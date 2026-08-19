@@ -553,90 +553,12 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
-	it('drains an expiration index removal before dropping the table stores', async function () {
-		const storagePath = path.join(testPath, 'expiration-index-removal-databases');
-		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);
-		const originalSetInterval = global.setInterval;
-		const expirationCallbacks = [];
-		let releaseRemoval;
-		mkdirSync(storagePath, { recursive: true });
-		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storagePath);
-		try {
-			resetDatabases();
-			global.setInterval = (callback, delay, ...args) => {
-				if (delay === 60000 && String(callback).includes('runningRecordExpiration')) {
-					expirationCallbacks.push(callback);
-					return originalSetInterval(() => {}, 0x7fffffff, ...args);
-				}
-				return originalSetInterval(callback, delay, ...args);
-			};
-			const Table = table({
-				table: `DropExpirationRemoval_${process.pid}_${Date.now()}`,
-				database: `DropExpirationDb_${process.pid}_${Date.now()}`,
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'expiresAt', expiresAt: true, indexed: true },
-				],
-			});
-			global.setInterval = originalSetInterval;
-			assert(expirationCallbacks.length > 0, 'table setup did not schedule an expiration scan');
-			const expiresAt = Date.now() - 1000;
-			await Table.put({ id: 'orphaned-index', expiresAt });
-			await Table.primaryStore.remove('orphaned-index');
-			const expirationKeys = [...Table.indices.expiresAt.getRange({ start: true, values: false, end: Date.now() })];
-			assert(
-				expirationKeys.some((entry) => entry.key === expiresAt && entry.value === 'orphaned-index'),
-				`missing expiration index key: ${JSON.stringify(expirationKeys)}`
-			);
-
-			const originalIfVersion = Table.primaryStore.ifVersion;
-			let removalStarted = false;
-			const removalGate = new Promise((resolve) => (releaseRemoval = resolve));
-			Table.primaryStore.ifVersion = async function (...args) {
-				removalStarted = true;
-				await removalGate;
-				return originalIfVersion.apply(this, args);
-			};
-
-			const originalDropSync = Table.primaryStore.dropSync;
-			let destructivePhaseStarted = false;
-			Table.primaryStore.dropSync = function (...args) {
-				destructivePhaseStarted = true;
-				return originalDropSync.apply(this, args);
-			};
-			const expirationPromise = Promise.all(expirationCallbacks.map((callback) => callback()));
-			await waitFor(() => removalStarted, { timeout: 2000, message: 'expiration scan did not start the index removal' });
-			const dropPromise = Table.dropTable();
-			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
-			assert.strictEqual(
-				destructivePhaseStarted,
-				false,
-				'dropTable() must wait for a direct expiration-index removal'
-			);
-			releaseRemoval();
-			let expirationSettled = false;
-			let dropSettled = false;
-			expirationPromise.then(
-				() => (expirationSettled = true),
-				() => (expirationSettled = true)
-			);
-			dropPromise.then(
-				() => (dropSettled = true),
-				() => (dropSettled = true)
-			);
-			await waitFor(() => expirationSettled && dropSettled, {
-				timeout: 5000,
-				message: `expiration/drop did not settle (expiration=${expirationSettled}, drop=${dropSettled})`,
-			});
-			await Promise.all([expirationPromise, dropPromise]);
-			assert.strictEqual(destructivePhaseStarted, true);
-			Table.primaryStore.ifVersion = originalIfVersion;
-		} finally {
-			global.setInterval = originalSetInterval;
-			releaseRemoval?.();
-			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, previousStoragePath);
-			resetDatabases();
-		}
+	it('releases an eviction read transaction before dropping the table', async function () {
+		const Table = defineTable(`DropAfterEvict_${process.pid}_${Date.now()}`);
+		await Table.put('expired', { name: 'evicted' });
+		const entry = Table.primaryStore.getEntry('expired');
+		await Table.evict('expired', entry.value, entry.version);
+		await Table.dropTable();
 	});
 
 	it('cancels a subscriber-paced replay instead of timing out the drop drain', async function () {

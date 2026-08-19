@@ -2180,15 +2180,13 @@ export function makeTable(options) {
 				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
 				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
-				return (transaction as any).commit().catch((error) => {
-					// The commit failed, so the read-snapshot/transaction handle is still open — release it, as the
-					// batched-eviction path does on its own commit failures. committed===true skips the finally abort.
-					try {
-						(transaction as any).abort();
-					} catch {}
-					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
-					else logger.warn?.('Error evicting record', id, error);
-				});
+				return (transaction as any)
+					.commit()
+					.catch((error) => {
+						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+						else logger.warn?.('Error evicting record', id, error);
+					})
+					.finally(() => lmdbTransaction.releaseReadTxn());
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
@@ -2196,7 +2194,7 @@ export function makeTable(options) {
 					if (primaryStore.ifVersion) {
 						(lmdbTransaction as any).abort?.();
 					} else {
-						(transaction as any)?.abort?.();
+						lmdbTransaction.releaseReadTxn();
 					}
 				}
 			}
@@ -6597,38 +6595,22 @@ export function makeTable(options) {
 				if (runningRecordExpiration) return;
 				runningRecordExpiration = true;
 				let finishExpirationScan: (() => void) | undefined;
-				const inFlightRemovals = new Set<Promise<void>>();
-				const trackRemoval = async (completion: Promise<void> | void) => {
-					if (!completion || typeof completion.then !== 'function') return;
-					let tracked: Promise<void>;
-					tracked = Promise.resolve(completion)
-						.catch((error) => {
-							if (!droppingTable) logger.error?.('Error removing expired index entry', error);
-						})
-						.finally(() => inFlightRemovals.delete(tracked));
-					inFlightRemovals.add(tracked);
-					if (inFlightRemovals.size >= MAX_INFLIGHT_MAINTENANCE_REMOVALS) await Promise.race(inFlightRemovals);
-				};
 				try {
 					finishExpirationScan = beginTableOperation('expiration scan');
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
-					for (const indexedEntry of index.getRange({
+					for (const key of index.getRange({
 						start: true,
 						values: false,
 						end: Date.now(),
 						snapshot: false,
 					})) {
-						const key = isRocksDB ? indexedEntry.key : indexedEntry;
-						const ids = isRocksDB ? [indexedEntry.value] : index.getValues(key);
-						for (const id of ids) {
+						for (const id of index.getValues(key)) {
 							const recordEntry = primaryStore.getEntry(id);
 							if (!recordEntry?.value) {
 								// cleanup the index if the record is gone
-								await trackRemoval(
-									primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id))
-								);
+								primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
 							} else if (recordEntry.value[expiresAtName] < Date.now()) {
 								// make sure the record hasn't changed and won't change while removing
 								TableResource.evict(id, recordEntry.value, recordEntry.version);
@@ -6640,12 +6622,8 @@ export function makeTable(options) {
 				} catch (error) {
 					if (!droppingTable) logger.error?.('Error in evicting old records', error);
 				} finally {
-					try {
-						await Promise.all(inFlightRemovals);
-					} finally {
-						finishExpirationScan?.();
-						runningRecordExpiration = false;
-					}
+					finishExpirationScan?.();
+					runningRecordExpiration = false;
 				}
 			}, RECORD_PRUNING_INTERVAL).unref();
 		}
