@@ -4978,7 +4978,7 @@ export function makeTable(options) {
 					if (value != null) recordCount++;
 					entriesScanned++;
 					await rest();
-					if (droppingTable) throw tableDroppingError();
+					if (isRocksDB && droppingTable) throw tableDroppingError();
 					if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
 						if (!counted) {
 							counted = true;
@@ -5018,7 +5018,7 @@ export function makeTable(options) {
 						if (value != null) recordCount++;
 						reverseScanned++;
 						await rest();
-						if (droppingTable) throw tableDroppingError();
+						if (isRocksDB && droppingTable) throw tableDroppingError();
 						if (reverseScanned >= limit) break;
 					}
 					// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
@@ -5345,7 +5345,7 @@ export function makeTable(options) {
 					end: endTime,
 				})) {
 					await rest(); // yield to other async operations
-					if (droppingTable) throw tableDroppingError();
+					if (isRocksDB && droppingTable) throw tableDroppingError();
 					if (auditRecord.tableId !== tableId) continue;
 					await trackRemoval(removeAuditEntry(auditStore, auditRecord));
 					entriesDeleted++;
@@ -5356,7 +5356,7 @@ export function makeTable(options) {
 					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
 						const { value, localTime } = entry;
 						await rest(); // yield to other async operations
-						if (droppingTable) throw tableDroppingError();
+						if (isRocksDB && droppingTable) throw tableDroppingError();
 						if (value === null && localTime < endTime) {
 							await trackRemoval(removeEntry(primaryStore, entry));
 						}
@@ -5396,7 +5396,7 @@ export function makeTable(options) {
 				for (let next = iterator.next(); !next.done; next = iterator.next()) {
 					const auditRecord = next.value;
 					await rest(); // yield to other async operations
-					if (droppingTable) throw tableDroppingError();
+					if (isRocksDB && droppingTable) throw tableDroppingError();
 					if (auditRecord.tableId !== tableId) continue;
 					yield {
 						id: auditRecord.recordId,
@@ -5407,7 +5407,7 @@ export function makeTable(options) {
 						user: auditRecord.user,
 						operation: auditRecord.originatingOperation,
 					};
-					if (droppingTable) throw tableDroppingError();
+					if (isRocksDB && droppingTable) throw tableDroppingError();
 				}
 			} finally {
 				try {
@@ -5430,7 +5430,7 @@ export function makeTable(options) {
 				const auditWindow = 100;
 				do {
 					await rest(); // yield to other async operations
-					if (droppingTable) throw tableDroppingError();
+					if (isRocksDB && droppingTable) throw tableDroppingError();
 					let insertionPoint = history.length;
 					let highestPreviousVersion = 0;
 					const start = nextVersion - auditWindow;

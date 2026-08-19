@@ -535,7 +535,6 @@ export class DatabaseTransaction implements Transaction {
 			// transaction (see the outstanding-iterators branch in commit()), so aborting it here
 			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
 			// into its own transaction; this handle's never-committed log batch dies with it.
-<<<<<<< HEAD
 			const transaction = this.detachOwnedTransaction();
 			try {
 				transaction?.abort();
