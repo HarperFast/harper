@@ -258,6 +258,7 @@ export type TransactionWrite = {
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
+	skipReplicationConfirmation?: boolean;
 	nodeName?: string;
 	nodeId?: number;
 	promise?: Promise<any>;
@@ -307,8 +308,8 @@ export function priorStagedWrite(operation: TransactionWrite): TransactionWrite 
  * `[-0]` and `[null]` vs `[NaN]` are DIFFERENT stored keys that value-ish encodings (JSON, string
  * coercion) collapse, cross-contaminating unrelated records. So every key is mapped through the
  * same encoder the stores use; latin1 keeps the bytes injective in a string. Symbol keys (internal
- * metadata writes) can't be key-encoded and keep native identity; so does null (topic-less
- * publishes), which never stages a record.
+ * metadata writes) can't be key-encoded and keep native identity. Null is reserved for topic-less
+ * publishes and audit-only markers.
  */
 export function writeKeyId(key: Id): unknown {
 	if (typeof key === 'symbol' || key == null) return key;
@@ -644,7 +645,8 @@ export class DatabaseTransaction implements Transaction {
 			result = operation.beforeIntermediate?.() as Promise<void>;
 			if (result?.then) this.completions.push(result);
 		}
-		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
+		const completion = operation.commit(txnTime, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		if (typeof completion?.then === 'function') this.completions.push(completion);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
 		// they survive the abort-after-failed-commit of the retry paths). isRetry stagings
@@ -858,13 +860,11 @@ export class DatabaseTransaction implements Transaction {
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0].store.rootStore.databaseName;
 								const lastWrite = this.writes[this.writes.length - 1];
-								if (confirmReplication && lastWrite) {
+								const lastEntry =
+									lastWrite && !lastWrite.skipReplicationConfirmation && lastWrite.store.getEntry(lastWrite.key);
+								if (confirmReplication && lastEntry) {
 									completions.push(
-										confirmReplication(
-											databaseName,
-											(lastWrite.store.getEntry(lastWrite.key) as any).version,
-											this.replicatedConfirmation
-										)
+										confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
 									);
 								}
 							}

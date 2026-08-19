@@ -19,7 +19,6 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-let outstandingCommit;
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -254,14 +253,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 
 		if (resolution) {
-			if (!outstandingCommit) {
-				outstandingCommit = resolution;
-				const clearOutstandingCommit = () => {
-					outstandingCommit = null;
-				};
-				outstandingCommit.then(clearOutstandingCommit, clearOutstandingCommit);
-			}
-
 			return resolution.then((resolution) => {
 				if (resolution) {
 					if (this.next) {
@@ -275,13 +266,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0].store.rootStore.databaseName;
 						const lastWrite = this.writes[this.writes.length - 1];
-						if (confirmReplication && lastWrite?.key != null)
+						const lastEntry =
+							lastWrite && !lastWrite.skipReplicationConfirmation && lastWrite.store.getEntry(lastWrite.key);
+						if (confirmReplication && lastEntry)
 							completions.push(
-								confirmReplication(
-									databaseName,
-									(lastWrite.store.getEntry(lastWrite.key) as any).localTime,
-									this.replicatedConfirmation
-								)
+								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
 							);
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,

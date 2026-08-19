@@ -3,12 +3,16 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
-const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
-const { replicationConfirmation } = require('#src/resources/LMDBTransaction');
+const {
+	DatabaseTransaction,
+	replicationConfirmation: rocksReplicationConfirmation,
+} = require('#src/resources/DatabaseTransaction');
+const { replicationConfirmation: lmdbReplicationConfirmation } = require('#src/resources/LMDBTransaction');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const setReplicationConfirmation = isLMDB ? lmdbReplicationConfirmation : rocksReplicationConfirmation;
 
 // A table-reload marker is a whole-table signal (harper-pro#489): one LOCAL_ONLY audit entry of type
 // 'reload' with no record, delivered to every subscriber on the table so they re-read it. It exists so
@@ -87,58 +91,68 @@ describe('table-reload marker (harper-pro#489)', () => {
 	});
 
 	it('persists the marker as a local-only audit entry that never replicates', async function () {
-		const ReloadTable = table({
-			table: 'ReloadMarkerAudit',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
-		});
-		// touch the audit stream first so the table has an audit store wired up
-		await ReloadTable.put({ id: 1, name: 'row' });
-		const originalRetryRisk = ReloadTable.primaryStore.retryRisk;
-		if (isLMDB) ReloadTable.primaryStore.retryRisk = 101;
-		try {
-			// Force the contention fallback; both LMDB commit paths must honor the completion contract.
-			await ReloadTable.writeReloadMarker();
-		} finally {
-			ReloadTable.primaryStore.retryRisk = originalRetryRisk;
-		}
-
-		// The txn-log store's empty getRange positions at the tail (for live subscription), so scan from an
-		// explicit numeric start to read the existing entries.
-		let marker;
-		for (const entry of ReloadTable.auditStore.getRange({ start: 1 })) {
-			if (entry.type === 'reload' && entry.tableId === ReloadTable.tableId) {
-				marker = entry;
-				break;
+		for (const forceContention of isLMDB ? [false, true] : [false]) {
+			const ReloadTable = table({
+				table: `ReloadMarkerAudit${forceContention ? 'Contention' : 'Optimistic'}`,
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			});
+			// touch the audit stream first so the table has an audit store wired up
+			await ReloadTable.put({ id: 1, name: 'row' });
+			const originalRetryRisk = ReloadTable.primaryStore.retryRisk;
+			if (isLMDB) ReloadTable.primaryStore.retryRisk = forceContention ? 101 : 0;
+			try {
+				await ReloadTable.writeReloadMarker();
+			} finally {
+				ReloadTable.primaryStore.retryRisk = originalRetryRisk;
 			}
+
+			// The txn-log store's empty getRange positions at the tail (for live subscription), so scan from an
+			// explicit numeric start to read the existing entries.
+			let marker;
+			for (const entry of ReloadTable.auditStore.getRange({ start: 1 })) {
+				if (entry.type === 'reload' && entry.tableId === ReloadTable.tableId) {
+					marker = entry;
+					break;
+				}
+			}
+			assert.ok(marker, 'a reload audit entry was written');
+			// LOCAL_ONLY makes the replication send path skip it by a bitmask test (no decode of an unknown
+			// type on a peer): the marker is a local signal only.
+			assert.ok(marker.extendedType & LOCAL_ONLY, 'reload marker is LOCAL_ONLY (never forwarded to peers)');
+			assert.ok(marker.recordId == null, 'reload marker has a null recordId');
+			// the regular row keeps its own audit entry; the marker did not disturb it
+			assert.ok((await ReloadTable.getHistoryOfRecord(1)).length >= 1, 'the real row still has its audit entry');
 		}
-		assert.ok(marker, 'a reload audit entry was written');
-		// LOCAL_ONLY makes the replication send path skip it by a bitmask test (no decode of an unknown
-		// type on a peer): the marker is a local signal only.
-		assert.ok(marker.extendedType & LOCAL_ONLY, 'reload marker is LOCAL_ONLY (never forwarded to peers)');
-		assert.ok(marker.recordId == null, 'reload marker has a null recordId');
-		// the regular row keeps its own audit entry; the marker did not disturb it
-		assert.ok((await ReloadTable.getHistoryOfRecord(1)).length >= 1, 'the real row still has its audit entry');
 	});
 
-	it('does not request replication confirmation for a local-only marker', async function () {
-		if (!isLMDB) return this.skip();
+	it('confirms a stored null-key publish but not a local-only marker', async function () {
 		const ReloadTable = table({
 			table: 'ReloadMarkerConfirmation',
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
-		const context = { transaction: new DatabaseTransaction() };
-		ReloadTable.writeReloadMarker(context);
-		const markerTransaction = context.transaction.next;
-		markerTransaction.replicatedConfirmation = 1;
 		let confirmationCalls = 0;
-		replicationConfirmation(() => {
+		let confirmedVersion;
+		setReplicationConfirmation((_databaseName, version) => {
 			confirmationCalls++;
+			confirmedVersion = version;
 		});
 		try {
+			const publishContext = { transaction: new DatabaseTransaction() };
+			ReloadTable.publish(null, { message: 'root topic' }, publishContext);
+			const publishTransaction = isLMDB ? publishContext.transaction.next : publishContext.transaction;
+			publishTransaction.replicatedConfirmation = 1;
+			await publishTransaction.commit({ doneWriting: true });
+			assert.equal(confirmationCalls, 1, 'a stored root-topic publish is confirmed');
+			assert.ok(confirmedVersion != null, 'the confirmation uses the stored entry version');
+
+			const context = { transaction: new DatabaseTransaction() };
+			ReloadTable.writeReloadMarker(context);
+			const markerTransaction = isLMDB ? context.transaction.next : context.transaction;
+			markerTransaction.replicatedConfirmation = 1;
 			await markerTransaction.commit({ doneWriting: true });
+			assert.equal(confirmationCalls, 1, 'a LOCAL_ONLY marker has nothing to confirm with peers');
 		} finally {
-			replicationConfirmation(undefined);
+			setReplicationConfirmation(undefined);
 		}
-		assert.equal(confirmationCalls, 0, 'a LOCAL_ONLY marker has nothing to confirm with peers');
 	});
 });
