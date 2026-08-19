@@ -483,6 +483,16 @@ describe('dropTable worker quiescence', function () {
 			releaseRemoval();
 			await Promise.all([deleteRemovalPromise, dropPromise]);
 			assert.strictEqual(destructivePhaseStarted, true);
+			assert.strictEqual(
+				Table.auditStore.deleteCallbacks[Table.tableId],
+				undefined,
+				'a dropped table must unregister its audit delete callback'
+			);
+			assert.strictEqual(
+				Table.auditStore.tableStores[Table.tableId],
+				undefined,
+				'audit retention must not retain the dropped table store'
+			);
 			Table.primaryStore.remove = originalRemove;
 		} finally {
 			releaseRemoval?.();

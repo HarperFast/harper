@@ -153,7 +153,8 @@ export function openAuditStore(rootStore) {
 		auditStore.deleteCallbacks = deleteCallbacks;
 		return {
 			remove() {
-				delete deleteCallbacks[tableId];
+				if (deleteCallbacks[tableId] === callback) delete deleteCallbacks[tableId];
+				if (auditStore.tableStores[tableId] === table) delete auditStore.tableStores[tableId];
 			},
 		};
 	};
