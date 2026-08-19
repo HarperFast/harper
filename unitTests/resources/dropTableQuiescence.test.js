@@ -582,8 +582,10 @@ describe('dropTable worker quiescence', function () {
 		let indexingWriteStarted;
 		const indexingWriteStartedPromise = new Promise((resolve) => (indexingWriteStarted = resolve));
 		let releaseIndexingWrite;
+		let indexingWrites = 0;
 		const indexingWriteGate = new Promise((resolve) => (releaseIndexingWrite = resolve));
 		index.put = async function (...args) {
+			indexingWrites++;
 			indexingWriteStarted();
 			await indexingWriteGate;
 			return originalPut.apply(this, args);
@@ -602,6 +604,7 @@ describe('dropTable worker quiescence', function () {
 			releaseIndexingWrite();
 			await Promise.all([Table.indexingOperation, dropPromise]);
 			assert.strictEqual(destructivePhaseStarted, true);
+			assert.ok(indexingWrites < 20, 'drop preparation must cancel the remaining index backfill');
 		} finally {
 			releaseIndexingWrite();
 			index.put = originalPut;

@@ -23,19 +23,17 @@ export function transaction<T>(
 	callback?: (transaction: Transaction) => T
 ): T {
 	let context: Context;
-	let asyncStorageContext;
 	if (typeof ctx === 'function') {
 		// optional first argument, handle case of no request
 		callback = ctx;
-		asyncStorageContext = contextStorage.getStore();
-		context = asyncStorageContext ?? {};
+		context = contextStorage.getStore() ?? {};
 	} else {
 		// The released placeholder is an absent argument, not a context: normalized before the fallback
 		// chain below so it resolves to the ambient store exactly as the `null` it replaced did, rather
 		// than to a bare `{}` that would drop the caller's user, session and timestamp.
 		const contextArg = isReleasedTransaction(ctx) ? undefined : ctx;
 		// request argument included, but null or undefined, so maybe create a new one
-		context = contextArg ?? (asyncStorageContext = contextStorage.getStore()) ?? {};
+		context = contextArg ?? contextStorage.getStore() ?? {};
 	}
 
 	if (typeof callback !== 'function') {

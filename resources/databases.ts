@@ -2120,6 +2120,10 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		let indexed = 0;
 		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
+		if (Table.primaryStore.dropping) {
+			await lastResolution;
+			return;
+		}
 		if (attributesLength > 0) {
 			let start: any;
 			for (const attribute of attributes) {
@@ -2143,6 +2147,10 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				versions: true,
 				snapshot: false, // don't hold a read transaction this whole time
 			})) {
+				if (Table.primaryStore.dropping) {
+					await lastResolution;
+					return;
+				}
 				if (!record) continue; // deletion entry
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
@@ -2226,6 +2234,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			hadIndexingErrors = true;
 			logger.error(error);
 		}
+		if (Table.primaryStore.dropping) return;
 		// Yield one more event turn so any queued when() error callbacks (which fire as
 		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
 		// before we decide whether to mark indexing as complete.

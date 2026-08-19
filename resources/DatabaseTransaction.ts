@@ -27,9 +27,6 @@ const trackedTxns = new Set<DatabaseTransaction>();
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
 const activeWriteTransactions = new Set<WeakRef<DatabaseTransaction>>();
-const activeWriteTransactionFinalizer = new FinalizationRegistry<WeakRef<DatabaseTransaction>>((reference) =>
-	activeWriteTransactions.delete(reference)
-);
 const terminalReplayCommitFailure = Symbol('terminalReplayCommitFailure');
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
@@ -619,7 +616,6 @@ export class DatabaseTransaction implements Transaction {
 		if (!this.#dropDrainReference && operation.store?.rootStore instanceof RocksDatabase) {
 			const reference = (this.#dropDrainReference = new WeakRef(this));
 			activeWriteTransactions.add(reference);
-			activeWriteTransactionFinalizer.register(this, reference, reference);
 		}
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
@@ -688,7 +684,6 @@ export class DatabaseTransaction implements Transaction {
 	private finishPendingWrites(): void {
 		if (this.#dropDrainReference) {
 			activeWriteTransactions.delete(this.#dropDrainReference);
-			activeWriteTransactionFinalizer.unregister(this.#dropDrainReference);
 			this.#dropDrainReference = undefined;
 		}
 		this.#resolvePendingWrites?.();
