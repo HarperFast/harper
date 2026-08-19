@@ -988,7 +988,7 @@ export class DatabaseTransaction implements Transaction {
 						try {
 							commitResolution = transaction.commit() as Promise<void>;
 						} catch (error) {
-							this.abortSynchronousReplayCommit(transaction, error, !!options.doneWriting);
+							commitResolution = this.abortSynchronousReplayCommit(transaction, error, !!options.doneWriting);
 						}
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
@@ -1294,7 +1294,7 @@ export class DatabaseTransaction implements Transaction {
 			this.releaseContext(!this.timedOut);
 		}
 	}
-	private abortSynchronousReplayCommit(transaction: RocksTransaction, error: unknown, final: boolean): never {
+	private abortSynchronousReplayCommit(transaction: RocksTransaction, error: unknown, final: boolean): Promise<never> {
 		try {
 			transaction.abort();
 		} catch (abortError) {
@@ -1328,7 +1328,10 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.debug?.('aborting linked transaction after synchronous replay commit failure', abortError);
 			}
 		}
-		throw error;
+		// Normalize the native API's unexpected synchronous throw to its ordinary rejected-Promise
+		// contract. The transaction() wrapper only aborts on a thrown commit; returning a rejection keeps
+		// the retained read handle alive until its iterators drain, matching the normal failure path.
+		return Promise.reject(error);
 	}
 	private abortSynchronousCommit(transaction: RocksTransaction, error: unknown): never {
 		try {
