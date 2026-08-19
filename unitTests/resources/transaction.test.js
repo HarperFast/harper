@@ -4,7 +4,8 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { transaction } = require('#src/resources/transaction');
+const { transaction, contextStorage } = require('#src/resources/transaction');
+const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { DatabaseTransaction, RELEASED_TRANSACTION, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
@@ -977,23 +978,44 @@ describe('Transactions', () => {
 				assert.equal((await TxnTest.get(110 + i))?.name, `checkpoint-${i}`, `row ${i} must persist`);
 			}
 		});
-		// Passing a transaction where a context is expected is a supported form; on a released context that
-		// argument is the placeholder, and every route that adopts it must read it as "no transaction"
-		// rather than assign onto the frozen shared instance.
+		// Passing a transaction where a context is expected is a supported form, and on a released context
+		// that argument is the placeholder. Every route that adopts one has to read it as an absent
+		// argument — Resource.create shifts its own arguments and never reaches transactional()'s
+		// normalizer, and transaction() can be handed it directly.
 		it('accepts a released slot wherever a transaction or context is accepted', async function () {
 			const context = {};
 			await transaction(context, async () => {
 				await TxnTest.put(120, { name: 'bare-arg' }, context);
 			});
 			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
-			await TxnTest.delete(120, context.transaction); // transactional() argument normalization
+			await TxnTest.delete(120, context.transaction);
 			assert.equal(await TxnTest.get(120), undefined, 'the delete must run on a fresh transaction');
-			// Resource.create shifts its own arguments and never reaches that normalizer.
 			const created = await TxnTest.create({ name: 'created-with-released-slot' }, context.transaction);
 			assert.ok(created?.id ?? created, 'create must not fail on a released slot');
-			// transaction() called with the placeholder directly as its context.
 			await transaction(context.transaction, async () => TxnTest.put(121, { name: 'direct' }));
 			assert.equal((await TxnTest.get(121)).name, 'direct');
+		});
+		// "Absent" has to mean the same thing at every route: an absent argument falls through to the
+		// ambient context. Resolving the placeholder to a bare `{}` instead would silently drop the
+		// caller's user, session and timestamp for everything inside.
+		it('keeps the ambient context when a released slot is passed as the context', async function () {
+			const seen = {};
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'test_registered_op', hdb_user: { username: 'ambient_identity' } } },
+				async () => {
+					const context = contextStorage.getStore();
+					await TxnTest.get(130); // completes and releases this context's transaction
+					assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+					await transaction(context.transaction, async () => {
+						seen.user = contextStorage.getStore()?.user?.username;
+						await TxnTest.put(130, { name: 'ambient' });
+					});
+					await TxnTest.create({ name: 'created-ambient' }, context.transaction);
+					return { message: 'ok' };
+				}
+			);
+			assert.equal(seen.user, 'ambient_identity', 'the ambient user must survive the released-slot route');
+			assert.equal((await TxnTest.get(130)).name, 'ambient');
 		});
 		// #1411: a timeout-poisoned abort must NOT release the context's back-reference. Resource.ts's
 		// dispatcher deliberately keeps joining a `timedOut` transaction (context?.transaction?.timedOut)
