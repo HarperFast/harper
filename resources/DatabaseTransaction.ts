@@ -561,6 +561,13 @@ export class DatabaseTransaction implements Transaction {
 		this.completeDeferredContextRelease();
 	}
 
+	/** Finish wrapper bookkeeping after the caller has already settled the native handle. */
+	completeReadTxn(): void {
+		this.detachOwnedTransaction();
+		this.finishPendingReads();
+		this.completeDeferredContextRelease();
+	}
+
 	/**
 	 * Complete a context release that releaseContext() deferred because outstanding read iterators
 	 * were still using this transaction (see releaseContext()) — called once the last one drains,

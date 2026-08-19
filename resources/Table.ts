@@ -2180,13 +2180,19 @@ export function makeTable(options) {
 				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
 				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
 				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
-				return (transaction as any)
-					.commit()
-					.catch((error) => {
-						if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
-						else logger.warn?.('Error evicting record', id, error);
-					})
-					.finally(() => lmdbTransaction.releaseReadTxn());
+				const handleCommitFailure = (error) => {
+					lmdbTransaction.releaseReadTxn();
+					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
+					else logger.warn?.('Error evicting record', id, error);
+				};
+				let commitCompletion: Promise<unknown>;
+				try {
+					commitCompletion = Promise.resolve((transaction as any).commit());
+				} catch (error) {
+					handleCommitFailure(error);
+					return Promise.resolve();
+				}
+				return commitCompletion.then(() => lmdbTransaction.completeReadTxn(), handleCommitFailure);
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply

@@ -561,6 +561,25 @@ describe('dropTable worker quiescence', function () {
 		await Table.dropTable();
 	});
 
+	it('releases an eviction read transaction when native commit throws synchronously', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const Table = defineTable(`DropAfterEvictThrow_${process.pid}_${Date.now()}`);
+		await Table.put('expired', { name: 'evicted' });
+		const entry = Table.primaryStore.getEntry('expired');
+		const originalCommit = Transaction.prototype.commit;
+		Transaction.prototype.commit = function () {
+			const error = new Error('Resource busy');
+			error.code = 'ERR_BUSY';
+			throw error;
+		};
+		try {
+			await Table.evict('expired', entry.value, entry.version);
+			await Table.dropTable();
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+	});
+
 	it('cancels a subscriber-paced replay instead of timing out the drop drain', async function () {
 		const Table = defineTable(`DropSlowReplay_${process.pid}_${Date.now()}`);
 		for (let i = 0; i < 110; i++) await Table.put(i, { name: `queued-${i}` });
