@@ -83,7 +83,7 @@ import { onStorageReclamation, getStorageSpaceStats } from '../server/storageRec
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
-import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
+import { RocksDatabase, Transaction as RocksTransaction, constants as rocksConstants } from '@harperfast/rocksdb-js';
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
@@ -2177,9 +2177,8 @@ export function makeTable(options) {
 					});
 				}
 				// RocksDB: eviction writes went directly into the raw transaction via options; commit it directly,
-				// as DatabaseTransaction.commit() would abort it (no tracked writes). The raw commit bypasses
-				// DatabaseTransaction's ERR_BUSY retry, so a concurrent-write conflict rejects here — swallow it
-				// (abandon the eviction) and log anything unexpected, rather than letting it crash the process.
+				// as DatabaseTransaction.commit() would abort it (no tracked writes). A coordinated-retry conflict
+				// resolves with RETRY_NOW_VALUE; abandon that eviction and release its native transaction.
 				const handleCommitFailure = (error) => {
 					lmdbTransaction.releaseReadTxn();
 					if (error?.code === 'ERR_BUSY') logger.trace?.('Abandoned eviction of busy record', id);
@@ -2192,7 +2191,14 @@ export function makeTable(options) {
 					handleCommitFailure(error);
 					return Promise.resolve();
 				}
-				return commitCompletion.then(() => lmdbTransaction.completeReadTxn(), handleCommitFailure);
+				return commitCompletion.then((result) => {
+					if (result === rocksConstants.RETRY_NOW_VALUE) {
+						lmdbTransaction.releaseReadTxn();
+						logger.trace?.('Abandoned eviction of busy record', id);
+						return;
+					}
+					lmdbTransaction.completeReadTxn();
+				}, handleCommitFailure);
 			} finally {
 				if (!committed) {
 					// Skip path or thrown error: abort instead of committing so we don't apply
