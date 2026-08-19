@@ -537,6 +537,11 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						`2. PRE-DELETE bucket=DEL hit counts: REST-QUERY=${restHits.length} SEARCH-BY-VALUE=${sbvHits.length} SQL=${sqlHits.length} (expect ${DEL_COUNT} each)`
 					);
 					strictEqual(
+						restHits.length,
+						DEL_COUNT,
+						`PRECONDITION: REST bucket=DEL pre-delete must see all ${DEL_COUNT} rows`
+					);
+					strictEqual(
 						sbvHits.length,
 						DEL_COUNT,
 						`PRECONDITION: search_by_value(DEL) pre-delete must see all ${DEL_COUNT} rows`
