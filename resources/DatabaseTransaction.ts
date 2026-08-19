@@ -273,6 +273,12 @@ export type TransactionWrite = {
 	appendedAuditEntry?: boolean;
 	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
 	priorWrite?: TransactionWrite;
+	// set only by a write that BOTH reads priorStagedWrite() and publishes stagedEntry; addWrite orders
+	// those against earlier same-key writes. A write that does one or neither would be ordered against a
+	// basis it cannot consume.
+	chainsStagedState?: boolean;
+	// addWrite's chain-walk memo: nearest earlier same-key write unsaved at staging time (null = none)
+	pendingPriorWrite?: TransactionWrite | null;
 	// what this write left for its key in this transaction, once its commit handler stored it (a
 	// deletion stages an entry with no value). Reset at the top of each commit-handler invocation so
 	// a retry round that takes an early return doesn't leave the prior round's state behind.
@@ -337,6 +343,8 @@ export class DatabaseTransaction implements Transaction {
 	// keep a write-holding head immortal.
 	declare writeTimeout: number;
 	timeoutBudget = 0;
+	// save() only stages here; ImmediateTransaction overrides it to commit, which addWrite must not defer
+	saveCommits = false;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -631,7 +639,20 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTimeout = this.timeout;
 		this.linkWrite(operation);
 		this.writes.push(operation);
-		if (!operation.deferSave) {
+		// Hold this write back while any earlier same-key write has not run — out of staging order both
+		// diff against the pre-transaction record (harper#2211, DESIGN.md). The whole chain, not just the
+		// immediate link: an eager non-chaining write in between would otherwise launder the deferral.
+		// Never where save() is itself the commit trigger (closed, or ImmediateTransaction): nothing would
+		// run the deferred write.
+		let awaitsPriorWrite = false;
+		if (operation.chainsStagedState === true && this.open === TRANSACTION_STATE.OPEN && !this.saveCommits) {
+			let pending = operation.priorWrite;
+			while (pending?.saved)
+				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
+			operation.pendingPriorWrite = pending ?? null;
+			awaitsPriorWrite = pending != null;
+		}
+		if (!operation.deferSave && !awaitsPriorWrite) {
 			// Setting saved to false means to defer saving
 			const saveResult: any = this.save(operation);
 			if (saveResult?.then) {
@@ -1164,6 +1185,7 @@ export interface Transaction {
 
 export class ImmediateTransaction extends DatabaseTransaction {
 	isCommitting = false;
+	saveCommits = true;
 	constructor(db: RootDatabaseKind) {
 		super();
 		this.db = db;
