@@ -2415,8 +2415,10 @@ function canCompleteInterruptedDrop(primaryMeta): boolean {
 	// A completed barrier is safe immediately. An incomplete barrier is safe only after a clean
 	// process start, when none of the handles from the recorded incarnation can still exist.
 	// Tombstones written before the incarnation field existed necessarily came from an older process.
+	const processInstanceId = manageThreads.getProcessInstanceId();
 	return (
-		primaryMeta?.dropQuiesced === true || primaryMeta?.dropProcessInstance !== manageThreads.getProcessInstanceId()
+		primaryMeta?.dropQuiesced === true ||
+		(processInstanceId != null && primaryMeta?.dropProcessInstance !== processInstanceId)
 	);
 }
 
@@ -2431,16 +2433,18 @@ export async function prepareTableDrop(
 	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
 	try {
 		if (preserveTable) matchingTables.add(preserveTable);
+		let generationMismatch: ClientError | undefined;
 		for (const databaseName of Object.getOwnPropertyNames(databases)) {
 			const databaseTables = databases[databaseName];
 			const Table = databaseTables?.[tableName];
 			if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
 			const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
 			if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) {
-				throw new ClientError(
+				generationMismatch ??= new ClientError(
 					`Drop generation does not match on this worker for ${databaseName}.${tableName}; refusing to acknowledge preparation`,
 					409
 				);
+				continue;
 			}
 			matchingTables.add(Table);
 		}
@@ -2457,6 +2461,7 @@ export async function prepareTableDrop(
 			(preparation): preparation is PromiseRejectedResult => preparation.status === 'rejected'
 		);
 		if (failedPreparation) throw failedPreparation.reason;
+		if (generationMismatch) throw generationMismatch;
 	} finally {
 		incompleteTableDropPreparations.delete(preparationKey);
 	}

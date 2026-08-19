@@ -167,6 +167,7 @@ describe('commit with open read iterators commits writes immediately on a replay
 		const targetDb = LingerTable.primaryStore.store.db;
 		const context = {};
 		let failedTransaction;
+		let synchronousFailure;
 		let iterator;
 		let rejection;
 		try {
@@ -178,7 +179,8 @@ describe('commit with open read iterators commits writes immediately on a replay
 				failedTransaction = context.transaction;
 				Transaction.prototype.commit = function (...args) {
 					if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
-					throw Object.assign(new Error('forced synchronous replay failure'), { code: 'ERR_BUSY' });
+					synchronousFailure = Object.assign(new Error('forced synchronous replay failure'), { code: 'ERR_BUSY' });
+					throw synchronousFailure;
 				};
 			});
 		} catch (error) {
@@ -189,6 +191,11 @@ describe('commit with open read iterators commits writes immediately on a replay
 		assert.match(rejection?.message, /forced synchronous replay failure/);
 		assert.strictEqual(rejection.code, 'ERR_BUSY', 'the terminal failure must retain its public error code');
 		assert.strictEqual(rejection.cause?.code, 'ERR_BUSY', 'the terminal failure must retain the native cause');
+		assert.strictEqual(
+			rejection.stack,
+			synchronousFailure.stack,
+			'the terminal failure must retain its original stack'
+		);
 		assert.strictEqual(context.transaction, failedTransaction, 'context release must wait for the retained iterator');
 		assert.ok(failedTransaction.transaction, 'the iterator must retain its original native read handle');
 		assert.strictEqual(failedTransaction.writes.length, 0, 'the failed replay must release its tracked writes');

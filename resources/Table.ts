@@ -67,7 +67,7 @@ import {
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
-import { transaction, contextStorage, getExecutingTransaction } from './transaction.ts';
+import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount, getProcessInstanceId } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
@@ -1494,7 +1494,14 @@ export function makeTable(options) {
 			}
 			const rootStore = primaryStore.rootStore;
 			const sharedRocksStore = databaseName === databasePath && rootStore instanceof RocksDatabase;
-			const activeTransaction = getExecutingTransaction();
+			const processInstanceId = sharedRocksStore ? getProcessInstanceId() : undefined;
+			if (sharedRocksStore && processInstanceId == null) {
+				throw new ServerError(
+					`Cannot safely coordinate dropping ${databaseName}.${tableName} from an unregistered worker`,
+					503
+				);
+			}
+			const activeTransaction = contextStorage.getStore()?.transaction;
 			const currentTableStores = new Set(tableStores());
 			if (
 				sharedRocksStore &&
@@ -1519,7 +1526,7 @@ export function makeTable(options) {
 					primaryMeta.dropQuiesced = !sharedRocksStore;
 					// A random process-start identity (not the PID, which containers commonly reuse) lets
 					// recovery distinguish a live process that may still hold handles from a clean restart.
-					if (sharedRocksStore) primaryMeta.dropProcessInstance = getProcessInstanceId();
+					if (sharedRocksStore) primaryMeta.dropProcessInstance = processInstanceId;
 					const tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
 					if (tombstoneWrite?.then) await tombstoneWrite;
 				}
@@ -4218,7 +4225,13 @@ export function makeTable(options) {
 			// in subscription.queue. Without this, the IIFE can fill the queue past
 			// EVENT_HIGH_WATER_MARK and hit waitForDrain before the consumer's listener exists.
 			if (request.listener) subscription!.on('data', request.listener);
-			const finishInitialScan = beginTableOperation('subscription replay', () => subscription.close());
+			let finishInitialScan: () => void;
+			try {
+				finishInitialScan = beginTableOperation('subscription replay', () => subscription.close());
+			} catch (error) {
+				subscription.close();
+				throw error;
+			}
 			const result = (async () => {
 				const isCollection = request.isCollection ?? thisId == null;
 				if (isCollection) {

@@ -50,7 +50,7 @@ const connectedPorts = []; // these are all known connected worker ports (siblin
 const PROCESS_INSTANCE_ENV = 'HARPER_INTERNAL_PROCESS_INSTANCE_ID';
 const processInstanceId = isMainThread
 	? randomUUID()
-	: workerData?.processInstanceId || process.env[PROCESS_INSTANCE_ENV] || randomUUID();
+	: workerData?.processInstanceId || process.env[PROCESS_INSTANCE_ENV];
 if (isMainThread) process.env[PROCESS_INSTANCE_ENV] = processInstanceId;
 const MAX_UNEXPECTED_RESTARTS = 50;
 // Threads get 10s to die before they're forced. In dev (`harper dev`) we widen this: a reload's old

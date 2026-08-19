@@ -1375,12 +1375,14 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// Keep the retained read handle alive until its iterators drain, but do not let a retryable native
 		// code re-enter commit after the staged writes above were discarded.
-		const terminalError: any = Object.assign(
-			new Error(error instanceof Error ? error.message : String(error), { cause: error }),
-			error instanceof Error ? error : undefined,
-			{ name: error instanceof Error ? error.name : 'Error' }
-		);
-		if (error instanceof Error) Object.setPrototypeOf(terminalError, Object.getPrototypeOf(error));
+		const terminalError: any = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+		if (error instanceof Error) {
+			const originalStack = error.stack;
+			Object.setPrototypeOf(terminalError, Object.getPrototypeOf(error));
+			Object.defineProperties(terminalError, Object.getOwnPropertyDescriptors(error));
+			Object.defineProperty(terminalError, 'cause', { configurable: true, value: error });
+			Object.defineProperty(terminalError, 'stack', { configurable: true, value: originalStack, writable: true });
+		}
 		Object.defineProperty(terminalError, terminalReplayCommitFailure, { value: true });
 		return Promise.reject(terminalError);
 	}

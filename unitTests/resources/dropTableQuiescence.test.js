@@ -350,7 +350,8 @@ describe('dropTable worker quiescence', function () {
 		const databaseName = `DropMismatchedPreparationDb_${process.pid}_${Date.now()}`;
 		const storePath = path.join(testPath, 'drop-mismatched-preparation-database');
 		const dropGeneration = 'expected-generation';
-		let attempts = 0;
+		let liveTableAttempts = 0;
+		let retainedTableAttempts = 0;
 		const Table = {
 			primaryStore: { rootStore: { path: storePath } },
 			dbisDB: {
@@ -359,17 +360,27 @@ describe('dropTable worker quiescence', function () {
 				},
 			},
 			async _prepareDrop() {
-				attempts++;
+				liveTableAttempts++;
+			},
+		};
+		const RetainedTable = {
+			primaryStore: { rootStore: { path: storePath } },
+			async _prepareDrop() {
+				retainedTableAttempts++;
 			},
 		};
 		databases[databaseName] = { [tableName]: Table };
 		try {
-			await assert.rejects(prepareTableDrop(storePath, tableName, dropGeneration), /generation does not match/);
+			await assert.rejects(
+				prepareTableDrop(storePath, tableName, dropGeneration, RetainedTable),
+				/generation does not match/
+			);
 		} finally {
 			delete databases[databaseName];
 		}
 		await prepareTableDrop(storePath, tableName, dropGeneration);
-		assert.strictEqual(attempts, 0, 'the mismatched table must not remain registered for later preparations');
+		assert.strictEqual(liveTableAttempts, 0, 'the mismatched live table must not be prepared');
+		assert.strictEqual(retainedTableAttempts, 1, 'a retained class must be closed before the mismatch NACKs');
 	});
 
 	it('does not wait for a read iterator on another table in the same database', async function () {
@@ -433,10 +444,27 @@ describe('dropTable worker quiescence', function () {
 		await Table.put({ id: 'scan', name: 'held' });
 
 		const originalSetImmediate = global.setImmediate;
+		const originalGetRange = Table.primaryStore.getRange;
+		let scanYieldPending = false;
+		Table.primaryStore.getRange = function (...args) {
+			const iterable = originalGetRange.apply(this, args);
+			return {
+				*[Symbol.iterator]() {
+					for (const entry of iterable) {
+						scanYieldPending = true;
+						yield entry;
+					}
+				},
+			};
+		};
 		let releaseScan;
 		global.setImmediate = (callback, ...args) => {
-			global.setImmediate = originalSetImmediate;
-			releaseScan = () => originalSetImmediate(callback, ...args);
+			if (scanYieldPending && !releaseScan) {
+				scanYieldPending = false;
+				releaseScan = () => originalSetImmediate(callback, ...args);
+				return;
+			}
+			return originalSetImmediate(callback, ...args);
 		};
 		let scanPromise;
 		try {
@@ -444,6 +472,7 @@ describe('dropTable worker quiescence', function () {
 			await waitFor(() => releaseScan, { message: 'getRecordCount() did not enter its yielded range scan' });
 		} finally {
 			global.setImmediate = originalSetImmediate;
+			Table.primaryStore.getRange = originalGetRange;
 		}
 
 		const originalDropSync = Table.primaryStore.dropSync;
