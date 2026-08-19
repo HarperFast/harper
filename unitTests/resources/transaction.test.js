@@ -5,7 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+const { DatabaseTransaction, RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
@@ -226,11 +226,11 @@ describe('Transactions', () => {
 			}
 			assert.equal(entries[0].name, 'thirteen');
 			await TxnTest3.put(14, { name: 'fourteen' }, context);
-			// context.transaction may already be released here: the preceding get()/search() calls each ran
-			// (and durably committed) their own short-lived transaction once the explicit commit above closed
-			// the original one, and DatabaseTransaction now releases the context's back-reference as soon as
-			// one of those completes — so there may be nothing left to explicitly commit.
-			await context.transaction?.commit();
+			// The preceding get()/search() calls each ran (and durably committed) their own short-lived
+			// transaction once the explicit commit above closed the original one, so there may be nothing
+			// left to commit — but the documented pattern is to keep committing the context's transaction,
+			// and that must stay callable rather than throwing on a released slot.
+			await context.transaction.commit();
 			assert.equal((await TxnTest.get(7, context)).name, 'SEVEN');
 			assert.equal((await TxnTest2.get(13, context)).name, 'thirteen');
 			assert.equal((await TxnTest3.get(14, context)).name, 'fourteen');
@@ -827,10 +827,10 @@ describe('Transactions', () => {
 				}
 				await context.transaction.commit();
 				await TxnTest.put({ id: 8, name: 'eight changed' }); // no context
-				// context.transaction may already be released here — the ambient put above ran (and durably
-				// committed) its own short-lived transaction once the explicit commit above closed the
-				// original one; see the identical comment in 'Can run txn with commit in the middle'.
-				await context.transaction?.commit();
+				// As in 'Can run txn with commit in the middle': the ambient put above ran (and durably
+				// committed) its own short-lived transaction once the explicit commit closed the original
+				// one, and committing the context's transaction again must still be safe.
+				await context.transaction.commit();
 				assert.equal((await TxnTest.get(8, context)).name, 'eight changed');
 			});
 		});
@@ -847,10 +847,11 @@ describe('Transactions', () => {
 			await transaction(context, async () => {
 				await TxnTest.put(90, { name: 'release-on-commit' }, context);
 			});
-			// releaseContext() nulls the slot rather than deleting it — Context.transaction is typed
-			// `DatabaseTransaction | null | undefined` to document a released-but-previously-attached
-			// state, so a long-lived, hot context isn't repeatedly forced into V8 dictionary mode.
-			assert.strictEqual(context.transaction, null);
+			// releaseContext() leaves the shared RELEASED_TRANSACTION in the slot rather than nulling or
+			// deleting it: the completed instance is no longer retained (the point of the release), while
+			// code that legitimately reaches for context.transaction after committing still finds a safe,
+			// completed transaction instead of a null.
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 			assert.equal((await TxnTest.get(90)).name, 'release-on-commit');
 		});
 		it('releases the context’s back-reference once the transaction aborts', async function () {
@@ -862,7 +863,7 @@ describe('Transactions', () => {
 				}),
 				/forced abort for test/
 			);
-			assert.strictEqual(context.transaction, null);
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 			assert.equal(await TxnTest.get(91), undefined);
 		});
 		it('does not clobber a context that has been re-pointed at a different transaction', async function () {
@@ -889,7 +890,7 @@ describe('Transactions', () => {
 			await transaction(context, async () => {
 				await TxnTest.put(92, { name: 'first txn on shared context' }, context);
 			});
-			assert.strictEqual(context.transaction, null);
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 			await transaction(context, async () => {
 				await TxnTest.put(93, { name: 'second txn on shared context' }, context);
 			});
@@ -899,15 +900,16 @@ describe('Transactions', () => {
 		// The release must not strand a later write on an uncommitted transaction. It doesn't, and the
 		// reason is worth pinning: resources/transaction.ts:35 only REUSES a context's transaction when
 		// it is still OPEN, so a retained CLOSED one was never reused for a subsequent write anyway —
-		// line 39 minted a fresh DatabaseTransaction either way. Nulling it therefore changes only what
-		// stays reachable, not how the next write is serviced: it still goes through the transaction()
-		// wrapper, which commits in onComplete (or aborts in onError) by construction.
+		// line 39 minted a fresh DatabaseTransaction either way. Replacing it with the completed
+		// RELEASED_TRANSACTION therefore changes only what stays reachable, not how the next write is
+		// serviced: it still goes through the transaction() wrapper, which commits in onComplete (or
+		// aborts in onError) by construction.
 		it('keeps post-completion writes on a reused context durable, with nothing left staged', async function () {
 			const context = {};
 			await transaction(context, async () => {
 				await TxnTest.put(94, { name: 'inside txn' }, context);
 			});
-			assert.strictEqual(context.transaction, null);
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 			// Writes made with the SAME context after its transaction completed must still commit.
 			await TxnTest.put(95, { name: 'after commit' }, context);
 			await TxnTest.get(95, context); // a read in between, which also re-enters the dispatcher
@@ -920,6 +922,41 @@ describe('Transactions', () => {
 				0,
 				'no write may be left staged on an uncommitted transaction attached to the reused context'
 			);
+		});
+		// The shape that broke central-manager on 5.2.3 (fabric connect / create + delete cluster all
+		// returned `Cannot read properties of null (reading 'commit')`): a handler that has no
+		// transaction() wrapper of its own, makes a static Resource API call with its context — which
+		// Resource.ts services by minting a transaction ON that context and driving it to a final commit
+		// — and then follows the documented pattern of committing the context's transaction itself. The
+		// release must not turn that documented call into a TypeError.
+		it('lets a handler commit its context after a nested Resource API call completed that context’s transaction', async function () {
+			const context = {};
+			await TxnTest.get(97, context);
+			assert.strictEqual(
+				context.transaction,
+				RELEASED_TRANSACTION,
+				'premise: the nested get’s own final commit released the slot'
+			);
+			await context.transaction.commit(); // documented pattern; must not throw
+			await TxnTest.put(97, { name: 'after released commit' }, context);
+			await context.transaction.commit();
+			assert.equal((await TxnTest.get(97)).name, 'after released commit');
+		});
+		// A shared, process-wide released transaction must never be claimed as a place to stage writes.
+		it('never lets the released placeholder be claimed or written to', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(98, { name: 'claim check' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			await TxnTest.put(99, { name: 'not staged on the placeholder' }, context);
+			// The write is serviced by a transaction of its own, which releases the slot back to the
+			// placeholder when it completes — so the slot's identity says nothing here. What must hold is
+			// that the shared instance was never claimed or staged into on the way through.
+			assert.equal(RELEASED_TRANSACTION.writes.length, 0, 'nothing may ever be staged on the placeholder');
+			assert.equal(RELEASED_TRANSACTION.db, undefined, 'no store may ever claim the placeholder');
+			assert.throws(() => RELEASED_TRANSACTION.addWrite({}), /already completed/);
+			assert.equal((await TxnTest.get(99)).name, 'not staged on the placeholder');
 		});
 		// #1411: a timeout-poisoned abort must NOT release the context's back-reference. Resource.ts's
 		// dispatcher deliberately keeps joining a `timedOut` transaction (context?.transaction?.timedOut)

@@ -36,6 +36,7 @@ import {
 	DatabaseTransaction,
 	ImmediateTransaction,
 	priorStagedWrite,
+	RELEASED_TRANSACTION,
 	TRANSACTION_STATE,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -5597,6 +5598,12 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
+		// RELEASED_TRANSACTION is the shared, process-wide placeholder a completed transaction leaves in
+		// the slot (DatabaseTransaction.ts's releaseContext) — it is a marker that this context has no
+		// transaction, not one to claim: the "uninitialized DatabaseTransaction, we can claim it" branch
+		// below would assign this table's store to an instance every other context is also pointing at.
+		// Treated as absent, exactly as the empty slot it replaced was.
+		if (transaction === RELEASED_TRANSACTION) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it

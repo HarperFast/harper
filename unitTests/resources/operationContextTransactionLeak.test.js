@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { contextStorage } = require('#src/resources/transaction');
-const { TRANSACTION_STATE, DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+const { TRANSACTION_STATE, DatabaseTransaction, RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');
 
 // Regression coverage for a transaction-context leak exposed by issue #1591/#1592 (ambient user
 // context for operation handlers) and confirmed against a real 2-node cluster-formation scenario
@@ -200,17 +200,17 @@ describe('Ambient operation context must not couple independent writes (transact
 		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
 		assert.strictEqual(
 			afterFirst,
-			null,
+			RELEASED_TRANSACTION,
 			"the first write's transaction must be released from the ambient context once its commit completes"
 		);
 		assert.strictEqual(
 			afterSecond,
-			null,
+			RELEASED_TRANSACTION,
 			"the second write's transaction must likewise be released, not left attached for a later write to observe"
 		);
 		assert.strictEqual(
 			afterThird,
-			null,
+			RELEASED_TRANSACTION,
 			"the third write's transaction must likewise be released, for the same reason"
 		);
 
