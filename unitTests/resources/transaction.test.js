@@ -78,20 +78,20 @@ describe('Transactions', () => {
 		if (isLMDB) return this.skip();
 		const transaction = new DatabaseTransaction();
 		transaction.db = TxnTest.primaryStore;
-		let completionObserved = false;
-		const completion = Promise.resolve();
-		const then = completion.then;
-		completion.then = function (...args) {
-			completionObserved = true;
-			return then.apply(this, args);
-		};
+		let settled = false;
+		let release;
+		const completion = new Promise((resolve) => (release = resolve)).then(() => {
+			settled = true;
+		});
 		transaction.addWrite({
 			key: 'async-commit-callback',
 			store: TxnTest.primaryStore,
 			commit: () => completion,
 		});
-		await transaction.commit({ doneWriting: true });
-		assert.equal(completionObserved, true, 'the callback completion was awaited');
+		const committed = transaction.commit({ doneWriting: true });
+		setImmediate(release);
+		await committed;
+		assert.equal(settled, true, 'commit resolved only after the callback completion settled');
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
