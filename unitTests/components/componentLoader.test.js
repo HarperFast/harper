@@ -3,11 +3,14 @@ const sinon = require('sinon');
 const path = require('path');
 const { tmpdir } = require('os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } = require('fs');
+const fs = require('node:fs/promises');
+const { waitFor } = require('../waitFor.js');
 
 describe('ComponentLoader Status Integration', function () {
 	let componentStatusRegistry;
 	let tempDir;
 	let componentLoader;
+	let withComponentPreparationLock;
 	let lifecycle;
 	let sandbox;
 
@@ -20,7 +23,7 @@ describe('ComponentLoader Status Integration', function () {
 		// Mock environment to use our temp directory
 		const env = require('#src/utility/environment/environmentManager');
 		sandbox.stub(env, 'get').callsFake((key) => {
-			if (key === 'COMPONENTSROOT') {
+			if (key === 'componentsRoot') {
 				return tempDir;
 			}
 			// Return some default values for other config
@@ -60,6 +63,7 @@ describe('ComponentLoader Status Integration', function () {
 
 		// Load componentLoader after setting up spies
 		componentLoader = require('#src/components/componentLoader');
+		({ withComponentPreparationLock } = require('#src/components/componentPreparationLock'));
 	});
 
 	after(function () {
@@ -400,6 +404,85 @@ describe('ComponentLoader Status Integration', function () {
 				componentLoader.loadedPaths.clear();
 			}
 		});
+	});
+
+	it('serializes a superseding load generation through deferred readiness', async function () {
+		this.timeout(15000);
+		const appName = 'deferred-generation-probe';
+		const pluginName = 'deferredGenerationProbe';
+		const componentDir = path.join(tempDir, appName);
+		const asidePath = path.join(tempDir, '.deploy-aside', appName, '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'config.yaml'), `${pluginName}: {}\n`);
+		await fs.mkdir(componentDir, { recursive: true });
+		await fs.writeFile(path.join(componentDir, 'partial'), 'partial');
+
+		let releasePreparation;
+		let preparationHeld;
+		const preparationStarted = new Promise((resolve) => (preparationHeld = resolve));
+		const preparation = withComponentPreparationLock(componentDir, async () => {
+			preparationHeld();
+			await new Promise((resolve) => (releasePreparation = resolve));
+		});
+
+		let releaseStart;
+		let startEntered = false;
+		let readyCalls = 0;
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+			async start() {
+				startEntered = true;
+				await new Promise((resolve) => (releaseStart = resolve));
+				return { ready: () => readyCalls++ };
+			},
+		};
+		const loadedComponents = new Map();
+		const resources = { isWorker: true, set() {} };
+
+		try {
+			await preparationStarted;
+			await componentLoader.loadComponentDirectories(loadedComponents, resources, new WeakMap());
+			releasePreparation();
+			await preparation;
+			try {
+				await waitFor(() => startEntered, { timeout: 5000, message: 'deferred component load did not start' });
+			} catch (error) {
+				error.message += `: loading=${lifecycle.loading
+					.getCalls()
+					.map((call) => String(call.args[0]))
+					.join(',')} failed=${lifecycle.failed
+					.getCalls()
+					.map((call) => String(call.args[1]))
+					.join('; ')} live=${existsSync(componentDir)} staging=${existsSync(path.dirname(asidePath))} loaded=${[
+					...componentLoader.loadedPaths.keys(),
+				].join(',')}`;
+				throw error;
+			}
+
+			let supersedingLoadSettled = false;
+			const supersedingLoad = componentLoader
+				.loadComponentDirectories(loadedComponents, resources, new WeakMap())
+				.then(() => (supersedingLoadSettled = true));
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(supersedingLoadSettled, false);
+
+			releaseStart();
+			await supersedingLoad;
+			await waitFor(() => readyCalls === 1);
+			assert.strictEqual(readyCalls, 1);
+		} finally {
+			releasePreparation?.();
+			releaseStart?.();
+			await preparation;
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(path.join(tempDir, '.deploy-aside', appName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(componentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
 	});
 
 	// A mounted application's deprecated `start`/`startOnMainThread` hooks receive the raw,

@@ -482,6 +482,7 @@ async function runNpmPack(
 export const ASIDE_STAGING_DIR = '.deploy-aside';
 const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
 const RETIRED_ASIDE_PREFIX = '.retired-';
+const PRIOR_ABSENT_RECORD_SUFFIX = '-prior-absent';
 const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const COMPONENT_RECOVERY_WAIT_TIMEOUT_MS = 30000;
@@ -741,6 +742,7 @@ export async function extractApplication(
 	const asideStagingDir = extractionStagingDirectory(application.dirPath);
 	const transactionPaths = new Set<string>();
 	let asidePath: string | undefined;
+	let recoveryRecordPath: string;
 	try {
 		await ensureExtractionStagingDirectory(asideStagingDir);
 		await recoverOrCleanupStaleExtractionPaths(application, asideStagingDir);
@@ -756,6 +758,15 @@ export async function extractApplication(
 			asidePath = join(asideStagingDir, `${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`);
 			await rename(application.dirPath, asidePath);
 			transactionPaths.add(asidePath);
+			recoveryRecordPath = asidePath;
+		} else {
+			await ensureExtractionStagingDirectory(asideStagingDir);
+			recoveryRecordPath = join(
+				asideStagingDir,
+				`${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}${PRIOR_ABSENT_RECORD_SUFFIX}`
+			);
+			await writeFile(recoveryRecordPath, '', { flag: 'wx', mode: 0o600 });
+			transactionPaths.add(recoveryRecordPath);
 		}
 		if (asidePath) application.isNewComponent = false;
 
@@ -766,13 +777,20 @@ export async function extractApplication(
 			const extracted = await readdir(application.dirPath, { withFileTypes: true });
 			if (extracted.length === 1 && extracted[0].isDirectory()) {
 				const topLevelDirPath = join(application.dirPath, extracted[0].name);
-				await ensureExtractionStagingDirectory(asideStagingDir);
-				const tempDirPath = join(asideStagingDir, `.normalize-${process.pid}-${Date.now()}-${randomUUID()}`);
-				transactionPaths.add(tempDirPath);
-				await rename(topLevelDirPath, tempDirPath);
-				await rmdir(application.dirPath);
-				await rename(tempDirPath, application.dirPath);
-				transactionPaths.delete(tempDirPath);
+				if (process.platform === 'win32') {
+					for (const childName of await readdir(topLevelDirPath)) {
+						await rename(join(topLevelDirPath, childName), join(application.dirPath, childName));
+					}
+					await rmdir(topLevelDirPath);
+				} else {
+					await ensureExtractionStagingDirectory(asideStagingDir);
+					const tempDirPath = join(asideStagingDir, `.normalize-${process.pid}-${Date.now()}-${randomUUID()}`);
+					transactionPaths.add(tempDirPath);
+					await rename(topLevelDirPath, tempDirPath);
+					await rmdir(application.dirPath);
+					await rename(tempDirPath, application.dirPath);
+					transactionPaths.delete(tempDirPath);
+				}
 			}
 		} catch (error) {
 			try {
@@ -799,10 +817,8 @@ export async function extractApplication(
 	const transaction: ExtractionTransaction = {
 		async commit() {
 			if (settled) return;
-			if (asidePath) {
-				const retiredMarkerPath = await retireExtractionAside(asidePath);
-				transactionPaths.add(retiredMarkerPath);
-			}
+			const retiredMarkerPath = await retireExtractionAside(recoveryRecordPath);
+			transactionPaths.add(retiredMarkerPath);
 			settled = true;
 			await cleanupExtractionPaths(application, asideStagingDir, transactionPaths);
 		},
@@ -856,6 +872,26 @@ export async function makeRollbackPlaceholderMovable(
 	}
 }
 
+async function identifyRollbackPlaceholder(
+	applicationDirPath: string
+): Promise<{ dev: bigint; ino: bigint } | undefined> {
+	const userId = process.getuid?.();
+	if (process.platform === 'win32' || userId === undefined || userId === 0) return undefined;
+	try {
+		const current = await lstat(applicationDirPath, { bigint: true });
+		if (
+			(current.isDirectory() || current.isFile()) &&
+			current.uid === BigInt(userId) &&
+			(Number(current.mode) & 0o777) === 0
+		) {
+			return { dev: current.dev, ino: current.ino };
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+	}
+	return undefined;
+}
+
 async function ensureExtractionStagingDirectory(asideStagingDir: string): Promise<void> {
 	for (const stagingDir of [dirname(asideStagingDir), asideStagingDir]) {
 		await mkdir(stagingDir, { recursive: true, mode: 0o700 });
@@ -878,26 +914,54 @@ async function recoverOrCleanupStaleExtractionPaths(
 	const entries = await readdir(asideStagingDir, { withFileTypes: true });
 	const entryNames = new Set(entries.map((entry) => entry.name));
 	const paths = new Set<string>(entries.map((entry) => join(asideStagingDir, entry.name)));
-	const restorable = entries
+	const recoveryRecords = entries
 		.filter(
 			(entry) =>
-				entry.isDirectory() &&
+				isExtractionRecoveryRecord(entry) &&
 				entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX) &&
 				!entryNames.has(`${RETIRED_ASIDE_PREFIX}${entry.name.slice(IN_PROGRESS_ASIDE_PREFIX.length)}`)
 		)
-		.map((entry) => ({ entry, timestamp: extractionAsideTimestamp(entry.name) }))
+		.map((entry) => ({
+			entry,
+			priorStateAbsent: isPriorAbsentRecoveryRecord(entry),
+			timestamp: extractionAsideTimestamp(entry.name),
+		}))
 		.filter(({ timestamp }) => Number.isFinite(timestamp))
 		.sort((left, right) => right.timestamp - left.timestamp);
-	if (restorable.length > 0) {
-		const restoredPath = join(asideStagingDir, restorable[0].entry.name);
-		await rollbackExtractedDirectory(application, asideStagingDir, restoredPath, paths, false);
+	const recoveryRecord =
+		recoveryRecords.find(({ priorStateAbsent }) => !priorStateAbsent) ??
+		recoveryRecords.find(({ priorStateAbsent }) => priorStateAbsent);
+	if (recoveryRecord) {
+		const recoveryPath = join(asideStagingDir, recoveryRecord.entry.name);
+		await rollbackExtractedDirectory(
+			application,
+			asideStagingDir,
+			recoveryRecord.priorStateAbsent ? undefined : recoveryPath,
+			paths,
+			false
+		);
 		application.logger.warn(
-			`Recovered the previous ${application.name} component directory after an interrupted deploy` +
-				(restorable.length > 1 ? `; discarded ${restorable.length - 1} older recovery candidates` : '')
+			(recoveryRecord.priorStateAbsent
+				? `Removed the partial ${application.name} component directory after an interrupted first deploy`
+				: `Recovered the previous ${application.name} component directory after an interrupted deploy`) +
+				(recoveryRecords.length > 1 ? `; discarded ${recoveryRecords.length - 1} older recovery candidates` : '')
 		);
 		return;
 	}
 	await cleanupExtractionPaths(application, asideStagingDir, paths);
+}
+
+function isPriorAbsentRecoveryRecord(entry: { isFile(): boolean; name: string }): boolean {
+	return entry.isFile() && entry.name.endsWith(PRIOR_ABSENT_RECORD_SUFFIX);
+}
+
+function isExtractionRecoveryRecord(entry: {
+	isDirectory(): boolean;
+	isFile(): boolean;
+	isSymbolicLink(): boolean;
+	name: string;
+}): boolean {
+	return entry.isDirectory() || entry.isSymbolicLink() || isPriorAbsentRecoveryRecord(entry);
 }
 
 function extractionAsideTimestamp(name: string): number {
@@ -999,7 +1063,7 @@ export async function retireComponentExtractionStaging(
 	}
 	const paths = new Set<string>(entries.map((entry) => join(asideStagingDir, entry.name)));
 	for (const entry of entries) {
-		if (!entry.isDirectory() || !entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX)) continue;
+		if (!isExtractionRecoveryRecord(entry) || !entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX)) continue;
 		const markerPath = retiredMarkerForAside(join(asideStagingDir, entry.name));
 		try {
 			await writeFile(markerPath, '', { flag: 'wx', mode: 0o600 });
@@ -1089,7 +1153,7 @@ async function rollbackExtractedDirectory(
 	retainReplacement: boolean
 ): Promise<void> {
 	await ensureExtractionStagingDirectory(asideStagingDir);
-	const retryableRenameCodes = new Set(['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES', 'EBUSY']);
+	const retryableRenameCodes = new Set(['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EPERM', 'EACCES', 'EBUSY']);
 	const displaceCurrentDirectory = async (): Promise<string | undefined> => {
 		const retryDeadline = Date.now() + 5000;
 		let lastError: unknown;
@@ -1111,10 +1175,11 @@ async function rollbackExtractedDirectory(
 	};
 
 	if (asidePath) {
+		const asideIsSymbolicLink = (await lstat(asidePath)).isSymbolicLink();
 		let restoreError: unknown;
 		let restoreRetryDeadline: number | undefined;
 		let fallbackDisplacedPath: string | undefined;
-		let placeholderIdentity: { dev: bigint; ino: bigint } | undefined;
+		let placeholderIdentity = await identifyRollbackPlaceholder(application.dirPath);
 		const failRestore = async (error: unknown): Promise<never> => {
 			try {
 				await makeRollbackPlaceholderMovable(application.dirPath, placeholderIdentity);
@@ -1212,7 +1277,11 @@ async function rollbackExtractedDirectory(
 				restoreRetryDeadline ??= Date.now() + 5000;
 				if (process.platform !== 'win32' && process.getuid?.() !== 0) {
 					try {
-						await mkdir(application.dirPath, { mode: 0o000 });
+						if (asideIsSymbolicLink) {
+							await writeFile(application.dirPath, '', { flag: 'wx', mode: 0o000 });
+						} else {
+							await mkdir(application.dirPath, { mode: 0o000 });
+						}
 						const placeholder = await lstat(application.dirPath, { bigint: true });
 						placeholderIdentity = { dev: placeholder.dev, ino: placeholder.ino };
 					} catch (placeholderError) {

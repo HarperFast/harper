@@ -64,6 +64,7 @@ let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
 let componentLoadGeneration = 0;
+let componentLoadGenerationTail = Promise.resolve();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
 export async function readyComponentModules(
@@ -146,136 +147,147 @@ export async function loadComponentDirectories(
 	loadedResources?: Resources,
 	readyComponentPromises: ComponentReadyPromises = new WeakMap()
 ) {
-	const loadGeneration = ++componentLoadGeneration;
-	if (loadedResources) resources = loadedResources;
-	if (loadedPluginModules) loadedComponents = loadedPluginModules;
-	const cycleResources = resources;
-	const cycleLoadedComponents = loadedComponents;
-	let failedRecoveries = new Map<string, Error>();
+	const previousGeneration = componentLoadGenerationTail;
+	let settleGeneration: () => void;
+	const generationSettled = new Promise<void>((resolve) => (settleGeneration = resolve));
+	componentLoadGenerationTail = previousGeneration.then(() => generationSettled);
+	await previousGeneration;
+	const deferredLoads: Promise<void>[] = [];
 	try {
-		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
-	} catch (error) {
-		const recoveryError = error instanceof Error ? error : new Error(String(error));
-		harperLogger.warn(
-			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
-			errorForLog(recoveryError)
-		);
-	}
-	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
-	// any application loads (root components — including the Pro custody registration — have
-	// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody
-	// secrets heal. Never throws.
-	await materializeGlobalSecrets();
-	const cfsLoaded: Promise<any>[] = [];
-	const deferredRecoveries = new Map(
-		[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
-	);
-	const unreportedFailedRecoveries = new Map(
-		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
-	);
-	const deferComponentLoad = (appName: string) => {
-		const appFolder = join(CF_ROUTES_DIR, appName);
-		const appWasVisible = existsSync(appFolder);
-		if (appWasVisible) {
-			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
+		const loadGeneration = ++componentLoadGeneration;
+		if (loadedResources) resources = loadedResources;
+		if (loadedPluginModules) loadedComponents = loadedPluginModules;
+		const cycleResources = resources;
+		const cycleLoadedComponents = loadedComponents;
+		let failedRecoveries = new Map<string, Error>();
+		try {
+			failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
+		} catch (error) {
+			const recoveryError = error instanceof Error ? error : new Error(String(error));
+			harperLogger.warn(
+				'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
+				errorForLog(recoveryError)
+			);
 		}
-		void recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
-			.then(async () => {
-				if (loadGeneration !== componentLoadGeneration) return;
-				if (!existsSync(appFolder)) {
-					if (appWasVisible) {
-						statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+		// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
+		// any application loads (root components — including the Pro custody registration — have
+		// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody
+		// secrets heal. Never throws.
+		await materializeGlobalSecrets();
+		const cfsLoaded: Promise<any>[] = [];
+		const deferredRecoveries = new Map(
+			[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
+		);
+		const unreportedFailedRecoveries = new Map(
+			[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
+		);
+		const deferComponentLoad = (appName: string) => {
+			const appFolder = join(CF_ROUTES_DIR, appName);
+			const appWasVisible = existsSync(appFolder);
+			if (appWasVisible) {
+				componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
+			}
+			const deferredLoad = recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+				.then(async () => {
+					if (loadGeneration !== componentLoadGeneration) return;
+					if (!existsSync(appFolder)) {
+						if (appWasVisible) {
+							statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+						}
+						return;
 					}
-					return;
-				}
-				const mountResult = tryRootConfigMount(appName);
-				if (!mountResult.ok) return;
-				const modulesBeforeLoad = new Set(cycleLoadedComponents.keys());
-				await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
-					isRoot: false,
-					autoReload: false,
-					appName,
-					mount: mountResult.mount,
+					const mountResult = tryRootConfigMount(appName);
+					if (!mountResult.ok) return;
+					const modulesBeforeLoad = new Set(cycleLoadedComponents.keys());
+					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+						isRoot: false,
+						autoReload: false,
+						appName,
+						mount: mountResult.mount,
+					});
+					if (loadGeneration !== componentLoadGeneration) return;
+					await readyComponentModules(
+						[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule)),
+						readyComponentPromises
+					);
+				})
+				.catch((error) => {
+					const recoveryError = error instanceof Error ? error : new Error(String(error));
+					if (appWasVisible) {
+						componentLifecycle.failed(
+							appName,
+							recoveryError,
+							`Component '${appName}' failed to load after waiting for in-progress preparation`
+						);
+					}
 				});
-				if (loadGeneration !== componentLoadGeneration) return;
-				await readyComponentModules(
-					[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule)),
-					readyComponentPromises
-				);
-			})
-			.catch((error) => {
-				const recoveryError = error instanceof Error ? error : new Error(String(error));
-				if (appWasVisible) {
+			deferredLoads.push(deferredLoad);
+		};
+		if (existsSync(CF_ROUTES_DIR)) {
+			const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
+			for (const appEntry of cfFolders) {
+				if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
+				// Skip hidden entries: component names are never dot-prefixed, and this keeps
+				// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
+				if (appEntry.name.startsWith('.')) continue;
+				const appName = appEntry.name;
+				const recoveryError = failedRecoveries.get(appName);
+				if (recoveryError) {
+					if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
+						deferredRecoveries.delete(appName);
+						deferComponentLoad(appName);
+						continue;
+					}
+					unreportedFailedRecoveries.delete(appName);
 					componentLifecycle.failed(
 						appName,
 						recoveryError,
-						`Component '${appName}' failed to load after waiting for in-progress preparation`
+						`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
 					);
-				}
-			});
-	};
-	if (existsSync(CF_ROUTES_DIR)) {
-		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
-		for (const appEntry of cfFolders) {
-			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
-			// Skip hidden entries: component names are never dot-prefixed, and this keeps
-			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
-			if (appEntry.name.startsWith('.')) continue;
-			const appName = appEntry.name;
-			const recoveryError = failedRecoveries.get(appName);
-			if (recoveryError) {
-				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
-					deferredRecoveries.delete(appName);
-					deferComponentLoad(appName);
 					continue;
 				}
-				unreportedFailedRecoveries.delete(appName);
-				componentLifecycle.failed(
-					appName,
-					recoveryError,
-					`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
+				const appFolder = join(CF_ROUTES_DIR, appName);
+				const mountResult = tryRootConfigMount(appName);
+				if (!mountResult.ok) continue;
+				cfsLoaded.push(
+					loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
+						isRoot: false,
+						autoReload: false,
+						appName,
+						mount: mountResult.mount,
+					})
 				);
-				continue;
 			}
-			const appFolder = join(CF_ROUTES_DIR, appName);
-			const mountResult = tryRootConfigMount(appName);
-			if (!mountResult.ok) continue;
-			cfsLoaded.push(
-				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
-					isRoot: false,
-					autoReload: false,
-					appName,
-					mount: mountResult.mount,
-				})
+		}
+		for (const [appName, recoveryError] of unreportedFailedRecoveries) {
+			componentLifecycle.failed(
+				appName,
+				recoveryError,
+				`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
 			);
 		}
-	}
-	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
-		componentLifecycle.failed(
-			appName,
-			recoveryError,
-			`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
-		);
-	}
-	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
-	const hdbAppFolder = process.env.RUN_HDB_APP;
-	if (hdbAppFolder) {
-		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
-		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
-		if (mountResult.ok) {
-			cfsLoaded.push(
-				loadComponent(hdbAppFolder, resources, hdbAppFolder, {
-					isRoot: false,
-					autoReload: Boolean(process.env.DEV_MODE),
-					appName: hdbAppFolder,
-					mount: mountResult.mount,
-				})
-			);
+		for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
+		const hdbAppFolder = process.env.RUN_HDB_APP;
+		if (hdbAppFolder) {
+			if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
+			const mountResult = tryRootConfigMount(basename(hdbAppFolder));
+			if (mountResult.ok) {
+				cfsLoaded.push(
+					loadComponent(hdbAppFolder, resources, hdbAppFolder, {
+						isRoot: false,
+						autoReload: Boolean(process.env.DEV_MODE),
+						appName: hdbAppFolder,
+						mount: mountResult.mount,
+					})
+				);
+			}
 		}
+		return await Promise.all(cfsLoaded).then(() => {
+			watchesSetup = true;
+		});
+	} finally {
+		void Promise.allSettled(deferredLoads).then(() => settleGeneration());
 	}
-	return Promise.all(cfsLoaded).then(() => {
-		watchesSetup = true;
-	});
 }
 
 export const TRUSTED_RESOURCE_PLUGINS: any = {

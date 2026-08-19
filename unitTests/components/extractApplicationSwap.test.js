@@ -5,6 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const { Readable } = require('node:stream');
+const { waitFor } = require('../waitFor.js');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -88,6 +89,26 @@ describe('extractApplication directory swap', () => {
 			await assert.rejects(() => extractApplication(app), extractionError);
 			await assert.rejects(fs.access(dirPath));
 			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('removes a partial first deploy after an interrupted process restarts', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-first-deploy-crash-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const stagingDir = path.join(componentsRoot, '.deploy-aside', 'web');
+		const absentMarker = path.join(stagingDir, '.in-progress-123-1-record-prior-absent');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web"');
+		await fs.mkdir(stagingDir, { recursive: true });
+		await fs.writeFile(absentMarker, '');
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0, failures.get('web')?.stack);
+			await assert.rejects(fs.access(dirPath));
+			await assert.rejects(fs.access(stagingDir));
 		} finally {
 			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
@@ -220,6 +241,29 @@ describe('extractApplication directory swap', () => {
 			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
 		} finally {
 			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('recovers a symlinked predecessor after an interrupted deploy', async function () {
+		if (process.platform === 'win32') this.skip();
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-symlink-recovery-'));
+		const previousTarget = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-symlink-target-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(path.dirname(asidePath), { recursive: true });
+		await fs.symlink(previousTarget, asidePath, 'dir');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0, failures.get('web')?.stack);
+			assert.strictEqual((await fs.lstat(dirPath)).isSymbolicLink(), true);
+			assert.strictEqual(await fs.readlink(dirPath), previousTarget);
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(previousTarget, { recursive: true, force: true });
 		}
 	});
 
@@ -506,6 +550,29 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('adopts an owner-owned rollback placeholder during interrupted recovery', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		this.timeout(15000);
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-placeholder-recovery-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath);
+		await fs.writeFile(path.join(dirPath, 'writer-created'), 'occupied');
+		await fs.chmod(dirPath, 0o000);
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.chmod(dirPath, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('reclaims a stale aside copy left by an earlier deploy', async function () {
 		this.timeout(20000);
 
@@ -563,16 +630,35 @@ describe('extractApplication directory swap', () => {
 			'wrapper/package.json': '{"name":"web","version":"2.0.0"}\n',
 			'wrapper/index.js': 'module.exports = () => 2;\n',
 		});
-		const app = new Application({
-			name: 'web',
-			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
-		});
+		const archive = await packageDirectory(sourceDir, { skip_node_modules: true });
+		let finishPayload;
+		const payload = Readable.from(
+			(async function* () {
+				yield archive;
+				await new Promise((resolve) => (finishPayload = resolve));
+			})()
+		);
+		const app = new Application({ name: 'web', payload });
 		app.dirPath = dirPath;
 
-		await extractApplication(app);
+		const extraction = extractApplication(app);
+		await waitFor(() =>
+			fs.access(path.join(dirPath, 'wrapper', 'package.json')).then(
+				() => true,
+				() => false
+			)
+		);
+		const liveDirectoryIdentity = await fs.lstat(dirPath, { bigint: true });
+		finishPayload();
+		await extraction;
 
 		assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '2.0.0');
 		assert.strictEqual(await fs.readFile(path.join(dirPath, 'index.js'), 'utf8'), 'module.exports = () => 2;\n');
+		if (process.platform === 'win32') {
+			const normalizedDirectoryIdentity = await fs.lstat(dirPath, { bigint: true });
+			assert.strictEqual(normalizedDirectoryIdentity.dev, liveDirectoryIdentity.dev);
+			assert.strictEqual(normalizedDirectoryIdentity.ino, liveDirectoryIdentity.ino);
+		}
 		assert.deepStrictEqual(
 			(await fs.readdir(componentsRoot)).filter((entry) => !entry.startsWith('.')),
 			['web'],
@@ -599,6 +685,7 @@ describe('extractApplication directory swap', () => {
 		assert.strictEqual(app.isNewComponent, true, 'defaults to true before extraction runs');
 		await extractApplication(app);
 		assert.strictEqual(app.isNewComponent, true, 'no prior directory existed, so this is a new component');
+		await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
 
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });

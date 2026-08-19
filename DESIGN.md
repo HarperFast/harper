@@ -156,9 +156,11 @@ On non-root POSIX systems, rollback uses a mode-`000` placeholder to keep that w
 retries. Before moving or removing it, rollback verifies the placeholder's device/inode identity and
 restores owner permissions because a cross-parent directory move updates `..` and requires write
 permission on the moved directory.
-The aside name is itself the recovery record: `.in-progress-*` is recoverable after an interrupted
-deploy unless a sibling `.retired-*` marker records that the replacement committed. Cleanup removes
-the aside before its marker, so an interrupted cleanup cannot make an obsolete tree recoverable.
+The aside name is itself the recovery record: an `.in-progress-*` directory or symlink preserves a
+previous tree, while an `.in-progress-*-prior-absent` file records that a first deploy must remove a
+partial live tree after a crash. A sibling `.retired-*` marker records that the replacement committed.
+Cleanup removes the recovery record before its marker, so an interrupted cleanup cannot make obsolete
+state recoverable.
 Component loading recovers unretired interrupted deploys before scanning the component root, and
 preparation repeats recovery under the same-component lock before reading runtime metadata. A full
 `drop_component` writes retirement markers before deleting the live tree and keeps its filesystem,
