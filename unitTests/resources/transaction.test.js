@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const harperLogger = require('#src/utility/logging/harper_logger');
@@ -92,6 +93,29 @@ describe('Transactions', () => {
 		setImmediate(release);
 		await committed;
 		assert.equal(settled, true, 'commit resolved only after the callback completion settled');
+	});
+	it('waits for promise-returning commit callbacks on a keyed LMDB write', async function () {
+		if (!isLMDB) return this.skip();
+		const transaction = new LMDBTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const order = [];
+		let release;
+		const completion = new Promise((resolve) => (release = resolve)).then(() => order.push('completion'));
+		transaction.addWrite({
+			key: 'lmdb-async-commit-callback',
+			store: TxnTest.primaryStore,
+			// keyed write: the conditional batch stages it, so this covers doWrite's non-null-key path
+			commit: () => {
+				TxnTest.primaryStore.put('lmdb-async-commit-callback', { name: 'staged' });
+				return completion;
+			},
+		});
+		// released well after the batch itself would resolve, so a commit that does not await the
+		// callback completion resolves first and fails the ordering assertion
+		const committed = transaction.commit({ doneWriting: true }).then(() => order.push('commit'));
+		setTimeout(release, 50);
+		await committed;
+		assert.deepEqual(order, ['completion', 'commit'], 'commit resolved only after the callback completion');
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
