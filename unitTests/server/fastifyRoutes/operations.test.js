@@ -510,6 +510,17 @@ describe('Test custom functions operations', () => {
 				await fs.remove(largeFilePath);
 			}
 		});
+
+		it('Test getComponentFile rejects a project containing path traversal segments', async () => {
+			await assert.rejects(
+				() => operations.getComponentFile({ project: '../../../../etc', file: 'passwd' }),
+				(error) => {
+					assert.match(error.message, /project name/i);
+					assert.strictEqual(error.statusCode, 400);
+					return true;
+				}
+			);
+		});
 	});
 
 	describe('Test deployComponent force flag', () => {
