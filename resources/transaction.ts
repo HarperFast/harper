@@ -30,14 +30,13 @@ export function transaction<T>(
 		asyncStorageContext = contextStorage.getStore();
 		context = asyncStorageContext ?? {};
 	} else {
+		// The released placeholder is an absent argument, not a context: normalized before the fallback
+		// chain below so it resolves to the ambient store exactly as the `null` it replaced did, rather
+		// than to a bare `{}` that would drop the caller's user, session and timestamp.
+		const contextArg = isReleasedTransaction(ctx) ? undefined : ctx;
 		// request argument included, but null or undefined, so maybe create a new one
-		context = ctx ?? (asyncStorageContext = contextStorage.getStore()) ?? {};
+		context = contextArg ?? (asyncStorageContext = contextStorage.getStore()) ?? {};
 	}
-	// Every path that adopts a caller-supplied transaction or context ends here, so this is the one place
-	// that has to refuse the released placeholder: it carries no context state, and assigning a new
-	// transaction onto the frozen shared instance below would throw. Treated as no context at all, which
-	// is what the `null` it replaced became.
-	if (isReleasedTransaction(context)) context = {};
 
 	if (typeof callback !== 'function') {
 		throw new TypeError('Callback function must be provided to transaction');
