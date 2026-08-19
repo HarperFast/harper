@@ -179,7 +179,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						this.setCommitPhase(false);
 						// aborted underneath us while parked above — see DatabaseTransaction's twin guard
 						if (this.timedOut) throw transactionOpenTooLongError();
-						if (stagedWrites > 0 && this.writes.length === 0)
+						if (stagedWrites > 0 && this.writes.length === 0 && this.open === TRANSACTION_STATE.CLOSED)
 							throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
 						return this.commit(options);
 					})();

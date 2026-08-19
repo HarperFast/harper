@@ -68,6 +68,7 @@ type StorageInfo = {
 	// that can still re-encode the same fileId.
 	fileState?: { discarded?: boolean };
 };
+type BlobFileInfo = { store?: any; fileId?: string };
 
 function discardStorage(storageInfo: StorageInfo): void {
 	(storageInfo.fileState ??= {}).discarded = true;
@@ -934,7 +935,9 @@ const RECLAMATION_AGE_CAP = 1_200_000;
 const HELD_RECHECK_INTERVAL = 1000;
 
 interface PendingReclamation {
-	blobs: Set<Blob>;
+	blobs: WeakRef<Blob>[];
+	seenBlobs: WeakSet<Blob>;
+	fileInfo: BlobFileInfo;
 	deadline: number;
 	enqueuedAt: number;
 	supersededAt: number;
@@ -1064,7 +1067,7 @@ export function holdBlobFile(blob: Blob): (() => void) | null {
  * Whether a record version referencing this file again was written since it was queued — by any
  * worker. Reading clears it, so the next supersession starts from a clean slate.
  */
-function consumeRereferenced(storageInfo: StorageInfo | undefined): boolean {
+function consumeRereferenced(storageInfo: BlobFileInfo | undefined): boolean {
 	const store = storageInfo?.store;
 	const fileId = storageInfo?.fileId;
 	if (!store || !fileId) return false;
@@ -1085,14 +1088,14 @@ function consumeRereferenced(storageInfo: StorageInfo | undefined): boolean {
  * the retention window. The second of granularity is padded rather than rounded: a snapshot opened
  * in the same second as the supersession is treated as possibly older than it.
  */
-function snapshotStillSees(storageInfo: StorageInfo | undefined, supersededAt: number): boolean {
+function snapshotStillSees(storageInfo: BlobFileInfo | undefined, supersededAt: number): boolean {
 	const oldestSnapshotSeconds = storageInfo?.store?.getOldestSnapshotTimestamp?.();
 	if (!oldestSnapshotSeconds) return false;
 	return oldestSnapshotSeconds * 1000 <= supersededAt + 1000;
 }
 
 /** Undo a reclaimer's claim once its unlink has landed, leaving the slot usable again. */
-function releaseReclaimClaim(storageInfo: StorageInfo | undefined): void {
+function releaseReclaimClaim(storageInfo: BlobFileInfo | undefined): void {
 	const store = storageInfo?.store;
 	const fileId = storageInfo?.fileId;
 	if (!store || !fileId) return;
@@ -1104,7 +1107,7 @@ function releaseReclaimClaim(storageInfo: StorageInfo | undefined): void {
  * Whether anything is still using the file. `claim` is for the reclaimer: it atomically takes the
  * count from 0 to RECLAIMING so a hold cannot be acquired between this check and the unlink.
  */
-function isBlobHeld(storageInfo: StorageInfo | undefined, claim = false): boolean {
+function isBlobHeld(storageInfo: BlobFileInfo | undefined, claim = false): boolean {
 	const store = storageInfo?.store;
 	const fileId = storageInfo?.fileId;
 	if (!store || !fileId) return false;
@@ -1179,14 +1182,19 @@ export function deleteBlob(blob: Blob): void {
 		if (state) Atomics.store(state.table, state.slot + REREFERENCED, 0);
 	}
 	// Reusing the queued entry when two writes supersede the same file keeps the age cap measuring
-	// from the first supersession and retains every blob instance that carries the condemned fileId.
+	// from the first supersession and tracks every live blob instance that carries the condemned fileId.
 	const pending = pendingReclamation.get(filePath) ?? {
-		blobs: new Set<Blob>(),
+		blobs: [],
+		seenBlobs: new WeakSet<Blob>(),
+		fileInfo: { store: storageInfo?.store, fileId: storageInfo?.fileId },
 		deadline: 0,
 		enqueuedAt: now,
 		supersededAt: now,
 	};
-	pending.blobs.add(blob);
+	if (!pending.seenBlobs.has(blob)) {
+		pending.seenBlobs.add(blob);
+		pending.blobs.push(new WeakRef(blob));
+	}
 	if (pending.unlinking) {
 		if (storageInfo) discardStorage(storageInfo);
 		return;
@@ -1237,7 +1245,7 @@ function runReclamation(): void {
 			earliest = pending.deadline;
 			break; // insertion order is deadline order; nothing behind this entry is due
 		}
-		const storageInfo = storageInfoForBlob.get(pending.blobs.values().next().value);
+		const storageInfo = pending.fileInfo;
 		const expired = now - pending.enqueuedAt >= ageCap;
 		let held: boolean;
 		try {
@@ -1296,7 +1304,9 @@ function runReclamation(): void {
 		pending.unlinking = true;
 		// Once reclamation has claimed this file, a later write must not preserve its soon-to-be-deleted
 		// fileId. The retention window above still permits legitimate re-references before this point.
-		for (const blob of pending.blobs) {
+		for (const blobRef of pending.blobs) {
+			const blob = blobRef.deref();
+			if (!blob) continue;
 			const instanceStorageInfo = storageInfoForBlob.get(blob);
 			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
 		}

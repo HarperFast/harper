@@ -893,7 +893,7 @@ export class DatabaseTransaction implements Transaction {
 				// resolve as SUCCESS: the caller is told its write landed when it was dropped, and a write
 				// carrying a blob is left holding an instance whose file was unlinked (issue #2062).
 				if (this.timedOut) throw transactionOpenTooLongError();
-				if (stagedWrites > 0 && this.writes.length === 0 && !this.transaction)
+				if (stagedWrites > 0 && this.writes.length === 0 && this.open === TRANSACTION_STATE.CLOSED)
 					throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
 				if (this.writes.length > this.validated) {
 					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
