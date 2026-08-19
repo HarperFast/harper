@@ -58,9 +58,8 @@ export function clearThisNodeName() {
 	nodeName = undefined;
 }
 
-// Reduce node.hostname to a bare host for display-URL composition: it may be configured as a
-// full URL (which would otherwise double-wrap the scheme/port), and the bracketed retry lets a
-// bare IPv6 literal parse.
+// node.hostname may be configured as a full URL; reduce it to a bare host so composing a
+// display URL from it does not double-wrap the scheme and port.
 export function nodeNameToDisplayHost(name: string): string {
 	if (!name) return name;
 	const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(name);

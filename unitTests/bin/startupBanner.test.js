@@ -25,12 +25,20 @@ describe('startupLog banner URLs (#2218 double-wrapped startup URLs)', () => {
 	// same config value startupLog() reads (no load-time-vs-run-time skew if another suite mutates it).
 	const opsPort = () => env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
 
+	let originalNodeHostname;
+	let originalSecurePort;
+
+	beforeEach(() => {
+		originalNodeHostname = env.get(CONFIG_PARAMS.NODE_HOSTNAME);
+		originalSecurePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+	});
+
 	afterEach(() => {
 		console.log = originalConsoleLog;
-		// Undo the per-test node identity so the cached name and config override don't leak into
-		// other suites in the same mocha process.
-		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, undefined);
-		env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, undefined);
+		// Restore (not blank) the config this suite mutated so it can't leak into other suites in
+		// the same mocha process.
+		env.setProperty(CONFIG_PARAMS.NODE_HOSTNAME, originalNodeHostname);
+		env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, originalSecurePort);
 		clearThisNodeName();
 	});
 
