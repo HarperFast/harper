@@ -23,7 +23,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
+import { markItcReadyForStorage, SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
@@ -284,6 +284,7 @@ export function toRocksCompression(compression: unknown): unknown {
 }
 
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
+	markItcReadyForStorage();
 	options.disableWAL ??= true;
 	const legacyOptions = options as { compression?: unknown };
 	// A configured codec applies to every column family, overriding whatever per-table metadata
@@ -2227,7 +2228,10 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						attribute.lastIndexedKey = key;
 						trackOperation(Table.dbisDB.put(attribute.key, attribute));
 					}
-					if (interrupted) return;
+					if (interrupted) {
+						await drainSubmittedOperations();
+						return;
+					}
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
 				else if (outstanding > MIN_OUTSTANDING_INDEXING)

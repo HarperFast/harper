@@ -989,6 +989,36 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
+	it('publishes drop-barrier readiness when opening the first RocksDB store', async function () {
+		const worker = startWorker(UNREADY_WORKER_FIXTURE, {
+			name: THREAD_TYPES.JOB,
+			workerIndex: 1,
+			threadCount: 2,
+			autoRestart: false,
+		});
+		try {
+			await new Promise((resolve, reject) => {
+				worker.once('online', resolve);
+				worker.once('error', reject);
+			});
+			assert.strictEqual(Atomics.load(worker.itcReadySignal, 0), 0);
+			const storageOpened = new Promise((resolve) =>
+				worker.on('message', (message) => message.type === 'storage-opened' && resolve())
+			);
+			worker.postMessage({ type: 'open-storage', table: `DropStorageReady_${process.pid}_${Date.now()}` });
+			await storageOpened;
+			assert.strictEqual(Atomics.load(worker.itcReadySignal, 0), 1);
+			const storageClosed = new Promise((resolve) =>
+				worker.on('message', (message) => message.type === 'storage-closed' && resolve())
+			);
+			worker.postMessage({ type: 'close-storage' });
+			await storageClosed;
+		} finally {
+			worker.wasShutdown = true;
+			await worker.terminate();
+		}
+	});
+
 	it('NACKs a malformed strict schema event', async function () {
 		const worker = startDropWorker(1, 2);
 		try {
@@ -1233,7 +1263,7 @@ describe('dropTable worker quiescence', function () {
 			origin = startDropWorker(2, 3, THREAD_TYPES.JOB);
 			await Promise.all([remote.booted, origin.booted]);
 			remote.send('initialize', { table: tableName });
-			origin.send('initialize', { table: tableName });
+			origin.send('initialize', { table: tableName, withAlias: true });
 			await Promise.all([remote.nextEvent('ready'), origin.nextEvent('ready')]);
 
 			remote.send('begin-transaction', { id: 'remote-staged' });
@@ -1254,6 +1284,8 @@ describe('dropTable worker quiescence', function () {
 			assert.strictEqual(prepared.handlesClosed, true);
 			const dropResult = await dropResultPromise;
 			assert.strictEqual(dropResult.outcome, 'resolved');
+			assert.strictEqual(dropResult.aliasPreparations, 1, 'the originating worker must prepare its alias only once');
+			assert.strictEqual(dropResult.aliasClosedStores, false, 'the relayed barrier must not close coordinator handles');
 			assert.deepStrictEqual([...origin.errors, ...remote.errors], []);
 		} finally {
 			await shutdownWorkers(origin, remote);

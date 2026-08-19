@@ -3,7 +3,7 @@
 require('../testUtils');
 const { parentPort } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
-const { table, closeLoadedDatabases } = require('#src/resources/databases');
+const { table, databases, closeLoadedDatabases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const {
 	onMessageByType,
@@ -14,6 +14,8 @@ const {
 const MESSAGE_TYPE = 'drop-table-quiescence-test';
 const CONTROL_TYPE = 'drop-table-quiescence-control';
 let TestTable;
+let aliasPreparations = 0;
+let aliasClosedStores = false;
 let releaseEmbed;
 let releaseRead;
 let releaseTransaction;
@@ -36,6 +38,8 @@ function runWorkerFixture() {
 			try {
 				switch (message.command) {
 					case 'initialize': {
+						aliasPreparations = 0;
+						aliasClosedStores = false;
 						const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];
 						if (message.withEmbed) {
 							attributes.push({ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } });
@@ -45,6 +49,20 @@ function runWorkerFixture() {
 							database: message.database ?? 'test',
 							attributes,
 						});
+						if (message.withAlias) {
+							const aliasName = `${message.database ?? 'test'}_alias`;
+							databases[aliasName] = {
+								[message.table]: {
+									primaryStore: TestTable.primaryStore,
+									dbisDB: TestTable.dbisDB,
+									async _prepareDrop({ closeStores }) {
+										aliasPreparations++;
+										aliasClosedStores ||= closeStores;
+										if (closeStores) TestTable.primaryStore.close();
+									},
+								},
+							};
+						}
 						if (message.withEmbed) {
 							const embedGate = new Promise((resolve) => {
 								releaseEmbed = resolve;
@@ -154,11 +172,13 @@ function runWorkerFixture() {
 						}
 						try {
 							await TestTable.dropTable();
-							report('drop-result', { outcome: 'resolved' });
+							report('drop-result', { outcome: 'resolved', aliasPreparations, aliasClosedStores });
 						} catch (error) {
 							report('drop-result', {
 								outcome: 'rejected',
 								error: error?.stack ?? String(error),
+								aliasPreparations,
+								aliasClosedStores,
 							});
 						} finally {
 							TestTable.primaryStore.dropSync = originalDropSync;

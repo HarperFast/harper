@@ -15,6 +15,7 @@ const {
 module.exports = {
 	sendItcEvent,
 	sendItcEventStrict,
+	markItcReadyForStorage,
 	validateEvent,
 	SchemaEventMsg,
 	UserEventMsg,
@@ -33,7 +34,7 @@ onMessageFromWorkers(async (event, sender) => {
 		}
 		if (event.relayStrictToWorkers && isMainThread) {
 			const relayedEvent = { ...event, relayStrictToWorkers: false, requestId: undefined };
-			await broadcastWithStrictAcknowledgement(relayedEvent);
+			await broadcastWithStrictAcknowledgement(relayedEvent, undefined, event.message.originator);
 		}
 	} catch (error) {
 		handlerError = error;
@@ -56,8 +57,10 @@ onMessageFromWorkers(async (event, sender) => {
 		}
 	}
 });
-if (!isMainThread && workerData?.itcReadyBuffer) {
-	Atomics.store(new Int32Array(workerData.itcReadyBuffer), 0, 1);
+function markItcReadyForStorage() {
+	if (isMainThread || !workerData?.itcReadyBuffer) return;
+	const readySignal = new Int32Array(workerData.itcReadyBuffer);
+	if (Atomics.exchange(readySignal, 0, 1) === 1) return;
 	parentPort?.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.ITC_READY });
 }
 

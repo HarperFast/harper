@@ -721,8 +721,10 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 // its handler successfully or exit completely. A timeout, ambiguous MessagePort disconnect,
 // handler error, or post failure rejects so the caller can leave its durable recovery marker in
 // place without touching storage.
-function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return broadcastAwaitingAcknowledgements(message, timeout, true, true, connectedPorts, true);
+function broadcastWithStrictAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, excludedThreadId) {
+	const ports =
+		excludedThreadId == null ? connectedPorts : connectedPorts.filter((port) => port.threadId !== excludedThreadId);
+	return broadcastAwaitingAcknowledgements(message, timeout, true, true, ports, true);
 }
 
 function sendToThreadWithStrictAcknowledgement(threadId, message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
@@ -772,8 +774,7 @@ function broadcastAwaitingAcknowledgements(
 			} else resolve();
 		};
 		for (let port of ports) {
-			// The worker publishes readiness before Table.ts can continue opening stores, so the coordinator
-			// does not depend on when its event loop handles the matching ITC_READY message.
+			// Storage opening publishes readiness atomically before creating the first RocksDB handle.
 			const itcReady = port.itcReady || (port.itcReadySignal && Atomics.load(port.itcReadySignal, 0) === 1);
 			if (skipUnready && !itcReady) continue;
 			// Ordinary post-change gossip excludes transient job workers. Strict pre-change barriers
