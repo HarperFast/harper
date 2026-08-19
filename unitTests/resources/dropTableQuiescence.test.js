@@ -317,7 +317,7 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
-	it('releases a failed preparation before a later retry', async function () {
+	it('retains a failed hidden preparation for a safe retry', async function () {
 		const tableName = `DropFailedPreparation_${process.pid}_${Date.now()}`;
 		const databaseName = `DropFailedPreparationDb_${process.pid}_${Date.now()}`;
 		const storePath = path.join(testPath, 'drop-failed-preparation-database');
@@ -331,8 +331,7 @@ describe('dropTable worker quiescence', function () {
 				},
 			},
 			async _prepareDrop() {
-				attempts++;
-				throw new Error('forced preparation failure');
+				if (++attempts === 1) throw new Error('forced preparation failure');
 			},
 		};
 		databases[databaseName] = { [tableName]: Table };
@@ -342,7 +341,9 @@ describe('dropTable worker quiescence', function () {
 			delete databases[databaseName];
 		}
 		await prepareTableDrop(storePath, tableName, dropGeneration);
-		assert.strictEqual(attempts, 1, 'the failed table must not remain registered for later preparations');
+		assert.strictEqual(attempts, 2, 'the failed hidden table must be retried by the next preparation barrier');
+		await prepareTableDrop(storePath, tableName, dropGeneration);
+		assert.strictEqual(attempts, 2, 'a successful retry must release the retained table');
 	});
 
 	it('releases a generation-mismatched preparation before a later retry', async function () {

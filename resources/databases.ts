@@ -2443,40 +2443,36 @@ export async function prepareTableDrop(
 	const preparationKey = tableDropPreparationKey(storePath, tableName, dropGeneration);
 	let matchingTables = incompleteTableDropPreparations.get(preparationKey);
 	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
-	try {
-		if (preserveTable) matchingTables.add(preserveTable);
-		let generationMismatch: ClientError | undefined;
-		for (const databaseName of Object.getOwnPropertyNames(databases)) {
-			const databaseTables = databases[databaseName];
-			const Table = databaseTables?.[tableName];
-			if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
-			const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
-			if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) {
-				generationMismatch ??= new ClientError(
-					`Drop generation does not match on this worker for ${databaseName}.${tableName}; refusing to acknowledge preparation`,
-					409
-				);
-				continue;
-			}
-			matchingTables.add(Table);
+	if (preserveTable) matchingTables.add(preserveTable);
+	let generationMismatch: ClientError | undefined;
+	for (const databaseName of Object.getOwnPropertyNames(databases)) {
+		const databaseTables = databases[databaseName];
+		const Table = databaseTables?.[tableName];
+		if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
+		const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
+		if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) {
+			generationMismatch ??= new ClientError(
+				`Drop generation does not match on this worker for ${databaseName}.${tableName}; refusing to acknowledge preparation`,
+				409
+			);
+			continue;
 		}
-		const preparations = await Promise.allSettled(
-			[...matchingTables].map(async (Table) => {
-				try {
-					await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
-				} finally {
-					matchingTables.delete(Table);
-				}
-			})
-		);
-		const failedPreparation = preparations.find(
-			(preparation): preparation is PromiseRejectedResult => preparation.status === 'rejected'
-		);
-		if (failedPreparation) throw failedPreparation.reason;
-		if (generationMismatch) throw generationMismatch;
-	} finally {
-		incompleteTableDropPreparations.delete(preparationKey);
+		matchingTables.add(Table);
 	}
+	// A failed hidden class is no longer discoverable through databases; retain it for a later barrier.
+	const preparations = await Promise.allSettled(
+		[...matchingTables].map(async (Table) => {
+			await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
+			matchingTables.delete(Table);
+		})
+	);
+	const failedPreparation = preparations.find(
+		(preparation): preparation is PromiseRejectedResult => preparation.status === 'rejected'
+	);
+	if (failedPreparation) throw failedPreparation.reason;
+	if (!matchingTables.size && incompleteTableDropPreparations.get(preparationKey) === matchingTables)
+		incompleteTableDropPreparations.delete(preparationKey);
+	if (generationMismatch) throw generationMismatch;
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {
