@@ -934,6 +934,12 @@ async function recoverOrCleanupStaleExtractionPaths(
 		recoveryRecords.find(({ priorStateAbsent }) => priorStateAbsent);
 	if (recoveryRecord) {
 		const recoveryPath = join(asideStagingDir, recoveryRecord.entry.name);
+		// Retire the losing candidates durably; a cleanup that fails must not let a later
+		// pass adopt one of them and restore an older tree over the one recovered here.
+		for (const { entry } of recoveryRecords) {
+			if (entry === recoveryRecord.entry) continue;
+			paths.add(await retireExtractionAside(join(asideStagingDir, entry.name)));
+		}
 		await rollbackExtractedDirectory(
 			application,
 			asideStagingDir,
@@ -1367,7 +1373,14 @@ async function rollbackExtractedDirectory(
 									try {
 										chmodSync(application.dirPath, 0o100);
 									} catch (chmodError) {
-										renameSync(application.dirPath, stagedPlaceholderPath);
+										try {
+											renameSync(application.dirPath, stagedPlaceholderPath);
+										} catch (compensationError) {
+											throw new AggregateError(
+												[chmodError, compensationError],
+												`Failed to restrict and then restore the ${application.name} rollback placeholder`
+											);
+										}
 										throw chmodError;
 									}
 								}
@@ -1392,6 +1405,7 @@ async function rollbackExtractedDirectory(
 								throw placeholderPlacementError;
 							}
 							if (!placeholderPlacementError) break;
+							await delay(10);
 						} while (Date.now() < restoreRetryDeadline);
 						if (transactionPaths.has(stagedPlaceholderPath)) {
 							throw new Error(

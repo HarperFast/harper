@@ -174,6 +174,36 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('retires losing recovery candidates so a failed cleanup cannot resurrect them', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-retire-losers-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const stagingDir = path.join(componentsRoot, '.deploy-aside', 'web');
+		const losingAside = path.join(stagingDir, '.in-progress-100-previous');
+		const winningAside = path.join(stagingDir, '.in-progress-200-previous');
+		await fs.mkdir(losingAside, { recursive: true });
+		await fs.writeFile(path.join(losingAside, 'package.json'), '{"name":"web","version":"0.9.0"}\n');
+		await fs.mkdir(winningAside, { recursive: true });
+		await fs.writeFile(path.join(winningAside, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		// Deny the best-effort cleanup permission to empty the losing aside, so it outlives recovery.
+		await fs.chmod(losingAside, 0o500);
+
+		try {
+			assert.strictEqual((await recoverInterruptedComponentExtractions(componentsRoot)).size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await fs.access(losingAside);
+			await fs.access(path.join(stagingDir, '.retired-100-previous'));
+
+			assert.strictEqual((await recoverInterruptedComponentExtractions(componentsRoot)).size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+		} finally {
+			await fs.chmod(losingAside, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('does not resurrect a committed cleanup leftover after the component was dropped', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-dropped-'));
 		const dirPath = path.join(componentsRoot, 'web');
@@ -581,7 +611,9 @@ describe('extractApplication directory swap', () => {
 		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
 		await fs.mkdir(asidePath, { recursive: true });
 		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
-		await fs.mkdir(dirPath, { mode: 0o300 });
+		await fs.mkdir(dirPath, { mode: 0o700 });
+		await fs.writeFile(path.join(dirPath, 'writer-created'), 'occupied');
+		await fs.chmod(dirPath, 0o300);
 
 		try {
 			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
