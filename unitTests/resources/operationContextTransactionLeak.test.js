@@ -237,4 +237,32 @@ describe('Ambient operation context must not couple independent writes (transact
 			'the third write must not join the second write’s transaction instance, for the same reason'
 		);
 	});
+
+	// The delivery path the 5.2.3 regression actually broke: an operations-API handler running under
+	// processLocalTransaction's ambient context (fabric connect, create/delete cluster in
+	// central-manager) reads through that context, then commits it itself — the documented
+	// mid-handler pattern. The unit-level shape in transaction.test.js uses a bare `{}` context; this
+	// one goes through the real operation-handler ambient context, which is what made the failure
+	// user-visible.
+	it('lets an operation handler commit its ambient context after a static read completed that context’s transaction', async () => {
+		let committed = false;
+		const result = await serverUtilities.processLocalTransaction(
+			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+			async () => {
+				const context = contextStorage.getStore();
+				await LeakTable.get('handler-commit-target');
+				// getUserPermissions()'s shape: bound the transaction the reads above ran in, then carry on.
+				await context.transaction.commit();
+				committed = true;
+				await LeakTable.put('handler-commit-target', { name: 'written after the handler commit' });
+				await context.transaction.commit();
+				return { message: 'ok' };
+			}
+		);
+		assert.equal(result?.message, 'ok', 'the handler must not fail on its own mid-handler commit');
+		assert.ok(committed);
+		const record = await LeakTable.get('handler-commit-target');
+		assert.ok(record, 'the write made after the handler’s own commit must persist');
+		assert.equal(record.name, 'written after the handler commit');
+	});
 });

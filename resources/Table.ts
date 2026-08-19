@@ -5598,11 +5598,9 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
-		// RELEASED_TRANSACTION is the shared, process-wide placeholder a completed transaction leaves in
-		// the slot (DatabaseTransaction.ts's releaseContext) — it is a marker that this context has no
-		// transaction, not one to claim: the "uninitialized DatabaseTransaction, we can claim it" branch
-		// below would assign this table's store to an instance every other context is also pointing at.
-		// Treated as absent, exactly as the empty slot it replaced was.
+		// The shared placeholder a completed transaction leaves in the slot marks "no transaction", so it
+		// is treated as absent rather than claimed by the branch below (which, on a frozen instance,
+		// would throw).
 		if (transaction === RELEASED_TRANSACTION) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {
