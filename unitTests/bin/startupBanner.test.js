@@ -58,26 +58,22 @@ describe('startupLog banner URLs (#2218 double-wrapped startup URLs)', () => {
 		return lines.join('\n');
 	}
 
-	it('composes well-formed ops + REST URLs when node.hostname is a full URL', () => {
-		// A URL-valued node.hostname is exactly the #2218 trigger: getThisNodeName() returns the whole
-		// URL, so the pre-fix banner produced `http://http://localhost:9926:9925/`.
+	it('never double-wraps a scheme, and does not show a rejected URL-valued node.hostname', () => {
+		// A URL-valued node.hostname was the #2218 trigger: getThisNodeName() returned the whole URL, so
+		// the pre-fix banner produced `http://http://localhost:9926:9925/`. Such a value is now rejected
+		// at the config boundary and skipped during identity resolution (with a warning), so it cannot
+		// reach the banner at all — the banner shows the fallback identity instead of the URL's host.
 		const restPort = 9926;
 		const portResolutions = new Map([[restPort, [{ name: 'rest', protocol_name: 'HTTP' }]]]);
 
 		const banner = bannerFor('http://localhost:9926', portResolutions);
 
 		assert.ok(!banner.includes('http://http://'), `banner double-wrapped a scheme:\n${banner}`);
-		assert.ok(
-			banner.includes(`http://localhost:${opsPort()}/`),
-			`expected the Operations-API URL http://localhost:${opsPort()}/ in banner:\n${banner}`
-		);
-		assert.ok(
-			banner.includes(`http://localhost:${restPort}/`),
-			`expected the REST URL http://localhost:${restPort}/ in banner:\n${banner}`
-		);
+		assert.ok(!banner.includes('http://localhost:9926:'), `banner composed from the raw URL:\n${banner}`);
+		assertBannerUrlsParse(banner);
 	});
 
-	it('composes well-formed HTTPS ops + REST URLs when node.hostname is a full URL', () => {
+	it('composes well-formed HTTPS URLs without double-wrapping a URL-valued node.hostname', () => {
 		const securePort = 9935;
 		const restPort = 9927;
 		env.setProperty(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, securePort);
@@ -86,14 +82,24 @@ describe('startupLog banner URLs (#2218 double-wrapped startup URLs)', () => {
 		const banner = bannerFor('https://localhost:9926', portResolutions);
 
 		assert.ok(!banner.includes('https://https://'), `banner double-wrapped a scheme:\n${banner}`);
+		assert.ok(banner.includes(`:${securePort}/`), `expected the secure ops port in banner:\n${banner}`);
+		assert.ok(banner.includes(`:${restPort}/`), `expected the REST port in banner:\n${banner}`);
+		assertBannerUrlsParse(banner);
+	});
+
+	it('brackets a bare IPv6 node.hostname so the composed URLs stay parseable', () => {
+		// The identity is stored unbracketed ("::1") so net.isIP types the certificate SAN as an IP;
+		// the banner must bracket it, or `http://::1:9925/` is not a parseable URL.
+		const restPort = 9926;
+		const portResolutions = new Map([[restPort, [{ name: 'rest', protocol_name: 'HTTP' }]]]);
+
+		const banner = bannerFor('::1', portResolutions);
+
 		assert.ok(
-			banner.includes(`https://localhost:${securePort}/`),
-			`expected the Operations-API URL https://localhost:${securePort}/ in banner:\n${banner}`
+			banner.includes(`http://[::1]:${opsPort()}/`),
+			`expected a bracketed IPv6 Operations-API URL in banner:\n${banner}`
 		);
-		assert.ok(
-			banner.includes(`https://localhost:${restPort}/`),
-			`expected the REST URL https://localhost:${restPort}/ in banner:\n${banner}`
-		);
+		assertBannerUrlsParse(banner);
 	});
 
 	it('leaves a plain bare-host node.hostname unchanged in composed URLs', () => {
@@ -114,3 +120,11 @@ describe('startupLog banner URLs (#2218 double-wrapped startup URLs)', () => {
 		);
 	});
 });
+
+// Every URL the banner prints must be parseable — the real invariant behind #2218 (a double-wrapped
+// or unbracketed authority is not).
+function assertBannerUrlsParse(banner) {
+	for (const url of banner.match(/https?:\/\/\S+/g) ?? []) {
+		assert.doesNotThrow(() => new URL(url), `banner contains an unparseable URL: ${url}`);
+	}
+}

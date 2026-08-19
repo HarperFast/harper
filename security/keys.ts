@@ -392,13 +392,15 @@ function loadAndWatch(path, loadCert, type) {
 }
 
 function getHost() {
-	let url = getThisNodeUrl();
-	if (url == null) {
+	// urlToNodeName returns undefined for a missing or malformed node/replication URL, so a bad
+	// replication.url falls back to the default host here rather than throwing during cert review.
+	const name = urlToNodeName(getThisNodeUrl());
+	if (name == null) {
 		const host = CERT_DOMAINS[0];
 		logger.info?.('node url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
-	return urlToNodeName(url);
+	return name;
 }
 
 export function getCommonName() {
