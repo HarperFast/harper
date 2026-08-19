@@ -1,0 +1,28 @@
+# QA-720 (source:gh:595, extension of QA-717/F-208) — complete per-path blob-reclamation
+# ledger for the bulk-removal surface: drop_table, drop_database, delete-by-search/bulk-delete,
+# overwrite-with-new-blob, overwrite-with-non-blob-value, plus the per-record-delete control.
+
+# Control + bulk-delete-by-search + overwrite arms all share this table -- delta-accounted
+# per arm so they can run against one live table without cross-contaminating counts.
+type Doc @table @sealed @export {
+	key: ID! @primaryKey
+	payload: Blob
+	sha256: String
+}
+
+# Sole target of the drop_table arm. Lives in the SAME "data" db as Doc so the db stays
+# resolvable (Doc survives the drop) -- keeps the drop_table blob delta isolated to this
+# table's own writes against a stable "data" db baseline.
+type DropMeTable @table @sealed @export {
+	key: ID! @primaryKey
+	payload: Blob
+	sha256: String
+}
+
+# Sole target of the drop_database arm -- its own database, so blobs/{db} is exclusively
+# this table's files and drop_database's whole-directory rimraf is unambiguous.
+type DropDbDoc @table(database: "qa720db") @sealed @export {
+	key: ID! @primaryKey
+	payload: Blob
+	sha256: String
+}
