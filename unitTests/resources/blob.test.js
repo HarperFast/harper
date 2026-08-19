@@ -1060,6 +1060,7 @@ describe('Blob test', () => {
 			}
 		);
 		cleanupUnusedBlobs(preCommit.blobs);
+		const ending = setTimeout(() => slow.end(Buffer.alloc(16384, 'r')), 250);
 		let storeError;
 		try {
 			assert(existsSync(filePath), 'the file should still be present while its source is open');
@@ -1069,7 +1070,8 @@ describe('Blob test', () => {
 				storeError = error;
 			}
 		} finally {
-			slow.end(Buffer.alloc(16384, 'r'));
+			clearTimeout(ending);
+			if (!slow.writableEnded) slow.end(Buffer.alloc(16384, 'r'));
 		}
 		assert.match(storeError?.message ?? '', /discarded/, 're-storing must fail before the condemned file is unlinked');
 		await saving;

@@ -378,9 +378,13 @@ let timer;
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
+			const commitChainHead = txn.commitChainHead ?? txn;
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				if (txn.committing && (txn.sourceApply || txn.isReplay || ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE)) {
+				if (
+					txn.committing &&
+					(txn.sourceApply || txn.isReplay || ++commitChainHead.commitPhaseTicks <= COMMIT_PHASE_GRACE)
+				) {
 					// see DatabaseTransaction's monitor (issue #2062)
 					harperLogger.warn?.(
 						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
@@ -404,7 +408,7 @@ function startMonitoringTxns() {
 						}`
 					);
 					try {
-						txn.abortDueToTimeout();
+						commitChainHead.abortDueToTimeout();
 					} catch (error) {
 						harperLogger.debug?.(`Error aborting timed out transaction: ${error.message}`);
 					}

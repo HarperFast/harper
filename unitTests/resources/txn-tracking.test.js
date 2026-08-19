@@ -564,10 +564,14 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		next.commitPhaseTicks = 7;
 		head.setCommitPhase(true);
 		assert.ok(head.committing && next.committing, 'every linked database must be spared together');
+		assert.equal(head.commitChainHead, head);
+		assert.equal(next.commitChainHead, head);
 		assert.equal(head.commitPhaseTicks, 0);
 		assert.equal(next.commitPhaseTicks, 0);
 		head.setCommitPhase(false);
 		assert.ok(!head.committing && !next.committing, 'every linked database must leave the phase together');
+		assert.equal(head.commitChainHead, undefined);
+		assert.equal(next.commitChainHead, undefined);
 	});
 
 	it('lets a commit whose blob save outruns the limit finish, keeping the record and its blob', async function () {
@@ -620,10 +624,14 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				{ message: 'both database links should enter the same commit phase' }
 			);
 			for (const link of links) trackedTxns.add(link);
-			await waitFor(() => links.every((txn) => txn.commitPhaseTicks >= 2), {
+			await waitFor(() => links[0].commitPhaseTicks >= 2, {
 				timeout: 5000,
-				message: 'the monitor should spare both links repeatedly',
+				message: 'the monitor should consume the shared commit-phase grace repeatedly',
 			});
+			assert.ok(
+				links.every((txn) => txn.commitChainHead === links[0]),
+				'every link must share the chain head'
+			);
 			assert.ok(
 				links.every((txn) => !txn.timedOut),
 				'no link may be poisoned while its chain is committing'
@@ -641,6 +649,48 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		}
 		assert.ok(await BlobResource.get(2067), 'the head database write must commit');
 		assert.equal((await SecondaryBlobResource.get(2067))?.value, 'secondary', 'the linked database write must commit');
+	});
+
+	it('aborts a parked multi-store commit from the chain head when a later link exhausts the grace', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		const trackedTxns = setExpiration(20);
+		let links;
+		try {
+			const committing = transaction(context, async (txn) => {
+				txn.timeoutBudget = 200;
+				await BlobResource.put({ id: 2068 }, context);
+				await SecondaryBlobResource.put({ id: 2068, value: 'secondary' }, context);
+				await BlobResource.put({ id: 2069, blob }, context);
+				links = databaseTxns(context);
+			});
+			committing.catch(() => {});
+			slow.write(Buffer.alloc(16384, 'j'));
+			await waitFor(() => links?.length === 2 && links.every((txn) => txn.committing), {
+				message: 'both database links should enter the same commit phase',
+			});
+			for (const link of links) trackedTxns.add(link);
+			links[0].timeout = 200;
+			links[1].timeout = 0;
+			await waitFor(() => links.some((txn) => txn.timedOut), {
+				timeout: 10000,
+				message: 'the later link should exhaust the shared commit-phase grace',
+			});
+			assert.ok(
+				links.every((txn) => txn.timedOut),
+				'every link must be poisoned together'
+			);
+			slow.end(Buffer.alloc(16384, 'k'));
+			await assert.rejects(committing, /open-transaction time/);
+		} finally {
+			for (const link of links ?? []) trackedTxns.delete(link);
+			if (!slow.writableEnded) slow.end();
+			setExpiration(30000);
+		}
+		assert.equal(await BlobResource.get(2068), undefined, 'the head database must not partially commit');
+		assert.equal(await BlobResource.get(2069), undefined, 'the head blob write must not partially commit');
+		assert.equal(await SecondaryBlobResource.get(2068), undefined, 'the linked database must not commit');
 	});
 
 	// Belt and braces for the same window: a transaction can still be poisoned while parked there via the

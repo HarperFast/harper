@@ -434,11 +434,13 @@ export class DatabaseTransaction implements Transaction {
 	// instead of poisoning it (issue #2062).
 	committing = false;
 	commitPhaseTicks = 0;
+	declare commitChainHead?: DatabaseTransaction;
 
 	setCommitPhase(committing: boolean): void {
 		// A commit phase covers the sealed write set across the whole multi-store chain.
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			txn.committing = committing;
+			txn.commitChainHead = committing ? this : undefined;
 			if (committing) txn.commitPhaseTicks = 0;
 		}
 	}
@@ -1562,6 +1564,7 @@ function startMonitoringTxns() {
 
 	function monitorTransaction(txn: DatabaseTransaction) {
 		{
+			const commitChainHead = txn.commitChainHead ?? txn;
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
 			// thereby keep chainStillActive believing it was written recently too.
@@ -1591,7 +1594,7 @@ function startMonitoringTxns() {
 					txn.releaseReadTxn();
 				} else if (
 					txn.committing &&
-					(txn.sourceApply || txn.isReplay || ++txn.commitPhaseTicks <= COMMIT_PHASE_GRACE)
+					(txn.sourceApply || txn.isReplay || ++commitChainHead.commitPhaseTicks <= COMMIT_PHASE_GRACE)
 				) {
 					// Parked in commit()'s pre-commit await — a `before`/`beforeIntermediate` hook, in practice a
 					// blob's durable file write, which for a multi-tens-of-MB payload legitimately outruns the
@@ -1634,7 +1637,7 @@ function startMonitoringTxns() {
 						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
 					);
 					try {
-						txn.abortDueToTimeout();
+						commitChainHead.abortDueToTimeout();
 					} catch (error) {
 						harperLogger.debug?.(`Error aborting timed out transaction: ${error.message}`);
 					}
