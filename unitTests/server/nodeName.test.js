@@ -98,6 +98,10 @@ describe('nodeNameToDisplayHost (#2218 double-wrapped startup URLs)', () => {
 	it('brackets a bare IPv6 literal so composed URLs stay valid', () => {
 		assert.strictEqual(nodeNameToDisplayHost('::1'), '[::1]');
 	});
+
+	it('returns an unparseable value unchanged rather than dropping it', () => {
+		assert.strictEqual(nodeNameToDisplayHost('node with space'), 'node with space');
+	});
 });
 
 describe('hostnameToUrl', () => {
