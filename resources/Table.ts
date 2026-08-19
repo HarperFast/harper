@@ -4556,7 +4556,7 @@ export function makeTable(options) {
 					key: null,
 					store: primaryStore,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
-						updateRecord(
+						return updateRecord(
 							null, // recordId: null — a whole-table signal, not a per-row change
 							undefined, // no record to store: this writes the audit entry only
 							undefined,
