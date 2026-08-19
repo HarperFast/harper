@@ -2110,18 +2110,36 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
 		);
+		let hadIndexingErrors = false;
+		const pendingOperations = new Set<Promise<unknown>>();
+		const trackOperation = <T>(operation: T | Promise<T>): T | Promise<T> => {
+			if (!(operation as Promise<T>)?.then) return operation;
+			const pendingOperation = Promise.resolve(operation);
+			pendingOperations.add(pendingOperation);
+			pendingOperation.then(
+				() => pendingOperations.delete(pendingOperation),
+				(error) => {
+					pendingOperations.delete(pendingOperation);
+					hadIndexingErrors = true;
+					logger.error(error);
+				}
+			);
+			return operation;
+		};
+		const drainSubmittedOperations = async () => {
+			while (pendingOperations.size > 0) await Promise.allSettled([...pendingOperations]);
+		};
 		let lastResolution;
 		for (const index of indicesToRemove) {
-			lastResolution = index.drop();
+			lastResolution = trackOperation(index.drop());
 		}
 		let interrupted;
-		let hadIndexingErrors = false;
 		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (Table.primaryStore.dropping) {
-			await lastResolution;
+			await drainSubmittedOperations();
 			return;
 		}
 		if (attributesLength > 0) {
@@ -2148,7 +2166,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				snapshot: false, // don't hold a read transaction this whole time
 			})) {
 				if (Table.primaryStore.dropping) {
-					await lastResolution;
+					await drainSubmittedOperations();
 					return;
 				}
 				if (!record) continue; // deletion entry
@@ -2178,7 +2196,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						const values = getIndexedValues(value, index.indexNulls);
 						if (values) {
 							for (let i = 0, l = values.length; i < l; i++) {
-								lastResolution = index.put(values[i], key);
+								lastResolution = trackOperation(index.put(values[i], key));
 							}
 						}
 					} catch (error) {
@@ -2198,11 +2216,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				when(
 					lastResolution,
 					() => outstanding--,
-					(error) => {
-						outstanding--;
-						hadIndexingErrors = true;
-						logger.error(error);
-					}
+					() => outstanding--
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;
@@ -2211,7 +2225,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					// occasionally update our progress so if we crash, we can resume
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
-						Table.dbisDB.put(attribute.key, attribute);
+						trackOperation(Table.dbisDB.put(attribute.key, attribute));
 					}
 					if (interrupted) return;
 				}
@@ -2221,24 +2235,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				else if (didSynchronousIndexing) await new Promise((resolve) => setImmediate(resolve)); // custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
 			}
 		}
-		// Await the last pending put. If it rejects, that is also an indexing error.
-		// Note: the when() calls above already attach rejection handlers to each record's
-		// last-put promise; this try-catch specifically handles the case where lastResolution
-		// itself rejects (i.e. the very last put in the loop failed) which would otherwise
-		// throw past the hadIndexingErrors check to the outer catch. The broader issue of
-		// unhandled rejections from non-last puts in multi-value attributes is pre-existing
-		// and out of scope for this fix.
-		try {
-			await lastResolution;
-		} catch (error) {
-			hadIndexingErrors = true;
-			logger.error(error);
-		}
+		// A backfill is quiesced only after every write it submitted has settled.
+		await drainSubmittedOperations();
 		if (Table.primaryStore.dropping) return;
-		// Yield one more event turn so any queued when() error callbacks (which fire as
-		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
-		// before we decide whether to mark indexing as complete.
-		await new Promise((resolve) => setImmediate(resolve));
 		if (hadIndexingErrors) {
 			// Some records failed to index. Persist the failure marker in the descriptor so
 			// the next call to table() (including after a restart with a fresh PID) re-triggers

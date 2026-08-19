@@ -581,13 +581,13 @@ describe('dropTable worker quiescence', function () {
 		const originalPut = index.put;
 		let indexingWriteStarted;
 		const indexingWriteStartedPromise = new Promise((resolve) => (indexingWriteStarted = resolve));
-		let releaseIndexingWrite;
+		let releaseFirstIndexingWrite;
 		let indexingWrites = 0;
-		const indexingWriteGate = new Promise((resolve) => (releaseIndexingWrite = resolve));
+		const firstIndexingWriteGate = new Promise((resolve) => (releaseFirstIndexingWrite = resolve));
 		index.put = async function (...args) {
 			indexingWrites++;
 			indexingWriteStarted();
-			await indexingWriteGate;
+			if (indexingWrites === 1) await firstIndexingWriteGate;
 			return originalPut.apply(this, args);
 		};
 		try {
@@ -600,13 +600,13 @@ describe('dropTable worker quiescence', function () {
 			};
 			const dropPromise = Table.dropTable();
 			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
-			assert.strictEqual(destructivePhaseStarted, false, 'dropTable() must wait for the index backfill');
-			releaseIndexingWrite();
+			assert.strictEqual(destructivePhaseStarted, false, 'dropTable() must wait for every submitted index write');
+			releaseFirstIndexingWrite();
 			await Promise.all([Table.indexingOperation, dropPromise]);
 			assert.strictEqual(destructivePhaseStarted, true);
 			assert.ok(indexingWrites < 20, 'drop preparation must cancel the remaining index backfill');
 		} finally {
-			releaseIndexingWrite();
+			releaseFirstIndexingWrite();
 			index.put = originalPut;
 		}
 	});
