@@ -576,9 +576,12 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * The stored entry of the last write eligible for replication confirmation. Writes that opt out
-	 * (audit-only markers, which stage no record) are skipped rather than ending the search, so a
-	 * trailing marker cannot suppress confirmation for replicable writes staged earlier.
+	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
+	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
+	 * replicable writes staged earlier: writes that explicitly opt out (audit-only markers, which stage
+	 * no record), and writes with no stored entry at all — a delete, or a delete on an `audit: false`
+	 * table, leaves nothing to read back. So a `put(A); delete(B)` transaction confirms on A's entry,
+	 * whose version is this transaction's (every write in a transaction is stamped with one version).
 	 */
 	lastConfirmableEntry(): Partial<Entry> | undefined {
 		for (let i = this.writes.length - 1; i >= 0; i--) {
@@ -598,6 +601,22 @@ export class DatabaseTransaction implements Transaction {
 	stageCompletion(completion: Promise<void>) {
 		completion.then(undefined, () => {});
 		this.completions.push(completion);
+	}
+
+	/**
+	 * Discard staged completions that no commit() will ever aggregate (abort path). Their rejections
+	 * are already no-op-handled by stageCompletion(), so without this they fail silently; log instead.
+	 * Clearing them also keeps a reused transaction's next commit() from rejecting with the previous
+	 * batch's error.
+	 */
+	drainCompletions(): void {
+		if (this.completions.length === 0) return;
+		const completions = this.completions;
+		this.completions = [];
+		for (const completion of completions)
+			completion.then(undefined, (error) =>
+				harperLogger.warn?.('A staged transaction completion failed after the transaction was aborted', error)
+			);
 	}
 
 	addWrite(operation: TransactionWrite) {
@@ -1028,7 +1047,13 @@ export class DatabaseTransaction implements Transaction {
 	}
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		// A write-only transaction never took a read reference (getReadTxn was never called), so the loop
+		// above releases nothing even though save() created a native handle; release it here instead of
+		// leaking the handle and its snapshot until GC. abortDueToTimeout() detaches the handle before
+		// calling abort(), so this is a no-op there rather than a double-abort.
+		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
+		this.drainCompletions();
 		for (const write of this.writes) {
 			if (write?.savedBlobs)
 				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
