@@ -151,6 +151,18 @@ describe('table-reload marker (harper-pro#489)', () => {
 			markerTransaction.replicatedConfirmation = 1;
 			await markerTransaction.commit({ doneWriting: true });
 			assert.equal(confirmationCalls, 1, 'a LOCAL_ONLY marker has nothing to confirm with peers');
+
+			// a trailing marker is exempt from confirmation, but it must not suppress confirmation for the
+			// replicable write staged before it in the same transaction
+			const mixedContext = { transaction: new DatabaseTransaction() };
+			await ReloadTable.put(2, { id: 2 }, mixedContext);
+			ReloadTable.writeReloadMarker(mixedContext);
+			const mixedTransaction = isLMDB ? mixedContext.transaction.next : mixedContext.transaction;
+			mixedTransaction.replicatedConfirmation = 1;
+			confirmedVersion = undefined;
+			await mixedTransaction.commit({ doneWriting: true });
+			assert.equal(confirmationCalls, 2, 'the replicable write staged before the marker is still confirmed');
+			assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the replicable write');
 		} finally {
 			setReplicationConfirmation(undefined);
 		}

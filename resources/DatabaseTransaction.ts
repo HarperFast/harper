@@ -575,6 +575,31 @@ export class DatabaseTransaction implements Transaction {
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
 	}
 
+	/**
+	 * Stage an async operation that commit() must wait for. Staging can happen a turn or more before
+	 * commit() attaches its Promise.all, so the no-op rejection handler is attached here: without it a
+	 * rejection in that window is an unhandled rejection (fatal under --unhandled-rejections=strict).
+	 * The rejection still surfaces through commit()'s Promise.all.
+	 */
+	/**
+	 * The stored entry of the last write eligible for replication confirmation. Writes that opt out
+	 * (audit-only markers, which stage no record) are skipped rather than ending the search, so a
+	 * trailing marker cannot suppress confirmation for replicable writes staged earlier.
+	 */
+	lastConfirmableEntry(): Partial<Entry> | undefined {
+		for (let i = this.writes.length - 1; i >= 0; i--) {
+			const write = this.writes[i];
+			if (!write || write.skipReplicationConfirmation) continue;
+			const entry = write.store.getEntry(write.key);
+			if (entry) return entry;
+		}
+	}
+
+	stageCompletion(completion: Promise<void>) {
+		completion.then(undefined, () => {});
+		this.completions.push(completion);
+	}
+
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
@@ -641,12 +666,12 @@ export class DatabaseTransaction implements Transaction {
 				return;
 			}
 			let result: Promise<void> = operation.before?.() as Promise<void>;
-			if (result?.then) this.completions.push(result);
+			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;
-			if (result?.then) this.completions.push(result);
+			if (result?.then) this.stageCompletion(result);
 		}
 		const completion = operation.commit(txnTime, operation.entry, this.retries > 0, transaction) as Promise<void>;
-		if (typeof completion?.then === 'function') this.completions.push(completion);
+		if (typeof completion?.then === 'function') this.stageCompletion(completion);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
 		// they survive the abort-after-failed-commit of the retry paths). isRetry stagings
@@ -859,9 +884,9 @@ export class DatabaseTransaction implements Transaction {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0].store.rootStore.databaseName;
-								const lastWrite = this.writes[this.writes.length - 1];
-								const lastEntry =
-									lastWrite && !lastWrite.skipReplicationConfirmation && lastWrite.store.getEntry(lastWrite.key);
+								// the last write that can be confirmed: a trailing confirmation-exempt write (an
+								// audit-only marker) must not suppress confirmation for replicable writes staged before it
+								const lastEntry = this.lastConfirmableEntry();
 								if (confirmReplication && lastEntry) {
 									completions.push(
 										confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
