@@ -8,7 +8,13 @@ const sinon = require('sinon');
 
 const env = require('#src/utility/environment/environmentManager');
 const { logger } = require('#src/utility/logging/logger');
-const { hostnameToUrl, getThisNodeName, nodeNameToDisplayHost, clearThisNodeName } = require('#src/server/nodeName');
+const {
+	hostnameToUrl,
+	getThisNodeName,
+	getThisNodeHostname,
+	nodeNameToDisplayHost,
+	clearThisNodeName,
+} = require('#src/server/nodeName');
 
 describe('getThisNodeName precedence (harper-pro#351)', () => {
 	let sandbox;
@@ -101,6 +107,28 @@ describe('nodeNameToDisplayHost (#2218 double-wrapped startup URLs)', () => {
 
 	it('returns an unparseable value unchanged rather than dropping it', () => {
 		assert.strictEqual(nodeNameToDisplayHost('node with space'), 'node with space');
+	});
+});
+
+describe('getThisNodeHostname reads and normalizes the configured node.hostname', () => {
+	let originalNodeHostname;
+
+	beforeEach(() => {
+		originalNodeHostname = env.get('node_hostname');
+		clearThisNodeName();
+	});
+
+	afterEach(() => {
+		env.setProperty('node_hostname', originalNodeHostname);
+		clearThisNodeName();
+	});
+
+	// Guards the wiring bin/run.ts depends on: the wrapper must normalize the resolved node name,
+	// not return it raw.
+	it('normalizes a URL-valued node.hostname to a bare host', () => {
+		env.setProperty('node_hostname', 'http://localhost:9926');
+		clearThisNodeName();
+		assert.strictEqual(getThisNodeHostname(), 'localhost');
 	});
 });
 
