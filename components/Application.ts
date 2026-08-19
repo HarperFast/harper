@@ -1363,7 +1363,14 @@ async function rollbackExtractedDirectory(
 							try {
 								writerDisplacedPath = displaceCurrentDirectorySync();
 								renameSync(stagedPlaceholderPath, application.dirPath);
-								if (!asideIsSymbolicLink) chmodSync(application.dirPath, 0o100);
+								if (!asideIsSymbolicLink) {
+									try {
+										chmodSync(application.dirPath, 0o100);
+									} catch (chmodError) {
+										renameSync(application.dirPath, stagedPlaceholderPath);
+										throw chmodError;
+									}
+								}
 								transactionPaths.delete(stagedPlaceholderPath);
 								placeholderPlacementError = undefined;
 							} catch (placeholderError) {
