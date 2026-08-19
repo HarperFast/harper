@@ -151,8 +151,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				// canonical sources.
 				if (hasBefore) {
 					// see `committing` in DatabaseTransaction (issue #2062)
-					this.committing = true;
-					this.commitPhaseTicks = 0;
+					this.setCommitPhase(true);
 					const stagedWrites = this.writes.length;
 					return (async () => {
 						try {
@@ -173,11 +172,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 								if (completion) await (completion.push ? Promise.all(completion) : completion);
 							}
 						} catch (error) {
-							this.committing = false;
+							this.setCommitPhase(false);
 							this.abort();
 							throw error;
 						}
-						this.committing = false;
+						this.setCommitPhase(false);
 						// aborted underneath us while parked above — see DatabaseTransaction's twin guard
 						if (this.timedOut) throw transactionOpenTooLongError();
 						if (stagedWrites > 0 && this.writes.length === 0)
@@ -389,7 +388,7 @@ function startMonitoringTxns() {
 						}`,
 						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : [])
 					);
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				} else if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
 					// Abort and surface an error rather than force-committing a partial write set: silently
 					// committing on the application's behalf breaks atomicity and can leave orphaned

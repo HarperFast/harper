@@ -64,10 +64,8 @@ type StorageInfo = {
 	saved?: boolean; // saving settled successfully; distinguishes durable from still-streaming when fileId is already assigned
 	asString?: string;
 	deleteOnFailure?: boolean;
-	// This blob's file has been unlinked (deleteBlob). The blob object outlives its file — the fileId
-	// stays set, and saveBlob short-circuits on a set fileId — so without this marker a caller still
-	// holding the instance (the deploy recorder re-puts the same record object across a deploy) would
-	// silently re-encode a reference to a destroyed file. See issue #2062.
+	// This blob's file has been condemned by transaction cleanup or claimed for reclamation. The blob
+	// object outlives its file, so without this marker a caller could re-encode the stale fileId.
 	discarded?: boolean;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
@@ -931,7 +929,7 @@ const RECLAMATION_AGE_CAP = 1_200_000;
 const HELD_RECHECK_INTERVAL = 1000;
 
 interface PendingReclamation {
-	blob: Blob;
+	blobs: Set<Blob>;
 	deadline: number;
 	enqueuedAt: number;
 	supersededAt: number;
@@ -1176,8 +1174,18 @@ export function deleteBlob(blob: Blob): void {
 		if (state) Atomics.store(state.table, state.slot + REREFERENCED, 0);
 	}
 	// Reusing the queued entry when two writes supersede the same file keeps the age cap measuring
-	// from the first supersession.
-	const pending = pendingReclamation.get(filePath) ?? { blob, deadline: 0, enqueuedAt: now, supersededAt: now };
+	// from the first supersession and retains every blob instance that carries the condemned fileId.
+	const pending = pendingReclamation.get(filePath) ?? {
+		blobs: new Set<Blob>(),
+		deadline: 0,
+		enqueuedAt: now,
+		supersededAt: now,
+	};
+	pending.blobs.add(blob);
+	if (pending.unlinking) {
+		if (storageInfo) storageInfo.discarded = true;
+		return;
+	}
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
 }
 
@@ -1224,7 +1232,7 @@ function runReclamation(): void {
 			earliest = pending.deadline;
 			break; // insertion order is deadline order; nothing behind this entry is due
 		}
-		const storageInfo = storageInfoForBlob.get(pending.blob);
+		const storageInfo = storageInfoForBlob.get(pending.blobs.values().next().value);
 		const expired = now - pending.enqueuedAt >= ageCap;
 		let held: boolean;
 		try {
@@ -1283,7 +1291,10 @@ function runReclamation(): void {
 		pending.unlinking = true;
 		// Once reclamation has claimed this file, a later write must not preserve its soon-to-be-deleted
 		// fileId. The retention window above still permits legitimate re-references before this point.
-		if (storageInfo) storageInfo.discarded = true;
+		for (const blob of pending.blobs) {
+			const instanceStorageInfo = storageInfoForBlob.get(blob);
+			if (instanceStorageInfo) instanceStorageInfo.discarded = true;
+		}
 		unlink(filePath, (error) => {
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;

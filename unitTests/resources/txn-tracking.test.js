@@ -7,7 +7,7 @@ const {
 	TRANSACTION_STATE,
 	COMMIT_PHASE_GRACE,
 } = require('#src/resources/DatabaseTransaction');
-const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
+const { setTxnExpiration: setLMDBTxnExpiration, LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
@@ -506,7 +506,7 @@ describe('Write txn timeout', () => {
 // longer than the limit, and aborting there both drops the write and unlinks the blob the write
 // references, leaving the caller holding a blob whose file is gone (issue #2062).
 describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', () => {
-	let BlobResource;
+	let BlobResource, SecondaryBlobResource;
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -518,37 +518,122 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				{ name: 'blob', type: 'Blob' },
 			],
 		});
+		SecondaryBlobResource = table({
+			table: 'CommitPhaseSecondaryBlobTable',
+			database: 'commit-phase-secondary',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'value', type: 'String' },
+			],
+		});
 	});
 
 	function setExpiration(ms) {
 		return BlobResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
 	}
 
-	// The table's writes live on whichever link of the context's transaction chain owns its database —
-	// on LMDB that is never the head (txnForContext only claims an unclaimed head for RocksDB).
-	function committingTxn(context) {
-		for (let txn = context.transaction; txn; txn = txn.next) if (txn.committing) return txn;
+	function databaseTxns(context) {
+		const txns = [];
+		for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) txns.push(txn);
+		return txns;
 	}
+
+	async function forceMonitorTicks(txn, count) {
+		for (let tick = 0; tick < count; tick++) {
+			txn.timeout = 0;
+			await waitFor(() => txn.timeout > 0 || txn.timedOut, {
+				message: `the monitor should process commit-phase tick ${tick + 1}`,
+			});
+			assert.ok(!txn.timedOut, `the monitor must spare commit-phase tick ${tick + 1}`);
+		}
+	}
+
+	it('marks and clears the commit phase across an LMDB transaction chain', function () {
+		const head = new LMDBTransaction();
+		const next = new LMDBTransaction();
+		head.next = next;
+		head.commitPhaseTicks = 4;
+		next.commitPhaseTicks = 7;
+		head.setCommitPhase(true);
+		assert.ok(head.committing && next.committing, 'every linked database must be spared together');
+		assert.equal(head.commitPhaseTicks, 0);
+		assert.equal(next.commitPhaseTicks, 0);
+		head.setCommitPhase(false);
+		assert.ok(!head.committing && !next.committing, 'every linked database must leave the phase together');
+	});
 
 	it('lets a commit whose blob save outruns the limit finish, keeping the record and its blob', async function () {
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
-		setExpiration(20);
+		const trackedTxns = setExpiration(20);
+		let parked;
 		try {
 			const context = {};
 			const committing = transaction(context, async () => {
 				await BlobResource.put({ id: 2062, blob }, context);
+				parked = databaseTxns(context)[0];
 			});
+			committing.catch(() => {});
 			slow.write(Buffer.alloc(16384, 'a'));
-			await delay(150); // the monitor fires repeatedly while the commit waits on the blob write
+			await waitFor(() => parked?.committing, { message: 'the blob save should park the commit' });
+			trackedTxns.add(parked);
+			await forceMonitorTicks(parked, 2);
 			slow.end(Buffer.alloc(16384, 'b'));
 			await committing;
 		} finally {
+			if (parked) trackedTxns.delete(parked);
+			if (!slow.writableEnded) slow.end();
 			setExpiration(30000);
 		}
 		const stored = await BlobResource.get(2062);
 		assert.ok(stored, 'the write must not be dropped while its blob save runs past the limit');
 		assert.equal((await stored.blob.bytes()).length, 32768, 'the blob file must survive the commit');
+	});
+
+	it('keeps every multi-store link alive while the head waits on its blob save', async function () {
+		if (isLMDB) this.skip();
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		const trackedTxns = setExpiration(20);
+		let links;
+		try {
+			const committing = transaction(context, async (txn) => {
+				txn.timeoutBudget = 200;
+				await BlobResource.put({ id: 2067, blob }, context);
+				await SecondaryBlobResource.put({ id: 2067, value: 'secondary' }, context);
+			});
+			committing.catch(() => {});
+			slow.write(Buffer.alloc(16384, 'h'));
+			links = await waitFor(
+				() => {
+					const txns = databaseTxns(context);
+					return txns.length === 2 && txns.every((txn) => txn.committing) && txns;
+				},
+				{ message: 'both database links should enter the same commit phase' }
+			);
+			for (const link of links) trackedTxns.add(link);
+			await waitFor(() => links.every((txn) => txn.commitPhaseTicks >= 2), {
+				timeout: 5000,
+				message: 'the monitor should spare both links repeatedly',
+			});
+			assert.ok(
+				links.every((txn) => !txn.timedOut),
+				'no link may be poisoned while its chain is committing'
+			);
+			assert.ok(
+				links.every((txn) => txn.timeout > 20),
+				'the commit-phase re-arm must preserve the transaction timeout budget'
+			);
+			slow.end(Buffer.alloc(16384, 'i'));
+			await committing;
+		} finally {
+			for (const link of links ?? []) trackedTxns.delete(link);
+			if (!slow.writableEnded) slow.end();
+			setExpiration(30000);
+		}
+		assert.ok(await BlobResource.get(2067), 'the head database write must commit');
+		assert.equal((await SecondaryBlobResource.get(2067))?.value, 'secondary', 'the linked database write must commit');
 	});
 
 	// Belt and braces for the same window: a transaction can still be poisoned while parked there via the
@@ -559,11 +644,13 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
 		const context = {};
+		let parked;
 		const committing = transaction(context, async () => {
 			await BlobResource.put({ id: 2063, blob }, context);
+			parked = databaseTxns(context)[0];
 		});
 		slow.write(Buffer.alloc(16384, 'c'));
-		const parked = await waitFor(() => committingTxn(context), {
+		await waitFor(() => parked?.committing, {
 			message: 'commit should park in its pre-commit phase while the blob save runs',
 		});
 		parked.abortDueToTimeout();
@@ -577,11 +664,13 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
 		const context = {};
+		let parked;
 		const committing = transaction(context, async () => {
 			await BlobResource.put({ id: 2064, blob }, context);
+			parked = databaseTxns(context)[0];
 		});
 		slow.write(Buffer.alloc(16384, 'd'));
-		const parked = await waitFor(() => committingTxn(context), {
+		await waitFor(() => parked?.committing, {
 			message: 'commit should park in its pre-commit phase while the blob save runs',
 		});
 		parked.abort();
@@ -597,18 +686,23 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
 		const context = { sourceApply: true };
-		setExpiration(20);
+		const trackedTxns = setExpiration(20);
+		let parked;
 		try {
 			const committing = transaction(context, async () => {
 				await BlobResource.put({ id: 2066, blob }, context);
+				parked = databaseTxns(context)[0];
 			});
 			slow.write(Buffer.alloc(16384, 'f'));
-			await delay(600); // many ticks, well past COMMIT_PHASE_GRACE
+			await waitFor(() => parked?.committing, { message: 'the blob save should park the source apply' });
+			trackedTxns.add(parked);
+			await forceMonitorTicks(parked, COMMIT_PHASE_GRACE + 2);
 			assert.equal(await BlobResource.get(2066), undefined, 'must not be committed while the blob is still writing');
-			assert.ok(!committingTxn(context) || !committingTxn(context).timedOut, 'a source apply must not be poisoned');
+			assert.ok(!parked.timedOut, 'a source apply must not be poisoned');
 			slow.end(Buffer.alloc(16384, 'g'));
 			await committing;
 		} finally {
+			if (parked) trackedTxns.delete(parked);
 			setExpiration(30000);
 		}
 		const stored = await BlobResource.get(2066);
@@ -622,20 +716,24 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		const stuck = new PassThrough(); // deliberately never ended
 		const blob = createBlob(stuck);
 		const context = {};
-		setExpiration(20);
+		const trackedTxns = setExpiration(20);
+		let parked;
 		const committing = transaction(context, async () => {
 			await BlobResource.put({ id: 2065, blob }, context);
+			parked = databaseTxns(context)[0];
 		});
 		committing.catch(() => {}); // settles only when the stuck source is destroyed below
 		stuck.write(Buffer.alloc(16384, 'e'));
-		let parked;
 		try {
-			parked = await waitFor(() => committingTxn(context), { message: 'commit should park in its pre-commit phase' });
+			await waitFor(() => parked?.committing, { message: 'commit should park in its pre-commit phase' });
+			trackedTxns.add(parked);
+			parked.timeout = 0;
 			await waitFor(() => parked.timedOut, {
 				timeout: 10000,
 				message: 'a commit phase that never finishes should be aborted once its grace runs out',
 			});
 		} finally {
+			if (parked) trackedTxns.delete(parked);
 			setExpiration(30000);
 			stuck.destroy();
 		}

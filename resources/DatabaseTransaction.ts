@@ -435,6 +435,14 @@ export class DatabaseTransaction implements Transaction {
 	committing = false;
 	commitPhaseTicks = 0;
 
+	setCommitPhase(committing: boolean): void {
+		// A commit phase covers the sealed write set across the whole multi-store chain.
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.committing = committing;
+			if (committing) txn.commitPhaseTicks = 0;
+		}
+	}
+
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		// The limit is an IDLE limit. Writes always re-arm it (see addWrite), but reads only do so
@@ -873,13 +881,12 @@ export class DatabaseTransaction implements Transaction {
 		if (completions.length > 0) this.completions = []; // reset
 		const stagedWrites = this.writes.length;
 		if (completions.length > 0) {
-			this.committing = true;
-			this.commitPhaseTicks = 0; // each commit phase (including a retry round's) gets the full grace
+			this.setCommitPhase(true);
 		}
 		return when(
 			completions.length > 0 ? Promise.all(completions) : null,
 			() => {
-				this.committing = false;
+				this.setCommitPhase(false);
 				// The transaction can be aborted underneath us while we are parked in the await above — by the
 				// monitor once the commit phase outlives its grace, or through the multi-store poison chain.
 				// abort() cleared the write set and released the handle, so resuming would commit nothing and
@@ -1249,7 +1256,7 @@ export class DatabaseTransaction implements Transaction {
 				return txnResolution;
 			},
 			(error) => {
-				this.committing = false;
+				this.setCommitPhase(false);
 				this.abort();
 				throw error;
 			}
@@ -1603,7 +1610,7 @@ function startMonitoringTxns() {
 						}`,
 						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : [])
 					);
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				} else if (txn.hasPendingWrites() && chainStillActive(txn)) {
 					// A later link in the chain was written recently (writes re-arm only the link that
 					// receives them, and a multi-store transaction can be writing database B while this
