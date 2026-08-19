@@ -208,10 +208,41 @@ describe('oidc jwks', () => {
 			await assert.rejects(() => getSigningKey(ISSUER, 'key-1'), /exceeds/);
 		});
 
+		// The expired-cache half, reachable now that getSigningKey takes a clock. A cached set survives
+		// a failed refresh so a network blip does not break deploys — but only for STALE_KEY_GRACE_MS,
+		// because `fetchedAt` is advanced ONLY by a successful fetch. Without the ceiling, a key the
+		// issuer has pulled stays honored for the whole length of an outage rather than 24h. Both
+		// sides are asserted: dropping the bound leaves the grace+1 case passing on the served key,
+		// and dropping the grace entirely would take the grace−1 case with it.
+		describe('the stale-key grace ceiling', () => {
+			const GRACE_MS = 86_400_000;
+
+			async function cacheThenFail() {
+				await getSigningKey(ISSUER, 'key-1'); // populate
+				respond = () => {
+					throw new Error('issuer is down');
+				};
+			}
+
+			it('still serves a cached key just inside the grace window', async () => {
+				await cacheThenFail();
+				const key = await getSigningKey(ISSUER, 'key-1', Date.now() + GRACE_MS - 1000);
+				assert.strictEqual(key.type, 'public', 'a blip must not break deploys inside the window');
+			});
+
+			it('refuses a cached key once the grace window has passed', async () => {
+				await cacheThenFail();
+				await assert.rejects(
+					() => getSigningKey(ISSUER, 'key-1', Date.now() + GRACE_MS + 1000),
+					'a pulled key must not be honored indefinitely through an outage'
+				);
+			});
+		});
+
 		// An issuer whose keys we have NEVER cached is the worse half of the outage case: there is no
 		// stale key to fall back on, so without a backoff every request rides the full discovery and
 		// fetch timeout — and the exchange is unauthenticated, with the issuer chosen from an
-		// unverified JWT. Reachable without any time travel, unlike the expired-cache half.
+		// unverified JWT. Reachable without time travel; the expired-cache half above needs the clock.
 		it('stops re-fetching for an issuer whose keys have never been cached', async () => {
 			respond = () => {
 				throw new Error('issuer is down');

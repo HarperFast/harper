@@ -205,10 +205,16 @@ function loadIssuerKeys(issuer: string): Promise<IssuerKeys> {
 }
 
 /** Resolves the public key an issuer used to sign a token, by `kid`. */
-export async function getSigningKey(issuer: string, kid: unknown): Promise<KeyObject> {
+/**
+ * `now` exists so the two time-based bounds below can be tested — the cache TTL and, more
+ * importantly, the STALE_KEY_GRACE_MS ceiling that stops a pulled key being honored forever through
+ * a prolonged outage. Reaching either otherwise needs a cache aged past an hour, and this repo bars
+ * new fake timers. Mirrors the `clockTimestamp` seam verifyIdentityToken already takes, rather than
+ * inventing a second convention. Callers in production pass nothing.
+ */
+export async function getSigningKey(issuer: string, kid: unknown, now: number = Date.now()): Promise<KeyObject> {
 	if (typeof kid !== 'string' || kid === '') throw new ClientError('Token has no key id', 401);
 	const normalizedIssuer = normalizeIssuer(issuer);
-	const now = Date.now();
 	const cached = issuerKeyCache.get(normalizedIssuer);
 
 	if (cached && now - cached.fetchedAt < JWKS_CACHE_TTL_MS) {
@@ -241,7 +247,7 @@ export async function getSigningKey(issuer: string, kid: unknown): Promise<KeyOb
 	} catch (error) {
 		// Recorded whether or not a stale key rescues this request, so the backoff also covers the
 		// issuer whose keys we have never held.
-		failedRefreshAt.set(normalizedIssuer, Date.now());
+		failedRefreshAt.set(normalizedIssuer, now);
 		if (!staleKey) throw error;
 		logger.warn?.(`Using cached signing key for ${normalizedIssuer}; refresh failed: ${(error as Error).message}`);
 		return staleKey;
