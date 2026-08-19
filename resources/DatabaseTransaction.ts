@@ -1193,24 +1193,13 @@ export class ImmediateTransaction extends DatabaseTransaction {
 }
 
 /**
- * What `context.transaction` holds once the transaction that was attached to it has completed — its
- * owning scope's final commit (`doneWriting`) or an abort — and released the back-reference (see
- * releaseContext()). One frozen, process-wide instance, so a long-lived context (an MQTT
- * subscription context, an ambient operation context) retains nothing measurable, which is the
- * whole point of releasing.
- *
- * A `null` slot broke the documented pattern of committing the current transaction mid-handler and
- * then continuing to use the context (`await getContext().transaction.commit()`, v5-migration docs;
- * "transactions can now be reused after calling transaction.commit()", 4.5.0 release notes): the
- * next `context.transaction.<anything>` threw `Cannot read properties of null`. Before the release
- * existed the slot held the completed, CLOSED transaction and those calls were harmless no-ops —
- * this restores exactly that observable behavior without retaining the transaction.
- *
- * Behaves like any CLOSED transaction: commit/abort are no-ops (nothing is staged here — this
- * instance is shared, so txnForContext() refuses to claim it and addWrite() throws rather than
- * quietly staging onto process-wide state), and reads through it see the latest committed state
- * with no snapshot pinned. Frozen so that a path which does try to claim it fails loudly instead of
- * corrupting every other context's view.
+ * What `context.transaction` holds once its transaction has completed and released the back-reference
+ * (see releaseContext()). One frozen, process-wide instance: the slot stays usable — the documented
+ * `getContext().transaction.commit()` pattern must not throw after completion — without any context
+ * retaining a finished transaction. `txnTime: 0` is the one fidelity loss versus re-committing the
+ * real completed transaction, which reported its own last timestamp; nothing is staged here either way.
+ * Frozen because it is shared: a path that tries to claim or mutate it must fail loudly rather than
+ * corrupt every other context's view.
  */
 class ReleasedTransaction extends DatabaseTransaction {
 	constructor() {

@@ -1,6 +1,11 @@
 import type { Context } from './ResourceInterface.ts';
 import { _assignPackageExport } from '../globals.js';
-import { DatabaseTransaction, type Transaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	RELEASED_TRANSACTION,
+	type Transaction,
+	TRANSACTION_STATE,
+} from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
@@ -75,13 +80,18 @@ export function transaction<T>(
 
 _assignPackageExport('transaction', transaction);
 
+// These assert that the caller still owns a live transaction, so a released slot must keep throwing
+// as an absent one always did — unlike `context.transaction.commit()`, whose documented contract is to
+// stay callable after completion.
 transaction.commit = function (contextSource) {
 	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
-	if (!transaction) throw new Error('No active transaction is available to commit');
+	if (!transaction || transaction === RELEASED_TRANSACTION)
+		throw new Error('No active transaction is available to commit');
 	return transaction.commit();
 };
 transaction.abort = function (contextSource) {
 	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
-	if (!transaction) throw new Error('No active transaction is available to abort');
+	if (!transaction || transaction === RELEASED_TRANSACTION)
+		throw new Error('No active transaction is available to abort');
 	return transaction.abort();
 };

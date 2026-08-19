@@ -68,12 +68,13 @@ export interface Context {
 	/** Describes the current cookie-based session if it is present and grants the capacity to delete it. authentication.enableSessions must be turned on in the harperdb-config.yaml  */
 	session?: Session;
 	/**
-	 * The database transaction object. `undefined` means none was ever attached. Once an attached
-	 * transaction completes it releases its back-reference (DatabaseTransaction.ts's
-	 * releaseContext()) and the slot holds RELEASED_TRANSACTION, a shared completed transaction:
-	 * always safe to call `commit()`/`abort()` on (both no-ops) and to read through (latest committed
-	 * state, no snapshot), so code that commits mid-handler can keep using its context. `null` was
-	 * the previous released marker and is still accepted defensively.
+	 * The database transaction object. `undefined` means none was ever attached. On the RocksDB path, a
+	 * completed transaction releases its back-reference (DatabaseTransaction.ts's releaseContext()) and
+	 * the slot holds RELEASED_TRANSACTION, a shared completed transaction: always safe to call
+	 * `commit()`/`abort()` on (both no-ops) and to read through (latest committed state, no snapshot),
+	 * so code that commits mid-handler can keep using its context. LMDBTransaction does not release,
+	 * so there the completed transaction itself stays in the slot — also safe to call, but retained.
+	 * `null` was the previous released marker and is still accepted defensively.
 	 */
 	transaction?: DatabaseTransaction | null;
 	/**	 If the operation that will be performed with this context should check user authorization	 */
