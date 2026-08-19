@@ -321,23 +321,10 @@ function startupLog(portResolutions: any) {
 	}`;
 	logMsg += `, unix socket: ${configUtils.getConfigPath(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)}\n`;
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)) {
-		logMsg +=
-			pad('') +
-			'http://' +
-			getThisNodeHostname() +
-			':' +
-			env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) +
-			'/\n';
+		logMsg += `${pad('')}http://${getThisNodeHostname()}:${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)}/\n`;
 	}
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)) {
-		logMsg +=
-			'\n' +
-			pad('') +
-			'https://' +
-			getThisNodeHostname() +
-			':' +
-			env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) +
-			'/\n';
+		logMsg += `\n${pad('')}https://${getThisNodeHostname()}:${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)}/\n`;
 	}
 
 	// MQTT Log
