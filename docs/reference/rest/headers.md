@@ -110,7 +110,7 @@ Opt in to a total match count on a collection `GET`/`HEAD`, returned via the `Co
 
 ```http
 GET /Product/?category=software&limit(0,25)
-Prefer: count=exact
+Prefer: count=estimated
 ```
 
 Accepts `count=exact` (precise, scans the full matched set) or `count=estimated` (fast, approximate). See [Pagination and Total Count](./querying.md#pagination-and-total-count) for the full request/response contract.
