@@ -18,6 +18,13 @@ const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
 const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const { waitFor } = require('../waitFor.js');
+
+function databaseTxns(context) {
+	const txns = [];
+	for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) txns.push(txn);
+	return txns;
+}
+
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -109,46 +116,53 @@ describe('Write txn timeout', () => {
 		return IndexedResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
 	}
 
-	it('keeps a RocksDB timeout budget across reads without shortening a larger global limit', async function () {
-		if (!(IndexedResource.primaryStore instanceof RocksDatabase)) this.skip();
+	it('keeps a timeout budget across reads without shortening a larger global limit', async function () {
 		try {
-			setTxnExpiration(30_000);
+			setExpiration(30_000);
 			const extendedContext = {};
 			await transaction(extendedContext, async (txn) => {
 				txn.timeoutBudget = 600_000;
 				await IndexedResource.put(900, { t: 9000 }, extendedContext);
-				assert.equal(txn.timeout, 600_000);
+				const databaseTxn = databaseTxns(extendedContext)[0];
+				assert.equal(databaseTxn.timeout, 600_000);
 				await IndexedResource.get(901, extendedContext);
-				assert.equal(txn.timeout, 600_000);
+				assert.equal(databaseTxn.timeout, 600_000);
 				await IndexedResource.get(902, extendedContext);
-				assert.equal(txn.timeout, 600_000);
+				assert.equal(databaseTxn.timeout, 600_000);
 			});
 
-			setTxnExpiration(1_200_000);
+			setExpiration(1_200_000);
 			const largerGlobalContext = {};
 			await transaction(largerGlobalContext, async (txn) => {
 				txn.timeoutBudget = 600_000;
 				await IndexedResource.get(903, largerGlobalContext);
-				assert.equal(txn.timeout, 1_200_000);
+				assert.equal(databaseTxns(largerGlobalContext)[0].timeout, 1_200_000);
 			});
 		} finally {
-			setTxnExpiration(30_000);
+			setExpiration(30_000);
 		}
 	});
 
-	it('does not abort a RocksDB write transaction whose budget exceeds the global limit', async function () {
-		if (!(IndexedResource.primaryStore instanceof RocksDatabase)) this.skip();
-		setTxnExpiration(20);
+	it('does not abort a write transaction whose budget exceeds the global limit', async function () {
+		const trackedTxns = setExpiration(20);
+		let databaseTxn;
 		try {
 			const context = {};
 			await transaction(context, async (txn) => {
 				txn.timeoutBudget = 5_000;
 				await IndexedResource.put(904, { t: 42 }, context);
-				await delay(150);
+				databaseTxn = databaseTxns(context)[0];
+				trackedTxns.add(databaseTxn);
+				await waitFor(() => databaseTxn.timeout < 5_000 || databaseTxn.timedOut, {
+					message: 'the monitor should tick while the transaction remains within its budget',
+				});
+				assert.ok(!databaseTxn.timedOut, 'the transaction must remain active within its timeout budget');
+				assert.ok(databaseTxn.timeout > 20, 'the global limit must not replace the larger timeout budget');
 			});
 			assert.equal((await IndexedResource.get(904))?.t, 42);
 		} finally {
-			setTxnExpiration(30_000);
+			if (databaseTxn) trackedTxns.delete(databaseTxn);
+			setExpiration(30_000);
 		}
 	});
 
@@ -532,12 +546,6 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		return BlobResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
 	}
 
-	function databaseTxns(context) {
-		const txns = [];
-		for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) txns.push(txn);
-		return txns;
-	}
-
 	async function forceMonitorTicks(txn, count) {
 		for (let tick = 0; tick < count; tick++) {
 			txn.timeout = 0;
@@ -591,7 +599,6 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 	});
 
 	it('keeps every multi-store link alive while the head waits on its blob save', async function () {
-		if (isLMDB) this.skip();
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
 		const context = {};
@@ -602,13 +609,13 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 				txn.timeoutBudget = 200;
 				await BlobResource.put({ id: 2067, blob }, context);
 				await SecondaryBlobResource.put({ id: 2067, value: 'secondary' }, context);
+				links = databaseTxns(context);
 			});
 			committing.catch(() => {});
 			slow.write(Buffer.alloc(16384, 'h'));
-			links = await waitFor(
+			await waitFor(
 				() => {
-					const txns = databaseTxns(context);
-					return txns.length === 2 && txns.every((txn) => txn.committing) && txns;
+					return links?.length === 2 && links.every((txn) => txn.committing);
 				},
 				{ message: 'both database links should enter the same commit phase' }
 			);

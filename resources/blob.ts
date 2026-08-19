@@ -64,10 +64,14 @@ type StorageInfo = {
 	saved?: boolean; // saving settled successfully; distinguishes durable from still-streaming when fileId is already assigned
 	asString?: string;
 	deleteOnFailure?: boolean;
-	// This blob's file has been condemned by transaction cleanup or claimed for reclamation. The blob
-	// object outlives its file, so without this marker a caller could re-encode the stale fileId.
-	discarded?: boolean;
+	// Slices share this state with their source, so condemning either instance invalidates every view
+	// that can still re-encode the same fileId.
+	fileState?: { discarded?: boolean };
 };
+
+function discardStorage(storageInfo: StorageInfo): void {
+	(storageInfo.fileState ??= {}).discarded = true;
+}
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
 const HEADER_SIZE = 8;
@@ -895,6 +899,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		if (sourceStorageInfo?.fileId) {
 			const slicedStorageInfo = {
 				...sourceStorageInfo,
+				fileState: (sourceStorageInfo.fileState ??= {}),
 				start,
 				end,
 			};
@@ -1183,7 +1188,7 @@ export function deleteBlob(blob: Blob): void {
 	};
 	pending.blobs.add(blob);
 	if (pending.unlinking) {
-		if (storageInfo) storageInfo.discarded = true;
+		if (storageInfo) discardStorage(storageInfo);
 		return;
 	}
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
@@ -1293,7 +1298,7 @@ function runReclamation(): void {
 		// fileId. The retention window above still permits legitimate re-references before this point.
 		for (const blob of pending.blobs) {
 			const instanceStorageInfo = storageInfoForBlob.get(blob);
-			if (instanceStorageInfo) instanceStorageInfo.discarded = true;
+			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
 		}
 		unlink(filePath, (error) => {
 			pendingReclamation.delete(filePath);
@@ -1364,7 +1369,7 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
 		storageInfoForBlob.set(blob, storageInfo);
 	} else {
-		if (storageInfo.discarded) {
+		if (storageInfo.fileState?.discarded) {
 			// The file this blob was saved to has been deleted (an aborted/skipped write's cleanup, or an
 			// explicit delete). Re-storing it would commit a reference to a file that no longer exists —
 			// a permanently unreadable record, and for a replicated one a blob the peer can never fetch.
@@ -2408,7 +2413,7 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 		// Tombstone the instance as soon as the deletion is DECIDED, not when the unlink is issued: the
 		// unlink waits for an in-flight save to settle, and a re-store in that window would otherwise
 		// mint a reference to a file that is already condemned (issue #2062).
-		storageInfo.discarded = true;
+		discardStorage(storageInfo);
 		const settle = storageInfo.saving ?? Promise.resolve();
 		settle.then(
 			() => deleteBlob(blob),

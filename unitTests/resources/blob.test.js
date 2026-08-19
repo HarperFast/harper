@@ -1019,6 +1019,7 @@ describe('Blob test', () => {
 		const record = { id: 2062, blob };
 		await BlobTest.put(record);
 		const filePath = getFilePathForBlob(blob);
+		const slice = blob.slice(0, 1024);
 		const decodedBlob = (await BlobTest.get(2062)).blob;
 		assert.notStrictEqual(decodedBlob, blob, 'the stored record should decode to a distinct blob instance');
 		deleteBlob(decodedBlob);
@@ -1032,6 +1033,13 @@ describe('Blob test', () => {
 			storeError = error;
 		}
 		assert.match(storeError?.message ?? '', /discarded/, 're-storing a discarded blob must fail loudly');
+		let sliceError;
+		try {
+			await BlobTest.put({ id: 2062, blob: slice });
+		} catch (error) {
+			sliceError = error;
+		}
+		assert.match(sliceError?.message ?? '', /discarded/, 'a slice sharing the condemned file must also fail');
 		await BlobTest.delete(2062); // leave no record referencing the destroyed file
 	});
 	it('#2062: cleanup tombstones a blob before its in-flight save settles', async () => {

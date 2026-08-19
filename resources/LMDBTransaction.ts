@@ -39,7 +39,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	getReadTxn(): any {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
-		this.timeout = txnExpiration; // reset the timeout
+		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0); // reset the timeout
 		if (this.stale) this.stale = false;
 		if (this.readTxn) {
 			if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
@@ -422,7 +422,7 @@ function startMonitoringTxns() {
 					} catch (error) {
 						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
 					}
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				}
 			} else {
 				txn.timeout -= txnExpiration;
