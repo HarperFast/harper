@@ -36,7 +36,7 @@ import {
 	DatabaseTransaction,
 	ImmediateTransaction,
 	priorStagedWrite,
-	RELEASED_TRANSACTION,
+	isReleasedTransaction,
 	TRANSACTION_STATE,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -5598,8 +5598,7 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
-		// The placeholder means "no transaction": it is shared process-wide and must never be claimed.
-		if (transaction === RELEASED_TRANSACTION) transaction = undefined;
+		if (isReleasedTransaction(transaction)) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it

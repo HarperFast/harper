@@ -1196,14 +1196,12 @@ export class ImmediateTransaction extends DatabaseTransaction {
  * What `context.transaction` holds once its transaction has completed and released the back-reference
  * (see releaseContext()). `commit()`/`abort()` are no-ops and reads through it see the latest
  * committed state, so the documented `getContext().transaction.commit()` pattern stays callable after
- * completion; `txnTime: 0` is the one thing it cannot report faithfully, since nothing is staged and no
- * timestamp was taken.
+ * completion, reporting the same `txnTime: 0` that re-committing the completed transaction itself did
+ * (its own timestamp is reset by the commit that completed it).
  *
- * Deliberately NOT a DatabaseTransaction subclass, and deliberately not extensible. It is one
- * process-wide instance shared by every released context — so it must own no mutable state at all, and
- * anything not on this exact surface must fail loudly rather than inherit behavior that would write
- * through to every other context. That is also why the surface is this small: these are the only
- * members any core reader of `context.transaction` touches (`txnForContext` maps it to absent first).
+ * Not a DatabaseTransaction subclass and not extensible: one process-wide instance shared by every
+ * released context owns no mutable state, and anything off this surface fails loudly rather than
+ * inheriting behavior that would write through to every other context.
  */
 const RELEASED_TRANSACTION_SURFACE = {
 	open: TRANSACTION_STATE.CLOSED,
@@ -1235,6 +1233,15 @@ const RELEASED_TRANSACTION_SURFACE = {
 };
 Object.freeze(RELEASED_TRANSACTION_SURFACE);
 export const RELEASED_TRANSACTION = RELEASED_TRANSACTION_SURFACE as unknown as DatabaseTransaction;
+
+/**
+ * The placeholder means "this context has no transaction". Every reader that would otherwise act on the
+ * value — claim it for a store, adopt it as a context, treat it as data — must ask first, or it operates
+ * on the one instance every released context shares.
+ */
+export function isReleasedTransaction(value: unknown): boolean {
+	return value === RELEASED_TRANSACTION;
+}
 
 let timer;
 

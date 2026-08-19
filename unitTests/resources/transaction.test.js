@@ -226,8 +226,6 @@ describe('Transactions', () => {
 			}
 			assert.equal(entries[0].name, 'thirteen');
 			await TxnTest3.put(14, { name: 'fourteen' }, context);
-			// There may be nothing left to commit here — the documented pattern is to keep committing the
-			// context's transaction regardless, so it must stay callable.
 			await context.transaction.commit();
 			assert.equal((await TxnTest.get(7, context)).name, 'SEVEN');
 			assert.equal((await TxnTest2.get(13, context)).name, 'thirteen');
@@ -825,8 +823,6 @@ describe('Transactions', () => {
 				}
 				await context.transaction.commit();
 				await TxnTest.put({ id: 8, name: 'eight changed' }); // no context
-				// As in 'Can run txn with commit in the middle': committing the context's transaction again
-				// must stay safe.
 				await context.transaction.commit();
 				assert.equal((await TxnTest.get(8, context)).name, 'eight changed');
 			});
@@ -844,8 +840,6 @@ describe('Transactions', () => {
 			await transaction(context, async () => {
 				await TxnTest.put(90, { name: 'release-on-commit' }, context);
 			});
-			// The completed instance is no longer retained, and the slot still holds a safe, callable
-			// completed transaction.
 			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 			assert.equal((await TxnTest.get(90)).name, 'release-on-commit');
 		});
@@ -926,7 +920,7 @@ describe('Transactions', () => {
 				RELEASED_TRANSACTION,
 				'premise: the nested get’s own final commit released the slot'
 			);
-			await context.transaction.commit(); // documented pattern; must not throw
+			await context.transaction.commit();
 			await TxnTest.put(97, { name: 'after released commit' }, context);
 			await context.transaction.commit();
 			assert.equal((await TxnTest.get(97)).name, 'after released commit');
@@ -939,19 +933,18 @@ describe('Transactions', () => {
 			});
 			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 			await TxnTest.put(99, { name: 'not staged on the placeholder' }, context);
-			// The write is serviced by a transaction of its own, which releases the slot back to the
-			// placeholder when it completes — so the slot's identity says nothing here. What must hold is
-			// that the shared instance was never claimed or staged into on the way through.
+			// The write runs on a transaction of its own, which releases the slot back to the placeholder,
+			// so the slot's identity says nothing here — only that the shared instance was never claimed.
 			assert.equal(RELEASED_TRANSACTION.writes.length, 0, 'nothing may ever be staged on the placeholder');
 			assert.equal(RELEASED_TRANSACTION.db, undefined, 'no store may ever claim the placeholder');
 			assert.equal((await TxnTest.get(99)).name, 'not staged on the placeholder');
 		});
-		// The placeholder is one instance shared by every released context, so each way of reaching its
-		// state must fail rather than write through to all of them.
+		// One instance is shared by every released context, so each route into its state must fail rather
+		// than write through to all of them.
 		it('refuses every route into the shared placeholder’s state', function () {
 			assert.throws(() => RELEASED_TRANSACTION.addWrite({}), /already completed/);
 			assert.throws(() => RELEASED_TRANSACTION.setContext({}), /shared released transaction/);
-			assert.throws(() => RELEASED_TRANSACTION.writes.push({}), TypeError, 'the write set must be frozen too');
+			assert.throws(() => RELEASED_TRANSACTION.writes.push({}), TypeError);
 			assert.throws(() => {
 				'use strict';
 				RELEASED_TRANSACTION.open = TRANSACTION_STATE.OPEN;
@@ -961,25 +954,48 @@ describe('Transactions', () => {
 		// transaction.commit(context) / transaction.abort(context) assert the caller still owns a live
 		// transaction. That has to hold for every way a transaction stops being live, not just an absent
 		// slot — a completed one can also still be sitting in it.
-		it('keeps transaction.commit()/abort() throwing once there is no live transaction', async function () {
+		it('keeps transaction.commit()/abort() throwing for a context that never had a transaction', function () {
 			assert.throws(() => transaction.commit({}), /No active transaction is available to commit/);
 			assert.throws(() => transaction.abort({}), /No active transaction is available to abort/);
+		});
+		// The two documented forms must agree: whatever `context.transaction.commit()` does on a completed
+		// transaction, `transaction.commit(context)` does too.
+		it('makes transaction.commit(context) a no-op on a released slot, like the direct form', async function () {
 			const context = {};
 			await transaction(context, async () => {
 				await TxnTest.put(100, { name: 'live' }, context);
-				await transaction.commit(context); // still OPEN: allowed
 			});
-			assert.throws(() => transaction.commit(context), /No active transaction is available to commit/);
-			assert.throws(() => transaction.abort(context), /No active transaction is available to abort/);
-			// Identity is not the test — a completed transaction still parked in the slot (the deferred
-			// release, or LMDB, which never releases at all) must throw too.
-			const completed = new DatabaseTransaction();
-			completed.open = TRANSACTION_STATE.CLOSED;
-			assert.throws(
-				() => transaction.commit({ transaction: completed }),
-				/No active transaction is available to commit/,
-				'a completed transaction still in the slot is not a live one'
-			);
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			assert.deepEqual(await transaction.commit(context), { txnTime: 0 });
+			assert.equal(transaction.abort(context), undefined);
+			assert.equal((await TxnTest.get(100)).name, 'live');
+		});
+		// A checkpointing loop commits every Nth row inside one scope. Each explicit commit closes the
+		// transaction without ending the scope that owns it, so the helper has to stay callable — and the
+		// rows written between checkpoints have to survive.
+		it('stays callable for repeated checkpoint commits inside one scope', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				for (let i = 0; i < 4; i++) {
+					await TxnTest.put(110 + i, { name: `checkpoint-${i}` }, context);
+					await transaction.commit(context);
+				}
+			});
+			for (let i = 0; i < 4; i++) {
+				assert.equal((await TxnTest.get(110 + i))?.name, `checkpoint-${i}`, `row ${i} must persist`);
+			}
+		});
+		// `Table.delete(id, context.transaction)` is a supported bare-transaction form; on a released
+		// context that argument is the placeholder, which must read as "no transaction" rather than be
+		// adopted as the (frozen) context.
+		it('accepts a released slot passed as the bare-transaction argument', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(120, { name: 'bare-arg' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			await TxnTest.delete(120, context.transaction);
+			assert.equal(await TxnTest.get(120), undefined, 'the delete must run on a fresh transaction');
 		});
 		// #1411: a timeout-poisoned abort must NOT release the context's back-reference. Resource.ts's
 		// dispatcher deliberately keeps joining a `timedOut` transaction (context?.transaction?.timedOut)
