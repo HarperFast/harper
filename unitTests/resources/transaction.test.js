@@ -74,6 +74,25 @@ describe('Transactions', () => {
 		assert.equal(answer.name, 'the answer');
 		assert.equal(answer.computed, 'the answer computed');
 	});
+	it('waits for promise-returning commit callbacks on RocksDB', async function () {
+		if (isLMDB) return this.skip();
+		const transaction = new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		let completionObserved = false;
+		const completion = Promise.resolve();
+		const then = completion.then;
+		completion.then = function (...args) {
+			completionObserved = true;
+			return then.apply(this, args);
+		};
+		transaction.addWrite({
+			key: 'async-commit-callback',
+			store: TxnTest.primaryStore,
+			commit: () => completion,
+		});
+		await transaction.commit({ doneWriting: true });
+		assert.equal(completionObserved, true, 'the callback completion was awaited');
+	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
 		let start = Date.now();
