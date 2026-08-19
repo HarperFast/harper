@@ -188,7 +188,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
 			const completion = write.commit(txnTime, write.entry, retries);
-			if (typeof completion?.then === 'function') (commitCompletions ??= []).push(completion);
+			if (typeof completion?.then === 'function') {
+				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
+				// or the exclusive transaction resolves), so handle rejection here to keep the gap from
+				// producing an unhandled rejection; it still surfaces through that Promise.all
+				completion.then(undefined, () => {});
+				(commitCompletions ??= []).push(completion);
+			}
 		};
 		// this uses optimistic locking to submit a transaction, conditioning each write on the expected version
 		const nextCondition = () => {
@@ -265,9 +271,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0].store.rootStore.databaseName;
-						const lastWrite = this.writes[this.writes.length - 1];
-						const lastEntry =
-							lastWrite && !lastWrite.skipReplicationConfirmation && lastWrite.store.getEntry(lastWrite.key);
+						const lastEntry = this.lastConfirmableEntry();
 						if (confirmReplication && lastEntry)
 							completions.push(
 								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
