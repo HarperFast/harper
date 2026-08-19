@@ -66,14 +66,20 @@ export function transaction<T>(
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		const committed = transaction.commit({ doneWriting: true });
-		if ((committed as any).then) {
-			return (committed as any).then(() => {
+		try {
+			const committed = transaction.commit({ doneWriting: true });
+			if ((committed as any).then) {
+				return (committed as any).then(() => result, onCommitError);
+			} else {
 				return result;
-			});
-		} else {
-			return result;
+			}
+		} catch (error) {
+			return onCommitError(error);
 		}
+	}
+	function onCommitError(error) {
+		transaction.abort();
+		throw error;
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {

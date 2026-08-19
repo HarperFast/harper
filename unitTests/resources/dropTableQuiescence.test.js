@@ -491,6 +491,66 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
+	it('drains an asynchronous id-allocation update before dropping the primary store', async function () {
+		const Table = table({
+			table: `DropIdAllocation_${process.pid}_${Date.now()}`,
+			database: 'test',
+			attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
+		});
+		Table.getNewId();
+		const originalPut = Table.primaryStore.put;
+		let allocationWriteStarted;
+		const allocationWriteStartedPromise = new Promise((resolve) => (allocationWriteStarted = resolve));
+		let releaseAllocationWrite;
+		const allocationWriteGate = new Promise((resolve) => (releaseAllocationWrite = resolve));
+		Table.primaryStore.put = async function (key, ...args) {
+			if (key === Symbol.for('id_allocation')) {
+				allocationWriteStarted();
+				await allocationWriteGate;
+			}
+			return originalPut.call(this, key, ...args);
+		};
+		try {
+			for (let count = 1; count < 512; count++) Table.getNewId();
+			await allocationWriteStartedPromise;
+			const originalDropSync = Table.primaryStore.dropSync;
+			let destructivePhaseStarted = false;
+			Table.primaryStore.dropSync = function (...args) {
+				destructivePhaseStarted = true;
+				return originalDropSync.apply(this, args);
+			};
+			const dropPromise = Table.dropTable();
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(destructivePhaseStarted, false, 'dropTable() must wait for the id-allocation write');
+			releaseAllocationWrite();
+			await dropPromise;
+			assert.strictEqual(destructivePhaseStarted, true);
+		} finally {
+			releaseAllocationWrite();
+			Table.primaryStore.put = originalPut;
+		}
+	});
+
+	it('aborts write tracking when the transaction wrapper commit throws synchronously', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const Table = defineTable(`DropAfterCommitThrow_${process.pid}_${Date.now()}`);
+		const originalCommit = Transaction.prototype.commit;
+		Transaction.prototype.commit = function () {
+			throw new Error('forced synchronous commit failure');
+		};
+		try {
+			await assert.rejects(
+				transaction(async () => {
+					await Table.put('held', { name: 'pending' });
+				}),
+				/forced synchronous commit failure/
+			);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		await Table.dropTable();
+	});
+
 	it('bounds and drains direct deleteHistory removals before dropping the primary store', async function () {
 		const storagePath = path.join(testPath, 'delete-history-removal-databases');
 		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);

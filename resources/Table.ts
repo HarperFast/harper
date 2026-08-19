@@ -1249,7 +1249,7 @@ export function makeTable(options) {
 							return;
 						}
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId, version);
-						primaryStore.put(
+						return primaryStore.put(
 							Symbol.for('id_allocation'),
 							{
 								start: updatedIdAllocation.start,
@@ -1273,7 +1273,21 @@ export function makeTable(options) {
 					}
 				};
 				if (nextId + asyncIdExpansionThreshold === idIncrementer.maxSafeId) {
-					setImmediate(updateEnd); // if we are getting kind of close to the end, we try to update it asynchronously
+					const finishIdAllocationUpdate = beginTableOperation('id allocation update');
+					setImmediate(() => {
+						try {
+							const completion = updateEnd(false);
+							if (completion?.then) {
+								completion.then(finishIdAllocationUpdate, (error) => {
+									finishIdAllocationUpdate();
+									if (!droppingTable) logger.warn?.(`Error updating id allocation for ${tableName}`, error);
+								});
+							} else finishIdAllocationUpdate();
+						} catch (error) {
+							finishIdAllocationUpdate();
+							if (!droppingTable) logger.warn?.(`Error updating id allocation for ${tableName}`, error);
+						}
+					});
 				} else if (nextId + 100 >= idIncrementer.maxSafeId) {
 					logger.warn?.(
 						`Synchronous id allocation required on table ${tableName}${
