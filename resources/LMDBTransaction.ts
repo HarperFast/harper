@@ -325,6 +325,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
+		this.drainCompletions();
 		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
 		// (retaining any fileId the current on-disk record still references — an aborted write may carry an
 		// already-saved blob shared with the surviving record; see harper-pro#406).

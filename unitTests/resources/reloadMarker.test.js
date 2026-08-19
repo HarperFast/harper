@@ -163,6 +163,28 @@ describe('table-reload marker (harper-pro#489)', () => {
 			await mixedTransaction.commit({ doneWriting: true });
 			assert.equal(confirmationCalls, 2, 'the replicable write staged before the marker is still confirmed');
 			assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the replicable write');
+
+			// the other write the confirmation walk skips: one with no stored entry at all. A delete on an
+			// audit: false table leaves nothing to read back, so a trailing delete must fall back to the put
+			// staged before it rather than confirming nothing.
+			const NoAuditTable = table({
+				table: 'ReloadMarkerNoAuditDelete',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+				audit: false,
+			});
+			await NoAuditTable.put(1, { id: 1 });
+			const deleteContext = { transaction: new DatabaseTransaction() };
+			await NoAuditTable.put(2, { id: 2 }, deleteContext);
+			await NoAuditTable.delete(1, deleteContext);
+			const deleteTransaction = isLMDB ? deleteContext.transaction.next : deleteContext.transaction;
+			deleteTransaction.replicatedConfirmation = 1;
+			confirmedVersion = undefined;
+			await deleteTransaction.commit({ doneWriting: true });
+			assert.equal(confirmationCalls, 3, 'the put staged before an entry-less delete is still confirmed');
+			// LMDB confirms on the audit store's local time, which an `audit: false` table's records do not
+			// carry at all (pre-existing: every confirmed write on such a table passes undefined). What this
+			// case pins is which write the walk selects, so only RocksDB can assert the value it carried.
+			if (!isLMDB) assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the put, not the delete');
 		} finally {
 			setReplicationConfirmation(undefined);
 		}
