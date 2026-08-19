@@ -75,21 +75,18 @@ export function transaction<T>(
 
 _assignPackageExport('transaction', transaction);
 
-// These assert that the caller still owns a live transaction, unlike `context.transaction.commit()`,
-// whose documented contract is to stay callable after completion. The check is on state, not on the
-// released placeholder's identity: a completed transaction can still be in the slot (the deferred
-// release, while an iterator drains) or never leave it (LMDB never releases), and all three mean the
-// same thing to a caller. A timeout-poisoned transaction is passed through so its own commit() reports
-// the poison rather than this weaker error.
-function requireLiveTransaction(contextSource, action: string): Transaction {
-	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
-	if (!transaction || (transaction.open !== TRANSACTION_STATE.OPEN && !(transaction as any).timedOut))
-		throw new Error(`No active transaction is available to ${action}`);
-	return transaction;
-}
+// Only a context that never had a transaction has none to act on. NOT a state check, and NOT a check
+// for the released placeholder: both would throw for a transaction that has completed but is still
+// reachable, and these helpers have to behave there exactly as a completed transaction in the slot
+// always did — a no-op — or a checkpointing loop that commits every Nth row starts failing on its
+// second checkpoint.
 transaction.commit = function (contextSource) {
-	return requireLiveTransaction(contextSource, 'commit').commit({});
+	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
+	if (!transaction) throw new Error('No active transaction is available to commit');
+	return transaction.commit();
 };
 transaction.abort = function (contextSource) {
-	return requireLiveTransaction(contextSource, 'abort').abort();
+	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
+	if (!transaction) throw new Error('No active transaction is available to abort');
+	return transaction.abort();
 };

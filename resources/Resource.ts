@@ -10,7 +10,12 @@ import {
 	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, TRANSACTION_STATE, type Transaction } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	isReleasedTransaction,
+	TRANSACTION_STATE,
+	type Transaction,
+} from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -589,6 +594,11 @@ function transactional(
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		let id, query, isCollection;
 		let data;
+		// `Table.delete(id, context.transaction)` is a supported form, and on a released context that
+		// argument is the placeholder — which must read as "no transaction" here rather than be adopted
+		// as the context (it is frozen, so transaction() assigning onto it would throw) or as data.
+		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
+		if (isReleasedTransaction(context)) context = undefined;
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (hasContent) {
 			// for put, post, patch, publish, query
