@@ -187,6 +187,8 @@ describe('commit with open read iterators commits writes immediately on a replay
 			Transaction.prototype.commit = originalCommit;
 		}
 		assert.match(rejection?.message, /forced synchronous replay failure/);
+		assert.strictEqual(rejection.code, 'ERR_BUSY', 'the terminal failure must retain its public error code');
+		assert.strictEqual(rejection.cause?.code, 'ERR_BUSY', 'the terminal failure must retain the native cause');
 		assert.strictEqual(context.transaction, failedTransaction, 'context release must wait for the retained iterator');
 		assert.ok(failedTransaction.transaction, 'the iterator must retain its original native read handle');
 		assert.strictEqual(failedTransaction.writes.length, 0, 'the failed replay must release its tracked writes');

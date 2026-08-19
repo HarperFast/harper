@@ -9,6 +9,11 @@ import {
 import { AsyncLocalStorage } from 'async_hooks';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
+const executingTransactionStorage = new AsyncLocalStorage<Transaction>();
+
+export function getExecutingTransaction(): Transaction | undefined {
+	return executingTransactionStorage.getStore() ?? contextStorage.getStore()?.transaction;
+}
 
 export function transaction<T>(context: Context, callback: (transaction: Transaction) => T): T;
 export function transaction<T>(callback: (transaction: Transaction) => T): T;
@@ -42,7 +47,7 @@ export function transaction<T>(
 		throw new TypeError('Callback function must be provided to transaction');
 	}
 	if (context?.transaction?.open === TRANSACTION_STATE.OPEN && typeof callback === 'function') {
-		return callback(context.transaction); // nothing to be done, already in open transaction
+		return executingTransactionStorage.run(context.transaction, () => callback(context.transaction));
 	}
 
 	const transaction = new DatabaseTransaction();
@@ -53,10 +58,11 @@ export function transaction<T>(
 	transaction.setContext(context);
 	let result;
 	try {
+		const invokeCallback = () => executingTransactionStorage.run(transaction, () => callback(transaction));
 		result =
 			(context as any).isExplicit || asyncStorageContext
-				? callback(transaction)
-				: contextStorage.run(context, () => callback(transaction));
+				? invokeCallback()
+				: contextStorage.run(context, invokeCallback);
 		if ((result as any)?.then) {
 			return (result as any).then(onComplete, onError);
 		}

@@ -2429,34 +2429,37 @@ export async function prepareTableDrop(
 	const preparationKey = tableDropPreparationKey(storePath, tableName, dropGeneration);
 	let matchingTables = incompleteTableDropPreparations.get(preparationKey);
 	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
-	if (preserveTable) matchingTables.add(preserveTable);
-	for (const databaseName of Object.getOwnPropertyNames(databases)) {
-		const databaseTables = databases[databaseName];
-		const Table = databaseTables?.[tableName];
-		if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
-		const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
-		if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) {
-			throw new ClientError(
-				`Drop generation does not match on this worker for ${databaseName}.${tableName}; refusing to acknowledge preparation`,
-				409
-			);
-		}
-		matchingTables.add(Table);
-	}
-	const preparations = await Promise.allSettled(
-		[...matchingTables].map(async (Table) => {
-			try {
-				await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
-			} finally {
-				matchingTables.delete(Table);
+	try {
+		if (preserveTable) matchingTables.add(preserveTable);
+		for (const databaseName of Object.getOwnPropertyNames(databases)) {
+			const databaseTables = databases[databaseName];
+			const Table = databaseTables?.[tableName];
+			if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
+			const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
+			if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) {
+				throw new ClientError(
+					`Drop generation does not match on this worker for ${databaseName}.${tableName}; refusing to acknowledge preparation`,
+					409
+				);
 			}
-		})
-	);
-	incompleteTableDropPreparations.delete(preparationKey);
-	const failedPreparation = preparations.find(
-		(preparation): preparation is PromiseRejectedResult => preparation.status === 'rejected'
-	);
-	if (failedPreparation) throw failedPreparation.reason;
+			matchingTables.add(Table);
+		}
+		const preparations = await Promise.allSettled(
+			[...matchingTables].map(async (Table) => {
+				try {
+					await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
+				} finally {
+					matchingTables.delete(Table);
+				}
+			})
+		);
+		const failedPreparation = preparations.find(
+			(preparation): preparation is PromiseRejectedResult => preparation.status === 'rejected'
+		);
+		if (failedPreparation) throw failedPreparation.reason;
+	} finally {
+		incompleteTableDropPreparations.delete(preparationKey);
+	}
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

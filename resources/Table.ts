@@ -67,7 +67,7 @@ import {
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
 import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
-import { transaction, contextStorage } from './transaction.ts';
+import { transaction, contextStorage, getExecutingTransaction } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount, getProcessInstanceId } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
@@ -494,7 +494,7 @@ export function makeTable(options) {
 				.filter((operation) => pendingTableOperations.has(operation))
 				.map(({ label }) => label);
 			throw new Error(
-				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight operation(s) on ${tableName} to settle${directOperationLabels.length ? ` (${directOperationLabels.join(', ')})` : ''}; refusing to drop the column families. The drop request is durable: retry drop_table after the blocking operations settle, or restart Harper to complete the drop.`
+				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight operation(s) on ${tableName} to settle${directOperationLabels.length ? ` (${directOperationLabels.join(', ')})` : ''}; refusing to drop the column families. The drop request is durable and the table is unavailable; restart Harper to complete the drop.`
 			);
 		}
 	};
@@ -1494,7 +1494,7 @@ export function makeTable(options) {
 			}
 			const rootStore = primaryStore.rootStore;
 			const sharedRocksStore = databaseName === databasePath && rootStore instanceof RocksDatabase;
-			const activeTransaction = contextStorage.getStore()?.transaction;
+			const activeTransaction = getExecutingTransaction();
 			const currentTableStores = new Set(tableStores());
 			if (
 				sharedRocksStore &&
@@ -1542,7 +1542,7 @@ export function makeTable(options) {
 						});
 					} catch (error) {
 						const quiescenceError: any = new ServerError(
-							`Unable to quiesce every worker before dropping ${databaseName}.${tableName}; the table remains unavailable and this durable drop will complete when Harper restarts. Retry drop_table in this process only after the blocking worker settles. ${error.message}`,
+							`Unable to quiesce every worker before dropping ${databaseName}.${tableName}; the table remains unavailable. Restart Harper to complete this durable drop. ${error.message}`,
 							503
 						);
 						quiescenceError.code = error.code;

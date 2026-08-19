@@ -26,7 +26,11 @@ const trackedTxns = new Set<DatabaseTransaction>();
 // is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
-const activeWriteTransactions = new Set<DatabaseTransaction>();
+const activeWriteTransactions = new Set<WeakRef<DatabaseTransaction>>();
+const activeWriteTransactionFinalizer = new FinalizationRegistry<WeakRef<DatabaseTransaction>>((reference) =>
+	activeWriteTransactions.delete(reference)
+);
+const terminalReplayCommitFailure = Symbol('terminalReplayCommitFailure');
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
@@ -154,10 +158,15 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 export function getPendingWriteResolutions(stores: Iterable<any>): Promise<void>[] {
 	const targetStores = new Set(stores);
 	const resolutions: Promise<void>[] = [];
-	for (const transaction of activeWriteTransactions) {
+	for (const reference of activeWriteTransactions) {
+		const transaction = reference.deref();
+		if (!transaction) {
+			activeWriteTransactions.delete(reference);
+			continue;
+		}
 		if (transaction.writes.some((write) => write && targetStores.has(write.store))) {
 			const resolution = transaction.getPendingWriteResolution();
-			if (resolution) resolutions.push(resolution);
+			if (resolution) resolutions.push(resolution.finally(() => void transaction));
 		}
 	}
 	return resolutions;
@@ -366,7 +375,7 @@ export class DatabaseTransaction implements Transaction {
 	// `db` identifies the first table; allocate only when one native transaction spans more tables.
 	#additionalStores?: Set<any>;
 	#lastTrackedStore?: any;
-	#trackedForDropDrain = false;
+	#dropDrainReference?: WeakRef<DatabaseTransaction>;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
@@ -607,9 +616,10 @@ export class DatabaseTransaction implements Transaction {
 			error.code = 'ERR_TABLE_DROPPING';
 			throw error;
 		}
-		if (!this.#trackedForDropDrain && operation.store?.rootStore instanceof RocksDatabase) {
-			this.#trackedForDropDrain = true;
-			activeWriteTransactions.add(this);
+		if (!this.#dropDrainReference && operation.store?.rootStore instanceof RocksDatabase) {
+			const reference = (this.#dropDrainReference = new WeakRef(this));
+			activeWriteTransactions.add(reference);
+			activeWriteTransactionFinalizer.register(this, reference, reference);
 		}
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
@@ -631,7 +641,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	getPendingWriteResolution(): Promise<void> | undefined {
-		if (!activeWriteTransactions.has(this)) return;
+		if (!this.#dropDrainReference) return;
 		this.#pendingWriteResolution ??= new Promise((resolve) => {
 			this.#resolvePendingWrites = resolve;
 		});
@@ -676,8 +686,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	private finishPendingWrites(): void {
-		activeWriteTransactions.delete(this);
-		this.#trackedForDropDrain = false;
+		if (this.#dropDrainReference) {
+			activeWriteTransactions.delete(this.#dropDrainReference);
+			activeWriteTransactionFinalizer.unregister(this.#dropDrainReference);
+			this.#dropDrainReference = undefined;
+		}
 		this.#resolvePendingWrites?.();
 		this.#pendingWriteResolution = undefined;
 		this.#resolvePendingWrites = undefined;
@@ -1157,7 +1170,10 @@ export class DatabaseTransaction implements Transaction {
 							// migration full-table copy. Both are transient and retryable. Before ERR_TRY_AGAIN was
 							// retried here, the rejection propagated out of the unawaited onCommit() handler as an
 							// unhandled rejection and the write was silently dropped — records lost mid-copy (#308).
-							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
+							if (
+								!error[terminalReplayCommitFailure] &&
+								(error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN')
+							) {
 								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 								// for future transactions
 								this.retries++;
@@ -1277,7 +1293,11 @@ export class DatabaseTransaction implements Transaction {
 				return txnResolution;
 			},
 			(error) => {
-				this.abort();
+				try {
+					this.abort();
+				} catch (abortError) {
+					harperLogger.debug?.('aborting transaction after failed commit', abortError);
+				}
 				throw error;
 			}
 		);
@@ -1355,11 +1375,14 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// Keep the retained read handle alive until its iterators drain, but do not let a retryable native
 		// code re-enter commit after the staged writes above were discarded.
-		return Promise.reject(
-			Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
-				name: error instanceof Error ? error.name : 'Error',
-			})
+		const terminalError: any = Object.assign(
+			new Error(error instanceof Error ? error.message : String(error), { cause: error }),
+			error instanceof Error ? error : undefined,
+			{ name: error instanceof Error ? error.name : 'Error' }
 		);
+		if (error instanceof Error) Object.setPrototypeOf(terminalError, Object.getPrototypeOf(error));
+		Object.defineProperty(terminalError, terminalReplayCommitFailure, { value: true });
+		return Promise.reject(terminalError);
 	}
 	private abortSynchronousCommit(transaction: RocksTransaction, error: unknown): never {
 		try {

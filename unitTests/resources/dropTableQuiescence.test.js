@@ -256,6 +256,27 @@ describe('dropTable worker quiescence', function () {
 		await Table.dropTable();
 	});
 
+	it('rejects a drop from a nested explicit transaction before tombstoning', async function () {
+		const tableName = `DropOwnNestedTxn_${process.pid}_${Date.now()}`;
+		const Table = defineTable(tableName);
+		const dbisDb = database({ database: 'test', table: null }).dbisDb;
+
+		await transaction(async () => {
+			const nestedContext = { isExplicit: true };
+			await assert.rejects(
+				() =>
+					transaction(nestedContext, async () => {
+						await Table.put({ id: 'nested-staged', name: 'pending' }, nestedContext);
+						await Table.dropTable();
+					}),
+				(error) => error?.code === 'ERR_TABLE_DROP_IN_TRANSACTION'
+			);
+		});
+		assert.notStrictEqual(dbisDb.getSync(`${tableName}/`)?.dropping, true);
+		assert.strictEqual(databases.test?.[tableName], Table);
+		await Table.dropTable();
+	});
+
 	it('preserves shared stores while preparing a database alias', async function () {
 		const tableName = `DropAliasedTable_${process.pid}_${Date.now()}`;
 		const databaseName = `DropAliasDb_${process.pid}_${Date.now()}`;
@@ -322,6 +343,33 @@ describe('dropTable worker quiescence', function () {
 		}
 		await prepareTableDrop(storePath, tableName, dropGeneration);
 		assert.strictEqual(attempts, 1, 'the failed table must not remain registered for later preparations');
+	});
+
+	it('releases a generation-mismatched preparation before a later retry', async function () {
+		const tableName = `DropMismatchedPreparation_${process.pid}_${Date.now()}`;
+		const databaseName = `DropMismatchedPreparationDb_${process.pid}_${Date.now()}`;
+		const storePath = path.join(testPath, 'drop-mismatched-preparation-database');
+		const dropGeneration = 'expected-generation';
+		let attempts = 0;
+		const Table = {
+			primaryStore: { rootStore: { path: storePath } },
+			dbisDB: {
+				getSync() {
+					return { dropping: true, dropGeneration: 'different-generation' };
+				},
+			},
+			async _prepareDrop() {
+				attempts++;
+			},
+		};
+		databases[databaseName] = { [tableName]: Table };
+		try {
+			await assert.rejects(prepareTableDrop(storePath, tableName, dropGeneration), /generation does not match/);
+		} finally {
+			delete databases[databaseName];
+		}
+		await prepareTableDrop(storePath, tableName, dropGeneration);
+		assert.strictEqual(attempts, 0, 'the mismatched table must not remain registered for later preparations');
 	});
 
 	it('does not wait for a read iterator on another table in the same database', async function () {
