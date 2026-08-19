@@ -238,12 +238,9 @@ describe('Ambient operation context must not couple independent writes (transact
 		);
 	});
 
-	// The delivery path the 5.2.3 regression actually broke: an operations-API handler running under
-	// processLocalTransaction's ambient context (fabric connect, create/delete cluster in
-	// central-manager) reads through that context, then commits it itself — the documented
-	// mid-handler pattern. The unit-level shape in transaction.test.js uses a bare `{}` context; this
-	// one goes through the real operation-handler ambient context, which is what made the failure
-	// user-visible.
+	// The delivery path: an operations-API handler under processLocalTransaction's ambient context reads
+	// through that context and then commits it itself. transaction.test.js covers the same shape on a
+	// bare `{}` context; only this one exercises the real ambient operation context.
 	it('lets an operation handler commit its ambient context after a static read completed that context’s transaction', async () => {
 		let committed = false;
 		const result = await serverUtilities.processLocalTransaction(
