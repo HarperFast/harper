@@ -1260,21 +1260,19 @@ describe('Blob test', () => {
 		source.blobStreamIdleTimeoutMs = 60000; // arm the source-idle watchdog (won't fire during the test)
 		const blob = await createBlob(source, { size: 20000 });
 		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
-		source.write(randomBytes(4000)); // a partial body lands before the abort
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		const lockKey = getFileId(blob) + ':blob';
+		await new Promise((resolve, reject) => {
+			source.write(randomBytes(4000), (error) => (error ? reject(error) : resolve()));
+		});
 		source.destroy(new Error('Blob source stream idle for 120000ms'));
 		await assert.rejects(Promise.resolve(saving), 'the aborted save rejects');
-		// the PENDING stub is written asynchronously in the abort callback; wait for the read to flip to 503
-		await waitFor(
-			async () => {
-				try {
-					await blob.bytes();
-					return false;
-				} catch (error) {
-					return error.statusCode === 503;
-				}
-			},
-			{ timeout: 2000, message: 'aborted source write should leave a PENDING (503) blob' }
+		const lockReleased = store.tryLock(lockKey);
+		if (lockReleased) store.unlock(lockKey);
+		assert.ok(lockReleased, 'the aborted save must release its blob lock before rejection settles');
+		await assert.rejects(
+			blob.bytes(),
+			(error) => error.statusCode === 503,
+			'aborted source write should leave a PENDING (503) blob before rejection settles'
 		);
 		unlinkSync(getFilePathForBlob(blob));
 	});

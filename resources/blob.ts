@@ -1476,10 +1476,17 @@ function writeBlobWithStream(
 					const messageBuffer = Buffer.from(String(error));
 					const header = new Uint8Array(HEADER_SIZE);
 					new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
-					writeFile(filePath, Buffer.concat([header, messageBuffer]), (writeError: Error) => {
+					const finishPendingMarker = (writeError?: Error) => {
 						if (writeError) logger.debug?.('Error writing pending marker to blob file', writeError);
 						store.unlock(lockKey);
-					});
+						reject(error);
+					};
+					try {
+						writeFile(filePath, Buffer.concat([header, messageBuffer]), finishPendingMarker);
+					} catch (writeError) {
+						finishPendingMarker(writeError as Error);
+					}
+					return;
 				} else {
 					store.unlock(lockKey);
 					try {
