@@ -224,11 +224,20 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// will fail and retry due to contention. This is used to determine when to give up on optimistic writes and
 			// use a real (async) transaction to get exclusive access to the data
 			if (db?.retryRisk) db.retryRisk *= 0.99; // gradually decay the retry risk
-			if (this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
-			else {
+			if (this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
+				nextCondition();
+				if (commitCompletions) {
+					if (resolution) {
+						resolution = resolution.then((committed) => Promise.all(commitCompletions).then(() => committed));
+					} else {
+						// Must resolve truthy or the conflict branch re-runs the writes.
+						resolution = Promise.all(commitCompletions).then(() => true);
+					}
+				}
+			} else {
 				// if it is too big to expect optimistic writes to work, or we have done too many retries we use
 				// a real LMDB transaction to get exclusive access to reading and writing
-				resolution = this.writes[0].store.transaction(() => {
+				const transactionResolution = this.writes[0].store.transaction(() => {
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);
@@ -236,20 +245,19 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 					return true; // success. always success
 				});
+				resolution = transactionResolution.then((committed) =>
+					commitCompletions ? Promise.all(commitCompletions).then(() => committed) : committed
+				);
 			}
-		}
-		if (commitCompletions) {
-			if (resolution) completions.push(...commitCompletions);
-			// A false resolution means an optimistic conflict and retries the writes.
-			else resolution = Promise.all(commitCompletions).then(() => true);
 		}
 
 		if (resolution) {
 			if (!outstandingCommit) {
 				outstandingCommit = resolution;
-				outstandingCommit.then(() => {
+				const clearOutstandingCommit = () => {
 					outstandingCommit = null;
-				});
+				};
+				outstandingCommit.then(clearOutstandingCommit, clearOutstandingCommit);
 			}
 
 			return resolution.then((resolution) => {
@@ -265,7 +273,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0].store.rootStore.databaseName;
 						const lastWrite = this.writes[this.writes.length - 1];
-						if (confirmReplication && lastWrite)
+						if (confirmReplication && lastWrite?.key != null)
 							completions.push(
 								confirmReplication(
 									databaseName,
