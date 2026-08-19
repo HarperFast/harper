@@ -164,8 +164,8 @@ describe('table-reload marker (harper-pro#489)', () => {
 			assert.equal(confirmationCalls, 2, 'the replicable write staged before the marker is still confirmed');
 			assert.ok(confirmedVersion != null, 'confirmation uses the stored entry of the replicable write');
 
-			// the other write the confirmation walk skips: one with no stored entry at all — a delete on an
-			// audit: false table leaves nothing to read back
+			// the other write the confirmation walk skips: one with no stored entry at all — a delete
+			// leaves nothing to read back only when the table has neither audit nor delete tracking
 			const NoAuditTable = table({
 				table: 'ReloadMarkerNoAuditDelete',
 				attributes: [{ name: 'id', isPrimaryKey: true }],
