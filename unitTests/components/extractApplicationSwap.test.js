@@ -626,6 +626,30 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('adopts a mode-000 directory placeholder left by an interrupted rollback', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		this.timeout(15000);
+		// Builds before the placeholder gained its 0o300/0o100 modes left mode-000 directories behind.
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-placeholder-zero-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath, { mode: 0o700 });
+		await fs.writeFile(path.join(dirPath, 'writer-created'), 'occupied');
+		await fs.chmod(dirPath, 0o000);
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.chmod(dirPath, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('reclaims a stale aside copy left by an earlier deploy', async function () {
 		this.timeout(20000);
 
