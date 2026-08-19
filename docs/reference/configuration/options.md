@@ -214,7 +214,7 @@ node:
   hostname: server-one
 ```
 
-- `hostname` — This node's identity. Must be a **bare hostname** (e.g. `server-one`) — **not** a URL and **not** `host:port`. Do not include a scheme (`https://`, `wss://`) or a port (`:9933`). This value becomes the node's TLS certificate common name and the host that replication advertises to peers and dials to reach this node, so a scheme or port silently breaks certificate matching and replication rather than erroring (see [harper#2218](https://github.com/HarperFast/harper/issues/2218)). Harper logs a startup warning if `hostname` is configured as a URL or `host:port` value (see [harper#2223](https://github.com/HarperFast/harper/pull/2223)). If unset, the node name is derived from `replication.hostname`, the replication URL, or the TLS certificate common name.
+- `hostname` — This node's identity. Must be a **bare hostname** (e.g. `server-one`) — **not** a URL and **not** `host:port`. Do not include a scheme (`https://`, `wss://`) or a port (`:9933`). This value becomes the node's TLS certificate common name and the host that replication advertises to peers and dials to reach this node, so a scheme or port silently breaks certificate matching and replication rather than erroring. Harper logs a startup warning if `hostname` is configured as a URL or `host:port` value. If unset, the node name is derived from `replication.hostname`, the replication URL, or the TLS certificate common name.
 
 ---
 
