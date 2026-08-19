@@ -229,6 +229,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				record = idPrefix;
 			}
 		}
+		if (isReleasedTransaction(context)) context = undefined; // never adopt the shared placeholder as a context
 		if (context) {
 			if ((context as any).getContext) context = (context as any).getContext();
 		} else {
@@ -594,9 +595,7 @@ function transactional(
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		let id, query, isCollection;
 		let data;
-		// `Table.delete(id, context.transaction)` is a supported form, and on a released context that
-		// argument is the placeholder — which must read as "no transaction" here rather than be adopted
-		// as the context (it is frozen, so transaction() assigning onto it would throw) or as data.
+		// The released placeholder must not be adopted as this call's context — or, worse, as its data.
 		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
 		if (isReleasedTransaction(context)) context = undefined;
 		// First we do our argument normalization. There are two main types of methods, with or without content
