@@ -25,7 +25,7 @@ import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
-import { getThisNodeName } from '../server/nodeName.ts';
+import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getHdbPid, isProcessRunning } from '../utility/processManagement/processManagement.js';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
@@ -321,14 +321,20 @@ function startupLog(portResolutions: any) {
 	}`;
 	logMsg += `, unix socket: ${configUtils.getConfigPath(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)}\n`;
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)) {
-		logMsg += pad('') + 'http://' + getThisNodeName() + ':' + env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) + '/\n';
+		logMsg +=
+			pad('') +
+			'http://' +
+			getThisNodeHostname() +
+			':' +
+			env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) +
+			'/\n';
 	}
 	if (env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)) {
 		logMsg +=
 			'\n' +
 			pad('') +
 			'https://' +
-			getThisNodeName() +
+			getThisNodeHostname() +
 			':' +
 			env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) +
 			'/\n';
@@ -383,7 +389,7 @@ function startupLog(portResolutions: any) {
 			if (!restLog.includes(pair) && name === 'rest') {
 				restLog += pair;
 				if (value.protocol_name === 'HTTP' || value.protocol_name === 'HTTPS') {
-					restHostnames.push(`${value.protocol_name.toLowerCase()}://${getThisNodeName()}:${key}/`);
+					restHostnames.push(`${value.protocol_name.toLowerCase()}://${getThisNodeHostname()}:${key}/`);
 				}
 			}
 

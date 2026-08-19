@@ -8,7 +8,7 @@ const sinon = require('sinon');
 
 const env = require('#src/utility/environment/environmentManager');
 const { logger } = require('#src/utility/logging/logger');
-const { hostnameToUrl, getThisNodeName, clearThisNodeName } = require('#src/server/nodeName');
+const { hostnameToUrl, getThisNodeName, getThisNodeHostname, clearThisNodeName } = require('#src/server/nodeName');
 
 describe('getThisNodeName precedence (harper-pro#351)', () => {
 	let sandbox;
@@ -75,6 +75,45 @@ describe('getThisNodeName precedence (harper-pro#351)', () => {
 			logger.warn = originalWarn;
 		}
 		assert.ok(!warn.called, 'should not warn when replication.hostname is unset');
+	});
+});
+
+describe('getThisNodeHostname (#2218 double-wrapped startup URLs)', () => {
+	let sandbox;
+
+	beforeEach(() => {
+		sandbox = sinon.createSandbox();
+		clearThisNodeName();
+	});
+
+	afterEach(() => {
+		sandbox.restore();
+		clearThisNodeName();
+	});
+
+	function stubNodeHostname(value) {
+		sandbox.stub(env, 'get').callsFake((key) => (key === 'node_hostname' ? value : undefined));
+	}
+
+	it('returns a bare host unchanged', () => {
+		stubNodeHostname('localhost');
+		assert.strictEqual(getThisNodeHostname(), 'localhost');
+	});
+
+	it('strips the scheme and port when node.hostname is a full URL', () => {
+		// Without this the startup banner composed http://http://localhost:9926:9925/
+		stubNodeHostname('http://localhost:9926');
+		assert.strictEqual(getThisNodeHostname(), 'localhost');
+	});
+
+	it('strips a bare host:port down to the host', () => {
+		stubNodeHostname('localhost:9926');
+		assert.strictEqual(getThisNodeHostname(), 'localhost');
+	});
+
+	it('preserves bracketed IPv6 hosts so composed URLs stay valid', () => {
+		stubNodeHostname('https://[::1]:9926');
+		assert.strictEqual(getThisNodeHostname(), '[::1]');
 	});
 });
 

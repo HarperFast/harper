@@ -58,6 +58,24 @@ export function clearThisNodeName() {
 	nodeName = undefined;
 }
 
+/**
+ * Returns this node's bare hostname (no scheme, no port) for composing display URLs.
+ * getThisNodeName() is normally a bare host ('localhost'), but if node.hostname is
+ * configured as a full URL ('http://localhost:9926'), composing a URL from it double-wraps
+ * the scheme and inherits the wrong port (http://http://localhost:9926:9925/). Reduce it
+ * back to the host so the composed URL is well-formed. (#2218)
+ */
+export function getThisNodeHostname(): string {
+	const name = getThisNodeName();
+	if (!name) return name;
+	try {
+		const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(name);
+		return new URL(hasScheme ? name : `http://${name}`).hostname || name;
+	} catch {
+		return name; // not URL-parseable; assume it is already a bare host
+	}
+}
+
 function getHostFromListeningPort(key: string) {
 	const port: string | undefined = env.get(key);
 	const lastColon = port?.lastIndexOf?.(':');
