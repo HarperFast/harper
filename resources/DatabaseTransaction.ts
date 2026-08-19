@@ -418,7 +418,12 @@ export class DatabaseTransaction implements Transaction {
 
 	useReadTxn(disableSnapshot?: boolean) {
 		const readTxn = this.getReadTxn(disableSnapshot);
-		if (DEBUG_LONG_TXNS) this.stackTraces.push(new StartedTransaction());
+		// Only getReadTxn's fresh-handle branch seeds stackTraces, so it is still undefined when the
+		// handle was adopted by save() or was never opened at all (issue #2222). Trace only a real
+		// handle: without one the transaction is never added to trackedTxns, so the monitor has nothing
+		// to dump the traces for, and an ImmediateTransaction (whose getReadTxn never returns one)
+		// would accumulate them for its lifetime.
+		if (DEBUG_LONG_TXNS && readTxn) (this.stackTraces ??= []).push(new StartedTransaction());
 		this.readTxnsUsed++;
 		return readTxn;
 	}
