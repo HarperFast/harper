@@ -400,14 +400,12 @@ export class DatabaseTransaction implements Transaction {
 		// snapshot that blocks compaction. Only applied when creating the transaction fresh; an
 		// already-open transaction keeps whatever snapshot mode it was created with.
 		// `coordinatedRetry` signals IsBusy write conflicts as RETRY_NOW rather than ERR_BUSY.
-		this.transaction = new RocksTransaction(this.db.store, { coordinatedRetry: true, disableSnapshot });
+		this.attachOwnedTransaction(new RocksTransaction(this.db.store, { coordinatedRetry: true, disableSnapshot }));
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
 		}
 
-		this.readTxnsUsed = 1;
-		this.baseReadRefConsumed = false; // fresh handle, fresh base reference for commit() to consume
 		if (DEBUG_LONG_TXNS) {
 			this.stackTraces = [new StartedTransaction()];
 		}
@@ -415,6 +413,22 @@ export class DatabaseTransaction implements Transaction {
 		trackedTxns.add(this);
 		if (trackedTxns.size > readTxnQueueDepthHighWater) readTxnQueueDepthHighWater = trackedTxns.size;
 		return this.transaction;
+	}
+
+	// Monitor state is not ownership state: it stays with `trackedTxns.add` in getReadTxn().
+	private attachOwnedTransaction(transaction: RocksTransactionWithRetry): void {
+		this.transaction = transaction;
+		this.readTxnsUsed = 1;
+		this.baseReadRefConsumed = false;
+	}
+
+	private detachOwnedTransaction(): RocksTransactionWithRetry | null {
+		const transaction = this.transaction;
+		trackedTxns.delete(this);
+		this.transaction = null;
+		this.readTxnsUsed = 0;
+		this.readTxnRefCount = 0;
+		return transaction;
 	}
 
 	useReadTxn(disableSnapshot?: boolean) {
@@ -432,9 +446,16 @@ export class DatabaseTransaction implements Transaction {
 			// transaction (see the outstanding-iterators branch in commit()), so aborting it here
 			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
 			// into its own transaction; this handle's never-committed log batch dies with it.
-			trackedTxns.delete(this);
-			this.transaction?.abort();
-			this.transaction = null;
+			const transaction = this.detachOwnedTransaction();
+			try {
+				transaction?.abort();
+			} catch (error) {
+				// Contained, not ignored: abort() calls this before it marks the wrapper CLOSED, clears
+				// writes and releases the context. Warn rather than debug — reached from abort()'s drain
+				// loop the handle can still hold write intents, and stalled writers with a clean log is
+				// the worst outcome here.
+				harperLogger.warn?.('Failed to release a transaction’s native handle', error);
+			}
 			this.completeDeferredContextRelease();
 		}
 	}
@@ -446,14 +467,12 @@ export class DatabaseTransaction implements Transaction {
 	 * abort (an in-flight replay commit owns them), only the snapshot's lifetime is enforced.
 	 */
 	releaseReadTxn(): void {
-		trackedTxns.delete(this);
-		this.readTxnsUsed = 0; // doneReadTxn() no-ops for the remaining iterators (guarded on this.transaction)
+		const transaction = this.detachOwnedTransaction();
 		try {
-			this.transaction?.abort();
+			transaction?.abort();
 		} catch (error) {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
-		this.transaction = null;
 		this.completeDeferredContextRelease();
 	}
 
@@ -470,7 +489,12 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	disregardReadTxn(): void {
-		if (--this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+		// Never release a handle carrying staged writes: commit() skips re-staging a write it has marked
+		// saved, so aborting the handle here drops it. The count is clamped because every getReadTxn()
+		// increments it but only this releases, so an unpaired call would drive it negative and cancel
+		// out a later handle's references.
+		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+			if (this.writes.some((write) => write)) return;
 			this.doneReadTxn();
 		}
 	}
@@ -658,7 +682,7 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
 			}
 			if (this.open === TRANSACTION_STATE.OPEN) {
-				this.transaction = transaction;
+				this.attachOwnedTransaction(transaction);
 			} else {
 				// if it is closed, we have to immediately commit, using our immediate transaction
 				immediateCommit = true;
@@ -810,8 +834,7 @@ export class DatabaseTransaction implements Transaction {
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
-					trackedTxns.delete(this);
-					this.transaction = null; // clear transaction so any further operations operate immediately
+					this.detachOwnedTransaction(); // any further operations operate immediately
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
@@ -1074,22 +1097,19 @@ export class DatabaseTransaction implements Transaction {
 	 * first, then abort each link's native transaction and release its DatabaseTransaction-level
 	 * resources. Two passes (mirroring abortDueToTimeout) so a throw while aborting one link can't leave
 	 * later links (this.next) holding native handles / read snapshots until GC. `headTransaction` is the
-	 * head link's native transaction, which commit() detached to a local before this point
-	 * (this.transaction is already null), so it is aborted directly; every other link still owns its
-	 * native transaction on `txn.transaction`.
+	 * head link's native transaction, which commit() detached to a local before this point, so it is
+	 * aborted directly; every other link still owns its native transaction on `txn.transaction`. The
+	 * head can still hold a retained read handle here (commit()'s outstanding-iterators branch), which
+	 * its iterators release.
 	 */
 	abortChainAfterRetries(headTransaction: RocksTransaction): void {
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			const nativeTxn = txn === this ? headTransaction : txn.transaction;
-			// Clear the native handle and read-snapshot bookkeeping so the abort() below only performs
-			// non-native cleanup (blobs, writes) and can't double-abort (RocksTransaction.abort() throws
-			// on an already-aborted handle) or spin abort()'s doneReadTxn loop on a nulled handle.
-			txn.transaction = null;
-			txn.readTxnsUsed = 0;
-			trackedTxns.delete(txn);
+			// Detach first so the abort() below performs only non-native cleanup and can't double-abort.
+			const detached = txn.detachOwnedTransaction();
+			const nativeTxn = txn === this ? headTransaction : detached;
 			try {
 				nativeTxn?.abort();
 			} catch (abortError) {
@@ -1142,8 +1162,27 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 	directCommitSync(): void {
-		trackedTxns.delete(this);
-		this.transaction?.commitSync();
+		const transaction = this.transaction;
+		try {
+			transaction?.commitSync();
+		} catch (error) {
+			// Still uncommitted and still holding its write intents, and no caller aborts after this
+			// throws. abort() rather than the native abort alone: it reclaims blobs a replayed write
+			// staged.
+			this.detachOwnedTransaction();
+			try {
+				transaction?.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('aborting a transaction whose synchronous commit failed', abortError);
+			}
+			try {
+				this.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('cleaning up after a failed synchronous commit', abortError);
+			}
+			throw error;
+		}
+		this.detachOwnedTransaction();
 	}
 	getContext() {
 		return this.#context;
