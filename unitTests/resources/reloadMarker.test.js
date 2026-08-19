@@ -3,6 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
+const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { replicationConfirmation } = require('#src/resources/LMDBTransaction');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
@@ -125,12 +126,16 @@ describe('table-reload marker (harper-pro#489)', () => {
 			table: 'ReloadMarkerConfirmation',
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
+		const context = { transaction: new DatabaseTransaction() };
+		ReloadTable.writeReloadMarker(context);
+		const markerTransaction = context.transaction.next;
+		markerTransaction.replicatedConfirmation = 1;
 		let confirmationCalls = 0;
 		replicationConfirmation(() => {
 			confirmationCalls++;
 		});
 		try {
-			await ReloadTable.writeReloadMarker({ replicatedConfirmation: 1 });
+			await markerTransaction.commit({ doneWriting: true });
 		} finally {
 			replicationConfirmation(undefined);
 		}

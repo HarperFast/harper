@@ -228,7 +228,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 				nextCondition();
 				if (commitCompletions) {
 					if (resolution) {
-						resolution = resolution.then((committed) => Promise.all(commitCompletions).then(() => committed));
+						resolution = Promise.resolve(resolution).then((committed) =>
+							Promise.all(commitCompletions).then(() => committed)
+						);
 					} else {
 						// Must resolve truthy or the conflict branch re-runs the writes.
 						resolution = Promise.all(commitCompletions).then(() => true);
