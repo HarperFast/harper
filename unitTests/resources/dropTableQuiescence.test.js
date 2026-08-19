@@ -296,6 +296,34 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
+	it('releases a failed preparation before a later retry', async function () {
+		const tableName = `DropFailedPreparation_${process.pid}_${Date.now()}`;
+		const databaseName = `DropFailedPreparationDb_${process.pid}_${Date.now()}`;
+		const storePath = path.join(testPath, 'drop-failed-preparation-database');
+		const dropGeneration = 'failed-preparation-test';
+		let attempts = 0;
+		const Table = {
+			primaryStore: { rootStore: { path: storePath } },
+			dbisDB: {
+				getSync() {
+					return { dropping: true, dropGeneration };
+				},
+			},
+			async _prepareDrop() {
+				attempts++;
+				throw new Error('forced preparation failure');
+			},
+		};
+		databases[databaseName] = { [tableName]: Table };
+		try {
+			await assert.rejects(prepareTableDrop(storePath, tableName, dropGeneration), /forced preparation failure/);
+		} finally {
+			delete databases[databaseName];
+		}
+		await prepareTableDrop(storePath, tableName, dropGeneration);
+		assert.strictEqual(attempts, 1, 'the failed table must not remain registered for later preparations');
+	});
+
 	it('does not wait for a read iterator on another table in the same database', async function () {
 		const droppedTable = defineTable(`DropReadScope_${process.pid}_${Date.now()}`);
 		const otherTable = defineTable(`DropReadScopeOther_${process.pid}_${Date.now()}`);

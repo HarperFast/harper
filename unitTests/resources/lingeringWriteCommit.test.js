@@ -178,7 +178,7 @@ describe('commit with open read iterators commits writes immediately on a replay
 				failedTransaction = context.transaction;
 				Transaction.prototype.commit = function (...args) {
 					if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
-					throw new Error('forced synchronous replay failure');
+					throw Object.assign(new Error('forced synchronous replay failure'), { code: 'ERR_BUSY' });
 				};
 			});
 		} catch (error) {

@@ -85,7 +85,9 @@ export function transaction<T>(
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
-		transaction.abort();
+		try {
+			transaction.abort();
+		} catch {}
 		throw error;
 	}
 }

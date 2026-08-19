@@ -1353,10 +1353,13 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.debug?.('aborting linked transaction after synchronous replay commit failure', abortError);
 			}
 		}
-		// Normalize the native API's unexpected synchronous throw to its ordinary rejected-Promise
-		// contract. The transaction() wrapper only aborts on a thrown commit; returning a rejection keeps
-		// the retained read handle alive until its iterators drain, matching the normal failure path.
-		return Promise.reject(error);
+		// Keep the retained read handle alive until its iterators drain, but do not let a retryable native
+		// code re-enter commit after the staged writes above were discarded.
+		return Promise.reject(
+			Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
+				name: error instanceof Error ? error.name : 'Error',
+			})
+		);
 	}
 	private abortSynchronousCommit(transaction: RocksTransaction, error: unknown): never {
 		try {

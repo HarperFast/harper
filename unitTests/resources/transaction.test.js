@@ -189,6 +189,26 @@ describe('Transactions', () => {
 		await committed;
 		assert.deepEqual(order, ['completion', 'commit'], 'commit resolved only after the callback completion');
 	});
+	it('preserves the application error when abort cleanup also fails', function () {
+		const applicationError = new Error('application failure');
+		assert.throws(
+			() =>
+				transaction({}, (txn) => {
+					txn.addWrite({
+						store: {
+							getEntry() {
+								throw new Error('abort cleanup failure');
+							},
+						},
+						key: 'pending',
+						savedBlobs: [],
+						deferSave: true,
+					});
+					throw applicationError;
+				}),
+			(error) => error === applicationError
+		);
+	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
 		let start = Date.now();

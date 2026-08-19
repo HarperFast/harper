@@ -494,7 +494,7 @@ export function makeTable(options) {
 				.filter((operation) => pendingTableOperations.has(operation))
 				.map(({ label }) => label);
 			throw new Error(
-				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight operation(s) on ${tableName} to settle${directOperationLabels.length ? ` (${directOperationLabels.join(', ')})` : ''}; refusing to drop the column families. The drop tombstone is durable, so recovery can retry after a clean restart.`
+				`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.size} in-flight operation(s) on ${tableName} to settle${directOperationLabels.length ? ` (${directOperationLabels.join(', ')})` : ''}; refusing to drop the column families. The drop request is durable: retry drop_table after the blocking operations settle, or restart Harper to complete the drop.`
 			);
 		}
 	};
@@ -1251,7 +1251,7 @@ export function makeTable(options) {
 							return;
 						}
 						logger.info?.('New id allocation', nextId, idIncrementer.maxSafeId, version);
-						return primaryStore.put(
+						const completion = primaryStore.put(
 							Symbol.for('id_allocation'),
 							{
 								start: updatedIdAllocation.start,
@@ -1262,6 +1262,7 @@ export function makeTable(options) {
 							Date.now(),
 							version
 						);
+						return inTxn ? undefined : completion;
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
 						logger.warn?.(
@@ -1541,7 +1542,7 @@ export function makeTable(options) {
 						});
 					} catch (error) {
 						const quiescenceError: any = new ServerError(
-							`Unable to quiesce every worker before dropping ${databaseName}.${tableName}; the table remains unavailable but its storage was not dropped. Restart Harper before retrying. ${error.message}`,
+							`Unable to quiesce every worker before dropping ${databaseName}.${tableName}; the table remains unavailable and this durable drop will complete when Harper restarts. Retry drop_table in this process only after the blocking worker settles. ${error.message}`,
 							503
 						);
 						quiescenceError.code = error.code;

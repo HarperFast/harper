@@ -2443,13 +2443,20 @@ export async function prepareTableDrop(
 		}
 		matchingTables.add(Table);
 	}
-	await Promise.all(
+	const preparations = await Promise.allSettled(
 		[...matchingTables].map(async (Table) => {
-			await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
-			matchingTables.delete(Table);
+			try {
+				await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
+			} finally {
+				matchingTables.delete(Table);
+			}
 		})
 	);
-	if (!matchingTables.size) incompleteTableDropPreparations.delete(preparationKey);
+	incompleteTableDropPreparations.delete(preparationKey);
+	const failedPreparation = preparations.find(
+		(preparation): preparation is PromiseRejectedResult => preparation.status === 'rejected'
+	);
+	if (failedPreparation) throw failedPreparation.reason;
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {
