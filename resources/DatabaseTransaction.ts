@@ -1380,7 +1380,7 @@ export class DatabaseTransaction implements Transaction {
 			// poison check in addWrite()/commit(), rather than silently landing a later write on a
 			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
 			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
-			this.releaseContext(!this.timedOut);
+			this.releaseContext(!this.timedOut && !this.disconnected);
 			const next = this.next;
 			this.next = null;
 			if (next) {
