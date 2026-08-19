@@ -31,6 +31,15 @@ describe('harper#2222 debugLongTransactions reads', function () {
 		const txn = new DatabaseTransaction();
 		txn.transaction = { openTimer: 0 }; // what save() assigns when a write opens the handle first
 		assert.strictEqual(txn.useReadTxn(), txn.transaction);
+		// Untracked, so a trace here could never be dumped.
+		assert.strictEqual(txn.stackTraces, undefined);
+	});
+
+	it('still traces a read on a transaction getReadTxn registered with the monitor', function () {
+		const txn = new DatabaseTransaction();
+		txn.transaction = { openTimer: 0 };
+		txn.stackTraces = []; // seeded by getReadTxn alongside trackedTxns.add
+		txn.useReadTxn();
 		assert.strictEqual(txn.stackTraces.length, 1);
 	});
 

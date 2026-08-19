@@ -418,12 +418,13 @@ export class DatabaseTransaction implements Transaction {
 
 	useReadTxn(disableSnapshot?: boolean) {
 		const readTxn = this.getReadTxn(disableSnapshot);
-		// Only getReadTxn's fresh-handle branch seeds stackTraces, so it is still undefined when the
-		// handle was adopted by save() or was never opened at all (issue #2222). Trace only a real
-		// handle: without one the transaction is never added to trackedTxns, so the monitor has nothing
-		// to dump the traces for, and an ImmediateTransaction (whose getReadTxn never returns one)
-		// would accumulate them for its lifetime.
-		if (DEBUG_LONG_TXNS && readTxn) (this.stackTraces ??= []).push(new StartedTransaction());
+		// stackTraces is seeded by the same getReadTxn branch that registers the transaction with
+		// trackedTxns, so its presence means the monitor can actually dump what is pushed here. A
+		// transaction that reached this point any other way — handle adopted by save(), past OPEN, or an
+		// ImmediateTransaction, whose getReadTxn never returns a handle — is untracked, and pushing to
+		// the array it never got threw (issue #2222). Capturing an Error per read that nothing can dump
+		// is not worth doing either, so those reads stay untraced.
+		if (DEBUG_LONG_TXNS && this.stackTraces) this.stackTraces.push(new StartedTransaction());
 		this.readTxnsUsed++;
 		return readTxn;
 	}
