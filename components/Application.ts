@@ -1155,6 +1155,17 @@ async function rollbackExtractedDirectory(
 ): Promise<void> {
 	await ensureExtractionStagingDirectory(asideStagingDir);
 	const retryableRenameCodes = new Set(['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EPERM', 'EACCES', 'EBUSY']);
+	const displaceCurrentDirectorySync = (): string | undefined => {
+		const displacedPath = join(asideStagingDir, `.failed-${process.pid}-${Date.now()}-${randomUUID()}`);
+		try {
+			renameSync(application.dirPath, displacedPath);
+			transactionPaths.add(displacedPath);
+			return displacedPath;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+			throw error;
+		}
+	};
 	const displaceCurrentDirectory = async (): Promise<string | undefined> => {
 		const retryDeadline = Date.now() + 5000;
 		let lastError: unknown;
@@ -1188,27 +1199,34 @@ async function rollbackExtractedDirectory(
 					const fallbackRetryDeadline = Date.now() + 5000;
 					let fallbackRestoreError: unknown;
 					do {
+						let writerDisplacedPath: string | undefined;
 						try {
-							const writerDisplacedPath = await displaceCurrentDirectory();
+							writerDisplacedPath = displaceCurrentDirectorySync();
 							placeholderIdentity = undefined;
-							if (writerDisplacedPath) {
-								await rm(writerDisplacedPath, {
-									recursive: true,
-									force: true,
-									maxRetries: 3,
-									retryDelay: 100,
-								});
-								transactionPaths.delete(writerDisplacedPath);
-							}
-							await rename(fallbackDisplacedPath, application.dirPath);
+							renameSync(fallbackDisplacedPath, application.dirPath);
 							fallbackRestoreError = undefined;
-							break;
 						} catch (restoreFallbackError) {
 							fallbackRestoreError = restoreFallbackError;
-							if (!retryableRenameCodes.has((restoreFallbackError as NodeJS.ErrnoException).code ?? '')) {
-								throw restoreFallbackError;
-							}
+						}
+						if (writerDisplacedPath) {
+							await rm(writerDisplacedPath, {
+								recursive: true,
+								force: true,
+								maxRetries: 3,
+								retryDelay: 100,
+							});
+							transactionPaths.delete(writerDisplacedPath);
+						}
+						if (
+							fallbackRestoreError &&
+							!retryableRenameCodes.has((fallbackRestoreError as NodeJS.ErrnoException).code ?? '')
+						) {
+							throw fallbackRestoreError;
+						}
+						if (fallbackRestoreError) {
 							await delay(10);
+						} else {
+							break;
 						}
 					} while (Date.now() < fallbackRetryDeadline);
 					if (fallbackRestoreError) throw fallbackRestoreError;
@@ -1341,27 +1359,32 @@ async function rollbackExtractedDirectory(
 						transactionPaths.add(stagedPlaceholderPath);
 						let placeholderPlacementError: unknown;
 						do {
+							let writerDisplacedPath: string | undefined;
 							try {
+								writerDisplacedPath = displaceCurrentDirectorySync();
 								renameSync(stagedPlaceholderPath, application.dirPath);
 								if (!asideIsSymbolicLink) chmodSync(application.dirPath, 0o100);
 								transactionPaths.delete(stagedPlaceholderPath);
-								break;
+								placeholderPlacementError = undefined;
 							} catch (placeholderError) {
 								placeholderPlacementError = placeholderError;
-								if (!retryableRenameCodes.has((placeholderError as NodeJS.ErrnoException).code ?? '')) {
-									throw placeholderError;
-								}
-								const writerDisplacedPath = await displaceCurrentDirectory();
-								if (writerDisplacedPath) {
-									await rm(writerDisplacedPath, {
-										recursive: true,
-										force: true,
-										maxRetries: 3,
-										retryDelay: 100,
-									});
-									transactionPaths.delete(writerDisplacedPath);
-								}
 							}
+							if (writerDisplacedPath) {
+								await rm(writerDisplacedPath, {
+									recursive: true,
+									force: true,
+									maxRetries: 3,
+									retryDelay: 100,
+								});
+								transactionPaths.delete(writerDisplacedPath);
+							}
+							if (
+								placeholderPlacementError &&
+								!retryableRenameCodes.has((placeholderPlacementError as NodeJS.ErrnoException).code ?? '')
+							) {
+								throw placeholderPlacementError;
+							}
+							if (!placeholderPlacementError) break;
 						} while (Date.now() < restoreRetryDeadline);
 						if (transactionPaths.has(stagedPlaceholderPath)) {
 							throw new Error(

@@ -560,7 +560,7 @@ describe('extractApplication directory swap', () => {
 		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
 		await fs.mkdir(dirPath);
 		await fs.writeFile(path.join(dirPath, 'writer-created'), 'occupied');
-		await fs.chmod(dirPath, 0o000);
+		await fs.chmod(dirPath, 0o100);
 
 		try {
 			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
