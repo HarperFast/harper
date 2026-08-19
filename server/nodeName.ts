@@ -58,22 +58,27 @@ export function clearThisNodeName() {
 	nodeName = undefined;
 }
 
-/**
- * Returns this node's bare hostname (no scheme, no port) for composing display URLs.
- * getThisNodeName() is normally a bare host ('localhost'), but if node.hostname is
- * configured as a full URL ('http://localhost:9926'), composing a URL from it double-wraps
- * the scheme and inherits the wrong port (http://http://localhost:9926:9925/). Reduce it
- * back to the host so the composed URL is well-formed. (#2218)
- */
-export function getThisNodeHostname(): string {
-	const name = getThisNodeName();
+// node.hostname is normally a bare host, but may be configured as a full URL; composing a
+// display URL from that form would double-wrap its scheme and port. Reduce it to a bare host
+// (bracketed, for an IPv6 literal) first. (#2218)
+export function nodeNameToDisplayHost(name: string): string {
 	if (!name) return name;
-	try {
-		const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(name);
-		return new URL(hasScheme ? name : `http://${name}`).hostname || name;
-	} catch {
-		return name; // not URL-parseable; assume it is already a bare host
+	const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(name);
+	// A bare IPv6 literal ('::1') only parses once bracketed, so try that form too.
+	const candidateUrls = hasScheme ? [name] : [`http://${name}`, `http://[${name}]`];
+	for (const candidateUrl of candidateUrls) {
+		try {
+			const { hostname } = new URL(candidateUrl);
+			if (hostname) return hostname;
+		} catch {
+			// not this form; try the next candidate
+		}
 	}
+	return name;
+}
+
+export function getThisNodeHostname(): string {
+	return nodeNameToDisplayHost(getThisNodeName());
 }
 
 function getHostFromListeningPort(key: string) {

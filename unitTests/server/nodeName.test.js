@@ -8,7 +8,7 @@ const sinon = require('sinon');
 
 const env = require('#src/utility/environment/environmentManager');
 const { logger } = require('#src/utility/logging/logger');
-const { hostnameToUrl, getThisNodeName, getThisNodeHostname, clearThisNodeName } = require('#src/server/nodeName');
+const { hostnameToUrl, getThisNodeName, nodeNameToDisplayHost, clearThisNodeName } = require('#src/server/nodeName');
 
 describe('getThisNodeName precedence (harper-pro#351)', () => {
 	let sandbox;
@@ -78,42 +78,25 @@ describe('getThisNodeName precedence (harper-pro#351)', () => {
 	});
 });
 
-describe('getThisNodeHostname (#2218 double-wrapped startup URLs)', () => {
-	let sandbox;
-
-	beforeEach(() => {
-		sandbox = sinon.createSandbox();
-		clearThisNodeName();
-	});
-
-	afterEach(() => {
-		sandbox.restore();
-		clearThisNodeName();
-	});
-
-	function stubNodeHostname(value) {
-		sandbox.stub(env, 'get').callsFake((key) => (key === 'node_hostname' ? value : undefined));
-	}
-
+describe('nodeNameToDisplayHost (#2218 double-wrapped startup URLs)', () => {
 	it('returns a bare host unchanged', () => {
-		stubNodeHostname('localhost');
-		assert.strictEqual(getThisNodeHostname(), 'localhost');
+		assert.strictEqual(nodeNameToDisplayHost('localhost'), 'localhost');
 	});
 
 	it('strips the scheme and port when node.hostname is a full URL', () => {
-		// Without this the startup banner composed http://http://localhost:9926:9925/
-		stubNodeHostname('http://localhost:9926');
-		assert.strictEqual(getThisNodeHostname(), 'localhost');
+		assert.strictEqual(nodeNameToDisplayHost('http://localhost:9926'), 'localhost');
 	});
 
 	it('strips a bare host:port down to the host', () => {
-		stubNodeHostname('localhost:9926');
-		assert.strictEqual(getThisNodeHostname(), 'localhost');
+		assert.strictEqual(nodeNameToDisplayHost('localhost:9926'), 'localhost');
 	});
 
-	it('preserves bracketed IPv6 hosts so composed URLs stay valid', () => {
-		stubNodeHostname('https://[::1]:9926');
-		assert.strictEqual(getThisNodeHostname(), '[::1]');
+	it('preserves an already-bracketed IPv6 host', () => {
+		assert.strictEqual(nodeNameToDisplayHost('https://[::1]:9926'), '[::1]');
+	});
+
+	it('brackets a bare IPv6 literal so composed URLs stay valid', () => {
+		assert.strictEqual(nodeNameToDisplayHost('::1'), '[::1]');
 	});
 });
 
