@@ -36,7 +36,7 @@ describe('test REST calls with cache table', () => {
 		assert.equal(response.status, 204);
 		response = await waitFor(
 			async () => {
-				const cacheResponse = await axios(`${baseUrl}/SimpleCache/3`, { validateStatus: () => true });
+				const cacheResponse = await axios(`${baseUrl}/SimpleCache/3`, { validateStatus: (status) => status < 500 });
 				return cacheResponse.status === 200 && cacheResponse.data?.name === 'name change' ? cacheResponse : false;
 			},
 			{ timeout: 5000, interval: 20, message: 'source update did not reach SimpleCache' }

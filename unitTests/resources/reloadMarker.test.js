@@ -93,14 +93,14 @@ describe('table-reload marker (harper-pro#489)', () => {
 
 		// The txn-log store's empty getRange positions at the tail (for live subscription), so scan from an
 		// explicit numeric start to read the existing entries.
-		const marker = await waitFor(
-			() => {
-				for (const entry of ReloadTable.auditStore.getRange({ start: 1 })) {
-					if (entry.type === 'reload') return entry;
-				}
-			},
-			{ timeout: 5000, interval: 20, message: 'a reload audit entry was written' }
-		);
+		let marker;
+		for (const entry of ReloadTable.auditStore.getRange({ start: 1 })) {
+			if (entry.type === 'reload' && entry.tableId === ReloadTable.tableId) {
+				marker = entry;
+				break;
+			}
+		}
+		assert.ok(marker, 'a reload audit entry was written');
 		// LOCAL_ONLY makes the replication send path skip it by a bitmask test (no decode of an unknown
 		// type on a peer): the marker is a local signal only.
 		assert.ok(marker.extendedType & LOCAL_ONLY, 'reload marker is LOCAL_ONLY (never forwarded to peers)');
