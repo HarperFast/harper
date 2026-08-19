@@ -990,10 +990,27 @@ describe('Transactions', () => {
 			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 			await TxnTest.delete(120, context.transaction);
 			assert.equal(await TxnTest.get(120), undefined, 'the delete must run on a fresh transaction');
-			const created = await TxnTest.create({ name: 'created-with-released-slot' }, context.transaction);
-			assert.ok(created?.id ?? created, 'create must not fail on a released slot');
+			const createdId = await TxnTest.create({ name: 'created-with-released-slot' }, context.transaction);
+			assert.equal((await TxnTest.get(createdId))?.name, 'created-with-released-slot', 'the create must persist');
 			await transaction(context.transaction, async () => TxnTest.put(121, { name: 'direct' }));
 			assert.equal((await TxnTest.get(121)).name, 'direct');
+		});
+		// A released slot must also be a clean start for a MULTI-STORE transaction: the chain the previous
+		// transaction built (`next`) went with its commit, so the next one has to build its own.
+		it('starts a fresh multi-store chain after the slot is released', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(140, { name: 'store-a' }, context);
+				await TxnTest2.put(140, { name: 'store-b' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			await transaction(context, async () => {
+				await TxnTest.put(141, { name: 'store-a-again' }, context);
+				await TxnTest2.put(141, { name: 'store-b-again' }, context);
+				assert.equal(context.transaction.next?.next, undefined, 'the chain must not carry links over');
+			});
+			assert.equal((await TxnTest.get(141)).name, 'store-a-again');
+			assert.equal((await TxnTest2.get(141)).name, 'store-b-again');
 		});
 		// "Absent" has to mean the same thing at every route: an absent argument falls through to the
 		// ambient context. Resolving the placeholder to a bare `{}` instead would silently drop the
