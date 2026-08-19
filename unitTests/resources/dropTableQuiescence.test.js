@@ -573,6 +573,28 @@ describe('dropTable worker quiescence', function () {
 		await Table.dropTable();
 	});
 
+	it('clears write tracking when native read abort throws', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const Table = defineTable(`DropAfterNativeAbortThrow_${process.pid}_${Date.now()}`);
+		const txn = new DatabaseTransaction();
+		txn.db = Table.primaryStore;
+		const nativeTransaction = txn.getReadTxn();
+		txn.addWrite({ store: Table.primaryStore, key: 'held', deferSave: true });
+		const originalAbort = Transaction.prototype.abort;
+		Transaction.prototype.abort = function (...args) {
+			if (this === nativeTransaction) throw new Error('forced native abort failure');
+			return originalAbort.apply(this, args);
+		};
+		try {
+			assert.throws(() => txn.abort(), /forced native abort failure/);
+			assert.strictEqual(txn.writes.length, 0, 'native abort failure must still clear the tracked writes');
+		} finally {
+			Transaction.prototype.abort = originalAbort;
+			txn.releaseReadTxn();
+		}
+		await Table.dropTable();
+	});
+
 	it('bounds and drains direct deleteHistory removals before dropping the primary store', async function () {
 		const storagePath = path.join(testPath, 'delete-history-removal-databases');
 		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);

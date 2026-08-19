@@ -160,4 +160,33 @@ describe('commit with open read iterators commits writes immediately on a replay
 		await delay(100);
 		assert.deepEqual(unhandled, [], 'a replay-commit failure must reject the awaited chain, never float unhandled');
 	});
+
+	it('a synchronous replay commit failure leaves the retained iterator usable', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = LingerTable.primaryStore.store.db;
+		const context = {};
+		let failedTransaction;
+		await transaction(context, async () => {
+			const results = await LingerTable.search({ conditions: [] }, context);
+			const iterator = results[Symbol.asyncIterator]();
+			await iterator.next();
+			await LingerTable.put({ id: 'linger-sync-fail', v: 42 }, context);
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				throw new Error('forced synchronous replay failure');
+			};
+			try {
+				assert.throws(() => context.transaction.commit(), /forced synchronous replay failure/);
+			} finally {
+				Transaction.prototype.commit = originalCommit;
+			}
+			failedTransaction = context.transaction;
+			assert.ok(failedTransaction.transaction, 'the iterator must retain its original native read handle');
+			assert.strictEqual(failedTransaction.writes.length, 0, 'the failed replay must release its tracked writes');
+			while (!(await iterator.next()).done);
+			assert.strictEqual(failedTransaction.transaction, null, 'draining the iterator must release its read handle');
+		});
+		assert.equal(await LingerTable.get('linger-sync-fail'), null, 'the failed replay must not commit its record');
+	});
 });

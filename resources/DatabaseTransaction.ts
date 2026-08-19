@@ -988,7 +988,7 @@ export class DatabaseTransaction implements Transaction {
 						try {
 							commitResolution = transaction.commit() as Promise<void>;
 						} catch (error) {
-							this.abortSynchronousCommit(transaction, error);
+							this.abortSynchronousReplayCommit(transaction, error, !!options.doneWriting);
 						}
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
@@ -1269,27 +1269,66 @@ export class DatabaseTransaction implements Transaction {
 		if (firstError) throw firstError;
 	}
 	private abortLink(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
-		// Defensively release any native handle whose reference bookkeeping was already consumed.
-	if (this.transaction) this.releaseReadTxn();
-	this.open = TRANSACTION_STATE.CLOSED;
-	try {
-		this.drainCompletions();
+		this.open = TRANSACTION_STATE.CLOSED;
+		try {
+			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+			// A write-only transaction never took a read reference (getReadTxn was never called), so the loop
+			// above releases nothing even though save() created a native handle; release it here instead of
+			// leaking the handle and its snapshot until GC. abortChainAfterRetries() detaches the handle
+			// before calling abort(), so this is a no-op there rather than a double-abort.
+			if (this.transaction) this.releaseReadTxn();
+			this.drainCompletions();
 			for (const write of this.writes) {
 				if (write?.savedBlobs)
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
-		}
-	} finally {
-		// reset the transaction even if blob inspection fails
+			}
+		} finally {
+			// reset the transaction even if blob inspection fails
 			this.clearWrites();
 			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
 			// starting a fresh one) so the rest of the logical operation fails atomically via the
 			// poison check in addWrite()/commit(), rather than silently landing a later write on a
-		// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
-		// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
-		this.releaseContext(!this.timedOut);
+			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
+			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
+			this.releaseContext(!this.timedOut);
+		}
 	}
+	private abortSynchronousReplayCommit(transaction: RocksTransaction, error: unknown, final: boolean): never {
+		try {
+			transaction.abort();
+		} catch (abortError) {
+			harperLogger.debug?.('aborting replay transaction after synchronous commit failure', abortError);
+		}
+		if (!this.writesAbandoned) {
+			this.writesAbandoned = true;
+			try {
+				this.transaction?.abandonWrites?.();
+			} catch (abandonError) {
+				harperLogger.debug?.('abandoning retained writes after synchronous replay commit failure', abandonError);
+			}
+		}
+		try {
+			for (const write of this.writes) {
+				if (write?.savedBlobs)
+					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+			}
+		} catch (cleanupError) {
+			harperLogger.debug?.('cleaning up blobs after synchronous replay commit failure', cleanupError);
+		} finally {
+			this.clearWrites();
+			this.releaseContext(final);
+		}
+		const nextTransaction = this.next;
+		this.next = null;
+		for (let linkedTransaction = nextTransaction; linkedTransaction; linkedTransaction = linkedTransaction.next) {
+			try {
+				linkedTransaction.abortLink();
+			} catch (abortError) {
+				harperLogger.debug?.('aborting linked transaction after synchronous replay commit failure', abortError);
+			}
+		}
+		throw error;
 	}
 	private abortSynchronousCommit(transaction: RocksTransaction, error: unknown): never {
 		try {
