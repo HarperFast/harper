@@ -95,9 +95,8 @@ describe('Transactions', () => {
 		assert.equal(settled, true, 'commit resolved only after the callback completion settled');
 	});
 	it('surfaces a commit-callback rejection without an unhandled rejection', async function () {
-		// runs on both engines: each has its own no-op rejection handler on the staged completion
-		// (DatabaseTransaction.stageCompletion and LMDBTransaction's doWrite), and each leaves a window
-		// where nothing else is attached to the rejection yet
+		// each engine has its own no-op rejection handler on the staged completion
+		// (DatabaseTransaction.stageCompletion, LMDBTransaction's doWrite)
 		const transaction = isLMDB ? new LMDBTransaction() : new DatabaseTransaction();
 		transaction.db = TxnTest.primaryStore;
 		const unhandled = [];
@@ -146,7 +145,9 @@ describe('Transactions', () => {
 				commit: () => Promise.reject(new Error('audit write failed after abort')),
 			});
 			assert.equal(transaction.completions.length, 1, 'the completion is staged before the abort');
+			assert.ok(transaction.transaction, 'the write-only transaction holds a native handle with no read reference');
 			transaction.abort();
+			assert.equal(transaction.transaction, null, 'the abort releases the native handle rather than leaking it');
 			assert.deepEqual(
 				transaction.completions,
 				[],
@@ -179,9 +180,7 @@ describe('Transactions', () => {
 				return completion;
 			},
 		});
-		// gated on the conditional batch itself rather than a timer: once the batch has flushed, a commit
-		// that does not await the callback completion has already resolved, so the empty-order assertion
-		// below fails deterministically instead of racing a fixed delay on a loaded machine
+		// gated on the batch rather than a timer: a fixed delay a loaded runner outruns would pass silently
 		const committed = transaction.commit({ doneWriting: true }).then(() => order.push('commit'));
 		await TxnTest.primaryStore.flushed;
 		assert.deepEqual(order, [], 'commit has not resolved while the callback completion is pending');
