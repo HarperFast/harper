@@ -1450,6 +1450,20 @@ export interface Transaction {
 	abort?(): any;
 }
 
+export function shouldSpareCommitPhase(
+	txn: DatabaseTransaction,
+	checkedCommitPhaseChains: Set<DatabaseTransaction>
+): boolean {
+	if (!txn.committing) return false;
+	if (txn.sourceApply || txn.isReplay) return true;
+	const commitChainHead = txn.commitChainHead ?? txn;
+	if (!checkedCommitPhaseChains.has(commitChainHead)) {
+		checkedCommitPhaseChains.add(commitChainHead);
+		commitChainHead.commitPhaseTicks++;
+	}
+	return commitChainHead.commitPhaseTicks <= COMMIT_PHASE_GRACE;
+}
+
 export class ImmediateTransaction extends DatabaseTransaction {
 	isCommitting = false;
 	saveCommits = true;
@@ -1556,6 +1570,7 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
+		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
 		for (const txn of trackedTxns) monitorTransaction(txn);
@@ -1592,10 +1607,7 @@ function startMonitoringTxns() {
 						}`
 					);
 					txn.releaseReadTxn();
-				} else if (
-					txn.committing &&
-					(txn.sourceApply || txn.isReplay || ++commitChainHead.commitPhaseTicks <= COMMIT_PHASE_GRACE)
-				) {
+				} else if (shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
 					// Parked in commit()'s pre-commit await — a `before`/`beforeIntermediate` hook, in practice a
 					// blob's durable file write, which for a multi-tens-of-MB payload legitimately outruns the
 					// limit. The write set is sealed and the caller is awaiting this commit, so the limit's

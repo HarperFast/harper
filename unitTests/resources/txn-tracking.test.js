@@ -6,6 +6,7 @@ const {
 	DatabaseTransaction,
 	TRANSACTION_STATE,
 	COMMIT_PHASE_GRACE,
+	shouldSpareCommitPhase,
 } = require('#src/resources/DatabaseTransaction');
 const { setTxnExpiration: setLMDBTxnExpiration, LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
@@ -568,6 +569,10 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal(next.commitChainHead, head);
 		assert.equal(head.commitPhaseTicks, 0);
 		assert.equal(next.commitPhaseTicks, 0);
+		const checkedCommitPhaseChains = new Set();
+		assert.ok(shouldSpareCommitPhase(head, checkedCommitPhaseChains));
+		assert.ok(shouldSpareCommitPhase(next, checkedCommitPhaseChains));
+		assert.equal(head.commitPhaseTicks, 1, 'one monitor pass must consume one grace tick per chain');
 		head.setCommitPhase(false);
 		assert.ok(!head.committing && !next.committing, 'every linked database must leave the phase together');
 		assert.equal(head.commitChainHead, undefined);
