@@ -531,9 +531,10 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
-	it('aborts write tracking when the transaction wrapper commit throws synchronously', async function () {
+	it('aborts write tracking and the native snapshot when commit throws synchronously', async function () {
 		const { Transaction } = require('@harperfast/rocksdb-js');
 		const Table = defineTable(`DropAfterCommitThrow_${process.pid}_${Date.now()}`);
+		assert.strictEqual(Table.primaryStore.getOldestSnapshotTimestamp(), 0);
 		const originalCommit = Transaction.prototype.commit;
 		Transaction.prototype.commit = function () {
 			throw new Error('forced synchronous commit failure');
@@ -548,6 +549,11 @@ describe('dropTable worker quiescence', function () {
 		} finally {
 			Transaction.prototype.commit = originalCommit;
 		}
+		assert.strictEqual(
+			Table.primaryStore.getOldestSnapshotTimestamp(),
+			0,
+			'a synchronous commit failure must not leave the detached native snapshot open'
+		);
 		await Table.dropTable();
 	});
 

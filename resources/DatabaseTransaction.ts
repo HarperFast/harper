@@ -985,7 +985,11 @@ export class DatabaseTransaction implements Transaction {
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
-						commitResolution = transaction.commit() as Promise<void>;
+						try {
+							commitResolution = transaction.commit() as Promise<void>;
+						} catch (error) {
+							this.abortSynchronousCommit(transaction, error);
+						}
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
 						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
@@ -1021,7 +1025,11 @@ export class DatabaseTransaction implements Transaction {
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
 							// Promise<number | void>; it is handled in the resolve callback below.
-							commitResolution = transaction.commit();
+							try {
+								commitResolution = transaction.commit();
+							} catch (error) {
+								this.abortSynchronousCommit(transaction, error);
+							}
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (trackOutstandingCommit
 							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
@@ -1282,6 +1290,19 @@ export class DatabaseTransaction implements Transaction {
 		// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
 		this.releaseContext(!this.timedOut);
 	}
+	}
+	private abortSynchronousCommit(transaction: RocksTransaction, error: unknown): never {
+		try {
+			transaction.abort();
+		} catch (abortError) {
+			harperLogger.debug?.('aborting native transaction after synchronous commit failure', abortError);
+		}
+		try {
+			this.abort();
+		} catch (abortError) {
+			harperLogger.debug?.('cleaning up transaction after synchronous commit failure', abortError);
+		}
+		throw error;
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
