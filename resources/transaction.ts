@@ -1,6 +1,11 @@
 import type { Context } from './ResourceInterface.ts';
 import { _assignPackageExport } from '../globals.js';
-import { DatabaseTransaction, type Transaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	isReleasedTransaction,
+	type Transaction,
+	TRANSACTION_STATE,
+} from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
@@ -28,6 +33,11 @@ export function transaction<T>(
 		// request argument included, but null or undefined, so maybe create a new one
 		context = ctx ?? (asyncStorageContext = contextStorage.getStore()) ?? {};
 	}
+	// Every path that adopts a caller-supplied transaction or context ends here, so this is the one place
+	// that has to refuse the released placeholder: it carries no context state, and assigning a new
+	// transaction onto the frozen shared instance below would throw. Treated as no context at all, which
+	// is what the `null` it replaced became.
+	if (isReleasedTransaction(context)) context = {};
 
 	if (typeof callback !== 'function') {
 		throw new TypeError('Callback function must be provided to transaction');
@@ -75,11 +85,9 @@ export function transaction<T>(
 
 _assignPackageExport('transaction', transaction);
 
-// Only a context that never had a transaction has none to act on. NOT a state check, and NOT a check
-// for the released placeholder: both would throw for a transaction that has completed but is still
-// reachable, and these helpers have to behave there exactly as a completed transaction in the slot
-// always did — a no-op — or a checkpointing loop that commits every Nth row starts failing on its
-// second checkpoint.
+// Only a context that never had a transaction has none to act on: a completed transaction still in the
+// slot must no-op here, as it always did, or a checkpointing loop that commits every Nth row fails on
+// its second checkpoint.
 transaction.commit = function (contextSource) {
 	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
 	if (!transaction) throw new Error('No active transaction is available to commit');
