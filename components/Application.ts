@@ -883,7 +883,7 @@ async function identifyRollbackPlaceholder(
 		if (
 			(current.isDirectory() || current.isFile()) &&
 			current.uid === BigInt(userId) &&
-			(permissions === 0 || (current.isDirectory() && permissions === 0o100))
+			(permissions === 0 || (current.isDirectory() && (permissions === 0o100 || permissions === 0o300)))
 		) {
 			return { dev: current.dev, ino: current.ino };
 		}
