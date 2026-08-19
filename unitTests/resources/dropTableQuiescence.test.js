@@ -605,7 +605,9 @@ describe('dropTable worker quiescence', function () {
 				return originalDropSync.apply(this, args);
 			};
 			const deleteHistoryPromise = Table.deleteHistory(Date.now() + 1000, true);
-			await waitFor(() => removalsStarted === 50, { message: 'deleteHistory() did not fill its bounded removal window' });
+			await waitFor(() => removalsStarted === 50, {
+				message: 'deleteHistory() did not fill its bounded removal window',
+			});
 			const dropPromise = Table.dropTable();
 			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
 			assert.strictEqual(removalsStarted, 50, 'deleteHistory() must bound its pending removal promises');
