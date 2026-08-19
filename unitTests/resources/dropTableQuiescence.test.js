@@ -491,7 +491,7 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
-	it('drains direct deleteHistory removals before dropping the primary store', async function () {
+	it('bounds and drains direct deleteHistory removals before dropping the primary store', async function () {
 		const storagePath = path.join(testPath, 'delete-history-removal-databases');
 		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);
 		let releaseRemoval;
@@ -505,20 +505,19 @@ describe('dropTable worker quiescence', function () {
 				audit: true,
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 			});
-			await Table.put({ id: 'deleted', name: 'removed' });
-			await Table.delete('deleted');
+			for (let id = 0; id < 51; id++) {
+				await Table.put({ id, name: 'removed' });
+				await Table.delete(id);
+			}
 			delete Table.auditStore.deleteCallbacks[Table.tableId];
 
 			const originalRemove = Table.primaryStore.remove;
-			let removalStarted;
-			const removalStartedPromise = new Promise((resolve) => {
-				removalStarted = resolve;
-			});
+			let removalsStarted = 0;
 			const removalGate = new Promise((resolve) => {
 				releaseRemoval = resolve;
 			});
 			Table.primaryStore.remove = async function (...args) {
-				removalStarted();
+				removalsStarted++;
 				await removalGate;
 				return originalRemove.apply(this, args);
 			};
@@ -530,19 +529,110 @@ describe('dropTable worker quiescence', function () {
 				return originalDropSync.apply(this, args);
 			};
 			const deleteHistoryPromise = Table.deleteHistory(Date.now() + 1000, true);
-			await removalStartedPromise;
+			await waitFor(() => removalsStarted === 50, { message: 'deleteHistory() did not fill its bounded removal window' });
 			const dropPromise = Table.dropTable();
 			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(removalsStarted, 50, 'deleteHistory() must bound its pending removal promises');
 			assert.strictEqual(
 				destructivePhaseStarted,
 				false,
 				'dropTable() must wait for direct primary-store removals started by deleteHistory()'
 			);
 			releaseRemoval();
-			await Promise.all([deleteHistoryPromise, dropPromise]);
+			const [deleteHistoryResult, dropResult] = await Promise.allSettled([deleteHistoryPromise, dropPromise]);
+			assert.strictEqual(deleteHistoryResult.status, 'rejected');
+			assert.strictEqual(deleteHistoryResult.reason.code, 'ERR_TABLE_DROPPING');
+			if (dropResult.status === 'rejected') throw dropResult.reason;
+			assert.strictEqual(removalsStarted, 50);
 			assert.strictEqual(destructivePhaseStarted, true);
 			Table.primaryStore.remove = originalRemove;
 		} finally {
+			releaseRemoval?.();
+			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, previousStoragePath);
+			resetDatabases();
+		}
+	});
+
+	it('drains an expiration index removal before dropping the table stores', async function () {
+		const storagePath = path.join(testPath, 'expiration-index-removal-databases');
+		const previousStoragePath = env.get(terms.CONFIG_PARAMS.STORAGE_PATH);
+		const originalSetInterval = global.setInterval;
+		const expirationCallbacks = [];
+		let releaseRemoval;
+		mkdirSync(storagePath, { recursive: true });
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, storagePath);
+		try {
+			resetDatabases();
+			global.setInterval = (callback, delay, ...args) => {
+				if (delay === 60000 && String(callback).includes('runningRecordExpiration')) {
+					expirationCallbacks.push(callback);
+					return originalSetInterval(() => {}, 0x7fffffff, ...args);
+				}
+				return originalSetInterval(callback, delay, ...args);
+			};
+			const Table = table({
+				table: `DropExpirationRemoval_${process.pid}_${Date.now()}`,
+				database: `DropExpirationDb_${process.pid}_${Date.now()}`,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+				],
+			});
+			global.setInterval = originalSetInterval;
+			assert(expirationCallbacks.length > 0, 'table setup did not schedule an expiration scan');
+			const expiresAt = Date.now() - 1000;
+			await Table.put({ id: 'orphaned-index', expiresAt });
+			await Table.primaryStore.remove('orphaned-index');
+			const expirationKeys = [...Table.indices.expiresAt.getRange({ start: true, values: false, end: Date.now() })];
+			assert(
+				expirationKeys.some((entry) => entry.key === expiresAt && entry.value === 'orphaned-index'),
+				`missing expiration index key: ${JSON.stringify(expirationKeys)}`
+			);
+
+			const originalIfVersion = Table.primaryStore.ifVersion;
+			let removalStarted = false;
+			const removalGate = new Promise((resolve) => (releaseRemoval = resolve));
+			Table.primaryStore.ifVersion = async function (...args) {
+				removalStarted = true;
+				await removalGate;
+				return originalIfVersion.apply(this, args);
+			};
+
+			const originalDropSync = Table.primaryStore.dropSync;
+			let destructivePhaseStarted = false;
+			Table.primaryStore.dropSync = function (...args) {
+				destructivePhaseStarted = true;
+				return originalDropSync.apply(this, args);
+			};
+			const expirationPromise = Promise.all(expirationCallbacks.map((callback) => callback()));
+			await waitFor(() => removalStarted, { timeout: 2000, message: 'expiration scan did not start the index removal' });
+			const dropPromise = Table.dropTable();
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(
+				destructivePhaseStarted,
+				false,
+				'dropTable() must wait for a direct expiration-index removal'
+			);
+			releaseRemoval();
+			let expirationSettled = false;
+			let dropSettled = false;
+			expirationPromise.then(
+				() => (expirationSettled = true),
+				() => (expirationSettled = true)
+			);
+			dropPromise.then(
+				() => (dropSettled = true),
+				() => (dropSettled = true)
+			);
+			await waitFor(() => expirationSettled && dropSettled, {
+				timeout: 5000,
+				message: `expiration/drop did not settle (expiration=${expirationSettled}, drop=${dropSettled})`,
+			});
+			await Promise.all([expirationPromise, dropPromise]);
+			assert.strictEqual(destructivePhaseStarted, true);
+			Table.primaryStore.ifVersion = originalIfVersion;
+		} finally {
+			global.setInterval = originalSetInterval;
 			releaseRemoval?.();
 			env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, previousStoragePath);
 			resetDatabases();

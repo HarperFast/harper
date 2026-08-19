@@ -128,6 +128,7 @@ const RECORD_PRUNING_INTERVAL = 60000; // one minute
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
 const EVICTION_BATCH_SIZE = 100;
+const MAX_INFLIGHT_MAINTENANCE_REMOVALS = 50;
 // Cap on eviction-batch commits in flight at once, so commit I/O overlaps scan/staging without
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
@@ -5270,9 +5271,26 @@ export function makeTable(options) {
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
 			const finishHistoryScan = beginTableOperation('history deletion scan');
-			const completions: Promise<void>[] = [];
+			const inFlightRemovals = new Set<Promise<void>>();
+			let removalFailure: unknown;
+			let removalFailed = false;
+			const trackRemoval = async (completion: Promise<void> | void) => {
+				if (!completion || typeof completion.then !== 'function') return;
+				let tracked: Promise<void>;
+				tracked = Promise.resolve(completion)
+					.then(undefined, (error) => {
+						if (!removalFailed) removalFailure = error;
+						removalFailed = true;
+					})
+					.finally(() => inFlightRemovals.delete(tracked));
+				inFlightRemovals.add(tracked);
+				if (inFlightRemovals.size >= MAX_INFLIGHT_MAINTENANCE_REMOVALS) await Promise.race(inFlightRemovals);
+				if (removalFailed) throw removalFailure;
+			};
+			let entriesDeleted = 0;
+			let operationFailure: unknown;
+			let operationFailed = false;
 			try {
-				let entriesDeleted = 0;
 				for (const auditRecord of auditStore.getRange({
 					start: 0,
 					end: endTime,
@@ -5280,7 +5298,7 @@ export function makeTable(options) {
 					await rest(); // yield to other async operations
 					if (droppingTable) throw tableDroppingError();
 					if (auditRecord.tableId !== tableId) continue;
-					completions.push(removeAuditEntry(auditStore, auditRecord));
+					await trackRemoval(removeAuditEntry(auditStore, auditRecord));
 					entriesDeleted++;
 				}
 				if (cleanupDeletedRecords) {
@@ -5291,21 +5309,23 @@ export function makeTable(options) {
 						await rest(); // yield to other async operations
 						if (droppingTable) throw tableDroppingError();
 						if (value === null && localTime < endTime) {
-							const completion = removeEntry(primaryStore, entry);
-							if (completion) completions.push(completion);
+							await trackRemoval(removeEntry(primaryStore, entry));
 						}
 					}
 				}
-				return entriesDeleted;
+			} catch (error) {
+				operationFailure = error;
+				operationFailed = true;
 			} finally {
 				try {
-					const settlements = await Promise.allSettled(completions);
-					const failure = settlements.find((settlement) => settlement.status === 'rejected');
-					if (failure?.status === 'rejected') throw failure.reason;
+					await Promise.all(inFlightRemovals);
 				} finally {
 					finishHistoryScan();
 				}
 			}
+			if (operationFailed) throw operationFailure;
+			if (removalFailed) throw removalFailure;
+			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
 			let iterator: Iterator<any> | undefined;
@@ -6577,22 +6597,38 @@ export function makeTable(options) {
 				if (runningRecordExpiration) return;
 				runningRecordExpiration = true;
 				let finishExpirationScan: (() => void) | undefined;
+				const inFlightRemovals = new Set<Promise<void>>();
+				const trackRemoval = async (completion: Promise<void> | void) => {
+					if (!completion || typeof completion.then !== 'function') return;
+					let tracked: Promise<void>;
+					tracked = Promise.resolve(completion)
+						.catch((error) => {
+							if (!droppingTable) logger.error?.('Error removing expired index entry', error);
+						})
+						.finally(() => inFlightRemovals.delete(tracked));
+					inFlightRemovals.add(tracked);
+					if (inFlightRemovals.size >= MAX_INFLIGHT_MAINTENANCE_REMOVALS) await Promise.race(inFlightRemovals);
+				};
 				try {
 					finishExpirationScan = beginTableOperation('expiration scan');
 					const expiresAtName = expiresAtProperty.name;
 					const index = indices[expiresAtName];
 					if (!index) throw new Error(`expiresAt attribute ${expiresAtProperty} must be indexed`);
-					for (const key of index.getRange({
+					for (const indexedEntry of index.getRange({
 						start: true,
 						values: false,
 						end: Date.now(),
 						snapshot: false,
 					})) {
-						for (const id of index.getValues(key)) {
+						const key = isRocksDB ? indexedEntry.key : indexedEntry;
+						const ids = isRocksDB ? [indexedEntry.value] : index.getValues(key);
+						for (const id of ids) {
 							const recordEntry = primaryStore.getEntry(id);
 							if (!recordEntry?.value) {
 								// cleanup the index if the record is gone
-								primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id));
+								await trackRemoval(
+									primaryStore.ifVersion(id, recordEntry?.version, () => index.remove(key, id))
+								);
 							} else if (recordEntry.value[expiresAtName] < Date.now()) {
 								// make sure the record hasn't changed and won't change while removing
 								TableResource.evict(id, recordEntry.value, recordEntry.version);
@@ -6604,8 +6640,12 @@ export function makeTable(options) {
 				} catch (error) {
 					if (!droppingTable) logger.error?.('Error in evicting old records', error);
 				} finally {
-					finishExpirationScan?.();
-					runningRecordExpiration = false;
+					try {
+						await Promise.all(inFlightRemovals);
+					} finally {
+						finishExpirationScan?.();
+						runningRecordExpiration = false;
+					}
 				}
 			}, RECORD_PRUNING_INTERVAL).unref();
 		}
