@@ -886,7 +886,7 @@ export class DatabaseTransaction implements Transaction {
 		return when(
 			completions.length > 0 ? Promise.all(completions) : null,
 			() => {
-				this.setCommitPhase(false);
+				if (completions.length > 0) this.setCommitPhase(false);
 				// The transaction can be aborted underneath us while we are parked in the await above — by the
 				// monitor once the commit phase outlives its grace, or through the multi-store poison chain.
 				// abort() cleared the write set and released the handle, so resuming would commit nothing and
