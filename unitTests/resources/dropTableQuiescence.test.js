@@ -210,6 +210,35 @@ describe('dropTable worker quiescence', function () {
 		await Table.dropTable();
 	});
 
+	it('aborts linked writes when the head commit rejects terminally', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const HeadTable = defineTable(`DropTerminalHead_${process.pid}_${Date.now()}`);
+		const LinkedTable = defineTable(`DropTerminalLinked_${process.pid}_${Date.now()}`);
+		const headTransaction = new DatabaseTransaction();
+		headTransaction.db = HeadTable.primaryStore;
+		const linkedTransaction = (headTransaction.next = new DatabaseTransaction());
+		linkedTransaction.db = LinkedTable.primaryStore;
+		await HeadTable.put({ id: 'head', name: 'pending' }, { transaction: headTransaction });
+		await LinkedTable.put({ id: 'linked', name: 'pending' }, { transaction: linkedTransaction });
+		const headNativeTransaction = headTransaction.transaction;
+		const originalCommit = Transaction.prototype.commit;
+		Transaction.prototype.commit = function (...args) {
+			if (this === headNativeTransaction)
+				return Promise.reject(Object.assign(new Error('forced terminal commit failure'), { code: 'ERR_CORRUPTION' }));
+			return originalCommit.apply(this, args);
+		};
+		try {
+			await assert.rejects(() => headTransaction.commit({ doneWriting: true }), /forced terminal commit failure/);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		assert.strictEqual(headTransaction.writes.length, 0, 'the failed head must clear its own write set');
+		assert.strictEqual(headTransaction.next, null, 'the failed head must detach its linked transaction chain');
+		assert.strictEqual(linkedTransaction.writes.length, 0, 'the failed head must abort every linked write set');
+		assert.strictEqual(linkedTransaction.transaction, null, 'the failed head must release every linked native handle');
+		await Promise.all([HeadTable.dropTable(), LinkedTable.dropTable()]);
+	});
+
 	it('rejects a drop from its own read transaction before tombstoning', async function () {
 		const tableName = `DropOwnReadTxn_${process.pid}_${Date.now()}`;
 		const Table = defineTable(tableName);
@@ -423,6 +452,54 @@ describe('dropTable worker quiescence', function () {
 			releaseCleanupCommit();
 			Transaction.prototype.commit = originalCommit;
 			Table.primaryStore.getEntry = originalGetEntry;
+		}
+	});
+
+	it('drains an active index backfill before dropping the table stores', async function () {
+		const tableName = `DropIndexBackfill_${process.pid}_${Date.now()}`;
+		let Table = table({
+			table: tableName,
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		for (let id = 0; id < 20; id++) await Table.put({ id, name: `name-${id}` });
+		Table = table({
+			table: tableName,
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+			],
+		});
+		assert.ok(Table.indexingOperation, 'adding an index to existing records must start a backfill');
+		const index = Table.indices.name;
+		const originalPut = index.put;
+		let indexingWriteStarted;
+		const indexingWriteStartedPromise = new Promise((resolve) => (indexingWriteStarted = resolve));
+		let releaseIndexingWrite;
+		const indexingWriteGate = new Promise((resolve) => (releaseIndexingWrite = resolve));
+		index.put = async function (...args) {
+			indexingWriteStarted();
+			await indexingWriteGate;
+			return originalPut.apply(this, args);
+		};
+		try {
+			await indexingWriteStartedPromise;
+			const originalDropSync = Table.primaryStore.dropSync;
+			let destructivePhaseStarted = false;
+			Table.primaryStore.dropSync = function (...args) {
+				destructivePhaseStarted = true;
+				return originalDropSync.apply(this, args);
+			};
+			const dropPromise = Table.dropTable();
+			for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+			assert.strictEqual(destructivePhaseStarted, false, 'dropTable() must wait for the index backfill');
+			releaseIndexingWrite();
+			await Promise.all([Table.indexingOperation, dropPromise]);
+			assert.strictEqual(destructivePhaseStarted, true);
+		} finally {
+			releaseIndexingWrite();
+			index.put = originalPut;
 		}
 	});
 

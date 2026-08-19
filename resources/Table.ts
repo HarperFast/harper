@@ -477,6 +477,8 @@ export function makeTable(options) {
 			...getPendingWriteResolutions(tableStores()),
 			...getPendingReadResolutions(tableStores()),
 		]);
+		const indexingOperation = (TableResource as any).indexingOperation;
+		if (indexingOperation) pending.add(indexingOperation);
 		if (!pending.size) return;
 		let timer: NodeJS.Timeout;
 		const timedOut = Symbol('timedOut');

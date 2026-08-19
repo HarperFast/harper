@@ -1215,7 +1215,32 @@ export class DatabaseTransaction implements Transaction {
 								} catch (abortError) {
 									harperLogger.debug?.('aborting transaction after failed commit', abortError);
 								}
-								this.finishPendingWrites();
+								const nextTransaction = this.next;
+								this.next = null;
+								for (
+									let linkedTransaction = nextTransaction;
+									linkedTransaction;
+									linkedTransaction = linkedTransaction.next
+								) {
+									try {
+										linkedTransaction.abortLink();
+									} catch (abortError) {
+										harperLogger.debug?.('aborting linked transaction after failed commit', abortError);
+									}
+								}
+								try {
+									for (const write of this.writes) {
+										if (write?.savedBlobs)
+											cleanupUnusedBlobs(
+												write.savedBlobs,
+												collectRetainedFileIds(write.store.getEntry(write.key)?.value)
+											);
+									}
+								} catch (cleanupError) {
+									harperLogger.debug?.('cleaning up writes after failed commit', cleanupError);
+								} finally {
+									this.clearWrites();
+								}
 								// A terminal failure is just as final as a success — release the context's
 								// back-reference here too, or transaction.ts's onComplete() (which has no
 								// rejection handler of its own) would leave a long-lived context pinning this
