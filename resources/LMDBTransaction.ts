@@ -184,10 +184,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
 		let resolution;
 		const completions = [];
+		let commitCompletions: Promise<void>[];
 		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
-			write.commit(txnTime, write.entry, retries);
+			const completion = write.commit(txnTime, write.entry, retries);
+			if (typeof completion?.then === 'function') (commitCompletions ??= []).push(completion);
 		};
 		// this uses optimistic locking to submit a transaction, conditioning each write on the expected version
 		const nextCondition = () => {
@@ -235,6 +237,11 @@ export class LMDBTransaction extends DatabaseTransaction {
 					return true; // success. always success
 				});
 			}
+		}
+		if (commitCompletions) {
+			if (resolution) completions.push(...commitCompletions);
+			// A false resolution means an optimistic conflict and retries the writes.
+			else resolution = Promise.all(commitCompletions).then(() => true);
 		}
 
 		if (resolution) {
