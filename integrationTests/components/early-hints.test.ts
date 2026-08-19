@@ -54,8 +54,9 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			30_000,
 			'deploy_component request'
 		);
-		const deployBody = await deployResponse.json();
-		strictEqual(deployResponse.status, 200, JSON.stringify(deployBody));
+		const deployText = await deployResponse.text();
+		strictEqual(deployResponse.status, 200, deployText);
+		const deployBody = JSON.parse(deployText);
 		strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
 		ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
 
