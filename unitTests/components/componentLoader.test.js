@@ -406,11 +406,14 @@ describe('ComponentLoader Status Integration', function () {
 		});
 	});
 
-	it('serializes a superseding load generation through deferred readiness', async function () {
+	it('serializes deferred readiness per component without blocking unrelated loads', async function () {
 		this.timeout(15000);
 		const appName = 'deferred-generation-probe';
 		const pluginName = 'deferredGenerationProbe';
+		const independentAppName = 'independent-generation-probe';
+		const independentPluginName = 'independentGenerationProbe';
 		const componentDir = path.join(tempDir, appName);
+		const independentComponentDir = path.join(tempDir, independentAppName);
 		const asidePath = path.join(tempDir, '.deploy-aside', appName, '.in-progress-123-previous');
 		await fs.mkdir(asidePath, { recursive: true });
 		await fs.writeFile(path.join(asidePath, 'config.yaml'), `${pluginName}: {}\n`);
@@ -428,6 +431,7 @@ describe('ComponentLoader Status Integration', function () {
 		let releaseStart;
 		let startEntered = false;
 		let readyCalls = 0;
+		let independentStartCalls = 0;
 		componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
 			async start() {
 				startEntered = true;
@@ -457,12 +461,22 @@ describe('ComponentLoader Status Integration', function () {
 				].join(',')}`;
 				throw error;
 			}
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[independentPluginName] = {
+				start() {
+					independentStartCalls++;
+				},
+			};
+			await fs.mkdir(independentComponentDir);
+			await fs.writeFile(path.join(independentComponentDir, 'config.yaml'), `${independentPluginName}: {}\n`);
 
 			let supersedingLoadSettled = false;
 			const supersedingLoad = componentLoader
 				.loadComponentDirectories(loadedComponents, resources, new WeakMap())
 				.then(() => (supersedingLoadSettled = true));
-			await new Promise((resolve) => setImmediate(resolve));
+			await waitFor(() => independentStartCalls === 1, {
+				timeout: 5000,
+				message: 'unrelated component load was blocked by deferred readiness',
+			});
 			assert.strictEqual(supersedingLoadSettled, false);
 
 			releaseStart();
@@ -474,6 +488,7 @@ describe('ComponentLoader Status Integration', function () {
 			releaseStart?.();
 			await preparation;
 			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[independentPluginName];
 			componentLoader.loadedPaths.clear();
 			await fs.rm(path.join(tempDir, '.deploy-aside', appName), {
 				recursive: true,
@@ -482,6 +497,7 @@ describe('ComponentLoader Status Integration', function () {
 				retryDelay: 100,
 			});
 			await fs.rm(componentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(independentComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
 	});
 

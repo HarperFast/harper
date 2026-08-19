@@ -35,7 +35,7 @@ import {
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { createReadStream, existsSync } from 'node:fs';
+import { chmodSync, createReadStream, existsSync, lstatSync, renameSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
@@ -879,10 +879,11 @@ async function identifyRollbackPlaceholder(
 	if (process.platform === 'win32' || userId === undefined || userId === 0) return undefined;
 	try {
 		const current = await lstat(applicationDirPath, { bigint: true });
+		const permissions = Number(current.mode) & 0o777;
 		if (
 			(current.isDirectory() || current.isFile()) &&
 			current.uid === BigInt(userId) &&
-			(Number(current.mode) & 0o777) === 0
+			(permissions === 0 || (current.isDirectory() && permissions === 0o100))
 		) {
 			return { dev: current.dev, ino: current.ino };
 		}
@@ -1184,13 +1185,33 @@ async function rollbackExtractedDirectory(
 			try {
 				await makeRollbackPlaceholderMovable(application.dirPath, placeholderIdentity);
 				if (retainReplacement && fallbackDisplacedPath) {
-					await rm(application.dirPath, {
-						recursive: true,
-						force: true,
-						maxRetries: 3,
-						retryDelay: 100,
-					});
-					await rename(fallbackDisplacedPath, application.dirPath);
+					const fallbackRetryDeadline = Date.now() + 5000;
+					let fallbackRestoreError: unknown;
+					do {
+						try {
+							const writerDisplacedPath = await displaceCurrentDirectory();
+							placeholderIdentity = undefined;
+							if (writerDisplacedPath) {
+								await rm(writerDisplacedPath, {
+									recursive: true,
+									force: true,
+									maxRetries: 3,
+									retryDelay: 100,
+								});
+								transactionPaths.delete(writerDisplacedPath);
+							}
+							await rename(fallbackDisplacedPath, application.dirPath);
+							fallbackRestoreError = undefined;
+							break;
+						} catch (restoreFallbackError) {
+							fallbackRestoreError = restoreFallbackError;
+							if (!retryableRenameCodes.has((restoreFallbackError as NodeJS.ErrnoException).code ?? '')) {
+								throw restoreFallbackError;
+							}
+							await delay(10);
+						}
+					} while (Date.now() < fallbackRetryDeadline);
+					if (fallbackRestoreError) throw fallbackRestoreError;
 					transactionPaths.delete(fallbackDisplacedPath);
 					transactionPaths.add(await retireExtractionAside(asidePath));
 				}
@@ -1226,8 +1247,18 @@ async function rollbackExtractedDirectory(
 		};
 		do {
 			try {
-				await makeRollbackPlaceholderMovable(application.dirPath, placeholderIdentity);
-				await rename(asidePath, application.dirPath);
+				if (placeholderIdentity) {
+					const current = lstatSync(application.dirPath, { bigint: true });
+					if (current.dev === placeholderIdentity.dev && current.ino === placeholderIdentity.ino) {
+						chmodSync(application.dirPath, 0o700);
+						renameSync(asidePath, application.dirPath);
+					} else {
+						placeholderIdentity = undefined;
+						await rename(asidePath, application.dirPath);
+					}
+				} else {
+					await rename(asidePath, application.dirPath);
+				}
 				transactionPaths.delete(asidePath);
 				await cleanupExtractionPaths(application, asideStagingDir, transactionPaths);
 				return;
@@ -1273,21 +1304,80 @@ async function rollbackExtractedDirectory(
 						)
 					);
 				}
-				fallbackDisplacedPath ??= displacedPath;
+				if (displacedPath) {
+					if (fallbackDisplacedPath) {
+						try {
+							await rm(displacedPath, {
+								recursive: true,
+								force: true,
+								maxRetries: 3,
+								retryDelay: 100,
+							});
+							transactionPaths.delete(displacedPath);
+						} catch (cleanupError) {
+							return failRestore(
+								new AggregateError(
+									[error, cleanupError],
+									`Failed to discard a displaced ${application.name} writer directory during rollback`
+								)
+							);
+						}
+					} else {
+						fallbackDisplacedPath = displacedPath;
+					}
+				}
 				restoreRetryDeadline ??= Date.now() + 5000;
 				if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+					const stagedPlaceholderPath = join(
+						asideStagingDir,
+						`.rollback-placeholder-${process.pid}-${Date.now()}-${randomUUID()}`
+					);
 					try {
 						if (asideIsSymbolicLink) {
-							await writeFile(application.dirPath, '', { flag: 'wx', mode: 0o000 });
+							await writeFile(stagedPlaceholderPath, '', { flag: 'wx', mode: 0o000 });
 						} else {
-							await mkdir(application.dirPath, { mode: 0o000 });
+							await mkdir(stagedPlaceholderPath, { mode: 0o300 });
+						}
+						transactionPaths.add(stagedPlaceholderPath);
+						let placeholderPlacementError: unknown;
+						do {
+							try {
+								renameSync(stagedPlaceholderPath, application.dirPath);
+								if (!asideIsSymbolicLink) chmodSync(application.dirPath, 0o100);
+								transactionPaths.delete(stagedPlaceholderPath);
+								break;
+							} catch (placeholderError) {
+								placeholderPlacementError = placeholderError;
+								if (!retryableRenameCodes.has((placeholderError as NodeJS.ErrnoException).code ?? '')) {
+									throw placeholderError;
+								}
+								const writerDisplacedPath = await displaceCurrentDirectory();
+								if (writerDisplacedPath) {
+									await rm(writerDisplacedPath, {
+										recursive: true,
+										force: true,
+										maxRetries: 3,
+										retryDelay: 100,
+									});
+									transactionPaths.delete(writerDisplacedPath);
+								}
+							}
+						} while (Date.now() < restoreRetryDeadline);
+						if (transactionPaths.has(stagedPlaceholderPath)) {
+							throw new Error(
+								`Failed to place the ${application.name} rollback placeholder before the deadline: ${errorMessage(placeholderPlacementError)}`,
+								{ cause: placeholderPlacementError }
+							);
 						}
 						const placeholder = await lstat(application.dirPath, { bigint: true });
 						placeholderIdentity = { dev: placeholder.dev, ino: placeholder.ino };
 					} catch (placeholderError) {
-						if ((placeholderError as NodeJS.ErrnoException).code !== 'EEXIST') {
-							return failRestore(placeholderError);
-						}
+						return failRestore(
+							new AggregateError(
+								[error, placeholderError],
+								`Failed to block a live ${application.name} writer during rollback`
+							)
+						);
 					}
 				}
 				await delay(10);

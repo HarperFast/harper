@@ -63,9 +63,22 @@ const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
-let componentLoadGeneration = 0;
-let componentLoadGenerationTail = Promise.resolve();
+const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
+
+function serializeComponentLoad<T>(appName: string, load: () => Promise<T>): Promise<T> {
+	const previousLoad = componentLoadTails.get(appName);
+	const currentLoad = previousLoad ? previousLoad.then(load) : load();
+	const loadTail = currentLoad.then(
+		() => undefined,
+		() => undefined
+	);
+	componentLoadTails.set(appName, loadTail);
+	void loadTail.then(() => {
+		if (componentLoadTails.get(appName) === loadTail) componentLoadTails.delete(appName);
+	});
+	return currentLoad;
+}
 
 export async function readyComponentModules(
 	serverModules: Iterable<any>,
@@ -147,14 +160,8 @@ export async function loadComponentDirectories(
 	loadedResources?: Resources,
 	readyComponentPromises: ComponentReadyPromises = new WeakMap()
 ) {
-	const previousGeneration = componentLoadGenerationTail;
-	let settleGeneration: () => void;
-	const generationSettled = new Promise<void>((resolve) => (settleGeneration = resolve));
-	componentLoadGenerationTail = previousGeneration.then(() => generationSettled);
-	await previousGeneration;
 	const deferredLoads: Promise<void>[] = [];
 	try {
-		const loadGeneration = ++componentLoadGeneration;
 		if (loadedResources) resources = loadedResources;
 		if (loadedPluginModules) loadedComponents = loadedPluginModules;
 		const cycleResources = resources;
@@ -187,40 +194,40 @@ export async function loadComponentDirectories(
 			if (appWasVisible) {
 				componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
 			}
-			const deferredLoad = recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
-				.then(async () => {
-					if (loadGeneration !== componentLoadGeneration) return;
-					if (!existsSync(appFolder)) {
-						if (appWasVisible) {
-							statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+			const deferredLoad = serializeComponentLoad(appName, () =>
+				recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+					.then(async () => {
+						if (!existsSync(appFolder)) {
+							if (appWasVisible) {
+								statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+							}
+							return;
 						}
-						return;
-					}
-					const mountResult = tryRootConfigMount(appName);
-					if (!mountResult.ok) return;
-					const modulesBeforeLoad = new Set(cycleLoadedComponents.keys());
-					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
-						isRoot: false,
-						autoReload: false,
-						appName,
-						mount: mountResult.mount,
-					});
-					if (loadGeneration !== componentLoadGeneration) return;
-					await readyComponentModules(
-						[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule)),
-						readyComponentPromises
-					);
-				})
-				.catch((error) => {
-					const recoveryError = error instanceof Error ? error : new Error(String(error));
-					if (appWasVisible) {
-						componentLifecycle.failed(
+						const mountResult = tryRootConfigMount(appName);
+						if (!mountResult.ok) return;
+						const modulesBeforeLoad = new Set(cycleLoadedComponents.keys());
+						await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+							isRoot: false,
+							autoReload: false,
 							appName,
-							recoveryError,
-							`Component '${appName}' failed to load after waiting for in-progress preparation`
+							mount: mountResult.mount,
+						});
+						await readyComponentModules(
+							[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule)),
+							readyComponentPromises
 						);
-					}
-				});
+					})
+					.catch((error) => {
+						const recoveryError = error instanceof Error ? error : new Error(String(error));
+						if (appWasVisible) {
+							componentLifecycle.failed(
+								appName,
+								recoveryError,
+								`Component '${appName}' failed to load after waiting for in-progress preparation`
+							);
+						}
+					})
+			);
 			deferredLoads.push(deferredLoad);
 		};
 		if (existsSync(CF_ROUTES_DIR)) {
@@ -250,12 +257,14 @@ export async function loadComponentDirectories(
 				const mountResult = tryRootConfigMount(appName);
 				if (!mountResult.ok) continue;
 				cfsLoaded.push(
-					loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
-						isRoot: false,
-						autoReload: false,
-						appName,
-						mount: mountResult.mount,
-					})
+					serializeComponentLoad(appName, () =>
+						loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+							isRoot: false,
+							autoReload: false,
+							appName,
+							mount: mountResult.mount,
+						})
+					)
 				);
 			}
 		}
@@ -273,12 +282,14 @@ export async function loadComponentDirectories(
 			const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 			if (mountResult.ok) {
 				cfsLoaded.push(
-					loadComponent(hdbAppFolder, resources, hdbAppFolder, {
-						isRoot: false,
-						autoReload: Boolean(process.env.DEV_MODE),
-						appName: hdbAppFolder,
-						mount: mountResult.mount,
-					})
+					serializeComponentLoad(hdbAppFolder, () =>
+						loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
+							isRoot: false,
+							autoReload: Boolean(process.env.DEV_MODE),
+							appName: hdbAppFolder,
+							mount: mountResult.mount,
+						})
+					)
 				);
 			}
 		}
@@ -286,7 +297,7 @@ export async function loadComponentDirectories(
 			watchesSetup = true;
 		});
 	} finally {
-		void Promise.allSettled(deferredLoads).then(() => settleGeneration());
+		void Promise.allSettled(deferredLoads);
 	}
 }
 
