@@ -1049,8 +1049,8 @@ export class DatabaseTransaction implements Transaction {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// A write-only transaction never took a read reference (getReadTxn was never called), so the loop
 		// above releases nothing even though save() created a native handle; release it here instead of
-		// leaking the handle and its snapshot until GC. abortDueToTimeout() detaches the handle before
-		// calling abort(), so this is a no-op there rather than a double-abort.
+		// leaking the handle and its snapshot until GC. abortChainAfterRetries() detaches the handle
+		// before calling abort(), so this is a no-op there rather than a double-abort.
 		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
