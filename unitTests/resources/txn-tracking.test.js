@@ -573,6 +573,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.ok(shouldSpareCommitPhase(head, checkedCommitPhaseChains));
 		assert.ok(shouldSpareCommitPhase(next, checkedCommitPhaseChains));
 		assert.equal(head.commitPhaseTicks, 1, 'one monitor pass must consume one grace tick per chain');
+		assert.equal(next.commitPhaseTicks, 0, 'a link must not run its own grace counter');
 		head.setCommitPhase(false);
 		assert.ok(!head.committing && !next.committing, 'every linked database must leave the phase together');
 		assert.equal(head.commitChainHead, undefined);

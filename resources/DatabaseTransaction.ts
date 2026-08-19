@@ -1573,11 +1573,12 @@ function startMonitoringTxns() {
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
-		for (const txn of trackedTxns) monitorTransaction(txn);
-		for (const txn of supervisedWriteRoots) if (!trackedTxns.has(txn)) monitorTransaction(txn);
+		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains);
+		for (const txn of supervisedWriteRoots)
+			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains);
 	}, txnExpiration).unref();
 
-	function monitorTransaction(txn: DatabaseTransaction) {
+	function monitorTransaction(txn: DatabaseTransaction, checkedCommitPhaseChains: Set<DatabaseTransaction>) {
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
