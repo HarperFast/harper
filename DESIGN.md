@@ -195,10 +195,11 @@ If the table needs `audit: true`, set it both in the schema (for fresh installs)
 A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
 in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
 persists a `dropping: true` flag, a unique `dropGeneration`, and the current process incarnation on
-the table's primary catalog entry (`T/`) before any destructive work. Every worker then stops new
-admission, drains table reads, writes, scans, and index backfills, and closes its column-family
-handles through a strict acknowledgement barrier. Only after every worker acknowledges does the
-coordinator set `dropQuiesced: true`, drop the column families, and remove the catalog rows.
+the table's primary catalog entry (`T/`) before any destructive work. It then starts the local drain
+and strict cross-worker barrier together, so every worker stops admission even if the coordinator's
+own drain fails. Each worker drains table reads, writes, scans, and index backfills and closes its
+column-family handles. Only after every worker acknowledges does the coordinator set
+`dropQuiesced: true`, drop the column families, and remove the catalog rows.
 
 The tombstone survives a partial failure. An unquiesced tombstone from the current process is not
 safe to complete or recreate because another worker may still hold a handle; the table remains

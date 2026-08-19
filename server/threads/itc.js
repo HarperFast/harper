@@ -21,6 +21,8 @@ module.exports = {
 	UserEventMsg,
 };
 let serverItcHandlers;
+const storageReadySignal = !isMainThread && workerData?.itcReadyBuffer && new Int32Array(workerData.itcReadyBuffer);
+let storageReady = false;
 const STRICT_COORDINATOR_ACK_TIMEOUT_MS = 60000;
 onMessageFromWorkers(async (event, sender) => {
 	const requestId = event?.requestId;
@@ -58,9 +60,9 @@ onMessageFromWorkers(async (event, sender) => {
 	}
 });
 function markItcReadyForStorage() {
-	if (isMainThread || !workerData?.itcReadyBuffer) return;
-	const readySignal = new Int32Array(workerData.itcReadyBuffer);
-	if (Atomics.exchange(readySignal, 0, 1) === 1) return;
+	if (storageReady || !storageReadySignal) return;
+	storageReady = true;
+	Atomics.store(storageReadySignal, 0, 1);
 	parentPort?.postMessage({ type: hdbTerms.ITC_EVENT_TYPES.ITC_READY });
 }
 

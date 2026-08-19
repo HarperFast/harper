@@ -1536,24 +1536,33 @@ export function makeTable(options) {
 			let locallyQuiesced = false;
 			try {
 				if (sharedRocksStore) {
-					await prepareTableDrop(rootStore.path, tableName, dropGeneration, TableResource);
-					locallyQuiesced = true;
-					try {
-						await signalling.signalTableDropPreparation({
-							originator: process.pid,
+					// Once the tombstone is durable, every worker must stop admission even if this
+					// coordinator's drain fails. Otherwise peers can acknowledge writes that restart
+					// recovery would later destroy without ever receiving the barrier.
+					const [localPreparation, remotePreparation] = await Promise.allSettled([
+						prepareTableDrop(rootStore.path, tableName, dropGeneration, TableResource),
+						signalling.signalTableDropPreparation({
 							operation: TABLE_DROP_PREPARE_OPERATION,
 							schema: databaseName,
 							table: tableName,
 							path: rootStore.path,
 							dropGeneration,
-						});
-					} catch (error) {
+						}),
+					]);
+					locallyQuiesced = localPreparation.status === 'fulfilled';
+					const failedPreparation =
+						localPreparation.status === 'rejected'
+							? localPreparation.reason
+							: remotePreparation.status === 'rejected'
+								? remotePreparation.reason
+								: undefined;
+					if (failedPreparation) {
 						const quiescenceError: any = new ServerError(
-							`Unable to quiesce every worker before dropping ${databaseName}.${tableName}; the table remains unavailable. Restart Harper to complete this durable drop. ${error.message}`,
+							`Unable to quiesce every worker before dropping ${databaseName}.${tableName}; the table remains unavailable. Restart Harper to complete this durable drop. ${failedPreparation.message ?? String(failedPreparation)}`,
 							503
 						);
-						quiescenceError.code = error.code;
-						quiescenceError.cause = error;
+						quiescenceError.code = failedPreparation.code;
+						quiescenceError.cause = failedPreparation;
 						throw quiescenceError;
 					}
 				} else {

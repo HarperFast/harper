@@ -1210,6 +1210,40 @@ describe('dropTable worker quiescence', function () {
 		}
 	});
 
+	it('quiesces peer workers when the coordinator drain fails', async function () {
+		this.timeout(30000);
+		const tableName = `DropCoordinatorFailure_${process.pid}_${Date.now()}`;
+		const Table = defineTable(tableName);
+		const dbisDb = database({ database: 'test', table: null }).dbisDb;
+		const originalPrepareDrop = Table._prepareDrop;
+		let remote;
+		try {
+			remote = startDropWorker(1, 2);
+			await remote.booted;
+			remote.send('initialize', { table: tableName });
+			await remote.nextEvent('ready');
+			Table._prepareDrop = async function (options) {
+				await originalPrepareDrop.call(this, options);
+				throw new Error('injected coordinator drain failure');
+			};
+
+			const remotePrepared = remote.nextEvent('prepare-finished');
+			await assert.rejects(() => Table.dropTable(), /injected coordinator drain failure/);
+			assert.strictEqual(
+				(await remotePrepared).handlesClosed,
+				true,
+				'a durable tombstone must stop peer admission even when the coordinator fails'
+			);
+			const tombstone = dbisDb.getSync(`${tableName}/`);
+			assert.strictEqual(tombstone?.dropping, true);
+			assert.strictEqual(tombstone?.dropQuiesced, false);
+		} finally {
+			Table._prepareDrop = originalPrepareDrop;
+			if (dbisDb.getSync(`${tableName}/`)?.dropping) await Table.dropTable();
+			await shutdownWorkers(remote);
+		}
+	});
+
 	it('continues after a worker fully exits during preparation', async function () {
 		this.timeout(30000);
 		// Force-terminating a worker intentionally bypasses closeLoadedDatabases(), so rocksdb-js keeps
