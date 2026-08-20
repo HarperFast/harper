@@ -23,7 +23,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
-import { SchemaEventMsg } from '../server/threads/itc.js';
+import { markItcReadyForStorage, SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
@@ -284,6 +284,7 @@ export function toRocksCompression(compression: unknown): unknown {
 }
 
 function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
+	markItcReadyForStorage();
 	options.disableWAL ??= true;
 	const legacyOptions = options as { compression?: unknown };
 	// A configured codec applies to every column family, overriding whatever per-table metadata
@@ -379,7 +380,21 @@ const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
 // resolved, so a resolution can only ever identify the outer path+table key,
 // never the specific spent generation to target.
 const interruptedDropAttempts = new Map<string, Map<string, number>>();
+const incompleteTableDropPreparations = new Map<string, Set<any>>();
 const interruptedDropTableKey = (storePath: string, tableName: string) => `${storePath}\0${tableName}`;
+const tableDropPreparationKey = (storePath: string, tableName: string, generation?: string) =>
+	`${storePath}\0${tableName}\0${generation ?? 'legacy'}`;
+
+function retainTableForDropPreparation(storePath: string, tableName: string, generation: string | undefined, Table) {
+	const preparationKey = tableDropPreparationKey(storePath, tableName, generation);
+	let matchingTables = incompleteTableDropPreparations.get(preparationKey);
+	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
+	matchingTables.add(Table);
+	// Marking and cancellation happen synchronously before _prepareDrop's first await. Keep the class
+	// in the preparation set after the drain so the later strict barrier can close its handles.
+	return Table._prepareDrop({ closeStores: false });
+}
+
 function getInterruptedDropAttempts(storePath: string, tableName: string, generation?: string): number {
 	return interruptedDropAttempts.get(interruptedDropTableKey(storePath, tableName))?.get(generation ?? 'legacy') ?? 0;
 }
@@ -772,11 +787,30 @@ function initStores(
 			clearInterruptedDropEntries(path, tableName);
 			continue;
 		}
+		// A tombstone always removes the worker-local class, even when this worker cannot safely
+		// perform the physical cleanup. Keeping it in definedTables would leave a stale class and
+		// its dropped handles reachable after this reconcile pass.
+		definedTables?.delete(tableName);
+		if (!canCompleteInterruptedDrop(tableDef.primary)) {
+			// The tombstone can become visible here before this worker receives the coordinator's
+			// strict barrier. Prepare the still-live class now; otherwise the registry cleanup below
+			// makes it undiscoverable to prepareTableDrop while its timers and handles remain active.
+			const liveTable = tables[tableName];
+			if (liveTable)
+				retainTableForDropPreparation(rootStore.path, tableName, tableDef.primary.dropGeneration, liveTable).catch(
+					(error) => logger.warn(`Failed to quiesce ${databaseName}.${tableName} during schema reconciliation`, error)
+				);
+			logger.debug(
+				`Deferring interrupted drop of table ${databaseName}.${tableName} until worker quiescence or a clean process start`
+			);
+			tablesToLoad.delete(tableName);
+			continue;
+		}
 		const generation = tableDef.primary?.dropGeneration;
 		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				completeInterruptedDropWithLock(rootStore, attributesDbi, databaseName, tableName, generation);
 				// Sweep every generation this worker has ever tracked for this table, not
 				// just the one just resolved: if a prior generation was exhausted here,
 				// then resolved+recreated+re-dropped by another worker as this generation
@@ -784,7 +818,6 @@ function initStores(
 				// place that sweeps), the prior generation's entry would otherwise never
 				// be cleared.
 				clearInterruptedDropEntries(path, tableName);
-				definedTables?.delete(tableName);
 			} catch (error) {
 				const attempt = failedAttempts + 1;
 				setInterruptedDropAttempts(path, tableName, generation, attempt);
@@ -1668,7 +1701,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// create below starts from a clean slate; treating the tombstoned
 				// entry as an existing table would recurse forever on the stale
 				// catalog row.
-				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
+				if (!canCompleteInterruptedDrop(existingTableMeta)) {
+					throw new ClientError(
+						`Table '${databaseName}.${tableName}' has an interrupted drop that was not quiesced across workers; restart Harper before recreating it`,
+						409
+					);
+				}
+				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, existingTableMeta.dropGeneration);
 				// This resolves the drop without ever going through the schema-load
 				// reconcile below, which is the only other place that returns a spent
 				// budget. Without clearing it here too, a table that gets dropped again
@@ -2072,16 +2111,38 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
 		);
+		let hadIndexingErrors = false;
+		const pendingOperations = new Set<Promise<unknown>>();
+		const trackOperation = <T>(operation: T | Promise<T>): T | Promise<T> => {
+			if (!(operation as Promise<T>)?.then) return operation;
+			const pendingOperation = Promise.resolve(operation);
+			pendingOperations.add(pendingOperation);
+			pendingOperation.then(
+				() => pendingOperations.delete(pendingOperation),
+				(error) => {
+					pendingOperations.delete(pendingOperation);
+					hadIndexingErrors = true;
+					logger.error(error);
+				}
+			);
+			return operation;
+		};
+		const drainSubmittedOperations = async () => {
+			while (pendingOperations.size > 0) await Promise.allSettled([...pendingOperations]);
+		};
 		let lastResolution;
 		for (const index of indicesToRemove) {
-			lastResolution = index.drop();
+			lastResolution = trackOperation(index.drop());
 		}
 		let interrupted;
-		let hadIndexingErrors = false;
 		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
+		if (Table.primaryStore.dropping) {
+			await drainSubmittedOperations();
+			return;
+		}
 		if (attributesLength > 0) {
 			let start: any;
 			for (const attribute of attributes) {
@@ -2105,6 +2166,10 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				versions: true,
 				snapshot: false, // don't hold a read transaction this whole time
 			})) {
+				if (Table.primaryStore.dropping) {
+					await drainSubmittedOperations();
+					return;
+				}
 				if (!record) continue; // deletion entry
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
@@ -2132,7 +2197,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						const values = getIndexedValues(value, index.indexNulls);
 						if (values) {
 							for (let i = 0, l = values.length; i < l; i++) {
-								lastResolution = index.put(values[i], key);
+								lastResolution = trackOperation(index.put(values[i], key));
 							}
 						}
 					} catch (error) {
@@ -2152,11 +2217,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				when(
 					lastResolution,
 					() => outstanding--,
-					(error) => {
-						outstanding--;
-						hadIndexingErrors = true;
-						logger.error(error);
-					}
+					() => outstanding--
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;
@@ -2165,9 +2226,12 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					// occasionally update our progress so if we crash, we can resume
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
-						Table.dbisDB.put(attribute.key, attribute);
+						trackOperation(Table.dbisDB.put(attribute.key, attribute));
 					}
-					if (interrupted) return;
+					if (interrupted) {
+						await drainSubmittedOperations();
+						return;
+					}
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
 				else if (outstanding > MIN_OUTSTANDING_INDEXING)
@@ -2175,23 +2239,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				else if (didSynchronousIndexing) await new Promise((resolve) => setImmediate(resolve)); // custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
 			}
 		}
-		// Await the last pending put. If it rejects, that is also an indexing error.
-		// Note: the when() calls above already attach rejection handlers to each record's
-		// last-put promise; this try-catch specifically handles the case where lastResolution
-		// itself rejects (i.e. the very last put in the loop failed) which would otherwise
-		// throw past the hadIndexingErrors check to the outer catch. The broader issue of
-		// unhandled rejections from non-last puts in multi-value attributes is pre-existing
-		// and out of scope for this fix.
-		try {
-			await lastResolution;
-		} catch (error) {
-			hadIndexingErrors = true;
-			logger.error(error);
-		}
-		// Yield one more event turn so any queued when() error callbacks (which fire as
-		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
-		// before we decide whether to mark indexing as complete.
-		await new Promise((resolve) => setImmediate(resolve));
+		// A backfill is quiesced only after every write it submitted has settled.
+		await drainSubmittedOperations();
+		if (Table.primaryStore.dropping) return;
 		if (hadIndexingErrors) {
 			// Some records failed to index. Persist the failure marker in the descriptor so
 			// the next call to table() (including after a restart with a fresh PID) re-triggers
@@ -2289,8 +2339,35 @@ async function runIndexing(Table, attributes, indicesToRemove) {
  * actionable, and logging here on every attempt would flood at the same
  * volume this function's callers are bounding.
  */
-function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
+function completeInterruptedDropWithLock(
+	rootStore,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	dropGeneration?: string
+) {
+	if (!(rootStore instanceof RocksDatabase)) {
+		return completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, dropGeneration);
+	}
+	while (!rootStore.tryLock('update-attributes')) {}
+	try {
+		return completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName, dropGeneration);
+	} finally {
+		rootStore.unlock('update-attributes');
+	}
+}
+
+function completeInterruptedDrop(
+	rootStore,
+	attributesDbi,
+	databaseName: string,
+	tableName: string,
+	dropGeneration?: string
+) {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
+	const primaryCatalogKey = tableName + '/';
+	const primaryMeta = (attributesDbi as any).getSync(primaryCatalogKey);
+	if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) return false;
 	if (rootStore instanceof RocksDatabase) {
 		for (const columnName of (rootStore as any).columns) {
 			if (columnName.startsWith(tableName + '/')) {
@@ -2331,7 +2408,6 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	// recognizes the table as mid-drop - instead of the tombstone vanishing
 	// first and stranding orphaned attribute rows that the next load would
 	// misread as a live (non-dropping) table.
-	const primaryCatalogKey = tableName + '/';
 	let removePrimaryLast = false;
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 		if (key === primaryCatalogKey) {
@@ -2344,6 +2420,59 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		(attributesDbi as any).removeSync(key);
 	}
 	if (removePrimaryLast) (attributesDbi as any).removeSync(primaryCatalogKey);
+	return true;
+}
+
+function canCompleteInterruptedDrop(primaryMeta): boolean {
+	// A completed barrier is safe immediately. An incomplete barrier is safe only after a clean
+	// process start, when none of the handles from the recorded incarnation can still exist.
+	// Tombstones written before the incarnation field existed necessarily came from an older process.
+	const processInstanceId = manageThreads.getProcessInstanceId();
+	return (
+		primaryMeta?.dropQuiesced === true ||
+		(processInstanceId != null && primaryMeta?.dropProcessInstance !== processInstanceId)
+	);
+}
+
+export async function prepareTableDrop(
+	storePath: string,
+	tableName: string,
+	dropGeneration: string | undefined,
+	preserveTable?: any
+): Promise<void> {
+	const preparationKey = tableDropPreparationKey(storePath, tableName, dropGeneration);
+	let matchingTables = incompleteTableDropPreparations.get(preparationKey);
+	if (!matchingTables) incompleteTableDropPreparations.set(preparationKey, (matchingTables = new Set()));
+	if (preserveTable) matchingTables.add(preserveTable);
+	let generationMismatch: ClientError | undefined;
+	for (const databaseName of Object.getOwnPropertyNames(databases)) {
+		const databaseTables = databases[databaseName];
+		const Table = databaseTables?.[tableName];
+		if (!Table || Table.primaryStore?.rootStore?.path !== storePath) continue;
+		const primaryMeta = Table.dbisDB?.getSync?.(`${tableName}/`);
+		if (!primaryMeta?.dropping || primaryMeta.dropGeneration !== dropGeneration) {
+			generationMismatch ??= new ClientError(
+				`Drop generation does not match on this worker for ${databaseName}.${tableName}; refusing to acknowledge preparation`,
+				409
+			);
+			continue;
+		}
+		matchingTables.add(Table);
+	}
+	// A failed hidden class is no longer discoverable through databases; retain it for a later barrier.
+	const preparations = await Promise.allSettled(
+		[...matchingTables].map(async (Table) => {
+			await Table._prepareDrop({ closeStores: Table.primaryStore !== preserveTable?.primaryStore });
+			matchingTables.delete(Table);
+		})
+	);
+	const failedPreparation = preparations.find(
+		(preparation): preparation is PromiseRejectedResult => preparation.status === 'rejected'
+	);
+	if (failedPreparation) throw failedPreparation.reason;
+	if (!matchingTables.size && incompleteTableDropPreparations.get(preparationKey) === matchingTables)
+		incompleteTableDropPreparations.delete(preparationKey);
+	if (generationMismatch) throw generationMismatch;
 }
 
 export function dropTableMeta({ table: tableName, database: databaseName }) {

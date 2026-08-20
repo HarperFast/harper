@@ -9,7 +9,12 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { when } from '../utility/when.ts';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Transaction as RocksTransaction, type Store as RocksStore, constants } from '@harperfast/rocksdb-js';
+import {
+	RocksDatabase,
+	Transaction as RocksTransaction,
+	type Store as RocksStore,
+	constants,
+} from '@harperfast/rocksdb-js';
 const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
@@ -21,6 +26,8 @@ const trackedTxns = new Set<DatabaseTransaction>();
 // is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
+const activeWriteTransactions = new Set<WeakRef<DatabaseTransaction>>();
+const terminalReplayCommitFailure = Symbol('terminalReplayCommitFailure');
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
@@ -138,6 +145,39 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 		count: outstandingCommitCount,
 		oldestAgeMs: oldestOutstandingCommit ? performance.now() - oldestOutstandingCommit.start : undefined,
 	};
+}
+
+/**
+ * Snapshot the transactions on this worker that have staged writes against any of the supplied stores.
+ * A table drop marks its stores as dropping before calling this, so no later addWrite can enter the set;
+ * awaiting the returned promises therefore establishes a closed drain boundary before handles are closed.
+ */
+export function getPendingWriteResolutions(stores: Iterable<any>): Promise<void>[] {
+	const targetStores = new Set(stores);
+	const resolutions: Promise<void>[] = [];
+	for (const reference of activeWriteTransactions) {
+		const transaction = reference.deref();
+		if (!transaction) {
+			activeWriteTransactions.delete(reference);
+			continue;
+		}
+		if (transaction.writes.some((write) => write && targetStores.has(write.store))) {
+			const resolution = transaction.getPendingWriteResolution();
+			if (resolution) resolutions.push(resolution.finally(() => void transaction));
+		}
+	}
+	return resolutions;
+}
+
+export function getPendingReadResolutions(stores: Iterable<any>): Promise<void>[] {
+	const targetStores = new Set(stores);
+	const resolutions: Promise<void>[] = [];
+	for (const transaction of trackedTxns) {
+		if (!transaction.usesAnyStore(targetStores)) continue;
+		const resolution = transaction.getPendingReadResolution();
+		if (resolution) resolutions.push(resolution);
+	}
+	return resolutions;
 }
 // Once per process: committing under open read iterators forces a write replay, so the warning is
 // about the caller's pattern, not the individual commit.
@@ -325,6 +365,14 @@ type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
 
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
+	#pendingWriteResolution?: Promise<void>;
+	#resolvePendingWrites?: () => void;
+	#pendingReadResolution?: Promise<void>;
+	#resolvePendingReads?: () => void;
+	// `db` identifies the first table; allocate only when one native transaction spans more tables.
+	#additionalStores?: Set<any>;
+	#lastTrackedStore?: any;
+	#dropDrainReference?: WeakRef<DatabaseTransaction>;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
@@ -496,8 +544,10 @@ export class DatabaseTransaction implements Transaction {
 				// loop the handle can still hold write intents, and stalled writers with a clean log is
 				// the worst outcome here.
 				harperLogger.warn?.('Failed to release a transaction’s native handle', error);
+			} finally {
+				this.finishPendingReads();
+				this.completeDeferredContextRelease();
 			}
-			this.completeDeferredContextRelease();
 		}
 	}
 
@@ -514,6 +564,14 @@ export class DatabaseTransaction implements Transaction {
 		} catch (error) {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
+		this.finishPendingReads();
+		this.completeDeferredContextRelease();
+	}
+
+	/** Finish wrapper bookkeeping after the caller has already settled the native handle. */
+	completeReadTxn(): void {
+		this.detachOwnedTransaction();
+		this.finishPendingReads();
 		this.completeDeferredContextRelease();
 	}
 
@@ -546,6 +604,20 @@ export class DatabaseTransaction implements Transaction {
 	 * (see priorStagedWrite). Called by both engines' addWrite.
 	 */
 	linkWrite(operation: TransactionWrite): void {
+		if (operation.store?.dropping) {
+			const databaseName = operation.store.rootStore?.databaseName;
+			const tableName = String(operation.store.name ?? '').replace(/\/$/, '');
+			const error: any = new ServerError(
+				`Table ${databaseName ? databaseName + '.' : ''}${tableName || 'unknown'} is being dropped`,
+				409
+			);
+			error.code = 'ERR_TABLE_DROPPING';
+			throw error;
+		}
+		if (!this.#dropDrainReference && operation.store?.rootStore instanceof RocksDatabase) {
+			const reference = (this.#dropDrainReference = new WeakRef(this));
+			activeWriteTransactions.add(reference);
+		}
 		if (operation.key === undefined) return;
 		let writesForStore = (this.writesByKey ??= new Map()).get(operation.store);
 		if (!writesForStore) this.writesByKey.set(operation.store, (writesForStore = new Map()));
@@ -560,8 +632,72 @@ export class DatabaseTransaction implements Transaction {
 	 * reused transaction never bases a write on a previous batch's staged state.
 	 */
 	clearWrites(): void {
+		this.finishPendingWrites();
 		this.writes = [];
 		this.writesByKey = undefined;
+	}
+
+	getPendingWriteResolution(): Promise<void> | undefined {
+		if (!this.#dropDrainReference) return;
+		this.#pendingWriteResolution ??= new Promise((resolve) => {
+			this.#resolvePendingWrites = resolve;
+		});
+		return this.#pendingWriteResolution;
+	}
+
+	getPendingReadResolution(): Promise<void> | undefined {
+		if (!this.transaction || !(this.readTxnsUsed > 0)) return;
+		this.#pendingReadResolution ??= new Promise((resolve) => {
+			this.#resolvePendingReads = resolve;
+		});
+		return this.#pendingReadResolution;
+	}
+
+	trackStore(store: any): void {
+		if (this.db !== store && this.#lastTrackedStore !== store) {
+			this.#lastTrackedStore = store;
+			(this.#additionalStores ??= new Set()).add(store);
+		}
+	}
+
+	usesAnyStore(stores: Set<any>): boolean {
+		if (stores.has(this.db)) return true;
+		for (const store of this.#additionalStores ?? []) {
+			if (stores.has(store)) return true;
+		}
+		return false;
+	}
+
+	hasWritesForAnyStore(stores: Set<any>): boolean {
+		for (let transaction: DatabaseTransaction = this; transaction; transaction = transaction.next) {
+			if (transaction.writes.some((write) => write && stores.has(write.store))) return true;
+		}
+		return false;
+	}
+
+	hasOpenReadsForAnyStore(stores: Set<any>): boolean {
+		for (let transaction: DatabaseTransaction = this; transaction; transaction = transaction.next) {
+			if (transaction.transaction && transaction.readTxnsUsed > 0 && transaction.usesAnyStore(stores)) return true;
+		}
+		return false;
+	}
+
+	private finishPendingWrites(): void {
+		if (this.#dropDrainReference) {
+			activeWriteTransactions.delete(this.#dropDrainReference);
+			this.#dropDrainReference = undefined;
+		}
+		this.#resolvePendingWrites?.();
+		this.#pendingWriteResolution = undefined;
+		this.#resolvePendingWrites = undefined;
+	}
+
+	private finishPendingReads(): void {
+		this.#resolvePendingReads?.();
+		this.#pendingReadResolution = undefined;
+		this.#resolvePendingReads = undefined;
+		this.#additionalStores = undefined;
+		this.#lastTrackedStore = undefined;
 	}
 
 	/**
@@ -858,7 +994,11 @@ export class DatabaseTransaction implements Transaction {
 						}
 						// with options.transaction set this is a retry round — the save loop above already
 						// re-staged the writes into it
-						commitResolution = transaction.commit() as Promise<void>;
+						try {
+							commitResolution = transaction.commit() as Promise<void>;
+						} catch (error) {
+							commitResolution = this.abortSynchronousReplayCommit(transaction, error, !!options.doneWriting);
+						}
 						recordCommitLatency(commitResolution, performance.now());
 						// Write-queue-depth accounting for this replay commit happens uniformly below, via
 						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
@@ -886,6 +1026,7 @@ export class DatabaseTransaction implements Transaction {
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					this.detachOwnedTransaction(); // any further operations operate immediately
+					this.finishPendingReads();
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
@@ -893,7 +1034,11 @@ export class DatabaseTransaction implements Transaction {
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
 							// Promise<number | void>; it is handled in the resolve callback below.
-							commitResolution = transaction.commit();
+							try {
+								commitResolution = transaction.commit();
+							} catch (error) {
+								this.abortSynchronousCommit(transaction, error);
+							}
 							// Record how long this commit stays outstanding (submit → settle) as a distribution
 							// metric. This is the same clock the overload check uses (trackOutstandingCommit
 							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
@@ -1021,7 +1166,10 @@ export class DatabaseTransaction implements Transaction {
 							// migration full-table copy. Both are transient and retryable. Before ERR_TRY_AGAIN was
 							// retried here, the rejection propagated out of the unawaited onCommit() handler as an
 							// unhandled rejection and the write was silently dropped — records lost mid-copy (#308).
-							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
+							if (
+								!error[terminalReplayCommitFailure] &&
+								(error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN')
+							) {
 								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
 								// for future transactions
 								this.retries++;
@@ -1079,6 +1227,32 @@ export class DatabaseTransaction implements Transaction {
 								} catch (abortError) {
 									harperLogger.debug?.('aborting transaction after failed commit', abortError);
 								}
+								const nextTransaction = this.next;
+								this.next = null;
+								for (
+									let linkedTransaction = nextTransaction;
+									linkedTransaction;
+									linkedTransaction = linkedTransaction.next
+								) {
+									try {
+										linkedTransaction.abortLink();
+									} catch (abortError) {
+										harperLogger.debug?.('aborting linked transaction after failed commit', abortError);
+									}
+								}
+								try {
+									for (const write of this.writes) {
+										if (write?.savedBlobs)
+											cleanupUnusedBlobs(
+												write.savedBlobs,
+												collectRetainedFileIds(write.store.getEntry(write.key)?.value)
+											);
+									}
+								} catch (cleanupError) {
+									harperLogger.debug?.('cleaning up writes after failed commit', cleanupError);
+								} finally {
+									this.clearWrites();
+								}
 								// A terminal failure is just as final as a success — release the context's
 								// back-reference here too, or transaction.ts's onComplete() (which has no
 								// rejection handler of its own) would leave a long-lived context pinning this
@@ -1115,23 +1289,42 @@ export class DatabaseTransaction implements Transaction {
 				return txnResolution;
 			},
 			(error) => {
-				this.abort();
+				try {
+					this.abort();
+				} catch (abortError) {
+					harperLogger.debug?.('aborting transaction after failed commit', abortError);
+				}
 				throw error;
 			}
 		);
 	}
 	abort(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
-		// Defensively release any native handle whose reference bookkeeping was already consumed.
-		if (this.transaction) this.releaseReadTxn();
+		let firstError: unknown;
+		for (let transaction: DatabaseTransaction = this; transaction; transaction = transaction.next) {
+			try {
+				transaction.abortLink();
+			} catch (error) {
+				firstError ??= error;
+			}
+		}
+		if (firstError) throw firstError;
+	}
+	private abortLink(): void {
 		this.open = TRANSACTION_STATE.CLOSED;
-		this.drainCompletions();
 		try {
+			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+			// A write-only transaction never took a read reference (getReadTxn was never called), so the loop
+			// above releases nothing even though save() created a native handle; release it here instead of
+			// leaking the handle and its snapshot until GC. abortChainAfterRetries() detaches the handle
+			// before calling abort(), so this is a no-op there rather than a double-abort.
+			if (this.transaction) this.releaseReadTxn();
+			this.drainCompletions();
 			for (const write of this.writes) {
 				if (write?.savedBlobs)
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 			}
 		} finally {
+			// reset the transaction even if blob inspection fails
 			this.clearWrites();
 			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
@@ -1140,16 +1333,67 @@ export class DatabaseTransaction implements Transaction {
 			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
 			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
 			this.releaseContext(!this.timedOut);
-			const next = this.next;
-			this.next = null;
-			if (next) {
-				try {
-					next.abort();
-				} catch (error) {
-					harperLogger.debug?.('cleaning up a chained transaction during abort', error);
-				}
+		}
+	}
+	private abortSynchronousReplayCommit(transaction: RocksTransaction, error: unknown, final: boolean): Promise<never> {
+		try {
+			transaction.abort();
+		} catch (abortError) {
+			harperLogger.debug?.('aborting replay transaction after synchronous commit failure', abortError);
+		}
+		if (!this.writesAbandoned) {
+			this.writesAbandoned = true;
+			try {
+				this.transaction?.abandonWrites?.();
+			} catch (abandonError) {
+				harperLogger.debug?.('abandoning retained writes after synchronous replay commit failure', abandonError);
 			}
 		}
+		try {
+			for (const write of this.writes) {
+				if (write?.savedBlobs)
+					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+			}
+		} catch (cleanupError) {
+			harperLogger.debug?.('cleaning up blobs after synchronous replay commit failure', cleanupError);
+		} finally {
+			this.clearWrites();
+			this.releaseContext(final);
+		}
+		const nextTransaction = this.next;
+		this.next = null;
+		for (let linkedTransaction = nextTransaction; linkedTransaction; linkedTransaction = linkedTransaction.next) {
+			try {
+				linkedTransaction.abortLink();
+			} catch (abortError) {
+				harperLogger.debug?.('aborting linked transaction after synchronous replay commit failure', abortError);
+			}
+		}
+		// Keep the retained read handle alive until its iterators drain, but do not let a retryable native
+		// code re-enter commit after the staged writes above were discarded.
+		const terminalError: any = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+		if (error instanceof Error) {
+			const originalStack = error.stack;
+			Object.setPrototypeOf(terminalError, Object.getPrototypeOf(error));
+			Object.defineProperties(terminalError, Object.getOwnPropertyDescriptors(error));
+			Object.defineProperty(terminalError, 'cause', { configurable: true, value: error });
+			Object.defineProperty(terminalError, 'stack', { configurable: true, value: originalStack, writable: true });
+		}
+		Object.defineProperty(terminalError, terminalReplayCommitFailure, { value: true });
+		return Promise.reject(terminalError);
+	}
+	private abortSynchronousCommit(transaction: RocksTransaction, error: unknown): never {
+		try {
+			transaction.abort();
+		} catch (abortError) {
+			harperLogger.debug?.('aborting native transaction after synchronous commit failure', abortError);
+		}
+		try {
+			this.abort();
+		} catch (abortError) {
+			harperLogger.debug?.('cleaning up transaction after synchronous commit failure', abortError);
+		}
+		throw error;
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
@@ -1170,6 +1414,7 @@ export class DatabaseTransaction implements Transaction {
 			// loop cannot spin on a nulled handle. Not to avoid a double abort: rocksdb-js tolerates
 			// abort-after-abort, and it is abort-after-COMMIT that throws.
 			const detached = txn.detachOwnedTransaction();
+			txn.finishPendingReads();
 			const committingTransaction = txn === this ? headTransaction : detached;
 			try {
 				committingTransaction?.abort();
@@ -1189,7 +1434,7 @@ export class DatabaseTransaction implements Transaction {
 				// abort() synchronously walks savedBlobs and can call write.store.getEntry(), which can throw
 				// (closed store, decode error). Catch and continue so one link's wrapper-cleanup failure can't
 				// strand later links' native handles — they were already detached/aborted above regardless.
-				txn.abort();
+				txn.abortLink();
 			} catch (abortError) {
 				harperLogger.debug?.('cleaning up conflicted transaction in chain after exhausting retries', abortError);
 			}
@@ -1225,7 +1470,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			try {
-				txn.abort();
+				txn.abortLink();
 			} catch (error) {
 				harperLogger.debug?.(`Error aborting timed-out transaction in chain: ${error.message}`);
 			}
@@ -1251,6 +1496,9 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.debug?.('cleaning up after a failed synchronous commit', abortError);
 			}
 			throw error;
+		} finally {
+			this.finishPendingReads();
+			this.finishPendingWrites();
 		}
 		this.detachOwnedTransaction();
 	}

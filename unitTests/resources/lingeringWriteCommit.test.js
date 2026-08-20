@@ -160,4 +160,48 @@ describe('commit with open read iterators commits writes immediately on a replay
 		await delay(100);
 		assert.deepEqual(unhandled, [], 'a replay-commit failure must reject the awaited chain, never float unhandled');
 	});
+
+	it('a synchronous replay commit failure leaves the retained iterator usable', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = LingerTable.primaryStore.store.db;
+		const context = {};
+		let failedTransaction;
+		let synchronousFailure;
+		let iterator;
+		let rejection;
+		try {
+			await transaction(context, async () => {
+				const results = await LingerTable.search({ conditions: [] }, context);
+				iterator = results[Symbol.asyncIterator]();
+				await iterator.next();
+				await LingerTable.put({ id: 'linger-sync-fail', v: 42 }, context);
+				failedTransaction = context.transaction;
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+					synchronousFailure = Object.assign(new Error('forced synchronous replay failure'), { code: 'ERR_BUSY' });
+					throw synchronousFailure;
+				};
+			});
+		} catch (error) {
+			rejection = error;
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		assert.match(rejection?.message, /forced synchronous replay failure/);
+		assert.strictEqual(rejection.code, 'ERR_BUSY', 'the terminal failure must retain its public error code');
+		assert.strictEqual(rejection.cause?.code, 'ERR_BUSY', 'the terminal failure must retain the native cause');
+		assert.strictEqual(
+			rejection.stack,
+			synchronousFailure.stack,
+			'the terminal failure must retain its original stack'
+		);
+		assert.strictEqual(context.transaction, failedTransaction, 'context release must wait for the retained iterator');
+		assert.ok(failedTransaction.transaction, 'the iterator must retain its original native read handle');
+		assert.strictEqual(failedTransaction.writes.length, 0, 'the failed replay must release its tracked writes');
+		while (!(await iterator.next()).done);
+		assert.strictEqual(failedTransaction.transaction, null, 'draining the iterator must release its read handle');
+		assert.strictEqual(context.transaction, null, 'draining the iterator must release the context back-reference');
+		assert.equal(await LingerTable.get('linger-sync-fail'), null, 'the failed replay must not commit its record');
+	});
 });

@@ -923,6 +923,7 @@ export const JWT_ENUM = {
 /** ITC Channel Event types */
 export const ITC_EVENT_TYPES = {
 	SHUTDOWN: 'shutdown',
+	ITC_READY: 'itc_ready',
 	CHILD_STARTED: 'child_started',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
@@ -950,6 +951,8 @@ export const ITC_EVENT_TYPES = {
 	OPERATION_EXECUTE_REQUEST: 'operation_execute_request',
 	OPERATION_EXECUTE_RESPONSE: 'operation_execute_response',
 } as const;
+
+export const TABLE_DROP_PREPARE_OPERATION = 'prepare_drop_table';
 
 /** Supported thread types */
 export const THREAD_TYPES = {

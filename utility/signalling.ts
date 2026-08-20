@@ -4,7 +4,7 @@ import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 let serverItcHandlers;
-import { sendItcEvent } from '../server/threads/itc.js';
+import { sendItcEvent, sendItcEventStrict } from '../server/threads/itc.js';
 
 // Await BOTH the local handler and the cross-worker broadcast. The local handler is what
 // rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
@@ -21,6 +21,15 @@ export async function signalSchemaChange(message: any) {
 	} catch (err) {
 		hdbLogger.error(err);
 	}
+}
+
+/**
+ * Quiesce a table on every connected thread before its RocksDB handles are dropped. Unlike normal
+ * post-change gossip, this rejects unless every handler succeeds; the caller must fail closed.
+ */
+export function signalTableDropPreparation(message: any) {
+	const event = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
+	return sendItcEventStrict(event);
 }
 
 /**

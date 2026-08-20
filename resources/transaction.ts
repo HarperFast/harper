@@ -23,26 +23,25 @@ export function transaction<T>(
 	callback?: (transaction: Transaction) => T
 ): T {
 	let context: Context;
-	let asyncStorageContext;
 	if (typeof ctx === 'function') {
 		// optional first argument, handle case of no request
 		callback = ctx;
-		asyncStorageContext = contextStorage.getStore();
-		context = asyncStorageContext ?? {};
+		context = contextStorage.getStore() ?? {};
 	} else {
 		// The released placeholder is an absent argument, not a context: normalized before the fallback
 		// chain below so it resolves to the ambient store exactly as the `null` it replaced did, rather
 		// than to a bare `{}` that would drop the caller's user, session and timestamp.
 		const contextArg = isReleasedTransaction(ctx) ? undefined : ctx;
 		// request argument included, but null or undefined, so maybe create a new one
-		context = contextArg ?? (asyncStorageContext = contextStorage.getStore()) ?? {};
+		context = contextArg ?? contextStorage.getStore() ?? {};
 	}
 
 	if (typeof callback !== 'function') {
 		throw new TypeError('Callback function must be provided to transaction');
 	}
 	if (context?.transaction?.open === TRANSACTION_STATE.OPEN && typeof callback === 'function') {
-		return callback(context.transaction); // nothing to be done, already in open transaction
+		const invokeCallback = () => callback(context.transaction);
+		return contextStorage.getStore() === context ? invokeCallback() : contextStorage.run(context, invokeCallback);
 	}
 
 	const transaction = new DatabaseTransaction();
@@ -53,10 +52,8 @@ export function transaction<T>(
 	transaction.setContext(context);
 	let result;
 	try {
-		result =
-			(context as any).isExplicit || asyncStorageContext
-				? callback(transaction)
-				: contextStorage.run(context, () => callback(transaction));
+		const invokeCallback = () => callback(transaction);
+		result = contextStorage.getStore() === context ? invokeCallback() : contextStorage.run(context, invokeCallback);
 		if ((result as any)?.then) {
 			return (result as any).then(onComplete, onError);
 		}
@@ -66,18 +63,28 @@ export function transaction<T>(
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		const committed = transaction.commit({ doneWriting: true });
-		if ((committed as any).then) {
-			return (committed as any).then(() => {
+		try {
+			const committed = transaction.commit({ doneWriting: true });
+			if ((committed as any).then) {
+				return (committed as any).then(() => result);
+			} else {
 				return result;
-			});
-		} else {
-			return result;
+			}
+		} catch (error) {
+			return onCommitError(error);
 		}
+	}
+	function onCommitError(error) {
+		try {
+			transaction.abort();
+		} catch {}
+		throw error;
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
-		transaction.abort();
+		try {
+			transaction.abort();
+		} catch {}
 		throw error;
 	}
 }

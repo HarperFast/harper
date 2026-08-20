@@ -194,14 +194,20 @@ If the table needs `audit: true`, set it both in the schema (for fresh installs)
 
 A table is a set of RocksDB column families (`T/` plus `T/<attr>`) and a set of catalog rows
 in the `__dbis__` store, with no transaction spanning the two. `Table.dropTable()` therefore
-persists a `dropping: true` flag on the table's primary catalog entry (`T/`) before any
-destructive work, then drops the column families (awaited - a failed drop must surface as the
-operation's error, never a swallowed rejection), then removes the catalog rows. If the process
-dies or a drop fails partway, the tombstone survives; both the boot-time schema load in
-`databases.ts` (`completeInterruptedDrop`) and a same-name `table()` create complete the
-interrupted drop instead of resurrecting the table. Without this, surviving catalog rows are
-silently re-opened with create-if-missing on the next start, which resurrects "deleted" tables
-(with their data, if the column families were never actually removed).
+persists a `dropping: true` flag, a unique `dropGeneration`, and the current process incarnation on
+the table's primary catalog entry (`T/`) before any destructive work. It then starts the local drain
+and strict cross-worker barrier together, so every worker stops admission even if the coordinator's
+own drain fails. Each worker drains table reads, writes, scans, and index backfills and closes its
+column-family handles. Only after every worker acknowledges does the coordinator set
+`dropQuiesced: true`, drop the column families, and remove the catalog rows.
+
+The tombstone survives a partial failure. An unquiesced tombstone from the current process is not
+safe to complete or recreate because another worker may still hold a handle; the table remains
+unavailable and Harper must restart. After a clean restart the process incarnation differs, so
+boot-time reconciliation can finish the drop. A same-name `table()` create may finish only a
+quiesced drop or one left by an older process. These checks prevent surviving catalog rows from
+being re-opened with create-if-missing and resurrecting a deleted table or an undiscoverable
+"ghost" column family.
 
 ## MCP protocol surface (`components/mcp/`)
 
