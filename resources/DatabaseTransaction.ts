@@ -1110,6 +1110,11 @@ export class DatabaseTransaction implements Transaction {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
+		// abortDueToTimeout() and abortChainAfterRetries() walk the chain themselves, but an ordinary
+		// application-error abort never did, so a link that took a blind write kept its native handle,
+		// its write intents and its supervision claim until GC. Re-entrant by design: every step here is
+		// idempotent, so the walking callers reaching this again is harmless.
+		for (let link: DatabaseTransaction = this.next; link; link = link.next) link.abort();
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
 		try {
@@ -1152,6 +1157,9 @@ export class DatabaseTransaction implements Transaction {
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			// Detach first so the abort() below performs only non-native cleanup, and so its doneReadTxn
+			// loop cannot spin on a nulled handle. Not to avoid a double abort: rocksdb-js tolerates
+			// abort-after-abort, and it is abort-after-COMMIT that throws.
 			const detached = txn.detachOwnedTransaction();
 			const committingTransaction = txn === this ? headTransaction : detached;
 			try {

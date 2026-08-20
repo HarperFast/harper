@@ -331,6 +331,36 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(isWriteSupervised(head), true, 'the head still holds writes of its own');
 	});
 
+	it('releases a chained link’s handle when an ordinary abort cleans the head', async function () {
+		const context = {};
+		const head = new DatabaseTransaction();
+		opened.push(head);
+		context.transaction = head;
+		head.setContext(context);
+		await Blind.get('abort-link-seed', context);
+
+		const other = await Chained.getResource({ id: null }, context, {});
+		other._writeInvalidate('abort-link');
+		const child = head.next;
+		opened.push(child);
+		const childHandle = child.transaction;
+		assert.ok(childHandle, 'expected the chained link to have adopted a handle');
+		let childAborts = 0;
+		const nativeAbort = childHandle.abort.bind(childHandle);
+		childHandle.abort = () => {
+			childAborts++;
+			return nativeAbort();
+		};
+
+		head.abort(); // an application error, not the monitor and not retry exhaustion
+
+		// Only abortDueToTimeout() and abortChainAfterRetries() ever walked the chain, so this link's
+		// handle and write intents used to survive the request that created them.
+		assert.strictEqual(childAborts, 1, 'the chained link’s native handle must be released too');
+		assert.strictEqual(child.transaction, null);
+		assert.strictEqual(child.open, TRANSACTION_STATE.CLOSED);
+	});
+
 	it('leaves crash-recovery replay unsupervised, so a timestamp group cannot be split', async function () {
 		const context = {};
 		const txn = new DatabaseTransaction();
@@ -349,10 +379,12 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		opened.push(txn);
 		const handle = stubHandle();
 		txn.attachOwnedTransaction(handle);
+		txn.readTxnRefCount = 3; // holders of the handle being released
 		txn.directCommitSync();
 		assert.strictEqual(handle.calls.commitSync, 1);
 		assert.strictEqual(txn.transaction, null);
 		assert.strictEqual(txn.readTxnsUsed, 0);
+		// Left set, a reused wrapper would carry these counts against a freshly adopted handle.
 		assert.strictEqual(txn.readTxnRefCount, 0);
 	});
 
