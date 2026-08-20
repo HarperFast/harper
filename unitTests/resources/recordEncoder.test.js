@@ -252,6 +252,15 @@ describe('RecordEncoder structure-dictionary bound & observability (harper#2220)
 		});
 	});
 
+	it('reports zeros rather than throwing for a store with no shared-structures mechanism', () => {
+		// msgpackr only defines getStructures when the option was supplied, so the captured super is
+		// undefined here; Table.getStructureCounts() is public and must not throw on such a store.
+		const enc = new RecordEncoder({ structures: [], randomAccessStructure: true });
+		const counts = enc.getStructureCounts();
+		assert.strictEqual(counts.typed, 0);
+		assert.strictEqual(counts.classic, 0);
+	});
+
 	it('reports whether typed encoding is enabled at all', () => {
 		// Random-access fields default off (utility/lmdb/OpenDBIObject.ts), so a typed count of 0
 		// against a limit of 256 is the normal state for most tables, not spare headroom.

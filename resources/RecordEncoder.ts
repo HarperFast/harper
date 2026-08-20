@@ -392,7 +392,9 @@ export class RecordEncoder extends StructonEncoder {
 				const buffer = this.rootStore.getBinarySync(sharedStructuresKey);
 				return buffer ? this.decode(buffer) : undefined;
 			} else {
-				return superGetStructures.call(this);
+				// msgpackr only defines getStructures when the option was supplied; a store with no
+				// shared-structures mechanism has no durable dictionary to report.
+				return superGetStructures?.call(this);
 			}
 		};
 	}

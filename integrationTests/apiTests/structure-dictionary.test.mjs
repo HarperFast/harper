@@ -61,6 +61,15 @@ suite('Record-structure dictionary', (ctx) => {
 		assert.ok(body.classic_structure_count > 0, JSON.stringify(body));
 	});
 
+	test('saturation is reported to the operator log', async () => {
+		// The unit tests stub harperLogger, so this is the only check that the warning survives a real
+		// logger binding -- the whole point of the signal is that an operator sees it.
+		const r = await client.req().send({ operation: 'read_log', limit: 10000, level: 'warn' }).expect(200);
+		const entries = Array.isArray(r.body) ? r.body : (r.body?.entries ?? []);
+		const hit = entries.some((e) => typeof e.message === 'string' && e.message.includes('Typed-structure dictionary'));
+		assert.ok(hit, `no saturation warning among ${entries.length} log entries`);
+	});
+
 	test('records written past the bound still read back correctly', async () => {
 		const r = await client
 			.req()
