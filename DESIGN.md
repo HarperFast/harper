@@ -674,9 +674,17 @@ delete the main thread's in-flight sidecar as if it were the last boot's wreckag
 A sidecar owned by a _live_ foreign process is not cleared — that process is mid-commit — but its
 presence still turns drift detection off for this boot: a pair someone else is halfway through is no
 more comparable than one an interruption left behind. That suspension is why a sidecar also ages
-out after a minute regardless of what its pid says: a commit is three synchronous steps, so anything
-older is wreckage whose pid has been recycled, and without the age-out it would suspend drift
-detection on every boot from then on.
+out regardless of what its pid says: without it, a sidecar whose owner was killed and whose pid was
+later recycled would look mid-commit forever and suspend drift detection on every boot. The age-out
+is deliberately far longer than a commit could take — recovery from a recycled pid only has to be
+eventual, while deleting a slow-but-live writer's sidecar is the worse error, stranding its config
+file against an unpromoted state.
+
+Drift detection is main-thread-only for the same reason recovery is. A worker never owns the state:
+in the normal sequence the main thread has already classified and persisted before any worker runs,
+and inside the main thread's commit window a file that differs from the snapshot is as likely to be
+the write in flight as an operator edit. A worker that concluded "user edit" would drop the
+env-supplied value for itself alone and serve different config than its siblings.
 
 Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
 CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo

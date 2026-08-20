@@ -252,6 +252,47 @@ describe('storage exhaustion during boot (#847)', function () {
 			assert.notStrictEqual(ownerOfHttpPortAfterReboot(testRoot, { stagedByLiveOwner: true }), 'user');
 		});
 
+		it('does not let a worker reclassify ownership at all', function (done) {
+			// A worker re-deriving inside the main thread's commit window would call the half-written
+			// config file a user edit and drop the env-supplied value for itself alone.
+			const { Worker } = require('node:worker_threads');
+			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":8123}}';
+			const first = prepareRuntimeEnvConfig({ http: {} }, testRoot);
+			first.saveState();
+			first.confirmConfigWritten();
+
+			const worker = new Worker(
+				`
+				const { prepareRuntimeEnvConfig } = require(${JSON.stringify(require.resolve('#src/config/harperConfigEnvVars'))});
+				const { parentPort, workerData } = require('node:worker_threads');
+				const { config } = prepareRuntimeEnvConfig({ http: { port: 7777 } }, workerData.root);
+				parentPort.postMessage({ port: config.http.port });
+			`,
+				{ eval: true, workerData: { root: testRoot }, env: process.env }
+			);
+			worker.on('error', done);
+			worker.on('message', (result) => {
+				try {
+					// The file differs from the snapshot, which on the main thread means a user edit. A
+					// worker must not draw that conclusion on its own: in the real sequence the main thread
+					// has already classified and persisted, and inside its commit window the difference is
+					// as likely to be the write in flight. So the worker keeps applying the layer (8123)
+					// rather than declaring the path the operator's and serving 7777 alone.
+					assert.strictEqual(result.port, 8123, 'the worker still applies the env layer');
+					assert.notStrictEqual(
+						JSON.parse(fs.readFileSync(statePath(), 'utf8')).sources['http.port'],
+						'user',
+						'and does not reclassify ownership on disk'
+					);
+					done();
+				} catch (error) {
+					done(error);
+				} finally {
+					worker.terminate();
+				}
+			});
+		});
+
 		it('clears a sidecar that is too old to be mid-commit, whatever its pid claims', function () {
 			// A pid outlives its owner when the number is recycled. Without an age-out that sidecar
 			// looks mid-commit forever, and drift detection stays suspended on every boot from then on.
@@ -260,7 +301,7 @@ describe('storage exhaustion during boot (#847)', function () {
 			fs.ensureDirSync(backupDir);
 			const recycledPid = path.join(backupDir, `.harper-config-state.pending.${process.ppid}.json`);
 			fs.writeFileSync(recycledPid, '{}');
-			const longAgo = new Date(Date.now() - 10 * 60 * 1000);
+			const longAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
 			fs.utimesSync(recycledPid, longAgo, longAgo);
 
 			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);

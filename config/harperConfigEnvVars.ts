@@ -39,10 +39,12 @@ const STATE_FILE_NAME = '.harper-config-state.json';
 const PENDING_STATE_PREFIX = '.harper-config-state.pending.';
 const PENDING_STATE_SUFFIX = '.json';
 const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDING_STATE_SUFFIX}`;
-// A commit is three synchronous steps inside one boot step, so seconds is already generous. Past
-// this, a sidecar is wreckage whatever its pid says - pids get recycled, and a recycled one would
-// otherwise look mid-commit forever, suspending drift detection on every boot from then on.
-const PENDING_STATE_STALE_MS = 60_000;
+// Recovery from a recycled pid only has to be eventual, and deleting a slow-but-live writer's
+// sidecar is the worse error - it strands that writer's config file against an unpromoted state. So
+// the age-out is far longer than a commit (three synchronous steps) could ever legitimately take:
+// long enough that a stalled writer or clock skew between containers sharing a volume cannot reach
+// it, short enough that leaked wreckage does not suspend drift detection indefinitely.
+const PENDING_STATE_STALE_MS = 60 * 60 * 1000;
 
 /**
  * Get logger instance with tag - lazy loaded to avoid circular dependencies
@@ -1103,9 +1105,13 @@ export function prepareRuntimeEnvConfig(
 		return { config: fileConfig, saveState: () => false, confirmConfigWritten: () => false, commitState: () => false };
 	}
 
-	// Detect drift (user manual edits) - only at runtime, not install, and not on a boot that found
-	// an interrupted commit, where a difference could equally be the write that was in flight
-	if (!options.isInstall && !interruptedCommit) {
+	// Detect drift (user manual edits) - only at runtime, not install, not on a boot that found an
+	// interrupted commit (where a difference could equally be the write that was in flight), and only
+	// on the main thread: a worker never owns the state, and one re-deriving inside the main thread's
+	// commit window would call its half-written config file a user edit and drop the env-supplied
+	// value for itself alone - serving different config than its siblings, with nothing on disk to
+	// show why.
+	if (!options.isInstall && !interruptedCommit && isMainThread) {
 		const driftedPaths = detectConfigDrift(fileConfig, state);
 		for (const path of driftedPaths) {
 			state.sources[path] = 'user';
