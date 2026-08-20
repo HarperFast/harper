@@ -671,6 +671,10 @@ derive the same merged config and would otherwise race over one pair of files fo
 already agree on — and since a worker shares its process's pid, a recovery scan from one would
 delete the main thread's in-flight sidecar as if it were the last boot's wreckage.
 
+A sidecar owned by a _live_ foreign process is not cleared — that process is mid-commit — but its
+presence still turns drift detection off for this boot: a pair someone else is halfway through is no
+more comparable than one an interruption left behind.
+
 Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
 CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo
 serializes config writes across processes. Pre-existing — both artifacts were unordered before this
