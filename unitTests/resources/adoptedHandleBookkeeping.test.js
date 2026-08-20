@@ -379,6 +379,8 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		head.open = TRANSACTION_STATE.CLOSED;
 		head.timeout = -1;
 		assert.strictEqual(isWriteSupervised(head), true);
+		const childHandle = child.transaction;
+		assert.ok(childHandle, 'the child still holds the handle its write was staged into');
 
 		setTxnExpiration(20);
 		try {
@@ -386,6 +388,9 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 			while (isWriteSupervised(head) && Date.now() < deadline) await delay(20);
 			// Asserted before the cleanup below: aborting the child would evict the root by itself.
 			assert.strictEqual(isWriteSupervised(head), false, 'the monitor must be able to evict it unconditionally');
+			// And the handle goes with it: dropping only the bookkeeping would strand a live native
+			// transaction in neither registry, unreachable by anything that could ever release it.
+			assert.strictEqual(child.transaction, null, 'eviction must release the handle it was tracking');
 		} finally {
 			setTxnExpiration(30000);
 			try {

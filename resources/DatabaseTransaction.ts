@@ -436,10 +436,19 @@ export class DatabaseTransaction implements Transaction {
 	 * one. Membership is keyed on the root but claimed per link, so removing it on any link's detach
 	 * would unsupervise a logical transaction still holding writes elsewhere in the chain.
 	 */
-	/** Drop the whole chain's supervision, however its links got there. */
+	/**
+	 * Give up on the whole chain: release any handle its links still hold, then drop the supervision
+	 * that was the only remaining way to find them. Clearing the bookkeeping alone would strand a live
+	 * handle in neither registry — the chained-commit throw this exists for is exactly the case where a
+	 * link never reached its own detach. Snapshots only, matching the CLOSED branch that calls this:
+	 * staged writes may be riding an in-flight replay commit and are not the monitor's to drop.
+	 */
 	dropWriteSupervision(): void {
 		const root = this.root ?? this;
-		for (let link: DatabaseTransaction = root; link; link = link.next) link.writeSupervised = false;
+		for (let link: DatabaseTransaction = root; link; link = link.next) {
+			if (link.transaction) link.releaseReadTxn(); // detaches, which clears this link's own claim
+			link.writeSupervised = false;
+		}
 		supervisedWriteRoots.delete(root);
 	}
 
