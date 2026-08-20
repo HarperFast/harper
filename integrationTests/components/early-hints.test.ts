@@ -12,20 +12,51 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
+import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const q = (url: string) => encodeURIComponent(url);
+const REQUEST_TIMEOUT_MS = 10_000;
+
+async function fetchWithTimeout(
+	input: string | URL,
+	init?: RequestInit,
+	timeoutMs = REQUEST_TIMEOUT_MS,
+	description = `${init?.method ?? 'GET'} request`
+): Promise<Response> {
+	const signal = AbortSignal.timeout(timeoutMs);
+	try {
+		return await fetch(input, { ...init, signal });
+	} catch (error) {
+		if (!signal.aborted) throw error;
+		throw new Error(`${description} to ${input} timed out after ${timeoutMs}ms`, { cause: error });
+	}
+}
 
 suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
-		const deployBody = await sendOperation(ctx.harper, {
-			operation: 'deploy_component',
-			project: 'early-hints',
-			package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
-			restart: true,
-		});
+		const deployURL = ctx.harper.operationsAPIURL;
+		const deployResponse = await fetchWithTimeout(
+			deployURL,
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					operation: 'deploy_component',
+					project: 'early-hints',
+					package: join(__dirname, '../fixtures/template-early-hints-2.0.0.tgz'),
+					restart: true,
+					// The compiled runtime imports only Harper and local files; its source-only toolchain is irrelevant here.
+					install_command: 'node --version',
+				}),
+			},
+			30_000,
+			'deploy_component request'
+		);
+		const deployText = await deployResponse.text();
+		strictEqual(deployResponse.status, 200, deployText);
+		const deployBody = JSON.parse(deployText);
 		strictEqual(deployBody.message, 'Successfully deployed: early-hints, restarting Harper');
 		ok(typeof deployBody.deployment_id === 'string', `expected deployment_id, got ${deployBody.deployment_id}`);
 
@@ -33,7 +64,7 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		const seedDeadline = Date.now() + 60_000;
 		while (true) {
 			try {
-				const check = await fetch(`${ctx.harper.httpURL}/site-images/`);
+				const check = await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/`);
 				if (check.status === 200) {
 					const data = await check.json();
 					console.log(
@@ -54,7 +85,7 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		const readyDeadline = Date.now() + 60_000;
 		while (true) {
 			try {
-				const check = await fetch(`${ctx.harper.httpURL}/site-images/`);
+				const check = await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/`);
 				if (check.status === 200) {
 					console.log('[early-hints poll ready] Server is ready.');
 					break;
@@ -74,21 +105,21 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	});
 
 	test('missing q param returns 400', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/hints`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints`);
 		strictEqual(res.status, 400);
 		const body = await res.json();
 		ok(body.error.includes('Missing URL'), `expected missing URL error, got: ${body.error}`);
 	});
 
 	test('unknown URL returns 404', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.doesnotexist.com/')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.doesnotexist.com/')}`);
 		strictEqual(res.status, 404);
 		const body = await res.json();
 		ok(body.error.includes('No early hints'), `expected no hints error, got: ${body.error}`);
 	});
 
 	test('valid URL returns 200 with link header format', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/')}`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
 		ok(typeof body === 'string', `expected string, got ${typeof body}`);
@@ -96,10 +127,10 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	});
 
 	test('explicit v=1 returns same result as default', async () => {
-		const defaultRes = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/')}`);
+		const defaultRes = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/')}`);
 		const defaultBody = await defaultRes.json();
 
-		const v1Res = await fetch(`${ctx.harper.httpURL}/hints?v=1&q=${q('https://www.harper.fast/')}`);
+		const v1Res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?v=1&q=${q('https://www.harper.fast/')}`);
 		strictEqual(v1Res.status, 200);
 		const v1Body = await v1Res.json();
 
@@ -107,12 +138,12 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	});
 
 	test('v=2 with no data returns 404', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/hints?v=2&q=${q('https://www.harper.fast/')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?v=2&q=${q('https://www.harper.fast/')}`);
 		strictEqual(res.status, 404);
 	});
 
 	test('safari mode s=1 returns preconnect hints', async () => {
-		const res = await fetch(`${ctx.harper.httpURL}/hints?s=1&q=${q('https://www.harper.fast/')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?s=1&q=${q('https://www.harper.fast/')}`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
 		ok(typeof body === 'string', `expected string, got ${typeof body}`);
@@ -121,10 +152,10 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	});
 
 	test('different pages return different hints', async () => {
-		const homeRes = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/')}`);
+		const homeRes = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/')}`);
 		const homeBody = await homeRes.json();
 
-		const companyRes = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/company')}`);
+		const companyRes = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/company')}`);
 		const companyBody = await companyRes.json();
 
 		ok(homeBody !== companyBody, 'expected different hints for different pages');
@@ -132,7 +163,7 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 
 	test('SiteImages CRUD', async () => {
 		// create
-		const createRes = await fetch(`${ctx.harper.httpURL}/site-images/`, {
+		const createRes = await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -145,24 +176,29 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		ok(createRes.status < 300, `create failed: ${createRes.status}`);
 
 		// read via /hints
-		const hintsRes = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/test-page')}`);
+		const hintsRes = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/test-page')}`);
 		strictEqual(hintsRes.status, 200);
 		const hintsBody = await hintsRes.json();
 		ok(hintsBody.includes('test-hero.png'), `expected test-hero.png in response, got: ${hintsBody}`);
 
 		// delete
-		const deleteRes = await fetch(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/test-page')}`, {
-			method: 'DELETE',
-		});
+		const deleteRes = await fetchWithTimeout(
+			`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/test-page')}`,
+			{
+				method: 'DELETE',
+			}
+		);
 		strictEqual(deleteRes.status, 200);
 
 		// confirm deleted
-		const deletedRes = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/test-page')}`);
+		const deletedRes = await fetchWithTimeout(
+			`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/test-page')}`
+		);
 		strictEqual(deletedRes.status, 404);
 	});
 
 	test('multiple hints returned comma-joined', async () => {
-		await fetch(`${ctx.harper.httpURL}/site-images/`, {
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -173,18 +209,20 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			}),
 		});
 
-		const res = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/multi')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/multi')}`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
 		const parts = body.split(',');
 		strictEqual(parts.length, 2, `expected 2 comma-separated hints, got ${parts.length}`);
 
 		// cleanup
-		await fetch(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/multi')}`, { method: 'DELETE' });
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/multi')}`, {
+			method: 'DELETE',
+		});
 	});
 
 	test('same-origin URL converted to relative path', async () => {
-		await fetch(`${ctx.harper.httpURL}/site-images/`, {
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -195,18 +233,20 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			}),
 		});
 
-		const res = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/relative')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/relative')}`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
 		ok(body.includes('</images/hero.png;'), `expected relative path, got: ${body}`);
 		ok(!body.includes('https://www.harper.fast'), `should not contain full origin, got: ${body}`);
 
 		// cleanup
-		await fetch(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/relative')}`, { method: 'DELETE' });
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/relative')}`, {
+			method: 'DELETE',
+		});
 	});
 
 	test('empty hints array returns 404', async () => {
-		await fetch(`${ctx.harper.httpURL}/site-images/`, {
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -217,11 +257,13 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			}),
 		});
 
-		const res = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/empty')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/empty')}`);
 		strictEqual(res.status, 404);
 
 		// cleanup
-		await fetch(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/empty')}`, { method: 'DELETE' });
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/empty')}`, {
+			method: 'DELETE',
+		});
 	});
 
 	test('response stays within 1024 char limit', async () => {
@@ -231,7 +273,7 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 				`https://cdn.example.com/image-with-a-really-long-name-that-keeps-going-${String(i).padStart(4, '0')}.png`
 		);
 
-		await fetch(`${ctx.harper.httpURL}/site-images/`, {
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -242,12 +284,14 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			}),
 		});
 
-		const res = await fetch(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/long')}`);
+		const res = await fetchWithTimeout(`${ctx.harper.httpURL}/hints?q=${q('https://www.harper.fast/long')}`);
 		strictEqual(res.status, 200);
 		const body = await res.json();
 		ok(body.length <= 1024, `response ${body.length} chars exceeds 1024 limit`);
 
 		// cleanup
-		await fetch(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/long')}`, { method: 'DELETE' });
+		await fetchWithTimeout(`${ctx.harper.httpURL}/site-images/${q('1|https://www.harper.fast/long')}`, {
+			method: 'DELETE',
+		});
 	});
 });
