@@ -73,6 +73,18 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'txnlog-purge-stale-read-blast
 const SCHEMA = 'data';
 const TABLE = 'Widget';
 const skipSuite = process.env.HARPER_RUNTIME === 'bun';
+// The lmdb arm is the CONTROL (the phantom under test is RocksDB-specific), and on Windows its
+// seed is not viable at this magnitude: LMDB insert cost there grows superlinearly with database
+// size -- measured 2.7s per 500-record batch at the start and 37.7s by the fifth wave, ~311s for
+// the seed against the rocksdb arm's 28.3s on the same runner, while Linux does both in ~2s
+// (harper#2243). That crosses the seed's per-request budget on a slow runner and reds
+// `Integration Tests 1/6 (Windows)` intermittently on `main`.
+//
+// Skipped rather than shrunk: the control's value is running the SAME workload as the subject, and
+// per-engine record counts would weaken exactly that. The control still runs on every other
+// platform, and LMDB is deprecated, so Windows-specific LMDB coverage buys little. Do NOT "fix"
+// this by raising the timeout -- that keeps ~5 minutes of Windows CI time and adds no signal.
+const skipLmdbArm = process.platform === 'win32';
 
 // DEL range gets bulk-deleted (the subject of this whole suite). KEEP range stays untouched
 // (scoping sanity: proves the delete/read paths aren't just globally broken). Padded payload
@@ -410,7 +422,7 @@ async function assertAbsentEverywhere(
 function defineSuite(engine: 'rocksdb' | 'lmdb') {
 	suite(
 		`QA-782 stale-read blast radius: ordinary table reads after bulk delete [${engine}]`,
-		{ skip: skipSuite },
+		{ skip: skipSuite || (engine === 'lmdb' && skipLmdbArm) },
 		(ctx: ContextWithHarper) => {
 			const findings: string[] = [];
 			const armConfig = {
