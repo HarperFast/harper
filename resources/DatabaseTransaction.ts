@@ -519,7 +519,7 @@ export class DatabaseTransaction implements Transaction {
 		// increments it but only this releases, so an unpaired call would drive it negative and cancel
 		// out a later handle's references.
 		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
-			if (this.writes.some((write) => write)) return;
+			for (const write of this.writes) if (write) return;
 			this.doneReadTxn();
 		}
 	}
