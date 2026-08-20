@@ -593,8 +593,13 @@ function takeInterruptedCommit(rootPath: string): boolean {
 	for (const entry of entries) {
 		if (!entry.startsWith(PENDING_STATE_PREFIX) || !entry.endsWith(PENDING_STATE_SUFFIX)) continue;
 		const pid = Number(entry.slice(PENDING_STATE_PREFIX.length, -PENDING_STATE_SUFFIX.length));
-		// A live owner is mid-commit; its sidecar is not wreckage to clear.
-		if (pid !== process.pid && isProcessAlive(pid)) continue;
+		if (pid !== process.pid && isProcessAlive(pid)) {
+			// A live owner is mid-commit, so its sidecar is not wreckage to clear - but the pair it is
+			// halfway through is no more comparable than an interrupted one, so drift detection is off
+			// for this boot either way.
+			interrupted = true;
+			continue;
+		}
 		try {
 			fs.removeSync(path.join(backupDir, entry));
 		} catch (error) {

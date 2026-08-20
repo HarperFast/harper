@@ -285,6 +285,15 @@ describe('config persistence from a worker thread (#847)', function () {
 			fs.ensureDirSync(path.join(root, dir));
 		const before = fs.readFileSync(configPath, 'utf8');
 
+		// Staged before the worker starts, or a fast runner finishes initConfig before this exists and
+		// the assertion below passes without anything ever looking at the file.
+		const stagedByMainThread = path.join(
+			root,
+			hdbTerms.BACKUP_DIR_NAME,
+			`.harper-config-state.pending.${process.pid}.json`
+		);
+		fs.writeFileSync(stagedByMainThread, '{}');
+
 		const worker = new Worker(
 			`
 			const configUtils = require(${JSON.stringify(require.resolve('#src/config/configUtils'))});
@@ -299,14 +308,12 @@ describe('config persistence from a worker thread (#847)', function () {
 			{ eval: true, env: { ...fixtureEnv, ROOTPATH: root, HARPER_SET_CONFIG: '{"http":{"port":8123}}' } }
 		);
 
-		// A staged commit that the main thread has in flight. A worker shares process.pid, so a
-		// recovery scan that only exempts other processes would delete this one.
-		const stagedByMainThread = path.join(
-			root,
-			hdbTerms.BACKUP_DIR_NAME,
-			`.harper-config-state.pending.${process.pid}.json`
-		);
-		fs.writeFileSync(stagedByMainThread, '{}');
+		// A worker that dies outside its try never posts, so without this mocha times out with no
+		// diagnosis and the temp root leaks.
+		worker.on('error', (error) => {
+			fs.removeSync(root);
+			done(error);
+		});
 
 		worker.on('message', (result) => {
 			try {
