@@ -146,6 +146,44 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 	});
 
 	// RocksDB only: LMDB does not guarantee read-after-write within a transaction.
+	// A CHAINED store's commit can fail while the head's succeeded, leaving the multi-store commit half
+	// landed. A handler that catches that (the shape people write, because a mid-scope commit can
+	// conflict) must not get a rotated scope on its next commit: the failed link would be dropped from
+	// the chain before its abort could clean up, and the rest of the scope would stage on a partial commit.
+	rocksOnly('surrenders ownership when a chained database’s commit fails', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const chainedDb = Other.primaryStore.store.db;
+		let forcedFailures = 0;
+		const context = {};
+		try {
+			await transaction(context, async () => {
+				await A.put('chain-fail-head', { v: 1 }, context);
+				await Other.put('chain-fail-link', { v: 1 }, context);
+				Transaction.prototype.commit = function (...args) {
+					if (this.store?.db !== chainedDb) return originalCommit.apply(this, args);
+					forcedFailures++;
+					Transaction.prototype.commit = originalCommit; // one forced failure only
+					return Promise.reject(Object.assign(new Error('forced chained failure'), { code: 'ERR_CORRUPTION' }));
+				};
+				await assert.rejects(context.transaction.commit(), /forced chained failure/);
+				assert.notEqual(
+					context.transaction?.open,
+					TRANSACTION_STATE.OPEN,
+					'a half-landed multi-store commit must not leave the scope rotated'
+				);
+				await A.put('chain-fail-after', { v: 2 }, context);
+			});
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		assert.ok(forcedFailures > 0, 'premise: the chained commit must actually have failed');
+		assert.ok(
+			await A.get('chain-fail-after'),
+			'a write after a half-landed commit must commit itself rather than stage into a rotated generation'
+		);
+	});
+
 	rocksOnly('reads its own post-commit writes', async function () {
 		const context = {};
 		await transaction(context, async () => {

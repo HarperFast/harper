@@ -1036,7 +1036,7 @@ export class DatabaseTransaction implements Transaction {
 									// As on the synchronous path: a completion that failed (a chained store's commit,
 									// a replication confirmation) leaves this commit partly landed, so ownership goes
 									// with it rather than letting a later commit rotate on top.
-									this.#scopeOwned = false;
+									this.endScopeOwnership();
 									throw error;
 								}
 							);
@@ -1159,7 +1159,7 @@ export class DatabaseTransaction implements Transaction {
 								// ownership as the head's own failure branch does: a handler that catches this and
 								// commits again must not rotate on top of it, and must not have the failed link
 								// dropped from the chain before its abort can clean up its blobs.
-								this.#scopeOwned = false;
+								this.endScopeOwnership();
 								throw error;
 							}
 						);
