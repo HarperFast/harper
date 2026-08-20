@@ -432,10 +432,15 @@ export class DatabaseTransaction implements Transaction {
 	private detachOwnedTransaction(): RocksTransactionWithRetry | null {
 		const transaction = this.transaction;
 		trackedTxns.delete(this);
-		supervisedWriteRoots.delete(this.root ?? this);
 		this.transaction = null;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
+		if (supervisedWriteRoots.size) {
+			const root = this.root ?? this;
+			let link: DatabaseTransaction = root;
+			while (link && !link.transaction) link = link.next;
+			if (!link) supervisedWriteRoots.delete(root);
+		}
 		return transaction;
 	}
 
@@ -697,7 +702,11 @@ export class DatabaseTransaction implements Transaction {
 				// unit. Replay is excluded deliberately — it is synchronous, already bounded by its own
 				// stall and wall-clock guards, and commits at timestamp boundaries that a monitor-driven
 				// commit could split.
-				if (!this.isReplay) supervisedWriteRoots.add(this.root ?? this);
+				if (!this.isReplay) {
+					const root = this.root ?? this;
+					root.timeout = Math.max(root.timeout || 0, this.timeout || txnExpiration, root.timeoutBudget || 0);
+					supervisedWriteRoots.add(root);
+				}
 			} else {
 				// if it is closed, we have to immediately commit, using our immediate transaction
 				immediateCommit = true;

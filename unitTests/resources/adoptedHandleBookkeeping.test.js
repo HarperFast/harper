@@ -205,18 +205,33 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		opened.push(head);
 		context.transaction = head;
 		head.setContext(context);
-		await Blind.get('chain-seed', context); // head claims the first database
+		head.db = Blind.primaryStore;
 
 		const other = await Chained.getResource({ id: null }, context, {});
-		other._writeInvalidate('chain-write'); // blind write, landing on the chained link
+		other._writeInvalidate('chain-write');
 		const child = head.next;
 		opened.push(child);
 		assert.ok(child?.transaction, 'expected the chained link to have adopted a handle');
+		assert.ok(Number.isFinite(head.timeout) && head.timeout > 0, 'the supervised root must have an armed timeout');
 
 		// The monitor iterates members independently and chainStillActive() only looks downstream, so a
 		// supervised child would be its own timeout root and could be reaped while the head is active.
 		assert.strictEqual(getSupervisedWriteRoots().has(head), true);
 		assert.strictEqual(getSupervisedWriteRoots().has(child), false);
+	});
+
+	it('keeps the root supervised while another chain link still owns a handle', async function () {
+		const { txn: head, context } = await blindWriteTransaction('root-write');
+		await Chained.get('chain-read', context);
+		const child = head.next;
+		opened.push(child);
+		assert.ok(child?.transaction, 'expected the chained read to own a handle');
+
+		child.releaseReadTxn();
+
+		assert.strictEqual(getSupervisedWriteRoots().has(head), true, 'the root write still owns a handle');
+		head.abort();
+		assert.strictEqual(getSupervisedWriteRoots().has(head), false, 'supervision ends with chain ownership');
 	});
 
 	it('leaves crash-recovery replay unsupervised, so a timestamp group cannot be split', async function () {
