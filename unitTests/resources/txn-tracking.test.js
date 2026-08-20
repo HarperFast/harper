@@ -376,115 +376,118 @@ describe('Write txn timeout', () => {
 			setExpiration(30000);
 		}
 	});
-	// A write-first link (save() built the handle with no prior read) has no readTxnsUsed, so the
-	// refcount loop never runs and the handle was stranded — permanently, since rocksdb-js's
-	// registry keeps it alive and it holds a read snapshot (#2107).
-	it('releases a write-first native handle on abort, with no read refcount to drive the loop', function () {
-		if (isLMDB) this.skip();
-		const txn = new DatabaseTransaction();
-		txn.open = TRANSACTION_STATE.OPEN;
-		let aborted = 0;
-		txn.transaction = {
-			abort() {
-				aborted++;
-			},
-		};
-		assert.strictEqual(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
 
-		txn.abort();
+	describe('abort releases the native handle', () => {
+		// A write-first link (save() built the handle with no prior read) has no readTxnsUsed, so the
+		// refcount loop never runs and the handle was stranded — permanently, since rocksdb-js's
+		// registry keeps it alive and it holds a read snapshot (#2107).
+		it('releases a write-first native handle on abort, with no read refcount to drive the loop', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			txn.open = TRANSACTION_STATE.OPEN;
+			let aborted = 0;
+			txn.transaction = {
+				abort() {
+					aborted++;
+				},
+			};
+			assert.strictEqual(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
 
-		assert.strictEqual(aborted, 1, 'abort() must release the native handle');
-		assert.strictEqual(txn.transaction, null, 'the released handle must not be reachable for reuse');
-	});
+			txn.abort();
 
-	// Control: the refcount loop still owns the read-created release, and the fallback must not
-	// abort the same handle a second time.
-	it('releases a read-created native handle exactly once on abort', function () {
-		if (isLMDB) this.skip();
-		const txn = new DatabaseTransaction();
-		txn.open = TRANSACTION_STATE.OPEN;
-		let aborted = 0;
-		txn.transaction = {
-			abort() {
-				aborted++;
-			},
-		};
-		txn.readTxnsUsed = 1; // as getReadTxn() would leave behind
-
-		txn.abort();
-
-		assert.strictEqual(aborted, 1, 'the read refcount loop must release it, and the fallback must not re-abort');
-		assert.strictEqual(txn.transaction, null);
-	});
-
-	// A failed commitSync leaves the handle open, and directCommitSync has already untracked it, so
-	// nothing else can reach it.
-	it('returns the native snapshot to baseline after a blind-write abort', function () {
-		if (isLMDB) this.skip();
-		const store = IndexedResource.primaryStore;
-		const rootStore = store.rootStore;
-		const liveTxns = () => registryStatus().reduce((total, db) => total + db.transactions, 0);
-		const snapshots = () => rootStore.getDBIntProperty('rocksdb.num-snapshots');
-
-		const baselineTxns = liveTxns();
-		const baselineSnapshots = snapshots();
-
-		const txn = new DatabaseTransaction();
-		txn.db = store;
-		txn.addWrite({
-			key: 601,
-			store,
-			commit() {},
+			assert.strictEqual(aborted, 1, 'abort() must release the native handle');
+			assert.strictEqual(txn.transaction, null, 'the released handle must not be reachable for reuse');
 		});
-		assert.strictEqual(txn.readTxnsUsed, 1, 'save() must attach the native handle with its base read reference');
-		assert.strictEqual(liveTxns(), baselineTxns + 1, 'test setup: the native handle must be registered');
-		assert.ok(snapshots() > baselineSnapshots, 'test setup: the blind-write lookup must pin a snapshot');
 
-		txn.abort();
+		// Control: the refcount loop still owns the read-created release, and the fallback must not
+		// abort the same handle a second time.
+		it('releases a read-created native handle exactly once on abort', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			txn.open = TRANSACTION_STATE.OPEN;
+			let aborted = 0;
+			txn.transaction = {
+				abort() {
+					aborted++;
+				},
+			};
+			txn.readTxnsUsed = 1; // as getReadTxn() would leave behind
 
-		assert.strictEqual(liveTxns(), baselineTxns, 'the native handle must be deregistered');
-		assert.strictEqual(snapshots(), baselineSnapshots, 'the read snapshot must be released');
-	});
+			txn.abort();
 
-	// RocksTransaction.abort() throws on an already committed/aborted handle. abort() must absorb
-	// that: its callers (abortDueToTimeout, abortChainAfterRetries, commit()'s rejection wrapper)
-	// have no handler, and a throw out of the first statement would skip every later cleanup step.
-	it('completes its cleanup when the native abort throws', function () {
-		if (isLMDB) this.skip();
-		const txn = new DatabaseTransaction();
-		txn.open = TRANSACTION_STATE.OPEN;
-		txn.transaction = {
-			abort() {
-				throw Object.assign(new Error('Transaction has already been committed'), {
-					code: 'ERR_ALREADY_COMMITTED',
-				});
-			},
-		};
-		txn.readTxnsUsed = 1; // release goes through the read-refcount loop, abort()'s first statement
+			assert.strictEqual(aborted, 1, 'the read refcount loop must release it, and the fallback must not re-abort');
+			assert.strictEqual(txn.transaction, null);
+		});
 
-		assert.doesNotThrow(() => txn.abort());
+		// A failed commitSync leaves the handle open, and directCommitSync has already untracked it, so
+		// nothing else can reach it.
+		it('returns the native snapshot to baseline after a blind-write abort', function () {
+			if (isLMDB) this.skip();
+			const store = IndexedResource.primaryStore;
+			const rootStore = store.rootStore;
+			const liveTxns = () => registryStatus().reduce((total, db) => total + db.transactions, 0);
+			const snapshots = () => rootStore.getDBIntProperty('rocksdb.num-snapshots');
 
-		assert.strictEqual(txn.transaction, null, 'the handle must be detached even though its abort threw');
-		assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED, 'the cleanup after the release must still run');
-	});
+			const baselineTxns = liveTxns();
+			const baselineSnapshots = snapshots();
 
-	it('releases the native handle when a direct commit throws', function () {
-		if (isLMDB) this.skip();
-		const txn = new DatabaseTransaction();
-		let aborted = 0;
-		txn.transaction = {
-			commitSync() {
-				throw new Error('commit failed');
-			},
-			abort() {
-				aborted++;
-			},
-		};
+			const txn = new DatabaseTransaction();
+			txn.db = store;
+			txn.addWrite({
+				key: 601,
+				store,
+				commit() {},
+			});
+			assert.strictEqual(txn.readTxnsUsed, 1, 'save() must attach the native handle with its base read reference');
+			assert.strictEqual(liveTxns(), baselineTxns + 1, 'test setup: the native handle must be registered');
+			assert.ok(snapshots() > baselineSnapshots, 'test setup: the blind-write lookup must pin a snapshot');
 
-		assert.throws(() => txn.directCommitSync(), /commit failed/);
+			txn.abort();
 
-		assert.strictEqual(aborted, 1, 'a failed direct commit must release the handle it orphaned');
-		assert.strictEqual(txn.transaction, null);
+			assert.strictEqual(liveTxns(), baselineTxns, 'the native handle must be deregistered');
+			assert.strictEqual(snapshots(), baselineSnapshots, 'the read snapshot must be released');
+		});
+
+		// RocksTransaction.abort() throws on an already committed/aborted handle. abort() must absorb
+		// that: its callers (abortDueToTimeout, abortChainAfterRetries, commit()'s rejection wrapper)
+		// have no handler, and a throw out of the first statement would skip every later cleanup step.
+		it('completes its cleanup when the native abort throws', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			txn.open = TRANSACTION_STATE.OPEN;
+			txn.transaction = {
+				abort() {
+					throw Object.assign(new Error('Transaction has already been committed'), {
+						code: 'ERR_ALREADY_COMMITTED',
+					});
+				},
+			};
+			txn.readTxnsUsed = 1; // release goes through the read-refcount loop, abort()'s first statement
+
+			assert.doesNotThrow(() => txn.abort());
+
+			assert.strictEqual(txn.transaction, null, 'the handle must be detached even though its abort threw');
+			assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED, 'the cleanup after the release must still run');
+		});
+
+		it('releases the native handle when a direct commit throws', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			let aborted = 0;
+			txn.transaction = {
+				commitSync() {
+					throw new Error('commit failed');
+				},
+				abort() {
+					aborted++;
+				},
+			};
+
+			assert.throws(() => txn.directCommitSync(), /commit failed/);
+
+			assert.strictEqual(aborted, 1, 'a failed direct commit must release the handle it orphaned');
+			assert.strictEqual(txn.transaction, null);
+		});
 	});
 });
 
