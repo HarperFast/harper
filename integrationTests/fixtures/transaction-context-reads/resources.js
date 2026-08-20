@@ -97,3 +97,52 @@ export class DashWriteThenSearch extends Resource {
 		return { variant: 'write-then-search', companyId, count: snapshots.length, snapshots };
 	}
 }
+
+// POST-COMMIT ATOMICITY — commit the per-request transaction mid-handler, then write two records
+// and throw. Those writes belong to the request transaction's pending final commit, so the failure
+// must leave neither of them behind.
+export class DashCommitWriteThrow extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const suffix = paramId(query) ?? 'x';
+		await tables.Company.get('c1');
+		await transaction.commit(this);
+		await tables.Company.put({ id: `atomic-company-${suffix}`, name: 'should not survive' });
+		await tables.ScoreSnapshot.put({ id: `atomic-snap-${suffix}`, companyId: 'atomic-co', score: 1 });
+		throw new Error('deliberate failure after the mid-handler commit');
+	}
+}
+
+// The same shape that succeeds: both post-commit writes must be durable once the request completes.
+export class DashCommitWriteOk extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const suffix = paramId(query) ?? 'x';
+		await tables.Company.get('c1');
+		await transaction.commit(this);
+		await tables.Company.put({ id: `ok-company-${suffix}`, name: 'kept' });
+		await tables.ScoreSnapshot.put({ id: `ok-snap-${suffix}`, companyId: 'atomic-co', score: 2 });
+		return { variant: 'commit-write-ok', suffix };
+	}
+}
+
+// CLOSED-SLOT READ GUARD — the original point of this fixture, preserved now that an ordinary
+// mid-handler commit rotates the scope to a fresh open generation instead of leaving it closed. An
+// undrained iterator holds the native handle, so the commit cannot rotate and the slot stays genuinely
+// CLOSED; the search that follows must still read the latest committed state rather than empty.
+export class DashUndrainedThenSearch extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const companyId = paramId(query);
+		const held = tables.ScoreSnapshot.search({
+			conditions: [{ attribute: 'companyId', comparator: 'equals', value: companyId }],
+		});
+		const iterator = held[Symbol.asyncIterator]();
+		await iterator.next(); // hold the handle open, do not drain
+		const ctx = this.getContext();
+		await transaction.commit(this);
+		const txnOpenAfter = ctx?.transaction?.open;
+		const snapshots = await searchSnapshots(companyId);
+		return { variant: 'undrained-then-search', companyId, txnOpenAfter, count: snapshots.length, snapshots };
+	}
+}

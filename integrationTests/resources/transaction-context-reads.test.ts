@@ -104,13 +104,44 @@ suite('Transaction context: closed txn in ALS still reads latest', { skip: skipS
 		strictEqual(body.count, SNAP_IDS.length);
 	});
 
-	test('commit-then-search (txn closed in ALS) still returns all rows', async () => {
+	test('commit-then-search still returns all rows, on the rotated generation', async () => {
 		const body = await dashCount('/DashCommitThenSearch/');
-		// Guards the misdiagnosis: the request txn is genuinely closed before the search
-		// (open: 1 -> 0), yet the closed slot reads latest committed state, not empty.
+		// The explicit commit closes the generation it committed and the scope rotates to a fresh
+		// OPEN, snapshot-free one, because the request scope still owes a final commit. Either way the
+		// search must read the latest committed state — which is what the original misdiagnosis
+		// (empty results from a closed slot) claimed it would not.
 		strictEqual(body.txnOpenBefore, 1, 'txn was open before the explicit commit');
-		strictEqual(body.txnOpenAfter, 0, 'txn is closed in ALS before the search');
-		strictEqual(body.count, SNAP_IDS.length, 'closed-txn-in-ALS must still see all snapshots');
+		strictEqual(body.txnOpenAfter, 1, 'the scope rotates to a fresh open generation after its own commit');
+		strictEqual(body.count, SNAP_IDS.length, 'the rotated generation must still see all snapshots');
+	});
+
+	test('a genuinely closed slot still returns all rows (original guard, via an undrained iterator)', async () => {
+		// The commit-then-search case above now rotates to a fresh OPEN generation, so it no longer
+		// exercises a CLOSED slot. An undrained iterator holds the handle, which blocks the rotation and
+		// keeps the slot closed — the shape this file was written to pin.
+		const body = await dashCount('/DashUndrainedThenSearch/');
+		strictEqual(body.txnOpenAfter, 0, 'a retained handle must block the rotation, leaving the slot closed');
+		strictEqual(body.count, SNAP_IDS.length, 'a closed slot must still read latest committed state, not empty');
+	});
+
+	test('writes made after a mid-handler commit roll back when the request fails', async () => {
+		const r = await fetch(`${httpURL}/DashCommitWriteThrow/?company=rollback`, {
+			headers: { Authorization: auth },
+		});
+		ok(r.status >= 500, `expected the handler failure to surface, got ${r.status}`);
+		for (const path of ['/Company/atomic-company-rollback', '/ScoreSnapshot/atomic-snap-rollback']) {
+			const probe = await fetch(`${httpURL}${path}`, { headers: { Authorization: auth } });
+			strictEqual(probe.status, 404, `${path} must not exist: it was written after the mid-handler commit`);
+		}
+	});
+
+	test('writes made after a mid-handler commit are durable when the request succeeds', async () => {
+		const r = await fetch(`${httpURL}/DashCommitWriteOk/?company=keep`, { headers: { Authorization: auth } });
+		ok(r.status < 300, `DashCommitWriteOk expected 2xx, got ${r.status}`);
+		for (const path of ['/Company/ok-company-keep', '/ScoreSnapshot/ok-snap-keep']) {
+			const probe = await fetch(`${httpURL}${path}`, { headers: { Authorization: auth } });
+			ok(probe.status < 300, `${path} must be durable once the request completes, got ${probe.status}`);
+		}
 	});
 
 	test('lazily-returned search iterated during post-commit serialization returns all rows', async () => {

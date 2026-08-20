@@ -5667,6 +5667,9 @@ export function makeTable(options) {
 					// commit is tracked with its own identity (DatabaseTransaction.ts's trackOutstandingCommit),
 					// so a wedged second-store commit is named just as precisely as a wedged first one.
 					transaction.next.startedFrom = transaction.startedFrom;
+					// A second database joined after a mid-scope commit belongs to the same snapshot-free
+					// generation as the head, or its reads would re-pin what the commit just unpinned.
+					transaction.next.snapshotFree = transaction.snapshotFree;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
