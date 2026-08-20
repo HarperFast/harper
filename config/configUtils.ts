@@ -24,7 +24,12 @@ import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
-import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
+import {
+	prepareRuntimeEnvConfig,
+	hasPersistedEnvConfigState,
+	discardConfigState,
+	readConfigStateContent,
+} from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 
@@ -1314,9 +1319,14 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	const configObj = configDoc.toJSON();
 
 	let saveEnvConfigState;
+	let confirmEnvConfigState;
 	try {
 		// Apply env vars with source tracking and drift detection
-		({ saveState: saveEnvConfigState } = prepareRuntimeEnvConfig(configObj, rootPath, options));
+		({ saveState: saveEnvConfigState, confirmConfigWritten: confirmEnvConfigState } = prepareRuntimeEnvConfig(
+			configObj,
+			rootPath,
+			options
+		));
 
 		// If securePort was set to the same value as port, auto-null port to avoid clashing
 		if (configObj.http?.port && configObj.http?.port === configObj.http?.securePort) {
@@ -1351,7 +1361,7 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	// Install has no config file yet and no process to keep alive, so its snapshot write stays
 	// mandatory - an install that never recorded originals should fail, not proceed.
 	if (!configFilePath) {
-		saveEnvConfigState();
+		confirmEnvConfigState();
 		return;
 	}
 
@@ -1365,11 +1375,14 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 			);
 		}
 		// The snapshot records the file's pre-env values, so neither artifact may move without the
-		// other. Snapshot refused: the file is left alone, being the last record of those values.
-		// Snapshot rewritten but the file write refused or failed: drop the snapshot, since one that
-		// is ahead of the file makes the next boot read the older value as a manual user edit and
-		// stop applying the env layer for good. Unlink needs no free space.
+		// other, and a snapshot ahead of the file makes the next boot read the older value as a
+		// manual user edit and stop applying the env layer for good. So: mark the snapshot pending,
+		// write the file, then clear the mark. Refused snapshot leaves the file alone (it is the
+		// last record of those values); refused or failed file write drops the snapshot (unlink
+		// needs no free space); a crash in between leaves the mark, and a pending snapshot is
+		// discarded when it is next loaded.
 		let snapshotRewritten = false;
+		const previousState = readConfigStateContent(rootPath as string);
 		if (persistConfigDuringBoot(`${rootPath} env config state`, () => (snapshotRewritten = saveEnvConfigState()))) {
 			let configPersisted = false;
 			try {
@@ -1377,9 +1390,12 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 					atomicWriteFile(configFilePath, String(configDoc), { skipIfUnchanged: true })
 				);
 			} finally {
-				if (!configPersisted && snapshotRewritten) discardConfigState(rootPath as string);
+				if (!configPersisted && snapshotRewritten) discardConfigState(rootPath as string, previousState);
 			}
-			if (configPersisted) logger.debug('Config file updated with runtime env var values');
+			if (configPersisted) {
+				if (snapshotRewritten) persistConfigDuringBoot(`${rootPath} env config state`, confirmEnvConfigState);
+				logger.debug('Config file updated with runtime env var values');
+			}
 		}
 	} catch (error) {
 		logger.error(`Failed to write config file after applying runtime env vars: ${error.message}`);

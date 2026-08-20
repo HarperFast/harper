@@ -738,6 +738,8 @@ export function createLogger(options: any = {} as any) {
 	return logger;
 }
 const LOG_TIME_USAGE_THRESHOLD = 100;
+// How long to write straight to stdio after the log file refuses an append.
+const APPEND_RETRY_COOLDOWN = 5000;
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
  * @param path
@@ -746,7 +748,7 @@ const LOG_TIME_USAGE_THRESHOLD = 100;
  */
 function getFileLogger(path, rotation, isExternalInstance) {
 	let logger = fileLoggers.get(path);
-	let logFD, loggedFDError, loggedAppendError, logTimer;
+	let logFD, loggedFDError, loggedAppendError, logTimer, retryAppendAfter;
 	let logBuffer;
 	let logTimeUsage = 0;
 	if (!logger) {
@@ -799,12 +801,17 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	// this is called on a timer, and will write the log buffer to the file
 	function logQueuedData(entry?: any) {
 		openLogFile(undefined);
-		if (logFD) {
+		const payload = logBuffer ? logBuffer.join('') : entry;
+		// A file that just refused a write will refuse the next one too, and every attempt costs a
+		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
+		// is the request path at full rate. Go straight to stdio until the cooldown expires.
+		if (logFD && !(retryAppendAfter > performance.now())) {
 			let startTime = performance.now();
-			const payload = logBuffer ? logBuffer.join('') : entry;
 			try {
 				fs.appendFileSync(logFD, payload);
+				retryAppendAfter = undefined;
 			} catch (error) {
+				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
 				// A log write must never take the process down: on an exhausted volume this throws from
 				// both inline and timer call sites, making every log statement a crash point (#847).
 				// The fallback goes through nativeStdWrite rather than console because
@@ -822,7 +829,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
 			// will start buffering
 			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
-		} else writeToStdioDirectly(process.stdout, logBuffer ? logBuffer.join('') : entry);
+		} else writeToStdioDirectly(process.stdout, payload);
 		if (logBuffer) logBuffer = null;
 	}
 

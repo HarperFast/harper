@@ -137,8 +137,26 @@ describe('storage exhaustion during boot (#847)', function () {
 			// The rollback keys off this: an unchanged snapshot still describes the file on disk, so
 			// it must not be discarded when only the config write is refused.
 			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
-			assert.strictEqual(prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot).saveState(), true);
-			assert.strictEqual(prepareRuntimeEnvConfig({ http: { port: 8123 } }, testRoot).saveState(), false);
+			const first = prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);
+			assert.strictEqual(first.saveState(), true);
+			assert.strictEqual(first.confirmConfigWritten(), true);
+
+			const second = prepareRuntimeEnvConfig({ http: { port: 8123 } }, testRoot);
+			assert.strictEqual(second.saveState(), false, 'a boot that re-derives the same state writes nothing');
+		});
+
+		it('discards a snapshot whose config-file write never completed', function () {
+			// The crash window: the snapshot rename landed, the process died before the config
+			// rename. The mark is the only thing that distinguishes this from a manual user edit.
+			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
+			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot).saveState();
+			assert.strictEqual(JSON.parse(fs.readFileSync(statePath(), 'utf8')).pendingConfigWrite, true);
+
+			// Next boot loads it: a pending snapshot must not be trusted as a description of the file.
+			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot).confirmConfigWritten();
+			const reloaded = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
+			assert.strictEqual(reloaded.pendingConfigWrite, undefined);
+			assert.deepStrictEqual(reloaded.originalValues, { 'http.port': 9926 }, 'originals re-derived from the file');
 		});
 
 		it('discards a snapshot that would misdescribe the config file', function () {
@@ -154,5 +172,34 @@ describe('storage exhaustion during boot (#847)', function () {
 			discardConfigState(testRoot);
 			assert.strictEqual(fs.existsSync(statePath()), false);
 		});
+	});
+});
+
+// The logger's fallback is the other half of #847: an append that cannot land must not throw, and
+// must not reach the console, because installStdioGuard routes console output back into this same
+// file logger and the recursion ends in a stack overflow. /dev/full refuses every write for real,
+// so this needs no stubbing - it just needs a platform that has it.
+describe('log writes that cannot land (#847)', function () {
+	const childScript = `
+		const { createLogger, initLogSettings } = require(${JSON.stringify(require.resolve('#src/utility/logging/harper_logger'))});
+		initLogSettings(true);
+		const logger = createLogger({ path: '/dev/full', level: 'error' });
+		for (let i = 0; i < 3; i++) logger.error('line ' + i + ' cannot be written');
+		process.stdout.write('CHILD-SURVIVED\\n');
+	`;
+
+	it('falls back to stdio instead of throwing or recursing', function () {
+		if (!fs.existsSync('/dev/full')) return this.skip();
+		const { execFileSync } = require('node:child_process');
+
+		const output = execFileSync(process.execPath, ['-e', childScript], {
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'pipe'],
+			env: { ...process.env, HARPER_ROOT: testRoot },
+		});
+
+		assert.match(output, /CHILD-SURVIVED/, 'the process survived a refused log append');
+		assert.match(output, /line 0 cannot be written/, 'the entry reached stdout rather than being dropped');
+		assert.doesNotMatch(output, /Maximum call stack/, 'the fallback did not re-enter the file logger');
 	});
 });
