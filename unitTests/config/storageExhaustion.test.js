@@ -206,7 +206,10 @@ describe('storage exhaustion during boot (#847)', function () {
 			const backupDir = path.join(testRoot, hdbTerms.BACKUP_DIR_NAME);
 			fs.ensureDirSync(backupDir);
 			const liveOwner = path.join(backupDir, `.harper-config-state.pending.${process.ppid}.json`);
-			const deadOwner = path.join(backupDir, '.harper-config-state.pending.999999.json');
+			// A pid that was real and is now gone, rather than one hardcoded and hoped to be free
+			const { execFileSync } = require('node:child_process');
+			const deadPid = Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']));
+			const deadOwner = path.join(backupDir, `.harper-config-state.pending.${deadPid}.json`);
 			fs.writeFileSync(liveOwner, '{}');
 			fs.writeFileSync(deadOwner, '{}');
 
@@ -252,5 +255,59 @@ describe('log writes that cannot land (#847)', function () {
 		assert.match(output, /CHILD-SURVIVED/, 'the process survived a refused log append');
 		assert.match(output, /line 0 cannot be written/, 'the entry reached stdout rather than being dropped');
 		assert.doesNotMatch(output, /Maximum call stack/, 'the fallback did not re-enter the file logger');
+	});
+});
+
+// Only the main thread persists config: every worker derives the same merged config, and letting
+// them all write it is what put four threads on one pair of files (#847). A real worker, because
+// the guard reads worker_threads.isMainThread and nothing else can tell the truth about that.
+describe('config persistence from a worker thread (#847)', function () {
+	it('applies the env layer in memory without touching the files', function (done) {
+		const { Worker } = require('node:worker_threads');
+		const os = require('node:os');
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-847-worker-'));
+		const configPath = path.join(root, hdbTerms.HARPER_CONFIG_FILE);
+		const { execFileSync } = require('node:child_process');
+		// A real config file, built the way an install builds one, plus the directories it validates
+		execFileSync(process.execPath, [
+			'-e',
+			`require(${JSON.stringify(require.resolve('#src/config/configUtils'))}).createConfigFile({ ROOTPATH: ${JSON.stringify(root)}, LOGGING_LEVEL: 'error' })`,
+		]);
+		for (const dir of ['database', 'log', 'components', hdbTerms.BACKUP_DIR_NAME])
+			fs.ensureDirSync(path.join(root, dir));
+		const before = fs.readFileSync(configPath, 'utf8');
+
+		const worker = new Worker(
+			`
+			const configUtils = require(${JSON.stringify(require.resolve('#src/config/configUtils'))});
+			const { parentPort } = require('node:worker_threads');
+			try {
+				configUtils.initConfig(true);
+				parentPort.postMessage({ port: configUtils.getConfigValue('http_port') });
+			} catch (error) {
+				parentPort.postMessage({ error: error.message });
+			}
+		`,
+			{ eval: true, env: { ...process.env, ROOTPATH: root, HARPER_SET_CONFIG: '{"http":{"port":8123}}' } }
+		);
+
+		worker.on('message', (result) => {
+			try {
+				assert.strictEqual(result.error, undefined, `worker failed: ${result.error}`);
+				assert.strictEqual(result.port, 8123, 'the worker still runs on the merged config');
+				assert.strictEqual(fs.readFileSync(configPath, 'utf8'), before, 'no config write from a worker');
+				assert.strictEqual(
+					fs.existsSync(path.join(root, hdbTerms.BACKUP_DIR_NAME, '.harper-config-state.json')),
+					false,
+					'no env-config state write from a worker'
+				);
+				done();
+			} catch (error) {
+				done(error);
+			} finally {
+				worker.terminate();
+				fs.removeSync(root);
+			}
+		});
 	});
 });
