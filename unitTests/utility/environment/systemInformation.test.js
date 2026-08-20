@@ -130,7 +130,7 @@ const EXPECTED_PROPERTIES = {
 		'node_version',
 		'npm_version',
 	],
-	time: ['current', 'uptime', 'timezone', 'timezoneName'],
+	time: ['current', 'uptime', 'timezone', 'timezoneName', 'process_uptime'],
 	cpu: [
 		'manufacturer',
 		'brand',
@@ -253,6 +253,8 @@ describe('test systemInformation module', () => {
 	it('test getTimeInfo function', () => {
 		const results = system_information.getTimeInfo();
 		assert.deepEqual(Object.keys(results).sort(), EXPECTED_PROPERTIES.time.sort());
+		assert.equal(typeof results.process_uptime, 'number');
+		assert.ok(results.process_uptime >= 0, 'process_uptime should be non-negative');
 	});
 
 	it('test getCPUInfo function', async () => {
