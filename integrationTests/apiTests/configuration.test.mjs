@@ -120,6 +120,23 @@ suite('Configuration', (ctx) => {
 			.expect(200);
 	});
 
+	test('describe_table reports record-structure dictionary counts', async () => {
+		// harper#2220: the dictionary is append-only and its saturation changes how novel record
+		// shapes are stored, so the counts have to actually reach the admin surface.
+		await client
+			.req()
+			.send({ operation: 'describe_table', table: DROP_ATTR_TABLE, schema: SCHEMA })
+			.expect((r) => {
+				assert.equal(typeof r.body.typed_structures_enabled, 'boolean', r.text);
+				assert.equal(typeof r.body.typed_structure_count, 'number', r.text);
+				assert.equal(typeof r.body.typed_structure_limit, 'number', r.text);
+				assert.equal(typeof r.body.classic_structure_count, 'number', r.text);
+				assert.ok(r.body.typed_structure_limit > 0, r.text);
+				assert.ok(r.body.typed_structure_count <= r.body.typed_structure_limit, r.text);
+			})
+			.expect(200);
+	});
+
 	test('create_attribute adds created_attribute', async () => {
 		await client
 			.req()

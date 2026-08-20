@@ -185,6 +185,7 @@ describe('RecordEncoder structure-dictionary bound & observability (harper#2220)
 	afterEach(() => {
 		harperLogger.warn = restoreWarn;
 	});
+	const saturationWarnings = () => warnings.filter((w) => /Typed-structure dictionary/.test(w[0]));
 
 	function makeCappedEncoder(store, maxOwnStructures) {
 		return new RecordEncoder({
@@ -203,8 +204,7 @@ describe('RecordEncoder structure-dictionary bound & observability (harper#2220)
 	});
 
 	it('stops minting typed structures at the bound, and past-cap records still round-trip', () => {
-		const store = sharedStore();
-		const enc = makeCappedEncoder(store, 4);
+		const enc = makeCappedEncoder(sharedStore(), 4);
 		// Each novel field name is a novel shape, so this would mint 20 structures if uncapped.
 		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
 		assert.strictEqual(enc.getStructureCounts().typed, 4, 'dictionary must stop growing at the bound');
@@ -212,33 +212,90 @@ describe('RecordEncoder structure-dictionary bound & observability (harper#2220)
 		assert.deepStrictEqual(enc.decode(bytes), { beyond: 'the cap' }, 'past-cap shapes fall back to plain encoding');
 	});
 
-	it('warns exactly once when the typed-structure dictionary saturates', () => {
+	it("reports the durable dictionary, not this encoder's own arrays", () => {
+		// The failure this guards: each worker owns its own encoder and loads lazily, so a worker that
+		// never encoded for a store holds empty arrays for a store whose durable dictionary is full.
+		// Reporting the local arrays would tell an operator there is full headroom when there is none.
 		const store = sharedStore();
-		const enc = makeCappedEncoder(store, 4);
+		const writer = makeCappedEncoder(store, 8);
+		for (let i = 0; i < 20; i++) writer.encode({ ['f' + i]: i });
+		assert.strictEqual(writer.getStructureCounts().typed, 8);
+
+		const idleWorker = makeCappedEncoder(store, 8);
+		assert.strictEqual(idleWorker.typedStructs.length, 0, 'precondition: this encoder has loaded nothing');
+		assert.strictEqual(idleWorker.getStructureCounts().typed, 8, 'counts must come from the durable payload');
+	});
+
+	it('reports zero for a store whose structures have never been saved', () => {
+		const enc = makeCappedEncoder(sharedStore(), 8);
+		assert.deepStrictEqual(enc.getStructureCounts(), {
+			typed: 0,
+			classic: 0,
+			typedLimit: 8,
+			typedEnabled: true,
+		});
+	});
+
+	it('reports whether typed encoding is enabled at all', () => {
+		// Random-access fields default off (utility/lmdb/OpenDBIObject.ts), so a typed count of 0
+		// against a limit of 256 is the normal state for most tables, not spare headroom.
+		assert.strictEqual(makeEncoder(true, sharedStore()).getStructureCounts().typedEnabled, true);
+		assert.strictEqual(makeEncoder(false, sharedStore()).getStructureCounts().typedEnabled, false);
+	});
+
+	it('reports classic (named-record) structures separately from typed ones', () => {
+		const enc = makeEncoder(false, sharedStore()); // struct hook bails -> msgpackr records mode
+		enc.encode(record);
+		const counts = enc.getStructureCounts();
+		assert.strictEqual(counts.typed, 0, 'records mode must not mint typed structures');
+		assert.ok(counts.classic > 0, 'records mode mints a classic named-record structure');
+	});
+
+	it('warns exactly once when the typed-structure dictionary saturates', () => {
+		const enc = makeCappedEncoder(sharedStore(), 4);
 		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
-		const saturationWarnings = warnings.filter((w) => /Typed-structure dictionary/.test(w[0]));
-		assert.strictEqual(saturationWarnings.length, 1, 'saturation should be reported once, not per write');
-		assert.match(saturationWarnings[0][0], /reached its limit of 4 structures/);
+		assert.strictEqual(saturationWarnings().length, 1, 'saturation should be reported once, not per write');
+		assert.match(saturationWarnings()[0][0], /reached its limit of 4 structures/);
 	});
 
 	it('does not warn while the dictionary still has headroom', () => {
 		const enc = makeCappedEncoder(sharedStore(), 64);
 		for (let i = 0; i < 8; i++) enc.encode({ ['f' + i]: i });
 		assert.strictEqual(enc.getStructureCounts().typed, 8);
-		assert.strictEqual(
-			warnings.filter((w) => /Typed-structure dictionary/.test(w[0])).length,
-			0,
-			'no warning below the bound'
-		);
+		assert.strictEqual(saturationWarnings().length, 0, 'no warning below the bound');
 	});
 
-	it('reports classic (named-record) structures separately from typed ones', () => {
-		const store = sharedStore();
-		const enc = makeEncoder(false, store); // struct hook bails -> msgpackr records mode
-		enc.encode(record);
-		const counts = enc.getStructureCounts();
-		assert.strictEqual(counts.typed, 0, 'records mode must not mint typed structures');
-		assert.ok(counts.classic > 0, 'records mode mints a classic named-record structure');
+	it('does not fail the write when the log sink throws on the saturation warning', () => {
+		// The structures are already durably committed by the time this runs, so a failing sink must
+		// not turn a committed save into a reported failure.
+		harperLogger.warn = () => {
+			throw new Error('log sink unavailable');
+		};
+		const enc = makeCappedEncoder(sharedStore(), 4);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 4);
+		const bytes = Buffer.from(enc.encode({ still: 'writable' }));
+		assert.deepStrictEqual(enc.decode(bytes), { still: 'writable' });
+	});
+
+	it('does not warn when the structure save was declined', () => {
+		// A declined save means the dictionary this encoder holds was never persisted; warning on it
+		// would report saturation of a dictionary that does not exist durably.
+		const enc = new RecordEncoder({
+			structures: [],
+			randomAccessStructure: true,
+			maxOwnStructures: 4,
+			getStructures: () => undefined,
+			saveStructures: () => false,
+		});
+		for (let i = 0; i < 20; i++) {
+			try {
+				enc.encode({ ['f' + i]: i });
+			} catch {
+				// structon surfaces sustained save contention; the point here is the absent warning
+			}
+		}
+		assert.strictEqual(saturationWarnings().length, 0, 'a declined save must not report saturation');
 	});
 
 	it('counts key order and per-field value width as distinct shapes, not just the field set', () => {

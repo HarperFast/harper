@@ -42,13 +42,29 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // monitoring; the store name is passed as the metric path.
 const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
 
-// Default bound on the per-encoder typed-structure dictionary. The dictionary is append-only and
-// pinned on the long-lived primary store, and its size is combinatorial in the shapes a table
-// realizes -- (field subset) x (key order) x (per-field value width class) -- not in column count,
-// so an unbounded one can exhaust memory on a wide/sparse schema. Reaching the cap is not an error:
-// novel shapes fall back to plain msgpackr encoding, which round-trips correctly but gives up
-// random-access field reads. See HarperFast/harper#2220.
+// Reaching this bound is not an error: novel shapes fall back to plain msgpackr encoding, which
+// round-trips correctly but gives up random-access field reads (HarperFast/harper#2220).
 export const DEFAULT_MAX_TYPED_STRUCTURES = 256;
+
+export interface StructureCounts {
+	typed: number;
+	classic: number;
+	typedLimit: number;
+	typedEnabled: boolean;
+}
+
+// Mirrors structon's onLoadedStructures: the durable shared-structures payload is a
+// {named, typed} Map, the same round-tripped through msgpackr as a plain object, cbor-x's
+// {structures} SharedData, or a legacy bare named array.
+function countDurableStructures(sharedData: any): { typed: number; classic: number } {
+	if (!sharedData) return { typed: 0, classic: 0 };
+	if (sharedData instanceof Map)
+		return { typed: sharedData.get('typed')?.length ?? 0, classic: sharedData.get('named')?.length ?? 0 };
+	if (Array.isArray(sharedData)) return { typed: 0, classic: sharedData.length };
+	if (!sharedData.named && !sharedData.typed && Array.isArray(sharedData.structures))
+		return { typed: 0, classic: sharedData.structures.length };
+	return { typed: sharedData.typed?.length ?? 0, classic: sharedData.named?.length ?? 0 };
+}
 
 // Terminal error messages msgpackr/structon throw when a record references a shared structure that
 // is not in this node's structures buffer. Both the typed (random-access) path (structon's
@@ -139,6 +155,7 @@ export class RecordEncoder extends StructonEncoder {
 	declare typedStructs: any[];
 	declare structures: any[];
 	declare maxOwnStructures: number;
+	randomAccessStructure = false;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
@@ -170,6 +187,7 @@ export class RecordEncoder extends StructonEncoder {
 		// (e.g. __dbis__, useVersions=false) must not — see the encode hook + harper#1307. Default to
 		// true when unspecified so an option that doesn't propagate can't silently strip prefixes.
 		this.useVersions = options.useVersions !== false;
+		this.randomAccessStructure = options.randomAccessStructure === true;
 		// structon (the StructonEncoder base) always installs the struct write hook. For DBIs
 		// that don't opt into struct mode (non-primary, e.g. __dbis__), force it to bail (return
 		// 0) so objects are written in plain msgpackr records mode — decodable by readers without
@@ -361,7 +379,7 @@ export class RecordEncoder extends StructonEncoder {
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
-				this.checkStructureCapacity();
+				if (result !== false) this.checkStructureCapacity();
 				return result;
 			}
 		};
@@ -376,36 +394,42 @@ export class RecordEncoder extends StructonEncoder {
 		};
 	}
 	/**
-	 * Current size of this store's record-structure dictionaries. Both numbers are O(1) reads of
-	 * in-memory arrays. `typed` is the random-access (structon) dictionary, which is append-only for
-	 * the life of the table and bounded by `maxOwnStructures`; `classic` is msgpackr's named-record
-	 * dictionary. Their sum is the same quantity replication stamps as `structureVersion`.
-	 * Exposed so dictionary growth is observable before it saturates -- see HarperFast/harper#2220.
+	 * Sizes of this store's record-structure dictionaries, read from the DURABLE shared-structures
+	 * payload rather than this encoder's arrays: each worker owns its own encoder and loads or mints
+	 * lazily, so a worker that never encoded for this store holds empty arrays for a store whose
+	 * dictionary is full. Only the durable payload is per-table (harper#2220).
 	 */
-	getStructureCounts(): { typed: number; classic: number; typedLimit: number } {
+	getStructureCounts(): StructureCounts {
+		const { typed, classic } = countDurableStructures(this.getStructures());
 		return {
-			typed: this.typedStructs?.length ?? 0,
-			classic: this.structures?.length ?? 0,
+			typed,
+			classic,
 			typedLimit: this.maxOwnStructures ?? DEFAULT_MAX_TYPED_STRUCTURES,
+			typedEnabled: this.randomAccessStructure,
 		};
 	}
 	/**
-	 * Warn once per store when the typed-structure dictionary saturates. Past the cap, novel record
-	 * shapes still encode and decode correctly but fall back to plain msgpackr encoding, losing
-	 * random-access field reads -- a permanent, otherwise-silent change in how this table is stored.
+	 * Warn on the transition to a saturated typed dictionary. Called only from the post-save path, so
+	 * this encoder's array is what was just persisted and reading it here is both cheap and canonical;
+	 * the durable-backed counts above are what a restarted or non-minting worker should report.
+	 * Never allowed to escape into the save's return value -- the structures are already committed.
 	 */
 	#reportedStructureSaturation = false;
 	checkStructureCapacity() {
 		if (this.#reportedStructureSaturation) return;
-		const { typed, typedLimit } = this.getStructureCounts();
-		if (typed < typedLimit) return;
+		const typedLimit = this.maxOwnStructures ?? DEFAULT_MAX_TYPED_STRUCTURES;
+		if ((this.typedStructs?.length ?? 0) < typedLimit) return;
 		this.#reportedStructureSaturation = true;
-		harperLogger.warn(
-			`Typed-structure dictionary for store ${this.name ?? this.rootStore?.name} reached its limit of ` +
-				`${typedLimit} structures; new record shapes will be stored without random-access field ` +
-				'encoding. This is driven by the variety of shapes written (field subset, key order, and ' +
-				'per-field value width), not by column count (see HarperFast/harper#2220).'
-		);
+		try {
+			harperLogger.warn(
+				`Typed-structure dictionary for store ${this.name ?? this.rootStore?.name} reached its limit of ` +
+					`${typedLimit} structures; new record shapes will be stored without random-access field ` +
+					'encoding. Dictionary size follows the variety of shapes written -- field set, key order, ' +
+					'and per-field value width -- not column count (see HarperFast/harper#2220).'
+			);
+		} catch {
+			// a failing log sink must not fail the write whose structures already committed
+		}
 	}
 	decode(buffer, options) {
 		lastMetadata = null;

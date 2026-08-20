@@ -1,6 +1,5 @@
 export const METRIC = {
 	TABLE_SIZE: 'table-size',
-	TABLE_STRUCTURES: 'table-structures',
 	DATABASE_SIZE: 'database-size',
 	STORAGE_VOLUME: 'storage-volume',
 	MAIN_THREAD_UTILIZATION: 'main-thread-utilization',
