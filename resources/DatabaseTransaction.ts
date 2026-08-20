@@ -437,9 +437,11 @@ export class DatabaseTransaction implements Transaction {
 		this.readTxnRefCount = 0;
 		if (supervisedWriteRoots.size) {
 			const root = this.root ?? this;
-			let link: DatabaseTransaction = root;
-			while (link && !link.transaction) link = link.next;
-			if (!link) supervisedWriteRoots.delete(root);
+			if (supervisedWriteRoots.has(root)) {
+				let link: DatabaseTransaction = root;
+				while (link && !link.transaction) link = link.next;
+				if (!link) supervisedWriteRoots.delete(root);
+			}
 		}
 		return transaction;
 	}
@@ -1113,6 +1115,15 @@ export class DatabaseTransaction implements Transaction {
 			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
 			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
 			this.releaseContext(!this.timedOut);
+			const next = this.next;
+			this.next = null;
+			if (next) {
+				try {
+					next.abort();
+				} catch (error) {
+					harperLogger.debug?.('cleaning up a chained transaction during abort', error);
+				}
+			}
 		}
 	}
 	/**

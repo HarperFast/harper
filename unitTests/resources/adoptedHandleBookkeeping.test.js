@@ -234,6 +234,23 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(getSupervisedWriteRoots().has(head), false, 'supervision ends with chain ownership');
 	});
 
+	it('aborts every owned handle when a supervised multi-database transaction fails', async function () {
+		const { txn: head, context } = await blindWriteTransaction('root-abort');
+		const other = await Chained.getResource({ id: null }, context, {});
+		other._writeInvalidate('child-abort');
+		const child = head.next;
+		opened.push(child);
+		assert.ok(child?.transaction, 'expected both database links to own handles');
+
+		head.abort();
+
+		assert.strictEqual(head.transaction, null);
+		assert.strictEqual(child.transaction, null);
+		assert.deepStrictEqual(child.writes, []);
+		assert.strictEqual(head.next, null);
+		assert.strictEqual(getSupervisedWriteRoots().has(head), false);
+	});
+
 	it('leaves crash-recovery replay unsupervised, so a timestamp group cannot be split', async function () {
 		const context = {};
 		const txn = new DatabaseTransaction();
