@@ -5612,6 +5612,10 @@ export function makeTable(options) {
 				if (!nextTxn) {
 					// no next one, then add our database
 					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// The chain root, so a link that only ever receives a blind write is supervised by the
+					// long-transaction monitor as part of its logical transaction rather than as its own
+					// timeout root (issue #2231).
+					transaction.next.root = transaction.root ?? transaction;
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;
