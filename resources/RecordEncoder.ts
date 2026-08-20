@@ -425,7 +425,7 @@ export class RecordEncoder extends StructonEncoder {
 		this.#reportedStructureSaturation = true;
 		try {
 			harperLogger.warn(
-				`Typed-structure dictionary for store ${this.name ?? this.rootStore?.name} reached its limit of ` +
+				`Typed-structure dictionary for store ${this.name ?? this.rootStore?.name ?? '(unnamed)'} reached its limit of ` +
 					`${typedLimit} structures; new record shapes will be stored without random-access field ` +
 					'encoding. Dictionary size follows the variety of shapes written -- field set, key order, ' +
 					'and per-field value width -- not column count (see HarperFast/harper#2220).'
