@@ -1382,10 +1382,10 @@ export class DatabaseTransaction implements Transaction {
 			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
 			this.releaseContext(!this.timedOut && !this.disconnected);
 			const next = this.next;
-			this.next = null;
+			if (!retainReadTransaction) this.next = null;
 			if (next) {
 				try {
-					next.abort();
+					next.abort(retainReadTransaction);
 				} catch (error) {
 					harperLogger.debug?.('cleaning up a chained transaction during abort', error);
 				}
@@ -1658,7 +1658,7 @@ function startMonitoringTxns() {
 						txn.dropWriteSupervision();
 						return;
 					}
-					if (txn.timedOut || txn.disconnected) continue;
+					if (txn.timedOut || txn.disconnected) return;
 					// The commit was already acknowledged; any staged writes are riding an in-flight
 					// replay commit (see the outstanding-iterators branch in commit()) and are not the
 					// monitor's to abort — dropping them here would re-introduce the silent
