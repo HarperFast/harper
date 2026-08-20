@@ -25,7 +25,11 @@ const {
 	waitForConfirmedTermination,
 	waitForWindowsTreeTermination,
 } = require('#src/components/Application');
-const { isProcessGroupAlive } = require('#src/server/threads/manageThreads');
+const {
+	isProcessGroupAlive,
+	registerProcessGroup,
+	unregisterProcessGroup,
+} = require('#src/server/threads/manageThreads');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
 let workDir;
@@ -232,6 +236,8 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 	});
 
 	it('treats a Linux process group containing only zombies as terminated', () => {
+		let now = 0;
+		const nextScan = () => (now += 1000);
 		const zombieGroup = (processIds) =>
 			isProcessGroupAlive(123, {
 				platform: 'linux',
@@ -239,20 +245,22 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 				readDirectory: () => processIds,
 				readStat: (path) =>
 					path === '/proc/123/stat' ? '123 (installer worker) Z 1 123 123' : '456 (installer child) Z 1 123 123',
+				now: nextScan,
 			});
-		assert.equal(zombieGroup(['123', '456']), false);
-		assert.equal(
+		assert.strictEqual(zombieGroup(['123', '456']), false);
+		assert.strictEqual(
 			isProcessGroupAlive(123, {
 				platform: 'linux',
 				processGroupExists: () => true,
 				readDirectory: () => ['123', '456'],
 				readStat: (path) =>
 					path === '/proc/123/stat' ? '123 (installer) Z 1 123 123' : '456 (still running) S 1 123 123',
+				now: nextScan,
 			}),
 			true
 		);
-		assert.equal(zombieGroup(['123']), false);
-		assert.equal(
+		assert.strictEqual(zombieGroup(['123']), false);
+		assert.strictEqual(
 			isProcessGroupAlive(123, {
 				platform: 'linux',
 				processGroupExists: () => true,
@@ -261,10 +269,11 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 					if (path === '/proc/123/stat') throw new Error('leader reaped');
 					return '456 (unreaped child) Z 1 123 123';
 				},
+				now: nextScan,
 			}),
 			false
 		);
-		assert.equal(
+		assert.strictEqual(
 			isProcessGroupAlive(123, {
 				platform: 'linux',
 				processGroupExists: () => true,
@@ -273,9 +282,80 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 					if (path === '/proc/123/stat') throw new Error('leader reaped');
 					return '456 (running child) S 1 123 123';
 				},
+				now: nextScan,
 			}),
 			true
 		);
+	});
+
+	it('does not trust a recycled Linux process-group leader pid', () => {
+		assert.strictEqual(
+			isProcessGroupAlive(234, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['234', '456'],
+				readStat: (path) =>
+					path === '/proc/234/stat' ? '234 (unrelated process) S 1 999 999' : '456 (installer child) Z 1 234 234',
+			}),
+			false
+		);
+	});
+
+	it('requires two all-zombie scans before reporting a Linux process group terminated', () => {
+		let scanCount = 0;
+		assert.strictEqual(
+			isProcessGroupAlive(345, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => {
+					scanCount++;
+					return ['345', '456'];
+				},
+				readStat: (path) =>
+					path === '/proc/345/stat' || scanCount === 1
+						? `${path === '/proc/345/stat' ? 345 : 456} (installer) Z 1 345 345`
+						: '456 (forked child) S 1 345 345',
+			}),
+			true
+		);
+		assert.strictEqual(scanCount, 2);
+	});
+
+	it('throttles Linux process-group scans and clears the throttle when unregistered', () => {
+		let now = 0;
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['456'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/456/stat') return `456 (installer child) ${childState} 1 567 567`;
+				throw new Error('leader reaped');
+			},
+			now: () => now,
+		};
+
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		assert.strictEqual(scanCount, 1);
+		childState = 'Z';
+		now = 999;
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		assert.strictEqual(scanCount, 1);
+		now = 1000;
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 3);
+
+		childState = 'S';
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		registerProcessGroup(567);
+		unregisterProcessGroup(567);
+		childState = 'Z';
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 6);
 	});
 
 	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {

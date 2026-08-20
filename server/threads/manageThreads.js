@@ -966,7 +966,9 @@ function processGroupLeaderState(processGroupId, platform, readStat) {
 	} catch {
 		return 'missing';
 	}
-	return stat[stat.lastIndexOf(')') + 2] === 'Z' ? 'zombie' : 'alive';
+	const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+	if (Number(fields[2]) !== processGroupId) return 'missing';
+	return fields[0] === 'Z' ? 'zombie' : 'alive';
 }
 
 function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
@@ -991,24 +993,24 @@ function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 	return false;
 }
 
-function isProcessGroupAlive(processGroupId, testOptions) {
-	const platform = testOptions?.platform ?? process.platform;
-	const groupExists = testOptions?.processGroupExists ?? processGroupExists;
-	const readDirectory = testOptions?.readDirectory ?? readdirSync;
-	const readStat = testOptions?.readStat ?? readFileSync;
+function isProcessGroupAlive(processGroupId, options) {
+	const platform = options?.platform ?? process.platform;
+	const groupExists = options?.processGroupExists ?? processGroupExists;
+	const readDirectory = options?.readDirectory ?? readdirSync;
+	const readStat = options?.readStat ?? readFileSync;
 	if (!groupExists(processGroupId)) {
 		zombieGroupScanTimes.delete(processGroupId);
 		return false;
 	}
 	const leaderState = processGroupLeaderState(processGroupId, platform, readStat);
 	if (leaderState === 'alive' || leaderState === 'unknown') return true;
-	if (!testOptions) {
-		const lastScan = zombieGroupScanTimes.get(processGroupId);
-		if (lastScan && performance.now() - lastScan < ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS) return true;
-		zombieGroupScanTimes.set(processGroupId, performance.now());
-	}
+	const scanTime = options?.now?.() ?? performance.now();
+	const lastScan = zombieGroupScanTimes.get(processGroupId);
+	if (lastScan !== undefined && scanTime - lastScan < ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS) return true;
+	zombieGroupScanTimes.set(processGroupId, scanTime);
 	const isAlive = scanLinuxProcessGroup(processGroupId, readDirectory, readStat);
 	if (isAlive !== false) return true;
+	if (scanLinuxProcessGroup(processGroupId, readDirectory, readStat) !== false) return true;
 	zombieGroupScanTimes.delete(processGroupId);
 	return false;
 }
@@ -1096,6 +1098,7 @@ function addProcessGroup(ownerThreadId, processGroupId) {
 }
 
 function removeProcessGroup(ownerThreadId, processGroupId) {
+	zombieGroupScanTimes.delete(processGroupId);
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return;
 	processGroups.delete(processGroupId);
