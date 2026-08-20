@@ -23,6 +23,18 @@ let hdbRoot;
 
 export default status;
 
+/**
+ * Derive process uptime in ms from an OS process start time and a reference `now`. `started` is the
+ * local-wall-clock string systeminformation reports (e.g. "2026-08-18 10:47:25"); `Date.parse` reads
+ * it as local time and returns NaN (rather than throwing) when it's missing or unparseable, so we
+ * return undefined in that case rather than emitting "NaNs". Negative spans clamp to 0.
+ */
+export function processUptimeMs(started: string, nowMs: number): number | undefined {
+	const startedAt = Date.parse(started);
+	if (Number.isNaN(startedAt)) return undefined;
+	return Math.max(0, Math.round(nowMs - startedAt));
+}
+
 /** Format uptime, then print the status object as YAML. */
 function report(status: any): void {
 	if (typeof status.harperdb.uptime === 'number') {
@@ -69,15 +81,13 @@ async function status() {
 			// `status` is a separate short-lived CLI process, so `process.uptime()` would report its
 			// own age, not the server's. Asking the server for its real uptime over the operations API
 			// would drag auth and a network round-trip into a command meant to stay lightweight and
-			// credential-free. Instead we use the OS process start time systeminformation already
-			// gathered — a local-wall-clock string like "2026-08-18 10:47:25". `Date.parse` reads it
-			// as local time and returns NaN (rather than throwing) if it's missing or unparseable, so
-			// guard explicitly and omit uptime rather than emitting "NaNs".
-			const startedAt = Date.parse(proc.started);
-			if (Number.isNaN(startedAt)) {
+			// credential-free. Instead derive it from the OS process start time systeminformation
+			// already gathered.
+			const uptime = processUptimeMs(proc.started, Date.now());
+			if (uptime === undefined) {
 				hdbLog.warn(`\`harperdb status\` could not determine uptime from process start time: ${proc.started}`);
 			} else {
-				status.harperdb.uptime = Math.max(0, Math.round(Date.now() - startedAt));
+				status.harperdb.uptime = uptime;
 			}
 			break;
 		}
