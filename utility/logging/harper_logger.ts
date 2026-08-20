@@ -809,7 +809,9 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			let startTime = performance.now();
 			try {
 				fs.appendFileSync(logFD, payload);
+				// Both cleared, so a volume that fills again months later reports itself again
 				retryAppendAfter = undefined;
+				loggedAppendError = false;
 			} catch (error) {
 				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
 				// A log write must never take the process down: on an exhausted volume this throws from

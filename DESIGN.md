@@ -662,13 +662,20 @@ config write unlinks the sidecar; a sidecar found at load means a commit was int
 cleared and drift detection is skipped for that boot rather than mistaking the in-flight write for
 an edit. A boot that re-derives the same state writes nothing at all.
 
-Two details the name and the caller carry. The sidecar is **per-process**: every CLI invocation and
-every worker thread runs `initConfig`, and one shared name would let a starting server clear a
-running process's in-flight commit — the loser would then rewrite the config file with the confirmed
-state still describing the old values, which is the failure the protocol exists to prevent. Recovery
-therefore only clears sidecars whose owning pid is gone. And only the **main thread** persists at
-all: workers derive the same merged config and would otherwise race over one pair of files for a
-result they already agree on.
+Two details the name and the caller carry. The sidecar is **per-process**: every CLI invocation runs
+`initConfig`, and one shared name would let a starting server clear a running process's in-flight
+commit — the loser would then rewrite the config file with the confirmed state still describing the
+old values, which is the failure the protocol exists to prevent. Recovery therefore only clears a
+sidecar whose owning pid is gone. And only the **main thread** persists or runs recovery: workers
+derive the same merged config and would otherwise race over one pair of files for a result they
+already agree on — and since a worker shares its process's pid, a recovery scan from one would
+delete the main thread's in-flight sidecar as if it were the last boot's wreckage.
+
+Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
+CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo
+serializes config writes across processes. Pre-existing — both artifacts were unordered before this
+protocol — and out of scope here, but the "commits as a unit" guarantee stops at the process
+boundary.
 
 Related: a log write must not be fatal either. `fs.appendFileSync` in `logQueuedData` throws from
 both inline and timer call sites, so on a full volume every log statement was a crash point. The

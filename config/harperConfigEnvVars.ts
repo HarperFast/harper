@@ -25,6 +25,7 @@
 import type { Logger } from '../utility/logging/logger.ts';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
@@ -1073,8 +1074,10 @@ export function prepareRuntimeEnvConfig(
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
-	// Load existing state
-	const interruptedCommit = takeInterruptedCommit(rootPath);
+	// Load existing state. Only the main thread persists, so only the main thread has wreckage to
+	// clear - and a worker shares its pid, so letting one scan would delete the main thread's
+	// in-flight sidecar as if it were last boot's.
+	const interruptedCommit = isMainThread && takeInterruptedCommit(rootPath);
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do

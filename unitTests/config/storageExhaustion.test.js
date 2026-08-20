@@ -299,6 +299,15 @@ describe('config persistence from a worker thread (#847)', function () {
 			{ eval: true, env: { ...fixtureEnv, ROOTPATH: root, HARPER_SET_CONFIG: '{"http":{"port":8123}}' } }
 		);
 
+		// A staged commit that the main thread has in flight. A worker shares process.pid, so a
+		// recovery scan that only exempts other processes would delete this one.
+		const stagedByMainThread = path.join(
+			root,
+			hdbTerms.BACKUP_DIR_NAME,
+			`.harper-config-state.pending.${process.pid}.json`
+		);
+		fs.writeFileSync(stagedByMainThread, '{}');
+
 		worker.on('message', (result) => {
 			try {
 				assert.strictEqual(result.error, undefined, `worker failed: ${result.error}`);
@@ -308,6 +317,11 @@ describe('config persistence from a worker thread (#847)', function () {
 					fs.existsSync(path.join(root, hdbTerms.BACKUP_DIR_NAME, '.harper-config-state.json')),
 					false,
 					'no env-config state write from a worker'
+				);
+				assert.strictEqual(
+					fs.existsSync(stagedByMainThread),
+					true,
+					"a worker must not clear the main thread's staged commit"
 				);
 				done();
 			} catch (error) {
