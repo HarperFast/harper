@@ -575,11 +575,9 @@ function loadConfigState(rootPath: string): ConfigState {
 }
 
 /**
- * Clear a sidecar left behind by an interrupted commit, and report whether one was there. The
- * config file may or may not have been written when the process stopped, so this boot cannot tell a
- * manual user edit from the write it was in the middle of - the caller skips drift detection rather
- * than mistaking one for the other and handing those paths to 'user' for good. The confirmed state,
- * and with it every recorded original, is untouched.
+ * Clear a sidecar left by an interrupted commit, reporting whether one was there. The caller skips
+ * drift detection for that boot: it cannot tell a manual user edit from the write that was in
+ * flight, and calling it an edit hands those paths to 'user' for good.
  */
 function takeInterruptedCommit(rootPath: string): boolean {
 	const pendingPath = path.join(getBackupDirPath(rootPath), PENDING_STATE_FILE_NAME);
@@ -640,10 +638,8 @@ function stageConfigState(rootPath: string, state: ConfigState): boolean {
 	return atomicWriteFile(path.join(backupDir, PENDING_STATE_FILE_NAME), serializeConfigState(state));
 }
 
-/**
- * Promote the staged state over the confirmed one. A rename, so an exhausted volume cannot refuse
- * it and leave the config file described by nothing.
- */
+// A rename, so an exhausted volume cannot refuse it and leave the config file described by nothing.
+
 export function commitStagedConfigState(rootPath: string): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	const pendingPath = path.join(backupDir, PENDING_STATE_FILE_NAME);
@@ -652,10 +648,8 @@ export function commitStagedConfigState(rootPath: string): boolean {
 	return true;
 }
 
-/**
- * Drop the staged state for a config-file write that did not happen. The confirmed record - the
- * only copy of the operator's pre-env values - stays exactly as it was.
- */
+// Drops the staged state for a config-file write that did not happen; the confirmed record stays.
+
 export function discardConfigState(rootPath: string): void {
 	const pendingPath = path.join(getBackupDirPath(rootPath), PENDING_STATE_FILE_NAME);
 	try {

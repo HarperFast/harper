@@ -117,9 +117,8 @@ export function isStorageExhausted(error): boolean {
 	return STORAGE_EXHAUSTED_CODES.has(error?.code) || STORAGE_EXHAUSTED_ERRNOS.has(error?.errno);
 }
 
-// Boot-path persistence of derived config is best-effort: the effective config is already in
-// memory, and on an exhausted volume a fatal write here is an un-breakable restart loop, because
-// freeing space needs a started process (#847). User-requested writes keep persist-or-throw.
+// Boot-path persistence of derived config is best-effort: on an exhausted volume a fatal write here
+// is an un-breakable restart loop, because freeing space needs a started process (#847).
 export function persistConfigDuringBoot(artifactPath: string, write: () => void): boolean {
 	try {
 		write();
@@ -1370,11 +1369,9 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		// The state records the file's pre-env values, so the two must move together: stage the new
-		// state beside the confirmed one, write the file, then promote the staged copy with a rename
-		// (which no exhausted volume can refuse). A staging write that is refused leaves the file
-		// alone; a file write that is refused drops the staged copy. Either way the confirmed record
-		// - the only copy of those pre-env values - is still there.
+		// Stage, write the file, promote by rename: the confirmed state is the only record of the
+		// file's pre-env values, so no write an exhausted volume can refuse may stand between it and
+		// disk. See DESIGN.md, boot-path config persistence.
 		let stateStaged = false;
 		if (persistConfigDuringBoot(`${rootPath} env config state`, () => (stateStaged = saveEnvConfigState()))) {
 			let configPersisted = false;
