@@ -1017,7 +1017,8 @@ export async function recoverInterruptedComponentExtractions(
 export async function recoverInterruptedComponentExtraction(
 	componentsRootDirPath: string,
 	componentName: string,
-	waitForPreparation = true
+	waitForPreparation = true,
+	waitTimeoutMs = COMPONENT_RECOVERY_WAIT_TIMEOUT_MS
 ): Promise<void> {
 	const componentDirPath = join(componentsRootDirPath, componentName);
 	await withComponentPreparationLock(
@@ -1037,7 +1038,7 @@ export async function recoverInterruptedComponentExtraction(
 			);
 		},
 		{
-			timeoutMs: waitForPreparation ? COMPONENT_RECOVERY_WAIT_TIMEOUT_MS : COMPONENT_RECOVERY_TRY_TIMEOUT_MS,
+			timeoutMs: waitForPreparation ? waitTimeoutMs : COMPONENT_RECOVERY_TRY_TIMEOUT_MS,
 			purpose: COMPONENT_RECOVERY_LOCK_PURPOSE,
 			renewTimeoutWhileOwnerAlive: waitForPreparation,
 			onWait: (owner) => {

@@ -317,8 +317,8 @@ describe('extractApplication directory swap', () => {
 			await started;
 			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
 			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
-			setTimeout(() => releaseRecovery(), 25);
-			await recoverInterruptedComponentExtraction(componentsRoot, 'web');
+			setTimeout(() => releaseRecovery(), 350);
+			await recoverInterruptedComponentExtraction(componentsRoot, 'web', true, 100);
 			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
 		} finally {
 			releaseRecovery?.();
