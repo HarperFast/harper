@@ -38,6 +38,7 @@ import {
 	priorStagedWrite,
 	isReleasedTransaction,
 	TRANSACTION_STATE,
+	writeKeyId,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
@@ -361,6 +362,15 @@ function detectCyclicEnumerable(start: any): boolean {
 }
 
 // #section: setup-and-factory
+/**
+ * Identity for the apply loop's per-key write chain. Never finer-grained than the store's own key
+ * identity or two writes to one record stop chaining; coarser only costs a wasted hop. Numbers and
+ * bigints must go through the encoder: they share a stored key but not a `toString` (`1e21` vs `10n ** 21n`).
+ */
+function chainKeyForId(id: any): string {
+	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
+}
+
 export function makeTable(options) {
 	const {
 		primaryKey,
@@ -707,6 +717,30 @@ export function makeTable(options) {
 					}
 				};
 
+				/** Keeps the writes to any one key in arrival order; see DESIGN.md (harper#2211). */
+				const stageWrite = (event, context) => {
+					let chainKey: string | undefined;
+					try {
+						const Table = event.table ? databases[databaseName][event.table] : TableResource;
+						const id = event.id ?? (event.value ? event.value[Table?.primaryKey] : undefined);
+						if (id != null && typeof id !== 'symbol') chainKey = `${event.table ?? tableName} ${chainKeyForId(id)}`;
+					} catch {
+						// writeUpdate()'s own id resolution fails the same way and reports it
+					}
+					// no record key, nothing to order: publishes and markers stage no record, and an id
+					// writeUpdate can't resolve throws there first
+					if (chainKey === undefined) return writeUpdate(event, context);
+					const chain = (context.writeChain ??= new Map<string, Promise<any>>());
+					const prior = chain.get(chainKey);
+					const staged = prior ? prior.then(() => writeUpdate(event, context)) : writeUpdate(event, context);
+					chain.set(chainKey, staged);
+					// Prune on success only: a rejected entry stays so later writes to the key short-circuit too
+					staged.then(() => {
+						if (chain.get(chainKey) === staged) chain.delete(chainKey);
+					}, noop);
+					return staged;
+				};
+
 				try {
 					const hasSubscribe = source.subscribe;
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
@@ -881,7 +915,7 @@ export function makeTable(options) {
 										}
 									} else {
 										// write in the current transaction if one is in progress
-										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));
+										txnInProgress.writePromises.push(stageWrite(event, txnInProgress));
 										continue;
 									}
 								}
@@ -893,7 +927,7 @@ export function makeTable(options) {
 										const promises: Promise<any>[] = [];
 										for (const write of event.writes) {
 											try {
-												promises.push(writeUpdate(write, event));
+												promises.push(stageWrite(write, event));
 											} catch (error) {
 												(error as Error).message +=
 													' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
@@ -928,7 +962,7 @@ export function makeTable(options) {
 											// event/context as transaction in progress and then future events
 											// are applied with that context until the next transaction begins/ends
 											txnInProgress = event;
-											txnInProgress.writePromises = [writeUpdate(event, event)];
+											txnInProgress.writePromises = [stageWrite(event, event)];
 											return new Promise((resolve) => {
 												// callback for when this transaction is finished (will be called on next txn begin/end).
 												txnInProgress.resolve = () => resolve(Promise.all(txnInProgress.writePromises)); // and make sure we wait for the write update to finish
@@ -3044,6 +3078,7 @@ export function makeTable(options) {
 				key: id,
 				store: primaryStore,
 				entry,
+				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
