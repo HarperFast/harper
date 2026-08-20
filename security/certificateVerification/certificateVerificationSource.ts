@@ -71,6 +71,7 @@ export class CertificateVerificationSource extends Resource {
 
 		// Handle result consistently
 		const expiresAt = Date.now() + methodConfig.cacheTtl;
+		context.expiresAt = expiresAt;
 
 		return {
 			certificate_id: id,

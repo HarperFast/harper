@@ -74,6 +74,7 @@ class CertificateRevocationListSource extends Resource {
 			const crlExpiry = result.next_update;
 			const configExpiry = Date.now() + config.cacheTtl;
 			const expiresAt = Math.min(crlExpiry, configExpiry);
+			context.expiresAt = expiresAt;
 
 			return {
 				...result,
@@ -90,6 +91,7 @@ class CertificateRevocationListSource extends Resource {
 			if (config.failureMode === 'fail-closed') {
 				// Cache the error for faster recovery
 				const expiresAt = Date.now() + ERROR_CACHE_TTL;
+				context.expiresAt = expiresAt;
 
 				return {
 					crl_id: id,

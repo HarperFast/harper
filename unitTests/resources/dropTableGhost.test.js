@@ -88,7 +88,7 @@ describe('dropTable ghost regression', () => {
 		await Fresh.dropTable();
 	});
 
-	it('surfaces a failed column family drop and completes the drop on recreate', async function () {
+	it('surfaces a failed column family drop and reconciles the authoritative tombstone', async function () {
 		const Doomed = defineTable('GhostFailDrop');
 		await Doomed.put({ id: 1, str: 'data' });
 		const restore = stubFailingDrop(Doomed.primaryStore, new Error('injected drop failure'));
@@ -99,10 +99,12 @@ describe('dropTable ghost regression', () => {
 		}
 		// the table is gone from the live schema (no half-alive table)...
 		assert.equal(databases[TEST_DB]?.GhostFailDrop, undefined, 'failed drop must still remove the table from memory');
-		// ...but the tombstoned catalog entry survives so the drop can complete later
-		assert.equal(getDbisDb().getSync('GhostFailDrop/')?.dropping, true, 'tombstone must survive a failed drop');
+		// Reconciliation rescans authoritative storage. A fresh handle can complete the
+		// tombstoned drop even though the original handle failed, so no worker retains
+		// stale catalog state after the failure is reported.
+		assert.equal(getDbisDb().getSync('GhostFailDrop/'), undefined, 'reconcile must complete the tombstoned drop');
 
-		// recreating the same name completes the interrupted drop and works
+		// recreating the same name starts clean after reconciliation
 		const Fresh = defineTable('GhostFailDrop');
 		await Fresh.put({ id: 2, str: 'fresh' });
 		assert.equal((await Fresh.get(2)).str, 'fresh');

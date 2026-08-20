@@ -20,6 +20,13 @@ describe('Per-record expiresAt without scheduled cleanup (#1339)', () => {
 	const matchesWarning = (message) => typeof message === 'string' && message.includes('per-record expiresAt');
 	const warningsFor = (tableName) =>
 		warnings.filter(([message]) => matchesWarning(message) && message.includes(`"${tableName}"`));
+	const sourceWarningsFor = (tableName) =>
+		warnings.filter(
+			([message]) =>
+				typeof message === 'string' &&
+				message.includes(`table "${tableName}"`) &&
+				message.includes('@expiresAt field without setting context.expiresAt')
+		);
 
 	before(function () {
 		setupTestDBPath();
@@ -96,5 +103,61 @@ describe('Per-record expiresAt without scheduled cleanup (#1339)', () => {
 		await SourcedTable.get(1);
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.strictEqual(warningsFor('SourcedExpiresAtTable').length, 0);
+	});
+
+	it('warns once when a source returns an @expiresAt field without setting cache expiration', async function () {
+		const tableName = 'SourcedFieldOnlyExpiresAtTable';
+		const SourcedTable = table({
+			table: tableName,
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		SourcedTable.sourcedFrom(
+			class extends Resource {
+				get() {
+					return { id: this.getId(), expiresAt: Date.now() + 60000 };
+				}
+			}
+		);
+
+		await SourcedTable.get(1);
+		await waitFor(() => sourceWarningsFor(tableName).length === 1);
+		assert.strictEqual(SourcedTable.primaryStore.getEntry(1)?.expiresAt, undefined);
+		assert.deepStrictEqual([...SourcedTable.indices.expiresAt.getRange({ start: true })], []);
+
+		await SourcedTable.get(2);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.strictEqual(sourceWarningsFor(tableName).length, 1);
+	});
+
+	it('warns before applying a table expiration to a returned @expiresAt field', async function () {
+		const tableName = 'SourcedTableExpirationFallback';
+		const SourcedTable = table({
+			table: tableName,
+			database: 'test',
+			expiration: 60,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		SourcedTable.sourcedFrom(
+			class extends Resource {
+				get() {
+					return { id: this.getId(), expiresAt: Date.now() + 120000 };
+				}
+			}
+		);
+
+		const before = Date.now() + 60000;
+		await SourcedTable.get(1);
+		await waitFor(() => SourcedTable.primaryStore.getEntry(1)?.expiresAt !== undefined);
+		const storedExpiration = SourcedTable.primaryStore.getEntry(1).expiresAt;
+		assert.ok(storedExpiration >= before);
+		assert.deepStrictEqual([...SourcedTable.indices.expiresAt.getValues(storedExpiration)], [1]);
+		assert.strictEqual(sourceWarningsFor(tableName).length, 1);
 	});
 });

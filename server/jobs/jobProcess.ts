@@ -91,7 +91,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		// effort — never let cleanup mask the job result.
 		try {
 			const { closeLoadedDatabases } = await import('../../resources/databases.ts');
-			closeLoadedDatabases();
+			await closeLoadedDatabases();
 		} catch (closeErr) {
 			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
 		}

@@ -16,6 +16,7 @@ import {
 	ACTION_32_BIT,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
 	LOCAL_ONLY,
+	HAS_EXPIRATION_DECISION,
 } from './auditStore.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
@@ -728,6 +729,10 @@ export function recordUpdater(store, tableId, auditStore) {
 					: TIMESTAMP_ASSIGN_NEW | 0x4000 // or just assign a new one
 				: NO_TIMESTAMP;
 		const expiresAt = options?.expiresAt;
+		if (options?.expirationDecisionPresent) {
+			if (assignMetadata < 0) assignMetadata = 0;
+			assignMetadata |= HAS_EXPIRATION_DECISION;
+		}
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
@@ -777,6 +782,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				if (!previousResidencyId) previousResidencyId = 0;
 			}
 			if (assignMetadata & HAS_EXPIRATION) extendedType |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
+			if (assignMetadata & HAS_EXPIRATION_DECISION) extendedType |= HAS_EXPIRATION_DECISION;
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
 			// we use resolveRecord outside of transaction, so must explicitly make it conditional
 			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;

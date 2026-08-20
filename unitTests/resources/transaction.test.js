@@ -5,14 +5,76 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
-const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
-const { DatabaseTransaction, RELEASED_TRANSACTION, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
+const {
+	DatabaseTransaction,
+	RELEASED_TRANSACTION,
+	TABLE_COMMIT_ADMISSION,
+	TABLE_COMMIT_RELEASE,
+	TRANSACTION_STATE,
+	withTableCommitAdmission,
+} = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
+const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { resetReplayedWritesWarning } = require('#src/resources/DatabaseTransaction');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+describe('Table commit admission', () => {
+	it('admits every existing transaction link before committing and preserves dynamic admission', async () => {
+		const events = [];
+		const store = (name) => ({
+			[TABLE_COMMIT_ADMISSION]() {
+				events.push(`admit:${name}`);
+				return true;
+			},
+			[TABLE_COMMIT_RELEASE]() {
+				events.push(`release:${name}`);
+			},
+		});
+		const storeA = store('a');
+		const storeB = store('b');
+		const storeC = store('c');
+		const tail = { writes: [{ store: storeB }], next: undefined };
+		const head = { writes: [{ store: storeA }], next: tail };
+
+		await withTableCommitAdmission(head, {}, (options) => {
+			assert.deepStrictEqual(events, ['admit:a', 'admit:b']);
+			tail.writes.push({ store: storeC });
+			return withTableCommitAdmission(tail, options, async () => {
+				assert.deepStrictEqual(events, ['admit:a', 'admit:b', 'admit:c']);
+			});
+		});
+
+		assert.deepStrictEqual(events, ['admit:a', 'admit:b', 'admit:c', 'release:a', 'release:b', 'release:c']);
+	});
+
+	it('releases a stamped transaction link after it is detached from the chain', async () => {
+		let pendingCommits = 0;
+		const store = {
+			[TABLE_COMMIT_ADMISSION]() {
+				pendingCommits++;
+				return true;
+			},
+			[TABLE_COMMIT_RELEASE]() {
+				pendingCommits--;
+			},
+		};
+		const tail = { writes: [{ store }], next: undefined };
+		const head = { writes: [], next: tail };
+
+		await withTableCommitAdmission(head, {}, () => {
+			head.next = undefined;
+		});
+		assert.strictEqual(tail.tableCommitAdmissionOwner, undefined);
+		assert.strictEqual(pendingCommits, 0);
+
+		await withTableCommitAdmission(tail, {}, () => undefined);
+		assert.strictEqual(tail.tableCommitAdmissionOwner, undefined);
+		assert.strictEqual(pendingCommits, 0, 'the detached link must release admission on its next commit');
+	});
+});
 
 // The package blocks deep imports of its package.json, so walk up from the resolved entry point.
 function installedRocksdbVersion() {
@@ -75,6 +137,29 @@ describe('Transactions', () => {
 		let answer = await TxnTest.get(42);
 		assert.equal(answer.name, 'the answer');
 		assert.equal(answer.computed, 'the answer computed');
+	});
+	it('aborts and releases the context when final commit admission is refused', async function () {
+		const context = {};
+		const id = 43;
+		const originalAdmission = TxnTest.primaryStore[TABLE_COMMIT_ADMISSION];
+		TxnTest.primaryStore[TABLE_COMMIT_ADMISSION] = () => {
+			const error = new Error('table is quiescing');
+			error.statusCode = 503;
+			throw error;
+		};
+		try {
+			assert.throws(
+				() =>
+					transaction(context, () => {
+						TxnTest.put(id, { name: 'must not commit' }, context);
+					}),
+				(error) => error?.statusCode === 503
+			);
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			assert.strictEqual(TxnTest.primaryStore.getEntry(id), undefined);
+		} finally {
+			TxnTest.primaryStore[TABLE_COMMIT_ADMISSION] = originalAdmission;
+		}
 	});
 	it('waits for promise-returning commit callbacks on RocksDB', async function () {
 		if (isLMDB) return this.skip();

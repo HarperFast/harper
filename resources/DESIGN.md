@@ -105,6 +105,36 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 
 ---
 
+## Record expiration sweeps
+
+An `@expiresAt` attribute is a public timestamp field backed by the record encoder's expiration metadata.
+Its index stores one canonical, non-negative epoch-millisecond number derived from that metadata, regardless of
+whether the API value was a number, numeric string, ISO string, or `Date`. Writes, index rebuilds, index searches,
+and scan filters apply the same normalization. `expirationIndexVersion` participates in the normal resumable
+schema reindex flow so stores created before canonicalization are rebuilt without a separate open-time scan.
+Rows created before expiration metadata was stored fall back to their public field during that rebuild and while
+sweeping; an explicit no-expiration metadata sentinel never falls back. This preserves upgrade behavior without
+making every open scan the table.
+
+The expiration index represents the effective stored expiration, not an ordinary field-value index. An explicit
+`options.expiresAt` or `context.expiresAt` override can therefore differ from the serialized field while remaining
+authoritative for index searches and reclamation. Source/cache fills do not infer TTL from the returned field; the
+source must set `sourceContext.expiresAt`, with table expiration providing the fallback.
+
+RocksDB `@expiresAt` sweeps walk one bounded composite-index range at a time with a fixed cutoff and an
+owned `(expiresAt, primaryKey)` cursor. A sweep never holds an iterator snapshot across an `await`, and it
+continues until every index entry at or before that cutoff has been considered. This keeps memory and native
+iterator lifetime bounded without leaving a permanent backlog when more than one chunk expires together.
+
+Dangling-index cleanup reads and writes the primary key in the same RocksDB transaction as the index removal.
+The primary write is a conflict guard against concurrent resurrection: absent keys receive a transactional
+remove, while retained audit tombstones are rewritten byte-for-byte so their version and retention semantics do
+not change. An `ERR_BUSY` abort leaves the newly written record and index authoritative for the next sweep.
+
+Table cleanup is a join point for both the primary reclamation scan and the `@expiresAt` index sweep. Database
+close and drop wait for that join before closing or destroying stores. A timeout fails closed: handles and
+registries remain live and cleanup scheduling is resumed, so active work is never raced by teardown.
+
 ## Path routing & parameterised routes
 
 `Resources.ts` is the registry that maps URL paths to `Resource` classes. Resources are registered (`jsResource.ts`) from a component's exports:

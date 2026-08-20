@@ -1158,7 +1158,6 @@ function resetDrainedQueue(): void {
  * @param blob
  */
 export function deleteBlob(blob: Blob): void {
-	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob as any);
 	if (!filePath) {
 		return;
@@ -1286,6 +1285,14 @@ function runReclamation(): void {
 		});
 	}
 	if (earliest !== Infinity) scheduleReclamation(earliest);
+}
+
+export function prepareBlobDeletion(object: any): () => void {
+	const blobs: Blob[] = [];
+	findBlobsInObject(object, (blob) => {
+		if (getFilePathForBlob(blob as any)) blobs.push(blob);
+	});
+	return () => blobs.forEach(deleteBlob);
 }
 
 /**

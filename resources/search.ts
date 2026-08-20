@@ -2,10 +2,10 @@ import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { SKIP } from '@harperfast/extended-iterable';
-import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
+import { effectiveExpirationTimestamp, expirationTimestamp, INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import { lastMetadata } from './RecordEncoder.ts';
+import { lastMetadata, type Entry } from './RecordEncoder.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 
@@ -13,6 +13,11 @@ import { RocksDatabase } from '@harperfast/rocksdb-js';
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
 const STARTS_WITH_ESTIMATE = 0.05;
+
+function normalizeExpirationSearchValue(value: any): any {
+	if (Array.isArray(value)) return value.map(normalizeExpirationSearchValue);
+	return expirationTimestamp(value) ?? value;
+}
 
 function getStringPrefixUpperBound(prefix: string): Uint8Array {
 	const maximumEncodedLength = prefix.length * 3 + 3;
@@ -327,6 +332,9 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
+	if (!isPrimaryKey && Table.expiresAtAttributeName !== undefined && Table.expiresAtAttributeName === attribute_name) {
+		value = normalizeExpirationSearchValue(value);
+	}
 	let start;
 	let end, inclusiveEnd, exclusiveStart, stringPrefix;
 	if (value instanceof Date) value = value.getTime();
@@ -475,14 +483,15 @@ export function searchByIndex(
 	if (isPrimaryKey) {
 		const results = index.getRange(rangeOptions).map(
 			filter
-				? function ({ key, value }) {
-						if (this?.isSync) return value && filter(value) ? key : SKIP;
+				? function (entry) {
+						const { key, value } = entry;
+						if (this?.isSync) return value && filter(value, entry) ? key : SKIP;
 						// for filter operations, we intentionally yield the event turn so that scanning queries
 						// do not hog resources
 						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
-									resolve(value && filter(value) ? key : SKIP);
+									resolve(value && filter(value, entry) ? key : SKIP);
 								} catch (error) {
 									reject(error);
 								}
@@ -561,7 +570,7 @@ export function searchByIndex(
 				const { key, value } = entry;
 				if (this.isSync) {
 					recordRead(entry);
-					return value && filter(value) ? key : SKIP;
+					return value && filter(value, entry) ? key : SKIP;
 				}
 				// for filter operations, we intentionally yield the event turn so that scanning queries
 				// do not hog resources
@@ -569,7 +578,7 @@ export function searchByIndex(
 					setImmediate(() => {
 						try {
 							recordRead(entry);
-							resolve(value && filter(value) ? key : SKIP);
+							resolve(value && filter(value, entry) ? key : SKIP);
 						} catch (error) {
 							reject(error);
 						}
@@ -622,13 +631,23 @@ function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, 
 							if (entriesForKey) entriesForKey.push(entry);
 							else joined.set(key, (entriesForKey = [entry]));
 						};
+						const filters = (joined as any).filters;
 						//let i = 0;
 						// get all the ids of the related records
 						for (const entry of rightIterable) {
-							const record = entry.value ?? store.getSync(entry.key ?? entry);
+							const storedEntry = filters
+								? entry?.value !== undefined
+									? entry
+									: store.getEntry(entry.key ?? entry)
+								: undefined;
+							const record = filters
+								? storedEntry?.value
+								: entry?.value !== undefined
+									? entry.value
+									: store.getSync(entry.key ?? entry);
 							const leftKey = record?.[rightProperty];
 							if (leftKey == null) continue;
-							if ((joined as any).filters?.some((filter) => !filter(record))) continue;
+							if (filters?.some((filter) => !filter(record, storedEntry))) continue;
 							if (isManyToMany) {
 								for (let i = 0; i < leftKey.length; i++) {
 									addEntry(leftKey[i], entry);
@@ -702,11 +721,12 @@ function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, sear
 						};
 						//let i = 0;
 						// get all the ids of the related records
-						for (const id of rightIterable) {
+						for (const idOrEntry of rightIterable) {
+							const id = idOrEntry?.key ?? idOrEntry;
 							if ((joined as any).filters) {
 								// if additional filters are defined, we need to check them
-								const record = store.getSync(id);
-								if ((joined as any).filters.some((filter) => !filter(record))) continue;
+								const entry = idOrEntry?.value !== undefined ? idOrEntry : store.getEntry(id);
+								if ((joined as any).filters.some((filter) => !filter(entry?.value, entry))) continue;
 							}
 							ids.add(id);
 							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
@@ -947,6 +967,9 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			return recordFilter;
 		}
 	}
+	const normalizeExpirationValue =
+		!isPrimaryKey && Table?.expiresAtAttributeName !== undefined && Table.expiresAtAttributeName === attribute;
+	if (normalizeExpirationValue) value = normalizeExpirationSearchValue(value);
 	if (value instanceof Date) value = value.getTime();
 
 	let baseFilter;
@@ -1051,6 +1074,8 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex?: boolean,
 		allowObjectMatching?: boolean
 	) {
+		const normalizeRecordExpiration =
+			!isPrimaryKey && Table?.expiresAtAttributeName !== undefined && Table.expiresAtAttributeName === attribute;
 		let thresholdRemainingMisses: number;
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
@@ -1066,10 +1091,15 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		}
 		let misses = 0;
 		let filteredSoFar = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
-		function recordFilter(record: any) {
+		function recordFilter(record: any, entry?: Entry) {
 			// `record` may be null/undefined when called via a nested-path filter
 			// where an intermediate property is missing.
-			const value = record == null ? undefined : record[attribute];
+			let value = normalizeRecordExpiration
+				? effectiveExpirationTimestamp(entry, record, attribute)
+				: record == null
+					? undefined
+					: record[attribute];
+			if (normalizeRecordExpiration) value = normalizeExpirationSearchValue(value);
 			let matches: boolean;
 			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);
 			else if (Array.isArray(value)) matches = value.some(filter);
@@ -1168,7 +1198,10 @@ export function estimateCondition(table) {
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 					const index = table.indices[attribute_name];
-					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
+					let value = condition[1] ?? condition.value;
+					if (table.expiresAtAttributeName !== undefined && table.expiresAtAttributeName === attribute_name)
+						value = normalizeExpirationSearchValue(value);
+					condition.estimated_count = index ? index.getValuesCount(value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
@@ -1183,8 +1216,10 @@ export function estimateCondition(table) {
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
+					const normalizeExpiration =
+						table.expiresAtAttributeName !== undefined && table.expiresAtAttributeName === attribute_name;
 					for (const item of condition.value) {
-						estimate += index.getValuesCount(item);
+						estimate += index.getValuesCount(normalizeExpiration ? normalizeExpirationSearchValue(item) : item);
 					}
 					condition.estimated_count = estimate;
 				} else if (Array.isArray(condition.value)) {

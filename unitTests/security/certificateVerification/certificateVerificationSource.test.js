@@ -87,7 +87,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 			const cacheTtl = 3600000; // 1 hour
 			const beforeTime = Date.now();
 
-			sinon.stub(source, 'getContext').returns({
+			const context = {
 				requestContext: {
 					certPem: 'cert',
 					issuerPem: 'issuer',
@@ -95,7 +95,8 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 						crl: { cacheTtl, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 },
 					},
 				},
-			});
+			};
+			sinon.stub(source, 'getContext').returns(context);
 
 			performCRLCheckStub.resolves({ status: 'good' });
 
@@ -105,6 +106,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function ()
 			// expiresAt should be approximately now + cacheTtl
 			assert.ok(result.expiresAt >= beforeTime + cacheTtl);
 			assert.ok(result.expiresAt <= afterTime + cacheTtl + 100); // Allow 100ms tolerance
+			assert.strictEqual(context.expiresAt, result.expiresAt);
 		});
 	});
 

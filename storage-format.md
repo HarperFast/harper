@@ -86,15 +86,38 @@ Variable-length integer encoding the operation type and extended type flags.
 
 **Additional Flags (upper bits):**
 
-| Value         | Name                         | Description                         |
-| ------------- | ---------------------------- | ----------------------------------- |
-| 64 (0x40)     | HAS_PREVIOUS_VERSION         | Previous version timestamp included |
-| 128 (0x80)    | HAS_EXTENDED_TYPE            | Extended type information           |
-| 512 (0x200)   | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included       |
-| 1024 (0x400)  | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included      |
-| 2048 (0x800)  | HAS_ORIGINATING_OPERATION    | Originating operation type included |
-| 4096 (0x1000) | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included       |
-| 8192 (0x2000) | HAS_BLOBS                    | Binary blob data included           |
+| Value           | Name                         | Description                          |
+| --------------- | ---------------------------- | ------------------------------------ |
+| 64 (0x40)       | HAS_PREVIOUS_VERSION         | Previous version timestamp included  |
+| 128 (0x80)      | HAS_EXTENDED_TYPE            | Extended type information            |
+| 512 (0x200)     | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included        |
+| 1024 (0x400)    | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included       |
+| 2048 (0x800)    | HAS_ORIGINATING_OPERATION    | Originating operation type included  |
+| 4096 (0x1000)   | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included        |
+| 8192 (0x2000)   | HAS_BLOBS                    | Binary blob data included            |
+| 65536 (0x10000) | HAS_EXPIRATION_DECISION      | Expiration decision is authoritative |
+
+`HAS_EXPIRATION_DECISION` carries no payload. It is mirrored in the primary record metadata and audit
+entry so a missing `HAS_EXPIRATION_EXTENDED_TYPE` bit means an explicit no-expiration decision rather
+than missing legacy metadata. Records and audit events without the decision bit retain the legacy
+fallback to a public `@expiresAt` field during upgrades.
+
+#### `@expiresAt` migration and mixed-version compatibility
+
+Source-backed tables now treat the source request context as authoritative for cache expiration. A
+source that intends a returned record to expire must set `context.expiresAt`; an `@expiresAt` field in
+the returned record is application data and no longer schedules expiration by itself. Omitting
+`context.expiresAt` records an explicit no-expiration decision, even when the returned record contains
+an `@expiresAt` field. This is a breaking change for source adapters that previously relied on that
+returned field: update them to set `context.expiresAt` before upgrading.
+
+New readers remain compatible with records written before `HAS_EXPIRATION_DECISION`: when the decision
+bit is absent, they fall back to the public `@expiresAt` field. The reverse is not safe during a rolling
+mixed-version deployment. An older worker does not understand an explicit no-expiration decision and
+can reinterpret the public field as an expiration. Do not run mixed versions for source-backed tables
+that return an `@expiresAt` field while intentionally omitting `context.expiresAt`; upgrade those
+workers together, or remove/neutralize the returned field until every worker understands the decision
+bit.
 
 ### Variable-Length Integer Encoding
 

@@ -360,6 +360,7 @@ export const HAS_ADDITIONAL_AUDIT_REFS = 0x4000;
  * lower-byte action region (which extendedType forbids) and within the always-32-bit metadata form.
  */
 export const LOCAL_ONLY = 0x8000;
+export const HAS_EXPIRATION_DECISION = 0x10000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',

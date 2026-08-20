@@ -3,6 +3,7 @@
 const chai = require('chai');
 const sinon = require('sinon');
 const rewire = require('rewire');
+const { threadId } = require('node:worker_threads');
 const { expect } = chai;
 const sinon_chai = require('sinon-chai').default;
 chai.use(sinon_chai);
@@ -26,6 +27,7 @@ describe('Test signalling module', () => {
 	});
 
 	afterEach(() => {
+		send_itc_event_stub.resetBehavior();
 		send_itc_event_stub.returns();
 		sandbox.resetHistory();
 	});
@@ -71,5 +73,183 @@ describe('Test signalling module', () => {
 		send_itc_event_stub.throws(TEST_ERROR);
 		signalling.signalUserChange('message');
 		expect(log_error_stub.lastCall.args[0].name).to.equal(TEST_ERROR);
+	});
+
+	it('strictly quiesces job workers and stops renewal when aborted', async () => {
+		send_itc_event_stub.resolves();
+		const localSchemaHandler = sandbox.stub().callsFake(async (event) => {
+			const resultByPhase = {
+				'hold-worker-starts': 'held',
+				'quiesce': 'quiesced',
+				'abort-quiesce': 'aborted',
+				'release-worker-starts': 'released',
+			};
+			return { [resultByPhase[event.message.phase]]: true };
+		});
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		try {
+			const message = await signalling.quiesceSchemaChange({
+				operation: 'drop_table',
+				schema: 'unit_test',
+				table: 'records',
+			});
+			const quiesceCall = send_itc_event_stub.getCalls().find((call) => call.args[0].message.phase === 'quiesce');
+			expect(message.originator).to.equal(threadId);
+			expect(quiesceCall.args[1].includeJobWorkers).to.equal(true);
+			expect(quiesceCall.args[1].acceptResult({ quiesced: true })).to.equal(true);
+			await signalling.abortSchemaQuiesce(message);
+			const abortCall = send_itc_event_stub.getCalls().find((call) => call.args[0].message.phase === 'abort-quiesce');
+			expect(abortCall.args[1].includeJobWorkers).to.equal(true);
+			expect(abortCall.args[1].acceptResult({ aborted: true })).to.equal(true);
+		} finally {
+			restoreHandlers();
+		}
+	});
+
+	it('retries strict terminal finalization and requires explicit worker results', async () => {
+		const localSchemaHandler = sandbox.stub().resolves({ finalized: true });
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		send_itc_event_stub.onFirstCall().rejects(new Error('first terminal failure'));
+		send_itc_event_stub.onSecondCall().rejects(new Error('second terminal failure'));
+		send_itc_event_stub.onThirdCall().resolves();
+		send_itc_event_stub.onCall(3).resolves();
+		try {
+			await signalling.finalizeSchemaChange({
+				operation: 'drop_schema',
+				schema: 'unit_test',
+				quiesceId: 'q-final',
+			});
+			expect(localSchemaHandler.firstCall.args[0].message.phase).to.equal('finalize-quiesce');
+			const terminalCalls = send_itc_event_stub
+				.getCalls()
+				.filter((call) => call.args[0].message.phase === 'finalize-quiesce');
+			expect(terminalCalls).to.have.length(3);
+			for (const call of terminalCalls) {
+				const options = call.args[1];
+				expect(options.includeJobWorkers).to.equal(true);
+				expect(options.acceptResult({ finalized: true })).to.equal(true);
+			}
+		} finally {
+			restoreHandlers();
+		}
+	});
+
+	it('requires explicit reconciliation results from local and job workers', async () => {
+		const localSchemaHandler = sandbox.stub().resolves({ reconciled: true });
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		send_itc_event_stub.resolves();
+		try {
+			await signalling.reconcileSchemaChange({
+				operation: 'drop_table',
+				schema: 'unit_test',
+				table: 'records',
+				quiesceId: 'q-reconcile',
+			});
+			const event = localSchemaHandler.firstCall.args[0];
+			expect(event.message.phase).to.equal('reconcile-quiesce');
+			const terminalCall = send_itc_event_stub
+				.getCalls()
+				.find((call) => call.args[0].message.phase === 'reconcile-quiesce');
+			const options = terminalCall.args[1];
+			expect(options.includeJobWorkers).to.equal(true);
+			expect(options.acceptResult({ reconciled: true })).to.equal(true);
+			expect(options.acceptResult({ finalized: true })).to.equal(false);
+		} finally {
+			restoreHandlers();
+		}
+	});
+
+	it('preserves terminal failure while attempting barrier release on every worker', async () => {
+		const localSchemaHandler = sandbox.stub().callsFake(async (event) => {
+			if (event.message.phase === 'finalize-quiesce') return { finalized: true };
+			if (event.message.phase === 'release-worker-starts') throw new Error('local barrier release failed');
+		});
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		send_itc_event_stub.callsFake(async (event) => {
+			if (event.message.phase === 'finalize-quiesce') throw new Error('terminal acknowledgement lost');
+		});
+		try {
+			let terminalError;
+			try {
+				await signalling.finalizeSchemaChange({
+					operation: 'drop_schema',
+					schema: 'unit_test',
+					quiesceId: 'q-terminal-exhausted',
+				});
+			} catch (error) {
+				terminalError = error;
+			}
+			expect(terminalError?.message).to.include('Could not finalized schema quiesce');
+			expect(terminalError?.message).not.to.include('local barrier release failed');
+			expect(
+				localSchemaHandler.getCalls().some((call) => call.args[0].message.phase === 'release-worker-starts')
+			).to.equal(true);
+			expect(
+				send_itc_event_stub.getCalls().some((call) => call.args[0].message.phase === 'release-worker-starts')
+			).to.equal(true);
+			const terminalAttempts = send_itc_event_stub
+				.getCalls()
+				.filter((call) => call.args[0].message.phase === 'finalize-quiesce');
+			expect(terminalAttempts).to.have.length(3);
+		} finally {
+			restoreHandlers();
+		}
+	});
+
+	it('reconciles and releases the worker barrier after a partial commit failure', async () => {
+		const localSchemaHandler = sandbox.stub().callsFake(async (event) => {
+			if (event.message.phase === 'commit-quiesce') return { committed: true };
+			if (event.message.phase === 'reconcile-quiesce') return { reconciled: true };
+			if (event.message.phase === 'release-worker-starts') return { released: true };
+		});
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		const message = {
+			operation: 'drop_table',
+			schema: 'unit_test',
+			table: 'records',
+			quiesceId: 'q-partial-commit',
+		};
+		send_itc_event_stub.rejects(new Error('commit acknowledgement lost'));
+		try {
+			let commitError;
+			try {
+				await signalling.commitSchemaChange(message);
+			} catch (error) {
+				commitError = error;
+			}
+			expect(commitError).to.exist;
+			expect(
+				localSchemaHandler.getCalls().some((call) => call.args[0].message.phase === 'release-worker-starts')
+			).to.equal(false);
+			send_itc_event_stub.resolves();
+			await signalling.reconcileSchemaChange(message);
+			expect(
+				localSchemaHandler.getCalls().some((call) => call.args[0].message.phase === 'release-worker-starts')
+			).to.equal(true);
+		} finally {
+			restoreHandlers();
+		}
+	});
+
+	it('refreshes a stale lease at the schema commit boundary', async () => {
+		const localSchemaHandler = sandbox.stub().resolves({ committed: true });
+		const restoreHandlers = signalling.__set__('serverItcHandlers', { schema: localSchemaHandler });
+		send_itc_event_stub.resolves();
+		const beforeCommit = Date.now();
+		try {
+			await signalling.commitSchemaChange({
+				operation: 'drop_table',
+				schema: 'unit_test',
+				table: 'records',
+				quiesceId: 'q-stale-commit-lease',
+				leaseUntil: 1,
+			});
+			const localMessage = localSchemaHandler.firstCall.args[0].message;
+			const remoteMessage = send_itc_event_stub.firstCall.args[0].message;
+			expect(localMessage.leaseUntil).to.be.at.least(beforeCommit + 120_000);
+			expect(remoteMessage.leaseUntil).to.equal(localMessage.leaseUntil);
+		} finally {
+			restoreHandlers();
+		}
 	});
 });

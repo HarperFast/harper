@@ -1,5 +1,6 @@
 import {
 	DatabaseTransaction,
+	withTableCommitAdmission,
 	transactionOpenTooLongError,
 	type CommitOptions,
 	type TransactionWrite,
@@ -118,6 +119,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: CommitOptions = {}): any {
+		return withTableCommitAdmission(this, options, (admittedOptions) => this.commitLmdbAdmitted(admittedOptions));
+	}
+
+	private commitLmdbAdmitted(options: CommitOptions): any {
 		if (this.timedOut) throw transactionOpenTooLongError();
 		options = options || {};
 		let txnTime = this.timestamp;

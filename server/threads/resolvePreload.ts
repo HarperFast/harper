@@ -12,8 +12,7 @@ import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 // for `--import`, or `dd-trace/init` for `--require`) bundled in a deployed component can be
 // preloaded before any Harper or app module in a worker thread — the only point early enough for
 // an APM agent to instrument subsequent module loads. `configKey` only labels warnings. The
-// caller memoizes the result since the config and installed components are fixed for the process
-// lifetime.
+// caller memoizes the result until the config or resolution roots change.
 export function resolvePreloadModules(
 	configured: unknown,
 	componentsRoot: string | undefined,

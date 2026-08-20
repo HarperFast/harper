@@ -186,7 +186,6 @@ export class ResourceBridge extends BridgeMethods {
 
 	async dropSchema(dropSchemaObj) {
 		await dropDatabase(dropSchemaObj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
 	}
 
 	async updateRecords(updateObj) {

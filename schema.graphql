@@ -163,7 +163,8 @@ Allows enumeration over a computed field, causing it to be included in serialize
 directive @enumerable on FIELD_DEFINITION
 
 """
-Flags the field as containing the expiration time of the entry.
+Flags the field as containing the expiration time of the entry. The index follows the effective stored expiration;
+an explicit write-context expiration can override the serialized field value.
 """
 directive @expiresAt on FIELD_DEFINITION
 

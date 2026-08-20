@@ -9,8 +9,19 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, database, getDatabases, closeDatabase, closeLoadedDatabases } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	getDatabases,
+	closeDatabase,
+	closeLoadedDatabases,
+	dropDatabase,
+	setDatabaseCloseTimeoutForTests,
+} = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const { createBlob } = require('#src/resources/blob');
+const { acquireRestoreLock, releaseRestoreLock } = require('#src/dataLayer/restoreMarker');
+const { waitFor } = require('../waitFor.js');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -38,7 +49,7 @@ describe('RocksDB handle release', function () {
 		const dbPath = rootStore.path;
 		assert.ok(refCountFor(dbPath) > 0, 'database should be open before close');
 
-		closeDatabase('closerelease1');
+		await closeDatabase('closerelease1');
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
 	});
@@ -50,7 +61,7 @@ describe('RocksDB handle release', function () {
 		if (!(a instanceof RocksDatabase)) return this.skip();
 		assert.ok(refCountFor(a.path) > 0 && refCountFor(b.path) > 0, 'both databases should be open');
 
-		closeLoadedDatabases();
+		await closeLoadedDatabases();
 
 		assert.strictEqual(refCountFor(a.path), 0, 'database a should be released');
 		assert.strictEqual(refCountFor(b.path), 0, 'database b should be released');
@@ -65,8 +76,261 @@ describe('RocksDB handle release', function () {
 		const dbPath = rootStore.path;
 		assert.ok(refCountFor(dbPath) > 0, 'tableless database should be open');
 
-		closeLoadedDatabases();
+		await closeLoadedDatabases();
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'tableless database should be released');
+	});
+
+	it('closeDatabase runs table cleanup before closing its stores', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'closerelease4',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		await closeDatabase('closerelease4');
+
+		assert.strictEqual(Table.cleanupStateForTests().closed, true);
+	});
+
+	it('coalesces concurrent closes of the same database', async function () {
+		const rootStore = openRocksDb('closerelease5');
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		const first = closeDatabase('closerelease5');
+		const second = closeDatabase('closerelease5');
+		assert.strictEqual(second, first, 'concurrent callers should share one close operation');
+		await first;
+
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
+	it('rejects a lazy table open while the database is closing', async function () {
+		const databaseName = 'closeopening6';
+		const Table = table({
+			table: 'existing',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const originalCleanup = Table.cleanup;
+		let releaseCleanup;
+		Table.cleanup = () => new Promise((resolve) => (releaseCleanup = resolve));
+
+		const close = closeDatabase(databaseName);
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'late',
+						database: databaseName,
+						attributes: [{ attribute: 'id', isPrimaryKey: true }],
+					}),
+				/Database .* is closing/
+			);
+		} finally {
+			Table.cleanup = originalCleanup;
+			releaseCleanup();
+		}
+		await close;
+	});
+
+	it('fails closed and resumes cleanup when close times out', async function () {
+		this.timeout(30000);
+		const Table = table({
+			table: 'expiring',
+			database: 'closetimeout6',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+				{ attribute: 'payload', type: 'Blob' },
+			],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await Table.put(1, {
+			id: 1,
+			expiresAt: Date.now() - 1_000,
+			payload: createBlob(Buffer.alloc(20_000, 1)),
+		});
+		await Table.primaryStore.committed;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const sweep = Table.runRecordExpirationSweepForTests({
+			beforeEvict: async () => {
+				evictionStarted = true;
+				await blockedEviction;
+			},
+		});
+		await waitFor(() => evictionStarted, { message: 'the expiration sweep should start' });
+		setDatabaseCloseTimeoutForTests(25);
+		try {
+			await assert.rejects(closeDatabase('closetimeout6'), /refusing to close database/);
+			assert.ok(refCountFor(rootStore.path) > 0, 'timed-out close must retain native handles');
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
+		} finally {
+			setDatabaseCloseTimeoutForTests();
+			releaseEviction();
+		}
+		await sweep;
+		await closeDatabase('closetimeout6');
+	});
+
+	it('fails closed and resumes cleanup when table quiescence rejects', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'closefailure7',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const quiesceForDrop = Table.quiesceForDrop;
+		Table.quiesceForDrop = async function () {
+			await quiesceForDrop.call(this);
+			throw new Error('injected cleanup failure');
+		};
+		try {
+			await assert.rejects(closeDatabase('closefailure7'), /Could not quiesce database/);
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
+		} finally {
+			Table.quiesceForDrop = quiesceForDrop;
+		}
+		await closeDatabase('closefailure7');
+	});
+
+	it('dropDatabase runs table cleanup before destroying its stores', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'droprelease6',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		await dropDatabase('droprelease6');
+
+		assert.strictEqual(Table.cleanupStateForTests().closed, true);
+	});
+
+	it('drops a tableless database while blocking a concurrent reopen', async function () {
+		const databaseName = 'droptableless7';
+		const rootStore = database({ database: databaseName });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+
+		const drop = dropDatabase(databaseName);
+		assert.throws(() => database({ database: databaseName }), /Database .* is closing/);
+		const close = closeDatabase(databaseName);
+		await drop;
+		assert.strictEqual(await close, true);
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
+	it('refuses to drop a tableless database while its restore lock is held', async function () {
+		const databaseName = 'droplockedtableless8';
+		const rootStore = database({ database: databaseName });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const restoreLock = acquireRestoreLock(rootStore.path);
+		try {
+			await assert.rejects(dropDatabase(databaseName));
+			assert.strictEqual(rootStore.status, 'open');
+		} finally {
+			releaseRestoreLock(restoreLock);
+		}
+		await dropDatabase(databaseName);
+	});
+
+	it('fails closed and resumes cleanup when drop times out', async function () {
+		this.timeout(30000);
+		const Table = table({
+			table: 'expiring',
+			database: 'droptimeout7',
+			attributes: [
+				{ attribute: 'id', isPrimaryKey: true },
+				{ attribute: 'expiresAt', expiresAt: true, indexed: true },
+				{ attribute: 'payload', type: 'Blob' },
+			],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await Table.put(1, {
+			id: 1,
+			expiresAt: Date.now() - 1_000,
+			payload: createBlob(Buffer.alloc(20_000, 2)),
+		});
+		await Table.primaryStore.committed;
+		let releaseEviction;
+		let evictionStarted = false;
+		const blockedEviction = new Promise((resolve) => (releaseEviction = resolve));
+		const sweep = Table.runRecordExpirationSweepForTests({
+			beforeEvict: async () => {
+				evictionStarted = true;
+				await blockedEviction;
+			},
+		});
+		await waitFor(() => evictionStarted, { message: 'the expiration sweep should start' });
+		setDatabaseCloseTimeoutForTests(25);
+		try {
+			await assert.rejects(dropDatabase('droptimeout7'), /refusing to destroy database/);
+			assert.ok(refCountFor(rootStore.path) > 0, 'timed-out drop must retain native handles');
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
+		} finally {
+			setDatabaseCloseTimeoutForTests();
+			releaseEviction();
+		}
+		await sweep;
+		await dropDatabase('droptimeout7');
+	});
+
+	it('fails closed and resumes cleanup when drop quiescence rejects', async function () {
+		const Table = table({
+			table: 'expiring',
+			database: 'dropfailure8',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const quiesceForDrop = Table.quiesceForDrop;
+		Table.quiesceForDrop = async function () {
+			await quiesceForDrop.call(this);
+			throw new Error('injected cleanup failure');
+		};
+		try {
+			await assert.rejects(dropDatabase('dropfailure8'), /Could not quiesce database/);
+			assert.strictEqual(rootStore.status, 'open');
+			assert.strictEqual(Table.cleanupStateForTests().closed, false);
+		} finally {
+			Table.quiesceForDrop = quiesceForDrop;
+		}
+		await dropDatabase('dropfailure8');
+	});
+
+	it('reconciles authoritative state when native database destruction fails', async function () {
+		const databaseName = 'dropdestroyfailure9';
+		const Table = table({
+			table: 'records',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const destroy = rootStore.destroy;
+		rootStore.destroy = () => {
+			throw new Error('injected destroy failure');
+		};
+		try {
+			await assert.rejects(dropDatabase(databaseName), /injected destroy failure/);
+		} finally {
+			rootStore.destroy = destroy;
+		}
+		const Recovered = getDatabases()[databaseName]?.records;
+		assert.ok(Recovered, 'authoritative reconciliation must reload a database that was not destroyed');
+		assert.notStrictEqual(Recovered, Table, 'the closed registration must not be restored');
+		assert.doesNotThrow(() => database({ database: databaseName }), 'the recovered database must be available');
+		await dropDatabase(databaseName);
 	});
 });

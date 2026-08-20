@@ -12,7 +12,22 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { isMainThread, workerData } = require('worker_threads');
-const { resetDatabases, closeDatabase } = require('../../resources/databases.ts');
+const {
+	resetDatabases,
+	closeDatabase,
+	quiesceSchemaTarget,
+	abortSchemaQuiesce,
+	commitSchemaQuiesce,
+	renewSchemaQuiesce,
+	finishSchemaQuiesce,
+	completeSchemaQuiesce,
+	failSchemaQuiesceFinalization,
+} = require('../../resources/databases.ts');
+const {
+	holdWorkerStartsForSchema,
+	releaseWorkerStartsForSchema,
+	isThreadConnected,
+} = require('../threads/manageThreads.js');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -38,6 +53,75 @@ const serverItcHandlers = {
  * @returns {Promise<void>}
  */
 const schemaListeners = [];
+const MAX_SCHEMA_TERMINAL_OUTCOMES = 1024;
+const schemaTerminalCompletions = new Map();
+const schemaTerminalOutcomes = new Map();
+const schemaWorkerBarrierLeases = new Map();
+const SCHEMA_WORKER_BARRIER_RECHECK_MS = 1_000;
+
+function expireSchemaWorkerBarrierLease(message) {
+	// The origin can legitimately block its event loop during synchronous RocksDB destruction.
+	// Keep replacement workers fenced until that owner disconnects or sends a terminal message.
+	if (isThreadConnected(message.originator)) {
+		const timer = setTimeout(() => expireSchemaWorkerBarrierLease(message), SCHEMA_WORKER_BARRIER_RECHECK_MS);
+		timer.unref();
+		schemaWorkerBarrierLeases.set(message.quiesceId, timer);
+		return;
+	}
+	schemaWorkerBarrierLeases.delete(message.quiesceId);
+	releaseWorkerStartsForSchema(message.quiesceId);
+}
+
+function armSchemaWorkerBarrierLease(message) {
+	if (!isMainThread) return;
+	const existing = schemaWorkerBarrierLeases.get(message.quiesceId);
+	if (existing) clearTimeout(existing);
+	const delay = Math.max(0, (message.leaseUntil ?? Date.now()) - Date.now());
+	const timer = setTimeout(() => expireSchemaWorkerBarrierLease(message), delay);
+	timer.unref();
+	schemaWorkerBarrierLeases.set(message.quiesceId, timer);
+}
+
+function commitSchemaWorkerBarrier(message) {
+	if (!isMainThread) return;
+	armSchemaWorkerBarrierLease(message);
+}
+
+function releaseSchemaWorkerBarrier(message) {
+	if (!isMainThread) return;
+	const timer = schemaWorkerBarrierLeases.get(message.quiesceId);
+	if (timer) clearTimeout(timer);
+	schemaWorkerBarrierLeases.delete(message.quiesceId);
+	releaseWorkerStartsForSchema(message.quiesceId);
+}
+
+function sameSchemaTerminalRequest(entry, message) {
+	return (
+		entry.phase === message.phase &&
+		entry.operation === message.operation &&
+		entry.schema === message.schema &&
+		entry.table === message.table
+	);
+}
+
+function schemaTerminalEntry(message, value) {
+	return {
+		phase: message.phase,
+		operation: message.operation,
+		schema: message.schema,
+		table: message.table,
+		value,
+	};
+}
+
+function retainSchemaTerminalOutcome(message, result) {
+	schemaTerminalOutcomes.set(message.quiesceId, schemaTerminalEntry(message, result));
+	while (schemaTerminalOutcomes.size > MAX_SCHEMA_TERMINAL_OUTCOMES) {
+		const oldestId = schemaTerminalOutcomes.keys().next().value;
+		schemaTerminalOutcomes.delete(oldestId);
+	}
+}
+
 async function schemaHandler(event) {
 	const validate = validateEvent(event);
 	if (validate) {
@@ -46,20 +130,91 @@ async function schemaHandler(event) {
 	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
-	// restore_backup: this thread must release its store handles so the restore can purge and
-	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
-	// the restoring marker is present, and reloads it on the completion signal (marker gone).
-	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+	if (event.message?.phase === 'hold-worker-starts') {
+		holdWorkerStartsForSchema(event.message.quiesceId);
+		armSchemaWorkerBarrierLease(event.message);
+		return { held: true };
 	}
-	await cleanLmdbMap(event.message);
-	await syncSchemaMetadata(event.message);
-	for (let listener of schemaListeners) {
+	if (event.message?.phase === 'release-worker-starts') {
+		releaseSchemaWorkerBarrier(event.message);
+		return { released: true };
+	}
+	if (event.message?.phase === 'quiesce') return quiesceSchemaTarget(event.message);
+	if (event.message?.phase === 'renew-quiesce') {
+		const result = renewSchemaQuiesce(event.message);
+		if (result.quiesced) armSchemaWorkerBarrierLease(event.message);
+		return result;
+	}
+	if (event.message?.phase === 'commit-quiesce') {
+		const result = await commitSchemaQuiesce(event.message);
+		if (result.committed) commitSchemaWorkerBarrier(event.message);
+		return result;
+	}
+	if (event.message?.phase === 'abort-quiesce') {
+		await abortSchemaQuiesce(event.message);
+		return { aborted: true };
+	}
+	const terminalPhase =
+		event.message?.phase === 'finalize-quiesce'
+			? 'finalized'
+			: event.message?.phase === 'reconcile-quiesce'
+				? 'reconciled'
+				: undefined;
+	if (terminalPhase) {
+		const quiesceId = event.message.quiesceId;
+		const outcome = schemaTerminalOutcomes.get(quiesceId);
+		if (outcome) return sameSchemaTerminalRequest(outcome, event.message) ? outcome.value : { [terminalPhase]: false };
+		const active = schemaTerminalCompletions.get(quiesceId);
+		if (active) return sameSchemaTerminalRequest(active, event.message) ? active.value : { [terminalPhase]: false };
+		const completion = applySchemaChange(event, terminalPhase);
+		schemaTerminalCompletions.set(quiesceId, schemaTerminalEntry(event.message, completion));
 		try {
-			listener(event?.message);
-		} catch (err) {
-			hdbLogger.error(err);
+			const result = await completion;
+			if (result?.[terminalPhase] === true) retainSchemaTerminalOutcome(event.message, result);
+			return result;
+		} finally {
+			if (schemaTerminalCompletions.get(quiesceId)?.value === completion) schemaTerminalCompletions.delete(quiesceId);
 		}
+	}
+	return applySchemaChange(event);
+}
+
+async function applySchemaChange(event, terminalPhase) {
+	if (terminalPhase && !finishSchemaQuiesce(event.message)) return { [terminalPhase]: false };
+	try {
+		// restore_backup: this thread must release its store handles so the restore can purge and
+		// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
+		// the restoring marker is present, and reloads it on the completion signal (marker gone).
+		if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				try {
+					await closeDatabase(event.message.schema);
+					break;
+				} catch (error) {
+					hdbLogger.warn(
+						`Could not close database ${event.message.schema} for restore${attempt === 0 ? '; retrying once' : ''}:`,
+						error
+					);
+					if (attempt === 1) return;
+				}
+			}
+		}
+		await cleanLmdbMap(event.message);
+		await syncSchemaMetadata(event.message, Boolean(terminalPhase));
+		for (let listener of schemaListeners) {
+			try {
+				listener(event?.message);
+			} catch (err) {
+				hdbLogger.error(err);
+			}
+		}
+		if (terminalPhase) {
+			await completeSchemaQuiesce(event.message);
+			return { [terminalPhase]: true };
+		}
+	} catch (error) {
+		if (terminalPhase) failSchemaQuiesceFinalization(event.message);
+		throw error;
 	}
 }
 
@@ -74,7 +229,7 @@ schemaHandler.addListener = function (listener) {
  * @param msg
  * @returns {Promise<void>}
  */
-async function syncSchemaMetadata(msg) {
+async function syncSchemaMetadata(msg, strict = false) {
 	try {
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
@@ -82,6 +237,7 @@ async function syncSchemaMetadata(msg) {
 			// wait for a write to finish to ensure all writes have been written
 			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
 	} catch (e) {
+		if (strict) throw e;
 		hdbLogger.error(e);
 	}
 }

@@ -1,0 +1,9 @@
+type IndexedExpiry @table(database: "quiesce_indexed") @export {
+	id: ID! @primaryKey
+	expiresAt: Float @expiresAt
+}
+
+type PrimaryExpiry @table(database: "quiesce_primary", expiration: 1, eviction: 1) @export {
+	id: ID! @primaryKey
+	value: String
+}

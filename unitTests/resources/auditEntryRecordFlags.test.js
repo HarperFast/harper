@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { createAuditEntry, readAuditEntry } = require('#src/resources/auditStore');
+const { createAuditEntry, readAuditEntry, HAS_EXPIRATION_DECISION } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 
@@ -25,6 +25,25 @@ describe('Audit entry record flags match the body (#2153)', () => {
 		extendedType: 0x1100, // HAS_EXPIRATION_EXTENDED_TYPE | HAS_STRUCTURE_UPDATE
 		expiresAt: 1817915930237,
 	};
+
+	it('round-trips an explicit no-expiration decision without adding payload bytes', () => {
+		const localOnlyEntry = createAuditEntry({
+			...baseRecord,
+			extendedType: 0x8000,
+			expiresAt: undefined,
+			encodedRecord: Buffer.from([0x80]),
+		});
+		const decisionEntry = createAuditEntry({
+			...baseRecord,
+			extendedType: HAS_EXPIRATION_DECISION,
+			expiresAt: undefined,
+			encodedRecord: Buffer.from([0x80]),
+		});
+		assert.equal(decisionEntry.length, localOnlyEntry.length);
+		const read = readAuditEntry(Buffer.from(decisionEntry));
+		assert.ok(read.extendedType & HAS_EXPIRATION_DECISION);
+		assert.equal(read.expiresAt, undefined);
+	});
 
 	it('clears HAS_RECORD on a put minted with no encoded record', () => {
 		const entry = createAuditEntry({ ...baseRecord, encodedRecord: undefined });

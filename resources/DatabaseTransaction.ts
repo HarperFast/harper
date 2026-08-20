@@ -244,6 +244,111 @@ export type CommitOptions = {
 	transaction?: RocksTransaction;
 };
 
+export const TABLE_COMMIT_ADMISSION = Symbol.for('harper.table-commit-admission');
+export const TABLE_COMMIT_RELEASE = Symbol.for('harper.table-commit-release');
+
+function hasAdmittedStore(owner: DatabaseTransaction, store: any): boolean {
+	return owner.admittedTableStore === store || owner.additionalAdmittedTableStores?.includes(store) === true;
+}
+
+function addAdmittedStore(owner: DatabaseTransaction, store: any): void {
+	if (owner.admittedTableStore === undefined) owner.admittedTableStore = store;
+	else (owner.additionalAdmittedTableStores ??= []).push(store);
+}
+
+function stampTransactionLink(owner: DatabaseTransaction, link: DatabaseTransaction): void {
+	if (link.tableCommitAdmissionOwner === owner) return;
+	link.tableCommitAdmissionOwner = owner;
+	if (link === owner) return;
+	if (owner.admittedTransactionLink === undefined) owner.admittedTransactionLink = link;
+	else (owner.additionalAdmittedTransactionLinks ??= []).push(link);
+}
+
+function admitTransactionStores(transaction: DatabaseTransaction, owner: DatabaseTransaction): void {
+	for (let link: DatabaseTransaction = transaction; link; link = link.next) {
+		stampTransactionLink(owner, link);
+		for (const write of link.writes) {
+			const store = write?.store;
+			if (!store || hasAdmittedStore(owner, store)) continue;
+			const admit = store[TABLE_COMMIT_ADMISSION];
+			if (admit && admit() !== false) addAdmittedStore(owner, store);
+		}
+	}
+}
+
+function releaseTransactionStores(owner: DatabaseTransaction): Promise<void> | void {
+	let completions: Promise<unknown>[] | undefined;
+	const releaseStore = (store: any) => {
+		try {
+			const completion = store[TABLE_COMMIT_RELEASE]?.();
+			if ((completion as any)?.then) (completions ??= []).push(Promise.resolve(completion));
+		} catch (error) {
+			(completions ??= []).push(Promise.reject(error));
+		}
+	};
+	if (owner.admittedTableStore !== undefined) releaseStore(owner.admittedTableStore);
+	for (const store of owner.additionalAdmittedTableStores ?? []) releaseStore(store);
+	const clearAdmissionOwner = (link: DatabaseTransaction) => {
+		if (link.tableCommitAdmissionOwner === owner) link.tableCommitAdmissionOwner = undefined;
+	};
+	clearAdmissionOwner(owner);
+	if (owner.admittedTransactionLink) clearAdmissionOwner(owner.admittedTransactionLink);
+	for (const link of owner.additionalAdmittedTransactionLinks ?? []) clearAdmissionOwner(link);
+	owner.admittedTableStore = undefined;
+	owner.additionalAdmittedTableStores = undefined;
+	owner.admittedTransactionLink = undefined;
+	owner.additionalAdmittedTransactionLinks = undefined;
+	if (completions) return Promise.allSettled(completions).then(() => undefined);
+}
+
+/**
+ * Hold every table touched by a transaction chain in the submitted-commit set until the complete
+ * commit (including retries and chained stores) settles. Recursive commit rounds reuse the same
+ * context and admit any stores added while asynchronous pre-commit work was running.
+ */
+export function withTableCommitAdmission<T>(
+	transaction: DatabaseTransaction,
+	options: CommitOptions,
+	commit: (options: CommitOptions) => T
+): T {
+	const activeOwner = transaction.tableCommitAdmissionOwner;
+	if (activeOwner) {
+		// Retry and recursive commit rounds remain owned by the original head until its promise settles.
+		admitTransactionStores(transaction, activeOwner);
+		return commit(options);
+	}
+	transaction.tableCommitAdmissionOwner = transaction;
+	try {
+		admitTransactionStores(transaction, transaction);
+		const resolution: any = commit(options);
+		if (resolution?.then) {
+			return resolution.then(
+				(value) => {
+					const release = releaseTransactionStores(transaction);
+					return release ? release.then(() => value) : value;
+				},
+				(error) => {
+					const release = releaseTransactionStores(transaction);
+					if (release)
+						return release.then(() => {
+							throw error;
+						});
+					throw error;
+				}
+			) as T;
+		}
+		const release = releaseTransactionStores(transaction);
+		return (release ? release.then(() => resolution) : resolution) as T;
+	} catch (error) {
+		const release = releaseTransactionStores(transaction);
+		if (release)
+			return release.then(() => {
+				throw error;
+			}) as T;
+		throw error;
+	}
+}
+
 type ReadTransaction = (LMDBTransaction | RocksTransaction) & {
 	openTimer?: number;
 	retryRisk?: number;
@@ -346,6 +451,11 @@ export class DatabaseTransaction implements Transaction {
 	timestamp = 0;
 	retries = 0;
 	declare next: DatabaseTransaction;
+	declare tableCommitAdmissionOwner?: DatabaseTransaction;
+	declare admittedTableStore?: any;
+	declare additionalAdmittedTableStores?: any[];
+	declare admittedTransactionLink?: DatabaseTransaction;
+	declare additionalAdmittedTransactionLinks?: DatabaseTransaction[];
 	// The head of this multi-store chain, set when the link is created; absent on the head itself.
 	declare root?: DatabaseTransaction;
 	// Whether this link is why its chain root is write-supervised (see endWriteSupervision).
@@ -432,11 +542,6 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Drop this link's supervision claim, and the root's with it once no link in the chain still holds
-	 * one. Membership is keyed on the root but claimed per link, so removing it on any link's detach
-	 * would unsupervise a logical transaction still holding writes elsewhere in the chain.
-	 */
-	/**
 	 * Give up on the whole chain: release any handle its links still hold, then drop the supervision
 	 * that was the only remaining way to find them. Clearing the bookkeeping alone would strand a live
 	 * handle in neither registry — the chained-commit throw this exists for is exactly the case where a
@@ -452,6 +557,11 @@ export class DatabaseTransaction implements Transaction {
 		supervisedWriteRoots.delete(root);
 	}
 
+	/**
+	 * Drop this link's supervision claim, and the root's with it once no link in the chain still holds
+	 * one. Membership is keyed on the root but claimed per link, so removing it on any link's detach
+	 * would unsupervise a logical transaction still holding writes elsewhere in the chain.
+	 */
 	private endWriteSupervision(): void {
 		if (!this.writeSupervised) return;
 		this.writeSupervised = false;
@@ -514,6 +624,12 @@ export class DatabaseTransaction implements Transaction {
 		} catch (error) {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
+		this.completeDeferredContextRelease();
+	}
+
+	/** Release wrapper bookkeeping after its native transaction was committed directly. */
+	detachReadTxn(): void {
+		this.detachOwnedTransaction();
 		this.completeDeferredContextRelease();
 	}
 
@@ -785,6 +901,10 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
+		return withTableCommitAdmission(this, options, (admittedOptions) => this.commitRocksAdmitted(admittedOptions));
+	}
+
+	private commitRocksAdmitted(options: CommitOptions): MaybePromise<CommitResolution> {
 		if (this.timedOut) throw transactionOpenTooLongError();
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
@@ -1470,6 +1590,10 @@ startMonitoringTxns();
  */
 export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
+}
+
+export function trackedTransactionCountForTests(): number {
+	return trackedTxns.size;
 }
 
 /** Test seam: whether the monitor supervises this logical transaction for its writes. */

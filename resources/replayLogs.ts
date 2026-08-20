@@ -13,7 +13,7 @@ import {
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
-import { purgeAgedLogs } from './auditStore.ts';
+import { HAS_EXPIRATION_DECISION, purgeAgedLogs } from './auditStore.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
@@ -198,7 +198,14 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
-				const options = { context, residencyId, nodeId, originatingOperation };
+				const options = {
+					context,
+					residencyId,
+					nodeId,
+					originatingOperation,
+					expiresAt,
+					expirationDecisionPresent: Boolean(extendedType & HAS_EXPIRATION_DECISION),
+				};
 				writes++;
 				switch (type) {
 					case 'put':

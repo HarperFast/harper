@@ -13,6 +13,9 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 // for testing validation logic, not for replacing dependencies with mocks
 const server_itc_handlers = rewire('#js/server/itc/serverHandlers');
 const { resetResources } = require('#src/resources/Resources');
+const { threadId } = require('node:worker_threads');
+const { isThreadConnected, waitForSchemaWorkerStarts } = require('#js/server/threads/manageThreads');
+const { waitFor } = require('../../waitFor');
 
 describe('Test hdbChildIpcHandler module', () => {
 	const TEST_ERR = 'The roof is on fire';
@@ -132,6 +135,352 @@ describe('Test hdbChildIpcHandler module', () => {
 			};
 			await schema_handler(test_event);
 			expect(log_error_stub).to.have.been.called;
+		});
+
+		it('returns the explicit quiesce result without resetting databases', async () => {
+			const expectedResult = { quiesced: true };
+			const quiesceStub = sandbox.stub().resolves(expectedResult);
+			const cleanStub = sandbox.stub().resolves();
+			const resetStub = sandbox.stub().returns({});
+			const restoreQuiesce = server_itc_handlers.__set__('quiesceSchemaTarget', quiesceStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			const restoreReset = server_itc_handlers.__set__('resetDatabases', resetStub);
+			try {
+				const message = {
+					originator: 12345,
+					operation: 'drop_table',
+					phase: 'quiesce',
+					schema: 'test',
+					table: 'records',
+					quiesceId: 'q-1',
+				};
+				const result = await schema_handler({ type: 'schema', message });
+				expect(result).to.equal(expectedResult);
+				expect(quiesceStub).to.have.been.calledOnceWithExactly(message);
+				expect(cleanStub).not.to.have.been.called;
+				expect(resetStub).not.to.have.been.called;
+			} finally {
+				restoreReset();
+				restoreClean();
+				restoreQuiesce();
+			}
+		});
+
+		it('retains a lease for the worker-start barrier after the commit boundary', () => {
+			const leases = server_itc_handlers.__get__('schemaWorkerBarrierLeases');
+			const armBarrier = server_itc_handlers.__get__('armSchemaWorkerBarrierLease');
+			const commitBarrier = server_itc_handlers.__get__('commitSchemaWorkerBarrier');
+			const releaseBarrier = server_itc_handlers.__get__('releaseSchemaWorkerBarrier');
+			const message = { quiesceId: 'q-committed-barrier', leaseUntil: Date.now() + 60_000 };
+			try {
+				armBarrier(message);
+				const firstLease = leases.get(message.quiesceId);
+				commitBarrier(message);
+				expect(leases.has(message.quiesceId)).to.equal(true);
+				expect(leases.get(message.quiesceId)).not.to.equal(firstLease);
+			} finally {
+				releaseBarrier(message);
+			}
+		});
+
+		it('retains the worker-start barrier while the committed origin is connected', async () => {
+			const message = {
+				originator: threadId,
+				operation: 'drop_table',
+				phase: 'hold-worker-starts',
+				schema: 'test',
+				table: 'records',
+				quiesceId: 'q-live-origin-barrier',
+				leaseUntil: Date.now(),
+			};
+			await schema_handler({ type: 'schema', message });
+			let released = false;
+			const waiting = waitForSchemaWorkerStarts().then(() => (released = true));
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				expect(released).to.equal(false);
+			} finally {
+				await schema_handler({ type: 'schema', message: { ...message, phase: 'release-worker-starts' } });
+			}
+			await waiting;
+			expect(released).to.equal(true);
+		});
+
+		it('keeps an unstamped schema teardown fenced', () => {
+			expect(isThreadConnected(undefined)).to.equal(true);
+		});
+
+		it('releases an expired worker-start barrier after its origin disconnects', async () => {
+			const message = {
+				originator: Number.MAX_SAFE_INTEGER,
+				operation: 'drop_table',
+				phase: 'hold-worker-starts',
+				schema: 'test',
+				table: 'records',
+				quiesceId: 'q-disconnected-origin-barrier',
+				leaseUntil: Date.now(),
+			};
+			await schema_handler({ type: 'schema', message });
+			let released = false;
+			waitForSchemaWorkerStarts().then(() => (released = true));
+			await waitFor(() => released, {
+				timeout: 2_000,
+				message: 'worker-start barrier was not released after its origin disconnected',
+			});
+		});
+
+		it('aborts quiescence without resetting databases', async () => {
+			const abortStub = sandbox.stub().resolves();
+			const cleanStub = sandbox.stub().resolves();
+			const resetStub = sandbox.stub().returns({});
+			const restoreAbort = server_itc_handlers.__set__('abortSchemaQuiesce', abortStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			const restoreReset = server_itc_handlers.__set__('resetDatabases', resetStub);
+			try {
+				const message = {
+					originator: 12345,
+					operation: 'drop_table',
+					phase: 'abort-quiesce',
+					schema: 'test',
+					table: 'records',
+					quiesceId: 'q-2',
+				};
+				const result = await schema_handler({ type: 'schema', message });
+				expect(result).to.deep.equal({ aborted: true });
+				expect(abortStub).to.have.been.calledOnceWithExactly(message);
+				expect(cleanStub).not.to.have.been.called;
+				expect(resetStub).not.to.have.been.called;
+			} finally {
+				restoreReset();
+				restoreClean();
+				restoreAbort();
+			}
+		});
+
+		it('finishes quiescence before the normal database reset', async () => {
+			const calls = [];
+			const finishStub = sandbox.stub().callsFake(() => calls.push('finish'));
+			const cleanStub = sandbox.stub().callsFake(async () => calls.push('clean'));
+			const resetStub = sandbox.stub().callsFake(() => {
+				calls.push('reset');
+				return {};
+			});
+			const restoreFinish = server_itc_handlers.__set__('finishSchemaQuiesce', finishStub);
+			const completeStub = sandbox.stub().resolves();
+			const restoreComplete = server_itc_handlers.__set__('completeSchemaQuiesce', completeStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			const restoreReset = server_itc_handlers.__set__('resetDatabases', resetStub);
+			try {
+				const message = {
+					originator: 12345,
+					operation: 'drop_table',
+					phase: 'finalize-quiesce',
+					schema: 'test',
+					quiesceId: 'q-3',
+				};
+				const result = await schema_handler({ type: 'schema', message });
+				expect(finishStub).to.have.been.calledOnceWithExactly(message);
+				expect(cleanStub).to.have.been.calledOnceWithExactly(message);
+				expect(resetStub).to.have.been.calledOnce;
+				expect(completeStub).to.have.been.calledOnceWithExactly(message);
+				expect(result).to.deep.equal({ finalized: true });
+				expect(calls).to.deep.equal(['finish', 'clean', 'reset']);
+			} finally {
+				restoreReset();
+				restoreClean();
+				restoreComplete();
+				restoreFinish();
+			}
+		});
+
+		it('coalesces concurrent terminal retries for the same quiescence', async () => {
+			let releaseReset;
+			const resetBlocked = new Promise((resolve) => (releaseReset = resolve));
+			const finishStub = sandbox.stub().returns(true);
+			const cleanStub = sandbox.stub().resolves();
+			const syncStub = sandbox.stub().callsFake(() => resetBlocked);
+			const completeStub = sandbox.stub();
+			const restoreFinish = server_itc_handlers.__set__('finishSchemaQuiesce', finishStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			const restoreSync = server_itc_handlers.__set__('syncSchemaMetadata', syncStub);
+			const restoreComplete = server_itc_handlers.__set__('completeSchemaQuiesce', completeStub);
+			try {
+				const message = {
+					originator: 12345,
+					operation: 'drop_schema',
+					phase: 'finalize-quiesce',
+					schema: 'test',
+					quiesceId: 'q-concurrent-finalize',
+				};
+				const first = schema_handler({ type: 'schema', message });
+				const retry = schema_handler({ type: 'schema', message });
+				releaseReset();
+				expect(await Promise.all([first, retry])).to.deep.equal([{ finalized: true }, { finalized: true }]);
+				expect(await schema_handler({ type: 'schema', message })).to.deep.equal({ finalized: true });
+				expect(finishStub).to.have.been.calledOnceWithExactly(message);
+				expect(cleanStub).to.have.been.calledOnceWithExactly(message);
+				expect(syncStub).to.have.been.calledOnceWithExactly(message, true);
+				expect(completeStub).to.have.been.calledOnceWithExactly(message);
+			} finally {
+				restoreComplete();
+				restoreSync();
+				restoreClean();
+				restoreFinish();
+			}
+		});
+
+		it('rejects a mismatched terminal request that reuses a completed ID', async () => {
+			const finishStub = sandbox.stub().returns(true);
+			const syncStub = sandbox.stub().resolves();
+			const restoreFinish = server_itc_handlers.__set__('finishSchemaQuiesce', finishStub);
+			const restoreSync = server_itc_handlers.__set__('syncSchemaMetadata', syncStub);
+			try {
+				const message = {
+					originator: 12345,
+					operation: 'drop_schema',
+					phase: 'finalize-quiesce',
+					schema: 'test',
+					quiesceId: 'q-terminal-identity',
+				};
+				expect(await schema_handler({ type: 'schema', message })).to.deep.equal({ finalized: true });
+				expect(
+					await schema_handler({
+						type: 'schema',
+						message: { ...message, schema: 'other' },
+					})
+				).to.deep.equal({ finalized: false });
+				expect(finishStub).to.have.been.calledOnce;
+				expect(syncStub).to.have.been.calledOnce;
+			} finally {
+				restoreSync();
+				restoreFinish();
+			}
+		});
+
+		it('bounds retained terminal outcomes', () => {
+			const outcomes = server_itc_handlers.__get__('schemaTerminalOutcomes');
+			const retain = server_itc_handlers.__get__('retainSchemaTerminalOutcome');
+			const maximum = server_itc_handlers.__get__('MAX_SCHEMA_TERMINAL_OUTCOMES');
+			outcomes.clear();
+			for (let index = 0; index <= maximum; index++) {
+				retain(
+					{
+						operation: 'drop_schema',
+						phase: 'finalize-quiesce',
+						schema: `test-${index}`,
+						quiesceId: `q-bounded-${index}`,
+					},
+					{ finalized: true }
+				);
+			}
+			expect(outcomes.size).to.equal(maximum);
+			expect(outcomes.has('q-bounded-0')).to.equal(false);
+			expect(outcomes.has(`q-bounded-${maximum}`)).to.equal(true);
+			outcomes.clear();
+		});
+
+		it('does not acknowledge finalization when the strict reset fails', async () => {
+			const finishStub = sandbox.stub().returns(true);
+			const syncStub = sandbox.stub().rejects(new Error('reset failed'));
+			const failStub = sandbox.stub();
+			const completeStub = sandbox.stub();
+			const restoreFinish = server_itc_handlers.__set__('finishSchemaQuiesce', finishStub);
+			const restoreSync = server_itc_handlers.__set__('syncSchemaMetadata', syncStub);
+			const restoreFail = server_itc_handlers.__set__('failSchemaQuiesceFinalization', failStub);
+			const restoreComplete = server_itc_handlers.__set__('completeSchemaQuiesce', completeStub);
+			try {
+				const message = {
+					originator: 12345,
+					operation: 'drop_schema',
+					phase: 'finalize-quiesce',
+					schema: 'test',
+					quiesceId: 'q-reset-failure',
+				};
+				let failure;
+				try {
+					await schema_handler({ type: 'schema', message });
+				} catch (error) {
+					failure = error;
+				}
+				expect(failure?.message).to.equal('reset failed');
+				expect(failStub).to.have.been.calledOnceWithExactly(message);
+				expect(completeStub).not.to.have.been.called;
+			} finally {
+				restoreComplete();
+				restoreFail();
+				restoreSync();
+				restoreFinish();
+			}
+		});
+
+		it('returns an explicit result after authoritative reconciliation', async () => {
+			const finishStub = sandbox.stub().returns(true);
+			const syncStub = sandbox.stub().resolves();
+			const completeStub = sandbox.stub();
+			const restoreFinish = server_itc_handlers.__set__('finishSchemaQuiesce', finishStub);
+			const restoreSync = server_itc_handlers.__set__('syncSchemaMetadata', syncStub);
+			const restoreComplete = server_itc_handlers.__set__('completeSchemaQuiesce', completeStub);
+			try {
+				const message = {
+					originator: 12345,
+					operation: 'drop_table',
+					phase: 'reconcile-quiesce',
+					schema: 'test',
+					table: 'records',
+					quiesceId: 'q-reconcile',
+				};
+				const result = await schema_handler({ type: 'schema', message });
+				expect(result).to.deep.equal({ reconciled: true });
+				expect(finishStub).to.have.been.calledOnceWithExactly(message);
+				expect(syncStub).to.have.been.calledOnceWithExactly(message, true);
+				expect(completeStub).to.have.been.calledOnceWithExactly(message);
+			} finally {
+				restoreComplete();
+				restoreSync();
+				restoreFinish();
+			}
+		});
+
+		it('retries a restore close failure and still acknowledges through the schema work', async () => {
+			const closeStub = sandbox.stub();
+			closeStub.onFirstCall().rejects(new Error('cleanup still active'));
+			closeStub.onSecondCall().resolves(true);
+			const cleanStub = sandbox.stub().resolves();
+			const syncStub = sandbox.stub().resolves();
+			const restoreClose = server_itc_handlers.__set__('closeDatabase', closeStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			const restoreSync = server_itc_handlers.__set__('syncSchemaMetadata', syncStub);
+			try {
+				await schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'test' },
+				});
+				expect(closeStub).to.have.been.calledTwice;
+				expect(cleanStub).to.have.been.calledOnce;
+				expect(syncStub).to.have.been.calledOnce;
+			} finally {
+				restoreSync();
+				restoreClean();
+				restoreClose();
+			}
+		});
+
+		it('resolves a restore close failure without rescanning an open database', async () => {
+			const closeStub = sandbox.stub().rejects(new Error('cleanup still active'));
+			const cleanStub = sandbox.stub().resolves();
+			const restoreClose = server_itc_handlers.__set__('closeDatabase', closeStub);
+			const restoreClean = server_itc_handlers.__set__('cleanLmdbMap', cleanStub);
+			try {
+				await schema_handler({
+					type: 'schema',
+					message: { originator: 12345, operation: 'restore_backup', schema: 'test' },
+				});
+				expect(closeStub).to.have.been.calledTwice;
+				expect(cleanStub).not.to.have.been.called;
+			} finally {
+				restoreClean();
+				restoreClose();
+			}
 		});
 	});
 
