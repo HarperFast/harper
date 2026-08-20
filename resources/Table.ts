@@ -445,6 +445,7 @@ export function makeTable(options) {
 	let pendingTableCommitCount = 0;
 	let pendingTableCommitWaiter: Promise<void> | undefined;
 	let resolvePendingTableCommits: (() => void) | undefined;
+	let unmatchedTableCommitReleaseReported = false;
 	let droppingTable = false;
 	let createdTimeProperty: Attribute | undefined,
 		updatedTimeProperty: Attribute | undefined,
@@ -480,7 +481,12 @@ export function makeTable(options) {
 	};
 	(primaryStore as any)[TABLE_COMMIT_RELEASE] = () => {
 		if (pendingTableCommitCount === 0) {
-			harperLogger.warn?.(`Ignored unmatched table commit release for ${tableName}`);
+			// Admission is synchronous and always precedes release, so this can only be duplicate
+			// accounting. Stay at the safe floor and report the first caller with a stack.
+			if (!unmatchedTableCommitReleaseReported) {
+				unmatchedTableCommitReleaseReported = true;
+				harperLogger.error?.(`Ignored unmatched table commit release for ${tableName}`, new Error());
+			}
 			return;
 		}
 		if (--pendingTableCommitCount === 0 && resolvePendingTableCommits) {
@@ -2153,6 +2159,7 @@ export function makeTable(options) {
 					if (!lazyEntry || lazyEntry.version !== existingVersion) return Promise.resolve();
 					// A lazy Rocks entry can reuse its decode buffer during the index updates below. Snapshot
 					// every field eviction still needs before another store operation can recycle that buffer.
+					// Value is deliberately omitted: blobs use existingRecord; non-blob removal only needs key.
 					currentEntry = {
 						key: id,
 						version: lazyEntry.version,

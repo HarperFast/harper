@@ -683,6 +683,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			expiresAt: storedEntry.expiresAt,
 			metadataFlags: storedEntry.metadataFlags,
 		};
+		let lazyMetadataReads = 0;
 		const originalGetEntry = Table.primaryStore.getEntry.bind(Table.primaryStore);
 		const originalIndexRemove = Table.indices.expiresAt.remove.bind(Table.indices.expiresAt);
 		Table.primaryStore.getEntry = (id, options) =>
@@ -695,6 +696,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 							return lazyState.expiresAt;
 						},
 						get metadataFlags() {
+							lazyMetadataReads++;
 							return lazyState.metadataFlags;
 						},
 						get key() {
@@ -709,7 +711,9 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 
 		setDeletionDelay(0);
 		try {
+			assert.strictEqual(Table.primaryStore.ifVersion, undefined, 'premise: this must exercise RocksDB eviction');
 			await Table.evict(1, storedEntry.value, storedEntry.version);
+			assert.strictEqual(lazyMetadataReads, 1, 'eviction must consume lazy metadata only while creating the snapshot');
 			await waitFor(() => !existsSync(filePath), {
 				timeout: 5_000,
 				message: 'eviction should use the snapshotted blob metadata after index writes',
@@ -1043,12 +1047,12 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		const Table = makeTable('ExpiresAtCommitReleaseFloor');
 		const admit = Table.primaryStore[TABLE_COMMIT_ADMISSION];
 		const release = Table.primaryStore[TABLE_COMMIT_RELEASE];
-		const originalWarn = harperLogger.warn;
-		const warnings = [];
-		harperLogger.warn = (...args) => warnings.push(args);
+		const originalError = harperLogger.error;
+		const errors = [];
+		harperLogger.error = (...args) => errors.push(args);
 		try {
 			release();
-			assert.match(warnings[0][0], /unmatched table commit release/);
+			assert.ok(errors.some(([message]) => /unmatched table commit release/.test(message)));
 			assert.strictEqual(admit(), true);
 			let quiesced = false;
 			const quiesce = Table.quiesceForDrop().then(() => (quiesced = true));
@@ -1057,7 +1061,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			release();
 			await quiesce;
 		} finally {
-			harperLogger.warn = originalWarn;
+			harperLogger.error = originalError;
 			Table.abortDropQuiesce();
 		}
 	});
