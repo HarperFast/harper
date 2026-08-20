@@ -115,6 +115,15 @@ suite('Transaction context: closed txn in ALS still reads latest', { skip: skipS
 		strictEqual(body.count, SNAP_IDS.length, 'the rotated generation must still see all snapshots');
 	});
 
+	test('a genuinely closed slot still returns all rows (original guard, via an undrained iterator)', async () => {
+		// The commit-then-search case above now rotates to a fresh OPEN generation, so it no longer
+		// exercises a CLOSED slot. An undrained iterator holds the handle, which blocks the rotation and
+		// keeps the slot closed — the shape this file was written to pin.
+		const body = await dashCount('/DashUndrainedThenSearch/');
+		strictEqual(body.txnOpenAfter, 0, 'a retained handle must block the rotation, leaving the slot closed');
+		strictEqual(body.count, SNAP_IDS.length, 'a closed slot must still read latest committed state, not empty');
+	});
+
 	test('writes made after a mid-handler commit roll back when the request fails', async () => {
 		const r = await fetch(`${httpURL}/DashCommitWriteThrow/?company=rollback`, {
 			headers: { Authorization: auth },

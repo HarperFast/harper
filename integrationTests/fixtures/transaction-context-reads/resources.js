@@ -125,3 +125,24 @@ export class DashCommitWriteOk extends Resource {
 		return { variant: 'commit-write-ok', suffix };
 	}
 }
+
+// CLOSED-SLOT READ GUARD — the original point of this fixture, preserved now that an ordinary
+// mid-handler commit rotates the scope to a fresh open generation instead of leaving it closed. An
+// undrained iterator holds the native handle, so the commit cannot rotate and the slot stays genuinely
+// CLOSED; the search that follows must still read the latest committed state rather than empty.
+export class DashUndrainedThenSearch extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const companyId = paramId(query);
+		const held = tables.ScoreSnapshot.search({
+			conditions: [{ attribute: 'companyId', comparator: 'equals', value: companyId }],
+		});
+		const iterator = held[Symbol.asyncIterator]();
+		await iterator.next(); // hold the handle open, do not drain
+		const ctx = this.getContext();
+		await transaction.commit(this);
+		const txnOpenAfter = ctx?.transaction?.open;
+		const snapshots = await searchSnapshots(companyId);
+		return { variant: 'undrained-then-search', companyId, txnOpenAfter, count: snapshots.length, snapshots };
+	}
+}

@@ -737,7 +737,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!transaction) {
 			transaction = new RocksTransaction(
 				operation.store.store as RocksStore,
-				this.snapshotFree ? { coordinatedRetry: true, disableSnapshot: true } : undefined
+				this.snapshotFree ? { disableSnapshot: true } : undefined
 			);
 			if (operation.store.rootStore !== this.db.rootStore) {
 				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
@@ -1019,18 +1019,27 @@ export class DatabaseTransaction implements Transaction {
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
-							if (options.doneWriting) this.#scopeOwned = false;
+							if (options.doneWriting) this.endScopeOwnership();
 							this.releaseContext(!!options.doneWriting);
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
-							return Promise.all(completions).then(() => {
-								// Only once the chained store's commit has settled, as on the synchronous path: a
-								// partially failed mid-scope commit must not leave the scope resumable.
-								this.completeMidScopeCommit(options);
-								return {
-									txnTime,
-								};
-							});
+							return Promise.all(completions).then(
+								() => {
+									// Only once the chained store's commit has settled, as on the synchronous path: a
+									// partially failed mid-scope commit must not leave the scope resumable.
+									this.completeMidScopeCommit(options);
+									return {
+										txnTime,
+									};
+								},
+								(error) => {
+									// As on the synchronous path: a completion that failed (a chained store's commit,
+									// a replication confirmation) leaves this commit partly landed, so ownership goes
+									// with it rather than letting a later commit rotate on top.
+									this.#scopeOwned = false;
+									throw error;
+								}
+							);
 						},
 						(error) => {
 							// Coordinated transactions surface conflicts as RETRY_NOW (handled in the
@@ -1110,7 +1119,7 @@ export class DatabaseTransaction implements Transaction {
 								// CLOSED wrapper forever.
 								// A failed commit must never be followed by a resumed segment: this generation is
 								// finished and its durability is unknown, so ownership goes with it.
-								this.#scopeOwned = false;
+								this.endScopeOwnership();
 								this.releaseContext(!!options.doneWriting);
 								throw error;
 							}
@@ -1122,7 +1131,7 @@ export class DatabaseTransaction implements Transaction {
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.clearWrites();
-				if (options.doneWriting) this.#scopeOwned = false;
+				if (options.doneWriting) this.endScopeOwnership();
 				this.releaseContext(!!options.doneWriting);
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
@@ -1135,15 +1144,25 @@ export class DatabaseTransaction implements Transaction {
 						options.transaction ? { ...options, transaction: undefined } : options
 					);
 					if ((nextResolution as any)?.then)
-						return (nextResolution as any)?.then((nextResolution) => {
-							// Only once the chained store's own commit has SETTLED: rotating first would leave the
-							// scope resumable after a partially failed mid-scope commit.
-							this.completeMidScopeCommit(options);
-							return {
-								txnTime: this.timestamp,
-								next: nextResolution,
-							};
-						});
+						return (nextResolution as any)?.then(
+							(nextResolution) => {
+								// Only once the chained store's own commit has SETTLED: rotating first would leave the
+								// scope resumable after a partially failed mid-scope commit.
+								this.completeMidScopeCommit(options);
+								return {
+									txnTime: this.timestamp,
+									next: nextResolution,
+								};
+							},
+							(error) => {
+								// A chained store's commit failed, so this multi-store commit half-landed. Surrender
+								// ownership as the head's own failure branch does: a handler that catches this and
+								// commits again must not rotate on top of it, and must not have the failed link
+								// dropped from the chain before its abort can clean up its blobs.
+								this.#scopeOwned = false;
+								throw error;
+							}
+						);
 					txnResolution.next = nextResolution as any;
 				}
 				this.completeMidScopeCommit(options);
@@ -1174,6 +1193,12 @@ export class DatabaseTransaction implements Transaction {
 	 * rollback of the rotated head — the cross-store leftover this rotation exists to prevent. Every
 	 * commit path must run this, and none may do one half without the other.
 	 */
+	/** Both scope flags leave together, so no exit can clear one and keep the other. */
+	private endScopeOwnership(): void {
+		this.#scopeOwned = false;
+		this.snapshotFree = false;
+	}
+
 	private completeMidScopeCommit(options: CommitOptions): void {
 		this.next = null;
 		this.rotateAfterMidScopeCommit(options);
@@ -1199,8 +1224,7 @@ export class DatabaseTransaction implements Transaction {
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 			}
 		} finally {
-			this.#scopeOwned = false; // the scope is over; nothing may rotate this instance again
-			this.snapshotFree = false;
+			this.endScopeOwnership(); // the scope is over; nothing may rotate this instance again
 			this.clearWrites();
 			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of

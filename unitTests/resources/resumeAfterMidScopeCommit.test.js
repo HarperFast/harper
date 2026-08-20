@@ -3,7 +3,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
+const { DatabaseTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 
 // A handler that commits its own transaction mid-scope is a documented pattern, and its enclosing
@@ -183,8 +183,30 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 		assert.deepEqual(pointReads, [2, 2, 3, 3, 4, 4], 'every read after the commit must see the latest value');
 	});
 
-	// The resume is scoped by ownership, not by state: without an owning scope there is no pending
-	// commit, so a write must commit itself rather than stage into a transaction nobody will commit.
+	// The gate is ownership, not state — and the case it exists for is a DatabaseTransaction sitting OPEN
+	// in a context that no transaction() scope owns: crash-recovery replay (replayLogs.ts) commits in a
+	// loop at timestamp boundaries, and Table.ts builds one directly. If the gate regressed to "anything
+	// rotates", replay would stage its post-commit writes into a generation its loop never commits. The
+	// released-slot test below cannot see that: it goes through the placeholder, so txnForContext builds
+	// an ImmediateTransaction and never consults ownership at all.
+	rocksOnly('does not rotate a transaction no scope owns', async function () {
+		const context = { transaction: new DatabaseTransaction() };
+		await A.put('unowned-1', { v: 1 }, context);
+		assert.ok(context.transaction, 'premise: the unowned transaction is still the context’s');
+		await context.transaction.commit();
+		assert.notEqual(
+			context.transaction.open,
+			TRANSACTION_STATE.OPEN,
+			'an unowned transaction must stay closed after its own commit — nothing guarantees another commit'
+		);
+		await A.put('unowned-2', { v: 2 }, context);
+		assert.ok(await A.get('unowned-1'));
+		assert.ok(
+			await A.get('unowned-2'),
+			'a write after an unowned transaction’s commit must commit itself, not stage into a generation nobody commits'
+		);
+	});
+
 	it('does not resume a transaction with no owning scope', async function () {
 		const context = {};
 		await transaction(context, async () => {
