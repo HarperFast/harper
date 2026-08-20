@@ -479,6 +479,10 @@ export function makeTable(options) {
 		return true;
 	};
 	(primaryStore as any)[TABLE_COMMIT_RELEASE] = () => {
+		if (pendingTableCommitCount === 0) {
+			harperLogger.warn?.(`Ignored unmatched table commit release for ${tableName}`);
+			return;
+		}
 		if (--pendingTableCommitCount === 0 && resolvePendingTableCommits) {
 			const resolve = resolvePendingTableCommits;
 			pendingTableCommitWaiter = undefined;
@@ -2145,8 +2149,16 @@ export function makeTable(options) {
 				// A raw Rocks read transaction can reuse an older snapshot. Reject an already-refreshed
 				// record before consulting it; commit-time conflict detection guards later races.
 				if (!primaryStore.ifVersion) {
-					currentEntry = primaryStore.getEntry(id, { lazy: true });
-					if (!currentEntry || currentEntry.version !== existingVersion) return Promise.resolve();
+					const lazyEntry = primaryStore.getEntry(id, { lazy: true });
+					if (!lazyEntry || lazyEntry.version !== existingVersion) return Promise.resolve();
+					// A lazy Rocks entry can reuse its decode buffer during the index updates below. Snapshot
+					// every field eviction still needs before another store operation can recycle that buffer.
+					currentEntry = {
+						key: id,
+						version: lazyEntry.version,
+						expiresAt: lazyEntry.expiresAt,
+						metadataFlags: lazyEntry.metadataFlags,
+					};
 				}
 				if (hasSourceGet || audit) {
 					if (!existingRecord) return Promise.resolve();

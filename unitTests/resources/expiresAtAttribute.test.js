@@ -17,6 +17,7 @@ const {
 } = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { transaction } = require('#src/resources/transaction');
+const harperLogger = require('#src/utility/logging/harper_logger');
 
 const activeTables = new Set();
 const table = (options) => {
@@ -662,6 +663,64 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		}
 	});
 
+	it('snapshots lazy Rocks metadata before eviction updates recycle the decode buffer', async function () {
+		const Table = table({
+			table: 'ExpiresAtLazyBlobEviction',
+			database: 'expires-at-lazy-blob-eviction',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		const blob = createBlob(Buffer.alloc(20_000, 13));
+		await Table.put(1, { id: 1, expiresAt: Date.now() - 1_000, payload: blob });
+		await Table.primaryStore.committed;
+		const storedEntry = Table.primaryStore.getEntry(1);
+		const filePath = getFilePathForBlob(blob);
+		const lazyState = {
+			version: storedEntry.version,
+			expiresAt: storedEntry.expiresAt,
+			metadataFlags: storedEntry.metadataFlags,
+		};
+		const originalGetEntry = Table.primaryStore.getEntry.bind(Table.primaryStore);
+		const originalIndexRemove = Table.indices.expiresAt.remove.bind(Table.indices.expiresAt);
+		Table.primaryStore.getEntry = (id, options) =>
+			options?.lazy
+				? {
+						get version() {
+							return lazyState.version;
+						},
+						get expiresAt() {
+							return lazyState.expiresAt;
+						},
+						get metadataFlags() {
+							return lazyState.metadataFlags;
+						},
+						get key() {
+							return id;
+						},
+					}
+				: originalGetEntry(id, options);
+		Table.indices.expiresAt.remove = (...args) => {
+			lazyState.metadataFlags = 0;
+			return originalIndexRemove(...args);
+		};
+
+		setDeletionDelay(0);
+		try {
+			await Table.evict(1, storedEntry.value, storedEntry.version);
+			await waitFor(() => !existsSync(filePath), {
+				timeout: 5_000,
+				message: 'eviction should use the snapshotted blob metadata after index writes',
+			});
+		} finally {
+			Table.primaryStore.getEntry = originalGetEntry;
+			Table.indices.expiresAt.remove = originalIndexRemove;
+			setDeletionDelay(500);
+		}
+	});
+
 	it('keeps a blob when eviction lacks the record and unlinks it after a committed eviction', async function () {
 		const Table = table({
 			table: 'ExpiresAtBlobFailSafe',
@@ -977,6 +1036,29 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 			releaseCommit();
 			Table.primaryStore[TABLE_COMMIT_ADMISSION] = originalAdmission;
 			Table.primaryStore[TABLE_COMMIT_RELEASE] = originalRelease;
+		}
+	});
+
+	it('ignores an unmatched commit release without wedging later drop quiescence', async function () {
+		const Table = makeTable('ExpiresAtCommitReleaseFloor');
+		const admit = Table.primaryStore[TABLE_COMMIT_ADMISSION];
+		const release = Table.primaryStore[TABLE_COMMIT_RELEASE];
+		const originalWarn = harperLogger.warn;
+		const warnings = [];
+		harperLogger.warn = (...args) => warnings.push(args);
+		try {
+			release();
+			assert.match(warnings[0][0], /unmatched table commit release/);
+			assert.strictEqual(admit(), true);
+			let quiesced = false;
+			const quiesce = Table.quiesceForDrop().then(() => (quiesced = true));
+			await delay(10);
+			assert.strictEqual(quiesced, false, 'quiescence must still wait for the balanced admission');
+			release();
+			await quiesce;
+		} finally {
+			harperLogger.warn = originalWarn;
+			Table.abortDropQuiesce();
 		}
 	});
 
