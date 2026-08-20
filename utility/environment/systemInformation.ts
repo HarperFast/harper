@@ -66,13 +66,13 @@ export class SystemInformationResponse {
 type TimeData = si.Systeminformation.TimeData & { process_uptime: number };
 
 /**
- * Returns the current local time, timezone, and two uptimes: `uptime` (host uptime, seconds, from
- * `si.time()`) and `process_uptime` (this Harper process's uptime, milliseconds). `process.uptime()`
- * is accurate here because this operation runs in the Harper server process — unlike `harper status`,
- * a separate CLI process.
+ * Returns the current local time, timezone, and two uptimes in seconds: `uptime` (host uptime, from
+ * `si.time()`) and `process_uptime` (this Harper process's uptime). `process.uptime()` is accurate
+ * here because this operation runs in the Harper server process — unlike `harper status`, a separate
+ * CLI process.
  */
 export function getTimeInfo(): TimeData {
-	return { ...si.time(), process_uptime: Math.round(process.uptime() * 1000) };
+	return { ...si.time(), process_uptime: Math.round(process.uptime()) };
 }
 
 type CpuInfo = Pick<

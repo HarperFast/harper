@@ -59,9 +59,7 @@ describe('Test status module', () => {
 	});
 
 	it('reports running, pid, and a formatted uptime', async () => {
-		const process_exit_stub = sandbox.stub(process, 'exit');
 		await status();
-		process_exit_stub.restore();
 		const output = console_log_stub.args[0][0];
 		assert.match(output, /status: running/);
 		assert.match(output, /pid: 62076/);
@@ -70,20 +68,16 @@ describe('Test status module', () => {
 	});
 
 	it('omits uptime when the process start time is unparseable but still reports running + pid', async () => {
-		const process_exit_stub = sandbox.stub(process, 'exit');
 		get_hdb_process_info_stub.resolves({ core: [{ pid: 62076, started: 'not-a-date' }] });
 
 		await status();
-		process_exit_stub.restore();
 		assert.strictEqual(console_log_stub.args[0][0], 'harperdb:\n  status: running\n  pid: 62076\n');
 	});
 
 	it('reports stopped when nothing is running', async () => {
-		const process_exit_stub = sandbox.stub(process, 'exit');
 		get_hdb_process_info_stub.resolves({ core: [] });
 
 		await status();
-		process_exit_stub.restore();
 		assert.strictEqual(console_log_stub.args[0][0], 'harperdb:\n  status: stopped\n');
 	});
 });

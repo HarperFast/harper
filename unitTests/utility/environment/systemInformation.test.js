@@ -253,8 +253,12 @@ describe('test systemInformation module', () => {
 	it('test getTimeInfo function', () => {
 		const results = system_information.getTimeInfo();
 		assert.deepEqual(Object.keys(results).sort(), EXPECTED_PROPERTIES.time.sort());
+		// process_uptime is process.uptime() in seconds (matching the sibling `uptime`), not ms.
 		assert.equal(typeof results.process_uptime, 'number');
-		assert.ok(results.process_uptime >= 0, 'process_uptime should be non-negative');
+		assert.ok(
+			Math.abs(results.process_uptime - process.uptime()) <= 2,
+			'process_uptime should be process uptime in seconds'
+		);
 	});
 
 	it('test getCPUInfo function', async () => {
