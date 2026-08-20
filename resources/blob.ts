@@ -1473,18 +1473,18 @@ function writeBlobWithStream(
 					// (createWriteStream flags 'w'); a terminal give-up on the receive side unlinks it (→ 404). Build
 					// the header directly rather than via createHeader so its compress-type OR can't collide with the
 					// PENDING type bits.
-					const messageBuffer = Buffer.from(String(error));
-					const header = new Uint8Array(HEADER_SIZE);
-					new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
-					const finishPendingMarker = (writeError?: Error) => {
+					const finishPendingMarker = (writeError?: unknown) => {
 						if (writeError) logger.debug?.('Error writing pending marker to blob file', writeError);
 						store.unlock(lockKey);
 						reject(error);
 					};
 					try {
+						const messageBuffer = Buffer.from(String(error));
+						const header = new Uint8Array(HEADER_SIZE);
+						new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
 						writeFile(filePath, Buffer.concat([header, messageBuffer]), finishPendingMarker);
 					} catch (writeError) {
-						finishPendingMarker(writeError as Error);
+						finishPendingMarker(writeError);
 					}
 					return;
 				} else {

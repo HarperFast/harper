@@ -1264,8 +1264,12 @@ describe('Blob test', () => {
 		await new Promise((resolve, reject) => {
 			source.write(randomBytes(4000), (error) => (error ? reject(error) : resolve()));
 		});
-		source.destroy(new Error('Blob source stream idle for 120000ms'));
-		await assert.rejects(Promise.resolve(saving), 'the aborted save rejects');
+		const sourceError = new Error('Blob source stream idle for 120000ms');
+		source.destroy(sourceError);
+		await assert.rejects(Promise.resolve(saving), (error) => {
+			assert.strictEqual(error, sourceError, 'the save must reject with the original source error');
+			return true;
+		});
 		const lockReleased = store.tryLock(lockKey);
 		if (lockReleased) store.unlock(lockKey);
 		assert.ok(lockReleased, 'the aborted save must release its blob lock before rejection settles');
@@ -1275,6 +1279,31 @@ describe('Blob test', () => {
 			'aborted source write should leave a PENDING (503) blob before rejection settles'
 		);
 		unlinkSync(getFilePathForBlob(blob));
+	});
+	it('#481: a synchronous PENDING marker failure releases the blob lock and preserves the source error', async () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const source = new PassThrough();
+		source.blobStreamIdleTimeoutMs = 60000;
+		const blob = await createBlob(source, { size: 20000 });
+		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
+		const lockKey = getFileId(blob) + ':blob';
+		await new Promise((resolve, reject) => {
+			source.write(randomBytes(4000), (error) => (error ? reject(error) : resolve()));
+		});
+		const sourceError = new Error('source failure');
+		sourceError.toString = () => {
+			throw new Error('synchronous marker construction failure');
+		};
+		source.destroy(sourceError);
+		await assert.rejects(Promise.resolve(saving), (error) => {
+			assert.strictEqual(error, sourceError, 'marker failure must not mask the source error');
+			return true;
+		});
+		const lockReleased = store.tryLock(lockKey);
+		if (lockReleased) store.unlock(lockKey);
+		assert.ok(lockReleased, 'a synchronous marker failure must release the blob lock before rejection settles');
+		const filePath = getFilePathForBlob(blob);
+		if (existsSync(filePath)) unlinkSync(filePath);
 	});
 	it('#481: an app-supplied (unarmed) source-stream abort is NOT marked PENDING (gate excludes one-shot streams)', async () => {
 		// Same abort shape, but the source is NOT armed with blobStreamIdleTimeoutMs — an ordinary app write,

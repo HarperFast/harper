@@ -122,6 +122,7 @@ jobs:
         run: npm run install:fixtures
 
       - name: Install Playwright browsers
+        timeout-minutes: 10
         run: |
           # APT can hang instead of failing over when the Azure mirror is unavailable.
           if [[ -f /etc/apt/apt-mirrors.txt ]]; then
