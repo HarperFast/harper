@@ -4,6 +4,7 @@
  * released the native transaction or its write intents.
  */
 const assert = require('node:assert');
+const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -11,7 +12,7 @@ const {
 	DatabaseTransaction,
 	TRANSACTION_STATE,
 	setTxnExpiration,
-	getSupervisedWriteRoots,
+	isWriteSupervised,
 	getTransactionQueueDepths,
 } = require('#src/resources/DatabaseTransaction');
 
@@ -187,8 +188,7 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		const trackedTxns = setTxnExpiration(30000);
 		const readDepthBefore = getTransactionQueueDepths().readDepth;
 		const { txn } = await blindWriteTransaction('supervised');
-
-		assert.strictEqual(getSupervisedWriteRoots().has(txn), true, 'a blind write must not be invisible');
+		assert.strictEqual(isWriteSupervised(txn), true, 'a blind write must not be invisible');
 		// The read-tracked set and the depth metric it feeds keep their meaning: this transaction holds no
 		// read snapshot, and getReadTxn() returns the already-adopted handle before it would register.
 		txn.getReadTxn();
@@ -196,7 +196,7 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(getTransactionQueueDepths().readDepth, readDepthBefore);
 
 		await txn.commit({ doneWriting: true });
-		assert.strictEqual(getSupervisedWriteRoots().has(txn), false, 'supervision ends with ownership');
+		assert.strictEqual(isWriteSupervised(txn), false, 'supervision ends with ownership');
 	});
 
 	it('supervises the chain root, not the link that received the blind write', async function () {
@@ -216,22 +216,54 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 
 		// The monitor iterates members independently and chainStillActive() only looks downstream, so a
 		// supervised child would be its own timeout root and could be reaped while the head is active.
-		assert.strictEqual(getSupervisedWriteRoots().has(head), true);
-		assert.strictEqual(getSupervisedWriteRoots().has(child), false);
+		assert.strictEqual(isWriteSupervised(head), true);
+		assert.strictEqual(isWriteSupervised(child), false);
 	});
 
-	it('keeps the root supervised while another chain link still owns a handle', async function () {
-		const { txn: head, context } = await blindWriteTransaction('root-write');
-		await Chained.get('chain-read', context);
-		const child = head.next;
+	it('keeps the root supervised when a read-only link in the same chain releases its handle', async function () {
+		const context = {};
+		const head = new DatabaseTransaction();
+		opened.push(head);
+		context.transaction = head;
+		head.setContext(context);
+		const resource = await Blind.getResource({ id: null }, context, {});
+		resource._writeInvalidate('chain-hold'); // head blind-writes: the root is supervised
+
+		const child = new DatabaseTransaction();
 		opened.push(child);
-		assert.ok(child?.transaction, 'expected the chained read to own a handle');
+		head.next = child;
+		child.root = head;
+		child.db = Chained.primaryStore;
+		child.getReadTxn(); // a read-only link, which never claimed supervision
+		child.doneReadTxn();
 
-		child.releaseReadTxn();
+		// Membership is keyed on the root, so removing it on any link's detach would leave the head
+		// holding write intents with nothing to reap it — the gap this supervision exists to close.
+		assert.strictEqual(isWriteSupervised(head), true);
+	});
 
-		assert.strictEqual(getSupervisedWriteRoots().has(head), true, 'the root write still owns a handle');
-		head.abort();
-		assert.strictEqual(getSupervisedWriteRoots().has(head), false, 'supervision ends with chain ownership');
+	it('reaps a blind-write transaction that runs past the open-transaction limit', async function () {
+		const context = {};
+		const txn = new DatabaseTransaction();
+		opened.push(txn);
+		context.transaction = txn;
+		txn.setContext(context);
+		const resource = await Blind.getResource({ id: null }, context, {});
+
+		// Before the write: addWrite arms the idle limit from the expiration current at that moment.
+		setTxnExpiration(20);
+		try {
+			resource._writeInvalidate('over-time');
+			assert.strictEqual(isWriteSupervised(txn), true);
+			const deadline = Date.now() + 5000;
+			while (txn.open !== TRANSACTION_STATE.CLOSED && Date.now() < deadline) await delay(20);
+		} finally {
+			setTxnExpiration(30000);
+		}
+		// Not just visible: the monitor actually acts. Before this, nothing ever forced a release.
+		assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED, 'the monitor must reap what it supervises');
+		assert.strictEqual(txn.transaction, null);
+		assert.strictEqual(isWriteSupervised(txn), false);
 	});
 
 	it('aborts every owned handle when a supervised multi-database transaction fails', async function () {
@@ -248,7 +280,7 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(child.transaction, null);
 		assert.deepStrictEqual(child.writes, []);
 		assert.strictEqual(head.next, null);
-		assert.strictEqual(getSupervisedWriteRoots().has(head), false);
+		assert.strictEqual(isWriteSupervised(head), false);
 	});
 
 	it('leaves crash-recovery replay unsupervised, so a timestamp group cannot be split', async function () {
@@ -261,7 +293,7 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		const resource = await Blind.getResource({ id: null }, context, {});
 		resource._writeInvalidate('replayed');
 		assert.ok(txn.transaction, 'the replayed write still adopts a handle');
-		assert.strictEqual(getSupervisedWriteRoots().has(txn), false);
+		assert.strictEqual(isWriteSupervised(txn), false);
 	});
 
 	it('detaches the handle when a synchronous commit succeeds', function () {

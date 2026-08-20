@@ -348,6 +348,8 @@ export class DatabaseTransaction implements Transaction {
 	declare next: DatabaseTransaction;
 	// The head of this multi-store chain, set when the link is created; absent on the head itself.
 	declare root?: DatabaseTransaction;
+	// Whether this link is why its chain root is write-supervised (see endWriteSupervision).
+	declare writeSupervised?: boolean;
 	declare stale: boolean;
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
@@ -429,20 +431,28 @@ export class DatabaseTransaction implements Transaction {
 		this.baseReadRefConsumed = false;
 	}
 
+	/**
+	 * Drop this link's supervision claim, and the root's with it once no link in the chain still holds
+	 * one. Membership is keyed on the root but claimed per link, so removing it on any link's detach
+	 * would unsupervise a logical transaction still holding writes elsewhere in the chain.
+	 */
+	private endWriteSupervision(): void {
+		if (!this.writeSupervised) return;
+		this.writeSupervised = false;
+		const root = this.root ?? this;
+		for (let link: DatabaseTransaction = root; link; link = link.next) {
+			if (link.writeSupervised) return;
+		}
+		supervisedWriteRoots.delete(root);
+	}
+
 	private detachOwnedTransaction(): RocksTransactionWithRetry | null {
 		const transaction = this.transaction;
 		trackedTxns.delete(this);
+		this.endWriteSupervision();
 		this.transaction = null;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
-		if (supervisedWriteRoots.size) {
-			const root = this.root ?? this;
-			if (supervisedWriteRoots.has(root)) {
-				let link: DatabaseTransaction = root;
-				while (link && !link.transaction) link = link.next;
-				if (!link) supervisedWriteRoots.delete(root);
-			}
-		}
 		return transaction;
 	}
 
@@ -707,6 +717,7 @@ export class DatabaseTransaction implements Transaction {
 				if (!this.isReplay) {
 					const root = this.root ?? this;
 					root.timeout = Math.max(root.timeout || 0, this.timeout || txnExpiration, root.timeoutBudget || 0);
+					this.writeSupervised = true;
 					supervisedWriteRoots.add(root);
 				}
 			} else {
@@ -1297,9 +1308,14 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
-		// A root can be in both registries (it read, and a later link blind-wrote), so the union is taken
-		// rather than iterating them in sequence. Allocated only when something is write-supervised.
-		for (const txn of supervisedWriteRoots.size ? new Set([...trackedTxns, ...supervisedWriteRoots]) : trackedTxns) {
+		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
+		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
+		for (const txn of trackedTxns) monitorTransaction(txn);
+		for (const txn of supervisedWriteRoots) if (!trackedTxns.has(txn)) monitorTransaction(txn);
+	}, txnExpiration).unref();
+
+	function monitorTransaction(txn: DatabaseTransaction) {
+		{
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
 			// thereby keep chainStillActive believing it was written recently too.
@@ -1366,7 +1382,7 @@ function startMonitoringTxns() {
 				txn.timeout -= txnExpiration;
 			}
 		}
-	}, txnExpiration).unref();
+	}
 }
 
 startMonitoringTxns();
@@ -1380,12 +1396,9 @@ export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
 }
 
-/**
- * Test seam: the logical transactions the monitor supervises for their writes, alongside the read-tracked
- * set that setTxnExpiration() returns.
- */
-export function getSupervisedWriteRoots() {
-	return supervisedWriteRoots;
+/** Test seam: whether the monitor supervises this logical transaction for its writes. */
+export function isWriteSupervised(txn: DatabaseTransaction): boolean {
+	return supervisedWriteRoots.has(txn);
 }
 
 export function setTxnExpiration(ms) {
