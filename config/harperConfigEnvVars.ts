@@ -39,6 +39,10 @@ const STATE_FILE_NAME = '.harper-config-state.json';
 const PENDING_STATE_PREFIX = '.harper-config-state.pending.';
 const PENDING_STATE_SUFFIX = '.json';
 const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDING_STATE_SUFFIX}`;
+// A commit is three synchronous steps inside one boot step, so seconds is already generous. Past
+// this, a sidecar is wreckage whatever its pid says - pids get recycled, and a recycled one would
+// otherwise look mid-commit forever, suspending drift detection on every boot from then on.
+const PENDING_STATE_STALE_MS = 60_000;
 
 /**
  * Get logger instance with tag - lazy loaded to avoid circular dependencies
@@ -593,7 +597,8 @@ function takeInterruptedCommit(rootPath: string): boolean {
 	for (const entry of entries) {
 		if (!entry.startsWith(PENDING_STATE_PREFIX) || !entry.endsWith(PENDING_STATE_SUFFIX)) continue;
 		const pid = Number(entry.slice(PENDING_STATE_PREFIX.length, -PENDING_STATE_SUFFIX.length));
-		if (pid !== process.pid && isProcessAlive(pid)) {
+		const entryPath = path.join(backupDir, entry);
+		if (pid !== process.pid && isProcessAlive(pid) && !isStale(entryPath)) {
 			// A live owner is mid-commit, so its sidecar is not wreckage to clear - but the pair it is
 			// halfway through is no more comparable than an interrupted one, so drift detection is off
 			// for this boot either way.
@@ -601,7 +606,7 @@ function takeInterruptedCommit(rootPath: string): boolean {
 			continue;
 		}
 		try {
-			fs.removeSync(path.join(backupDir, entry));
+			fs.removeSync(entryPath);
 		} catch (error) {
 			// Keep drift detection on rather than disabling it every boot over a sidecar we cannot clear
 			getLogger().warn(`Could not remove an interrupted env config commit (${entry}): ${(error as Error).message}`);
@@ -611,6 +616,14 @@ function takeInterruptedCommit(rootPath: string): boolean {
 	}
 	if (interrupted) getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
 	return interrupted;
+}
+
+function isStale(entryPath: string): boolean {
+	try {
+		return Date.now() - fs.statSync(entryPath).mtimeMs > PENDING_STATE_STALE_MS;
+	} catch {
+		return false;
+	}
 }
 
 function isProcessAlive(pid: number): boolean {

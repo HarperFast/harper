@@ -1398,16 +1398,22 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 		let stateStaged = false;
 		if (persistConfigDuringBoot(`${rootPath} env config state`, () => (stateStaged = saveEnvConfigState()))) {
 			let configPersisted = false;
+			let configRewritten = false;
 			try {
-				configPersisted = persistConfigDuringBoot(configFilePath, () =>
-					atomicWriteFile(configFilePath, String(configDoc), { skipIfUnchanged: true })
-				);
+				configPersisted = persistConfigDuringBoot(configFilePath, () => {
+					configRewritten = atomicWriteFile(configFilePath, String(configDoc), { skipIfUnchanged: true });
+				});
 			} finally {
 				if (!configPersisted && stateStaged) discardConfigState(rootPath as string);
 			}
 			if (configPersisted) {
 				if (stateStaged) confirmEnvConfigState();
-				logger.debug('Config file updated with runtime env var values');
+				// Distinguished, because this is the line that answers "did something rewrite my config?"
+				logger.debug(
+					configRewritten
+						? 'Config file updated with runtime env var values'
+						: 'Config file already matched the runtime env var values'
+				);
 			}
 		}
 	} catch (error) {

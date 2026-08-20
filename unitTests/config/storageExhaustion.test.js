@@ -252,6 +252,22 @@ describe('storage exhaustion during boot (#847)', function () {
 			assert.notStrictEqual(ownerOfHttpPortAfterReboot(testRoot, { stagedByLiveOwner: true }), 'user');
 		});
 
+		it('clears a sidecar that is too old to be mid-commit, whatever its pid claims', function () {
+			// A pid outlives its owner when the number is recycled. Without an age-out that sidecar
+			// looks mid-commit forever, and drift detection stays suspended on every boot from then on.
+			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
+			const backupDir = path.join(testRoot, hdbTerms.BACKUP_DIR_NAME);
+			fs.ensureDirSync(backupDir);
+			const recycledPid = path.join(backupDir, `.harper-config-state.pending.${process.ppid}.json`);
+			fs.writeFileSync(recycledPid, '{}');
+			const longAgo = new Date(Date.now() - 10 * 60 * 1000);
+			fs.utimesSync(recycledPid, longAgo, longAgo);
+
+			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);
+
+			assert.strictEqual(fs.existsSync(recycledPid), false);
+		});
+
 		it('tolerates discarding when nothing is staged', function () {
 			discardConfigState(testRoot);
 			assert.strictEqual(fs.existsSync(stagedPath()), false);
