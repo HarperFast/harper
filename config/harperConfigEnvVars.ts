@@ -28,15 +28,16 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
-import { atomicWriteFile } from './configUtils.ts';
+import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
-// Written beside the confirmed state while a config-file write is in flight, and renamed over it
-// once that file is on disk. A rename needs no free space, so the confirmed record - the only copy
-// of the operator's pre-env values - is never at the mercy of a write that an exhausted volume can
-// refuse (#847).
-const PENDING_STATE_FILE_NAME = '.harper-config-state.pending.json';
+// Staged beside the confirmed state while a config-file write is in flight, then renamed over it.
+// Per-process, because every CLI invocation and worker runs this and one shared name would let one
+// clear another's in-flight commit. See DESIGN.md, boot-path config persistence.
+const PENDING_STATE_PREFIX = '.harper-config-state.pending.';
+const PENDING_STATE_SUFFIX = '.json';
+const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDING_STATE_SUFFIX}`;
 
 /**
  * Get logger instance with tag - lazy loaded to avoid circular dependencies
@@ -580,17 +581,40 @@ function loadConfigState(rootPath: string): ConfigState {
  * flight, and calling it an edit hands those paths to 'user' for good.
  */
 function takeInterruptedCommit(rootPath: string): boolean {
-	const pendingPath = path.join(getBackupDirPath(rootPath), PENDING_STATE_FILE_NAME);
-	if (!fs.existsSync(pendingPath)) return false;
+	const backupDir = getBackupDirPath(rootPath);
+	let entries: string[];
 	try {
-		fs.removeSync(pendingPath);
-	} catch (error) {
-		getLogger().warn(
-			`Could not remove an interrupted env config commit at ${pendingPath}: ${(error as Error).message}`
-		);
+		entries = fs.readdirSync(backupDir);
+	} catch {
+		return false;
 	}
-	getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
-	return true;
+	let interrupted = false;
+	for (const entry of entries) {
+		if (!entry.startsWith(PENDING_STATE_PREFIX) || !entry.endsWith(PENDING_STATE_SUFFIX)) continue;
+		const pid = Number(entry.slice(PENDING_STATE_PREFIX.length, -PENDING_STATE_SUFFIX.length));
+		// A live owner is mid-commit; its sidecar is not wreckage to clear.
+		if (pid !== process.pid && isProcessAlive(pid)) continue;
+		try {
+			fs.removeSync(path.join(backupDir, entry));
+		} catch (error) {
+			// Keep drift detection on rather than disabling it every boot over a sidecar we cannot clear
+			getLogger().warn(`Could not remove an interrupted env config commit (${entry}): ${(error as Error).message}`);
+			continue;
+		}
+		interrupted = true;
+	}
+	if (interrupted) getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
+	return interrupted;
+}
+
+function isProcessAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'EPERM';
+	}
 }
 
 function freshConfigState(): ConfigState {
@@ -635,23 +659,29 @@ function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
 function stageConfigState(rootPath: string, state: ConfigState): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	fs.ensureDirSync(backupDir);
-	return atomicWriteFile(path.join(backupDir, PENDING_STATE_FILE_NAME), serializeConfigState(state));
+	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state));
 }
 
 // A rename, so an exhausted volume cannot refuse it and leave the config file described by nothing.
 
 export function commitStagedConfigState(rootPath: string): boolean {
 	const backupDir = getBackupDirPath(rootPath);
-	const pendingPath = path.join(backupDir, PENDING_STATE_FILE_NAME);
-	if (!fs.existsSync(pendingPath)) return false;
-	fs.renameSync(pendingPath, path.join(backupDir, STATE_FILE_NAME));
-	return true;
+	const pendingPath = path.join(backupDir, pendingStateFileName());
+	try {
+		renameWithRetry(pendingPath, path.join(backupDir, STATE_FILE_NAME));
+		return true;
+	} catch (error) {
+		// Loud: the config file is already on disk, so the confirmed state now describes values it no
+		// longer has, and the next boot reads that difference as a manual user edit.
+		getLogger().error(`Could not promote the staged env config state at ${pendingPath}: ${(error as Error).message}`);
+		return false;
+	}
 }
 
 // Drops the staged state for a config-file write that did not happen; the confirmed record stays.
 
 export function discardConfigState(rootPath: string): void {
-	const pendingPath = path.join(getBackupDirPath(rootPath), PENDING_STATE_FILE_NAME);
+	const pendingPath = path.join(getBackupDirPath(rootPath), pendingStateFileName());
 	try {
 		fs.removeSync(pendingPath);
 	} catch (error) {

@@ -123,7 +123,8 @@ describe('storage exhaustion during boot (#847)', function () {
 		}
 
 		function stagedPath() {
-			return path.join(testRoot, hdbTerms.BACKUP_DIR_NAME, '.harper-config-state.pending.json');
+			// per-process, so a second Harper cannot clear this one's in-flight commit
+			return path.join(testRoot, hdbTerms.BACKUP_DIR_NAME, `.harper-config-state.pending.${process.pid}.json`);
 		}
 
 		it('stages beside the confirmed state and only promotes it once the config file is written', function () {
@@ -195,6 +196,24 @@ describe('storage exhaustion during boot (#847)', function () {
 				{ 'http.port': 9926 },
 				"the operator's pre-env value is still recorded"
 			);
+		});
+
+		it("leaves another live process's staged commit alone", function () {
+			// One shared name would let a starting server clear a running CLI's in-flight commit, and
+			// the loser would rewrite the config file with the confirmed state still describing the old
+			// values - the exact state this protocol exists to prevent.
+			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
+			const backupDir = path.join(testRoot, hdbTerms.BACKUP_DIR_NAME);
+			fs.ensureDirSync(backupDir);
+			const liveOwner = path.join(backupDir, `.harper-config-state.pending.${process.ppid}.json`);
+			const deadOwner = path.join(backupDir, '.harper-config-state.pending.999999.json');
+			fs.writeFileSync(liveOwner, '{}');
+			fs.writeFileSync(deadOwner, '{}');
+
+			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);
+
+			assert.strictEqual(fs.existsSync(liveOwner), true, "a live owner's commit is untouched");
+			assert.strictEqual(fs.existsSync(deadOwner), false, "a dead owner's commit is cleared");
 		});
 
 		it('tolerates discarding when nothing is staged', function () {

@@ -6,7 +6,7 @@ import fs from 'fs-extra';
 import YAML from 'yaml';
 import path from 'path';
 import { constants as osConstants } from 'node:os';
-import { threadId } from 'node:worker_threads';
+import { isMainThread, threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
 import isNumber from 'is-number';
 import propertiesReaderModule from 'properties-reader';
@@ -147,42 +147,60 @@ export function atomicWriteFile(
 	// same file every boot want that.
 	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
+	try {
+		fs.writeFileSync(tempPath, content);
+	} catch (err) {
+		// The open succeeds before the write runs out of room, leaving the temp file behind.
+		removeTempFile(tempPath);
+		throw err;
+	}
+	try {
+		renameWithRetry(tempPath, filePath, { maxRetries, initialDelayMs, maxDelayMs });
+	} catch (err) {
+		removeTempFile(tempPath);
+		throw err;
+	}
+	return true;
+}
+
+export function renameWithRetry(
+	fromPath,
+	toPath,
+	{
+		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
+		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
+		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
+	} = {}
+) {
 	let retries = maxRetries;
 	let delayMs = initialDelayMs;
 	let attempts = 0;
 	const startedAt = Date.now();
-	let renamed = false;
-	try {
-		// Inside the cleanup boundary: a write that fails partway leaves a partial temp behind.
-		fs.writeFileSync(tempPath, content);
-		while (!renamed) {
-			try {
-				attempts++;
-				fs.renameSync(tempPath, filePath);
-				renamed = true;
-			} catch (err) {
-				if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
-					retries--;
-					if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
-					delayMs = Math.min(delayMs * 2, maxDelayMs);
-					continue;
-				}
-				// Attempts and elapsed distinguish a holder that never released from one that lost
-				// a race, and neither survives on the rethrown error.
-				if (err.code === 'EPERM' || err.code === 'EACCES') {
-					logger.warn(
-						`Could not replace ${filePath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms`
-					);
-				}
-				throw err;
+	while (true) {
+		try {
+			attempts++;
+			fs.renameSync(fromPath, toPath);
+			return;
+		} catch (err) {
+			if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
+				retries--;
+				// Sleep synchronously (all call sites are sync) to allow the holder to close the
+				// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
+				// which is what makes a multi-second worst-case budget affordable.
+				if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
+				delayMs = Math.min(delayMs * 2, maxDelayMs);
+				continue;
 			}
-		}
-	} finally {
-		if (!renamed) {
-			removeTempFile(tempPath);
+			// Attempts and elapsed distinguish a holder that never released from one that lost
+			// a race, and neither survives on the rethrown error.
+			if (err.code === 'EPERM' || err.code === 'EACCES') {
+				logger.warn(
+					`Could not replace ${toPath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms`
+				);
+			}
+			throw err;
 		}
 	}
-	return true;
 }
 
 function removeTempFile(tempPath) {
@@ -1359,6 +1377,11 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 		commitEnvConfigState();
 		return;
 	}
+
+	// Every worker thread runs initConfig and derives the same merged config, so letting them all
+	// persist it means N threads racing over one pair of files for a result they already agree on.
+	// The main thread owns the on-disk copy; a worker runs on the in-memory one.
+	if (!isMainThread) return;
 
 	// Persist changes to file
 	try {

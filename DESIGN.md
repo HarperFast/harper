@@ -654,13 +654,21 @@ something: writing the state last means the file it would read originals from is
 overwritten; writing it first leaves a state ahead of the file, which the next boot's
 `detectConfigDrift` reads as a manual user edit and _permanently_ reassigns those paths to `user`,
 silently disabling the env layer even after space is freed. So the commit is three steps —
-`saveState()` stages the new state in `.harper-config-state.pending.json`, the config file is
+`saveState()` stages the new state in `.harper-config-state.pending.<pid>.json`, the config file is
 written, and `confirmConfigWritten()` **renames** the sidecar over the confirmed record. A rename
 needs no free space, which is the point: no write an exhausted volume can refuse ever stands between
 the confirmed originals and disk. A refused staging write leaves the config file alone; a refused
 config write unlinks the sidecar; a sidecar found at load means a commit was interrupted, so it is
 cleared and drift detection is skipped for that boot rather than mistaking the in-flight write for
 an edit. A boot that re-derives the same state writes nothing at all.
+
+Two details the name and the caller carry. The sidecar is **per-process**: every CLI invocation and
+every worker thread runs `initConfig`, and one shared name would let a starting server clear a
+running process's in-flight commit — the loser would then rewrite the config file with the confirmed
+state still describing the old values, which is the failure the protocol exists to prevent. Recovery
+therefore only clears sidecars whose owning pid is gone. And only the **main thread** persists at
+all: workers derive the same merged config and would otherwise race over one pair of files for a
+result they already agree on.
 
 Related: a log write must not be fatal either. `fs.appendFileSync` in `logQueuedData` throws from
 both inline and timer call sites, so on a full volume every log statement was a crash point. The
