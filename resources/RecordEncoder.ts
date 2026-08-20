@@ -413,11 +413,12 @@ export class RecordEncoder extends StructonEncoder {
 		};
 	}
 	/**
-	 * Warn on the transition to a saturated typed dictionary. Scoped to this encoder, not the durable
-	 * store: it fires only from the post-save path (where the local array is exactly what was just
-	 * persisted), so each worker that crosses the bound warns once and a worker restarted against an
-	 * already-full dictionary never does. The counts above are the reliable signal; this is the
-	 * heads-up. It must not escape into the save's return value -- the structures are committed.
+	 * Warn once per encoder when its typed dictionary is at the bound. Fires from the post-save path,
+	 * so it needs some structure save to happen -- any save, including a classic one -- and it needs
+	 * this encoder to have loaded the dictionary. Several workers can therefore each warn for one
+	 * table, and a worker that never saves after loading a full dictionary stays silent. The counts
+	 * above are the reliable signal; this is the heads-up. It must not escape into the save's return
+	 * value -- the structures are committed.
 	 */
 	#reportedStructureSaturation = false;
 	checkStructureCapacity() {
