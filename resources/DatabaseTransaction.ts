@@ -523,11 +523,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	releaseReadTxn(): void {
 		const transaction = this.detachOwnedTransaction();
-		try {
-			transaction?.abort();
-		} catch (error) {
-			harperLogger.debug?.('releasing timed-out read transaction', error);
-		}
+		abortNativeTransaction(transaction, 'releasing timed-out read transaction');
 		this.completeDeferredContextRelease();
 	}
 
@@ -1254,11 +1250,7 @@ export class DatabaseTransaction implements Transaction {
 			// throws. abort() rather than the native abort alone: it reclaims blobs a replayed write
 			// staged.
 			this.detachOwnedTransaction();
-			try {
-				transaction?.abort();
-			} catch (abortError) {
-				harperLogger.debug?.('aborting a transaction whose synchronous commit failed', abortError);
-			}
+			abortNativeTransaction(transaction, 'aborting a transaction whose synchronous commit failed');
 			try {
 				this.abort();
 			} catch (abortError) {
