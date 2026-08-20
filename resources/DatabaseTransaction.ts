@@ -16,6 +16,11 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
+// Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
+// two have different units and different consumers: trackedTxns is per-link, bounds a read snapshot, and
+// is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
+// chain root — so a chain child can never become its own timeout root (issue #2231).
+const supervisedWriteRoots = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
@@ -341,6 +346,8 @@ export class DatabaseTransaction implements Transaction {
 	timestamp = 0;
 	retries = 0;
 	declare next: DatabaseTransaction;
+	// The head of this multi-store chain, set when the link is created; absent on the head itself.
+	declare root?: DatabaseTransaction;
 	declare stale: boolean;
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
@@ -425,6 +432,7 @@ export class DatabaseTransaction implements Transaction {
 	private detachOwnedTransaction(): RocksTransactionWithRetry | null {
 		const transaction = this.transaction;
 		trackedTxns.delete(this);
+		supervisedWriteRoots.delete(this.root ?? this);
 		this.transaction = null;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
@@ -450,9 +458,11 @@ export class DatabaseTransaction implements Transaction {
 			try {
 				transaction?.abort();
 			} catch (error) {
-				// abort() calls this before it marks the wrapper CLOSED, clears writes and releases the
-				// context; a throw here would strand all three and mask the caller's original error.
-				harperLogger.debug?.('releasing a drained read transaction', error);
+				// Contained, not ignored: abort() calls this before it marks the wrapper CLOSED, clears
+				// writes and releases the context. Warn rather than debug — reached from abort()'s drain
+				// loop the handle can still hold write intents, and stalled writers with a clean log is
+				// the worst outcome here.
+				harperLogger.warn?.('Failed to release a transaction’s native handle', error);
 			}
 			this.completeDeferredContextRelease();
 		}
@@ -681,6 +691,13 @@ export class DatabaseTransaction implements Transaction {
 			}
 			if (this.open === TRANSACTION_STATE.OPEN) {
 				this.attachOwnedTransaction(transaction);
+				// A write that never read is otherwise invisible to the long-transaction monitor: its
+				// handle was adopted here rather than in getReadTxn(), which is the only other place that
+				// registers. Supervise the chain root, so the monitor reaps the logical transaction as one
+				// unit. Replay is excluded deliberately — it is synchronous, already bounded by its own
+				// stall and wall-clock guards, and commits at timestamp boundaries that a monitor-driven
+				// commit could split.
+				if (!this.isReplay) supervisedWriteRoots.add(this.root ?? this);
 			} else {
 				// if it is closed, we have to immediately commit, using our immediate transaction
 				immediateCommit = true;
@@ -1260,7 +1277,9 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
-		for (const txn of trackedTxns) {
+		// A root can be in both registries (it read, and a later link blind-wrote), so the union is taken
+		// rather than iterating them in sequence. Allocated only when something is write-supervised.
+		for (const txn of supervisedWriteRoots.size ? new Set([...trackedTxns, ...supervisedWriteRoots]) : trackedTxns) {
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
 			// thereby keep chainStillActive believing it was written recently too.
@@ -1339,6 +1358,14 @@ startMonitoringTxns();
  */
 export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
+}
+
+/**
+ * Test seam: the logical transactions the monitor supervises for their writes, alongside the read-tracked
+ * set that setTxnExpiration() returns.
+ */
+export function getSupervisedWriteRoots() {
+	return supervisedWriteRoots;
 }
 
 export function setTxnExpiration(ms) {

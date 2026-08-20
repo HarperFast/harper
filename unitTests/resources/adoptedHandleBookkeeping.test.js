@@ -7,14 +7,20 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { DatabaseTransaction, TRANSACTION_STATE, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const {
+	DatabaseTransaction,
+	TRANSACTION_STATE,
+	setTxnExpiration,
+	getSupervisedWriteRoots,
+	getTransactionQueueDepths,
+} = require('#src/resources/DatabaseTransaction');
 
 // RocksDB's DatabaseTransaction owns the bookkeeping under test; LMDBTransaction keeps its own
 // counter independently and never adopts one of these handles.
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 describe('harper#2224 adopted read-handle bookkeeping', function () {
-	let Blind;
+	let Blind, Chained;
 	// A handle left open pins a read snapshot for the rest of the process and blocks blob reclamation.
 	const opened = [];
 
@@ -39,6 +45,12 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		setMainIsWorker(true);
 		Blind = table({
 			table: 'AdoptedHandle',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+		});
+		// A second database, so a write to it lands on a chain link rather than the head.
+		Chained = table({
+			table: 'AdoptedHandleChained',
+			database: 'adoptedOther',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
 		});
 	});
@@ -125,7 +137,6 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		txn.getReadTxn();
 		assert.strictEqual(txn.readTxnRefCount, 1);
 		txn.getReadTxn();
-		// Pins the increment the two guards below model with a hand-written count.
 		assert.strictEqual(txn.readTxnRefCount, 2);
 	});
 
@@ -139,8 +150,6 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		const resource = await Blind.getResource({ id: null }, context, {});
 		resource._writeUpdate('disregard', { v: 'fresh' }, true);
 
-		// A caching read holding the only outstanding reference — the shape an unpaired disregard
-		// reaches after a detach zeroed the count.
 		txn.readTxnRefCount = 1;
 		txn.disregardReadTxn();
 
@@ -174,14 +183,53 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(txn.readTxnsUsed, 2, 'the iterator reference must survive the write');
 	});
 
-	it('is never registered with the long-transaction monitor, even once it is read', async function () {
+	it('is supervised by the long-transaction monitor without joining the read-tracked set', async function () {
 		const trackedTxns = setTxnExpiration(30000);
-		const { txn } = await blindWriteTransaction('untracked');
-		assert.strictEqual(trackedTxns.has(txn), false);
-		// getReadTxn() returns the already-adopted handle before it reaches trackedTxns.add, so reading
-		// does not register it either. Deliberate here, and tracked as its own follow-up (#2231).
+		const readDepthBefore = getTransactionQueueDepths().readDepth;
+		const { txn } = await blindWriteTransaction('supervised');
+
+		assert.strictEqual(getSupervisedWriteRoots().has(txn), true, 'a blind write must not be invisible');
+		// The read-tracked set and the depth metric it feeds keep their meaning: this transaction holds no
+		// read snapshot, and getReadTxn() returns the already-adopted handle before it would register.
 		txn.getReadTxn();
 		assert.strictEqual(trackedTxns.has(txn), false);
+		assert.strictEqual(getTransactionQueueDepths().readDepth, readDepthBefore);
+
+		await txn.commit({ doneWriting: true });
+		assert.strictEqual(getSupervisedWriteRoots().has(txn), false, 'supervision ends with ownership');
+	});
+
+	it('supervises the chain root, not the link that received the blind write', async function () {
+		const context = {};
+		const head = new DatabaseTransaction();
+		opened.push(head);
+		context.transaction = head;
+		head.setContext(context);
+		await Blind.get('chain-seed', context); // head claims the first database
+
+		const other = await Chained.getResource({ id: null }, context, {});
+		other._writeInvalidate('chain-write'); // blind write, landing on the chained link
+		const child = head.next;
+		opened.push(child);
+		assert.ok(child?.transaction, 'expected the chained link to have adopted a handle');
+
+		// The monitor iterates members independently and chainStillActive() only looks downstream, so a
+		// supervised child would be its own timeout root and could be reaped while the head is active.
+		assert.strictEqual(getSupervisedWriteRoots().has(head), true);
+		assert.strictEqual(getSupervisedWriteRoots().has(child), false);
+	});
+
+	it('leaves crash-recovery replay unsupervised, so a timestamp group cannot be split', async function () {
+		const context = {};
+		const txn = new DatabaseTransaction();
+		opened.push(txn);
+		txn.isReplay = true; // set at construction in replayLogs, before any write
+		context.transaction = txn;
+		txn.setContext(context);
+		const resource = await Blind.getResource({ id: null }, context, {});
+		resource._writeInvalidate('replayed');
+		assert.ok(txn.transaction, 'the replayed write still adopts a handle');
+		assert.strictEqual(getSupervisedWriteRoots().has(txn), false);
 	});
 
 	it('detaches the handle when a synchronous commit succeeds', function () {
@@ -215,7 +263,6 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		txn.setContext(context);
 		txn.attachOwnedTransaction(stubHandle({ commitThrows: true, abortThrows: true }));
 		assert.throws(() => txn.directCommitSync(), /native commitSync failed/);
-		// abort() is what reclaims blobs a replayed write staged.
 		assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED);
 		assert.deepStrictEqual(txn.writes, []);
 		assert.strictEqual(context.transaction, null);
