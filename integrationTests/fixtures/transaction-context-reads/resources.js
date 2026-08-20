@@ -97,3 +97,31 @@ export class DashWriteThenSearch extends Resource {
 		return { variant: 'write-then-search', companyId, count: snapshots.length, snapshots };
 	}
 }
+
+// POST-COMMIT ATOMICITY — commit the per-request transaction mid-handler, then write two records
+// and throw. Those writes belong to the request transaction's pending final commit, so the failure
+// must leave neither of them behind.
+export class DashCommitWriteThrow extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const suffix = paramId(query) ?? 'x';
+		await tables.Company.get('c1');
+		await transaction.commit(this);
+		await tables.Company.put({ id: `atomic-company-${suffix}`, name: 'should not survive' });
+		await tables.ScoreSnapshot.put({ id: `atomic-snap-${suffix}`, companyId: 'atomic-co', score: 1 });
+		throw new Error('deliberate failure after the mid-handler commit');
+	}
+}
+
+// The same shape that succeeds: both post-commit writes must be durable once the request completes.
+export class DashCommitWriteOk extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const suffix = paramId(query) ?? 'x';
+		await tables.Company.get('c1');
+		await transaction.commit(this);
+		await tables.Company.put({ id: `ok-company-${suffix}`, name: 'kept' });
+		await tables.ScoreSnapshot.put({ id: `ok-snap-${suffix}`, companyId: 'atomic-co', score: 2 });
+		return { variant: 'commit-write-ok', suffix };
+	}
+}

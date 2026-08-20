@@ -325,6 +325,15 @@ type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
 
 export class DatabaseTransaction implements Transaction {
 	#context: Context;
+	// Whether a resources/transaction.ts scope owns this instance — i.e. a final commit or abort is
+	// guaranteed to follow. Only such a transaction may be rotated to a new generation by a mid-scope
+	// commit (see rotateAfterMidScopeCommit); anything else must commit each later write immediately,
+	// because nothing would commit staged ones. Settable only at construction, so it cannot be turned on
+	// for a transaction that is already attached to a context and running.
+	#scopeOwned: boolean;
+	constructor(options?: { scopeOwned?: boolean }) {
+		this.#scopeOwned = options?.scopeOwned === true;
+	}
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
@@ -383,6 +392,11 @@ export class DatabaseTransaction implements Transaction {
 	// Set once the retained read handle's write intents have been released (see commit()'s
 	// outstanding-iterators branch), so a retry round cannot re-fire the release.
 	declare writesAbandoned?: boolean;
+	// Set once a mid-scope commit has rotated this instance to a new generation: every native
+	// transaction it opens from then on reads WITHOUT a snapshot. Committing mid-scope is how a handler
+	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
+	// back what it asked for.
+	declare snapshotFree?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -409,7 +423,12 @@ export class DatabaseTransaction implements Transaction {
 		// snapshot that blocks compaction. Only applied when creating the transaction fresh; an
 		// already-open transaction keeps whatever snapshot mode it was created with.
 		// `coordinatedRetry` signals IsBusy write conflicts as RETRY_NOW rather than ERR_BUSY.
-		this.attachOwnedTransaction(new RocksTransaction(this.db.store, { coordinatedRetry: true, disableSnapshot }));
+		this.attachOwnedTransaction(
+			new RocksTransaction(this.db.store, {
+				coordinatedRetry: true,
+				disableSnapshot: disableSnapshot || this.snapshotFree,
+			})
+		);
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
@@ -716,7 +735,10 @@ export class DatabaseTransaction implements Transaction {
 		if (!transaction && this.open === TRANSACTION_STATE.OPEN) transaction = this.transaction;
 		let immediateCommit = false;
 		if (!transaction) {
-			transaction = new RocksTransaction(operation.store.store as RocksStore);
+			transaction = new RocksTransaction(
+				operation.store.store as RocksStore,
+				this.snapshotFree ? { coordinatedRetry: true, disableSnapshot: true } : undefined
+			);
 			if (operation.store.rootStore !== this.db.rootStore) {
 				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
 			}
@@ -997,11 +1019,14 @@ export class DatabaseTransaction implements Transaction {
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
+							if (options.doneWriting) this.#scopeOwned = false;
 							this.releaseContext(!!options.doneWriting);
-							this.next = null;
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
 							return Promise.all(completions).then(() => {
+								// Only once the chained store's commit has settled, as on the synchronous path: a
+								// partially failed mid-scope commit must not leave the scope resumable.
+								this.completeMidScopeCommit(options);
 								return {
 									txnTime,
 								};
@@ -1083,6 +1108,9 @@ export class DatabaseTransaction implements Transaction {
 								// back-reference here too, or transaction.ts's onComplete() (which has no
 								// rejection handler of its own) would leave a long-lived context pinning this
 								// CLOSED wrapper forever.
+								// A failed commit must never be followed by a resumed segment: this generation is
+								// finished and its durability is unknown, so ownership goes with it.
+								this.#scopeOwned = false;
 								this.releaseContext(!!options.doneWriting);
 								throw error;
 							}
@@ -1094,6 +1122,7 @@ export class DatabaseTransaction implements Transaction {
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				this.clearWrites();
+				if (options.doneWriting) this.#scopeOwned = false;
 				this.releaseContext(!!options.doneWriting);
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
@@ -1106,12 +1135,18 @@ export class DatabaseTransaction implements Transaction {
 						options.transaction ? { ...options, transaction: undefined } : options
 					);
 					if ((nextResolution as any)?.then)
-						return (nextResolution as any)?.then((nextResolution) => ({
-							txnTime: this.timestamp,
-							next: nextResolution,
-						}));
+						return (nextResolution as any)?.then((nextResolution) => {
+							// Only once the chained store's own commit has SETTLED: rotating first would leave the
+							// scope resumable after a partially failed mid-scope commit.
+							this.completeMidScopeCommit(options);
+							return {
+								txnTime: this.timestamp,
+								next: nextResolution,
+							};
+						});
 					txnResolution.next = nextResolution as any;
 				}
+				this.completeMidScopeCommit(options);
 				return txnResolution;
 			},
 			(error) => {
@@ -1120,6 +1155,38 @@ export class DatabaseTransaction implements Transaction {
 			}
 		);
 	}
+	/**
+	 * A successful commit that is NOT the scope's final one leaves the scope still running and still
+	 * responsible for a commit. Rotate to a fresh OPEN generation so the rest of the scope's writes
+	 * stage into it and are committed — or rolled back — as one unit, instead of each committing itself
+	 * the moment it is made. Every dispatch path keeps its plain `open === OPEN` check; CLOSED never
+	 * gains a second meaning.
+	 *
+	 * Deliberately not rotated when: the scope is finished (`doneWriting`), nothing owns this instance,
+	 * a timeout poisoned it, or a commit failed — a failed or uncertain commit must never be followed by
+	 * a resumed segment that can commit on its own. Nor when read iterators still hold the native
+	 * handle: that handle belongs to them until they drain, so there is nothing to rotate into and those
+	 * writes keep today's immediate-commit path.
+	 */
+	/**
+	 * Finish a commit: the chain goes with it, then the scope may rotate. A link left attached and CLOSED
+	 * would be reused by txnForContext for the next write to that database and commit itself, surviving a
+	 * rollback of the rotated head — the cross-store leftover this rotation exists to prevent. Every
+	 * commit path must run this, and none may do one half without the other.
+	 */
+	private completeMidScopeCommit(options: CommitOptions): void {
+		this.next = null;
+		this.rotateAfterMidScopeCommit(options);
+	}
+
+	/** See completeMidScopeCommit, which is the only caller and carries the reasoning. */
+	private rotateAfterMidScopeCommit(options: CommitOptions): void {
+		if (options.doneWriting || this.timedOut || this.transaction || !this.#scopeOwned) return;
+		this.open = TRANSACTION_STATE.OPEN;
+		this.snapshotFree = true;
+		this.writesAbandoned = false;
+	}
+
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
@@ -1132,6 +1199,8 @@ export class DatabaseTransaction implements Transaction {
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 			}
 		} finally {
+			this.#scopeOwned = false; // the scope is over; nothing may rotate this instance again
+			this.snapshotFree = false;
 			this.clearWrites();
 			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of

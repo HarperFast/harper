@@ -45,7 +45,9 @@ export function transaction<T>(
 		return callback(context.transaction); // nothing to be done, already in open transaction
 	}
 
-	const transaction = new DatabaseTransaction();
+	// scopeOwned: onComplete/onError below guarantee this instance a final commit or an abort, which is
+	// what lets a mid-scope commit rotate it instead of leaving later writes to commit themselves.
+	const transaction = new DatabaseTransaction({ scopeOwned: true });
 	context.transaction = transaction;
 	if (context.timestamp) transaction.timestamp = context.timestamp;
 	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
