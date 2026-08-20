@@ -436,6 +436,13 @@ export class DatabaseTransaction implements Transaction {
 	 * one. Membership is keyed on the root but claimed per link, so removing it on any link's detach
 	 * would unsupervise a logical transaction still holding writes elsewhere in the chain.
 	 */
+	/** Drop the whole chain's supervision, however its links got there. */
+	dropWriteSupervision(): void {
+		const root = this.root ?? this;
+		for (let link: DatabaseTransaction = root; link; link = link.next) link.writeSupervised = false;
+		supervisedWriteRoots.delete(root);
+	}
+
 	private endWriteSupervision(): void {
 		if (!this.writeSupervised) return;
 		this.writeSupervised = false;
@@ -1110,11 +1117,6 @@ export class DatabaseTransaction implements Transaction {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
-		// abortDueToTimeout() and abortChainAfterRetries() walk the chain themselves, but an ordinary
-		// application-error abort never did, so a link that took a blind write kept its native handle,
-		// its write intents and its supervision claim until GC. Re-entrant by design: every step here is
-		// idempotent, so the walking callers reaching this again is harmless.
-		for (let link: DatabaseTransaction = this.next; link; link = link.next) link.abort();
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
 		try {
@@ -1331,6 +1333,14 @@ function startMonitoringTxns() {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
+					if (!txn.transaction) {
+						// Nothing left to supervise, and this is the registry's only unconditional exit:
+						// membership otherwise ends when a claiming link detaches, which a chained commit
+						// throwing synchronously inside when()'s success callback never reaches. Left
+						// enrolled, the transaction would draw the warning below every tick forever.
+						txn.dropWriteSupervision();
+						return;
+					}
 					// The commit was already acknowledged; any staged writes are riding an in-flight
 					// replay commit (see the outstanding-iterators branch in commit()) and are not the
 					// monitor's to abort — dropping them here would re-introduce the silent

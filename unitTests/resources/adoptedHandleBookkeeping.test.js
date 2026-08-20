@@ -361,6 +361,42 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(child.open, TRANSACTION_STATE.CLOSED);
 	});
 
+	it('evicts a closed, handle-less root whose claim is held by a chain link', async function () {
+		const context = {};
+		const head = new DatabaseTransaction();
+		context.transaction = head;
+		head.setContext(context);
+		await Blind.get('evict-seed', context);
+		const other = await Chained.getResource({ id: null }, context, {});
+		other._writeInvalidate('evict-claim'); // the CHILD claims the root
+		const child = head.next;
+		assert.strictEqual(child.writeSupervised, true);
+
+		// What a chained commit throwing synchronously leaves: the head closed with its handle gone, but
+		// still enrolled, because the claiming link never detached. The head's own release path returns
+		// early — the claim is not its own — so without an unconditional exit it is enrolled forever.
+		head.releaseReadTxn();
+		head.open = TRANSACTION_STATE.CLOSED;
+		head.timeout = -1;
+		assert.strictEqual(isWriteSupervised(head), true);
+
+		setTxnExpiration(20);
+		try {
+			const deadline = Date.now() + 3000;
+			while (isWriteSupervised(head) && Date.now() < deadline) await delay(20);
+			// Asserted before the cleanup below: aborting the child would evict the root by itself.
+			assert.strictEqual(isWriteSupervised(head), false, 'the monitor must be able to evict it unconditionally');
+		} finally {
+			setTxnExpiration(30000);
+			try {
+				child.abort();
+			} catch {
+				/* already finalized */
+			}
+			head.clearWrites();
+		}
+	});
+
 	it('leaves crash-recovery replay unsupervised, so a timestamp group cannot be split', async function () {
 		const context = {};
 		const txn = new DatabaseTransaction();
