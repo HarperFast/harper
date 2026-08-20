@@ -327,7 +327,7 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
-	it('waits for a peer recovery that outlasts the bulk recovery grace period', async function () {
+	it('bounds bulk recovery while a peer recovery remains live', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-peer-recovery-'));
 		const dirPath = path.join(componentsRoot, 'web');
 		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
@@ -349,9 +349,20 @@ describe('extractApplication directory swap', () => {
 
 		try {
 			await started;
-			setTimeout(() => releaseRecovery(), 350);
-			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
-			assert.strictEqual(failures.size, 0);
+			let failIfUnbounded;
+			const failures = await Promise.race([
+				recoverInterruptedComponentExtractions(componentsRoot),
+				new Promise((_, reject) => {
+					failIfUnbounded = setTimeout(
+						() => reject(new Error('bulk recovery waited past its bounded lock timeout')),
+						1000
+					);
+				}),
+			]).finally(() => clearTimeout(failIfUnbounded));
+			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
+			releaseRecovery();
+			await recovery;
+			await recoverInterruptedComponentExtraction(componentsRoot, 'web');
 			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
 		} finally {
 			releaseRecovery?.();

@@ -1039,9 +1039,7 @@ export async function recoverInterruptedComponentExtraction(
 		{
 			timeoutMs: waitForPreparation ? COMPONENT_RECOVERY_WAIT_TIMEOUT_MS : COMPONENT_RECOVERY_TRY_TIMEOUT_MS,
 			purpose: COMPONENT_RECOVERY_LOCK_PURPOSE,
-			renewTimeoutWhileOwnerAlive: waitForPreparation
-				? true
-				: (owner) => owner.purpose === COMPONENT_RECOVERY_LOCK_PURPOSE,
+			renewTimeoutWhileOwnerAlive: waitForPreparation,
 			onWait: (owner) => {
 				logger.info(
 					`Waiting to settle component deployment state for ${componentName}` +

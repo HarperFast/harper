@@ -501,9 +501,10 @@ describe('ComponentLoader Status Integration', function () {
 		}
 	});
 
-	it('keeps readiness scoped to each concurrent deferred component load', async function () {
+	it('keeps installed-package readiness scoped to each concurrent deferred component load', async function () {
 		this.timeout(15000);
 		const firstAppName = 'first-deferred-readiness-probe';
+		const firstPackageName = 'first-deferred-readiness-package';
 		const firstPluginName = 'firstDeferredReadinessProbe';
 		const secondAppName = 'second-deferred-readiness-probe';
 		const secondPluginName = 'secondDeferredReadinessProbe';
@@ -513,7 +514,13 @@ describe('ComponentLoader Status Integration', function () {
 		const firstAsideDir = path.join(tempDir, '.deploy-aside', firstAppName, '.in-progress-123-previous');
 		const secondAsideDir = path.join(tempDir, '.deploy-aside', secondAppName, '.in-progress-123-previous');
 		await fs.mkdir(firstAsideDir, { recursive: true });
-		await fs.writeFile(path.join(firstAsideDir, 'config.yaml'), `${firstPluginName}: {}\n`);
+		await fs.writeFile(
+			path.join(firstAsideDir, 'config.yaml'),
+			`${firstPackageName}:\n  package: ${firstPackageName}\n`
+		);
+		const firstPackageDir = path.join(firstAsideDir, 'node_modules', firstPackageName);
+		await fs.mkdir(firstPackageDir, { recursive: true });
+		await fs.writeFile(path.join(firstPackageDir, 'config.yaml'), `${firstPluginName}: {}\n`);
 		await fs.mkdir(secondAsideDir, { recursive: true });
 		await fs.writeFile(path.join(secondAsideDir, 'config.yaml'), `${secondPluginName}: {}\n${secondBlockerName}: {}\n`);
 		await fs.mkdir(firstComponentDir, { recursive: true });
