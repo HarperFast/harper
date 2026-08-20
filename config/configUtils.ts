@@ -107,7 +107,11 @@ const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 // `Unknown system error -122` with an unusable `code`; the numeric errno is the portable signal
 // (EDQUOT is 122 on Linux, 69 on macOS).
 const STORAGE_EXHAUSTED_CODES = new Set(['ENOSPC', 'EDQUOT']);
-const STORAGE_EXHAUSTED_ERRNOS = new Set([-osConstants.errno.ENOSPC, -osConstants.errno.EDQUOT]);
+// EDQUOT is absent from os.constants.errno on platforms without quotas, so filter before negating:
+// -undefined is NaN, which would sit in the set matching nothing and reading as a bug.
+const STORAGE_EXHAUSTED_ERRNOS = new Set(
+	[osConstants.errno.ENOSPC, osConstants.errno.EDQUOT].filter((errno) => errno !== undefined).map((errno) => -errno)
+);
 
 export function isStorageExhausted(error): boolean {
 	return STORAGE_EXHAUSTED_CODES.has(error?.code) || STORAGE_EXHAUSTED_ERRNOS.has(error?.errno);
