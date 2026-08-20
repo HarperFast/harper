@@ -191,14 +191,36 @@ function fmtMiB(bytes: number): string {
 	return `${(bytes / 1024 / 1024).toFixed(3)}MiB`;
 }
 
-async function seedRange(ctx: ContextWithHarper, start: number, count: number, bucket: string): Promise<void> {
+// DIAGNOSTIC (harper#2243): time every insert batch and hand the durations back so the caller
+// can print a per-batch profile. The per-request budget is raised well past the production 60s
+// so a slow Windows run yields a full profile instead of aborting mid-seed.
+const PROFILE_BATCH_TIMEOUT_MS = 600_000;
+
+async function seedRange(ctx: ContextWithHarper, start: number, count: number, bucket: string): Promise<number[]> {
+	const batchMs: number[] = [];
 	for (let s = start; s < start + count; s += BATCH_SIZE) {
 		const records = [];
 		for (let i = s; i < Math.min(s + BATCH_SIZE, start + count); i++) {
 			records.push({ id: `k${i}`, seq: i, bucket, payload: payloadFor(i) });
 		}
-		const r = await rawOp(ctx, { operation: 'insert', schema: SCHEMA, table: TABLE, records });
+		const t0 = Date.now();
+		const r = await rawOp(
+			ctx,
+			{ operation: 'insert', schema: SCHEMA, table: TABLE, records },
+			PROFILE_BATCH_TIMEOUT_MS
+		);
+		batchMs.push(Date.now() - t0);
 		ok(r.status === 200, `insert batch@${s} should succeed, got ${r.status}: ${r.text.slice(0, 300)}`);
+	}
+	return batchMs;
+}
+
+async function rocksStats(ctx: ContextWithHarper): Promise<any> {
+	try {
+		const r = await fetch(`${ctx.harper.httpURL}/RocksStats/`, { headers: { Authorization: authHeader(ctx) } });
+		return await r.json();
+	} catch (error) {
+		return { available: false, error: String(error) };
 	}
 }
 
@@ -445,19 +467,37 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			});
 
 			test('1. seed DEL (6000) + KEEP (6000) ranges, force flushes between waves', { timeout: 300_000 }, async () => {
-				// Flush every 2000 rows so data is genuinely on disk, not just resident in the memtable.
-				await seedRange(ctx, 0, 2000, 'DEL');
-				await flush(ctx, engine);
-				await seedRange(ctx, 2000, 2000, 'DEL');
-				await flush(ctx, engine);
-				await seedRange(ctx, 4000, 2000, 'DEL');
-				await flush(ctx, engine);
-				await seedRange(ctx, 6000, 2000, 'KEEP');
-				await flush(ctx, engine);
-				await seedRange(ctx, 8000, 2000, 'KEEP');
-				await flush(ctx, engine);
-				await seedRange(ctx, 10000, 2000, 'KEEP');
-				await flush(ctx, engine);
+				// DIAGNOSTIC (harper#2243): profile each wave -- per-batch insert durations, flush
+				// duration, and the RocksDB stat deltas that separate a write stall from slow
+				// flush/fsync. Printed as [WINPROFILE] lines so a CI log can be grepped for them.
+				const before = await rocksStats(ctx);
+				console.log(`[WINPROFILE] engine=${engine} platform=${process.platform} statsBefore=${JSON.stringify(before)}`);
+				const waves: Array<[number, number, string]> = [
+					[0, 2000, 'DEL'],
+					[2000, 2000, 'DEL'],
+					[4000, 2000, 'DEL'],
+					[6000, 2000, 'KEEP'],
+					[8000, 2000, 'KEEP'],
+					[10000, 2000, 'KEEP'],
+				];
+				for (const [start, count, bucket] of waves) {
+					const batchMs = await seedRange(ctx, start, count, bucket);
+					const flushT0 = Date.now();
+					await flush(ctx, engine);
+					const flushMs = Date.now() - flushT0;
+					const after = await rocksStats(ctx);
+					console.log(
+						`[WINPROFILE] engine=${engine} wave@${start} bucket=${bucket} ` +
+							`insertBatchesMs=[${batchMs.join(',')}] insertTotalMs=${batchMs.reduce((a, b) => a + b, 0)} ` +
+							`maxBatchMs=${Math.max(...batchMs)} flushMs=${flushMs} ` +
+							`stallMicros=${after?.stallMicros} memTableFlushPending=${after?.memTableFlushPending} ` +
+							`numImmutableMemTable=${after?.numImmutableMemTable} compactionPending=${after?.compactionPending} ` +
+							`pendingCompactionBytes=${after?.estimatePendingCompactionBytes} ` +
+							`logQueueDepth=${after?.commitPipelineLogQueueDepth} commitQueueDepth=${after?.commitPipelineCommitQueueDepth}`
+					);
+				}
+				const finalStats = await rocksStats(ctx);
+				console.log(`[WINPROFILE] engine=${engine} statsAfter=${JSON.stringify(finalStats)}`);
 
 				cutoffTimestamp = Date.now();
 				await sleep(250);

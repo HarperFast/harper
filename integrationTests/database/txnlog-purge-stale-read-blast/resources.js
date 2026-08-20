@@ -70,3 +70,41 @@ export class FullScan extends Resource {
 		return { totalCount, records };
 	}
 }
+
+// DIAGNOSTIC ONLY (harper#2243) — not for merge. Exposes the RocksDB stat counters that
+// discriminate a write stall from slow flush/fsync on Windows. `enableStats: true` is already
+// set for every RocksDB database (resources/databases.ts), so the curated keys are populated.
+export class RocksStats extends Resource {
+	static loadAsInstance = false;
+	async get() {
+		const t = tables['Widget'];
+		const root = t?.primaryStore?.rootStore;
+		if (!root || typeof root.getStats !== 'function') return { available: false };
+		let stats;
+		try {
+			stats = root.getStats();
+		} catch (error) {
+			return { available: false, error: String(error) };
+		}
+		const pick = (k) => stats?.[k];
+		return {
+			available: true,
+			stallMicros: pick('rocksdb.stall.micros'),
+			writeStall: pick('rocksdb.db.write.stall'),
+			flushMicros: pick('rocksdb.db.flush.micros'),
+			writeMicros: pick('rocksdb.db.write.micros'),
+			compactionTimesMicros: pick('rocksdb.compaction.times.micros'),
+			numImmutableMemTable: pick('rocksdb.num-immutable-mem-table'),
+			memTableFlushPending: pick('rocksdb.mem-table-flush-pending'),
+			numRunningFlushes: pick('rocksdb.num-running-flushes'),
+			numRunningCompactions: pick('rocksdb.num-running-compactions'),
+			compactionPending: pick('rocksdb.compaction-pending'),
+			estimatePendingCompactionBytes: pick('rocksdb.estimate-pending-compaction-bytes'),
+			bytesWritten: pick('rocksdb.bytes.written'),
+			keysWritten: pick('rocksdb.number.keys.written'),
+			txnlogBytesWritten: pick('txnlog.bytesWritten'),
+			commitPipelineLogQueueDepth: pick('commitPipeline.logQueueDepth'),
+			commitPipelineCommitQueueDepth: pick('commitPipeline.commitQueueDepth'),
+		};
+	}
+}
