@@ -122,7 +122,13 @@ jobs:
         run: npm run install:fixtures
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        timeout-minutes: 10
+        run: |
+          # APT can hang instead of failing over when the Azure mirror is unavailable.
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i '\|azure.archive.ubuntu.com|d' /etc/apt/apt-mirrors.txt
+          fi
+          npx playwright install --with-deps chromium
 
       - name: Run integration tests
         run: npm run test:integration
