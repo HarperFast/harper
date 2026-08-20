@@ -54,9 +54,11 @@ export interface StructureCounts {
 }
 
 // Mirrors structon's onLoadedStructures over the four durable payload shapes it accepts. The
-// bare-array and cbor-x forms carry named structures only, and structon keeps the encoder's own
-// typed dictionary for them -- so `localTyped` must be reported rather than zero, or a saturated
-// store reads as empty.
+// bare-array and cbor-x forms carry named structures only; structon keeps the encoder's own typed
+// dictionary for them, and they are written by the capped fallback path (msgpackr's base save
+// overwriting the combined payload, before structon's best-effort re-save). That window is by
+// definition a saturated store, so reporting zero there would show an empty dictionary at the one
+// moment the count matters most.
 function countDurableStructures(sharedData: any, localTyped: number): { typed: number; classic: number } {
 	if (!sharedData) return { typed: 0, classic: 0 };
 	if (sharedData instanceof Map)
