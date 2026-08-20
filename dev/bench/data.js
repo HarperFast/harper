@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787211174456,
+  "lastUpdate": 1787226335200,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -12923,6 +12923,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 985,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "kriszyp",
+            "username": "kriszyp",
+            "email": "34054+kriszyp@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "0a70c9e8ec7eb834be8bbcfec5bb78efface0725",
+          "message": "chore: sync package-lock.json with package.json",
+          "timestamp": "2026-08-19T02:10:21Z",
+          "url": "https://github.com/HarperFast/harper/commit/0a70c9e8ec7eb834be8bbcfec5bb78efface0725"
+        },
+        "date": 1787226332216,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 9143,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 8325,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 8262,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 14283520,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 6381,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1127,
             "unit": "ops"
           }
         ]
