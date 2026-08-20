@@ -748,7 +748,7 @@ export async function extractApplication(
 		await recoverOrCleanupStaleExtractionPaths(application, asideStagingDir);
 		let componentExists = true;
 		try {
-			await access(application.dirPath, constants.F_OK);
+			await lstat(application.dirPath);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 			componentExists = false;

@@ -73,6 +73,33 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('restores a dangling symlink when payload extraction fails', async function () {
+		if (process.platform === 'win32') this.skip();
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-dangling-symlink-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const missingTarget = path.join(componentsRoot, 'missing-target');
+		const extractionError = new Error('payload delivery failed');
+		await fs.symlink(missingTarget, dirPath, 'dir');
+		const app = new Application({
+			name: 'web',
+			payload: new Readable({
+				read() {
+					this.destroy(extractionError);
+				},
+			}),
+		});
+		app.dirPath = dirPath;
+
+		try {
+			await assert.rejects(() => extractApplication(app), extractionError);
+			assert.strictEqual((await fs.lstat(dirPath)).isSymbolicLink(), true);
+			assert.strictEqual(await fs.readlink(dirPath), missingTarget);
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('removes a partial directory when a first deploy fails', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-new-failure-'));
 		const dirPath = path.join(componentsRoot, 'web');
