@@ -2,7 +2,7 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { transaction } = require('#src/resources/transaction');
+const { transaction, contextStorage } = require('#src/resources/transaction');
 const { DatabaseTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 
@@ -150,39 +150,50 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 	// landed. A handler that catches that (the shape people write, because a mid-scope commit can
 	// conflict) must not get a rotated scope on its next commit: the failed link would be dropped from
 	// the chain before its abort could clean up, and the rest of the scope would stage on a partial commit.
-	rocksOnly('surrenders ownership when a chained database’s commit fails', async function () {
-		const { Transaction } = require('@harperfast/rocksdb-js');
-		const originalCommit = Transaction.prototype.commit;
-		const chainedDb = Other.primaryStore.store.db;
-		let forcedFailures = 0;
-		const context = {};
-		try {
-			await transaction(context, async () => {
-				await A.put('chain-fail-head', { v: 1 }, context);
-				await Other.put('chain-fail-link', { v: 1 }, context);
-				Transaction.prototype.commit = function (...args) {
-					if (this.store?.db !== chainedDb) return originalCommit.apply(this, args);
-					forcedFailures++;
-					Transaction.prototype.commit = originalCommit; // one forced failure only
-					return Promise.reject(Object.assign(new Error('forced chained failure'), { code: 'ERR_CORRUPTION' }));
-				};
-				await assert.rejects(context.transaction.commit(), /forced chained failure/);
-				assert.notEqual(
-					context.transaction?.open,
-					TRANSACTION_STATE.OPEN,
-					'a half-landed multi-store commit must not leave the scope rotated'
-				);
-				await A.put('chain-fail-after', { v: 2 }, context);
-			});
-		} finally {
-			Transaction.prototype.commit = originalCommit;
-		}
-		assert.ok(forcedFailures > 0, 'premise: the chained commit must actually have failed');
-		assert.ok(
-			await A.get('chain-fail-after'),
-			'a write after a half-landed commit must commit itself rather than stage into a rotated generation'
-		);
-	});
+	// A rejected promise and a synchronous throw leave the chained commit through different code, so both
+	// have to surrender ownership.
+	for (const mode of ['rejects', 'throws synchronously']) {
+		rocksOnly(`surrenders ownership when a chained database’s commit ${mode}`, async function () {
+			const { Transaction } = require('@harperfast/rocksdb-js');
+			const originalCommit = Transaction.prototype.commit;
+			const chainedDb = Other.primaryStore.store.db;
+			const tag = mode === 'rejects' ? 'reject' : 'throw';
+			let forcedFailures = 0;
+			const context = {};
+			try {
+				await transaction(context, async () => {
+					await A.put(`chain-${tag}-head`, { v: 1 }, context);
+					await Other.put(`chain-${tag}-link`, { v: 1 }, context);
+					Transaction.prototype.commit = function (...args) {
+						if (this.store?.db !== chainedDb) return originalCommit.apply(this, args);
+						forcedFailures++;
+						Transaction.prototype.commit = originalCommit; // one forced failure only
+						const error = Object.assign(new Error(`forced chained ${tag}`), { code: 'ERR_CORRUPTION' });
+						if (mode === 'rejects') return Promise.reject(error);
+						throw error;
+					};
+					await assert.rejects(
+						(async () => context.transaction.commit())(),
+						new RegExp(`forced chained ${tag}`),
+						'the failure must reach the caller either way'
+					);
+					assert.notEqual(
+						context.transaction?.open,
+						TRANSACTION_STATE.OPEN,
+						'a half-landed multi-store commit must not leave the scope rotated'
+					);
+					await A.put(`chain-${tag}-after`, { v: 2 }, context);
+				});
+			} finally {
+				Transaction.prototype.commit = originalCommit;
+			}
+			assert.ok(forcedFailures > 0, 'premise: the chained commit must actually have failed');
+			assert.ok(
+				await A.get(`chain-${tag}-after`),
+				'a write after a half-landed commit must commit itself rather than stage into a rotated generation'
+			);
+		});
+	}
 
 	rocksOnly('reads its own post-commit writes', async function () {
 		const context = {};
@@ -314,14 +325,29 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 		for (let i = 0; i < 4; i++) assert.ok(await A.get(`ckpt-${i}`), `ckpt-${i} must persist`);
 	});
 
-	it('resumes under an ambient operation-handler context too', async function () {
-		await serverUtilities.processLocalTransaction(
-			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
-			async () => {
-				await A.put('ambient', { v: 1 });
-				return { message: 'ok' };
-			}
+	// The ambient operation-handler context is the shape central-manager runs in, so the rotation has to
+	// hold there and not only on an explicit `transaction(context, …)` scope.
+	rocksOnly('rotates under an ambient operation-handler context', async function () {
+		await assert.rejects(
+			serverUtilities.processLocalTransaction(
+				{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+				async () => {
+					const context = contextStorage.getStore();
+					await transaction(context, async () => {
+						await A.put('ambient-pre', { v: 1 }, context);
+						await context.transaction.commit();
+						await A.put('ambient-post', { v: 2 }, context);
+						throw new Error('forced ambient failure');
+					});
+				}
+			),
+			/forced ambient failure/
 		);
-		assert.ok(await A.get('ambient'), 'the ambient path must be unaffected');
+		assert.ok(await A.get('ambient-pre'), 'what the mid-scope commit committed must stay committed');
+		assert.equal(
+			await A.get('ambient-post'),
+			undefined,
+			'a write after the mid-scope commit must roll back under an ambient context too'
+		);
 	});
 });
