@@ -23,16 +23,10 @@ let hdbRoot;
 
 export default status;
 
-/**
- * Derive process uptime in ms from an OS process start time and a reference `now`. `started` is the
- * local-wall-clock string systeminformation reports (e.g. "2026-08-18 10:47:25"); `Date.parse` reads
- * it as local time and returns NaN (rather than throwing) when it's missing or unparseable, so we
- * return undefined in that case rather than emitting "NaNs". Negative spans clamp to 0.
- */
-export function processUptimeMs(started: string, nowMs: number): number | undefined {
-	const startedAt = Date.parse(started);
-	if (Number.isNaN(startedAt)) return undefined;
-	return Math.max(0, Math.round(nowMs - startedAt));
+/** Uptime in ms between two epoch-ms timestamps. Both are absolute (UTC) instants, so the result is
+ * timezone- and DST-independent; negative spans clamp to 0. */
+export function processUptimeMs(startMs: number, nowMs: number): number {
+	return Math.max(0, Math.round(nowMs - startMs));
 }
 
 /** Format uptime, then print the status object as YAML. */
@@ -59,9 +53,10 @@ async function status() {
 	}
 
 	hdbRoot = envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
+	const pidFile = path.join(hdbRoot, hdbTerms.HDB_PID_FILE);
 	let hdbPid;
 	try {
-		hdbPid = Number.parseInt(await fs.readFile(path.join(hdbRoot, hdbTerms.HDB_PID_FILE), 'utf8'));
+		hdbPid = Number.parseInt(await fs.readFile(pidFile, 'utf8'));
 	} catch (err) {
 		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
 			// A missing pid file is the normal stopped state (clean shutdown removes it), not an error.
@@ -78,16 +73,15 @@ async function status() {
 		if (proc.pid === hdbPid) {
 			status.harperdb.status = STATUSES.RUNNING;
 			status.harperdb.pid = hdbPid;
-			// `status` is a separate short-lived CLI process, so `process.uptime()` would report its
-			// own age, not the server's. Asking the server for its real uptime over the operations API
-			// would drag auth and a network round-trip into a command meant to stay lightweight and
-			// credential-free. Instead derive it from the OS process start time systeminformation
-			// already gathered.
-			const uptime = processUptimeMs(proc.started, Date.now());
-			if (uptime === undefined) {
-				hdbLog.warn(`\`harperdb status\` could not determine uptime from process start time: ${proc.started}`);
-			} else {
-				status.harperdb.uptime = uptime;
+			// `status` is a separate short-lived CLI process, so `process.uptime()` would report its own
+			// age, not the server's. The pid file is written once at startup, so its mtime is an epoch
+			// timestamp for when the server started — a numeric UTC instant, so subtracting it from now
+			// is DST-safe (no local-time string to round-trip, unlike systeminformation's `proc.started`).
+			try {
+				const { mtimeMs } = await fs.stat(pidFile);
+				status.harperdb.uptime = processUptimeMs(mtimeMs, Date.now());
+			} catch (err) {
+				hdbLog.warn(`\`harperdb status\` could not determine uptime: ${err}`);
 			}
 			break;
 		}
