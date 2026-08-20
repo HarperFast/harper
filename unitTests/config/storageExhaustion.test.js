@@ -9,13 +9,11 @@ const { atomicWriteFile, isStorageExhausted, persistConfigDuringBoot } = require
 const { prepareRuntimeEnvConfig, discardConfigState } = require('#src/config/harperConfigEnvVars');
 const hdbTerms = require('#src/utility/hdbTerms');
 
-// A real ENOSPC/EDQUOT needs a volume with no room, which a unit test cannot arrange portably, so
-// the failures below are synthetic errors carrying the errno the platform would report. The
-// end-to-end proof that boot survives an exhausted volume is the live run recorded in the PR.
+// A real ENOSPC/EDQUOT needs a volume with no room, which no unit test can arrange portably.
 function storageExhaustedError(errnoName) {
 	const errno = os.constants.errno[errnoName];
-	// Node has no code mapping for EDQUOT on Linux (where this was reported): the error arrives as
-	// `Unknown system error -122` and only the errno identifies it.
+	// Node has no code mapping for EDQUOT on Linux: the error arrives as `Unknown system error
+	// -122` and only the errno identifies it.
 	return Object.assign(new Error(`Unknown system error -${errno}`), {
 		errno: -errno,
 		code: `Unknown system error -${errno}`,
@@ -133,6 +131,14 @@ describe('storage exhaustion during boot (#847)', function () {
 
 			saveState();
 			assert.strictEqual(fs.existsSync(statePath()), true);
+		});
+
+		it('reports whether the snapshot write actually rewrote the file', function () {
+			// The rollback keys off this: an unchanged snapshot still describes the file on disk, so
+			// it must not be discarded when only the config write is refused.
+			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
+			assert.strictEqual(prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot).saveState(), true);
+			assert.strictEqual(prepareRuntimeEnvConfig({ http: { port: 8123 } }, testRoot).saveState(), false);
 		});
 
 		it('discards a snapshot that would misdescribe the config file', function () {

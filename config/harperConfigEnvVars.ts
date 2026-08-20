@@ -586,7 +586,8 @@ function loadConfigState(rootPath: string): ConfigState {
 /**
  * Save configuration state to file
  */
-function saveConfigState(rootPath: string, state: ConfigState): void {
+// Returns true when the file was rewritten, false when it already held this state.
+function saveConfigState(rootPath: string, state: ConfigState): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	const statePath = path.join(backupDir, STATE_FILE_NAME);
 
@@ -595,7 +596,7 @@ function saveConfigState(rootPath: string, state: ConfigState): void {
 
 	// Atomic write: a torn state file resets to fresh on the next load, losing every
 	// restoration record — the blast radius is user config-file content
-	atomicWriteFile(statePath, JSON.stringify(state, null, 2) + '\n', { skipIfUnchanged: true });
+	return atomicWriteFile(statePath, JSON.stringify(state, null, 2) + '\n', { skipIfUnchanged: true });
 }
 
 /**
@@ -985,7 +986,7 @@ export function prepareRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
 	options: { isInstall?: boolean } = {}
-): { config: ConfigObject; saveState: () => void } {
+): { config: ConfigObject; saveState: () => boolean } {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
@@ -995,7 +996,7 @@ export function prepareRuntimeEnvConfig(
 
 	// No env vars set and no previous state, nothing to do
 	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
-		return { config: fileConfig, saveState: () => {} };
+		return { config: fileConfig, saveState: () => false };
 	}
 
 	// Detect drift (user manual edits) - only at runtime, not install

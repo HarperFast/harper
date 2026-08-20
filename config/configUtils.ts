@@ -1361,20 +1361,21 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 			);
 		}
 		// The snapshot records the file's pre-env values, so neither artifact may move without the
-		// other. Snapshot refused: leave the file alone, it is the last record of those values.
-		// Snapshot landed but the file write refused: remove it (unlink needs no free space) - a
-		// snapshot ahead of the file makes the next boot read the older value as a manual user edit
-		// and stop applying the env layer for good.
-		if (persistConfigDuringBoot(`${rootPath} env config state`, saveEnvConfigState)) {
-			if (
-				persistConfigDuringBoot(configFilePath, () =>
+		// other. Snapshot refused: the file is left alone, being the last record of those values.
+		// Snapshot rewritten but the file write refused or failed: drop the snapshot, since one that
+		// is ahead of the file makes the next boot read the older value as a manual user edit and
+		// stop applying the env layer for good. Unlink needs no free space.
+		let snapshotRewritten = false;
+		if (persistConfigDuringBoot(`${rootPath} env config state`, () => (snapshotRewritten = saveEnvConfigState()))) {
+			let configPersisted = false;
+			try {
+				configPersisted = persistConfigDuringBoot(configFilePath, () =>
 					atomicWriteFile(configFilePath, String(configDoc), { skipIfUnchanged: true })
-				)
-			) {
-				logger.debug('Config file updated with runtime env var values');
-			} else {
-				discardConfigState(rootPath as string);
+				);
+			} finally {
+				if (!configPersisted && snapshotRewritten) discardConfigState(rootPath as string);
 			}
+			if (configPersisted) logger.debug('Config file updated with runtime env var values');
 		}
 	} catch (error) {
 		logger.error(`Failed to write config file after applying runtime env vars: ${error.message}`);

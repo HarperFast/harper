@@ -385,6 +385,17 @@ module.exports = {
 	externalLogger,
 };
 
+// Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
+// text back into the file logger this is the fallback for, and swallows a broken pipe - there is
+// nowhere left to report it.
+function writeToStdioDirectly(stream, text) {
+	try {
+		nativeStdWrite.call(stream, text);
+	} catch {
+		// stdio is gone too
+	}
+}
+
 // A bare no-op would read as permanent backpressure to a pipe()'d source; this drains and
 // discards instead.
 function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
@@ -801,9 +812,9 @@ function getFileLogger(path, rotation, isExternalInstance) {
 				// logging.file and logging.console are both on, which would recurse until the stack blew.
 				if (!loggedAppendError) {
 					loggedAppendError = true;
-					nativeStdWrite.call(process.stderr, `Harper cannot write to its log file: ${error}\n`);
+					writeToStdioDirectly(process.stderr, `Harper cannot write to its log file: ${error}\n`);
 				}
-				nativeStdWrite.call(process.stdout, payload);
+				writeToStdioDirectly(process.stdout, payload);
 				logBuffer = null;
 				return;
 			}
@@ -811,7 +822,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
 			// will start buffering
 			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
-		} else if (!loggedFDError) console.log(logBuffer ? logBuffer.join('') : entry);
+		} else writeToStdioDirectly(process.stdout, logBuffer ? logBuffer.join('') : entry);
 		if (logBuffer) logBuffer = null;
 	}
 
