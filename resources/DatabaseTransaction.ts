@@ -526,7 +526,7 @@ export class DatabaseTransaction implements Transaction {
 	private completeDeferredContextRelease(): void {
 		if (!this.pendingContextRelease) return;
 		this.pendingContextRelease = false;
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) this.#context.transaction = RELEASED_TRANSACTION;
 	}
 
 	disregardReadTxn(): void {
@@ -582,11 +582,9 @@ export class DatabaseTransaction implements Transaction {
 	 * alive (a fresh write on the same context must not join a DIFFERENT, already-replayed
 	 * transaction) until doneReadTxn() drains the last one, so the release is deferred to there.
 	 *
-	 * Sets `.transaction` to `null` rather than deleting the property: `Context.transaction` is
-	 * typed `DatabaseTransaction | null | undefined` precisely to document this released state, and
-	 * `delete` would repeatedly force a long-lived, hot context (e.g. an MQTT subscription context
-	 * releasing/reattaching a transaction per message) into V8's slower dictionary-mode property
-	 * storage.
+	 * Leaves RELEASED_TRANSACTION in the slot: the slot must stay callable (see that constant), and it
+	 * must stay a plain assignment — `delete` repeatedly forces a long-lived, hot context into V8's
+	 * dictionary-mode property storage.
 	 */
 	private releaseContext(final: boolean): void {
 		if (!final) return;
@@ -594,7 +592,7 @@ export class DatabaseTransaction implements Transaction {
 			this.pendingContextRelease = true;
 			return;
 		}
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) this.#context.transaction = RELEASED_TRANSACTION;
 	}
 
 	checkOverloaded() {
@@ -1303,6 +1301,57 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	getReadTxn(): any {
 		return; // no transaction means read latest
 	}
+}
+
+/**
+ * What `context.transaction` holds once its transaction has completed and released the back-reference
+ * (see releaseContext()). `commit()`/`abort()` are no-ops and reads through it see the latest
+ * committed state, so the documented `getContext().transaction.commit()` pattern stays callable after
+ * completion, reporting the same `txnTime: 0` that re-committing the completed transaction itself did
+ * (its own timestamp is reset by the commit that completed it).
+ *
+ * Not a DatabaseTransaction subclass and not extensible: one process-wide instance shared by every
+ * released context owns no mutable state, and anything off this surface fails loudly rather than
+ * inheriting behavior that would write through to every other context.
+ */
+const RELEASED_TRANSACTION_SURFACE = {
+	open: TRANSACTION_STATE.CLOSED,
+	transaction: undefined,
+	writes: Object.freeze([]),
+	commit(): CommitResolution {
+		return { txnTime: 0 };
+	},
+	abort(): void {},
+	getReadTxn(): undefined {
+		return; // no transaction means read latest
+	},
+	useReadTxn(): undefined {
+		return;
+	},
+	doneReadTxn(): void {},
+	disregardReadTxn(): void {},
+	hasPendingWrites(): boolean {
+		return false;
+	},
+	addWrite(): never {
+		throw new Error(
+			'Cannot write to a transaction that has already completed; start a new one with transaction() or pass a fresh context'
+		);
+	},
+	setContext(): never {
+		throw new Error('Cannot attach a context to the shared released transaction');
+	},
+};
+Object.freeze(RELEASED_TRANSACTION_SURFACE);
+export const RELEASED_TRANSACTION = RELEASED_TRANSACTION_SURFACE as unknown as DatabaseTransaction;
+
+/**
+ * The placeholder means "this context has no transaction". Every reader that would otherwise act on the
+ * value — claim it for a store, adopt it as a context, treat it as data — must ask first, or it operates
+ * on the one instance every released context shares.
+ */
+export function isReleasedTransaction(value: unknown): boolean {
+	return value === RELEASED_TRANSACTION;
 }
 
 let timer;
