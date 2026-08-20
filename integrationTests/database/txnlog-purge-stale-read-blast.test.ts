@@ -20,16 +20,16 @@
  *     necessarily served by the one and only worker) rather than relying on HTTP keep-alive
  *     connection-affinity tricks (that per-worker-routing question is QA-787's separate
  *     concern; this suite isolates "which surface", not "which worker").
- *   - Seed a large contiguous key range (bucket=DEL, 6000 rows) + a non-deleted range
- *     (bucket=KEEP, 6000 rows) + a byte-exact ARMED POSITIVE CONTROL (bucket=CTRL, 5 rows,
- *     inserted after a recorded cutoff) -- large enough, with padded payloads, to force real
- *     on-disk data (forced via explicit `primaryStore.flush()` calls between seeding waves,
- *     matching QA-779/QA-787's proven >16MiB-crossing magnitude so the LATER audit-purge arm
- *     is non-vacuous too).
+ *   - Seed large contiguous DEL + KEEP ranges and a byte-exact ARMED POSITIVE CONTROL
+ *     (bucket=CTRL, 5 rows, inserted after a recorded cutoff). The RocksDB subject uses 6000
+ *     rows per range with padded payloads and explicit `primaryStore.flush()` calls between
+ *     waves, matching QA-779/QA-787's proven >16MiB-crossing magnitude so the LATER audit-purge
+ *     arm is non-vacuous too. The LMDB control uses 600 rows per range because it has no
+ *     `.txnlog` rotation precondition and does not need the RocksDB stress volume.
  *   - WARM every read surface pre-delete (also proves the oracle: a "clean" post-delete
  *     result must follow a "present" pre-delete result on the exact same surface).
- *   - Bulk-delete the entire DEL bucket (6000 ids, one contiguous key range) via the ops
- *     `delete` operation.
+ *   - Bulk-delete the entire DEL bucket (one contiguous key range) via the ops `delete`
+ *     operation.
  *   - Same-process, post-delete, read back DEL samples (must be GONE), CTRL (must survive
  *     byte-correct -- proves the reader actually reads), and KEEP samples (must survive --
  *     proves the delete was scoped) across FIVE ordinary surfaces: REST record GET, REST
@@ -42,7 +42,8 @@
  *   - RESTART DISCRIMINATOR: `killHarper` + `startHarper` on the identical `dataRootDir`,
  *     then re-measure. If pre-restart reads were already clean, post-restart must also be
  *     clean -- that agreement is the confirmation the bound holds.
- *   - Runs on BOTH `rocksdb` (the subject) and `lmdb` (control), same fixture, same workload.
+ *   - Runs on BOTH `rocksdb` (the subject) and `lmdb` (control), with the same fixture,
+ *     operation sequence, samples across each key range, and read surfaces.
  *
  * MQTT/SSE snapshot arm: NOT included. An SSE/MQTT subscribe on a collection is a live
  * event stream, not a point-in-time snapshot read (no guaranteed initial backlog dump), so it
@@ -78,15 +79,13 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun';
 // (scoping sanity: proves the delete/read paths aren't just globally broken). Padded payload
 // matches QA-779/QA-787's proven >16MiB-crossing magnitude so delete_transaction_logs_before
 // in the contrast arm actually rotates/removes whole .txnlog files instead of a no-op.
-const DEL_COUNT = 6000; // ids k0..k5999
-const KEEP_COUNT = 6000; // ids k6000..k11999
+const ROCKSDB_RANGE_COUNT = 6000;
+const LMDB_RANGE_COUNT = 600;
 const BATCH_SIZE = 500;
 const PAYLOAD_PAD = 'y'.repeat(1780);
 function payloadFor(i: number): string {
 	return `seq${i}:${PAYLOAD_PAD}`;
 }
-const DEL_SAMPLE_IDX = [0, 1, 50, 1500, 3000, 5999]; // spans the whole deleted range, incl. boundary
-const KEEP_SAMPLE_IDX = [6000, 6001, 9000, 11999]; // spans the whole surviving range, incl. boundary
 const CTRL_COUNT = 5;
 const CTRL_IDS = Array.from({ length: CTRL_COUNT }, (_, i) => `ctrl${i}`);
 function ctrlPayload(i: number): string {
@@ -189,6 +188,18 @@ function txnLogStats(root: string): { fileCount: number; totalBytes: number } {
 
 function fmtMiB(bytes: number): string {
 	return `${(bytes / 1024 / 1024).toFixed(3)}MiB`;
+}
+
+function isPreCutoffInsert(entry: any, id: string, cutoffTimestamp: number): boolean {
+	const entryTimestamp = Number(entry?.timestamp);
+	return (
+		entry?.operation === 'insert' &&
+		Array.isArray(entry.ids) &&
+		entry.ids.includes(id) &&
+		Number.isFinite(entryTimestamp) &&
+		Number.isFinite(cutoffTimestamp) &&
+		entryTimestamp < cutoffTimestamp
+	);
 }
 
 async function seedRange(ctx: ContextWithHarper, start: number, count: number, bucket: string): Promise<void> {
@@ -412,6 +423,17 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 		`QA-782 stale-read blast radius: ordinary table reads after bulk delete [${engine}]`,
 		{ skip: skipSuite },
 		(ctx: ContextWithHarper) => {
+			const rangeCount = engine === 'rocksdb' ? ROCKSDB_RANGE_COUNT : LMDB_RANGE_COUNT;
+			const seedWaveSize = rangeCount / 3;
+			const delSampleIndexes = [
+				0,
+				1,
+				Math.floor(rangeCount / 120),
+				Math.floor(rangeCount / 4),
+				Math.floor(rangeCount / 2),
+				rangeCount - 1,
+			];
+			const keepSampleIndexes = [rangeCount, rangeCount + 1, rangeCount * 1.5, rangeCount * 2 - 1];
 			const findings: string[] = [];
 			const armConfig = {
 				threads: { count: 1 },
@@ -419,7 +441,15 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				storage: { engine },
 			};
 			let dataRootDir: string;
-			let cutoffTimestamp: number;
+			let cutoffTimestamp = Number.NaN;
+			let seedComplete = false;
+
+			function assertSeedCompleted(): void {
+				ok(
+					seedComplete && Number.isFinite(cutoffTimestamp),
+					'PRECONDITION: the seed phase must complete before running read, delete, purge, or restart probes'
+				);
+			}
 
 			before(async () => {
 				await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: armConfig, env: { HARPER_STORAGE_ENGINE: engine } });
@@ -444,61 +474,68 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				ok(info.engineGuess === engine, `PRECONDITION: expected engine ${engine}, got ${info.engineGuess}`);
 			});
 
-			test('1. seed DEL (6000) + KEEP (6000) ranges, force flushes between waves', { timeout: 300_000 }, async () => {
-				// Flush every 2000 rows so data is genuinely on disk, not just resident in the memtable.
-				await seedRange(ctx, 0, 2000, 'DEL');
-				await flush(ctx, engine);
-				await seedRange(ctx, 2000, 2000, 'DEL');
-				await flush(ctx, engine);
-				await seedRange(ctx, 4000, 2000, 'DEL');
-				await flush(ctx, engine);
-				await seedRange(ctx, 6000, 2000, 'KEEP');
-				await flush(ctx, engine);
-				await seedRange(ctx, 8000, 2000, 'KEEP');
-				await flush(ctx, engine);
-				await seedRange(ctx, 10000, 2000, 'KEEP');
-				await flush(ctx, engine);
+			test(
+				`1. seed DEL (${rangeCount}) + KEEP (${rangeCount}) ranges, force flushes between waves`,
+				{ timeout: 300_000 },
+				async () => {
+					for (const { bucket, start } of [
+						{ bucket: 'DEL', start: 0 },
+						{ bucket: 'KEEP', start: rangeCount },
+					]) {
+						for (let offset = 0; offset < rangeCount; offset += seedWaveSize) {
+							await seedRange(ctx, start + offset, seedWaveSize, bucket);
+							await flush(ctx, engine);
+						}
+					}
 
-				cutoffTimestamp = Date.now();
-				await sleep(250);
+					cutoffTimestamp = Date.now();
+					await sleep(250);
 
-				// Armed positive control, inserted AFTER the cutoff (so it also survives the later
-				// timestamp-based audit purge, giving that arm a non-vacuous control too).
-				const ctrlRecords = CTRL_IDS.map((id, i) => ({
-					id,
-					seq: 900_000 + i,
-					bucket: 'CTRL',
-					payload: ctrlPayload(900_000 + i),
-				}));
-				const ctrlRes = await rawOp(ctx, { operation: 'insert', schema: SCHEMA, table: TABLE, records: ctrlRecords });
-				ok(
-					ctrlRes.status === 200,
-					`control insert should succeed, got ${ctrlRes.status}: ${ctrlRes.text.slice(0, 300)}`
-				);
-				await flush(ctx, engine);
-
-				const diskStats = txnLogStats(dataRootDir);
-				findings.push(
-					`1. seeded DEL=${DEL_COUNT} KEEP=${KEEP_COUNT} CTRL=${CTRL_COUNT}; cutoffTimestamp=${cutoffTimestamp}; ` +
-						`.txnlog on-disk: fileCount=${diskStats.fileCount} totalBytes=${fmtMiB(diskStats.totalBytes)}`
-				);
-				// .txnlog rotated files are a RocksDB-specific on-disk shape (RocksTransactionLogStore);
-				// LMDB keeps its audit log inside the single .mdb env, so this non-vacuous "real bytes on
-				// disk" precondition for the later audit-purge arm only applies to the rocksdb arm.
-				if (engine === 'rocksdb') {
+					// Armed positive control, inserted AFTER the cutoff (so it also survives the later
+					// timestamp-based audit purge, giving that arm a non-vacuous control too).
+					const ctrlRecords = CTRL_IDS.map((id, i) => ({
+						id,
+						seq: 900_000 + i,
+						bucket: 'CTRL',
+						payload: ctrlPayload(900_000 + i),
+					}));
+					const ctrlRes = await rawOp(ctx, {
+						operation: 'insert',
+						schema: SCHEMA,
+						table: TABLE,
+						records: ctrlRecords,
+					});
 					ok(
-						diskStats.totalBytes > 16 * 1024 * 1024,
-						`PRECONDITION: expected >16MiB of .txnlog data (for the later audit arm), got ${fmtMiB(diskStats.totalBytes)}`
+						ctrlRes.status === 200,
+						`control insert should succeed, got ${ctrlRes.status}: ${ctrlRes.text.slice(0, 300)}`
 					);
+					await flush(ctx, engine);
+
+					const diskStats = txnLogStats(dataRootDir);
+					findings.push(
+						`1. seeded DEL=${rangeCount} KEEP=${rangeCount} CTRL=${CTRL_COUNT}; cutoffTimestamp=${cutoffTimestamp}; ` +
+							`.txnlog on-disk: fileCount=${diskStats.fileCount} totalBytes=${fmtMiB(diskStats.totalBytes)}`
+					);
+					// .txnlog rotated files are a RocksDB-specific on-disk shape (RocksTransactionLogStore);
+					// LMDB keeps its audit log inside the single .mdb env, so this non-vacuous "real bytes on
+					// disk" precondition for the later audit-purge arm only applies to the rocksdb arm.
+					if (engine === 'rocksdb') {
+						ok(
+							diskStats.totalBytes > 16 * 1024 * 1024,
+							`PRECONDITION: expected >16MiB of .txnlog data (for the later audit arm), got ${fmtMiB(diskStats.totalBytes)}`
+						);
+					}
+					seedComplete = true;
 				}
-			});
+			);
 
 			test(
 				'2. WARM: every surface sees DEL/KEEP/CTRL present+correct BEFORE the delete',
 				{ timeout: 60_000 },
 				async () => {
-					const delSampleIds = DEL_SAMPLE_IDX.map((i) => `k${i}`);
-					const keepSampleIds = KEEP_SAMPLE_IDX.map((i) => `k${i}`);
+					assertSeedCompleted();
+					const delSampleIds = delSampleIndexes.map((i) => `k${i}`);
+					const keepSampleIds = keepSampleIndexes.map((i) => `k${i}`);
 
 					// All five surfaces, for both sample sets.
 					await assertPresentEverywhere(
@@ -529,46 +566,45 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						findings
 					);
 
-					// REST query + search_by_value + SQL, bucket-wide (non-vacuous: full DEL_COUNT hits).
+					// REST query + search_by_value + SQL, bucket-wide (non-vacuous: the full range is returned).
 					const restHits = await restQueryBucket(ctx, 'DEL');
 					const sbvHits = await searchByBucket(ctx, 'DEL');
 					const sqlHits = await sqlByBucket(ctx, 'DEL');
 					findings.push(
-						`2. PRE-DELETE bucket=DEL hit counts: REST-QUERY=${restHits.length} SEARCH-BY-VALUE=${sbvHits.length} SQL=${sqlHits.length} (expect ${DEL_COUNT} each)`
+						`2. PRE-DELETE bucket=DEL hit counts: REST-QUERY=${restHits.length} SEARCH-BY-VALUE=${sbvHits.length} SQL=${sqlHits.length} (expect ${rangeCount} each)`
 					);
 					strictEqual(
 						restHits.length,
-						DEL_COUNT,
-						`PRECONDITION: REST bucket=DEL pre-delete must see all ${DEL_COUNT} rows`
+						rangeCount,
+						`PRECONDITION: REST bucket=DEL pre-delete must see all ${rangeCount} rows`
 					);
 					strictEqual(
 						sbvHits.length,
-						DEL_COUNT,
-						`PRECONDITION: search_by_value(DEL) pre-delete must see all ${DEL_COUNT} rows`
+						rangeCount,
+						`PRECONDITION: search_by_value(DEL) pre-delete must see all ${rangeCount} rows`
 					);
 					strictEqual(
 						sqlHits.length,
-						DEL_COUNT,
-						`PRECONDITION: SQL bucket=DEL pre-delete must see all ${DEL_COUNT} rows`
+						rangeCount,
+						`PRECONDITION: SQL bucket=DEL pre-delete must see all ${rangeCount} rows`
 					);
 
 					const fs = await fullScan(ctx, []);
-					findings.push(
-						`2. PRE-DELETE FullScan totalCount=${fs.totalCount} (expect ${DEL_COUNT + KEEP_COUNT + CTRL_COUNT})`
-					);
+					findings.push(`2. PRE-DELETE FullScan totalCount=${fs.totalCount} (expect ${rangeCount * 2 + CTRL_COUNT})`);
 					strictEqual(
 						fs.totalCount,
-						DEL_COUNT + KEEP_COUNT + CTRL_COUNT,
+						rangeCount * 2 + CTRL_COUNT,
 						'PRECONDITION: pre-delete total row count must match seeded volume'
 					);
 				}
 			);
 
 			test(
-				'3. BULK DELETE: remove the entire DEL bucket (6000-id contiguous key range)',
+				`3. BULK DELETE: remove the entire DEL bucket (${rangeCount}-id contiguous key range)`,
 				{ timeout: 120_000 },
 				async () => {
-					const allDelIds = Array.from({ length: DEL_COUNT }, (_, i) => `k${i}`);
+					assertSeedCompleted();
+					const allDelIds = Array.from({ length: rangeCount }, (_, i) => `k${i}`);
 					let totalDeleted = 0;
 					for (let s = 0; s < allDelIds.length; s += 1000) {
 						const chunk = allDelIds.slice(s, s + 1000);
@@ -577,11 +613,11 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						const n = Array.isArray(r.body?.deleted_hashes) ? r.body.deleted_hashes.length : 0;
 						totalDeleted += n;
 					}
-					findings.push(`3. bulk-deleted ${totalDeleted}/${DEL_COUNT} ids from bucket=DEL`);
+					findings.push(`3. bulk-deleted ${totalDeleted}/${rangeCount} ids from bucket=DEL`);
 					strictEqual(
 						totalDeleted,
-						DEL_COUNT,
-						`NON-VACUOUS PRECONDITION: delete op must report exactly ${DEL_COUNT} deleted hashes`
+						rangeCount,
+						`NON-VACUOUS PRECONDITION: delete op must report exactly ${rangeCount} deleted hashes`
 					);
 				}
 			);
@@ -590,8 +626,26 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				'4. KEY TEST (same process): DEL absent, CTRL + KEEP intact, on ALL FIVE ordinary read surfaces',
 				{ timeout: 60_000 },
 				async () => {
-					const delSampleIds = DEL_SAMPLE_IDX.map((i) => `k${i}`);
-					const keepSampleIds = KEEP_SAMPLE_IDX.map((i) => `k${i}`);
+					assertSeedCompleted();
+					const delSampleIds = delSampleIndexes.map((i) => `k${i}`);
+					const keepSampleIds = keepSampleIndexes.map((i) => `k${i}`);
+
+					const detectorControl = await assertAbsentEverywhere(
+						ctx,
+						'4. DETECTOR POSITIVE CONTROL (known-present CTRL)',
+						[CTRL_IDS[0]],
+						'CTRL',
+						findings
+					);
+					strictEqual(
+						detectorControl.detail.length,
+						5,
+						`NON-VACUOUS POSITIVE CONTROL: expected one result from each of 5 absence probes, got ${detectorControl.detail.join(', ')}`
+					);
+					ok(
+						detectorControl.anyPhantom && detectorControl.detail.every((result) => result.includes('PHANTOM')),
+						`NON-VACUOUS POSITIVE CONTROL: every absence probe must flag known-present ${CTRL_IDS[0]}, got ${detectorControl.detail.join(', ')}`
+					);
 
 					const { anyPhantom, detail } = await assertAbsentEverywhere(
 						ctx,
@@ -624,7 +678,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					);
 
 					const fs = await fullScan(ctx, []);
-					findings.push(`4. POST-DELETE FullScan totalCount=${fs.totalCount} (expect ${KEEP_COUNT + CTRL_COUNT})`);
+					findings.push(`4. POST-DELETE FullScan totalCount=${fs.totalCount} (expect ${rangeCount + CTRL_COUNT})`);
 
 					findings.push(
 						`4. VERDICT (same-process, ordinary reads): ${anyPhantom ? `STALENESS REACHES ORDINARY READS -- ${detail.join(', ')}` : 'CLEAN -- no phantom on any of the 5 surfaces'}`
@@ -632,7 +686,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 					strictEqual(
 						fs.totalCount,
-						KEEP_COUNT + CTRL_COUNT,
+						rangeCount + CTRL_COUNT,
 						'POST-DELETE total row count must reflect the deletion exactly'
 					);
 					ok(
@@ -646,7 +700,8 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				'5. CONTRAST ARM (known-reproducing): audit purge in the SAME process -- does the F-225 phantom appear here too?',
 				{ timeout: 120_000 },
 				async () => {
-					const sampleId = `k${DEL_SAMPLE_IDX[0]}`; // k0 -- inserted well before cutoffTimestamp
+					assertSeedCompleted();
+					const sampleId = `k${delSampleIndexes[0]}`; // k0 -- inserted well before cutoffTimestamp
 
 					// WARM the transaction-log cache for this key BEFORE the purge, mirroring the WARM
 					// step used for the other four surfaces (test 2). QA-781 root-caused F-225 to a
@@ -667,9 +722,12 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						`WARM read_audit_log(${sampleId}) expected 200, got ${preWarm.status}: ${preWarm.text.slice(0, 300)}`
 					);
 					const preWarmEntries = Array.isArray(preWarm.body?.[sampleId]) ? preWarm.body[sampleId] : [];
+					const preCutoffInsertEntries = preWarmEntries.filter((entry: any) =>
+						isPreCutoffInsert(entry, sampleId, cutoffTimestamp)
+					);
 					ok(
-						preWarmEntries.some((e: any) => Number(e.timestamp) < cutoffTimestamp),
-						`NON-VACUOUS PRECONDITION: WARM read_audit_log(${sampleId}) must see the pre-cutoff insert entry before the purge, got ${JSON.stringify(preWarmEntries)}`
+						preCutoffInsertEntries.length > 0,
+						`NON-VACUOUS PRECONDITION: WARM read_audit_log(${sampleId}) must see its pre-cutoff insert entry before the purge (cutoff=${cutoffTimestamp}), got ${JSON.stringify(preWarmEntries)}`
 					);
 
 					// A TABLE-scoped purge is REFUSED on RocksDB as of 4bd781787: all tables in a
@@ -749,7 +807,9 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					// NOT purge-eligible and legitimately survives -- only a still-present pre-cutoff
 					// entry is evidence of F-225 staleness. Counting any entry as "phantom" would flag
 					// this arm as reproducing F-225 on every run, purge bug or not.
-					const stalePreCutoffEntries = entries.filter((e: any) => Number(e.timestamp) < cutoffTimestamp);
+					const stalePreCutoffEntries = entries.filter((entry: any) =>
+						isPreCutoffInsert(entry, sampleId, cutoffTimestamp)
+					);
 					const phantomAudit = stalePreCutoffEntries.length > 0;
 
 					findings.push(
@@ -771,13 +831,14 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				'6. RESTART DISCRIMINATOR: kill + restart on identical dataRootDir, re-measure',
 				{ timeout: 120_000 },
 				async () => {
+					assertSeedCompleted();
 					await killHarper(ctx as any);
 					await startHarper(ctx, { config: armConfig, env: { HARPER_STORAGE_ENGINE: engine } });
 					await pollReadiness(ctx);
 					findings.push(`6. restarted Harper on same dataRootDir; new pid=${ctx.harper.process.pid}`);
 
-					const delSampleIds = DEL_SAMPLE_IDX.map((i) => `k${i}`);
-					const keepSampleIds = KEEP_SAMPLE_IDX.map((i) => `k${i}`);
+					const delSampleIds = delSampleIndexes.map((i) => `k${i}`);
+					const keepSampleIds = keepSampleIndexes.map((i) => `k${i}`);
 
 					const { anyPhantom, detail } = await assertAbsentEverywhere(
 						ctx,
