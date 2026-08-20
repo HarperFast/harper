@@ -265,7 +265,6 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(txn.transaction, null);
 		assert.strictEqual(isWriteSupervised(txn), false);
 	});
-
 	it('aborts every owned handle when a supervised multi-database transaction fails', async function () {
 		const { txn: head, context } = await blindWriteTransaction('root-abort');
 		const other = await Chained.getResource({ id: null }, context, {});
@@ -281,6 +280,55 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.deepStrictEqual(child.writes, []);
 		assert.strictEqual(head.next, null);
 		assert.strictEqual(isWriteSupervised(head), false);
+	});
+
+	it('reaps a chain whose write landed on a link, not on the root', async function () {
+		const context = {};
+		const head = new DatabaseTransaction();
+		opened.push(head);
+		context.transaction = head;
+		head.setContext(context);
+		// A read claims the head for the first database without arming its idle limit, and an unarmed
+		// limit decays to NaN, which is never <= 0 — the chained shape would go unreaped forever.
+		await Blind.get('chain-overtime-seed', context);
+		head.timeout = undefined; // the read's own arming is not what the chained write can rely on
+
+		setTxnExpiration(20);
+		try {
+			const other = await Chained.getResource({ id: null }, context, {});
+			other._writeInvalidate('chain-overtime');
+			const child = head.next;
+			opened.push(child);
+			assert.ok(child?.transaction, 'expected a chained link to have taken the write');
+			assert.strictEqual(isWriteSupervised(head), true);
+
+			const deadline = Date.now() + 5000;
+			while (head.open !== TRANSACTION_STATE.CLOSED && Date.now() < deadline) await delay(20);
+		} finally {
+			setTxnExpiration(30000);
+		}
+		assert.strictEqual(head.open, TRANSACTION_STATE.CLOSED, 'the logical transaction must be reaped');
+		assert.strictEqual(isWriteSupervised(head), false);
+	});
+
+	it('keeps the root supervised while any link in the chain still claims it', async function () {
+		const context = {};
+		const head = new DatabaseTransaction();
+		opened.push(head);
+		context.transaction = head;
+		head.setContext(context);
+		const resource = await Blind.getResource({ id: null }, context, {});
+		resource._writeInvalidate('two-claims'); // the head claims
+
+		const other = await Chained.getResource({ id: null }, context, {});
+		other._writeInvalidate('two-claims-child'); // and so does the child
+		const child = head.next;
+		opened.push(child);
+		assert.strictEqual(head.writeSupervised, true);
+		assert.strictEqual(child.writeSupervised, true);
+
+		await child.commit({ doneWriting: true }); // one claim released
+		assert.strictEqual(isWriteSupervised(head), true, 'the head still holds writes of its own');
 	});
 
 	it('leaves crash-recovery replay unsupervised, so a timestamp group cannot be split', async function () {
