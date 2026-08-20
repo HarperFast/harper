@@ -122,15 +122,44 @@ describe('storage exhaustion during boot (#847)', function () {
 			return path.join(testRoot, hdbTerms.BACKUP_DIR_NAME, '.harper-config-state.json');
 		}
 
-		it('does not touch the state file until the caller commits it', function () {
+		function stagedPath() {
+			return path.join(testRoot, hdbTerms.BACKUP_DIR_NAME, '.harper-config-state.pending.json');
+		}
+
+		it('stages beside the confirmed state and only promotes it once the config file is written', function () {
 			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
-			const { config, saveState } = prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);
+			const { config, saveState, confirmConfigWritten } = prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);
 
 			assert.strictEqual(config.http.port, 8123, 'env layer applied in memory');
-			assert.strictEqual(fs.existsSync(statePath()), false, 'state must wait for the config file write');
+			assert.strictEqual(fs.existsSync(statePath()), false);
+			assert.strictEqual(fs.existsSync(stagedPath()), false);
 
-			saveState();
+			assert.strictEqual(saveState(), true);
+			assert.strictEqual(fs.existsSync(stagedPath()), true, 'staged copy written');
+			assert.strictEqual(fs.existsSync(statePath()), false, 'confirmed record waits for the config file');
+
+			assert.strictEqual(confirmConfigWritten(), true);
 			assert.strictEqual(fs.existsSync(statePath()), true);
+			assert.strictEqual(fs.existsSync(stagedPath()), false, 'promotion is a rename, not a copy');
+		});
+
+		it('leaves the confirmed state untouched when the config write never lands', function () {
+			// The record of the operator's pre-env values lives only here. A staged copy that was
+			// never promoted must not cost them that.
+			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
+			const first = prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);
+			first.saveState();
+			first.confirmConfigWritten();
+			const confirmed = fs.readFileSync(statePath(), 'utf8');
+			assert.deepStrictEqual(JSON.parse(confirmed).originalValues, { 'http.port': 9926 });
+
+			process.env.HARPER_SET_CONFIG = '{"http":{"port":8124}}';
+			const second = prepareRuntimeEnvConfig({ http: { port: 8123 } }, testRoot);
+			assert.strictEqual(second.saveState(), true);
+			discardConfigState(testRoot);
+
+			assert.strictEqual(fs.existsSync(stagedPath()), false);
+			assert.strictEqual(fs.readFileSync(statePath(), 'utf8'), confirmed, 'confirmed record survives verbatim');
 		});
 
 		it('reports whether the snapshot write actually rewrote the file', function () {
@@ -145,32 +174,32 @@ describe('storage exhaustion during boot (#847)', function () {
 			assert.strictEqual(second.saveState(), false, 'a boot that re-derives the same state writes nothing');
 		});
 
-		it('discards a snapshot whose config-file write never completed', function () {
-			// The crash window: the snapshot rename landed, the process died before the config
-			// rename. The mark is the only thing that distinguishes this from a manual user edit.
+		it('clears a staged copy left by an interrupted commit, keeping the confirmed originals', function () {
+			// The crash window: staged, config file possibly written, process died before the rename.
+			// This boot cannot tell that from a manual user edit, so it must not guess - and must not
+			// lose the confirmed originals while deciding.
 			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
-			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot).saveState();
-			assert.strictEqual(JSON.parse(fs.readFileSync(statePath(), 'utf8')).pendingConfigWrite, true);
+			const first = prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot);
+			first.saveState();
+			first.confirmConfigWritten();
 
-			// Next boot loads it: a pending snapshot must not be trusted as a description of the file.
-			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot).confirmConfigWritten();
-			const reloaded = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
-			assert.strictEqual(reloaded.pendingConfigWrite, undefined);
-			assert.deepStrictEqual(reloaded.originalValues, { 'http.port': 9926 }, 'originals re-derived from the file');
+			process.env.HARPER_SET_CONFIG = '{"http":{"port":8124}}';
+			prepareRuntimeEnvConfig({ http: { port: 8123 } }, testRoot).saveState();
+			assert.strictEqual(fs.existsSync(stagedPath()), true, 'a commit is in flight');
+
+			// Next boot
+			prepareRuntimeEnvConfig({ http: { port: 8123 } }, testRoot);
+			assert.strictEqual(fs.existsSync(stagedPath()), false, 'the interrupted commit is cleared');
+			assert.deepStrictEqual(
+				JSON.parse(fs.readFileSync(statePath(), 'utf8')).originalValues,
+				{ 'http.port': 9926 },
+				"the operator's pre-env value is still recorded"
+			);
 		});
 
-		it('discards a snapshot that would misdescribe the config file', function () {
-			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
-			prepareRuntimeEnvConfig({ http: { port: 9926 } }, testRoot).saveState();
-			assert.strictEqual(fs.existsSync(statePath()), true);
-
+		it('tolerates discarding when nothing is staged', function () {
 			discardConfigState(testRoot);
-			assert.strictEqual(fs.existsSync(statePath()), false);
-		});
-
-		it('tolerates discarding when there is no state file', function () {
-			discardConfigState(testRoot);
-			assert.strictEqual(fs.existsSync(statePath()), false);
+			assert.strictEqual(fs.existsSync(stagedPath()), false);
 		});
 	});
 });

@@ -32,6 +32,11 @@ import { atomicWriteFile } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
+// Written beside the confirmed state while a config-file write is in flight, and renamed over it
+// once that file is on disk. A rename needs no free space, so the confirmed record - the only copy
+// of the operator's pre-env values - is never at the mercy of a write that an exhausted volume can
+// refuse (#847).
+const PENDING_STATE_FILE_NAME = '.harper-config-state.pending.json';
 
 /**
  * Get logger instance with tag - lazy loaded to avoid circular dependencies
@@ -77,11 +82,6 @@ type ConfigSource = 'HARPER_DEFAULT_CONFIG' | 'HARPER_CONFIG' | 'HARPER_SET_CONF
  */
 interface ConfigState {
 	version: string;
-	// Set while a snapshot has been committed but the config file it describes has not. A snapshot
-	// left in this state (the process died between the two renames) does not describe the file on
-	// disk, so treating its paths as drift would read the older file value as a manual user edit
-	// and permanently hand them to 'user' (#847).
-	pendingConfigWrite?: boolean;
 	sources: Record<string, ConfigSource>; // Maps config path to the source that set it
 	originalValues: Record<string, any>; // Original values before env var override (for restoration)
 	// Paths the config file declared as empty objects before an env layer first populated
@@ -555,12 +555,6 @@ function loadConfigState(rootPath: string): ConfigState {
 
 	try {
 		const state = fs.readJsonSync(statePath) as ConfigState;
-		if (state.pendingConfigWrite) {
-			getLogger().warn(
-				`Discarding an env config state snapshot whose config-file write never completed (${statePath})`
-			);
-			return freshConfigState();
-		}
 		// Ensure newer fields exist (for backwards compatibility with old state files)
 		if (!state.originalValues) {
 			state.originalValues = {};
@@ -578,6 +572,25 @@ function loadConfigState(rootPath: string): ConfigState {
 		logger.warn(`Failed to load config state file, starting fresh: ${(error as Error).message}`);
 		return freshConfigState();
 	}
+}
+
+/**
+ * Clear a sidecar left behind by an interrupted commit, and report whether one was there. The
+ * config file may or may not have been written when the process stopped, so this boot cannot tell a
+ * manual user edit from the write it was in the middle of - the caller skips drift detection rather
+ * than mistaking one for the other and handing those paths to 'user' for good. The confirmed state,
+ * and with it every recorded original, is untouched.
+ */
+function takeInterruptedCommit(rootPath: string): boolean {
+	const pendingPath = path.join(getBackupDirPath(rootPath), PENDING_STATE_FILE_NAME);
+	if (!fs.existsSync(pendingPath)) return false;
+	try {
+		fs.removeSync(pendingPath);
+	} catch (error) {
+		getLogger().warn(`Could not remove an interrupted env config commit at ${pendingPath}: ${(error as Error).message}`);
+	}
+	getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
+	return true;
 }
 
 function freshConfigState(): ConfigState {
@@ -619,40 +632,34 @@ function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
 	}
 }
 
-/**
- * Put back the config-state file that was on disk before a snapshot write that the config-file
- * write then failed to match. Restoring rather than deleting matters because originalValues
- * accumulates across every prior boot and lives nowhere else: the config file holds the env-derived
- * value, so a deleted state file makes that value the new "original" and the operator's real one is
- * gone for good. Deleting is the last resort for when the restore itself cannot be written.
- */
-export function discardConfigState(rootPath: string, previousContent?: string): void {
-	const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
-	try {
-		if (previousContent === undefined) fs.removeSync(statePath);
-		else atomicWriteFile(statePath, previousContent);
-		return;
-	} catch (error) {
-		getLogger().warn(
-			`Could not restore the previous env config state at ${statePath}, removing it instead: ${(error as Error).message}`
-		);
-	}
-	try {
-		fs.removeSync(statePath);
-	} catch (error) {
-		getLogger().warn(`Could not remove the stale env config state at ${statePath}: ${(error as Error).message}`);
-	}
+function stageConfigState(rootPath: string, state: ConfigState): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	fs.ensureDirSync(backupDir);
+	return atomicWriteFile(path.join(backupDir, PENDING_STATE_FILE_NAME), serializeConfigState(state));
 }
 
 /**
- * The bytes currently on disk for the env-config state, or undefined when there is no state file.
- * A caller that is about to replace it keeps this so a failed pairing can put the old one back.
+ * Promote the staged state over the confirmed one. A rename, so an exhausted volume cannot refuse
+ * it and leave the config file described by nothing.
  */
-export function readConfigStateContent(rootPath: string): string | undefined {
+export function commitStagedConfigState(rootPath: string): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	const pendingPath = path.join(backupDir, PENDING_STATE_FILE_NAME);
+	if (!fs.existsSync(pendingPath)) return false;
+	fs.renameSync(pendingPath, path.join(backupDir, STATE_FILE_NAME));
+	return true;
+}
+
+/**
+ * Drop the staged state for a config-file write that did not happen. The confirmed record - the
+ * only copy of the operator's pre-env values - stays exactly as it was.
+ */
+export function discardConfigState(rootPath: string): void {
+	const pendingPath = path.join(getBackupDirPath(rootPath), PENDING_STATE_FILE_NAME);
 	try {
-		return fs.readFileSync(path.join(getBackupDirPath(rootPath), STATE_FILE_NAME), 'utf8');
-	} catch {
-		return undefined;
+		fs.removeSync(pendingPath);
+	} catch (error) {
+		getLogger().warn(`Could not remove the staged env config state at ${pendingPath}: ${(error as Error).message}`);
 	}
 }
 
@@ -1015,37 +1022,43 @@ export function applyRuntimeEnvConfig(
 	rootPath: string,
 	options: { isInstall?: boolean } = {}
 ): ConfigObject {
-	const { config, confirmConfigWritten } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
-	confirmConfigWritten();
+	const { config, commitState } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
+	commitState();
 	return config;
 }
 
 /**
- * Apply the env layers and hand the snapshot writes back to the caller, so a caller that also
- * persists the merged config file can commit the pair as a unit (#847): saveState() marks the
- * snapshot pending, confirmConfigWritten() clears the mark once the config file is on disk, and a
- * refused or failed config write is rolled back with discardConfigState(). A snapshot left pending
- * by a crash between the two is discarded on load rather than read as a manual user edit.
+ * Apply the env layers and hand the state writes back to the caller, so a caller that also persists
+ * the merged config file can commit the pair as a unit (#847): saveState() stages the new state
+ * beside the confirmed one, confirmConfigWritten() renames it over the confirmed one after the
+ * config file lands, and discardConfigState() drops the staged copy if that write never happens.
  */
 export function prepareRuntimeEnvConfig(
 	fileConfig: ConfigObject,
 	rootPath: string,
 	options: { isInstall?: boolean } = {}
-): { config: ConfigObject; saveState: () => boolean; confirmConfigWritten: () => boolean } {
+): {
+	config: ConfigObject;
+	saveState: () => boolean;
+	confirmConfigWritten: () => boolean;
+	commitState: () => boolean;
+} {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
 	// Load existing state
+	const interruptedCommit = takeInterruptedCommit(rootPath);
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
 	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
-		return { config: fileConfig, saveState: () => false, confirmConfigWritten: () => false };
+		return { config: fileConfig, saveState: () => false, confirmConfigWritten: () => false, commitState: () => false };
 	}
 
-	// Detect drift (user manual edits) - only at runtime, not install
-	if (!options.isInstall) {
+	// Detect drift (user manual edits) - only at runtime, not install, and not on a boot that found
+	// an interrupted commit, where a difference could equally be the write that was in flight
+	if (!options.isInstall && !interruptedCommit) {
 		const driftedPaths = detectConfigDrift(fileConfig, state);
 		for (const path of driftedPaths) {
 			state.sources[path] = 'user';
@@ -1075,12 +1088,8 @@ export function prepareRuntimeEnvConfig(
 
 	return {
 		config: fileConfig,
-		// A boot that re-derives the same state writes nothing at all: without this the pending
-		// marker alone would differ from the file and put a write back on every boot.
-		saveState: () =>
-			configStateMatchesDisk(rootPath, state)
-				? false
-				: saveConfigState(rootPath, { ...state, pendingConfigWrite: true }),
-		confirmConfigWritten: () => saveConfigState(rootPath, state),
+		saveState: () => (configStateMatchesDisk(rootPath, state) ? false : stageConfigState(rootPath, state)),
+		confirmConfigWritten: () => commitStagedConfigState(rootPath),
+		commitState: () => saveConfigState(rootPath, state),
 	};
 }

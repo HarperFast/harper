@@ -20,6 +20,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	let prepareRuntimeEnvConfigStub;
 	let saveEnvConfigStateStub;
 	let confirmEnvConfigStateStub;
+	let commitEnvConfigStateStub;
 	let hasPersistedEnvConfigStateStub;
 	let fsWriteFileSyncStub;
 	let fsRenameSyncStub;
@@ -53,10 +54,12 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		prepareRuntimeEnvConfigStub.reset();
 		saveEnvConfigStateStub = sinon.stub().returns(true);
 		confirmEnvConfigStateStub = sinon.stub().returns(true);
+		commitEnvConfigStateStub = sinon.stub().returns(true);
 		prepareRuntimeEnvConfigStub.returns({
 			config: { http: { port: 9925 } },
 			saveState: saveEnvConfigStateStub,
 			confirmConfigWritten: confirmEnvConfigStateStub,
+			commitState: commitEnvConfigStateStub,
 		});
 		hasPersistedEnvConfigStateStub.reset();
 		hasPersistedEnvConfigStateStub.returns(false); // default: no prior state
