@@ -20,12 +20,9 @@
  *     necessarily served by the one and only worker) rather than relying on HTTP keep-alive
  *     connection-affinity tricks (that per-worker-routing question is QA-787's separate
  *     concern; this suite isolates "which surface", not "which worker").
- *   - Seed large contiguous DEL + KEEP ranges and a byte-exact ARMED POSITIVE CONTROL
- *     (bucket=CTRL, 5 rows, inserted after a recorded cutoff). The RocksDB subject uses 6000
- *     rows per range with padded payloads and explicit `primaryStore.flush()` calls between
- *     waves, matching QA-779/QA-787's proven >16MiB-crossing magnitude so the LATER audit-purge
- *     arm is non-vacuous too. The LMDB control uses 600 rows per range because it has no
- *     `.txnlog` rotation precondition and does not need the RocksDB stress volume.
+ *   - Seed contiguous DEL + KEEP ranges and a byte-exact ARMED POSITIVE CONTROL. The RocksDB
+ *     subject retains the >16MiB `.txnlog` rotation precondition; the LMDB control does not
+ *     need that engine-specific stress volume.
  *   - WARM every read surface pre-delete (also proves the oracle: a "clean" post-delete
  *     result must follow a "present" pre-delete result on the exact same surface).
  *   - Bulk-delete the entire DEL bucket (one contiguous key range) via the ops `delete`
@@ -566,7 +563,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						findings
 					);
 
-					// REST query + search_by_value + SQL, bucket-wide (non-vacuous: the full range is returned).
+					// Bucket-wide counts keep the warm-up non-vacuous.
 					const restHits = await restQueryBucket(ctx, 'DEL');
 					const sbvHits = await searchByBucket(ctx, 'DEL');
 					const sqlHits = await sqlByBucket(ctx, 'DEL');
@@ -630,6 +627,14 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const delSampleIds = delSampleIndexes.map((i) => `k${i}`);
 					const keepSampleIds = keepSampleIndexes.map((i) => `k${i}`);
 
+					const { anyPhantom, detail } = await assertAbsentEverywhere(
+						ctx,
+						'4. POST-DELETE DEL samples',
+						delSampleIds,
+						'DEL',
+						findings
+					);
+
 					const detectorControl = await assertAbsentEverywhere(
 						ctx,
 						'4. DETECTOR POSITIVE CONTROL (known-present CTRL)',
@@ -645,14 +650,6 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					ok(
 						detectorControl.anyPhantom && detectorControl.detail.every((result) => result.includes('PHANTOM')),
 						`NON-VACUOUS POSITIVE CONTROL: every absence probe must flag known-present ${CTRL_IDS[0]}, got ${detectorControl.detail.join(', ')}`
-					);
-
-					const { anyPhantom, detail } = await assertAbsentEverywhere(
-						ctx,
-						'4. POST-DELETE DEL samples',
-						delSampleIds,
-						'DEL',
-						findings
 					);
 
 					// Armed control: must survive byte-correct on every surface, or a "clean" phantom
