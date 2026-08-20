@@ -6,7 +6,12 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-const { DatabaseTransaction, TRANSACTION_STATE, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const {
+	DatabaseTransaction,
+	TRANSACTION_STATE,
+	setTxnExpiration,
+	RELEASED_TRANSACTION,
+} = require('#src/resources/DatabaseTransaction');
 // A coordinatedRetry transaction (the source-apply path) signals an optimistic write conflict by
 // resolving commit() with this sentinel instead of rejecting with ERR_BUSY.
 const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
@@ -326,7 +331,7 @@ describe('abortChainAfterRetries chain cleanup', () => {
 		assert.ok(!trackedTxns.has(head), 'head must be untracked');
 		assert.ok(!trackedTxns.has(next), "later link must be untracked despite the earlier link's cleanup exception");
 		assert.deepStrictEqual(head.writes, [], 'failed blob cleanup must not retain the write graph');
-		assert.equal(context.transaction, null, 'failed blob cleanup must not retain the closed wrapper');
+		assert.equal(context.transaction, RELEASED_TRANSACTION, 'failed blob cleanup must not retain the closed wrapper');
 	});
 
 	it('aborts both head handles when an outstanding iterator forced writes onto a replay transaction', () => {

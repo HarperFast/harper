@@ -14,6 +14,7 @@ const {
 	setTxnExpiration,
 	isWriteSupervised,
 	getTransactionQueueDepths,
+	RELEASED_TRANSACTION,
 } = require('#src/resources/DatabaseTransaction');
 
 // RocksDB's DatabaseTransaction owns the bookkeeping under test; LMDBTransaction keeps its own
@@ -109,7 +110,7 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(txn.readTxnsUsed, 0);
 		assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED);
 		assert.deepStrictEqual(txn.writes, []);
-		assert.strictEqual(context.transaction, null);
+		assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 	});
 
 	it('counts a read through an adopted handle instead of poisoning the count with NaN', async function () {
@@ -450,7 +451,7 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.throws(() => txn.directCommitSync(), /native commitSync failed/);
 		assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED);
 		assert.deepStrictEqual(txn.writes, []);
-		assert.strictEqual(context.transaction, null);
+		assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 	});
 
 	it('completes wrapper cleanup even when the native abort throws', function () {
@@ -464,6 +465,6 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(txn.transaction, null);
 		assert.strictEqual(txn.readTxnsUsed, 0);
 		assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED);
-		assert.strictEqual(context.transaction, null);
+		assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
 	});
 });
