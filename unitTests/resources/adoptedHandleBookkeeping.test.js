@@ -193,6 +193,7 @@ describe('harper#2224 adopted read-handle bookkeeping', function () {
 		assert.strictEqual(handle.calls.commitSync, 1);
 		assert.strictEqual(txn.transaction, null);
 		assert.strictEqual(txn.readTxnsUsed, 0);
+		assert.strictEqual(txn.readTxnRefCount, 0);
 	});
 
 	it('aborts and detaches when a synchronous commit fails, rethrowing the commit error', function () {

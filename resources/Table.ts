@@ -4511,7 +4511,7 @@ export function makeTable(options) {
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
-					updateRecord(
+					return updateRecord(
 						id,
 						existingEntry?.value ?? null,
 						existingEntry,
@@ -4555,8 +4555,9 @@ export function makeTable(options) {
 				tableTxn.addWrite({
 					key: null,
 					store: primaryStore,
+					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
-						updateRecord(
+						return updateRecord(
 							null, // recordId: null — a whole-table signal, not a per-row change
 							undefined, // no record to store: this writes the audit entry only
 							undefined,

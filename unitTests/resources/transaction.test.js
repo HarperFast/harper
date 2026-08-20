@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const harperLogger = require('#src/utility/logging/harper_logger');
@@ -73,6 +74,119 @@ describe('Transactions', () => {
 		let answer = await TxnTest.get(42);
 		assert.equal(answer.name, 'the answer');
 		assert.equal(answer.computed, 'the answer computed');
+	});
+	it('waits for promise-returning commit callbacks on RocksDB', async function () {
+		if (isLMDB) return this.skip();
+		const transaction = new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		let settled = false;
+		let release;
+		const completion = new Promise((resolve) => (release = resolve)).then(() => {
+			settled = true;
+		});
+		transaction.addWrite({
+			key: 'async-commit-callback',
+			store: TxnTest.primaryStore,
+			commit: () => completion,
+		});
+		const committed = transaction.commit({ doneWriting: true });
+		setImmediate(release);
+		await committed;
+		assert.equal(settled, true, 'commit resolved only after the callback completion settled');
+	});
+	it('surfaces a commit-callback rejection without an unhandled rejection', async function () {
+		// each engine has its own no-op rejection handler on the staged completion
+		// (DatabaseTransaction.stageCompletion, LMDBTransaction's doWrite)
+		const transaction = isLMDB ? new LMDBTransaction() : new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			transaction.addWrite({
+				key: 'rejecting-commit-callback',
+				store: TxnTest.primaryStore,
+				commit: () => {
+					// keyed write: LMDB stages it in the conditional batch, so its aggregating Promise.all is
+					// attached only after that batch resolves — a turn or more after this rejection exists
+					if (isLMDB) TxnTest.primaryStore.put('rejecting-commit-callback', { name: 'staged' });
+					return Promise.reject(new Error('audit write failed'));
+				},
+			});
+			// the staging-to-commit gap: a rejection with no consumer is reported at the end of this turn
+			await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+			assert.deepEqual(unhandled, [], 'the staged completion has a rejection handler before commit');
+			await assert.rejects(
+				() => transaction.commit({ doneWriting: true }),
+				/audit write failed/,
+				'the rejection still propagates out of commit'
+			);
+			// the commit-to-aggregation gap, which is the one LMDB's handler covers
+			await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+			assert.deepEqual(unhandled, [], 'the completion stays handled across the commit aggregation gap');
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+	it('drains staged completions when a transaction is aborted', async function () {
+		if (isLMDB) return this.skip(); // LMDB creates its commit completions at commit time, not at write time
+		const transaction = new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		const warnings = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => warnings.push(args);
+		try {
+			transaction.addWrite({
+				key: 'aborted-commit-callback',
+				store: TxnTest.primaryStore,
+				commit: () => Promise.reject(new Error('audit write failed after abort')),
+			});
+			assert.equal(transaction.completions.length, 1, 'the completion is staged before the abort');
+			assert.ok(transaction.transaction, 'the write-only transaction holds a native handle with no read reference');
+			transaction.abort();
+			assert.equal(transaction.transaction, null, 'the abort releases the native handle rather than leaking it');
+			assert.deepEqual(
+				transaction.completions,
+				[],
+				'an aborted batch cannot carry its completions into a later commit on a reused transaction'
+			);
+			await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+			assert.deepEqual(unhandled, [], 'the abandoned rejection does not escape as an unhandled rejection');
+			assert.ok(
+				warnings.some((args) => /aborted/.test(args[0])),
+				'the abandoned rejection is logged rather than silently dropped'
+			);
+		} finally {
+			harperLogger.warn = originalWarn;
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+	it('waits for promise-returning commit callbacks on a keyed LMDB write', async function () {
+		if (!isLMDB) return this.skip();
+		const transaction = new LMDBTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const order = [];
+		let release;
+		const completion = new Promise((resolve) => (release = resolve)).then(() => order.push('completion'));
+		transaction.addWrite({
+			key: 'lmdb-async-commit-callback',
+			store: TxnTest.primaryStore,
+			// keyed write: the conditional batch stages it, so this covers doWrite's non-null-key path
+			commit: () => {
+				TxnTest.primaryStore.put('lmdb-async-commit-callback', { name: 'staged' });
+				return completion;
+			},
+		});
+		// gated on the batch rather than a timer: a fixed delay a loaded runner outruns would pass silently
+		const committed = transaction.commit({ doneWriting: true }).then(() => order.push('commit'));
+		await TxnTest.primaryStore.flushed;
+		assert.deepEqual(order, [], 'commit has not resolved while the callback completion is pending');
+		release();
+		await committed;
+		assert.deepEqual(order, ['completion', 'commit'], 'commit resolved only after the callback completion');
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
