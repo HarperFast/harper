@@ -138,6 +138,65 @@ export let blobsWereEncoded = false; // keep track of whether blobs were encoded
 // the header is 8 bytes
 const DEFAULT_BLOB_READ_TIMEOUT = 20000;
 /**
+ * Upper bound on the PENDING-marker cleanup barrier in the aborted-save path below. That barrier
+ * defers the save's rejection until the marker write and the lock release have both happened, so
+ * settlement depends on a `writeFile` callback firing. On a wedged volume it may never fire, and an
+ * un-settled `saving` is worse than a late one: on the replication receive path it keeps
+ * `outstandingBlobsToFinish` non-empty, which clamps the resume cursor with no watchdog to release
+ * it. 30s is five orders of magnitude above a working disk's cost for this ~200-byte write, so the
+ * fallback only fires when the write really is not coming back, and stays well inside the 120s
+ * source-idle timeout that would otherwise be the only exit.
+ */
+const PENDING_MARKER_WRITE_TIMEOUT = 30000;
+
+/**
+ * The bounded, once-only cleanup barrier used by the aborted-save PENDING-marker path.
+ *
+ * Contract: `release` runs before `settle`, both run exactly once, and they run no later than
+ * `timeoutMs` even if the caller's completion callback never arrives.
+ *
+ * Ordering matters because a consumer that observes the rejection immediately re-acquires the blob
+ * lock (Pro's in-place repair does exactly this); settling first would make it race a lock this
+ * path still holds. Bounding matters because the completion callback is an `fs` callback that a
+ * wedged volume may never deliver, and an un-settled save clamps the replication resume cursor
+ * with nothing to unclamp it. The once-guard matters because `store.unlock` has no ownership
+ * check, so a timer and a late callback both firing would release a lock another writer has since
+ * taken — invisible to tests, which is why this is guarded rather than merely documented.
+ *
+ * Exported so the ordering, the bound, and the guard can be unit-tested without stalling a real
+ * filesystem write; the production caller is {@link writeBlobWithStream}'s abort branch.
+ */
+export function createPendingMarkerBarrier(options: {
+	release: () => void;
+	settle: () => void;
+	timeoutMs: number;
+	onTimeout?: () => void;
+	onWriteError?: (writeError: unknown) => void;
+}): (writeError?: unknown) => void {
+	let settled = false;
+	const finish = (writeError?: unknown) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		if (writeError) options.onWriteError?.(writeError);
+		options.release();
+		options.settle();
+	};
+	// `finish`'s own guard is what makes double-release impossible; the `settled` check here only
+	// suppresses a spurious `onTimeout` log, and the `clearTimeout` above is tidiness (the timer is
+	// unref'd, so a stray one costs nothing). Verified by mutation: dropping the guard in `finish`
+	// turns the suite red, dropping the `clearTimeout` does not.
+	const timer = setTimeout(() => {
+		if (settled) return;
+		options.onTimeout?.();
+		finish();
+	}, options.timeoutMs);
+	// Never hold the process open for the fallback; it exists to unwedge a caller, not to keep the
+	// event loop alive.
+	timer.unref?.();
+	return finish;
+}
+/**
  * How long a blob read will wait for an in-progress write to finish before giving up. This bounds
  * the read paths — the stream() open-retry loop and the incomplete-content waits — so a blob whose
  * backing file is being written, truncated, or deleted returns a prompt, actionable error instead
@@ -1473,11 +1532,28 @@ function writeBlobWithStream(
 					// (createWriteStream flags 'w'); a terminal give-up on the receive side unlinks it (→ 404). Build
 					// the header directly rather than via createHeader so its compress-type OR can't collide with the
 					// PENDING type bits.
-					const finishPendingMarker = (writeError?: unknown) => {
-						if (writeError) logger.debug?.('Error writing pending marker to blob file', writeError);
-						store.unlock(lockKey);
-						reject(error);
-					};
+					// Bounded so a `writeFile` that never calls back cannot leave `saving` un-settled for the
+					// process lifetime. This branch is exactly the replication receive path where that costs
+					// the most: Pro pushes `saving` into `outstandingBlobsToFinish` and `cursorBlockedByBlob()`
+					// holds the resume cursor at `lastDurableSequenceId` while it is non-empty, with nothing to
+					// unclamp it. If the fallback fires, the lock is released while the marker write is still in
+					// flight, so a late-completing write can stamp PENDING over a newer writer's bytes — that
+					// reads as 503 and the blob-gap machinery re-streams it, whereas a permanently clamped
+					// cursor never heals. Bounding is the better failure.
+					const finishPendingMarker = createPendingMarkerBarrier({
+						timeoutMs: PENDING_MARKER_WRITE_TIMEOUT,
+						release: () => store.unlock(lockKey),
+						// The original error, never a timeout error: the receive loop classifies this exact reason
+						// (isReplicationConnectionClosedError / isUnrecoverableSourceBlobError) to decide whether
+						// the resume cursor holds or advances, so substituting one misroutes that decision.
+						settle: () => reject(error),
+						onWriteError: (writeError) => logger.debug?.('Error writing pending marker to blob file', writeError),
+						onTimeout: () =>
+							logger.warn?.(
+								`Timed out after ${PENDING_MARKER_WRITE_TIMEOUT}ms writing the PENDING marker for blob file ${filePath}; ` +
+									`releasing the write lock and failing the save so the caller is not held on an unsettled write`
+							),
+					});
 					try {
 						const messageBuffer = Buffer.from(String(error));
 						const header = new Uint8Array(HEADER_SIZE);
