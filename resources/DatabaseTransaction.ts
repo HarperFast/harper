@@ -1069,10 +1069,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
-		// A write-only transaction never took a read reference (getReadTxn was never called), so the loop
-		// above releases nothing even though save() created a native handle; release it here instead of
-		// leaking the handle and its snapshot until GC. abortChainAfterRetries() detaches the handle
-		// before calling abort(), so this is a no-op there rather than a double-abort.
+		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
@@ -1097,21 +1094,29 @@ export class DatabaseTransaction implements Transaction {
 	 * later links (this.next) holding native handles / read snapshots until GC. `headTransaction` is the
 	 * head link's native transaction, which commit() detached to a local before this point, so it is
 	 * aborted directly; every other link still owns its native transaction on `txn.transaction`. The
-	 * head can still hold a retained read handle here (commit()'s outstanding-iterators branch), which
-	 * its iterators release.
+	 * head can also own a retained read handle from commit()'s outstanding-iterators branch, separate
+	 * from the replay transaction; retry exhaustion aborts both.
 	 */
 	abortChainAfterRetries(headTransaction: RocksTransaction): void {
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			// Detach first so the abort() below performs only non-native cleanup and can't double-abort.
 			const detached = txn.detachOwnedTransaction();
-			const nativeTxn = txn === this ? headTransaction : detached;
+			const committingTransaction = txn === this ? headTransaction : detached;
 			try {
-				nativeTxn?.abort();
+				committingTransaction?.abort();
 			} catch (abortError) {
 				harperLogger.debug?.('aborting conflicted transaction in chain after exhausting retries', abortError);
+			}
+			// With outstanding iterators, the head owns a retained read handle while the retry commits
+			// through a separate replay handle. Both must be aborted after retry exhaustion.
+			if (txn === this && detached && detached !== committingTransaction) {
+				try {
+					detached.abort();
+				} catch (abortError) {
+					harperLogger.debug?.('aborting retained read transaction after exhausting retries', abortError);
+				}
 			}
 			try {
 				// abort() synchronously walks savedBlobs and can call write.store.getEntry(), which can throw

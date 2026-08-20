@@ -324,4 +324,24 @@ describe('abortChainAfterRetries chain cleanup', () => {
 		assert.ok(!trackedTxns.has(head), 'head must be untracked');
 		assert.ok(!trackedTxns.has(next), "later link must be untracked despite the earlier link's cleanup exception");
 	});
+
+	it('aborts both head handles when an outstanding iterator forced writes onto a replay transaction', () => {
+		const head = new DatabaseTransaction();
+		const retainedRead = fakeNative();
+		const replayWrite = fakeNative();
+		head.transaction = retainedRead;
+		head.readTxnsUsed = 1;
+		head.readTxnRefCount = 1;
+
+		const trackedTxns = setTxnExpiration(30000);
+		trackedTxns.add(head);
+		head.abortChainAfterRetries(replayWrite);
+
+		assert.ok(replayWrite.aborted, 'the replay write transaction must be aborted');
+		assert.ok(retainedRead.aborted, 'the retained read transaction must be aborted');
+		assert.equal(head.transaction, null, 'the retained handle must be detached');
+		assert.equal(head.readTxnsUsed, 0);
+		assert.equal(head.readTxnRefCount, 0);
+		assert.ok(!trackedTxns.has(head), 'the retained read transaction must be untracked');
+	});
 });
