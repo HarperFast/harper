@@ -16,6 +16,8 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
+// Read options for a rotated generation's native transactions; shared because they never vary.
+const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
 // Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
 // two have different units and different consumers: trackedTxns is per-link, bounds a read snapshot, and
 // is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
@@ -396,7 +398,7 @@ export class DatabaseTransaction implements Transaction {
 	// transaction it opens from then on reads WITHOUT a snapshot. Committing mid-scope is how a handler
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
-	declare snapshotFree?: boolean;
+	snapshotFree = false;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -737,7 +739,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!transaction) {
 			transaction = new RocksTransaction(
 				operation.store.store as RocksStore,
-				this.snapshotFree ? { disableSnapshot: true } : undefined
+				this.snapshotFree ? SNAPSHOT_FREE : undefined
 			);
 			if (operation.store.rootStore !== this.db.rootStore) {
 				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
@@ -1140,9 +1142,16 @@ export class DatabaseTransaction implements Transaction {
 					// now run any other transactions
 					options.timestamp = this.timestamp;
 					// as above: the next store must not inherit this store's explicit native transaction
-					const nextResolution = this.next?.commit(
-						options.transaction ? { ...options, transaction: undefined } : options
-					);
+					let nextResolution;
+					try {
+						nextResolution = this.next?.commit(options.transaction ? { ...options, transaction: undefined } : options);
+					} catch (error) {
+						// A synchronous throw reaches neither rejection handler below, and the head has already
+						// committed — surrender ownership here too, or the scope stays resumable on top of a
+						// half-landed multi-store commit.
+						this.endScopeOwnership();
+						throw error;
+					}
 					if ((nextResolution as any)?.then)
 						return (nextResolution as any)?.then(
 							(nextResolution) => {
