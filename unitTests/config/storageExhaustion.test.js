@@ -269,10 +269,18 @@ describe('config persistence from a worker thread (#847)', function () {
 		const configPath = path.join(root, hdbTerms.HARPER_CONFIG_FILE);
 		const { execFileSync } = require('node:child_process');
 		// A real config file, built the way an install builds one, plus the directories it validates
-		execFileSync(process.execPath, [
-			'-e',
-			`require(${JSON.stringify(require.resolve('#src/config/configUtils'))}).createConfigFile({ ROOTPATH: ${JSON.stringify(root)}, LOGGING_LEVEL: 'error' })`,
-		]);
+		const fixtureEnv = { ...process.env };
+		// The fixture must not inherit a config env var from a sibling suite: install would then
+		// write the very state file this test asserts a worker does not create.
+		for (const name of ['HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG', 'HARPER_SET_CONFIG']) delete fixtureEnv[name];
+		execFileSync(
+			process.execPath,
+			[
+				'-e',
+				`require(${JSON.stringify(require.resolve('#src/config/configUtils'))}).createConfigFile({ ROOTPATH: ${JSON.stringify(root)}, LOGGING_LEVEL: 'error' })`,
+			],
+			{ env: fixtureEnv }
+		);
 		for (const dir of ['database', 'log', 'components', hdbTerms.BACKUP_DIR_NAME])
 			fs.ensureDirSync(path.join(root, dir));
 		const before = fs.readFileSync(configPath, 'utf8');
@@ -288,7 +296,7 @@ describe('config persistence from a worker thread (#847)', function () {
 				parentPort.postMessage({ error: error.message });
 			}
 		`,
-			{ eval: true, env: { ...process.env, ROOTPATH: root, HARPER_SET_CONFIG: '{"http":{"port":8123}}' } }
+			{ eval: true, env: { ...fixtureEnv, ROOTPATH: root, HARPER_SET_CONFIG: '{"http":{"port":8123}}' } }
 		);
 
 		worker.on('message', (result) => {
