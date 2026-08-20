@@ -34,7 +34,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install latest rocksdb-js
-        run: npm install --save @harperfast/rocksdb-js@latest
+        run: npm install --save-exact @harperfast/rocksdb-js@latest
 
       - name: Stage changes
         id: stage-changes

@@ -196,6 +196,18 @@ describe('Test configValidator module', () => {
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
+
+		it('enforces the blob-gap reconnect floor', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = { blobGapReconnectMs: 999 };
+			const rejected = configValidator(config);
+			expect(rejected.error.message).to.include(
+				"'replication.blobGapReconnectMs' must be greater than or equal to 1000"
+			);
+
+			config.replication.blobGapReconnectMs = 1000;
+			expect(configValidator(config).error).to.be.undefined;
+		});
 	});
 
 	describe('getDomainSocketPathLengthWarning', () => {

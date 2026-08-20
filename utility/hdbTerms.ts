@@ -650,11 +650,18 @@ export const CONFIG_PARAMS = {
 		'replication_mtls_certificateVerification_ocsp_failureMode',
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
+	REPLICATION_BLOBGAPRECONNECTMS: 'replication_blobGapReconnectMs',
+	REPLICATION_COPYCURSORFLUSHBYTES: 'replication_copyCursorFlushBytes',
+	REPLICATION_COPYCURSORFLUSHINTERVALMS: 'replication_copyCursorFlushIntervalMs',
 	REPLICATION_BLOBSENDDRAINTIMEOUT: 'replication_blobSendDrainTimeout',
 	REPLICATION_FAILOVER: 'replication_failover',
 	REPLICATION_BLOBCONCURRENCY: 'replication_blobConcurrency',
 	REPLICATION_MAXPAYLOAD: 'replication_maxPayload',
 	REPLICATION_RECORDCONCURRENCY: 'replication_recordConcurrency',
+	// Byte ceiling on inbound replication frames accepted but not yet processed. Without it the
+	// receive path's frame queue is unbounded and a receiver slower than its peer grows it at the full
+	// inbound line rate until the worker is OOM-killed (harper#2226, harper-pro#659).
+	REPLICATION_RECEIVEQUEUEHIGHWATERMARK: 'replication_receiveQueueHighWaterMark',
 	REPLICATION_PINGINTERVAL: 'replication_pingInterval',
 	REPLICATION_PINGTIMEOUT: 'replication_pingTimeout',
 	REPLICATION_COPYTIMEOUT: 'replication_copyTimeout',

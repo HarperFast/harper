@@ -12,7 +12,7 @@
  */
 
 import { addExtension, pack, Packr } from 'msgpackr';
-import { readFile, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
+import { readFile, rename, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
 import {
 	close,
 	closeSync,
@@ -27,6 +27,7 @@ import {
 	unlink,
 	readdirSync,
 	existsSync,
+	fstatSync,
 	watch,
 	write,
 	statSync,
@@ -76,6 +77,7 @@ const ERROR_TYPE = 0xff;
 // overwrites this stub; a terminal give-up unlinks the file (→ 404). Distinct from ERROR_TYPE (a permanent
 // corrupt/error stub, replicated as-is). See harper-pro#481.
 const PENDING_TYPE = 0xfe;
+const BLOB_REPAIR_SUFFIX = '.repair';
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
@@ -1370,59 +1372,59 @@ export function shouldDestroyIdleBlobSource(paused: boolean, bytesWritten: numbe
 	return !(paused && bytesWritten > lastProgressBytes);
 }
 
-function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageInfo): Blob {
+function writeBlobWithStream(
+	blob: Blob,
+	stream: Readable,
+	storageInfo: StorageInfo,
+	options?: {
+		expectedSize?: number | (() => number | undefined);
+		repairTargetPath?: string;
+		repairTempLockKey?: string;
+	}
+): Blob {
+	const repairTargetPath = options?.repairTargetPath;
+	const repairing = repairTargetPath !== undefined;
+	const repairTempLockKey = options?.repairTempLockKey;
 	const { filePath, fileId, store, compress, flush } = storageInfo;
 	storageInfo.saving = new Promise((resolve, reject) => {
-		// pipe the stream to the file
 		const lockKey = fileId + ':blob';
-		if (!store.tryLock(lockKey)) {
-			throw new Error(`Unable to get lock for blob file ${fileId}`);
-		}
-		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
+		let lockAcquired = repairing;
+		let writeStream: ReturnType<typeof createWriteStream>;
 		let wroteSize = false;
-		if (blob.size !== undefined) {
-			// if we know the size, we can write the header immediately
-			writeStream.write(createHeader(blob.size)); // write the default header
-			wroteSize = true;
-		}
-		// Source-idle watchdog: destroys the source if no 'data' arrives for the threshold so pipeline
-		// rejects cleanly. Off unless the owning caller armed this source (or the env override is set);
-		// see getBlobStreamIdleTimeoutMs. On expiry while the stream is paused (pipeline backpressure),
-		// re-arm only if the destination is still draining — bytesWritten advancing since the last arm
-		// means a slow-but-live writeStream, not a wedge. A pause with zero downstream progress for the
-		// whole interval is a genuine stall (disk hang / stuck pipeline) the 'data' re-arm can never
-		// clear — the receive socket stays paused on backpressure that never lifts — so destroy it.
 		let idleTimer: NodeJS.Timeout | undefined;
 		let armIdleTimer: (() => void) | undefined;
-		let lastProgressBytes = 0;
-		const idleTimeoutMs = getBlobStreamIdleTimeoutMs(stream);
-		if (idleTimeoutMs > 0) {
-			armIdleTimer = () => {
-				if (idleTimer) clearTimeout(idleTimer);
-				lastProgressBytes = writeStream.bytesWritten;
-				idleTimer = setTimeout(() => {
-					if (!shouldDestroyIdleBlobSource(stream.isPaused(), writeStream.bytesWritten, lastProgressBytes)) {
-						armIdleTimer?.();
-						return;
-					}
-					stream.destroy(new Error(`Blob source stream idle for ${idleTimeoutMs}ms (fileId=${fileId})`));
-				}, idleTimeoutMs).unref();
-			};
-			stream.on('data', armIdleTimer);
-			// Re-arm on 'resume' too: when backpressure clears, the stream flips to flowing before the
-			// next 'data' fires, so an expiry landing in that window would see isPaused()===false and
-			// destroy a stream that just resumed — give it a fresh window instead.
-			stream.on('resume', armIdleTimer);
-			armIdleTimer();
-		}
+		let idleTimeoutMs = 0;
 		let compressedStream: any;
-		if (compress) {
-			if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
-			compressedStream = createDeflate();
-			pipeline(stream, compressedStream, writeStream, finished);
-		} else {
-			if (!wroteSize) writeStream.write(DEFAULT_HEADER); // write the default header to the file
-			pipeline(stream, writeStream, finished);
+		function unlockWriteLocks() {
+			if (repairTempLockKey) store.unlock(repairTempLockKey);
+			store.unlock(lockKey);
+		}
+		function closeWriteStreamFile() {
+			const fd = (writeStream as any)?.fd;
+			if (fd == null) return;
+			closeSync(fd);
+			(writeStream as any).fd = null;
+		}
+		function failTemporaryRepair(error: unknown) {
+			const removeTemporaryFile = () => {
+				unlink(filePath, (unlinkError) => {
+					if (unlinkError && (unlinkError as { code?: string }).code !== 'ENOENT')
+						logger.debug?.('Error deleting temporary blob repair file', unlinkError);
+					unlockWriteLocks();
+					reject(error);
+				});
+			};
+			if (writeStream && !writeStream.closed && (writeStream as any).fd == null) {
+				writeStream.once('close', removeTemporaryFile);
+				writeStream.destroy();
+				return;
+			}
+			try {
+				closeWriteStreamFile();
+			} catch (closeError) {
+				logger.debug?.('Error closing temporary blob repair file', closeError);
+			}
+			removeTemporaryFile();
 		}
 		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
@@ -1432,8 +1434,7 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			headerView.setBigInt64(0, headerValue);
 			return header;
 		}
-		// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
-		function finished(error?: Error) {
+		function finished(error?: unknown) {
 			if (idleTimer) {
 				clearTimeout(idleTimer);
 				idleTimer = undefined;
@@ -1445,6 +1446,10 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			}
 			const fd = (writeStream as any).fd;
 			if (error) {
+				if (repairTargetPath) {
+					failTemporaryRepair(error);
+					return;
+				}
 				if (fd) {
 					close(fd);
 					(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
@@ -1468,7 +1473,7 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 					// (createWriteStream flags 'w'); a terminal give-up on the receive side unlinks it (→ 404). Build
 					// the header directly rather than via createHeader so its compress-type OR can't collide with the
 					// PENDING type bits.
-					const messageBuffer = Buffer.from(error.toString());
+					const messageBuffer = Buffer.from(String(error));
 					const header = new Uint8Array(HEADER_SIZE);
 					new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
 					writeFile(filePath, Buffer.concat([header, messageBuffer]), (writeError: Error) => {
@@ -1480,7 +1485,7 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 					try {
 						if (statSync(filePath).size === 0) {
 							// if there was an error in the stream, nothing may have been written, so we can write the error message instead
-							const errorBuffer = Buffer.from(error.toString());
+							const errorBuffer = Buffer.from(String(error));
 							writeFile(
 								filePath,
 								Buffer.concat([createHeader(BigInt(errorBuffer.length) + 0xff000000000000n), errorBuffer]),
@@ -1498,9 +1503,52 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 				if (!wroteSize) {
 					wroteSize = true;
 					const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
-					(blob as any).size = size;
+					let expectedSize: number | undefined;
+					try {
+						expectedSize = typeof options?.expectedSize === 'function' ? options.expectedSize() : options?.expectedSize;
+					} catch (error) {
+						finished(error);
+						return;
+					}
+					if (repairing && (expectedSize === undefined || size !== expectedSize)) {
+						finished(
+							new Error(
+								expectedSize === undefined
+									? `Blob repair size unavailable for ${fileId}; wrote ${size}`
+									: `Blob repair size mismatch for ${fileId}: expected ${expectedSize}, wrote ${size}`
+							)
+						);
+						return;
+					}
+					if (!repairing) (blob as any).size = size;
 					write(fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
 					return; // not finished yet, wait for this write and then we are finished
+				}
+				if (repairTargetPath) {
+					const replaceTarget = async () => {
+						try {
+							closeWriteStreamFile();
+							await rename(filePath, repairTargetPath);
+							unlockWriteLocks();
+							resolve();
+						} catch (replaceError) {
+							try {
+								await unlinkPromised(filePath);
+							} catch (unlinkError) {
+								if ((unlinkError as { code?: string }).code !== 'ENOENT')
+									logger.debug?.('Error deleting temporary blob repair file', unlinkError);
+							}
+							unlockWriteLocks();
+							reject(replaceError);
+						}
+					};
+					if (flush) {
+						fdatasync(fd, (syncError) => {
+							if (syncError) failTemporaryRepair(syncError);
+							else void replaceTarget();
+						});
+					} else void replaceTarget();
+					return;
 				}
 				store.unlock(lockKey);
 				if (flush) {
@@ -1518,15 +1566,62 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 				}
 			}
 		}
+		try {
+			if (!lockAcquired) {
+				if (!store.tryLock(lockKey)) throw new Error(`Unable to get lock for blob file ${fileId}`);
+				lockAcquired = true;
+			}
+			writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
+			if (blob.size !== undefined && !repairing) {
+				writeStream.write(createHeader(blob.size));
+				wroteSize = true;
+			}
+			let lastProgressBytes = 0;
+			idleTimeoutMs = getBlobStreamIdleTimeoutMs(stream);
+			if (idleTimeoutMs > 0) {
+				armIdleTimer = () => {
+					if (idleTimer) clearTimeout(idleTimer);
+					lastProgressBytes = writeStream.bytesWritten;
+					idleTimer = setTimeout(() => {
+						if (!shouldDestroyIdleBlobSource(stream.isPaused(), writeStream.bytesWritten, lastProgressBytes)) {
+							armIdleTimer?.();
+							return;
+						}
+						stream.destroy(new Error(`Blob source stream idle for ${idleTimeoutMs}ms (fileId=${fileId})`));
+					}, idleTimeoutMs).unref();
+				};
+				stream.on('data', armIdleTimer);
+				stream.on('resume', armIdleTimer);
+				armIdleTimer();
+			}
+			if (compress) {
+				if (!wroteSize) writeStream.write(COMPRESS_HEADER);
+				compressedStream = createDeflate();
+				pipeline(stream, compressedStream, writeStream, finished);
+			} else {
+				if (!wroteSize) writeStream.write(DEFAULT_HEADER);
+				pipeline(stream, writeStream, finished);
+			}
+		} catch (error) {
+			if (idleTimer) clearTimeout(idleTimer);
+			if (repairTargetPath) {
+				failTemporaryRepair(error);
+				return;
+			}
+			writeStream?.destroy();
+			if (lockAcquired) store.unlock(lockKey);
+			reject(error);
+		}
 	});
 	// Mark durable on settle: fileId is assigned as soon as a save STARTS, so pre-commit gating
 	// needs this to tell a durable blob from one still streaming (review on the local-write gate)
-	storageInfo.saving.then(
-		() => {
-			storageInfo.saved = true;
-		},
-		() => {}
-	);
+	if (!repairing)
+		storageInfo.saving.then(
+			() => {
+				storageInfo.saved = true;
+			},
+			() => {}
+		);
 	return blob;
 }
 
@@ -1541,6 +1636,144 @@ export function isSaving(blob: Blob): Promise<void> {
 export function getFilePathForBlob(blob: FileBackedBlob): string {
 	const storageInfo = storageInfoForBlob.get(blob);
 	return storageInfo?.fileId && getFilePath(storageInfo);
+}
+/**
+ * Repairs a damaged file-backed blob under its existing fileId. The damage check and atomic file
+ * replacement share the blob lock, so a failed repair never modifies the referenced file. Callers
+ * must establish an exact record identity tie (same version and source node) and positional blob
+ * pairing before calling. The received byte count must match the reported source size and, when
+ * present, the stored descriptor. On a synchronous `undefined`, no repair started and `source`
+ * remains owned by the caller.
+ */
+export function repairBlobFile(
+	blob: Blob,
+	source: Readable,
+	sourceSize: number | (() => number | undefined) | undefined = (blob as { size?: number }).size
+): Promise<void> | undefined {
+	let blobLockKey: string | undefined;
+	let repairTempLockKey: string | undefined;
+	let blobLockHeld = false;
+	let repairTempLockHeld = false;
+	let locksOwnedByWriter = false;
+	let store: any;
+	try {
+		if (!(blob instanceof FileBackedBlob)) return undefined;
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (!storageInfo?.fileId || !storageInfo.store) return undefined;
+		if (storageInfo.start !== undefined || storageInfo.end !== undefined) return undefined;
+		store = storageInfo.store;
+		storageInfo.filePath ??= getFilePath(storageInfo);
+		const filePath = storageInfo.filePath;
+		const descriptorSize = (blob as { size?: number }).size;
+		if (sourceSize === undefined) return undefined;
+		if (typeof sourceSize === 'number' && descriptorSize !== undefined && sourceSize !== descriptorSize)
+			return undefined;
+		let verifiedSize = typeof sourceSize === 'number' ? sourceSize : undefined;
+		blobLockKey = storageInfo.fileId + ':blob';
+		if (!store.tryLock(blobLockKey)) return undefined;
+		blobLockHeld = true;
+		if (blobFileMissingOrIncomplete(blob) !== true) {
+			store.unlock(blobLockKey);
+			blobLockHeld = false;
+			return undefined;
+		}
+		const fileDir = dirname(filePath);
+		if (!existsSync(fileDir)) ensureDirSync(fileDir);
+		const repairFilePath = filePath + BLOB_REPAIR_SUFFIX;
+		repairTempLockKey = repairFilePath + ':blob';
+		if (!store.tryLock(repairTempLockKey)) {
+			store.unlock(blobLockKey);
+			blobLockHeld = false;
+			return undefined;
+		}
+		repairTempLockHeld = true;
+		const expectedSize =
+			typeof sourceSize === 'function'
+				? () => {
+						const reportedSize = sourceSize();
+						if (reportedSize === undefined)
+							throw new Error(`Blob repair source size unavailable for ${storageInfo.fileId}`);
+						if (descriptorSize !== undefined && reportedSize !== descriptorSize)
+							throw new Error(
+								`Blob repair source size mismatch for ${storageInfo.fileId}: ` +
+									`expected ${descriptorSize}, received ${reportedSize}`
+							);
+						return (verifiedSize = reportedSize);
+					}
+				: sourceSize;
+		const repairStorageInfo = {
+			...storageInfo,
+			filePath: repairFilePath,
+			saving: undefined,
+			flush: true,
+			compress: false,
+		};
+		writeBlobWithStream(blob as any, source, repairStorageInfo, {
+			expectedSize,
+			repairTargetPath: filePath,
+			repairTempLockKey,
+		});
+		locksOwnedByWriter = true;
+		const settled = (repairStorageInfo.saving as Promise<void>).then(() => {
+			if (descriptorSize === undefined) (blob as { size?: number }).size = verifiedSize;
+			logger.warn?.(`Repaired blob file in place: ${storageInfo.fileId} (${filePath})`);
+		});
+		settled.catch(() => {});
+		return settled;
+	} catch (error) {
+		if (!locksOwnedByWriter) {
+			if (repairTempLockHeld) store?.unlock(repairTempLockKey);
+			if (blobLockHeld) store?.unlock(blobLockKey);
+		}
+		logger.warn?.('Unable to start in-place blob repair', error);
+		return undefined;
+	}
+}
+
+export function blobHeaderIndicatesIncomplete(header: Buffer, fileSize: number): boolean {
+	if (fileSize < HEADER_SIZE || header.length < HEADER_SIZE) return true;
+	const type = header.readUInt16BE(0);
+	if (type !== UNCOMPRESSED_TYPE && type !== DEFLATE_TYPE) return true;
+	const storedSize = header.readUIntBE(2, 6);
+	if (storedSize === UNKNOWN_SIZE) return true;
+	return type === UNCOMPRESSED_TYPE && fileSize !== HEADER_SIZE + storedSize;
+}
+
+/**
+ * Whether a file-backed blob's backing file is missing or incomplete on disk — the gate for the
+ * copy-delivery repair. This blocking probe is the locked final recheck after the caller's async
+ * exact-duplicate prefilter. Compressed bodies require the asynchronous repair sweep for
+ * verification. Returns undefined for blobs the question does not apply to.
+ */
+export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
+	try {
+		if (!(blob instanceof FileBackedBlob)) return undefined;
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (!storageInfo?.fileId) return undefined;
+		const filePath = getFilePath(storageInfo);
+		let fd: number;
+		try {
+			fd = openSync(filePath, 'r');
+		} catch (error) {
+			if ((error as { code?: string })?.code === 'ENOENT') return true;
+			logger.debug?.('Unable to open blob file for in-place repair inspection', error);
+			return undefined;
+		}
+		try {
+			const size = fstatSync(fd).size;
+			if (size < HEADER_SIZE) return true;
+			const header = Buffer.allocUnsafe(HEADER_SIZE);
+			if (readSync(fd, header, 0, HEADER_SIZE, 0) < HEADER_SIZE) return true;
+			if (blobHeaderIndicatesIncomplete(header, size)) return true;
+			const descriptorSize = (blob as { size?: number }).size;
+			return descriptorSize !== undefined && header.readUIntBE(2, 6) !== descriptorSize;
+		} finally {
+			closeSync(fd);
+		}
+	} catch (error) {
+		logger.debug?.('Unable to inspect blob file for in-place repair', error);
+		return undefined;
+	}
 }
 export const databasePaths = new Map<RootDatabase, string[]>();
 export function getRootBlobPathsForDB(store: RootDatabase) {
@@ -2358,6 +2591,13 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		for (const path of pathsToCheck) {
 			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
 		}
+		const repairTempLocks = new Map<string, string>();
+		for (const path of pathsToCheck) {
+			if (!path.endsWith(BLOB_REPAIR_SUFFIX)) continue;
+			const lockKey = path + ':blob';
+			if ((store as any).tryLock(lockKey)) repairTempLocks.set(path, lockKey);
+			else pathsToCheck.delete(path);
+		}
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;
 		for (const path of pathsToCheck) {
@@ -2365,6 +2605,9 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				await unlinkPromised(path);
 			} catch (error) {
 				logger.debug?.('Error deleting file', error);
+			} finally {
+				const lockKey = repairTempLocks.get(path);
+				if (lockKey) (store as any).unlock(lockKey);
 			}
 		}
 		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
@@ -2404,15 +2647,13 @@ async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
 	} finally {
 		closeSync(fd);
 	}
+	if (blobHeaderIndicatesIncomplete(header, fileSize)) return false;
 	const headerValue = new DataView(header.buffer, header.byteOffset, 8).getBigUint64(0);
-	if (Number(headerValue >> 48n) === ERROR_TYPE) return false;
-	if (Number(headerValue >> 48n) === PENDING_TYPE) return false; // half-replicated, bytes still expected (harper-pro#481)
 	// The header size field holds the *uncompressed* content length for both compressed and
 	// uncompressed blobs (writeBlobWithStream stores deflate.bytesWritten, which is the input/
 	// uncompressed byte count). For an uncompressed blob that equals the on-disk body length;
 	// for a compressed blob it does not, so the body length can't be compared to it directly.
 	const size = Number(headerValue & 0xffffffffffffn);
-	if (size === UNKNOWN_SIZE) return false; // in-flight placeholder, header not yet finalized
 	if (header[1] === DEFLATE_TYPE) {
 		// A compressed blob's header size is the uncompressed length, so it can't be compared to the
 		// compressed on-disk body. Verify by streaming the body through inflate and counting the
@@ -2437,7 +2678,7 @@ async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
 			source.pipe(inflate);
 		});
 	}
-	return size === fileSize - HEADER_SIZE;
+	return true;
 }
 
 /**

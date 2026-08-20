@@ -253,11 +253,12 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => void;
+	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
 	validate?: (txnTime: number) => void;
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
+	skipReplicationConfirmation?: boolean;
 	nodeName?: string;
 	nodeId?: number;
 	promise?: Promise<any>;
@@ -307,8 +308,8 @@ export function priorStagedWrite(operation: TransactionWrite): TransactionWrite 
  * `[-0]` and `[null]` vs `[NaN]` are DIFFERENT stored keys that value-ish encodings (JSON, string
  * coercion) collapse, cross-contaminating unrelated records. So every key is mapped through the
  * same encoder the stores use; latin1 keeps the bytes injective in a string. Symbol keys (internal
- * metadata writes) can't be key-encoded and keep native identity; so does null (topic-less
- * publishes), which never stages a record.
+ * metadata writes) can't be key-encoded and keep native identity. Null is reserved for topic-less
+ * publishes and audit-only markers.
  */
 export function writeKeyId(key: Id): unknown {
 	if (typeof key === 'symbol' || key == null) return key;
@@ -574,6 +575,51 @@ export class DatabaseTransaction implements Transaction {
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
 	}
 
+	/**
+	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
+	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
+	 * replicable writes staged earlier: writes that explicitly opt out (audit-only markers, which stage
+	 * no record), and writes with no stored entry at all — a delete leaves a readable tombstone on any
+	 * audited or delete-tracking table, so only a delete on a table with neither is entry-less. Such a
+	 * `put(A); delete(B)` confirms on A's entry, whose version is this transaction's (every write in a
+	 * transaction is stamped with one version).
+	 */
+	lastConfirmableEntry(): Partial<Entry> | undefined {
+		for (let i = this.writes.length - 1; i >= 0; i--) {
+			const write = this.writes[i];
+			if (!write || write.skipReplicationConfirmation) continue;
+			const entry = write.store.getEntry(write.key);
+			if (entry) return entry;
+		}
+	}
+
+	/**
+	 * Stage an async operation that commit() must wait for. Staging can happen a turn or more before
+	 * commit() attaches its Promise.all, so the no-op rejection handler is attached here: without it a
+	 * rejection in that window is an unhandled rejection (fatal under --unhandled-rejections=strict).
+	 * The rejection still surfaces through commit()'s Promise.all.
+	 */
+	stageCompletion(completion: Promise<void>) {
+		completion.then(undefined, () => {});
+		this.completions.push(completion);
+	}
+
+	/**
+	 * Discard staged completions that no commit() will ever aggregate (abort path). Their rejections
+	 * are already no-op-handled by stageCompletion(), so without this they fail silently; log instead.
+	 * Clearing them also keeps a reused transaction's next commit() from rejecting with the previous
+	 * batch's error.
+	 */
+	drainCompletions(): void {
+		if (this.completions.length === 0) return;
+		const completions = this.completions;
+		this.completions = [];
+		for (const completion of completions)
+			completion.then(undefined, (error) =>
+				harperLogger.warn?.('A staged transaction completion failed after the transaction was aborted', error)
+			);
+	}
+
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
@@ -640,11 +686,12 @@ export class DatabaseTransaction implements Transaction {
 				return;
 			}
 			let result: Promise<void> = operation.before?.() as Promise<void>;
-			if (result?.then) this.completions.push(result);
+			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;
-			if (result?.then) this.completions.push(result);
+			if (result?.then) this.stageCompletion(result);
 		}
-		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
+		const completion = operation.commit(txnTime, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		if (typeof completion?.then === 'function') this.stageCompletion(completion);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
 		// they survive the abort-after-failed-commit of the retry paths). isRetry stagings
@@ -857,14 +904,10 @@ export class DatabaseTransaction implements Transaction {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0].store.rootStore.databaseName;
-								const lastWrite = this.writes[this.writes.length - 1];
-								if (confirmReplication && lastWrite) {
+								const lastEntry = this.lastConfirmableEntry();
+								if (confirmReplication && lastEntry) {
 									completions.push(
-										confirmReplication(
-											databaseName,
-											(lastWrite.store.getEntry(lastWrite.key) as any).version,
-											this.replicatedConfirmation
-										)
+										confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
 									);
 								}
 							}
@@ -1005,7 +1048,13 @@ export class DatabaseTransaction implements Transaction {
 	}
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		// A write-only transaction never took a read reference (getReadTxn was never called), so the loop
+		// above releases nothing even though save() created a native handle; release it here instead of
+		// leaking the handle and its snapshot until GC. abortChainAfterRetries() detaches the handle
+		// before calling abort(), so this is a no-op there rather than a double-abort.
+		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
+		this.drainCompletions();
 		for (const write of this.writes) {
 			if (write?.savedBlobs)
 				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));

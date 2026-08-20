@@ -170,6 +170,26 @@ async function harper() {
 			return require('./run').main();
 		default:
 			const cliApiOp = cliOperations.buildRequest();
+			// `harper deploy setup=true` provisions an encrypted deploy credential (client-side sealed
+			// token) rather than deploying — an interactive flow, not a single operation call.
+			if (cliApiOp.operation === 'deploy_component' && cliApiOp.setup) {
+				const { deploySetup } = require('./deploySetup');
+				await deploySetup(cliApiOp);
+				return;
+			}
+			// A `token=` that didn't reach the setup flow is a mistyped invocation, not a deploy field —
+			// `harper deploy setup token=…` (no `=true`) parses `setup` as a bare word that buildRequest
+			// drops, so it would otherwise proceed as an ordinary deploy carrying a live credential it has
+			// no use for. Refuse rather than deploy: the token is redacted and never sent either way, but
+			// silently ignoring it would leave the user believing a credential was provisioned.
+			if (cliApiOp.operation === 'deploy_component' && cliApiOp.token !== undefined) {
+				// statusCode so formatCliError prints this as a one-line hint rather than a stack trace —
+				// it's a typo, not a crash.
+				throw Object.assign(
+					new Error('`token=` is only valid with `setup=true` — did you mean `harper deploy setup=true`?'),
+					{ statusCode: 400 }
+				);
+			}
 			logger.trace('calling cli operations with:', cliOperations.redactCredentials(cliApiOp));
 			await cliOperations.cliOperations(cliApiOp);
 			return;
