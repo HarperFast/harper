@@ -8,7 +8,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
-const { RocksDatabase, Transaction: RocksTransaction, registryStatus } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 describe('Txn Expiration', () => {
 	let SlowResource,
@@ -419,11 +419,7 @@ describe('Write txn timeout', () => {
 
 	// A failed commitSync leaves the handle open, and directCommitSync has already untracked it, so
 	// nothing else can reach it.
-	// The object-double tests above prove the JS release logic; this one proves the thing #2107 is
-	// actually about — that the native handle and its RocksDB read snapshot are really gone. Built
-	// in the write-first shape save() produces: a transaction constructed directly, read through to
-	// establish the snapshot, and never given a read refcount.
-	it('returns the native snapshot to baseline when a write-first transaction aborts', function () {
+	it('returns the native snapshot to baseline after a blind-write abort', function () {
 		if (isLMDB) this.skip();
 		const store = IndexedResource.primaryStore;
 		const rootStore = store.rootStore;
@@ -434,12 +430,15 @@ describe('Write txn timeout', () => {
 		const baselineSnapshots = snapshots();
 
 		const txn = new DatabaseTransaction();
-		txn.open = TRANSACTION_STATE.OPEN;
-		txn.transaction = new RocksTransaction(store.store);
-		store.getEntry(601, { transaction: txn.transaction }); // establishes the read snapshot
-		assert.strictEqual(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
+		txn.db = store;
+		txn.addWrite({
+			key: 601,
+			store,
+			commit() {},
+		});
+		assert.strictEqual(txn.readTxnsUsed, 1, 'save() must attach the native handle with its base read reference');
 		assert.strictEqual(liveTxns(), baselineTxns + 1, 'test setup: the native handle must be registered');
-		assert.ok(snapshots() > baselineSnapshots, 'test setup: the read must have pinned a snapshot');
+		assert.ok(snapshots() > baselineSnapshots, 'test setup: the blind-write lookup must pin a snapshot');
 
 		txn.abort();
 
