@@ -587,7 +587,9 @@ function takeInterruptedCommit(rootPath: string): boolean {
 	try {
 		fs.removeSync(pendingPath);
 	} catch (error) {
-		getLogger().warn(`Could not remove an interrupted env config commit at ${pendingPath}: ${(error as Error).message}`);
+		getLogger().warn(
+			`Could not remove an interrupted env config commit at ${pendingPath}: ${(error as Error).message}`
+		);
 	}
 	getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
 	return true;
