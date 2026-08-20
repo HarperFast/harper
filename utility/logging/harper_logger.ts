@@ -790,18 +790,20 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		openLogFile(undefined);
 		if (logFD) {
 			let startTime = performance.now();
+			const payload = logBuffer ? logBuffer.join('') : entry;
 			try {
-				fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry);
+				fs.appendFileSync(logFD, payload);
 			} catch (error) {
-				// A log write must never take the process down: on a full or quota-exhausted volume this
-				// throws, and it runs both inline and from a timer, so every log statement would become a
-				// crash point exactly when the operator needs the diagnostic (#847). Degrade to the
-				// console, the same fallback used when the file cannot be opened at all.
+				// A log write must never take the process down: on an exhausted volume this throws from
+				// both inline and timer call sites, making every log statement a crash point (#847).
+				// The fallback goes through nativeStdWrite rather than console because
+				// installStdioGuard routes console output back into this same file logger when
+				// logging.file and logging.console are both on, which would recurse until the stack blew.
 				if (!loggedAppendError) {
 					loggedAppendError = true;
-					console.error(error);
+					nativeStdWrite.call(process.stderr, `Harper cannot write to its log file: ${error}\n`);
 				}
-				console.log(logBuffer ? logBuffer.join('') : entry);
+				nativeStdWrite.call(process.stdout, payload);
 				logBuffer = null;
 				return;
 			}
@@ -833,6 +835,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 						fs.mkdirpSync(pathModule.dirname(path));
 						return openLogFile(true);
 					} catch (mkdirError) {
+						// creating the log directory can fail for the same reason the log write can
 						error = mkdirError;
 					}
 				}

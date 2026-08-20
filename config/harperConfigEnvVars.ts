@@ -599,6 +599,20 @@ function saveConfigState(rootPath: string, state: ConfigState): void {
 }
 
 /**
+ * Remove the config-state file, for a snapshot that no longer describes the config file on disk.
+ * Starting from no state re-derives the layers and only loses the recorded originals; keeping a
+ * mismatched snapshot instead hands the path to 'user' and silently disables the env layer.
+ */
+export function discardConfigState(rootPath: string): void {
+	const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
+	try {
+		fs.removeSync(statePath);
+	} catch (error) {
+		getLogger().warn(`Could not remove the stale env config state at ${statePath}: ${(error as Error).message}`);
+	}
+}
+
+/**
  * Detect config drift (user manual edits)
  * Compares current file values with expected values from state
  */
@@ -963,11 +977,9 @@ export function applyRuntimeEnvConfig(
 }
 
 /**
- * Apply the env layers and hand the state save back to the caller instead of performing it, so a
- * caller that also persists the merged config file can order the pair. The snapshot describes what
- * the config file holds, so it must not be written when that file's write did not happen: the next
- * boot would compare the file's older value against the newer snapshot, classify it as a manual
- * user edit, and stop applying the env layer altogether (#847).
+ * Apply the env layers and hand the state save back to the caller rather than performing it, so a
+ * caller that also persists the merged config file can commit the pair in order and roll the
+ * snapshot back if the file write is refused (#847).
  */
 export function prepareRuntimeEnvConfig(
 	fileConfig: ConfigObject,

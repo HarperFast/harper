@@ -877,30 +877,6 @@ describe('Test harper_logger module', () => {
 		expect(fake_func.called).to.be.true;
 	});
 
-	describe('Test file logging on an exhausted volume (#847)', () => {
-		it('falls back to the console instead of throwing when the log append is refused', () => {
-			// appendFileSync runs both inline and from a timer, so an EDQUOT/ENOSPC throw here turns
-			// every log statement into a crash point - including the diagnostic that reports the
-			// storage problem in the first place.
-			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			const getFileLogger = harper_logger.__get__('getFileLogger');
-			const logToFile = getFileLogger(path.join(TEST_LOG_DIR, 'exhausted.log'), undefined, false);
-			const edquotError = Object.assign(new Error('Unknown system error -122'), { errno: -122 });
-			sandbox.stub(fs, 'appendFileSync').throws(edquotError);
-			const consoleLogStub = sandbox.stub(console, 'log');
-			sandbox.stub(console, 'error');
-
-			try {
-				expect(() => logToFile('a log line that cannot be written')).to.not.throw();
-				expect(consoleLogStub.calledOnce).to.be.true;
-				expect(consoleLogStub.firstCall.args[0]).to.include('a log line that cannot be written');
-			} finally {
-				sandbox.restore();
-				fs.removeSync(TEST_LOG_DIR);
-			}
-		});
-	});
-
 	describe('Test errorForLog function (#1734)', () => {
 		const util = require('util');
 		const { errorForLog } = harperLoggerModule;

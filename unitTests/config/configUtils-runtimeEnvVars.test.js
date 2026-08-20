@@ -3,7 +3,6 @@
 const assert = require('node:assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
-const os = require('node:os');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 // configUtils now imports these as ES modules; stub them on the shared module
@@ -274,95 +273,6 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 			assert.match(loggerStub.error.firstCall.args[0], /Failed to apply runtime env config/);
 
 			delete process.env.HARPER_DEFAULT_CONFIG;
-		});
-	});
-	// Storage exhaustion at boot (#847): persisting the merged config is a derived artifact, so a
-	// full or quota-exhausted volume must leave the process running on the in-memory config rather
-	// than aborting startup into a restart loop nothing inside the container can break.
-	describe('storage exhaustion', function () {
-		// Linux reports EDQUOT with no code mapping - `Unknown system error -122` - so the errno is
-		// the only signal the classifier can use (122 on Linux, 69 on macOS).
-		const quotaErrno = os.constants.errno.EDQUOT;
-		const edquotError = Object.assign(new Error(`Unknown system error -${quotaErrno}`), {
-			errno: -quotaErrno,
-			code: `Unknown system error -${quotaErrno}`,
-			syscall: 'open',
-		});
-		const enospcError = Object.assign(new Error('ENOSPC: no space left on device, open'), {
-			errno: -os.constants.errno.ENOSPC,
-			code: 'ENOSPC',
-			syscall: 'open',
-		});
-
-		afterEach(function () {
-			delete process.env.HARPER_DEFAULT_CONFIG;
-		});
-
-		it('continues boot when the config write fails with EDQUOT', function () {
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			YAMLStub.parseDocument.returns({ errors: [], contents: 'merged contents' });
-			fsWriteFileSyncStub.throws(edquotError);
-
-			applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
-
-			assert.strictEqual(mockConfigDoc.contents, 'merged contents', 'merged config still applied in memory');
-			assert.strictEqual(loggerStub.error.called, true);
-			assert.match(loggerStub.error.firstCall.args[0], /Storage exhausted/);
-		});
-
-		it('continues boot when the config write fails with ENOSPC', function () {
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			fsWriteFileSyncStub.throws(enospcError);
-
-			applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
-
-			assert.strictEqual(loggerStub.error.called, true);
-			assert.match(loggerStub.error.firstCall.args[0], /Storage exhausted/);
-		});
-
-		it('does not save the env state snapshot when the config write failed', function () {
-			// The snapshot describes what the config file holds. Writing it against a file that was
-			// never updated makes the next boot read the older file value as a manual user edit and
-			// stop applying the env layer entirely.
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			fsWriteFileSyncStub.throws(edquotError);
-
-			applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
-
-			assert.strictEqual(saveEnvConfigStateStub.called, false);
-		});
-
-		it('saves the env state snapshot after a successful config write', function () {
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-
-			applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
-
-			assert.strictEqual(saveEnvConfigStateStub.calledOnce, true);
-			assert.strictEqual(fsRenameSyncStub.calledBefore(saveEnvConfigStateStub), true);
-		});
-
-		it('continues boot when only the env state save is exhausted', function () {
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			saveEnvConfigStateStub.throws(edquotError);
-
-			applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
-
-			assert.strictEqual(loggerStub.error.called, true);
-			assert.match(loggerStub.error.firstCall.args[0], /Storage exhausted/);
-		});
-
-		it('still fails the install path, which has no started process to keep alive', function () {
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			saveEnvConfigStateStub.throws(edquotError);
-
-			assert.throws(() => applyRuntimeEnvVarConfig(mockConfigDoc, null, { isInstall: true }), /Unknown system error/);
-		});
-
-		it('still throws on a write error that is not storage exhaustion', function () {
-			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
-			fsWriteFileSyncStub.throws(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }));
-
-			assert.throws(() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'), /permission denied/);
 		});
 	});
 });

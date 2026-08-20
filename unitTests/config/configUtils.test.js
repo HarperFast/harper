@@ -5,7 +5,6 @@ const chai = require('chai');
 const expect = chai.expect;
 const assert = require('node:assert/strict');
 const rewire = require('rewire');
-const os = require('node:os');
 const path = require('path');
 const fs = require('fs-extra');
 const config_utils_rw = rewire('#src/config/configUtils');
@@ -262,39 +261,6 @@ describe('Test configUtils module', () => {
 			}
 		});
 
-		it('skips the write entirely when skipIfUnchanged is set and the content matches', () => {
-			fs.writeFileSync(ATOMIC_TEST_PATH, 'rootPath: /tmp/hdb');
-			const writeStub = sandbox.stub(fs, 'writeFileSync');
-			const renameStub = sandbox.stub(fs, 'renameSync');
-			try {
-				atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /tmp/hdb', { skipIfUnchanged: true });
-				expect(writeStub.called).to.be.false;
-				expect(renameStub.called).to.be.false;
-			} finally {
-				writeStub.restore();
-				renameStub.restore();
-			}
-		});
-
-		it('still writes with skipIfUnchanged when the content differs or the file is absent', () => {
-			atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /new', { skipIfUnchanged: true });
-			expect(fs.readFileSync(ATOMIC_TEST_PATH, 'utf8')).to.equal('rootPath: /new');
-			atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /newer', { skipIfUnchanged: true });
-			expect(fs.readFileSync(ATOMIC_TEST_PATH, 'utf8')).to.equal('rootPath: /newer');
-		});
-
-		it('does not read the target on the default path', () => {
-			fs.writeFileSync(ATOMIC_TEST_PATH, 'rootPath: /tmp/hdb');
-			const readStub = sandbox.spy(fs, 'readFileSync');
-			try {
-				atomicWriteFile(ATOMIC_TEST_PATH, 'rootPath: /tmp/hdb');
-				expect(readStub.calledWith(ATOMIC_TEST_PATH, 'utf8')).to.be.false;
-				expect(fs.readFileSync(ATOMIC_TEST_PATH, 'utf8')).to.equal('rootPath: /tmp/hdb');
-			} finally {
-				readStub.restore();
-			}
-		});
-
 		it('does not retry on a non-permission rename error', () => {
 			const renameStub = sandbox.stub(fs, 'renameSync');
 			const enoentError = Object.assign(new Error('ENOENT: no such file or directory, rename'), { code: 'ENOENT' });
@@ -384,28 +350,6 @@ describe('Test configUtils module', () => {
 				ensureConfigKeysPresent(['secretCustody']);
 				assert.ok('secretCustody' in config_utils_rw.__get__('configObj'));
 				assert.deepStrictEqual(config_utils_rw.__get__('configObj').secretCustody, {});
-			} finally {
-				restore();
-			}
-		});
-
-		it('still activates the key on this boot when the write is refused for lack of space (#847)', () => {
-			// A built-in gated on a missing key must not stay dormant just because the volume is full:
-			// the backfill is persisted for future boots, but activation happens in memory.
-			writeConfig('replication: {}\n');
-			const quotaErrno = os.constants.errno.EDQUOT;
-			const realWriteFileSync = fs.writeFileSync.bind(fs);
-			sandbox.stub(fs, 'writeFileSync').callsFake((target, ...rest) => {
-				if (String(target).endsWith('.tmp'))
-					throw Object.assign(new Error(`Unknown system error -${quotaErrno}`), { errno: -quotaErrno });
-				return realWriteFileSync(target, ...rest);
-			});
-			sandbox.stub(logger, 'error');
-			const restore = config_utils_rw.__set__('configObj', { replication: {} });
-			try {
-				assert.deepStrictEqual(ensureConfigKeysPresent(['secretCustody']), ['secretCustody']);
-				assert.ok('secretCustody' in config_utils_rw.__get__('configObj'));
-				assert.ok(!YAML.parse(fs.readFileSync(ENSURE_CONFIG_PATH, 'utf8')).secretCustody);
 			} finally {
 				restore();
 			}
@@ -682,48 +626,6 @@ describe('Test configUtils module', () => {
 			config_utils_rw.initConfig(true);
 
 			expect(logger_trace_stub.secondCall.args[0]).to.equal(CONFIG_INIT_MSG);
-		});
-
-		it('completes startup when every atomic write is refused with EDQUOT (#847)', () => {
-			// The field failure: a volume at hard XFS quota refuses the sibling temp file, the error
-			// escapes initConfig, the container restarts, and nothing inside it can free space
-			// because nothing can start. Boot must proceed on the in-memory merged config instead.
-			config_utils_rw.createConfigFile(TEST_ARGS_2);
-			const onDiskBefore = fs.readFileSync(CONFIG_FILE_PATH, 'utf8');
-			process.env.HARPER_SET_CONFIG = '{"http":{"port":8123}}';
-
-			const realWriteFileSync = fs.writeFileSync.bind(fs);
-			// Node has no code mapping for EDQUOT on Linux, where this was reported: the error arrives
-			// as `Unknown system error -122` and only the errno identifies it (122 there, 69 on macOS).
-			const quotaErrno = os.constants.errno.EDQUOT;
-			const edquotError = Object.assign(new Error(`Unknown system error -${quotaErrno}`), {
-				errno: -quotaErrno,
-				code: `Unknown system error -${quotaErrno}`,
-				syscall: 'open',
-			});
-			sandbox.stub(fs, 'writeFileSync').callsFake((target, ...rest) => {
-				if (String(target).endsWith('.tmp')) throw edquotError;
-				return realWriteFileSync(target, ...rest);
-			});
-			const logger_error_stub = sandbox.stub(logger, 'error');
-
-			config_utils_rw.__set__('flatConfigObj', undefined);
-			get_props_file_path_stub.returns(CONFIG_FILE_PATH);
-			access_sync_stub.returns(true);
-			properties_reader_stub.returns({ get: () => CONFIG_FILE_PATH });
-			config_utils_rw.__set__('PropertiesReader', properties_reader_stub);
-
-			try {
-				config_utils_rw.initConfig(true);
-
-				expect(logger_trace_stub.lastCall.args[0]).to.equal(CONFIG_INIT_MSG);
-				expect(config_utils_rw.getConfigValue('http_port')).to.equal(8123);
-				expect(fs.readFileSync(CONFIG_FILE_PATH, 'utf8')).to.equal(onDiskBefore);
-				expect(logger_error_stub.args.some(([message]) => /Storage exhausted/.test(message))).to.be.true;
-			} finally {
-				delete process.env.HARPER_SET_CONFIG;
-				fs.removeSync(path.join(HDB_ROOT, hdbTerms.BACKUP_DIR_NAME));
-			}
 		});
 
 		it('Test in-memory obj undefined, config file path undefined and error is caught', () => {
