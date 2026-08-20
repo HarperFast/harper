@@ -16,6 +16,11 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
+// Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
+// two have different units and different consumers: trackedTxns is per-link, bounds a read snapshot, and
+// is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
+// chain root — so a chain child can never become its own timeout root (issue #2231).
+const supervisedWriteRoots = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
@@ -341,6 +346,10 @@ export class DatabaseTransaction implements Transaction {
 	timestamp = 0;
 	retries = 0;
 	declare next: DatabaseTransaction;
+	// The head of this multi-store chain, set when the link is created; absent on the head itself.
+	declare root?: DatabaseTransaction;
+	// Whether this link is why its chain root is write-supervised (see endWriteSupervision).
+	declare writeSupervised?: boolean;
 	declare stale: boolean;
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
@@ -422,9 +431,36 @@ export class DatabaseTransaction implements Transaction {
 		this.baseReadRefConsumed = false;
 	}
 
+	/**
+	 * Drop this link's supervision claim, and the root's with it once no link in the chain still holds
+	 * one. Membership is keyed on the root but claimed per link, so removing it on any link's detach
+	 * would unsupervise a logical transaction still holding writes elsewhere in the chain.
+	 */
+	/**
+	 * End supervision for the whole chain. abort() cleans only its own link, so a claim held by a chain
+	 * link would otherwise keep the root enrolled for the life of the process — the monitor revisiting a
+	 * CLOSED transaction every tick, and the registry pinning the chain beyond GC's reach.
+	 */
+	private endChainWriteSupervision(): void {
+		const root = this.root ?? this;
+		for (let link: DatabaseTransaction = root; link; link = link.next) link.writeSupervised = false;
+		supervisedWriteRoots.delete(root);
+	}
+
+	private endWriteSupervision(): void {
+		if (!this.writeSupervised) return;
+		this.writeSupervised = false;
+		const root = this.root ?? this;
+		for (let link: DatabaseTransaction = root; link; link = link.next) {
+			if (link.writeSupervised) return;
+		}
+		supervisedWriteRoots.delete(root);
+	}
+
 	private detachOwnedTransaction(): RocksTransactionWithRetry | null {
 		const transaction = this.transaction;
 		trackedTxns.delete(this);
+		this.endWriteSupervision();
 		this.transaction = null;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
@@ -683,6 +719,21 @@ export class DatabaseTransaction implements Transaction {
 			}
 			if (this.open === TRANSACTION_STATE.OPEN) {
 				this.attachOwnedTransaction(transaction);
+				// A write that never read is otherwise invisible to the long-transaction monitor: its
+				// handle was adopted here rather than in getReadTxn(), which is the only other place that
+				// registers. Supervise the chain root, so the monitor reaps the logical transaction as one
+				// unit. Replay is excluded deliberately — it is synchronous, already bounded by its own
+				// stall and wall-clock guards, and commits at timestamp boundaries that a monitor-driven
+				// commit could split.
+				if (!this.isReplay) {
+					this.writeSupervised = true;
+					const root = this.root ?? this;
+					// The monitor decays the root's idle limit, but only getReadTxn() and addWrite() arm it,
+					// and neither has necessarily run on a root whose chain link took the write — an unarmed
+					// limit decays to NaN, which is never <= 0, so the transaction would never be reaped.
+					if (root.timeout === undefined) root.timeout = Math.max(txnExpiration, root.timeoutBudget ?? 0);
+					supervisedWriteRoots.add(root);
+				}
 			} else {
 				// if it is closed, we have to immediately commit, using our immediate transaction
 				immediateCommit = true;
@@ -1084,6 +1135,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// reset the transaction
 		this.clearWrites();
+		this.endChainWriteSupervision();
 		// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 		// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
 		// starting a fresh one) so the rest of the logical operation fails atomically via the
@@ -1255,7 +1307,14 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
-		for (const txn of trackedTxns) {
+		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
+		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
+		for (const txn of trackedTxns) monitorTransaction(txn);
+		for (const txn of supervisedWriteRoots) if (!trackedTxns.has(txn)) monitorTransaction(txn);
+	}, txnExpiration).unref();
+
+	function monitorTransaction(txn: DatabaseTransaction) {
+		{
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
 			// thereby keep chainStillActive believing it was written recently too.
@@ -1322,7 +1381,7 @@ function startMonitoringTxns() {
 				txn.timeout -= txnExpiration;
 			}
 		}
-	}, txnExpiration).unref();
+	}
 }
 
 startMonitoringTxns();
@@ -1334,6 +1393,11 @@ startMonitoringTxns();
  */
 export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
+}
+
+/** Test seam: whether the monitor supervises this logical transaction for its writes. */
+export function isWriteSupervised(txn: DatabaseTransaction): boolean {
+	return supervisedWriteRoots.has(txn);
 }
 
 export function setTxnExpiration(ms) {
