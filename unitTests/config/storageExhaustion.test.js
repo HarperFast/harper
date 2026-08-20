@@ -219,6 +219,39 @@ describe('storage exhaustion during boot (#847)', function () {
 			assert.strictEqual(fs.existsSync(deadOwner), false, "a dead owner's commit is cleared");
 		});
 
+		// The consequence of the flag, not just the flag: a config file that differs from the confirmed
+		// snapshot is normally a manual user edit and permanently owned by 'user'. While some process
+		// is mid-commit it is equally likely to be that write, so it must not be claimed.
+		function ownerOfHttpPortAfterReboot(root, { stagedByLiveOwner }) {
+			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":8123}}';
+			// The file must not specify the path: HARPER_DEFAULT_CONFIG fills gaps, it does not
+			// override what the operator wrote, so it only takes ownership of a value it supplied.
+			const first = prepareRuntimeEnvConfig({ http: {} }, root);
+			first.saveState();
+			first.confirmConfigWritten();
+
+			if (stagedByLiveOwner) {
+				fs.writeFileSync(
+					path.join(root, hdbTerms.BACKUP_DIR_NAME, `.harper-config-state.pending.${process.ppid}.json`),
+					'{}'
+				);
+			}
+
+			// next boot, against a config file whose value no longer matches the snapshot
+			const second = prepareRuntimeEnvConfig({ http: { port: 7777 } }, root);
+			second.saveState();
+			second.confirmConfigWritten();
+			return JSON.parse(fs.readFileSync(statePath(), 'utf8')).sources['http.port'];
+		}
+
+		it('claims a differing config file as a user edit when nothing is mid-commit', function () {
+			assert.strictEqual(ownerOfHttpPortAfterReboot(testRoot, { stagedByLiveOwner: false }), 'user');
+		});
+
+		it('does not claim one while another process is mid-commit', function () {
+			assert.notStrictEqual(ownerOfHttpPortAfterReboot(testRoot, { stagedByLiveOwner: true }), 'user');
+		});
+
 		it('tolerates discarding when nothing is staged', function () {
 			discardConfigState(testRoot);
 			assert.strictEqual(fs.existsSync(stagedPath()), false);
