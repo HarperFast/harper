@@ -93,7 +93,9 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 			// stripped, since this runs ahead of the validation that now rejects it, and a stale
 			// caller's token must not reach the log); value/values carry .env secrets from
 			// set_env_value; value/envelope carry secrets from set_secret — none may reach the
-			// operations log.
+			// operations log. `token` is stripped defensively: no operation declares one at the top
+			// level today, but validation allows unknown keys, so a caller that sends one anyway (a
+			// mistyped `harper deploy setup token=…`) would otherwise log a live credential.
 			/* eslint-disable no-unused-vars, @typescript-eslint/no-unused-vars */
 			const {
 				hdb_user,
@@ -105,6 +107,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 				value,
 				values,
 				envelope,
+				token,
 				...cleanBody
 			} = req.body;
 			/* eslint-enable no-unused-vars, @typescript-eslint/no-unused-vars */

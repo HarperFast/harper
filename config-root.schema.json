@@ -292,6 +292,26 @@
 					}
 				},
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
+				"blobGapReconnectMs": {
+					"type": "number",
+					"minimum": 1000,
+					"description": "Time (ms) a replication blob gap may remain connected before reconnecting. Default: blobTimeout"
+				},
+				"copyCursorFlushBytes": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Copied bytes between resume-cursor flushes. Default: 67108864"
+				},
+				"copyCursorFlushIntervalMs": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Maximum time (ms) between copy resume-cursor flushes. Default: 5000"
+				},
+				"copyTimeout": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Time (ms) without copy progress before the connection is terminated. Default: 300000"
+				},
 				"pingInterval": {
 					"type": "number",
 					"minimum": 1,

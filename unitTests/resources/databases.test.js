@@ -17,6 +17,7 @@ const {
 	renewSchemaQuiesce,
 	finishSchemaQuiesce,
 	completeSchemaQuiesce,
+	failSchemaQuiesceFinalization,
 	expireSchemaQuiesceLeaseForTests,
 	recoverCommittedSchemaQuiesceForTests,
 } = require('#src/resources/databases');
@@ -423,6 +424,39 @@ describe('cross-worker schema quiescence', () => {
 		assert.strictEqual(Table.isDropQuiescing(), false);
 	});
 
+	it('can retry terminal reconciliation after a transient restore failure', async () => {
+		const DB = 'quiesce-reconcile-retry-test';
+		const Table = table({ table: 'Records', database: DB, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const message = {
+			operation: 'drop_table',
+			schema: DB,
+			table: 'Records',
+			quiesceId: 'q-reconcile-retry',
+			originLocal: true,
+		};
+		assert.strictEqual((await quiesceSchemaTarget(message)).quiesced, true);
+		assert.strictEqual((await commitSchemaQuiesce(message)).committed, true);
+		const terminal = { ...message, phase: 'reconcile-quiesce' };
+		const originalAbort = Table.abortDropQuiesce;
+		Table.abortDropQuiesce = () => {
+			throw new Error('injected restore failure');
+		};
+		try {
+			assert.strictEqual(finishSchemaQuiesce(terminal), true);
+			await assert.rejects(completeSchemaQuiesce(terminal), /injected restore failure/);
+			failSchemaQuiesceFinalization(terminal);
+			assert.strictEqual(
+				finishSchemaQuiesce(terminal),
+				true,
+				'a transient failure must leave reconciliation retryable'
+			);
+		} finally {
+			Table.abortDropQuiesce = originalAbort;
+		}
+		await completeSchemaQuiesce(terminal);
+		assert.strictEqual(Table.isDropQuiescing(), false);
+	});
+
 	it('does not recover a committed peer quiescence while its origin is connected', async () => {
 		const message = {
 			originator: require('node:worker_threads').threadId,
@@ -554,7 +588,7 @@ describe('cross-worker schema quiescence', () => {
 			);
 		} finally {
 			signalling.finalizeSchemaChange = originalFinalize;
-			if (terminalMessage) completeSchemaQuiesce({ ...terminalMessage, phase: 'reconcile-quiesce' });
+			if (terminalMessage) await completeSchemaQuiesce({ ...terminalMessage, phase: 'reconcile-quiesce' });
 		}
 	});
 

@@ -38,6 +38,7 @@ import {
 	priorStagedWrite,
 	TABLE_COMMIT_ADMISSION,
 	TABLE_COMMIT_RELEASE,
+	isReleasedTransaction,
 	TRANSACTION_STATE,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -4717,7 +4718,7 @@ export function makeTable(options) {
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
-					updateRecord(
+					return updateRecord(
 						id,
 						existingEntry?.value ?? null,
 						existingEntry,
@@ -4762,8 +4763,9 @@ export function makeTable(options) {
 				tableTxn.addWrite({
 					key: null,
 					store: primaryStore,
+					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
-						updateRecord(
+						return updateRecord(
 							null, // recordId: null — a whole-table signal, not a per-row change
 							undefined, // no record to store: this writes the audit entry only
 							undefined,
@@ -5901,6 +5903,7 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
+		if (isReleasedTransaction(transaction)) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
@@ -5916,6 +5919,10 @@ export function makeTable(options) {
 				if (!nextTxn) {
 					// no next one, then add our database
 					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// The chain root, so a link that only ever receives a blind write is supervised by the
+					// long-transaction monitor as part of its logical transaction rather than as its own
+					// timeout root (issue #2231).
+					transaction.next.root = transaction.root ?? transaction;
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;

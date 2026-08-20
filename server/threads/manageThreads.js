@@ -166,6 +166,10 @@ function waitForSchemaWorkerStarts() {
 }
 
 function isThreadConnected(ownerThreadId) {
+	// Schema teardown callers need a synchronous local-port check because their event loop can be
+	// blocked by native destruction. Every worker is connected to its siblings; an unstamped legacy
+	// message must remain fenced rather than guessing that an unknown owner has exited.
+	if (!Number.isInteger(ownerThreadId)) return true;
 	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
 	return connectedPorts.some((port) => port.threadId === ownerThreadId);
 }

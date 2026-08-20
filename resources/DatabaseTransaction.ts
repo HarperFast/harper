@@ -16,6 +16,11 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
+// Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
+// two have different units and different consumers: trackedTxns is per-link, bounds a read snapshot, and
+// is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
+// chain root — so a chain child can never become its own timeout root (issue #2231).
+const supervisedWriteRoots = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
@@ -358,11 +363,12 @@ export type TransactionWrite = {
 	entry?: Partial<Entry>;
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
-	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => void;
+	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
 	validate?: (txnTime: number) => void;
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
+	skipReplicationConfirmation?: boolean;
 	nodeName?: string;
 	nodeId?: number;
 	promise?: Promise<any>;
@@ -412,8 +418,8 @@ export function priorStagedWrite(operation: TransactionWrite): TransactionWrite 
  * `[-0]` and `[null]` vs `[NaN]` are DIFFERENT stored keys that value-ish encodings (JSON, string
  * coercion) collapse, cross-contaminating unrelated records. So every key is mapped through the
  * same encoder the stores use; latin1 keeps the bytes injective in a string. Symbol keys (internal
- * metadata writes) can't be key-encoded and keep native identity; so does null (topic-less
- * publishes), which never stages a record.
+ * metadata writes) can't be key-encoded and keep native identity. Null is reserved for topic-less
+ * publishes and audit-only markers.
  */
 export function writeKeyId(key: Id): unknown {
 	if (typeof key === 'symbol' || key == null) return key;
@@ -450,6 +456,10 @@ export class DatabaseTransaction implements Transaction {
 	declare additionalAdmittedTableStores?: any[];
 	declare admittedTransactionLink?: DatabaseTransaction;
 	declare additionalAdmittedTransactionLinks?: DatabaseTransaction[];
+	// The head of this multi-store chain, set when the link is created; absent on the head itself.
+	declare root?: DatabaseTransaction;
+	// Whether this link is why its chain root is write-supervised (see endWriteSupervision).
+	declare writeSupervised?: boolean;
 	declare stale: boolean;
 	// Whether this read handle's base reference (readTxnsUsed starts at 1 in getReadTxn) has been
 	// consumed by a commit round; iterator references are consumed only by doneReadTxn().
@@ -509,14 +519,12 @@ export class DatabaseTransaction implements Transaction {
 		// snapshot that blocks compaction. Only applied when creating the transaction fresh; an
 		// already-open transaction keeps whatever snapshot mode it was created with.
 		// `coordinatedRetry` signals IsBusy write conflicts as RETRY_NOW rather than ERR_BUSY.
-		this.transaction = new RocksTransaction(this.db.store, { coordinatedRetry: true, disableSnapshot });
+		this.attachOwnedTransaction(new RocksTransaction(this.db.store, { coordinatedRetry: true, disableSnapshot }));
 
 		if (this.timestamp) {
 			this.transaction.setTimestamp(this.timestamp);
 		}
 
-		this.readTxnsUsed = 1;
-		this.baseReadRefConsumed = false; // fresh handle, fresh base reference for commit() to consume
 		if (DEBUG_LONG_TXNS) {
 			this.stackTraces = [new StartedTransaction()];
 		}
@@ -524,6 +532,54 @@ export class DatabaseTransaction implements Transaction {
 		trackedTxns.add(this);
 		if (trackedTxns.size > readTxnQueueDepthHighWater) readTxnQueueDepthHighWater = trackedTxns.size;
 		return this.transaction;
+	}
+
+	// Monitor state is not ownership state: it stays with `trackedTxns.add` in getReadTxn().
+	private attachOwnedTransaction(transaction: RocksTransactionWithRetry): void {
+		this.transaction = transaction;
+		this.readTxnsUsed = 1;
+		this.baseReadRefConsumed = false;
+	}
+
+	/**
+	 * Give up on the whole chain: release any handle its links still hold, then drop the supervision
+	 * that was the only remaining way to find them. Clearing the bookkeeping alone would strand a live
+	 * handle in neither registry — the chained-commit throw this exists for is exactly the case where a
+	 * link never reached its own detach. Snapshots only, matching the CLOSED branch that calls this:
+	 * staged writes may be riding an in-flight replay commit and are not the monitor's to drop.
+	 */
+	dropWriteSupervision(): void {
+		const root = this.root ?? this;
+		for (let link: DatabaseTransaction = root; link; link = link.next) {
+			if (link.transaction) link.releaseReadTxn(); // detaches, which clears this link's own claim
+			link.writeSupervised = false;
+		}
+		supervisedWriteRoots.delete(root);
+	}
+
+	/**
+	 * Drop this link's supervision claim, and the root's with it once no link in the chain still holds
+	 * one. Membership is keyed on the root but claimed per link, so removing it on any link's detach
+	 * would unsupervise a logical transaction still holding writes elsewhere in the chain.
+	 */
+	private endWriteSupervision(): void {
+		if (!this.writeSupervised) return;
+		this.writeSupervised = false;
+		const root = this.root ?? this;
+		for (let link: DatabaseTransaction = root; link; link = link.next) {
+			if (link.writeSupervised) return;
+		}
+		supervisedWriteRoots.delete(root);
+	}
+
+	private detachOwnedTransaction(): RocksTransactionWithRetry | null {
+		const transaction = this.transaction;
+		trackedTxns.delete(this);
+		this.endWriteSupervision();
+		this.transaction = null;
+		this.readTxnsUsed = 0;
+		this.readTxnRefCount = 0;
+		return transaction;
 	}
 
 	useReadTxn(disableSnapshot?: boolean) {
@@ -541,9 +597,16 @@ export class DatabaseTransaction implements Transaction {
 			// transaction (see the outstanding-iterators branch in commit()), so aborting it here
 			// discards nothing — the replay re-staged the writes AND their audit/txn-log entries
 			// into its own transaction; this handle's never-committed log batch dies with it.
-			trackedTxns.delete(this);
-			this.transaction?.abort();
-			this.transaction = null;
+			const transaction = this.detachOwnedTransaction();
+			try {
+				transaction?.abort();
+			} catch (error) {
+				// Contained, not ignored: abort() calls this before it marks the wrapper CLOSED, clears
+				// writes and releases the context. Warn rather than debug — reached from abort()'s drain
+				// loop the handle can still hold write intents, and stalled writers with a clean log is
+				// the worst outcome here.
+				harperLogger.warn?.('Failed to release a transaction’s native handle', error);
+			}
 			this.completeDeferredContextRelease();
 		}
 	}
@@ -555,19 +618,18 @@ export class DatabaseTransaction implements Transaction {
 	 * abort (an in-flight replay commit owns them), only the snapshot's lifetime is enforced.
 	 */
 	releaseReadTxn(): void {
+		const transaction = this.detachOwnedTransaction();
 		try {
-			this.transaction?.abort();
+			transaction?.abort();
 		} catch (error) {
 			harperLogger.debug?.('releasing timed-out read transaction', error);
 		}
-		this.detachReadTxn();
+		this.completeDeferredContextRelease();
 	}
 
 	/** Release wrapper bookkeeping after its native transaction was committed directly. */
 	detachReadTxn(): void {
-		trackedTxns.delete(this);
-		this.readTxnsUsed = 0; // doneReadTxn() no-ops for the remaining iterators (guarded on this.transaction)
-		this.transaction = null;
+		this.detachOwnedTransaction();
 		this.completeDeferredContextRelease();
 	}
 
@@ -580,11 +642,16 @@ export class DatabaseTransaction implements Transaction {
 	private completeDeferredContextRelease(): void {
 		if (!this.pendingContextRelease) return;
 		this.pendingContextRelease = false;
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) this.#context.transaction = RELEASED_TRANSACTION;
 	}
 
 	disregardReadTxn(): void {
-		if (--this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+		// Never release a handle carrying staged writes: commit() skips re-staging a write it has marked
+		// saved, so aborting the handle here drops it. The count is clamped because every getReadTxn()
+		// increments it but only this releases, so an unpaired call would drive it negative and cancel
+		// out a later handle's references.
+		if (this.readTxnRefCount > 0 && --this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+			if (this.writes.length > 0) return;
 			this.doneReadTxn();
 		}
 	}
@@ -631,11 +698,9 @@ export class DatabaseTransaction implements Transaction {
 	 * alive (a fresh write on the same context must not join a DIFFERENT, already-replayed
 	 * transaction) until doneReadTxn() drains the last one, so the release is deferred to there.
 	 *
-	 * Sets `.transaction` to `null` rather than deleting the property: `Context.transaction` is
-	 * typed `DatabaseTransaction | null | undefined` precisely to document this released state, and
-	 * `delete` would repeatedly force a long-lived, hot context (e.g. an MQTT subscription context
-	 * releasing/reattaching a transaction per message) into V8's slower dictionary-mode property
-	 * storage.
+	 * Leaves RELEASED_TRANSACTION in the slot: the slot must stay callable (see that constant), and it
+	 * must stay a plain assignment — `delete` repeatedly forces a long-lived, hot context into V8's
+	 * dictionary-mode property storage.
 	 */
 	private releaseContext(final: boolean): void {
 		if (!final) return;
@@ -643,7 +708,7 @@ export class DatabaseTransaction implements Transaction {
 			this.pendingContextRelease = true;
 			return;
 		}
-		if (this.#context?.transaction === this) this.#context.transaction = null;
+		if (this.#context?.transaction === this) this.#context.transaction = RELEASED_TRANSACTION;
 	}
 
 	checkOverloaded() {
@@ -689,6 +754,51 @@ export class DatabaseTransaction implements Transaction {
 		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
 	}
 
+	/**
+	 * The stored entry of the last write eligible for replication confirmation. Two kinds of write are
+	 * skipped (rather than ending the search) so a trailing one cannot suppress confirmation for
+	 * replicable writes staged earlier: writes that explicitly opt out (audit-only markers, which stage
+	 * no record), and writes with no stored entry at all — a delete leaves a readable tombstone on any
+	 * audited or delete-tracking table, so only a delete on a table with neither is entry-less. Such a
+	 * `put(A); delete(B)` confirms on A's entry, whose version is this transaction's (every write in a
+	 * transaction is stamped with one version).
+	 */
+	lastConfirmableEntry(): Partial<Entry> | undefined {
+		for (let i = this.writes.length - 1; i >= 0; i--) {
+			const write = this.writes[i];
+			if (!write || write.skipReplicationConfirmation) continue;
+			const entry = write.store.getEntry(write.key);
+			if (entry) return entry;
+		}
+	}
+
+	/**
+	 * Stage an async operation that commit() must wait for. Staging can happen a turn or more before
+	 * commit() attaches its Promise.all, so the no-op rejection handler is attached here: without it a
+	 * rejection in that window is an unhandled rejection (fatal under --unhandled-rejections=strict).
+	 * The rejection still surfaces through commit()'s Promise.all.
+	 */
+	stageCompletion(completion: Promise<void>) {
+		completion.then(undefined, () => {});
+		this.completions.push(completion);
+	}
+
+	/**
+	 * Discard staged completions that no commit() will ever aggregate (abort path). Their rejections
+	 * are already no-op-handled by stageCompletion(), so without this they fail silently; log instead.
+	 * Clearing them also keeps a reused transaction's next commit() from rejecting with the previous
+	 * batch's error.
+	 */
+	drainCompletions(): void {
+		if (this.completions.length === 0) return;
+		const completions = this.completions;
+		this.completions = [];
+		for (const completion of completions)
+			completion.then(undefined, (error) =>
+				harperLogger.warn?.('A staged transaction completion failed after the transaction was aborted', error)
+			);
+	}
+
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
@@ -727,7 +837,19 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.warn?.('Created new transaction in save, but the store does match existing store', transaction.id);
 			}
 			if (this.open === TRANSACTION_STATE.OPEN) {
-				this.transaction = transaction;
+				this.attachOwnedTransaction(transaction);
+				// A write that never read is otherwise invisible to the long-transaction monitor: its
+				// handle was adopted here rather than in getReadTxn(), which is the only other place that
+				// registers. Supervise the chain root, so the monitor reaps the logical transaction as one
+				// unit. Replay is excluded deliberately — it is synchronous, already bounded by its own
+				// stall and wall-clock guards, and commits at timestamp boundaries that a monitor-driven
+				// commit could split.
+				if (!this.isReplay) {
+					const root = this.root ?? this;
+					root.timeout = Math.max(root.timeout || 0, this.timeout || txnExpiration, root.timeoutBudget || 0);
+					this.writeSupervised = true;
+					supervisedWriteRoots.add(root);
+				}
 			} else {
 				// if it is closed, we have to immediately commit, using our immediate transaction
 				immediateCommit = true;
@@ -755,11 +877,12 @@ export class DatabaseTransaction implements Transaction {
 				return;
 			}
 			let result: Promise<void> = operation.before?.() as Promise<void>;
-			if (result?.then) this.completions.push(result);
+			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;
-			if (result?.then) this.completions.push(result);
+			if (result?.then) this.stageCompletion(result);
 		}
-		operation.commit(txnTime, operation.entry, this.retries > 0, transaction);
+		const completion = operation.commit(txnTime, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		if (typeof completion?.then === 'function') this.stageCompletion(completion);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
 		// they survive the abort-after-failed-commit of the retry paths). isRetry stagings
@@ -882,8 +1005,7 @@ export class DatabaseTransaction implements Transaction {
 					}
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
-					trackedTxns.delete(this);
-					this.transaction = null; // clear transaction so any further operations operate immediately
+					this.detachOwnedTransaction(); // any further operations operate immediately
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
@@ -976,14 +1098,10 @@ export class DatabaseTransaction implements Transaction {
 								// if we want to wait for replication confirmation, we need to track the transaction times
 								// and when replication notifications come in, we count the number of confirms until we reach the desired number
 								const databaseName = this.writes[0].store.rootStore.databaseName;
-								const lastWrite = this.writes[this.writes.length - 1];
-								if (confirmReplication && lastWrite) {
+								const lastEntry = this.lastConfirmableEntry();
+								if (confirmReplication && lastEntry) {
 									completions.push(
-										confirmReplication(
-											databaseName,
-											(lastWrite.store.getEntry(lastWrite.key) as any).version,
-											this.replicatedConfirmation
-										)
+										confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
 									);
 								}
 							}
@@ -1123,35 +1241,34 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 	abort(): void {
-		// A failed final commit has already closed this wrapper and may have replayed its writes on a
-		// separate native transaction while iterators retain the original read handle. Clean up the
-		// failed writes below, but leave that read handle to the iterators that still own it.
-		if (this.open !== TRANSACTION_STATE.CLOSED) {
-			while (this.readTxnsUsed > 0) this.doneReadTxn();
-		}
+		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		// Defensively release any native handle whose reference bookkeeping was already consumed.
+		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
-		for (const write of this.writes) {
-			if (write?.savedBlobs)
-				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
-		}
-		// reset the transaction
-		this.clearWrites();
-		// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
-		// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
-		// starting a fresh one) so the rest of the logical operation fails atomically via the
-		// poison check in addWrite()/commit(), rather than silently landing a later write on a
-		// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
-		// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
-		this.releaseContext(!this.timedOut);
-	}
-	private abortNativeTransaction(nativeTransaction: RocksTransaction | undefined, logMessage: string): void {
-		this.transaction = null;
-		this.readTxnsUsed = 0;
-		trackedTxns.delete(this);
+		this.drainCompletions();
 		try {
-			nativeTransaction?.abort();
-		} catch (abortError) {
-			harperLogger.debug?.(logMessage, abortError);
+			for (const write of this.writes) {
+				if (write?.savedBlobs)
+					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+			}
+		} finally {
+			this.clearWrites();
+			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
+			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
+			// starting a fresh one) so the rest of the logical operation fails atomically via the
+			// poison check in addWrite()/commit(), rather than silently landing a later write on a
+			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
+			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
+			this.releaseContext(!this.timedOut);
+			const next = this.next;
+			this.next = null;
+			if (next) {
+				try {
+					next.abort();
+				} catch (error) {
+					harperLogger.debug?.('cleaning up a chained transaction during abort', error);
+				}
+			}
 		}
 	}
 	/**
@@ -1159,17 +1276,35 @@ export class DatabaseTransaction implements Transaction {
 	 * first, then abort each link's native transaction and release its DatabaseTransaction-level
 	 * resources. Two passes (mirroring abortDueToTimeout) so a throw while aborting one link can't leave
 	 * later links (this.next) holding native handles / read snapshots until GC. `headTransaction` is the
-	 * head link's native transaction, which commit() detached to a local before this point
-	 * (this.transaction is already null), so it is aborted directly; every other link still owns its
-	 * native transaction on `txn.transaction`.
+	 * head link's native transaction, which commit() detached to a local before this point, so it is
+	 * aborted directly; every other link still owns its native transaction on `txn.transaction`. The
+	 * head can also own a retained read handle from commit()'s outstanding-iterators branch, separate
+	 * from the replay transaction; retry exhaustion aborts both.
 	 */
 	abortChainAfterRetries(headTransaction: RocksTransaction): void {
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			const nativeTxn = txn === this ? headTransaction : txn.transaction;
-			txn.abortNativeTransaction(nativeTxn, 'aborting conflicted transaction in chain after exhausting retries');
+			// Detach first so the abort() below performs only non-native cleanup, and so its doneReadTxn
+			// loop cannot spin on a nulled handle. Not to avoid a double abort: rocksdb-js tolerates
+			// abort-after-abort, and it is abort-after-COMMIT that throws.
+			const detached = txn.detachOwnedTransaction();
+			const committingTransaction = txn === this ? headTransaction : detached;
+			try {
+				committingTransaction?.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('aborting conflicted transaction in chain after exhausting retries', abortError);
+			}
+			// With outstanding iterators, the head owns a retained read handle while the retry commits
+			// through a separate replay handle. Both must be aborted after retry exhaustion.
+			if (txn === this && detached && detached !== committingTransaction) {
+				try {
+					detached.abort();
+				} catch (abortError) {
+					harperLogger.debug?.('aborting retained read transaction after exhausting retries', abortError);
+				}
+			}
 			try {
 				// abort() synchronously walks savedBlobs and can call write.store.getEntry(), which can throw
 				// (closed store, decode error). Catch and continue so one link's wrapper-cleanup failure can't
@@ -1209,7 +1344,6 @@ export class DatabaseTransaction implements Transaction {
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			txn.abortNativeTransaction(txn.transaction, 'aborting timed-out transaction in chain');
 			try {
 				txn.abort();
 			} catch (error) {
@@ -1218,8 +1352,27 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 	directCommitSync(): void {
-		trackedTxns.delete(this);
-		this.transaction?.commitSync();
+		const transaction = this.transaction;
+		try {
+			transaction?.commitSync();
+		} catch (error) {
+			// Still uncommitted and still holding its write intents, and no caller aborts after this
+			// throws. abort() rather than the native abort alone: it reclaims blobs a replayed write
+			// staged.
+			this.detachOwnedTransaction();
+			try {
+				transaction?.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('aborting a transaction whose synchronous commit failed', abortError);
+			}
+			try {
+				this.abort();
+			} catch (abortError) {
+				harperLogger.debug?.('cleaning up after a failed synchronous commit', abortError);
+			}
+			throw error;
+		}
+		this.detachOwnedTransaction();
 	}
 	getContext() {
 		return this.#context;
@@ -1270,6 +1423,57 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	}
 }
 
+/**
+ * What `context.transaction` holds once its transaction has completed and released the back-reference
+ * (see releaseContext()). `commit()`/`abort()` are no-ops and reads through it see the latest
+ * committed state, so the documented `getContext().transaction.commit()` pattern stays callable after
+ * completion, reporting the same `txnTime: 0` that re-committing the completed transaction itself did
+ * (its own timestamp is reset by the commit that completed it).
+ *
+ * Not a DatabaseTransaction subclass and not extensible: one process-wide instance shared by every
+ * released context owns no mutable state, and anything off this surface fails loudly rather than
+ * inheriting behavior that would write through to every other context.
+ */
+const RELEASED_TRANSACTION_SURFACE = {
+	open: TRANSACTION_STATE.CLOSED,
+	transaction: undefined,
+	writes: Object.freeze([]),
+	commit(): CommitResolution {
+		return { txnTime: 0 };
+	},
+	abort(): void {},
+	getReadTxn(): undefined {
+		return; // no transaction means read latest
+	},
+	useReadTxn(): undefined {
+		return;
+	},
+	doneReadTxn(): void {},
+	disregardReadTxn(): void {},
+	hasPendingWrites(): boolean {
+		return false;
+	},
+	addWrite(): never {
+		throw new Error(
+			'Cannot write to a transaction that has already completed; start a new one with transaction() or pass a fresh context'
+		);
+	},
+	setContext(): never {
+		throw new Error('Cannot attach a context to the shared released transaction');
+	},
+};
+Object.freeze(RELEASED_TRANSACTION_SURFACE);
+export const RELEASED_TRANSACTION = RELEASED_TRANSACTION_SURFACE as unknown as DatabaseTransaction;
+
+/**
+ * The placeholder means "this context has no transaction". Every reader that would otherwise act on the
+ * value — claim it for a store, adopt it as a context, treat it as data — must ask first, or it operates
+ * on the one instance every released context shares.
+ */
+export function isReleasedTransaction(value: unknown): boolean {
+	return value === RELEASED_TRANSACTION;
+}
+
 let timer;
 
 /**
@@ -1292,7 +1496,14 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
-		for (const txn of trackedTxns) {
+		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
+		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
+		for (const txn of trackedTxns) monitorTransaction(txn);
+		for (const txn of supervisedWriteRoots) if (!trackedTxns.has(txn)) monitorTransaction(txn);
+	}, txnExpiration).unref();
+
+	function monitorTransaction(txn: DatabaseTransaction) {
+		{
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
 			// thereby keep chainStillActive believing it was written recently too.
@@ -1300,6 +1511,14 @@ function startMonitoringTxns() {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
+					if (!txn.transaction) {
+						// Nothing left to supervise, and this is the registry's only unconditional exit:
+						// membership otherwise ends when a claiming link detaches, which a chained commit
+						// throwing synchronously inside when()'s success callback never reaches. Left
+						// enrolled, the transaction would draw the warning below every tick forever.
+						txn.dropWriteSupervision();
+						return;
+					}
 					// The commit was already acknowledged; any staged writes are riding an in-flight
 					// replay commit (see the outstanding-iterators branch in commit()) and are not the
 					// monitor's to abort — dropping them here would re-introduce the silent
@@ -1359,7 +1578,7 @@ function startMonitoringTxns() {
 				txn.timeout -= txnExpiration;
 			}
 		}
-	}, txnExpiration).unref();
+	}
 }
 
 startMonitoringTxns();
@@ -1375,6 +1594,11 @@ export function resetReplayedWritesWarning() {
 
 export function trackedTransactionCountForTests(): number {
 	return trackedTxns.size;
+}
+
+/** Test seam: whether the monitor supervises this logical transaction for its writes. */
+export function isWriteSupervised(txn: DatabaseTransaction): boolean {
+	return supervisedWriteRoots.has(txn);
 }
 
 export function setTxnExpiration(ms) {

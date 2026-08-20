@@ -10,7 +10,12 @@ import {
 	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, TRANSACTION_STATE, type Transaction } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	isReleasedTransaction,
+	TRANSACTION_STATE,
+	type Transaction,
+} from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -224,6 +229,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				record = idPrefix;
 			}
 		}
+		if (isReleasedTransaction(context)) context = undefined;
 		if (context) {
 			if ((context as any).getContext) context = (context as any).getContext();
 		} else {
@@ -589,6 +595,9 @@ function transactional(
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		let id, query, isCollection;
 		let data;
+		// An absent argument, not a context — and not this call's data either.
+		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
+		if (isReleasedTransaction(context)) context = undefined;
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (hasContent) {
 			// for put, post, patch, publish, query

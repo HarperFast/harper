@@ -50,6 +50,10 @@ jobs:
       - name: Benchmark unit tests
         run: npm run test:bench # pure-logic tests for benchmarks/ converters; doesn't need a running Harper instance
 
+      - name: Review-coverage action tests
+        if: matrix.node-version == 24
+        run: node --test .github/actions/review-coverage/*.test.mjs
+
       - name: Setup Harper
         env:
           DEFAULTS_MODE: 'dev'

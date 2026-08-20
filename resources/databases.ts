@@ -1648,6 +1648,7 @@ export function failSchemaQuiesceFinalization(message: Pick<SchemaQuiesceMessage
 	const state = schemaQuiescence.get(message.quiesceId);
 	if (!state) return;
 	state.finalizing = false;
+	state.abortRequested = false;
 	armSchemaQuiesceLease(state);
 }
 

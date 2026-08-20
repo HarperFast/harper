@@ -20,7 +20,6 @@ export const TRANSACTION_STATE = {
 	OPEN: 1, // the transaction is open and can be used for reads and writes
 	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
 };
-let outstandingCommit;
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -189,10 +188,18 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
 		let resolution;
 		const completions = [];
+		let commitCompletions: Promise<void>[];
 		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
-			write.commit(txnTime, write.entry, retries);
+			const completion = write.commit(txnTime, write.entry, retries);
+			if (typeof completion?.then === 'function') {
+				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
+				// or the exclusive transaction resolves), so handle rejection here to keep the gap from
+				// producing an unhandled rejection; it still surfaces through that Promise.all
+				completion.then(undefined, () => {});
+				(commitCompletions ??= []).push(completion);
+			}
 		};
 		// this uses optimistic locking to submit a transaction, conditioning each write on the expected version
 		const nextCondition = () => {
@@ -227,11 +234,22 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// will fail and retry due to contention. This is used to determine when to give up on optimistic writes and
 			// use a real (async) transaction to get exclusive access to the data
 			if (db?.retryRisk) db.retryRisk *= 0.99; // gradually decay the retry risk
-			if (this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
-			else {
+			if (this.writes.length + (db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) {
+				nextCondition();
+				if (commitCompletions) {
+					if (resolution) {
+						resolution = Promise.resolve(resolution).then((committed) =>
+							Promise.all(commitCompletions).then(() => committed)
+						);
+					} else {
+						// Must resolve truthy or the conflict branch re-runs the writes.
+						resolution = Promise.all(commitCompletions).then(() => true);
+					}
+				}
+			} else {
 				// if it is too big to expect optimistic writes to work, or we have done too many retries we use
 				// a real LMDB transaction to get exclusive access to reading and writing
-				resolution = this.writes[0].store.transaction(() => {
+				const transactionResolution = this.writes[0].store.transaction(() => {
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);
@@ -239,17 +257,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 					return true; // success. always success
 				});
+				resolution = transactionResolution.then((committed) =>
+					commitCompletions ? Promise.all(commitCompletions).then(() => committed) : committed
+				);
 			}
 		}
 
 		if (resolution) {
-			if (!outstandingCommit) {
-				outstandingCommit = resolution;
-				outstandingCommit.then(() => {
-					outstandingCommit = null;
-				});
-			}
-
 			return resolution.then((resolution) => {
 				if (resolution) {
 					if (this.next) {
@@ -262,14 +276,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const databaseName = this.writes[0].store.rootStore.databaseName;
-						const lastWrite = this.writes[this.writes.length - 1];
-						if (confirmReplication && lastWrite)
+						const lastEntry = this.lastConfirmableEntry();
+						if (confirmReplication && lastEntry)
 							completions.push(
-								confirmReplication(
-									databaseName,
-									(lastWrite.store.getEntry(lastWrite.key) as any).localTime,
-									this.replicatedConfirmation
-								)
+								confirmReplication(databaseName, (lastEntry as any).localTime, this.replicatedConfirmation)
 							);
 					}
 					// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
@@ -320,6 +330,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
+		this.drainCompletions();
 		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
 		// (retaining any fileId the current on-disk record still references — an aborted write may carry an
 		// already-saved blob shared with the surviving record; see harper-pro#406).

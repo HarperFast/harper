@@ -14,7 +14,8 @@ const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default
 const server_itc_handlers = rewire('#js/server/itc/serverHandlers');
 const { resetResources } = require('#src/resources/Resources');
 const { threadId } = require('node:worker_threads');
-const { waitForSchemaWorkerStarts } = require('#js/server/threads/manageThreads');
+const { isThreadConnected, waitForSchemaWorkerStarts } = require('#js/server/threads/manageThreads');
+const { waitFor } = require('../../waitFor');
 
 describe('Test hdbChildIpcHandler module', () => {
 	const TEST_ERR = 'The roof is on fire';
@@ -205,6 +206,10 @@ describe('Test hdbChildIpcHandler module', () => {
 			expect(released).to.equal(true);
 		});
 
+		it('keeps an unstamped schema teardown fenced', () => {
+			expect(isThreadConnected(undefined)).to.equal(true);
+		});
+
 		it('releases an expired worker-start barrier after its origin disconnects', async () => {
 			const message = {
 				originator: Number.MAX_SAFE_INTEGER,
@@ -216,7 +221,12 @@ describe('Test hdbChildIpcHandler module', () => {
 				leaseUntil: Date.now(),
 			};
 			await schema_handler({ type: 'schema', message });
-			await waitForSchemaWorkerStarts();
+			let released = false;
+			waitForSchemaWorkerStarts().then(() => (released = true));
+			await waitFor(() => released, {
+				timeout: 2_000,
+				message: 'worker-start barrier was not released after its origin disconnected',
+			});
 		});
 
 		it('aborts quiescence without resetting databases', async () => {
