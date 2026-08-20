@@ -258,7 +258,10 @@ export async function loadComponentDirectories(
 						appName,
 						mount: mountResult.mount,
 					})
-				)
+				).catch((error) => {
+					const loadError = error instanceof Error ? error : new Error(String(error));
+					componentLifecycle.failed(appName, loadError, `Component '${appName}' failed to load`);
+				})
 			);
 		}
 	}

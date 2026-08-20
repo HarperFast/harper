@@ -322,6 +322,39 @@ describe('ComponentLoader Status Integration', function () {
 		});
 	});
 
+	it('isolates a dangling component symlink while loading healthy siblings', async function () {
+		if (process.platform === 'win32') this.skip();
+		const danglingAppName = 'dangling-component-probe';
+		const healthyAppName = 'healthy-sibling-probe';
+		const healthyPluginName = 'healthySiblingProbe';
+		const danglingAppPath = path.join(tempDir, danglingAppName);
+		const healthyAppPath = path.join(tempDir, healthyAppName);
+		let healthyLoadCalls = 0;
+
+		await fs.symlink(path.join(tempDir, 'missing-component-target'), danglingAppPath, 'dir');
+		await fs.mkdir(healthyAppPath);
+		await fs.writeFile(path.join(healthyAppPath, 'config.yaml'), `${healthyPluginName}: {}\n`);
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[healthyPluginName] = {
+			start() {
+				healthyLoadCalls++;
+			},
+		};
+
+		try {
+			await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+
+			assert.strictEqual(healthyLoadCalls, 1, 'healthy sibling did not load');
+			const danglingFailure = lifecycle.failed.getCalls().find((call) => call.args[0] === danglingAppName);
+			assert.ok(danglingFailure, 'dangling component was not marked failed');
+			assert.strictEqual(danglingFailure.args[1].code, 'ENOENT');
+		} finally {
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[healthyPluginName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(danglingAppPath, { force: true });
+			await fs.rm(healthyAppPath, { recursive: true, force: true });
+		}
+	});
+
 	describe('deploy lifecycle listener lifecycle (#1462)', function () {
 		const { deployLifecycle } = require('#src/components/deployLifecycle');
 
