@@ -42,6 +42,14 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // monitoring; the store name is passed as the metric path.
 const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
 
+// Default bound on the per-encoder typed-structure dictionary. The dictionary is append-only and
+// pinned on the long-lived primary store, and its size is combinatorial in the shapes a table
+// realizes -- (field subset) x (key order) x (per-field value width class) -- not in column count,
+// so an unbounded one can exhaust memory on a wide/sparse schema. Reaching the cap is not an error:
+// novel shapes fall back to plain msgpackr encoding, which round-trips correctly but gives up
+// random-access field reads. See HarperFast/harper#2220.
+export const DEFAULT_MAX_TYPED_STRUCTURES = 256;
+
 // Terminal error messages msgpackr/structon throw when a record references a shared structure that
 // is not in this node's structures buffer. Both the typed (random-access) path (structon's
 // readStruct) and the classic path (msgpackr's createSecondByteReader) reload the structures from
@@ -128,6 +136,9 @@ export class RecordEncoder extends StructonEncoder {
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
+	declare typedStructs: any[];
+	declare structures: any[];
+	declare maxOwnStructures: number;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
@@ -143,7 +154,7 @@ export class RecordEncoder extends StructonEncoder {
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
 		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
 		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
-		options.maxOwnStructures ??= 256;
+		options.maxOwnStructures ??= DEFAULT_MAX_TYPED_STRUCTURES;
 		/**
 		 * The base class for records that provides the read-only methods for accessing
 		 * metadata and will be assigned computed property getters. On its own, these instances
@@ -343,12 +354,14 @@ export class RecordEncoder extends StructonEncoder {
 				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
 				if (committed === true) {
 					this.structureUpdate = structures;
+					this.checkStructureCapacity();
 					return true;
 				}
 				return false;
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
+				this.checkStructureCapacity();
 				return result;
 			}
 		};
@@ -361,6 +374,38 @@ export class RecordEncoder extends StructonEncoder {
 				return superGetStructures.call(this);
 			}
 		};
+	}
+	/**
+	 * Current size of this store's record-structure dictionaries. Both numbers are O(1) reads of
+	 * in-memory arrays. `typed` is the random-access (structon) dictionary, which is append-only for
+	 * the life of the table and bounded by `maxOwnStructures`; `classic` is msgpackr's named-record
+	 * dictionary. Their sum is the same quantity replication stamps as `structureVersion`.
+	 * Exposed so dictionary growth is observable before it saturates -- see HarperFast/harper#2220.
+	 */
+	getStructureCounts(): { typed: number; classic: number; typedLimit: number } {
+		return {
+			typed: this.typedStructs?.length ?? 0,
+			classic: this.structures?.length ?? 0,
+			typedLimit: this.maxOwnStructures ?? DEFAULT_MAX_TYPED_STRUCTURES,
+		};
+	}
+	/**
+	 * Warn once per store when the typed-structure dictionary saturates. Past the cap, novel record
+	 * shapes still encode and decode correctly but fall back to plain msgpackr encoding, losing
+	 * random-access field reads -- a permanent, otherwise-silent change in how this table is stored.
+	 */
+	#reportedStructureSaturation = false;
+	checkStructureCapacity() {
+		if (this.#reportedStructureSaturation) return;
+		const { typed, typedLimit } = this.getStructureCounts();
+		if (typed < typedLimit) return;
+		this.#reportedStructureSaturation = true;
+		harperLogger.warn(
+			`Typed-structure dictionary for store ${this.name ?? this.rootStore?.name} reached its limit of ` +
+				`${typedLimit} structures; new record shapes will be stored without random-access field ` +
+				'encoding. This is driven by the variety of shapes written (field subset, key order, and ' +
+				'per-field value width), not by column count (see HarperFast/harper#2220).'
+		);
 	}
 	decode(buffer, options) {
 		lastMetadata = null;

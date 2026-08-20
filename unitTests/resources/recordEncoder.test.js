@@ -1,6 +1,11 @@
 require('../testUtils');
 const assert = require('assert');
-const { RecordEncoder, RecordObject, isMissingStructureError } = require('#src/resources/RecordEncoder');
+const {
+	RecordEncoder,
+	RecordObject,
+	isMissingStructureError,
+	DEFAULT_MAX_TYPED_STRUCTURES,
+} = require('#src/resources/RecordEncoder');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Encoder } = require('msgpackr');
 
@@ -167,5 +172,86 @@ describe('RecordEncoder missing-structure handling (harper#1163)', () => {
 		assert.strictEqual(enc.decode(truncated), null, 'corrupt (non-structure) decode should still return null');
 		assert.strictEqual(errors.length, 1, 'genuine corruption should use the generic error path');
 		assert.strictEqual(warnings.length, 0, 'genuine corruption should not use the missing-structure warning');
+	});
+});
+
+describe('RecordEncoder structure-dictionary bound & observability (harper#2220)', () => {
+	let warnings, restoreWarn;
+	beforeEach(() => {
+		warnings = [];
+		restoreWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => warnings.push(args);
+	});
+	afterEach(() => {
+		harperLogger.warn = restoreWarn;
+	});
+
+	function makeCappedEncoder(store, maxOwnStructures) {
+		return new RecordEncoder({
+			structures: [],
+			randomAccessStructure: true,
+			maxOwnStructures,
+			getStructures: store.get,
+			saveStructures: store.save,
+		});
+	}
+
+	it('defaults the typed-structure dictionary to the documented bound', () => {
+		const enc = makeEncoder(true, sharedStore());
+		assert.strictEqual(enc.maxOwnStructures, DEFAULT_MAX_TYPED_STRUCTURES);
+		assert.strictEqual(enc.getStructureCounts().typedLimit, DEFAULT_MAX_TYPED_STRUCTURES);
+	});
+
+	it('stops minting typed structures at the bound, and past-cap records still round-trip', () => {
+		const store = sharedStore();
+		const enc = makeCappedEncoder(store, 4);
+		// Each novel field name is a novel shape, so this would mint 20 structures if uncapped.
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 4, 'dictionary must stop growing at the bound');
+		const bytes = Buffer.from(enc.encode({ beyond: 'the cap' }));
+		assert.deepStrictEqual(enc.decode(bytes), { beyond: 'the cap' }, 'past-cap shapes fall back to plain encoding');
+	});
+
+	it('warns exactly once when the typed-structure dictionary saturates', () => {
+		const store = sharedStore();
+		const enc = makeCappedEncoder(store, 4);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		const saturationWarnings = warnings.filter((w) => /Typed-structure dictionary/.test(w[0]));
+		assert.strictEqual(saturationWarnings.length, 1, 'saturation should be reported once, not per write');
+		assert.match(saturationWarnings[0][0], /reached its limit of 4 structures/);
+	});
+
+	it('does not warn while the dictionary still has headroom', () => {
+		const enc = makeCappedEncoder(sharedStore(), 64);
+		for (let i = 0; i < 8; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 8);
+		assert.strictEqual(
+			warnings.filter((w) => /Typed-structure dictionary/.test(w[0])).length,
+			0,
+			'no warning below the bound'
+		);
+	});
+
+	it('reports classic (named-record) structures separately from typed ones', () => {
+		const store = sharedStore();
+		const enc = makeEncoder(false, store); // struct hook bails -> msgpackr records mode
+		enc.encode(record);
+		const counts = enc.getStructureCounts();
+		assert.strictEqual(counts.typed, 0, 'records mode must not mint typed structures');
+		assert.ok(counts.classic > 0, 'records mode mints a classic named-record structure');
+	});
+
+	it('counts key order and per-field value width as distinct shapes, not just the field set', () => {
+		// The growth driver behind harper#2220: dictionary size is combinatorial in
+		// (field subset) x (key order) x (per-field value width class), not linear in column count.
+		const byOrder = makeEncoder(true, sharedStore());
+		byOrder.encode({ a: 1, b: 1, c: 1 });
+		byOrder.encode({ c: 1, b: 1, a: 1 });
+		assert.strictEqual(byOrder.getStructureCounts().typed, 2, 'same field set, different key order, two shapes');
+
+		const byWidth = makeEncoder(true, sharedStore());
+		byWidth.encode({ id: 'k', v: 1 }); // 1-byte int
+		byWidth.encode({ id: 'k', v: 70000 }); // 4-byte int
+		assert.strictEqual(byWidth.getStructureCounts().typed, 2, 'same field set, different value width, two shapes');
 	});
 });

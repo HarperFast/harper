@@ -223,6 +223,15 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		}
 		tableResult.table_size = tableObj.getSize();
 		tableResult.db_audit_size = tableObj.getAuditSize();
+		// Record-structure dictionary sizes (harper#2220). Append-only for the life of the table and
+		// combinatorial in the shapes written, so surface them here to make growth observable before
+		// the typed dictionary saturates and novel shapes drop to plain encoding.
+		const structureCounts = tableObj.getStructureCounts?.();
+		if (structureCounts) {
+			tableResult.typed_structure_count = structureCounts.typed;
+			tableResult.typed_structure_limit = structureCounts.typedLimit;
+			tableResult.classic_structure_count = structureCounts.classic;
+		}
 		let auditStore = tableObj.auditStore;
 		if (auditStore) {
 			for (let key of auditStore.getKeys({ reverse: true, limit: 1 })) {

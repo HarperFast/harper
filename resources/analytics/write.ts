@@ -348,6 +348,21 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 		log.trace?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, metric);
 		dbUsedSize += tableSize;
+		// Record-structure dictionary sizes (harper#2220). Append-only for the life of the table, so
+		// a time series here is what makes a hot write path minting novel shapes visible -- and shows
+		// the headroom left before the typed dictionary saturates and novel shapes drop to plain
+		// encoding. Both counts are O(1) reads of in-memory arrays.
+		const structureCounts = table.getStructureCounts?.();
+		if (structureCounts) {
+			storeMetric(analyticsTable, {
+				metric: METRIC.TABLE_STRUCTURES,
+				database: dbName,
+				table: tableName,
+				typedStructures: structureCounts.typed,
+				typedStructureLimit: structureCounts.typedLimit,
+				classicStructures: structureCounts.classic,
+			});
+		}
 	}
 	return dbUsedSize;
 }

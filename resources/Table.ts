@@ -4823,6 +4823,15 @@ export function makeTable(options) {
 			const stats = primaryStore.getStats();
 			return (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
 		}
+		/**
+		 * Sizes of this table's record-structure dictionaries: `typed` is the random-access
+		 * (structon) dictionary, `classic` msgpackr's named-record dictionary, and `typedLimit` the
+		 * bound past which novel record shapes fall back to plain encoding. O(1). See
+		 * HarperFast/harper#2220.
+		 */
+		static getStructureCounts(): { typed: number; classic: number; typedLimit: number } | undefined {
+			return primaryStore.encoder?.getStructureCounts?.();
+		}
 		static getAuditSize(): number {
 			const stats = auditStore?.getStats();
 			return (
