@@ -735,7 +735,7 @@ const LOG_TIME_USAGE_THRESHOLD = 100;
  */
 function getFileLogger(path, rotation, isExternalInstance) {
 	let logger = fileLoggers.get(path);
-	let logFD, loggedFDError, logTimer;
+	let logFD, loggedFDError, loggedAppendError, logTimer;
 	let logBuffer;
 	let logTimeUsage = 0;
 	if (!logger) {
@@ -790,7 +790,21 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		openLogFile(undefined);
 		if (logFD) {
 			let startTime = performance.now();
-			fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry);
+			try {
+				fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry);
+			} catch (error) {
+				// A log write must never take the process down: on a full or quota-exhausted volume this
+				// throws, and it runs both inline and from a timer, so every log statement would become a
+				// crash point exactly when the operator needs the diagnostic (#847). Degrade to the
+				// console, the same fallback used when the file cannot be opened at all.
+				if (!loggedAppendError) {
+					loggedAppendError = true;
+					console.error(error);
+				}
+				console.log(logBuffer ? logBuffer.join('') : entry);
+				logBuffer = null;
+				return;
+			}
 			let endTime = performance.now();
 			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
 			// will start buffering
@@ -815,8 +829,12 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			} catch (error) {
 				if (error.code === 'ENOENT' && !isRetry) {
 					// if the directory doesn't exist, create it
-					fs.mkdirpSync(pathModule.dirname(path));
-					return openLogFile(true);
+					try {
+						fs.mkdirpSync(pathModule.dirname(path));
+						return openLogFile(true);
+					} catch (mkdirError) {
+						error = mkdirError;
+					}
 				}
 				if (!loggedFDError) {
 					loggedFDError = true;

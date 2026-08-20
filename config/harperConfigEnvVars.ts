@@ -595,7 +595,7 @@ function saveConfigState(rootPath: string, state: ConfigState): void {
 
 	// Atomic write: a torn state file resets to fresh on the next load, losing every
 	// restoration record — the blast radius is user config-file content
-	atomicWriteFile(statePath, JSON.stringify(state, null, 2) + '\n');
+	atomicWriteFile(statePath, JSON.stringify(state, null, 2) + '\n', { skipIfUnchanged: true });
 }
 
 /**
@@ -957,6 +957,23 @@ export function applyRuntimeEnvConfig(
 	rootPath: string,
 	options: { isInstall?: boolean } = {}
 ): ConfigObject {
+	const { config, saveState } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
+	saveState();
+	return config;
+}
+
+/**
+ * Apply the env layers and hand the state save back to the caller instead of performing it, so a
+ * caller that also persists the merged config file can order the pair. The snapshot describes what
+ * the config file holds, so it must not be written when that file's write did not happen: the next
+ * boot would compare the file's older value against the newer snapshot, classify it as a manual
+ * user edit, and stop applying the env layer altogether (#847).
+ */
+export function prepareRuntimeEnvConfig(
+	fileConfig: ConfigObject,
+	rootPath: string,
+	options: { isInstall?: boolean } = {}
+): { config: ConfigObject; saveState: () => void } {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
@@ -966,7 +983,7 @@ export function applyRuntimeEnvConfig(
 
 	// No env vars set and no previous state, nothing to do
 	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
-		return fileConfig;
+		return { config: fileConfig, saveState: () => {} };
 	}
 
 	// Detect drift (user manual edits) - only at runtime, not install
@@ -998,8 +1015,5 @@ export function applyRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
-	// Save updated state
-	saveConfigState(rootPath, state);
-
-	return fileConfig;
+	return { config: fileConfig, saveState: () => saveConfigState(rootPath, state) };
 }

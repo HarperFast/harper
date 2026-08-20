@@ -5,6 +5,7 @@ import { configValidator, getDomainSocketPathLengthWarning } from '../validation
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import path from 'path';
+import { constants as osConstants } from 'node:os';
 import { threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
 import isNumber from 'is-number';
@@ -23,7 +24,7 @@ import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
-import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
+import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 
@@ -102,6 +103,34 @@ const RENAME_RETRY_MAX_DELAY_MS = 500;
 // Never notified; exists only so Atomics.wait can time out (a synchronous, CPU-idle sleep).
 const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
+// Linux has no libuv mapping for EDQUOT, so a quota-exhausted write surfaces as
+// `Unknown system error -122` with an unusable `code`; the numeric errno is the portable signal
+// (EDQUOT is 122 on Linux, 69 on macOS).
+const STORAGE_EXHAUSTED_CODES = new Set(['ENOSPC', 'EDQUOT']);
+const STORAGE_EXHAUSTED_ERRNOS = new Set([-osConstants.errno.ENOSPC, -osConstants.errno.EDQUOT]);
+
+function isStorageExhausted(error): boolean {
+	return STORAGE_EXHAUSTED_CODES.has(error?.code) || STORAGE_EXHAUSTED_ERRNOS.has(error?.errno);
+}
+
+// The effective configuration is fully derived and validated in memory before any of it reaches
+// disk, so persisting it during boot is best-effort: on an exhausted volume a fatal write turns a
+// full disk into a restart loop that nothing inside the container can break, because the cleanup
+// that would free space needs a started process (#847). Writes a user asked for keep
+// persist-or-throw semantics - only boot-path writes of derived state come through here.
+function persistConfigDuringBoot(artifactPath: string, write: () => void): boolean {
+	try {
+		write();
+		return true;
+	} catch (error) {
+		if (!isStorageExhausted(error)) throw error;
+		logger.error(
+			`Storage exhausted (${error.code ?? error.errno}) writing ${artifactPath}; continuing startup with the in-memory configuration. The file on disk is unchanged - free space on the Harper volume to restore config persistence.`
+		);
+		return false;
+	}
+}
+
 export function atomicWriteFile(
 	filePath,
 	content,
@@ -109,8 +138,14 @@ export function atomicWriteFile(
 		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
 		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
 		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
+		skipIfUnchanged = false,
 	} = {}
 ) {
+	// Opt-in, because skipping means no mtime bump and so no watcher event: only callers that
+	// re-derive the same file every boot ask for it, and for them a no-op write is pure cost -
+	// a temp file, a rename that can race a sibling worker on Windows, and an EDQUOT on a full
+	// volume for content that would not have changed.
+	if (skipIfUnchanged && matchesFileContent(filePath, content)) return;
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
 	let retries = maxRetries;
 	let delayMs = initialDelayMs;
@@ -148,6 +183,15 @@ export function atomicWriteFile(
 				fs.unlinkSync(tempPath);
 			} catch {}
 		}
+	}
+}
+
+function matchesFileContent(filePath, content): boolean {
+	if (typeof content !== 'string') return false;
+	try {
+		return fs.readFileSync(filePath, 'utf8') === content;
+	} catch {
+		return false;
 	}
 }
 
@@ -361,13 +405,13 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 	}
 	if (added.length === 0) return [];
 
-	atomicWriteFile(configFilePath, String(configDoc));
-
 	// Mirror the additions into the already-memoized config so a built-in gated on the new key
 	// activates on the CURRENT boot: componentLoader reads the root config from getConfigObj(),
 	// which is cached early in boot — before an upgrade backfill runs — so a file-only write would
 	// otherwise not take effect until the next restart. flatConfigObj is backfilled alongside it so
 	// getFlatConfigObj()/getConfigValue() also see the new key on this boot rather than undefined.
+	// Done before the write so that a write this boot cannot fail (an exhausted volume) leaves a
+	// security built-in disabled.
 	if (configObj) {
 		for (const key of added) {
 			if (configObj[key] === undefined) configObj[key] = {};
@@ -375,6 +419,8 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 			if (flatConfigObj && flatConfigObj[flatKey] === undefined) flatConfigObj[flatKey] = configObj[key];
 		}
 	}
+
+	persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	return added;
 }
 
@@ -581,7 +627,7 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		atomicWriteFile(configFilePath, String(configDoc));
+		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}
 }
 
@@ -1258,9 +1304,10 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	// Convert to JSON for processing
 	const configObj = configDoc.toJSON();
 
+	let saveEnvConfigState;
 	try {
 		// Apply env vars with source tracking and drift detection
-		applyRuntimeEnvConfig(configObj, rootPath, options);
+		({ saveState: saveEnvConfigState } = prepareRuntimeEnvConfig(configObj, rootPath, options));
 
 		// If securePort was set to the same value as port, auto-null port to avoid clashing
 		if (configObj.http?.port && configObj.http?.port === configObj.http?.securePort) {
@@ -1292,8 +1339,11 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 		throw error;
 	}
 
-	// We're done here if no config file to write to
+	// Install has no config file to write to yet, and no started process to keep alive: persisting
+	// the state snapshot stays mandatory there, so a failure surfaces instead of producing an
+	// install whose originals were never recorded.
 	if (!configFilePath) {
+		saveEnvConfigState();
 		return;
 	}
 
@@ -1306,8 +1356,14 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		atomicWriteFile(configFilePath, String(configDoc));
-		logger.debug('Config file updated with runtime env var values');
+		if (
+			persistConfigDuringBoot(configFilePath, () =>
+				atomicWriteFile(configFilePath, String(configDoc), { skipIfUnchanged: true })
+			)
+		) {
+			persistConfigDuringBoot(`${rootPath} env config state`, saveEnvConfigState);
+			logger.debug('Config file updated with runtime env var values');
+		}
 	} catch (error) {
 		logger.error(`Failed to write config file after applying runtime env vars: ${error.message}`);
 		throw error;
