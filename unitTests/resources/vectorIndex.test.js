@@ -698,6 +698,22 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		return { layer0Ef, budgets: [...new Set(budgets)] };
 	}
 
+	function captureLimitDerivedLayer0Ef(Table, minResults) {
+		const customIndex = Table.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		let layer0Ef = 0;
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			if (level === 0) layer0Ef = ef;
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		};
+		try {
+			customIndex.search({ target: [1, 0, 0], comparator: 'sort' }, { transaction: undefined }, undefined, minResults);
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+		return layer0Ef;
+	}
+
 	it('builds small graphs at the base efConstruction, unchanged', async () => {
 		for (let i = 0; i < 20; i++) {
 			const a = (i / 20) * Math.PI * 2;
@@ -766,6 +782,17 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		assert.deepStrictEqual(budgets, [1500 * customIndex.filterExpansion]);
 	});
 
+	it('leaves an explicit schema ef authoritative over the limit-derived floor', async () => {
+		for (const [Table, expectedEf] of [
+			[Pinned, 64],
+			[SearchPinned, 1500],
+		]) {
+			for (let i = 0; i < 3; i++) await Table.put(i, { vector: [1, i / 10, 0] });
+			const layer0Ef = captureLimitDerivedLayer0Ef(Table, 3000);
+			assert.strictEqual(layer0Ef, expectedEf, 'a schema search-ef pin must cap limit-derived widening');
+		}
+	});
+
 	// The refactor's stated mechanism, not just the formula: an update-only worker (counter absent,
 	// as after a restart with no new inserts) must ensure the shared counter with ONE seek, then read
 	// it atomically — never a reverse seek per write, and never a failed write if the seek throws.
@@ -825,28 +852,35 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 			assert.deepStrictEqual([...firstEfs], [200], 'the fallback count must preserve the construction scale');
 			assert.deepStrictEqual([...secondEfs], [200], 'the memoized fallback must preserve the scale');
 			assert.strictEqual(attachAttempts, 1, 'the attach must not be retried on every update');
-			assert.strictEqual(
-				seekTransactions.length,
-				2,
-				'the first update should seek once to attach and once to fall back'
-			);
+			assert.strictEqual(seekTransactions.length, 1, 'the attach seed seek must also supply the fallback count');
 			assert(seekTransactions[0], 'the counter seed seek must use the write transaction');
-			assert.strictEqual(seekTransactions[1], seekTransactions[0], 'the fallback seek must use the same transaction');
-		} finally {
 			store.getUserSharedBuffer = originalGetUserSharedBuffer;
 			store.getKeys = originalGetKeys;
 			customIndex.idIncrementerRetryAt = 0;
-		}
-		try {
 			await T.put(1, { vector: [0.7, 0.3, 0.1] });
 			assert(customIndex.idIncrementer, 'the attach must be retryable once the backoff expires');
 			assert.strictEqual(customIndex.idIncrementerFailureLogged, false, 'recovery must re-arm the warning');
 		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
 			customIndex.idIncrementer = saved;
 			customIndex.nodeCount = savedNodeCount;
 			customIndex.nodeCountAt = savedNodeCountAt;
 			customIndex.idIncrementerRetryAt = savedRetryAt;
 			customIndex.idIncrementerFailureLogged = savedFailureLogged;
+		}
+	});
+
+	it('keeps construction count resolution best-effort on the write path', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		customIndex.resolveConstructionNodeCount = () => {
+			throw new RangeError('simulated unusable counter');
+		};
+		try {
+			const efs = await connectionEfsDuringPut(T, 2);
+			assert.deepStrictEqual([...efs], [100], 'count resolution failure must retain the base efConstruction');
+		} finally {
+			delete customIndex.resolveConstructionNodeCount;
 		}
 	});
 
@@ -861,15 +895,25 @@ describe('HNSW construction ef auto-scale (#2180)', () => {
 		customIndex.nodeCountAt = 0;
 		const store = customIndex.indexStore;
 		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		const originalGetKeys = store.getKeys;
+		let seekCount = 0;
+		store.getKeys = function* (options) {
+			if (options?.reverse) {
+				seekCount++;
+				yield 999_999;
+				return;
+			}
+			yield* originalGetKeys.call(this, options);
+		};
 		store.getUserSharedBuffer = () => new ArrayBuffer(0);
-		customIndex.resolveNodeCount = () => 1_000_000;
 		try {
 			const efs = await connectionEfsDuringPut(T, 0);
 			assert.strictEqual(customIndex.idIncrementer, undefined);
 			assert.deepStrictEqual([...efs], [200]);
+			assert.strictEqual(seekCount, 1, 'the unusable buffer fallback must reuse the attach seed seek');
 		} finally {
 			store.getUserSharedBuffer = originalGetUserSharedBuffer;
-			delete customIndex.resolveNodeCount;
+			store.getKeys = originalGetKeys;
 			customIndex.idIncrementer = saved;
 			customIndex.nodeCount = savedNodeCount;
 			customIndex.nodeCountAt = savedNodeCountAt;

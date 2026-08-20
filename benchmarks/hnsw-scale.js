@@ -381,7 +381,8 @@ function pct(sorted, p) {
 
 let inSearch = false;
 let currentEf = 0;
-let currentEfConstruction = 0;
+let efConstructionStart = 0;
+let efConstructionEnd = 0;
 const layerStats = { visitsByLevel: new Map(), timeByLevel: new Map(), callsByLevel: new Map() };
 function resetLayerStats() {
 	layerStats.visitsByLevel.clear();
@@ -410,7 +411,10 @@ function instrument(hnsw) {
 		// query — the same value, and read from the index rather than recomputed here, so this cannot
 		// drift when the auto-scale formula changes.
 		if (inSearch && level === 0) currentEf = ef;
-		else if (!inSearch && level === 0) currentEfConstruction = ef;
+		else if (!inSearch && level === 0) {
+			if (!efConstructionStart) efConstructionStart = ef;
+			efConstructionEnd = ef;
+		}
 		if (inSearch && UPPER_EF !== undefined && level > 0 && currentEf) ef = UPPER_EF === 'match' ? currentEf : UPPER_EF;
 		else if (inSearch && UPPER_EF !== undefined && UPPER_EF !== 'match' && level > 0) ef = UPPER_EF;
 		else if (!inSearch && BUILD_UPPER_EF !== undefined && level > 0) ef = BUILD_UPPER_EF;
@@ -469,7 +473,8 @@ for (const N of SIZES) {
 	if (EF_CONSTRUCTION !== undefined) options.efConstruction = EF_CONSTRUCTION;
 	const hnsw = new HierarchicalNavigableSmallWorld(store, options);
 	instrument(hnsw);
-	currentEfConstruction = 0;
+	efConstructionStart = 0;
+	efConstructionEnd = 0;
 
 	let buildMs;
 	let queries = [];
@@ -486,7 +491,8 @@ for (const N of SIZES) {
 	}
 
 	const shape = graphShape(store);
-	const effectiveEfConstruction = currentEfConstruction || hnsw.efConstruction;
+	const effectiveEfConstructionStart = efConstructionStart || hnsw.efConstruction;
+	const effectiveEfConstructionEnd = efConstructionEnd || hnsw.efConstruction;
 
 	// queries drawn from the same distribution (perturbed corpus rows); --stream built its own above
 	if (!STREAM)
@@ -572,7 +578,8 @@ for (const N of SIZES) {
 			clusters: nClusters,
 			buildMs: Math.round(buildMs),
 			msPerInsert: +(buildMs / N).toFixed(2),
-			efConstruction: effectiveEfConstruction,
+			efConstructionStart: effectiveEfConstructionStart,
+			efConstructionEnd: effectiveEfConstructionEnd,
 			efSpec: String(efSpec),
 			ef: effectiveEf,
 			p50: +pct(latencies, 50).toFixed(2),
@@ -596,7 +603,7 @@ for (const N of SIZES) {
 		rows.push(row);
 		console.log(
 			`N=${String(N).padStart(7)}  build ${String(row.buildMs).padStart(7)}ms (${row.msPerInsert} ms/ins)  ` +
-				`efC=${String(row.efConstruction).padStart(4)}  ef=${String(row.ef).padStart(4)}${efSpec === 'auto' ? '*' : ' '}  p50 ${String(row.p50).padStart(8)}ms  p95 ${String(row.p95).padStart(8)}ms  ` +
+				`efC=${String(row.efConstructionStart).padStart(4)}→${String(row.efConstructionEnd).padEnd(4)}  ef=${String(row.ef).padStart(4)}${efSpec === 'auto' ? '*' : ' '}  p50 ${String(row.p50).padStart(8)}ms  p95 ${String(row.p95).padStart(8)}ms  ` +
 				`µs/vec ${String(row.usPerVector).padStart(6)}  visited ${String(row.visited).padStart(7)} (${String(row.visitedPctOfGraph).padStart(5)}% of graph; L0 ${row.l0Visited}, upper ${row.upperVisited}, upper ${row.upperTimePct}% of time)  ` +
 				`d(nn)/d(rand) ${row.dNear}/${row.dRand}  recall@${TOP_K} raw ${row.recall} set ${row.recallSet}  returned ${row.returned}  deg0 ${row.avgDegree0}  levels ${row.levels}`
 		);

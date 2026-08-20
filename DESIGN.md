@@ -872,10 +872,10 @@ request. Any future approximate index needs the same plumbing.
 Two bounds keep that from becoming a new problem. `ef` drives a synchronous traversal that holds
 every admitted candidate in a sorted array with an O(len) insert, so a limit-derived `ef` is capped
 at `LIMIT_EF_MAX`; without it, ordinary deep pagination (`offset` in the millions) would walk the
-whole graph on the event loop, which is worse than the truncation being fixed. And a per-query `ef`
-stays authoritative: it is an explicit cost ceiling, so it bounds the result set rather than being
-raised by the limit. A schema-level `efConstructionSearch` is a default rather than a per-request
-decision, so it does not block the floor.
+whole graph on the event loop, which is worse than the truncation being fixed. And schema-level or
+per-query `ef` values stay authoritative: each is an explicit cost ceiling, so it bounds the result
+set rather than being raised by the limit. Only automatically scaled indexes widen toward
+`LIMIT_EF_MAX` to satisfy a larger bounded request.
 
 `LIMIT_EF_MAX` is the _only_ bound on the widening — deliberately not also the graph size. Clamping
 there is tempting and costs more than it saves: the memoized size reads low while a table grows, so

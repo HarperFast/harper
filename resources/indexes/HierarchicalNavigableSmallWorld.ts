@@ -83,8 +83,8 @@ const ROUTING_EF = 1;
 // Ceiling on the ef a query's own `offset + limit` can ask for. `limit` is unprivileged and set on
 // every request, so this bounds what a caller can make one thread do synchronously: layer 0 holds
 // `ef` candidates in a sorted array with an O(len) insert. Kept within a small multiple of the
-// index's own auto-scaled ceiling so the worst case stays the same order; a caller who genuinely
-// wants more sets an explicit `ef` and owns the cost.
+// index's own auto-scaled ceiling so the worst case stays the same order. Schema and per-query ef
+// pins are authoritative cost ceilings; only an automatically scaled index widens from `limit`.
 const LIMIT_EF_MAX = 2 * AUTO_EF_CEILING;
 // Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
 // At a constant efConstruction, edge quality erodes as the graph grows until true neighbours become
@@ -391,7 +391,12 @@ export class HierarchicalNavigableSmallWorld {
 			// atomic load; a failed attach falls back to the memoized seek and retries after its TTL.
 			let efConstruction = this.efConstruction;
 			if (!this.efConstructionConfigured) {
-				efConstruction = autoScaleEfConstruction(this.resolveConstructionNodeCount(options));
+				// Graph size only tunes a heuristic; a write must never fail because it could not be resolved.
+				try {
+					efConstruction = autoScaleEfConstruction(this.resolveConstructionNodeCount(options));
+				} catch (error) {
+					logger.debug?.('could not resolve the HNSW construction node count; using the base ef', error);
+				}
 				if (efConstruction > this.efConstruction && this.lastLoggedEfConstruction !== efConstruction) {
 					// once per resolved value per process: makes replica-divergent build quality and the
 					// build-cost ramp diagnosable (the resolved value is otherwise surfaced nowhere)
@@ -788,15 +793,22 @@ export class HierarchicalNavigableSmallWorld {
 		// array first would, on an attach failure, leave THIS process allocating ids nobody else can
 		// see — cross-worker id collisions. Left unset, the next write simply retries the ensure.
 		const seed = new BigInt64Array([BigInt(largestNodeId) + 1n]);
-		const sharedBuffer = this.indexStore.getUserSharedBuffer('next-id', seed.buffer);
-		if (
-			!sharedBuffer ||
-			sharedBuffer.byteLength < BigInt64Array.BYTES_PER_ELEMENT ||
-			sharedBuffer.byteLength % BigInt64Array.BYTES_PER_ELEMENT !== 0
-		) {
-			throw new Error('Shared HNSW id counter buffer is unusable');
+		try {
+			const sharedBuffer = this.indexStore.getUserSharedBuffer('next-id', seed.buffer);
+			if (
+				!sharedBuffer ||
+				sharedBuffer.byteLength < BigInt64Array.BYTES_PER_ELEMENT ||
+				sharedBuffer.byteLength % BigInt64Array.BYTES_PER_ELEMENT !== 0
+			) {
+				throw new Error('Shared HNSW id counter buffer is unusable');
+			}
+			this.idIncrementer = new BigInt64Array(sharedBuffer);
+		} catch (error) {
+			// Reuse the transactional seed seek as the degraded count instead of seeking a second time.
+			this.nodeCount = largestNodeId + 1;
+			this.nodeCountAt = Date.now();
+			throw error;
 		}
-		this.idIncrementer = new BigInt64Array(sharedBuffer);
 	}
 
 	/** O(1) node count — the shared id counter, else a single reverse seek to the largest node id. */
@@ -1120,12 +1132,12 @@ export class HierarchicalNavigableSmallWorld {
 		// to cover the request, up to LIMIT_EF_MAX — `ef` sizes a synchronous traversal that holds every
 		// admitted candidate in a sorted array with an O(len) insert, so an unbounded one lets a plain
 		// `limit` stall the thread. Past the ceiling the result set is still short, as it was before.
-		// A per-query `ef` is left authoritative: it is an explicit cost ceiling, and a caller who sets
-		// one has said what they are willing to spend.
+		// Schema and per-query `ef` pins are authoritative cost ceilings. Only an automatically scaled
+		// index widens toward LIMIT_EF_MAX to cover a larger bounded request.
 		// The ceiling is the only bound: clamping to the graph size as well would need a count exact as
 		// of this query — the memo reads low while a table grows, truncating the very limit this
 		// honours — and an ef above the node count is free, the traversal ending at the graph, not ef.
-		if (minResults !== undefined && !explicitEf && minResults > effectiveEf) {
+		if (minResults !== undefined && !explicitEf && !this.efSearchConfigured && minResults > effectiveEf) {
 			effectiveEf = Math.max(effectiveEf, Math.min(minResults, LIMIT_EF_MAX));
 		}
 		// Predicate-aware traversal budget (#1241): matches accrue slower than visits under a selective
