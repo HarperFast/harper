@@ -163,7 +163,6 @@ export async function loadComponentDirectories(
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
-	const cycleLoadedComponents = loadedComponents;
 	let failedRecoveries = new Map<string, Error>();
 	try {
 		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
@@ -203,17 +202,15 @@ export async function loadComponentDirectories(
 					}
 					const mountResult = tryRootConfigMount(appName);
 					if (!mountResult.ok) return;
-					const modulesBeforeLoad = new Set(cycleLoadedComponents.keys());
+					const loadedModules = new Set<any>();
 					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
 						isRoot: false,
 						autoReload: false,
 						appName,
 						mount: mountResult.mount,
+						collectLoadedModules: loadedModules,
 					});
-					await readyComponentModules(
-						[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule)),
-						readyComponentPromises
-					);
+					await readyComponentModules(loadedModules, readyComponentPromises);
 				})
 				.catch((error) => {
 					const recoveryError = error instanceof Error ? error : new Error(String(error));
@@ -561,6 +558,7 @@ export interface LoadComponentOptions {
 	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
 	// across deploys (#1462).
 	collectScopes?: Set<Scope>;
+	collectLoadedModules?: Set<any>;
 	// Routing the operator declared for this application in the root config (`host`/`urlPath` on
 	// the application's entry). Applied to every plugin scope this load creates, and inherited by
 	// components the application itself declares, so the whole subtree moves together.
@@ -592,6 +590,7 @@ export async function loadComponent(
 		autoReload,
 		appName,
 		mount,
+		collectLoadedModules,
 	} = options;
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
@@ -736,6 +735,7 @@ export async function loadComponent(
 								autoReload: false,
 								appName: appName || componentName,
 								collectScopes: options.collectScopes,
+								collectLoadedModules,
 								// `host`/`urlPath` on this entry route the component being loaded. For an
 								// application (no plugin module of its own) that entry is the only place an
 								// operator can say where the app is served — its own config.yaml declares the
@@ -928,6 +928,7 @@ export async function loadComponent(
 							...componentConfig,
 						})) || extensionModule;
 				loadedComponents.set(extensionModule, true);
+				collectLoadedModules?.add(extensionModule);
 
 				if (
 					(extensionModule.handleFile ||

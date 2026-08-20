@@ -501,6 +501,120 @@ describe('ComponentLoader Status Integration', function () {
 		}
 	});
 
+	it('keeps readiness scoped to each concurrent deferred component load', async function () {
+		this.timeout(15000);
+		const firstAppName = 'first-deferred-readiness-probe';
+		const firstPluginName = 'firstDeferredReadinessProbe';
+		const secondAppName = 'second-deferred-readiness-probe';
+		const secondPluginName = 'secondDeferredReadinessProbe';
+		const secondBlockerName = 'secondDeferredReadinessBlocker';
+		const firstComponentDir = path.join(tempDir, firstAppName);
+		const secondComponentDir = path.join(tempDir, secondAppName);
+		const firstAsideDir = path.join(tempDir, '.deploy-aside', firstAppName, '.in-progress-123-previous');
+		const secondAsideDir = path.join(tempDir, '.deploy-aside', secondAppName, '.in-progress-123-previous');
+		await fs.mkdir(firstAsideDir, { recursive: true });
+		await fs.writeFile(path.join(firstAsideDir, 'config.yaml'), `${firstPluginName}: {}\n`);
+		await fs.mkdir(secondAsideDir, { recursive: true });
+		await fs.writeFile(path.join(secondAsideDir, 'config.yaml'), `${secondPluginName}: {}\n${secondBlockerName}: {}\n`);
+		await fs.mkdir(firstComponentDir, { recursive: true });
+		await fs.writeFile(path.join(firstComponentDir, 'partial'), 'partial');
+		await fs.mkdir(secondComponentDir, { recursive: true });
+		await fs.writeFile(path.join(secondComponentDir, 'partial'), 'partial');
+
+		let releaseFirstPreparation;
+		let releaseSecondPreparation;
+		let firstPreparationHeld;
+		let secondPreparationHeld;
+		const firstPreparationStarted = new Promise((resolve) => (firstPreparationHeld = resolve));
+		const secondPreparationStarted = new Promise((resolve) => (secondPreparationHeld = resolve));
+		const firstPreparation = withComponentPreparationLock(firstComponentDir, async () => {
+			firstPreparationHeld();
+			await new Promise((resolve) => (releaseFirstPreparation = resolve));
+		});
+		const secondPreparation = withComponentPreparationLock(secondComponentDir, async () => {
+			secondPreparationHeld();
+			await new Promise((resolve) => (releaseSecondPreparation = resolve));
+		});
+
+		let releaseFirstStart;
+		let releaseSecondStart;
+		let firstStartEntered;
+		let secondBlockerEntered = false;
+		let firstReadyCalls = 0;
+		let secondReadyCalls = 0;
+		const firstStartReached = new Promise((resolve) => (firstStartEntered = resolve));
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[firstPluginName] = {
+			async start() {
+				firstStartEntered();
+				await new Promise((resolve) => (releaseFirstStart = resolve));
+				return { ready: () => firstReadyCalls++ };
+			},
+		};
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[secondPluginName] = {
+			async start() {
+				await firstStartReached;
+				return { ready: () => secondReadyCalls++ };
+			},
+		};
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[secondBlockerName] = {
+			async start() {
+				secondBlockerEntered = true;
+				await new Promise((resolve) => (releaseSecondStart = resolve));
+			},
+		};
+		const loadedComponents = new Map();
+		const resources = { isWorker: true, set() {} };
+
+		try {
+			await Promise.all([firstPreparationStarted, secondPreparationStarted]);
+			await componentLoader.loadComponentDirectories(loadedComponents, resources, new WeakMap());
+			releaseFirstPreparation();
+			releaseSecondPreparation();
+			await Promise.all([firstPreparation, secondPreparation]);
+			await waitFor(() => secondBlockerEntered, {
+				timeout: 5000,
+				message: 'concurrent deferred loads did not reach the controlled interleaving',
+			});
+
+			releaseFirstStart();
+			await waitFor(() => firstReadyCalls === 1, {
+				timeout: 5000,
+				message: 'first deferred component did not become ready',
+			});
+			assert.strictEqual(secondReadyCalls, 0, 'second component became ready before its load completed');
+
+			releaseSecondStart();
+			await waitFor(() => secondReadyCalls === 1, {
+				timeout: 5000,
+				message: 'second deferred component did not become ready after its load completed',
+			});
+		} finally {
+			releaseFirstPreparation?.();
+			releaseSecondPreparation?.();
+			releaseFirstStart?.();
+			releaseSecondStart?.();
+			await Promise.all([firstPreparation, secondPreparation]);
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[firstPluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[secondPluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[secondBlockerName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(path.join(tempDir, '.deploy-aside', firstAppName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(path.join(tempDir, '.deploy-aside', secondAppName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(firstComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(secondComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	// A mounted application's deprecated `start`/`startOnMainThread` hooks receive the raw,
 	// unmounted server (unlike the new Plugin API's `handleApplication(scope)`), so routes they
 	// register would silently escape the mount. Loading must fail closed instead (review finding).
