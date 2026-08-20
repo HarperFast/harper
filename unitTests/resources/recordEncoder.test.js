@@ -226,6 +226,22 @@ describe('RecordEncoder structure-dictionary bound & observability (harper#2220)
 		assert.strictEqual(idleWorker.getStructureCounts().typed, 8, 'counts must come from the durable payload');
 	});
 
+	it('does not report zero typed structures for a named-only durable payload', () => {
+		// structon keeps this encoder's typed dictionary for the legacy bare-array and cbor-x
+		// {structures} payloads -- both carry named structures only. Reading typed as 0 for those
+		// would show an empty dictionary for a store that is actually saturated.
+		const store = sharedStore();
+		const enc = makeCappedEncoder(store, 8);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.typedStructs.length, 8, 'precondition: this encoder holds a full dictionary');
+
+		store.save(['someNamedStructure']); // legacy bare-array form
+		assert.strictEqual(enc.getStructureCounts().typed, 8, 'bare-array payload must not zero the typed count');
+
+		store.save({ structures: ['someNamedStructure'] }); // cbor-x SharedData form
+		assert.strictEqual(enc.getStructureCounts().typed, 8, 'cbor-x payload must not zero the typed count');
+	});
+
 	it('reports zero for a store whose structures have never been saved', () => {
 		const enc = makeCappedEncoder(sharedStore(), 8);
 		assert.deepStrictEqual(enc.getStructureCounts(), {

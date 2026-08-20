@@ -43,7 +43,7 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
 
 // Reaching this bound is not an error: novel shapes fall back to plain msgpackr encoding, which
-// round-trips correctly but gives up random-access field reads (HarperFast/harper#2220).
+// round-trips correctly but gives up random-access field reads.
 export const DEFAULT_MAX_TYPED_STRUCTURES = 256;
 
 export interface StructureCounts {
@@ -53,16 +53,17 @@ export interface StructureCounts {
 	typedEnabled: boolean;
 }
 
-// Mirrors structon's onLoadedStructures: the durable shared-structures payload is a
-// {named, typed} Map, the same round-tripped through msgpackr as a plain object, cbor-x's
-// {structures} SharedData, or a legacy bare named array.
-function countDurableStructures(sharedData: any): { typed: number; classic: number } {
+// Mirrors structon's onLoadedStructures over the four durable payload shapes it accepts. The
+// bare-array and cbor-x forms carry named structures only, and structon keeps the encoder's own
+// typed dictionary for them -- so `localTyped` must be reported rather than zero, or a saturated
+// store reads as empty.
+function countDurableStructures(sharedData: any, localTyped: number): { typed: number; classic: number } {
 	if (!sharedData) return { typed: 0, classic: 0 };
 	if (sharedData instanceof Map)
 		return { typed: sharedData.get('typed')?.length ?? 0, classic: sharedData.get('named')?.length ?? 0 };
-	if (Array.isArray(sharedData)) return { typed: 0, classic: sharedData.length };
+	if (Array.isArray(sharedData)) return { typed: localTyped, classic: sharedData.length };
 	if (!sharedData.named && !sharedData.typed && Array.isArray(sharedData.structures))
-		return { typed: 0, classic: sharedData.structures.length };
+		return { typed: localTyped, classic: sharedData.structures.length };
 	return { typed: sharedData.typed?.length ?? 0, classic: sharedData.named?.length ?? 0 };
 }
 
@@ -394,13 +395,12 @@ export class RecordEncoder extends StructonEncoder {
 		};
 	}
 	/**
-	 * Sizes of this store's record-structure dictionaries, read from the DURABLE shared-structures
-	 * payload rather than this encoder's arrays: each worker owns its own encoder and loads or mints
-	 * lazily, so a worker that never encoded for this store holds empty arrays for a store whose
-	 * dictionary is full. Only the durable payload is per-table (harper#2220).
+	 * Sizes of this store's record-structure dictionaries. Read from the durable payload, not this
+	 * encoder's arrays: each worker owns an encoder and loads lazily, so a worker that never encoded
+	 * for this store holds empty arrays for a store whose dictionary is full.
 	 */
 	getStructureCounts(): StructureCounts {
-		const { typed, classic } = countDurableStructures(this.getStructures());
+		const { typed, classic } = countDurableStructures(this.getStructures(), this.typedStructs?.length ?? 0);
 		return {
 			typed,
 			classic,
@@ -409,10 +409,11 @@ export class RecordEncoder extends StructonEncoder {
 		};
 	}
 	/**
-	 * Warn on the transition to a saturated typed dictionary. Called only from the post-save path, so
-	 * this encoder's array is what was just persisted and reading it here is both cheap and canonical;
-	 * the durable-backed counts above are what a restarted or non-minting worker should report.
-	 * Never allowed to escape into the save's return value -- the structures are already committed.
+	 * Warn on the transition to a saturated typed dictionary. Scoped to this encoder, not the durable
+	 * store: it fires only from the post-save path (where the local array is exactly what was just
+	 * persisted), so each worker that crosses the bound warns once and a worker restarted against an
+	 * already-full dictionary never does. The counts above are the reliable signal; this is the
+	 * heads-up. It must not escape into the save's return value -- the structures are committed.
 	 */
 	#reportedStructureSaturation = false;
 	checkStructureCapacity() {
@@ -428,7 +429,7 @@ export class RecordEncoder extends StructonEncoder {
 					'and per-field value width -- not column count (see HarperFast/harper#2220).'
 			);
 		} catch {
-			// a failing log sink must not fail the write whose structures already committed
+			// the structures are already committed; a failing sink must not fail the write
 		}
 	}
 	decode(buffer, options) {

@@ -339,21 +339,11 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 	for (const [tableName, table] of Object.entries(tables)) {
 		const fullTableName = `${dbName}.${tableName}`;
 		const tableSize = table.getSize();
-		// Structure-dictionary counts ride on this record rather than their own: they are three
-		// slow-moving integers on the same per-table cadence, and a separate metric would double
-		// the retained per-table row count for a year (harper#2220).
-		const structureCounts = table.getStructureCounts?.();
 		const metric = {
 			metric: METRIC.TABLE_SIZE,
 			database: dbName,
 			table: tableName,
 			size: tableSize,
-			...(structureCounts && {
-				typedStructures: structureCounts.typed,
-				typedStructureLimit: structureCounts.typedLimit,
-				typedStructuresEnabled: structureCounts.typedEnabled,
-				classicStructures: structureCounts.classic,
-			}),
 		};
 		log.trace?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, metric);

@@ -4831,7 +4831,7 @@ export function makeTable(options) {
 			const stats = primaryStore.getStats();
 			return (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
 		}
-		/** Sizes of this table's durable record-structure dictionaries -- see HarperFast/harper#2220. */
+		/** Sizes of this table's durable record-structure dictionaries. */
 		static getStructureCounts(): StructureCounts | undefined {
 			return primaryStore.encoder?.getStructureCounts?.();
 		}
