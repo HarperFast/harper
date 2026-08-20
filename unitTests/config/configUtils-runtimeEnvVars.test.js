@@ -180,6 +180,9 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		assert.deepStrictEqual(fsRenameSyncStub.firstCall.args, [writeTarget, '/test/config.yaml']);
 		assert.strictEqual(loggerStub.debug.called, true);
 		assert.match(loggerStub.debug.firstCall.args[0], /Config file updated/);
+		// The pending mark on the snapshot is only cleared once the file it describes is on disk.
+		assert.strictEqual(confirmEnvConfigStateStub.calledOnce, true, 'snapshot confirmed after the file write');
+		assert.strictEqual(fsRenameSyncStub.calledBefore(confirmEnvConfigStateStub), true);
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
@@ -206,6 +209,8 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		assert.strictEqual(loggerStub.error.called, true);
 		assert.match(loggerStub.error.firstCall.args[0], /Failed to write config file/);
+		// A snapshot whose config file never landed stays marked pending, so the next boot discards it.
+		assert.strictEqual(confirmEnvConfigStateStub.called, false, 'snapshot not confirmed when the file write failed');
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
