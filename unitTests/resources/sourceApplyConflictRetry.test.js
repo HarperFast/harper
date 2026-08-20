@@ -282,6 +282,8 @@ describe('abortChainAfterRetries chain cleanup', () => {
 	it("still detaches, untracks, and natively aborts later links when an earlier link's wrapper cleanup throws", () => {
 		const head = new DatabaseTransaction();
 		const next = new DatabaseTransaction();
+		const context = { transaction: head };
+		head.setContext(context);
 		head.next = next;
 
 		const headNative = fakeNative();
@@ -323,6 +325,8 @@ describe('abortChainAfterRetries chain cleanup', () => {
 		assert.equal(next.transaction, null, 'later link must have its native handle detached');
 		assert.ok(!trackedTxns.has(head), 'head must be untracked');
 		assert.ok(!trackedTxns.has(next), "later link must be untracked despite the earlier link's cleanup exception");
+		assert.deepStrictEqual(head.writes, [], 'failed blob cleanup must not retain the write graph');
+		assert.equal(context.transaction, null, 'failed blob cleanup must not retain the closed wrapper');
 	});
 
 	it('aborts both head handles when an outstanding iterator forced writes onto a replay transaction', () => {

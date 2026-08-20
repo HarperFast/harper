@@ -1073,19 +1073,21 @@ export class DatabaseTransaction implements Transaction {
 		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
-		for (const write of this.writes) {
-			if (write?.savedBlobs)
-				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+		try {
+			for (const write of this.writes) {
+				if (write?.savedBlobs)
+					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+			}
+		} finally {
+			this.clearWrites();
+			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
+			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
+			// starting a fresh one) so the rest of the logical operation fails atomically via the
+			// poison check in addWrite()/commit(), rather than silently landing a later write on a
+			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
+			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
+			this.releaseContext(!this.timedOut);
 		}
-		// reset the transaction
-		this.clearWrites();
-		// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
-		// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
-		// starting a fresh one) so the rest of the logical operation fails atomically via the
-		// poison check in addWrite()/commit(), rather than silently landing a later write on a
-		// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
-		// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
-		this.releaseContext(!this.timedOut);
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
