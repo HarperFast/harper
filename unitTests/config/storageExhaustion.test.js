@@ -195,7 +195,6 @@ describe('log writes that cannot land (#847)', function () {
 		const output = execFileSync(process.execPath, ['-e', childScript], {
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
-			env: { ...process.env, HARPER_ROOT: testRoot },
 		});
 
 		assert.match(output, /CHILD-SURVIVED/, 'the process survived a refused log append');
