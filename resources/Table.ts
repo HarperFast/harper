@@ -36,6 +36,7 @@ import {
 	DatabaseTransaction,
 	ImmediateTransaction,
 	priorStagedWrite,
+	isReleasedTransaction,
 	TRANSACTION_STATE,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -5597,6 +5598,7 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
+		if (isReleasedTransaction(transaction)) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
@@ -5612,6 +5614,10 @@ export function makeTable(options) {
 				if (!nextTxn) {
 					// no next one, then add our database
 					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// The chain root, so a link that only ever receives a blind write is supervised by the
+					// long-transaction monitor as part of its logical transaction rather than as its own
+					// timeout root (issue #2231).
+					transaction.next.root = transaction.root ?? transaction;
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;

@@ -31,6 +31,7 @@ const {
 	registerBlobReceiveInFlight,
 	unregisterBlobReceiveInFlight,
 	isBlobReceiveInFlight,
+	createPendingMarkerBarrier,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -1260,24 +1261,121 @@ describe('Blob test', () => {
 		source.blobStreamIdleTimeoutMs = 60000; // arm the source-idle watchdog (won't fire during the test)
 		const blob = await createBlob(source, { size: 20000 });
 		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
-		source.write(randomBytes(4000)); // a partial body lands before the abort
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		source.destroy(new Error('Blob source stream idle for 120000ms'));
-		await assert.rejects(Promise.resolve(saving), 'the aborted save rejects');
-		// the PENDING stub is written asynchronously in the abort callback; wait for the read to flip to 503
-		await waitFor(
-			async () => {
-				try {
-					await blob.bytes();
-					return false;
-				} catch (error) {
-					return error.statusCode === 503;
-				}
-			},
-			{ timeout: 2000, message: 'aborted source write should leave a PENDING (503) blob' }
+		const lockKey = getFileId(blob) + ':blob';
+		await new Promise((resolve, reject) => {
+			source.write(randomBytes(4000), (error) => (error ? reject(error) : resolve()));
+		});
+		const sourceError = new Error('Blob source stream idle for 120000ms');
+		source.destroy(sourceError);
+		await assert.rejects(Promise.resolve(saving), (error) => {
+			assert.strictEqual(error, sourceError, 'the save must reject with the original source error');
+			return true;
+		});
+		const lockReleased = store.tryLock(lockKey);
+		if (lockReleased) store.unlock(lockKey);
+		assert.ok(lockReleased, 'the aborted save must release its blob lock before rejection settles');
+		await assert.rejects(
+			blob.bytes(),
+			(error) => error.statusCode === 503,
+			'aborted source write should leave a PENDING (503) blob before rejection settles'
 		);
 		unlinkSync(getFilePathForBlob(blob));
 	});
+	it('#481: a synchronous PENDING marker failure releases the blob lock and preserves the source error', async () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const source = new PassThrough();
+		source.blobStreamIdleTimeoutMs = 60000;
+		const blob = await createBlob(source, { size: 20000 });
+		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
+		const lockKey = getFileId(blob) + ':blob';
+		await new Promise((resolve, reject) => {
+			source.write(randomBytes(4000), (error) => (error ? reject(error) : resolve()));
+		});
+		const sourceError = new Error('source failure');
+		sourceError.toString = () => {
+			throw new Error('synchronous marker construction failure');
+		};
+		source.destroy(sourceError);
+		await assert.rejects(Promise.resolve(saving), (error) => {
+			assert.strictEqual(error, sourceError, 'marker failure must not mask the source error');
+			return true;
+		});
+		const lockReleased = store.tryLock(lockKey);
+		if (lockReleased) store.unlock(lockKey);
+		assert.ok(lockReleased, 'a synchronous marker failure must release the blob lock before rejection settles');
+		const filePath = getFilePathForBlob(blob);
+		if (existsSync(filePath)) unlinkSync(filePath);
+	});
+	// The barrier's own contract, exercised without stalling a real filesystem write. The abort
+	// regressions above cover the wired-up normal path; these cover the two behaviors that did not
+	// exist before the bound was added, and which no fs-backed test can reach: the fallback firing
+	// when the write callback never arrives, and the once-guard that keeps a late callback from
+	// releasing a lock a different writer now holds.
+	describe('#2228: the PENDING-marker cleanup barrier', () => {
+		it('releases before it settles, exactly once, on a normal write completion', () => {
+			const order = [];
+			const finish = createPendingMarkerBarrier({
+				timeoutMs: 60_000,
+				release: () => order.push('release'),
+				settle: () => order.push('settle'),
+			});
+			finish();
+			finish(); // a duplicate completion must be a no-op
+			assert.deepStrictEqual(order, ['release', 'settle'], 'release must precede settle, and each run once');
+		});
+
+		it('reports a write error before releasing, and still releases and settles', () => {
+			const order = [];
+			const writeError = new Error('ENOSPC');
+			let reported;
+			const finish = createPendingMarkerBarrier({
+				timeoutMs: 60_000,
+				release: () => order.push('release'),
+				settle: () => order.push('settle'),
+				onWriteError: (error) => {
+					reported = error;
+					order.push('report');
+				},
+			});
+			finish(writeError);
+			assert.deepStrictEqual(order, ['report', 'release', 'settle']);
+			assert.strictEqual(reported, writeError, 'the write error is reported verbatim');
+		});
+
+		it('settles on its own when the write callback never arrives (the bound)', async () => {
+			const order = [];
+			let timedOut = false;
+			createPendingMarkerBarrier({
+				timeoutMs: 10,
+				release: () => order.push('release'),
+				settle: () => order.push('settle'),
+				onTimeout: () => {
+					timedOut = true;
+				},
+			});
+			// Deliberately never call finish — this is the wedged-volume shape.
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.ok(timedOut, 'the fallback must report that it fired');
+			assert.deepStrictEqual(order, ['release', 'settle'], 'the fallback must release then settle');
+		});
+
+		it('never releases twice when a late write callback lands after the fallback fired', async () => {
+			let releases = 0;
+			let settles = 0;
+			const finish = createPendingMarkerBarrier({
+				timeoutMs: 10,
+				release: () => releases++,
+				settle: () => settles++,
+			});
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.strictEqual(releases, 1, 'the fallback released once');
+			finish(); // the stalled write finally calls back
+			finish(new Error('late error'));
+			assert.strictEqual(releases, 1, 'a late callback must NOT release a lock another writer may hold');
+			assert.strictEqual(settles, 1, 'and must not settle twice');
+		});
+	});
+
 	it('#481: an app-supplied (unarmed) source-stream abort is NOT marked PENDING (gate excludes one-shot streams)', async () => {
 		// Same abort shape, but the source is NOT armed with blobStreamIdleTimeoutMs — an ordinary app write,
 		// not a replication receive. The abort branch must NOT stamp it PENDING: nothing will ever re-stream
