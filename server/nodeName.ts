@@ -58,6 +58,25 @@ export function clearThisNodeName() {
 	nodeName = undefined;
 }
 
+// node.hostname may be configured as a full URL; reduce it to a bare host so composing a
+// display URL from it does not double-wrap the scheme and port.
+export function nodeNameToDisplayHost(name: string): string {
+	if (!name) return name;
+	const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(name);
+	const candidates = hasScheme ? [name] : [`http://${name}`, `http://[${name}]`];
+	for (const candidate of candidates) {
+		try {
+			const { hostname } = new URL(candidate);
+			if (hostname) return hostname;
+		} catch {}
+	}
+	return name;
+}
+
+export function getThisNodeHostname(): string {
+	return nodeNameToDisplayHost(getThisNodeName());
+}
+
 function getHostFromListeningPort(key: string) {
 	const port: string | undefined = env.get(key);
 	const lastColon = port?.lastIndexOf?.(':');

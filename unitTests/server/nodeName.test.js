@@ -8,7 +8,13 @@ const sinon = require('sinon');
 
 const env = require('#src/utility/environment/environmentManager');
 const { logger } = require('#src/utility/logging/logger');
-const { hostnameToUrl, getThisNodeName, clearThisNodeName } = require('#src/server/nodeName');
+const {
+	hostnameToUrl,
+	getThisNodeName,
+	getThisNodeHostname,
+	nodeNameToDisplayHost,
+	clearThisNodeName,
+} = require('#src/server/nodeName');
 
 describe('getThisNodeName precedence (harper-pro#351)', () => {
 	let sandbox;
@@ -75,6 +81,54 @@ describe('getThisNodeName precedence (harper-pro#351)', () => {
 			logger.warn = originalWarn;
 		}
 		assert.ok(!warn.called, 'should not warn when replication.hostname is unset');
+	});
+});
+
+describe('nodeNameToDisplayHost (#2218 double-wrapped startup URLs)', () => {
+	it('returns a bare host unchanged', () => {
+		assert.strictEqual(nodeNameToDisplayHost('localhost'), 'localhost');
+	});
+
+	it('strips the scheme and port when node.hostname is a full URL', () => {
+		assert.strictEqual(nodeNameToDisplayHost('http://localhost:9926'), 'localhost');
+	});
+
+	it('strips a bare host:port down to the host', () => {
+		assert.strictEqual(nodeNameToDisplayHost('localhost:9926'), 'localhost');
+	});
+
+	it('preserves an already-bracketed IPv6 host', () => {
+		assert.strictEqual(nodeNameToDisplayHost('https://[::1]:9926'), '[::1]');
+	});
+
+	it('brackets a bare IPv6 literal so composed URLs stay valid', () => {
+		assert.strictEqual(nodeNameToDisplayHost('::1'), '[::1]');
+	});
+
+	it('returns an unparseable value unchanged rather than dropping it', () => {
+		assert.strictEqual(nodeNameToDisplayHost('node with space'), 'node with space');
+	});
+});
+
+describe('getThisNodeHostname reads and normalizes the configured node.hostname', () => {
+	let originalNodeHostname;
+
+	beforeEach(() => {
+		originalNodeHostname = env.get('node_hostname');
+		clearThisNodeName();
+	});
+
+	afterEach(() => {
+		env.setProperty('node_hostname', originalNodeHostname);
+		clearThisNodeName();
+	});
+
+	// Guards the wiring bin/run.ts depends on: the wrapper must normalize the resolved node name,
+	// not return it raw.
+	it('normalizes a URL-valued node.hostname to a bare host', () => {
+		env.setProperty('node_hostname', 'http://localhost:9926');
+		clearThisNodeName();
+		assert.strictEqual(getThisNodeHostname(), 'localhost');
 	});
 });
 
