@@ -47,6 +47,8 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 import * as regDeprecated from '../resources/registrationDeprecated.ts';
 import * as deploymentOperations from '../components/deploymentOperations.ts';
 import * as secretOperations from '../components/secretOperations.ts';
+import * as trustPolicyOperations from '../security/authn/oidc/trustPolicyOperations.ts';
+import * as tokenExchange from '../security/authn/oidc/tokenExchange.ts';
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -359,6 +361,28 @@ requiredPermissions.set(
 	new (permission as any)(true, [], terms.OPERATIONS_ENUM.GET_SECRETS_PUBLIC_KEY)
 );
 
+// OIDC trust policies (#2171). A policy lets an external CI run authenticate as a Harper user, so
+// these are SU-only; the handlers ALSO enforce super_user directly so they cannot be delegated
+// through a role's `operations` allowlist (gate-2 bypass below).
+requiredPermissions.set(
+	trustPolicyOperations.addOidcTrust.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.ADD_OIDC_TRUST)
+);
+requiredPermissions.set(
+	trustPolicyOperations.listOidcTrust.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.LIST_OIDC_TRUST)
+);
+requiredPermissions.set(
+	trustPolicyOperations.dropOidcTrust.name,
+	new (permission as any)(true, [], terms.OPERATIONS_ENUM.DROP_OIDC_TRUST)
+);
+// The exchange is unauthenticated by design — it authenticates its own caller against a trust
+// policy, the way create_authentication_tokens does against a password.
+requiredPermissions.set(
+	tokenExchange.exchangeOidcToken.name,
+	new (permission as any)(false, [], terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN)
+);
+
 //Below are functions that are currently open to all roles
 requiredPermissions.set(regDeprecated.getRegistrationInfo.name, new (permission as any)(false, []));
 requiredPermissions.set(user.userInfo.name, new (permission as any)(false, [], terms.OPERATIONS_ENUM.USER_INFO));
@@ -418,7 +442,77 @@ module.exports = {
  * @param operation - The operation specified in the call.
  * @returns {null | PermissionResponseObject} - null if permissions match, errors returned in the PermissionResponseObject
  */
-export function verifyPermsAST(ast, userObject, operation) {
+/**
+ * Token-scoped narrowing: a minted operation token may carry a subset of what its user's role allows,
+ * so one credential can be handed out with less authority than the user has (an OIDC trust policy
+ * uses this to scope a single workflow). Returns a denial, or undefined when the scope permits — or
+ * when there is no scope, which is every token minted before this existed.
+ *
+ * Shared by verifyPerms AND verifyPermsAST, and called first in both. Four ways this gets bypassed
+ * if it moves or is incomplete:
+ *
+ * 1. `sql` dispatches to verifyPermsAST, in a branch mutually exclusive with the verifyPerms call
+ *    (server/serverHelpers/serverUtilities.ts). A gate in only one of them means a token scoped to
+ *    `get_status` can still run arbitrary SQL against whatever its role can reach.
+ * 2. Both functions `return null` early for a super_user — the identity that most needs constraining.
+ * 3. verifyPerms' `operations` gate 2 also returns null, treating an explicit listing of an SU-only
+ *    operation as a deliberate grant.
+ * 4. Operations that never reach verifyPerms at all: create_authentication_tokens (NO_AUTH),
+ *    refresh_operation_token, and impersonation each PRODUCE a new credential or principal, so the
+ *    scope has to be carried forward there too or a scoped token mints an unscoped one. That carry-
+ *    forward lives in tokenAuthentication.ts and impersonation.ts, not here.
+ *
+ * It can only subtract. The scope is deliberately NOT merged into `permission.operations`, because
+ * that field is not purely narrowing (see gate 2) — merging into it could widen instead.
+ *
+ * `apiOperation` MUST be the snake_case API operation the caller actually invoked (`deploy_component`,
+ * `sql`, `export_local`, ...) — i.e. `requestJson.operation`, the same namespace the policy's scope is
+ * written in. It is emphatically NOT the handler function name: many handlers have no `api_name`
+ * mapping (deploy_component → `deployComponent`) and some are shared across operations
+ * (`search_by_id`/`search_by_hash`), so resolving the scope name from the handler both denies the
+ * feature's own headline op and conflates aliases. Callers pass the real operation.
+ */
+function tokenScopeDenial(userObject: any, apiOperation: string) {
+	// `!= null`, not `!== undefined`: an unscoped policy stores `operations: null`, and expanding a
+	// null would throw rather than fall through to the role.
+	const tokenOperations = userObject?.tokenOperations;
+	if (tokenOperations == null) return undefined;
+
+	// `instanceof Set`, not just presence: this memo rides on hdb_user, and a job persists that user
+	// into hdb_job.request, where msgpackr round-trips a Set back as a plain Array. Trusting the
+	// memo's presence would then call .has() on an Array and throw a TypeError out of the auth gate
+	// — still fail-closed, but as a 500 rather than a denial, and only inside a job worker.
+	let scopedOps = userObject._expandedTokenOperations;
+	if (!(scopedOps instanceof Set)) {
+		scopedOps = userObject._expandedTokenOperations = expandOperationsPerms(tokenOperations);
+	}
+	if (scopedOps.has(apiOperation)) return undefined;
+
+	harperLogger.info(`Operation '${apiOperation}' is outside the scope of the presented token`);
+	return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(apiOperation));
+}
+
+/**
+ * A scope naming `sql` grants the SQL interface, not unrestricted DML through it.
+ *
+ * `read_only` expands to include `sql` — the group defers DML enforcement to table CRUD permissions
+ * (see its note in operationPermissions.ts) — but verifyPermsAST returns null outright for a
+ * super_user before any table check runs. Without this, a token scoped to `read_only` could DELETE,
+ * which is the one thing that name promises it cannot do.
+ *
+ * So a write statement additionally requires its matching data operation in scope. That is exactly
+ * what separates `read_only` (no insert/update/delete) from `standard_user` (all three), with no
+ * need to track which group admitted `sql`. A bare `['sql']` therefore admits SELECT only; name the
+ * write operations alongside it to allow more. Anything that is not a recognized SELECT falls
+ * through to the same check and is denied unless named, so an unfamiliar statement type fails closed.
+ */
+function sqlWriteScopeDenial(userObject: any, sqlVariant: string) {
+	if (userObject?.tokenOperations == null) return undefined;
+	if (sqlVariant === terms.VALID_SQL_OPS_ENUM.SELECT) return undefined;
+	return tokenScopeDenial(userObject, sqlVariant);
+}
+
+export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.OPERATIONS_ENUM.SQL) {
 	//TODO - update these validation checks to use validate.js
 	if (commonUtils.isEmptyOrZeroLength(ast)) {
 		harperLogger.info('verify_perms_ast has an empty user parameter');
@@ -432,6 +526,15 @@ export function verifyPermsAST(ast, userObject, operation) {
 		harperLogger.info('verify_perms_ast has a null operation parameter');
 		throw handleHDBError(new Error());
 	}
+
+	// `operation` here is the SQL statement variant (select/insert/...), not the API operation. The
+	// scope is checked against `apiOperation` — the top-level operation the caller invoked, which is
+	// `sql` for a direct SQL call but `export_local`/`export_to_s3` for a job whose inner
+	// search_operation is SQL. Checking a hardcoded `sql` would let a token scoped only to `sql` start
+	// an export that its scope excludes. Ahead of the super_user bypass, as on the NoSQL path.
+	const scopeDenial = tokenScopeDenial(userObject, apiOperation) ?? sqlWriteScopeDenial(userObject, operation);
+	if (scopeDenial) return scopeDenial;
+
 	try {
 		const bucketModule = require('../sqlTranslator/sql_statement_bucket');
 		const bucket = bucketModule.default || bucketModule;
@@ -527,7 +630,7 @@ export function verifyPermsAST(ast, userObject, operation) {
  * @param operation - The name of the operation specified in the request.
  * @returns { null | PermissionResponseObject } - null if permissions match, errors are consolidated into PermissionResponseObj.
  */
-export function verifyPerms(requestJson: any, operation: any, _options?: any) {
+export function verifyPerms(requestJson: any, operation: any, options?: { apiOperation?: string }) {
 	if (
 		requestJson === null ||
 		operation === null ||
@@ -557,6 +660,14 @@ export function verifyPerms(requestJson: any, operation: any, _options?: any) {
 	}
 
 	const permsResponse = new PermissionResponseObject();
+
+	// The top-level API operation the caller invoked — the namespace the policy scope is written in.
+	// For a job (export_local/export_to_s3), the dispatcher passes the nested search_operation as
+	// requestJson, so requestJson.operation is the *inner* op (e.g. search_by_conditions); the caller
+	// threads the real top-level op through `options.apiOperation` so a read-scoped token cannot ride
+	// an export. Never `op` (the handler name), which would deny deploy_component and conflate aliases.
+	const scopeDenial = tokenScopeDenial(requestJson.hdb_user, options?.apiOperation ?? requestJson.operation);
+	if (scopeDenial) return scopeDenial;
 
 	if (
 		commonUtils.isEmptyOrZeroLength(requestJson.hdb_user?.role) ||

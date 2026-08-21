@@ -603,4 +603,38 @@ describe('security/impersonation.ts', () => {
 			assert.strictEqual(modeC.role.id, '_impersonated_ctx_user');
 		});
 	});
+
+	describe('token operation scope survives impersonation (#2174)', () => {
+		// A scoped operation token constrains the credential regardless of which principal it acts as,
+		// so impersonating must not shed the scope — otherwise a scoped super_user token escalates by
+		// impersonating a broader (still-downgraded) role.
+		const INLINE_ROLE = { role: { permission: { super_user: false, dev: { tables: {} } } } };
+
+		it('carries tokenOperations onto the impersonated user', async () => {
+			const su = makeSuperUser();
+			su.tokenOperations = ['deploy_component'];
+			const impersonated = await applyImpersonation(su, INLINE_ROLE);
+			assert.deepStrictEqual(impersonated.tokenOperations, ['deploy_component']);
+		});
+
+		// Impersonation returns a NEW principal, so dropping the provenance marker would let a
+		// workload token launder it — impersonate, then mint the 30-day credential that
+		// createTokens would otherwise refuse. Carried for the same reason the scope is (#2171).
+		it('carries workload identity provenance onto the impersonated user', async () => {
+			const su = makeSuperUser();
+			su.fromWorkloadIdentity = true;
+			const impersonated = await applyImpersonation(su, INLINE_ROLE);
+			assert.strictEqual(impersonated.fromWorkloadIdentity, true);
+		});
+
+		it('marks no provenance when the authenticating token was password-minted', async () => {
+			const impersonated = await applyImpersonation(makeSuperUser(), INLINE_ROLE);
+			assert.strictEqual(impersonated.fromWorkloadIdentity, undefined);
+		});
+
+		it('adds no scope when the authenticating token was unscoped', async () => {
+			const impersonated = await applyImpersonation(makeSuperUser(), INLINE_ROLE);
+			assert.strictEqual(impersonated.tokenOperations, undefined);
+		});
+	});
 });

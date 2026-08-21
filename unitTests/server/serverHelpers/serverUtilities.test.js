@@ -73,6 +73,44 @@ describe('Test serverUtilities.js module ', () => {
 			request.operation = 'add_user';
 			assert.doesNotThrow(() => serverUtilities.chooseOperation(request, true));
 		});
+
+		// The token scope's "can only ever subtract" invariant, asserted where it is ENFORCED rather
+		// than where it is computed (#2171/#2174). This is the front door for an export job carrying
+		// nested SQL: the job is gated here, before it is ever queued, and the check inside the job's
+		// own SQL execution is a dead branch (#2202). So this gate is the whole safety argument, and
+		// the rest of the scope suite only asserts that a denial object comes back — not that anyone
+		// throws on it.
+		function exportJobRequest(tokenOperations, sql) {
+			const request = testUtils.deepClone(TEST_JSON_SUPER_USER);
+			request.operation = 'export_local';
+			request.search_operation = { operation: 'sql', sql };
+			request.hdb_user.tokenOperations = tokenOperations;
+			return request;
+		}
+
+		it('throws 403 for an export job whose nested write SQL is outside the token scope', function () {
+			// Scoped to the export itself but not to `delete`: a write statement additionally requires
+			// its matching data operation, which is what keeps `read_only` from admitting a DELETE.
+			assert.throws(
+				() => serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'DELETE FROM data.dog')),
+				(error) => {
+					assert.strictEqual(error.statusCode ?? error.http_code, 403, 'expected a forbidden status');
+					return true;
+				},
+				'an export job must not smuggle write SQL past the scope gate'
+			);
+		});
+
+		it('throws 403 for an export job when the export operation itself is outside the scope', function () {
+			assert.throws(() => serverUtilities.chooseOperation(exportJobRequest(['get_status'], 'SELECT * FROM data.dog')));
+		});
+
+		// The other direction, so this cannot pass by refusing everything: an in-scope export runs.
+		it('admits an export job whose nested SQL is inside the token scope', function () {
+			assert.doesNotThrow(() =>
+				serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'SELECT * FROM data.dog'))
+			);
+		});
 	});
 
 	describe('registered operation authorization envelope', function () {
@@ -873,5 +911,60 @@ describe('Test serverUtilities.js module ', () => {
 				'registration works again after a failure'
 			);
 		});
+	});
+});
+
+// processLocalTransaction builds `operationLog` from mainLogger at module load, so the logged body
+// cannot be intercepted after the fact — which is why the older redaction test above guards on
+// `if (info_log_stub.called)` and passes vacuously. Testing the redaction directly avoids that.
+describe('redactForOperationLog', () => {
+	const { UNLOGGABLE_OPERATION_FIELDS, redactForOperationLog } = serverUtilities;
+
+	// Redaction runs before the handler, so a rejected request logs a still-spendable credential.
+	const CREDENTIAL_FIELDS = {
+		hdb_user: { username: 'admin' },
+		hdbAuthHeader: 'Basic abc',
+		password: 'pw',
+		payload: 'blob',
+		credentials: [{ secret: 'deploy.app.github.com' }],
+		registryAuth: 'auth',
+		value: 'env-secret',
+		values: ['env-secret'],
+		envelope: 'enc:v1:sealed',
+		// login (#1876) and exchange_oidc_token (#2171) both carry a live token here.
+		token: 'eyJhbGciOiJSUzI1NiJ9.identity.signature',
+		// refresh_operation_token carries the 30-day credential.
+		refresh_token: 'eyJhbGciOiJSUzI1NiJ9.refresh.signature',
+	};
+
+	it('strips every credential-bearing field', () => {
+		const clean = redactForOperationLog({ operation: 'exchange_oidc_token', ...CREDENTIAL_FIELDS });
+		for (const field of Object.keys(CREDENTIAL_FIELDS)) {
+			assert.ok(!(field in clean), `${field} must not reach the operations log`);
+		}
+	});
+
+	it('leaves nothing JWT-shaped behind', () => {
+		const clean = redactForOperationLog({ operation: 'exchange_oidc_token', ...CREDENTIAL_FIELDS });
+		assert.ok(!/eyJ[A-Za-z0-9_-]/.test(JSON.stringify(clean)), 'no JWT-shaped value should survive');
+	});
+
+	it('preserves everything else', () => {
+		const clean = redactForOperationLog({ operation: 'create_schema', schema: 'test', database: 'data' });
+		assert.deepStrictEqual(clean, { operation: 'create_schema', schema: 'test', database: 'data' });
+	});
+
+	it('does not mutate the request body', () => {
+		const body = { operation: 'exchange_oidc_token', token: 'live-credential' };
+		redactForOperationLog(body);
+		assert.equal(body.token, 'live-credential', 'the handler still needs the field it was sent');
+	});
+
+	// The list is the contract; pin the credential-bearing entries so a refactor cannot quietly drop
+	// one the way harper#1527 did for set_env_value.
+	it('pins the fields the list must contain', () => {
+		for (const field of Object.keys(CREDENTIAL_FIELDS)) {
+			assert.ok(UNLOGGABLE_OPERATION_FIELDS.includes(field), `${field} must stay in the redaction list`);
+		}
 	});
 });

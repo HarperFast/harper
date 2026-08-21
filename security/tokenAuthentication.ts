@@ -15,6 +15,13 @@ const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
 import { findAndValidateUser, type User } from './user.ts';
+import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
+import {
+	WORKLOAD_IDENTITY_CLAIM,
+	attachWorkloadIdentityToUser,
+	isWorkloadIdentityPrincipal,
+	markTokenAsWorkloadIdentity,
+} from './credentialProvenance.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -133,6 +140,31 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	);
 	if (validation) throw new ClientError(validation.message);
 
+	// create_authentication_tokens is NO_AUTH, so verifyPerms — and the token-scope gate inside it —
+	// never runs here. A caller holding a workload-identity token (#2171) must not mint any standing
+	// credential through it: honoring expires_in verbatim turns a minutes-long leak into an
+	// arbitrarily long-lived one, and the refresh_token write below hands out a 30-day credential —
+	// both defeating the exchange's ephemerality guarantee. A CI token needs none of this; it already
+	// holds the operation token the exchange gave it, and gets a fresh one next run.
+	//
+	// Gated on provenance, NOT on the scope: a trust policy carries `operations` only when the
+	// operator opts in, so the ordinary exchanged token is unscoped and a scope-only check would let
+	// exactly the common case through. The scope check stays as well, covering a scoped credential
+	// from any other source.
+	//
+	// First, ahead of the user lookup and the `purpose` branch: this reads only the caller's own
+	// principal, so a refused request should cost no database read and write nothing. That also
+	// covers the login path, where a session is minted from a username alone and so cannot be
+	// narrowed after the fact.
+	// `authObj?.` — a bare createTokens() reaches here, and must still fail as invalid credentials
+	// below rather than as a TypeError out of this guard.
+	if (isWorkloadIdentityPrincipal(authObj?.hdb_user)) {
+		throw new ClientError('a workload identity token cannot mint authentication tokens', HTTP_STATUS_CODES.FORBIDDEN);
+	}
+	if (hasOperationScope((authObj?.hdb_user as any)?.tokenOperations)) {
+		throw new ClientError('a scoped token cannot mint authentication tokens', HTTP_STATUS_CODES.FORBIDDEN);
+	}
+
 	let user: any;
 	try {
 		// Trusted bypass is dispatch/async-context state (set by a component calling
@@ -233,8 +265,14 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const decodedJWT = jwt.decode(refresh_token, { json: true });
+	const refreshedPayload: { username: string; super_user: boolean; operations?: string[] } = {
+		username: decodedJWT.username,
+		super_user: decodedJWT.super_user,
+	};
+	// Refreshing a scoped refresh token must not widen back to the full role.
+	attachScopeToToken(refreshedPayload, decodedJWT.operations);
 	const operationToken = jwt.sign(
-		{ username: decodedJWT.username, super_user: decodedJWT.super_user },
+		refreshedPayload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
 			expiresIn: OPERATION_TOKEN_TIMEOUT as StringValue,
@@ -244,6 +282,45 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 	);
 
 	return { operation_token: operationToken };
+}
+
+/**
+ * Signs a standalone operation token. No refresh token, no write to the user record.
+ *
+ * createTokens cannot serve this: it overwrites hdb_user.refresh_token as a side effect, silently
+ * revoking whatever credential that user already held (#2018). The OIDC exchange (#2171) exists so
+ * CI holds no durable credential at all, so minting one on its behalf would defeat the point.
+ *
+ * The caller is responsible for having established that the user exists, is active, and is entitled
+ * to this token — nothing here re-checks that.
+ */
+export async function createOperationToken(
+	user: { username: string; super_user: boolean; operations?: string[] },
+	expiresIn: StringValue
+): Promise<string> {
+	const keys: JWTRSAKeys = await getJWTRSAKeys();
+	const payload: { username: string; super_user: boolean; operations?: string[] } = {
+		username: user.username,
+		super_user: user.super_user,
+	};
+	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
+	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
+	// what keeps this from failing open.
+	attachScopeToToken(payload, user.operations);
+	// Unconditional, because every token this function mints is minted without a password — the
+	// caller vouched for the user instead. That is precisely the credential that must not be able to
+	// trade itself for a longer-lived one, whether or not a scope narrows it.
+	markTokenAsWorkloadIdentity(payload);
+
+	return jwt.sign(
+		payload,
+		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+		{
+			expiresIn,
+			algorithm: RSA_ALGORITHM,
+			subject: TOKEN_TYPE.OPERATION,
+		} satisfies SignOptions
+	);
 }
 
 export async function validateOperationToken(token: string): Promise<any> {
@@ -281,6 +358,15 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
 			throw new Error('Invalid token');
 		}
+
+		// Surfaced as `tokenOperations` rather than merged into role.permission.operations: that field
+		// is not purely narrowing (verifyPerms gate 2 treats an explicit SU-only listing as a grant),
+		// so merging a token scope into it could widen. verifyPerms intersects this separately, ahead
+		// of every bypass.
+		attachScopeToUser(user, tokenVerified.operations);
+		// Provenance rides the same lift: the claim is signed, so a caller cannot strip it to look
+		// like a password-minted principal at createTokens.
+		attachWorkloadIdentityToUser(user, tokenVerified[WORKLOAD_IDENTITY_CLAIM]);
 
 		return user;
 	} catch (err) {
