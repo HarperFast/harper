@@ -1778,6 +1778,68 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 	});
 
+	it('finishes retention for a settled deploy whose backup is still parked, instead of deleting it', async () => {
+		// `retainActivatedPrevious` is best-effort: it can fail after the swap and config commit, leaving the
+		// displaced release under `.deploy-activating` while the deploy still reports success. The row is
+		// then terminal and the live tree is good, so "delete anything that is not mid-activation" removed
+		// the sole remaining copy — making a successful deploy permanently unrevertable.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		await fs.mkdir(livePath, { recursive: true });
+		await fs.writeFile(path.join(livePath, 'index.js'), "module.exports = 'live';\n");
+		const activationProjectDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationProjectDir, { recursive: true });
+		const backupPath = path.join(activationProjectDir, `.previous-${deploymentId}-1-1-${randomUUID()}`);
+		await fs.mkdir(backupPath, { recursive: true });
+		await fs.writeFile(path.join(backupPath, 'index.js'), "module.exports = 'displaced';\n");
+
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === deploymentId ? { deployment_id: id, project: name, status: 'success' } : undefined),
+			async () => {
+				throw new Error('a settled row must not be re-persisted');
+			}
+		);
+
+		assert.deepStrictEqual([...reconciliation.errors.keys()], []);
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		assert.match(await readMarker(previousPath), /displaced/, 'the displaced release is retained, not deleted');
+		assert.match(await readMarker(livePath), /live/, 'and the live tree is untouched');
+		await cleanup(name);
+	});
+
+	it('recovers a revert whose holding tree is itself a symlink', async () => {
+		// A `file:` directory deploy makes the live path a symlink, and the revert renames that live path
+		// into the holding slot — so the holding entry is a symlink, not a directory. Gating the recovery
+		// loop on isDirectory() skipped those entries entirely: the component was left with no live tree
+		// and recovered on no restart, ever.
+		const name = fixtureName();
+		const linkTarget = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-revert-dirpkg-'));
+		await fs.writeFile(path.join(linkTarget, 'index.js'), "module.exports = 'symlinked-live';\n");
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		const previousRoot = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR);
+		await fs.mkdir(previousRoot, { recursive: true });
+
+		// Crash shape: live (a symlink) already renamed into the holding slot, nothing put back yet.
+		const holding = path.join(previousRoot, `.reverting-${name}-${randomUUID()}`);
+		await fs.symlink(linkTarget, holding);
+
+		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.strictEqual(failures.size, 0);
+		assert.match(
+			await readMarker(livePath),
+			/symlinked-live/,
+			'the symlinked tree is restored to the live path rather than skipped forever'
+		);
+		assert.strictEqual(existsSync(holding), false, 'and the holding slot is emptied');
+
+		await fs.rm(livePath, { force: true });
+		await fs.rm(linkTarget, { recursive: true, force: true });
+		await cleanup(name);
+	});
+
 	it('treats a live directory-package symlink as a live component, not a missing one', async () => {
 		// A `file:` directory deploy is materialized as a symlink by design. Requiring a real directory
 		// reported this shape as "neither staged nor live", and the artifact sweep then deleted the

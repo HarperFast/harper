@@ -122,6 +122,35 @@ describe('deploy_component two-phase orchestration', function () {
 		return value;
 	}
 
+	it('settles superseded staged rows on a full deploy, not only on stage-and-stop', async () => {
+		// Staged DIRECTORIES are pruned on every stage, but the row half used to run only on the
+		// `activate: false` return. A full deploy therefore evicted trees while their rows still read
+		// `staged` cluster-wide — list_deployments offering a deployment_id that a later activate cannot
+		// use, and under clock skew a different one on each node.
+		const project = name();
+		const priorMax = environment.get(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
+		environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, 1);
+		try {
+			const first = await operations.deployComponent({
+				project,
+				payload: await makePayload('1.0.0'),
+				activate: false,
+			});
+			assert.strictEqual(rows.get(first.deployment_id).status, 'staged');
+
+			// A full deploy of the same project: its own stage supersedes the one above.
+			await operations.deployComponent({ project, payload: await makePayload('2.0.0'), restart: false });
+
+			assert.strictEqual(
+				rows.get(first.deployment_id).status,
+				'failed',
+				'the superseded row is settled, so it no longer advertises an unusable deployment_id'
+			);
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, priorMax);
+		}
+	});
+
 	it('normalizes string request booleans, including install_allow_scripts', async () => {
 		// Joi coerces these, but validateBySchema discards `result.value`, so the raw string reaches the
 		// handler. `install_allow_scripts: 'false'` would then read as truthy and run package lifecycle

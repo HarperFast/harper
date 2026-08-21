@@ -894,12 +894,17 @@ async function deployComponentTwoPhase(req) {
 		}
 		await recorder.checkpoint('staged', 'staged');
 
+		// Settle superseded staged ROWS here, not only on the stage-and-stop return below. `stageApplication`
+		// prunes staged directories on every stage, so gating the row half on `activate: false` let a full
+		// deploy evict trees while their rows still read `staged` cluster-wide — a deployment_id that
+		// list_deployments offers and a later activate cannot use, differently on each node under clock skew.
+		await pruneStagedDeploymentArtifacts(req.project, activationSpec, recorder.deploymentId).catch((error) =>
+			log.warn('Failed to prune expired staged deployments', error)
+		);
+
 		if (req.activate === false) {
 			emit('phase', { phase: 'staged', status: 'done' });
 			await recorder.finish('staged');
-			await pruneStagedDeploymentArtifacts(req.project, activationSpec, recorder.deploymentId).catch((error) =>
-				log.warn('Failed to prune expired staged deployments', error)
-			);
 			await pruneProjectPayloads(req.project, getPayloadRetentionMaxCount()).catch((error) =>
 				log.warn('Failed to prune staged deployment payloads', error)
 			);

@@ -888,20 +888,8 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 					return;
 				}
 				const previousPath = previousDirPathFor(liveDirPath);
-				const liveExists = await lstat(liveDirPath).then(
-					() => true,
-					(err) => {
-						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-						throw err;
-					}
-				);
-				const previousExists = await lstat(previousPath).then(
-					() => true,
-					(err) => {
-						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-						throw err;
-					}
-				);
+				const liveExists = await liveComponentPresent(liveDirPath);
+				const previousExists = await liveComponentPresent(previousPath);
 				if (!liveExists && !previousExists) {
 					await rm(markerPath, { force: true });
 					throw new Error(
@@ -941,7 +929,11 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 		}
 	}
 	for (const entry of entries) {
-		if (!entry.isDirectory() || !entry.name.startsWith(REVERTING_PREFIX)) continue;
+		// A holding tree can itself be a symlink: a `file:` directory deploy makes the live path a symlink,
+		// and the revert renames that live path here. Gating on isDirectory() alone skipped those entries,
+		// so such a component was never recovered — it stayed with no live tree across every restart.
+		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+		if (!entry.name.startsWith(REVERTING_PREFIX)) continue;
 		const holding = join(previousRoot, entry.name);
 		// `.reverting-<componentName>-<uuid>`. The component name may itself contain dashes, so match the
 		// trailing UUID explicitly rather than cutting at the last dash — which would leave most of the
@@ -954,13 +946,7 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 		const liveDirPath = join(componentsRootDirPath, componentName);
 		try {
 			await withComponentPreparationLock(liveDirPath, async () => {
-				const liveExists = await lstat(liveDirPath).then(
-					() => true,
-					(err) => {
-						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-						throw err;
-					}
-				);
+				const liveExists = await liveComponentPresent(liveDirPath);
 				if (!liveExists) {
 					// Two different crash shapes land here, and they need opposite repairs. Either the swap never
 					// placed the reverted-to version (undo: the holding tree goes back to live), or it did and
@@ -975,8 +961,7 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 						!!manifest &&
 						manifest.live?.deployment_id === marker.live?.deployment_id &&
 						manifest.previous?.deployment_id === marker.previous?.deployment_id;
-					const previousStat = await lstat(previousDirPathFor(liveDirPath)).catch(() => undefined);
-					if (persistedAlreadyExchanged && previousStat?.isDirectory()) {
+					if (persistedAlreadyExchanged && (await liveComponentPresent(previousDirPathFor(liveDirPath)))) {
 						await mkdir(dirname(liveDirPath), { recursive: true });
 						await rename(previousDirPathFor(liveDirPath), liveDirPath);
 						await rename(holding, previousDirPathFor(liveDirPath));
@@ -997,13 +982,7 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 					return;
 				}
 				const previousPath = previousDirPathFor(liveDirPath);
-				const previousExists = await lstat(previousPath).then(
-					() => true,
-					(err) => {
-						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-						throw err;
-					}
-				);
+				const previousExists = await liveComponentPresent(previousPath);
 				if (!previousExists) {
 					// The reverted-to version is live and only the retain step was lost, so finish it. The
 					// marker is the source of truth over the manifest, because an earlier pass may already have
@@ -1036,8 +1015,10 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 					);
 					return;
 				}
-				// Both slots occupied: the swap completed, so this is residue.
+				// Both slots occupied: the swap completed, so this is residue. The marker goes with it —
+				// leaving it behind keeps durable crash evidence that no longer matches the disk.
 				await rm(holding, { recursive: true, force: true });
+				await rm(revertRecoveryMarkerFor(holding), { force: true }).catch(() => {});
 			});
 		} catch (error) {
 			const recoveryError = error instanceof Error ? error : new Error(String(error));
@@ -3543,7 +3524,19 @@ export async function reconcileStagedApplicationArtifacts(
 						}
 					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
 						await rename(artifactPath, livePath);
-					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && (!row || !liveUsable)) {
+					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && row && liveUsable) {
+						// The activation finished — the row is settled and the live tree is good — but a backup is
+						// still here, which only happens when `retainActivatedPrevious` failed inside its
+						// best-effort catch. The deploy reported success, so this is the sole remaining copy of
+						// the release it displaced; deleting it as residue is what makes that deploy permanently
+						// unrevertable. Finish the retention instead.
+						try {
+							await retainRecoveredActivation(livePath, projectEntry.name, deploymentId, row.activation_spec);
+						} catch (error) {
+							const reconcileError = error instanceof Error ? error : new Error(String(error));
+							errors.set(deploymentId, reconcileError);
+						}
+					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX)) {
 						// A backup artifact still here means the activation never finished retaining it, so this is
 						// the only copy of the tree it displaced. It is deleted only when the state positively says
 						// it is residue. An absent row does not: the lookup returns undefined both for a row
