@@ -728,25 +728,12 @@ export class DatabaseTransaction implements Transaction {
 	private parkReusedVersionSentinels(): void {
 		try {
 			for (const write of this.writes) {
-				if (write?.storedReusedVersion && !write.skipped && typeof write.store.parkUnvouchable === 'function') {
-					const { store, key } = write;
-					if (!store.parkUnvouchable(key)) {
-						// A concurrent write's intent holds the slot; if that write commits, its own cycle
-						// resolves the key, but if it aborts nothing re-parks — warm peers would keep being
-						// vouched the pre-merge value. Retry once the intent has had time to clear, and
-						// escalate to warn: a still-refused park is a silent stale-read hole in production.
-						setTimeout(() => {
-							try {
-								if (!store.parkUnvouchable(key)) {
-									harperLogger.warn?.(
-										`unvouchable sentinel could not be parked for ${store.path ?? ''} key ${String(key)}; warm readers may serve a stale value until the next write to it`
-									);
-								}
-							} catch {
-								/* store closing; nothing to protect */
-							}
-						}, 10).unref?.();
-					}
+				if (
+					write?.storedReusedVersion &&
+					!write.skipped &&
+					typeof write.store.parkUnvouchableWithRetry === 'function'
+				) {
+					write.store.parkUnvouchableWithRetry(write.key);
 				}
 			}
 		} catch (parkError) {

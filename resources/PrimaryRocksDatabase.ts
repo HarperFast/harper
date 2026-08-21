@@ -4,6 +4,7 @@ const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
 import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, VERSION_UNVOUCHABLE, type Entry } from './RecordEncoder.ts';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -213,6 +214,36 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			// never fail (or leak) a completed commit over the advisory park
 			return false;
 		}
+	}
+
+	/**
+	 * parkUnvouchable with a bounded backoff for slots held by a concurrent write's intent. On
+	 * final refusal, reads the stored head: a competitor that committed an advancing version
+	 * resolved the key legitimately (debug), while a still-flagged head means warm peers may be
+	 * vouched a stale value until the key's next write (warn — the hole is otherwise invisible).
+	 */
+	parkUnvouchableWithRetry(id: any, delays: number[] = [10, 50, 250]): void {
+		if (this.parkUnvouchable(id)) return;
+		const retry = (attempt: number) => {
+			try {
+				if (this.parkUnvouchable(id)) return;
+				if (attempt < delays.length) {
+					setTimeout(() => retry(attempt + 1), delays[attempt]).unref?.();
+					return;
+				}
+				const head = this.getEntry(id, { uncachedRead: true });
+				if (head && (head.metadataFlags & VERSION_REUSED || head.version === VERSION_UNVOUCHABLE)) {
+					harperLogger.warn?.(
+						`unvouchable sentinel could not be parked for ${(this as any).path ?? ''} key ${String(id)}; warm readers may serve a stale value until the next write to it`
+					);
+				} else {
+					harperLogger.debug?.('unvouchable park superseded by an advancing write', id);
+				}
+			} catch {
+				/* store closing; nothing left to protect */
+			}
+		};
+		setTimeout(() => retry(1), delays[0]).unref?.();
 	}
 
 	getSync(id: any, options?: any): any {
