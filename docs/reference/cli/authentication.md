@@ -208,7 +208,7 @@ Expose the two values to the deploy step and no other credentials are needed:
 
 **Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. If the refresh token itself is rejected, the command reports that and exits non-zero rather than falling back to another identity.
 
-**A blank token variable is an error, not a fallback.** If a namespace is set but empty — the usual shape of a misconfigured CI secret — the CLI says so and falls back to saved login credentials. It does not silently run as whoever last logged in on that machine.
+**A blank token variable is reported, then skipped.** If a namespace is set but empty — the usual shape of a misconfigured CI secret — the CLI warns and continues down the precedence list, so the run proceeds under the saved `harper login` token if that machine has one. The warning is the only thing separating this from silently deploying as whoever last logged in, so treat it as a failure signal in CI rather than assuming a blank secret stops the run.
 
 **Lifetimes.** Operation tokens expire after `authentication.operationTokenTimeout` (default `1d`) and refresh tokens after `authentication.refreshTokenTimeout` (default `30d`). The pipeline needs a new refresh token when that window closes.
 
