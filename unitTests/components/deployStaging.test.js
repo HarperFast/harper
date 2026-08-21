@@ -408,9 +408,7 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 		await fs.rm(packageDirectory, { recursive: true, force: true });
 	});
-	// ————————————————————————————————————————————————————————————————————————————
-	// Retained previous + addressed revert (harper#1849 review, @kriszyp)
-	// ————————————————————————————————————————————————————————————————————————————
+	// Retained previous + addressed revert
 
 	it('retains the tree an activation displaced, addressed by the deployment that produced it', async () => {
 		const name = fixtureName();
@@ -617,10 +615,7 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /over-dead-link/);
 		await cleanup(name);
 	});
-	// ————————————————————————————————————————————————————————————————————————————
-	// Restart gate: package metadata compared across the swap
-	// (harper#674 / harper#1849 @heskew finding 2)
-	// ————————————————————————————————————————————————————————————————————————————
+	// Restart gate: package metadata compared across the swap (harper#674)
 	//
 	// main's in-place prepareApplication compares installed package metadata before extraction against
 	// after install; the two-phase path never touches the live directory until the swap, so the
@@ -692,9 +687,7 @@ describe('two-phase component directory transaction', function () {
 		assert.strictEqual(first.packageMetadataChanged, false, 'nothing to compare against; isNewComponent carries it');
 		await cleanup(name);
 	});
-	// ————————————————————————————————————————————————————————————————————————————
 	// Interrupted revert: compensation and startup recovery
-	// ————————————————————————————————————————————————————————————————————————————
 
 	async function twoActivations(name) {
 		const first = randomUUID();
@@ -714,7 +707,7 @@ describe('two-phase component directory transaction', function () {
 	// all rename cleanly onto a free path). Inducing it would need a fault-injection seam in production
 	// code. The compensation is still there — it is what turns an exceptional I/O error into "the
 	// component keeps serving what it was serving" — but the durable half below is what actually covers
-	// the reviewer's scenario: a process that dies mid-swap, which compensation inherently cannot handle.
+	// the case that matters: a process that dies mid-swap, which compensation inherently cannot handle.
 
 	it('startup recovery restores the live tree from a revert that died before the swap', async () => {
 		const name = fixtureName();
@@ -1702,6 +1695,35 @@ describe('two-phase component directory transaction', function () {
 			undefined,
 			'so the component reports as not revertable until its next deploy'
 		);
+		await cleanup(name);
+	});
+
+	it('fails a component closed when an activation-artifact lookup throws, destroying nothing', async () => {
+		// A failed lookup cannot distinguish "no such deployment" from "the table is unreadable", so it may
+		// not authorize cleanup: the artifact could be the displaced release, and the live tree could be
+		// mid-activation and disagreeing with its durable config. Block the component and touch nothing.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		await twoActivations(name);
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		const activationProjectDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationProjectDir, { recursive: true });
+		const artifactPath = path.join(activationProjectDir, `.previous-${deploymentId}-1-1-${randomUUID()}`);
+		await fs.mkdir(artifactPath, { recursive: true });
+
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async () => {
+				throw new Error('deployment table unavailable');
+			},
+			async () => {}
+		);
+
+		assert.strictEqual(reconciliation.failedProjects.has(name), true, 'the component does not load');
+		assert.strictEqual(reconciliation.errors.has(deploymentId), true, 'and the failure is reported');
+		assert.strictEqual(existsSync(artifactPath), true, 'the artifact is left alone');
+		assert.match(await readMarker(previousPath), /v1/, 'and the retained previous release is untouched');
+		await fs.rm(activationProjectDir, { recursive: true, force: true });
 		await cleanup(name);
 	});
 

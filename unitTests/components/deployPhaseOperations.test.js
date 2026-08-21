@@ -264,9 +264,7 @@ describe('deploy_component two-phase orchestration', function () {
 		assert.strictEqual(restartNeeded(), true, 'a new component activated without restart requires one');
 	});
 
-	// ————————————————————————————————————————————————————————————————————————————
-	// revert_component (harper#1849 review, @kriszyp)
-	// ————————————————————————————————————————————————————————————————————————————
+	// revert_component
 
 	it('reverts the cluster to a named previous deployment and fans the target out to peers', async () => {
 		const project = name();

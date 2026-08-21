@@ -1235,7 +1235,7 @@ function isTrustedReplicatedOperation(req) {
  * (`deploy_component`), not a revert.
  *
  * `to_deployment_id` is required and names the deployment the caller expects to be live afterwards,
- * which is what makes the operation idempotent under ordinary request retries (harper#1849 review): if
+ * which is what makes the operation idempotent under ordinary request retries: if
  * that version is already live the call succeeds without touching anything, instead of toggling the
  * rejected release back in. Targeting the retained previous swaps, and the displaced tree becomes the
  * new retained previous — so an explicitly-targeted revert-of-a-revert still rolls forward.
@@ -1377,10 +1377,8 @@ async function restartRevertedComponent(req, emit) {
 	return { restartMessage: '' };
 }
 
-// ————————————————————————————————————————————————————————————————————————————
 // Shared deploy-family helpers (used by deploy_component, its component_deploy_phase fan-out, and
 // revert_component).
-// ————————————————————————————————————————————————————————————————————————————
 
 // Reject deploying over a protected core component name unless force is set. Lazy-loads
 // componentLoader to avoid a circular dependency.

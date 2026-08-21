@@ -644,8 +644,8 @@ async function pruneStagedBuilds(componentName: string, keepStagingId: string, m
  * worker harmlessly keeps writing into the renamed inode until it exits on restart.
  *
  * The `.discarded-` prefix is load-bearing, and is the whole reason this exists alongside the
- * extraction transaction's `.in-progress-` asides. `.deploy-aside` has exactly ONE contract
- * (harper#1849 review, @kriszyp): an `.in-progress-` directory with no matching `.retired-` marker is
+ * extraction transaction's `.in-progress-` asides. `.deploy-aside` has exactly ONE contract: an
+ * `.in-progress-` directory with no matching `.retired-` marker is
  * a ROLLBACK RECORD, and `recoverInterruptedComponentExtractions` restores the newest such directory
  * OVER the live component path at startup. A tree that is already known to be garbage when it is
  * parked — the evicted two-deploys-ago retained-previous below — must therefore never carry that
@@ -683,8 +683,8 @@ export async function discardDirAside(targetDirPath: string, componentName: stri
  * `.deploy-previous/<name>`, which produced the tree now LIVE, and the root-config entry each one was
  * activated with.
  *
- * This is what makes `revert_component` addressable rather than a blind toggle (harper#1849 review,
- * @kriszyp): the caller names the deployment it expects to end up live, so a retried request whose
+ * This is what makes `revert_component` addressable rather than a blind toggle: the caller names the
+ * deployment it expects to end up live, so a retried request whose
  * response was lost is a no-op instead of flipping the rejected release back in. It is also what lets
  * a revert restore persistent state, not just the directory: `application_config` is the root-config
  * entry (and install-lock entry) that belongs with each tree, so reverting away from a `package`
@@ -1081,7 +1081,7 @@ export async function getRevertTarget(
  * deploy, run their own health checks, and swap back fast — with no package resolution, artifact
  * download or install, because the bytes are already on disk.
  *
- * ADDRESSED, NOT TOGGLED (harper#1849 review, @kriszyp). The caller passes the deployment id it
+ * ADDRESSED, NOT TOGGLED. The caller passes the deployment id it
  * expects to be live when this returns:
  *   - already live → a no-op success, so an ordinary request retry whose first response was lost
  *     cannot swap the rejected release back in.
@@ -3114,7 +3114,7 @@ export async function activateStagedApplication(
 					// dependency or module-entry change — but it does invalidate already-loaded code. The one-shot
 					// path compares it across its in-place install (prepareApplication); the two-phase path has to
 					// compare the outgoing live tree against the staged one, which is only possible here, while
-					// both still exist. Feeds markRestartRequiredForDeploy (harper#674, harper#1849 @heskew).
+					// both still exist. Feeds markRestartRequiredForDeploy (harper#674).
 					application.packageMetadataChanged = installedRuntimeChanged(
 						await readInstalledPackageMetadata(application.dirPath),
 						await readInstalledPackageMetadata(stagingDirPath),

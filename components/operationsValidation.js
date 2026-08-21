@@ -592,7 +592,7 @@ function revertComponentValidator(req) {
 		// The deployment the caller expects to be live once this returns. REQUIRED, and the whole reason
 		// revert is safe to retry: a revert that names its target is a no-op when that version is already
 		// live, where a bare "swap to the other one" toggle would flip the rejected release back in if a
-		// caller retried after losing the first response (harper#1849 review).
+		// caller retried after losing the first response.
 		to_deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).required().messages({
 			'string.pattern.base': `'to_deployment_id' must be a UUID`,
 			'any.required': `'to_deployment_id' is required: name the deployment you expect to be live after the revert (list_deployments reports it, and deploy_component returns it)`,
