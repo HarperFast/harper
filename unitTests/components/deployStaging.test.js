@@ -1358,4 +1358,68 @@ describe('two-phase component directory transaction', function () {
 		);
 		await cleanup(name);
 	});
+	it('rolls config back when a failure lands after the config commit, not just during it', async () => {
+		// The commit is followed by the manifest write and the retain rename. A failure in either used to
+		// undo only the directories, leaving root config and the application lock naming the reverted-to
+		// release while the original bytes were live again — which a cold start would then reinstall over.
+		const name = fixtureName();
+		const { application, first, second } = await twoActivations(name);
+		let committed = 0;
+		let rolledBack = 0;
+
+		// Fail the retain rename by making the retained-previous slot unwritable at that moment: the
+		// manifest write has already succeeded, so this is strictly post-commit.
+		const previousRoot = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR);
+		await assert.rejects(() =>
+			revertApplication(application, first, {
+				commitPersistentState: async () => {
+					committed++;
+					await fs.chmod(previousRoot, 0o500);
+				},
+				rollbackPersistentState: async () => {
+					rolledBack++;
+					await fs.chmod(previousRoot, 0o700);
+				},
+			})
+		);
+		await fs.chmod(previousRoot, 0o700).catch(() => {});
+
+		assert.equal(committed, 1, 'the commit ran');
+		assert.equal(rolledBack, 1, 'and a post-commit failure rolled it back');
+		assert.match(await readMarker(application.dirPath), /v2/, 'the pre-revert version is live again');
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.live.deployment_id, second, 'the manifest was put back too, so live/manifest agree');
+		assert.equal(target.previous.deployment_id, first);
+		await cleanup(name);
+	});
+
+	it('rolls forward an interrupted revert whose compensation had already moved live away', async () => {
+		// Crash shape: config and the manifest committed, then compensation renamed live away before it
+		// could put the holding tree back. Undoing the directories here would contradict the persisted
+		// state, so recovery has to finish the revert instead — decided by comparing marker to manifest.
+		const name = fixtureName();
+		const { application, first, second } = await twoActivations(name);
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		const holding = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, `.reverting-${name}-${randomUUID()}`);
+
+		// Build that exact state by hand: live absent, previous = reverted-to tree, holding = old live,
+		// manifest already exchanged, and a marker recording the same intent.
+		const staleManifest = JSON.parse(await fs.readFile(`${previousPath}.json`, 'utf8'));
+		const intended = { previous: staleManifest.live, live: staleManifest.previous };
+		await fs.rename(application.dirPath, holding);
+		await fs.writeFile(`${holding}.recovering.json`, JSON.stringify(intended, null, 2));
+		await fs.writeFile(`${previousPath}.json`, JSON.stringify(intended, null, 2));
+
+		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.equal(failures.size, 0);
+		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version is live, matching config');
+		assert.match(await readMarker(previousPath), /v2/, 'the displaced tree is retained');
+		assert.equal(existsSync(holding), false);
+		assert.equal(existsSync(`${holding}.recovering.json`), false);
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.live.deployment_id, first);
+		assert.equal(target.previous.deployment_id, second);
+		await cleanup(name);
+	});
 });

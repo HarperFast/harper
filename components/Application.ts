@@ -499,6 +499,9 @@ const REVERTING_PREFIX = '.reverting-';
 // anything and removed only once the directory, manifest and config are all durable, so a recovery
 // interrupted part-way is resumable rather than losing its own evidence. See recoverInterruptedReverts.
 const REVERT_RECOVERY_SUFFIX = '.recovering.json';
+// Distinguishes the no-live restore branch's marker from a swap's holding-bound one; there is no
+// holding directory in that branch, so the marker needs its own stable name.
+const RESTORE_MARKER_INFIX = '.restoring';
 
 // The revert-intent marker is named after the holding directory it describes. A fixed per-component
 // path would be reused by every future revert of that component, so an orphan left by one attempt
@@ -845,8 +848,34 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 					}
 				);
 				if (!liveExists) {
+					// Two different crash shapes land here, and they need opposite repairs. Either the swap never
+					// placed the reverted-to version (undo: the holding tree goes back to live), or it did and
+					// compensation got as far as moving live away before failing (roll forward: the reverted-to
+					// tree in `previous` goes to live, because config and the manifest already describe it).
+					// The marker distinguishes them: if the on-disk manifest already matches its intended `live`,
+					// the persistent side committed and undoing the directories would contradict it.
+					const marker = await readRevertRecoveryMarker(revertRecoveryMarkerFor(holding));
+					const manifest = await readRetainedPreviousManifest(liveDirPath);
+					const persistedAlreadyExchanged =
+						!!marker &&
+						!!manifest &&
+						manifest.live?.deployment_id === marker.live?.deployment_id &&
+						manifest.previous?.deployment_id === marker.previous?.deployment_id;
+					const previousStat = await lstat(previousDirPathFor(liveDirPath)).catch(() => undefined);
+					if (persistedAlreadyExchanged && previousStat?.isDirectory()) {
+						await mkdir(dirname(liveDirPath), { recursive: true });
+						await rename(previousDirPathFor(liveDirPath), liveDirPath);
+						await rename(holding, previousDirPathFor(liveDirPath));
+						await rm(revertRecoveryMarkerFor(holding), { force: true });
+						logger.warn(
+							`Completed an interrupted ${componentName} revert whose compensation had already begun; ` +
+								`the reverted-to version is live and matches its persisted configuration`
+						);
+						return;
+					}
 					await mkdir(dirname(liveDirPath), { recursive: true });
 					await rename(holding, liveDirPath);
+					await rm(revertRecoveryMarkerFor(holding), { force: true });
 					logger.warn(
 						`Restored the live ${componentName} component directory after an interrupted revert; ` +
 							`the revert did not take effect and can be retried`
@@ -961,7 +990,10 @@ export async function getRevertTarget(
 export async function revertApplication(
 	application: Application,
 	toDeploymentId: string,
-	hooks: { commitPersistentState?: (config: ApplicationConfig | null) => Promise<void> } = {}
+	hooks: {
+		commitPersistentState?: (config: ApplicationConfig | null) => Promise<void>;
+		rollbackPersistentState?: () => Promise<void>;
+	} = {}
 ): Promise<{ swapped: boolean; activatedConfig: ApplicationConfig | null; fromDeploymentId: string | null }> {
 	const liveDirPath = application.dirPath;
 	return withComponentPreparationLock(liveDirPath, async () => {
@@ -1033,57 +1065,97 @@ export async function revertApplication(
 				// Persistent state commits here, inside the lock and while the holding tree still exists.
 				// Committing it after the lock released let a queued activation swap and commit in between,
 				// leaving that activation's bytes live under this revert's config.
+				//
+				// Everything from the commit to the final rename shares one undo path. A failure after the
+				// commit — a manifest write, or the retain rename — has to take config and the application
+				// lock back too, or the directories end up describing one release while the persisted state
+				// names the other, and a cold start reinstalls over the live bytes.
+				let persistCommitted = false;
+				let manifestWritten = false;
+				const undoRevert = async (cause: unknown, detail: string): Promise<never> => {
+					const undoErrors: unknown[] = [];
+					if (persistCommitted) {
+						await hooks.rollbackPersistentState?.().catch((rollbackError) => undoErrors.push(rollbackError));
+					}
+					if (manifestWritten) {
+						// The manifest currently claims the exchange happened. Put it back before the directories
+						// move, so no window reports the reverted-to version as live over the old bytes.
+						await writeRetainedPreviousManifest(liveDirPath, {
+							previous: target.previous,
+							live: target.live,
+						}).catch((manifestError) => undoErrors.push(manifestError));
+					}
+					try {
+						await rename(liveDirPath, previousPath);
+						await rename(holding, liveDirPath);
+						application.useLiveBuildDir();
+						await rm(recoveryMarkerPath, { force: true });
+					} catch (restoreError) {
+						undoErrors.push(restoreError);
+					}
+					if (undoErrors.length) {
+						throw new AggregateError(
+							[cause, ...undoErrors],
+							`Reverted ${application.name} but could not ${detail}, and could not fully undo it; ` +
+								`${holding} may still hold the previously-live tree`
+						);
+					}
+					throw cause;
+				};
 				try {
 					await hooks.commitPersistentState?.(target.previous.application_config);
+					persistCommitted = true;
 					application.useLiveBuildDir();
 					await writeRetainedPreviousManifest(liveDirPath, {
 						previous: target.live,
 						live: target.previous,
 					});
+					manifestWritten = true;
 				} catch (persistError) {
-					try {
-						await rename(liveDirPath, previousPath);
-						await rename(holding, liveDirPath);
-						await rm(recoveryMarkerPath, { force: true });
-					} catch (restoreError) {
-						throw new AggregateError(
-							[persistError, restoreError],
-							`Reverted ${application.name} but could not persist its configuration or undo the swap; ` +
-								`${holding} still holds the previously-live tree`
-						);
-					}
-					throw persistError;
+					await undoRevert(persistError, 'persist its configuration');
 				}
 				// Consumes the recovery evidence, so it goes last.
 				try {
 					await rename(holding, previousPath);
 				} catch (retainError) {
-					// The revert itself succeeded (the requested version IS live); only retaining the tree it
-					// displaced failed. Undo the whole swap rather than leave the manifest describing a
-					// retained previous that is not where it says it is.
-					try {
-						await rename(liveDirPath, previousPath);
-						await rename(holding, liveDirPath);
-					} catch (restoreError) {
-						throw new AggregateError(
-							[retainError, restoreError],
-							`Reverted ${application.name} but could not retain the displaced version, and could not ` +
-								`undo the swap; ${holding} still holds the previously-live tree`
-						);
-					}
-					throw retainError;
+					await undoRevert(retainError, 'retain the displaced version');
 				}
 				await rm(recoveryMarkerPath, { force: true });
 			} else {
 				// No live version to preserve; restore the previous into place. Nothing becomes the new
 				// retained previous, so the component can't be reverted again until its next deploy.
-				await rename(previousPath, liveDirPath);
-				await hooks.commitPersistentState?.(target.previous.application_config);
-				application.useLiveBuildDir();
-				await writeRetainedPreviousManifest(liveDirPath, {
+				//
+				// This branch gets the same intent marker and undo as the swap above: without them a config
+				// failure after the rename left the retained slot empty, the persisted state naming an absent
+				// version, and no `.reverting-*` artifact for recovery to find.
+				const restoreMarkerPath = revertRecoveryMarkerFor(`${previousPath}${RESTORE_MARKER_INFIX}`);
+				await writeJsonAtomically(restoreMarkerPath, {
 					previous: { deployment_id: null, application_config: null },
 					live: target.previous,
 				});
+				await rename(previousPath, liveDirPath);
+				try {
+					await hooks.commitPersistentState?.(target.previous.application_config);
+					application.useLiveBuildDir();
+					await writeRetainedPreviousManifest(liveDirPath, {
+						previous: { deployment_id: null, application_config: null },
+						live: target.previous,
+					});
+				} catch (persistError) {
+					const undoErrors: unknown[] = [];
+					await hooks.rollbackPersistentState?.().catch((rollbackError) => undoErrors.push(rollbackError));
+					await rename(liveDirPath, previousPath).catch((restoreError) => undoErrors.push(restoreError));
+					await rm(restoreMarkerPath, { force: true }).catch(() => {});
+					if (undoErrors.length) {
+						throw new AggregateError(
+							[persistError, ...undoErrors],
+							`Restored ${application.name} from its retained version but could not persist configuration ` +
+								`or undo the restore`
+						);
+					}
+					throw persistError;
+				}
+				await rm(restoreMarkerPath, { force: true });
 			}
 			return {
 				swapped: true,

@@ -1261,14 +1261,13 @@ async function revertComponent(req) {
 		const result = await revertApplication(application, req.to_deployment_id, {
 			commitPersistentState: async (activatedConfig) => {
 				configTransaction = await createApplicationConfigTransaction(req.project, activatedConfig);
-				try {
-					await configTransaction.commit();
-				} catch (configError) {
-					await configTransaction.rollback().catch((rollbackError) => {
-						log.error(`Failed to roll back the ${req.project} revert configuration write`, rollbackError);
-					});
-					throw configError;
-				}
+				await configTransaction.commit();
+			},
+			// Called for any failure after the commit landed, not just a failing commit: the manifest write
+			// and the retain rename come after it, and undoing only the directories would leave root config
+			// and the application lock naming the release that is no longer live.
+			rollbackPersistentState: async () => {
+				await configTransaction?.rollback();
 			},
 		});
 		emit('phase', { phase: 'revert', status: 'done' });
