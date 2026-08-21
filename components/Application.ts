@@ -752,13 +752,7 @@ async function writeJsonAtomically(targetPath: string, value: unknown): Promise<
 }
 
 async function writeRetainedPreviousManifest(liveDirPath: string, manifest: RetainedPreviousManifest): Promise<void> {
-	const manifestPath = previousManifestPathFor(liveDirPath);
-	// Temp + rename so a crash mid-write can never leave a half-written manifest, which would make a
-	// retained tree unaddressable (and so unrevertable).
-	const tempPath = `${manifestPath}.${process.pid}.${randomUUID()}.tmp`;
-	await mkdir(dirname(manifestPath), { recursive: true });
-	await writeFile(tempPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
-	await rename(tempPath, manifestPath);
+	await writeJsonAtomically(previousManifestPathFor(liveDirPath), manifest);
 }
 
 /**
@@ -863,8 +857,10 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 		// its marker. It is recovered on its own terms below.
 		if (holdingName.endsWith(RESTORE_MARKER_INFIX)) continue;
 		if (entryNames.has(holdingName)) continue;
-		const orphanName = REVERTING_NAME_PATTERN.exec(holdingName.slice(REVERTING_PREFIX.length))?.[1];
-		if (!holdingName.startsWith(REVERTING_PREFIX) || !orphanName || !safeComponentName(orphanName)) {
+		const orphanName = holdingName.startsWith(REVERTING_PREFIX)
+			? REVERTING_NAME_PATTERN.exec(holdingName.slice(REVERTING_PREFIX.length))?.[1]
+			: undefined;
+		if (!orphanName || !safeComponentName(orphanName)) {
 			await rm(join(previousRoot, entry.name), { force: true }).catch(() => {});
 			continue;
 		}
@@ -3120,6 +3116,11 @@ export async function activateStagedApplication(
 		let newMarkerPath: string | undefined;
 		let swapped = false;
 		let repointedLinks = 0;
+		// Attempted, not counted: the repoint mutates links as it walks, so a throw partway leaves some
+		// already aimed at the live path while the assignment below never happens. Keying compensation on
+		// the returned count skipped the undo for exactly that case, and a retry of this deployment id then
+		// validated the staged tree against whatever release is live.
+		let repointAttempted = false;
 		try {
 			await hooks.beforeSwap?.();
 			const existingArtifacts = await activationArtifacts(application.dirPath, deploymentId);
@@ -3179,6 +3180,7 @@ export async function activateStagedApplication(
 			// dangling; rewriting them to their future live targets now means a failure lands in the catch
 			// below, which restores the previous release rather than leaving a live component that cannot
 			// resolve its dependencies. Done pre-swap for the compensation, not post-swap for convenience.
+			repointAttempted = true;
 			repointedLinks = await repointStagedDependencyLinks(stagingDirPath, application.dirPath);
 			if (repointedLinks) {
 				logger.debug?.(
@@ -3197,7 +3199,7 @@ export async function activateStagedApplication(
 					rollbackErrors.push(rollbackError);
 				}
 			}
-			if (repointedLinks) {
+			if (repointAttempted) {
 				// The candidate is going back to staging, so its links have to point at staging again. Left
 				// aimed at the live path they would resolve against whatever release is live, so a retry of
 				// this same deployment id would validate the staged tree against the wrong bytes.
@@ -3553,12 +3555,21 @@ export async function reconcileStagedApplicationArtifacts(
 						}
 					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
 						await rename(artifactPath, livePath);
-					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && row && liveUsable) {
-						// The activation finished — the row is settled and the live tree is good — but a backup is
-						// still here, which only happens when `retainActivatedPrevious` failed inside its
-						// best-effort catch. The deploy reported success, so this is the sole remaining copy of
-						// the release it displaced; deleting it as residue is what makes that deploy permanently
-						// unrevertable. Finish the retention instead.
+					} else if (
+						artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) &&
+						row &&
+						liveUsable &&
+						(await readRetainedPreviousManifest(livePath).catch(() => undefined))?.live?.deployment_id === deploymentId
+					) {
+						// The activation finished — settled row, good live tree — but a backup is still parked,
+						// which only happens when `retainActivatedPrevious` failed inside its best-effort catch.
+						// That backup is the sole remaining copy of the release this deploy displaced, so deleting
+						// it as residue is what makes the deploy permanently unrevertable. Finish the retention.
+						//
+						// Gated on the manifest naming THIS deployment as live. A settled row proves the
+						// activation ended, not that it ended as the current release: an artifact left by an older
+						// deployment would otherwise overwrite a valid retained previous with stale bytes and
+						// write a manifest naming a release that is no longer live.
 						try {
 							await retainRecoveredActivation(livePath, projectEntry.name, deploymentId, row.activation_spec);
 						} catch (error) {

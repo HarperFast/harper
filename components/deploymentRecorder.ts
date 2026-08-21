@@ -671,16 +671,16 @@ export async function pruneProjectPayloads(project: string, maxCount: number): P
 		// must not be dropped — skip it and let a later prune reclaim it once it settles.
 		if (!TERMINAL_STATUSES.has(row.status)) continue;
 		const size = typeof row.payload_size === 'number' ? row.payload_size : 0;
-		// Patch, not put: writing the whole spread record back would also rewrite fields a concurrent
-		// deploy may have just changed on this row — reverting a status or dropping an error while
-		// reclaiming a tarball. Only these two fields are this prune's business.
-		const eventLog = Array.isArray(row.event_log) ? [...row.event_log] : [];
-		eventLog.push({
-			t: Date.now(),
-			event: 'payload_dropped',
-			data: { payload_size: size, reason: 'payloadRetention_maxCount', max_count: maxCount },
-		});
-		await table.patch(row.deployment_id, { payload_blob: null, event_log: eventLog });
+		// Patch only the field this prune owns. Writing the whole record back would rewrite fields a
+		// concurrent deploy just changed — reverting a status, dropping an error — while reclaiming a
+		// tarball. The drop is not appended to `event_log` either: that would be a read-copy-write of an
+		// append-only list, so a concurrent writer's entry would be lost. `payload_blob_present: false`
+		// already reports the outcome on the row, and the reclaim is logged here for the audit trail.
+		await table.patch(row.deployment_id, { payload_blob: null });
+		logger.info?.(
+			`Reclaimed ${size} bytes of deployment payload for '${project}' (${row.deployment_id}): ` +
+				`beyond deployment_payloadRetention_maxCount=${maxCount}`
+		);
 		freed += size;
 	}
 	return freed;

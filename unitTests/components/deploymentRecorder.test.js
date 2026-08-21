@@ -970,9 +970,14 @@ describe('pruneProjectPayloads (deployment_payloadRetention_maxCount)', () => {
 		assert.ok(row, 'the pruned deployment row still exists (audit trail preserved)');
 		assert.strictEqual(row.status, 'success', 'status is untouched');
 		assert.strictEqual(row.payload_size, 100, 'payload_size is retained as metadata');
-		assert.ok(
-			row.event_log.some((e) => e.event === 'payload_dropped' && e.data?.reason === 'payloadRetention_maxCount'),
-			'the drop is recorded in the event log with its reason'
+		assert.strictEqual(row.payload_blob, null, 'the tarball is reclaimed');
+		// The drop is deliberately NOT appended to event_log: that would be a read-copy-write of an
+		// append-only list, so a concurrent writer's entry would be lost to reclaim a tarball. The null
+		// blob already reports the outcome on the row, and the reclaim is logged.
+		assert.deepStrictEqual(
+			row.event_log.filter((e) => e.event === 'payload_dropped'),
+			[],
+			'and nothing is appended to the audit list'
 		);
 	});
 

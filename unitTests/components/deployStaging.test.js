@@ -1778,11 +1778,11 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 	});
 
-	it('finishes retention for a settled deploy whose backup is still parked, instead of deleting it', async () => {
-		// `retainActivatedPrevious` is best-effort: it can fail after the swap and config commit, leaving the
-		// displaced release under `.deploy-activating` while the deploy still reports success. The row is
-		// then terminal and the live tree is good, so "delete anything that is not mid-activation" removed
-		// the sole remaining copy — making a successful deploy permanently unrevertable.
+	it('keeps a parked backup it cannot prove belongs to the live release, rather than retaining or deleting it', async () => {
+		// A settled row plus a good live tree proves the activation ended — not that it ended as the CURRENT
+		// release. With no manifest naming this deployment as live, the artifact could be left over from an
+		// older deployment, and retaining it would overwrite a valid retained previous with stale bytes.
+		// Deleting it is equally wrong: it may be the only copy of what that deploy displaced. So it stays.
 		const name = fixtureName();
 		const deploymentId = randomUUID();
 		const livePath = path.join(COMPONENTS_ROOT, name);
@@ -1803,9 +1803,14 @@ describe('two-phase component directory transaction', function () {
 		);
 
 		assert.deepStrictEqual([...reconciliation.errors.keys()], []);
-		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
-		assert.match(await readMarker(previousPath), /displaced/, 'the displaced release is retained, not deleted');
-		assert.match(await readMarker(livePath), /live/, 'and the live tree is untouched');
+		assert.strictEqual(existsSync(backupPath), true, 'the unprovable backup is left in place');
+		assert.strictEqual(
+			existsSync(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)),
+			false,
+			'and nothing stale is promoted into the retained slot'
+		);
+		assert.match(await readMarker(livePath), /live/, 'the live tree is untouched');
+		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name), { recursive: true, force: true });
 		await cleanup(name);
 	});
 
