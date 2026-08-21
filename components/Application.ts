@@ -3178,16 +3178,23 @@ export async function reconcileStagedApplicationArtifacts(
 			const stagedPath = stagedApplicationPath(componentDirPath, entry.name);
 			if (row.status === 'staged') {
 				if (!(await hasCompleteStagedApplication(stagedPath))) {
-					// Only a not-yet-activated candidate is broken; the live tree and its persisted config are
-					// consistent. Failing the component closed here would take a healthy component offline and
-					// keep it offline, because nothing else sweeps a staging directory whose subtree is missing.
-					logger.warn(
-						`Discarding staged deployment '${entry.name}' for '${row.project}': no valid component tree. ` +
-							`The live component is unaffected.`
-					);
-					await settleStagedDeployment?.(entry.name);
-					await rm(deploymentPath, { recursive: true, force: true });
-					removed.push(entry.name);
+					let discarded = false;
+					await withComponentPreparationLock(componentDirPath, async () => {
+						// Re-read under the lock. The check above is an unlocked fast path, so an activation may
+						// have swapped this candidate in and cleaned it up since.
+						if (await hasCompleteStagedApplication(stagedPath)) return;
+						// Only a not-yet-activated candidate is broken; the live tree and its persisted config are
+						// consistent. Failing the component closed here would take a healthy component offline and
+						// keep it offline, because nothing else sweeps a staging directory whose subtree is missing.
+						logger.warn(
+							`Discarding staged deployment '${entry.name}' for '${row.project}': no valid component tree. ` +
+								`The live component is unaffected.`
+						);
+						await settleStagedDeployment?.(entry.name);
+						await rm(deploymentPath, { recursive: true, force: true });
+						discarded = true;
+					});
+					if (discarded) removed.push(entry.name);
 				}
 				continue;
 			}
@@ -3199,11 +3206,21 @@ export async function reconcileStagedApplicationArtifacts(
 					activationSpec: row.activation_spec,
 				});
 			} else {
-				const liveStat = await lstat(componentDirPath).catch(() => undefined);
-				if (!liveStat?.isDirectory() || liveStat.isSymbolicLink()) {
-					throw new Error(`Interrupted activation '${entry.name}' has neither a staged nor live component tree`);
-				}
-				await persistActivation(row);
+				let ownedByActivation = false;
+				await withComponentPreparationLock(componentDirPath, async () => {
+					// Re-read under the lock for the same reason as the `staged` branch above: if a complete
+					// candidate is here now, an in-flight activation owns these artifacts and will settle them.
+					if (await hasCompleteStagedApplication(stagedPath)) {
+						ownedByActivation = true;
+						return;
+					}
+					const liveStat = await lstat(componentDirPath).catch(() => undefined);
+					if (!liveStat?.isDirectory() || liveStat.isSymbolicLink()) {
+						throw new Error(`Interrupted activation '${entry.name}' has neither a staged nor live component tree`);
+					}
+					await persistActivation(row);
+				});
+				if (ownedByActivation) continue;
 			}
 			await removeActivationArtifacts(componentDirPath, entry.name);
 			recovered.add(entry.name);
@@ -3229,41 +3246,49 @@ export async function reconcileStagedApplicationArtifacts(
 				await rm(projectPath, { recursive: true, force: true });
 				continue;
 			}
-			for (const artifact of await readdir(projectPath, { withFileTypes: true })) {
-				const deploymentId = activationArtifactDeploymentId(artifact.name);
-				const artifactPath = join(projectPath, artifact.name);
-				if (!deploymentId) {
-					await rm(artifactPath, { recursive: true, force: true });
-					continue;
-				}
-				let row: Record<string, any> | undefined;
-				try {
-					row = await getDeployment(deploymentId);
-				} catch (lookupError) {
-					// Cannot tell absent from unreadable, so destroy nothing and fail the component closed.
-					const reconcileError = lookupError instanceof Error ? lookupError : new Error(String(lookupError));
-					errors.set(deploymentId, reconcileError);
-					failedProjects.set(projectEntry.name, reconcileError);
-					continue;
-				}
-				const livePath = join(componentsRootDirPath, projectEntry.name);
-				const liveStat = await lstat(livePath).catch(() => undefined);
-				if (row?.status === 'activating' && row.project === projectEntry.name && liveStat?.isDirectory()) {
-					try {
-						await persistActivation(row);
+			const livePath = join(componentsRootDirPath, projectEntry.name);
+			// This sweep renames a backup back over the live path, so it must hold the lock every other
+			// mutator of that path holds. A reload cycle can retry reconciliation while an activation is
+			// mid-swap, and an unlocked sweep would restore the backup underneath it — after which the
+			// in-flight rename fails ENOTEMPTY and its own compensation fails ENOENT. Waiting out a live
+			// owner is what makes the decisions below sound: they are read from settled state, not a
+			// half-finished swap.
+			await withComponentPreparationLock(livePath, async () => {
+				for (const artifact of await readdir(projectPath, { withFileTypes: true })) {
+					const deploymentId = activationArtifactDeploymentId(artifact.name);
+					const artifactPath = join(projectPath, artifact.name);
+					if (!deploymentId) {
 						await rm(artifactPath, { recursive: true, force: true });
-						recovered.add(deploymentId);
-					} catch (error) {
-						const reconcileError = error instanceof Error ? error : new Error(String(error));
+						continue;
+					}
+					let row: Record<string, any> | undefined;
+					try {
+						row = await getDeployment(deploymentId);
+					} catch (lookupError) {
+						// Cannot tell absent from unreadable, so destroy nothing and fail the component closed.
+						const reconcileError = lookupError instanceof Error ? lookupError : new Error(String(lookupError));
 						errors.set(deploymentId, reconcileError);
 						failedProjects.set(projectEntry.name, reconcileError);
+						continue;
 					}
-				} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
-					await rename(artifactPath, livePath);
-				} else {
-					await rm(artifactPath, { recursive: true, force: true });
+					const liveStat = await lstat(livePath).catch(() => undefined);
+					if (row?.status === 'activating' && row.project === projectEntry.name && liveStat?.isDirectory()) {
+						try {
+							await persistActivation(row);
+							await rm(artifactPath, { recursive: true, force: true });
+							recovered.add(deploymentId);
+						} catch (error) {
+							const reconcileError = error instanceof Error ? error : new Error(String(error));
+							errors.set(deploymentId, reconcileError);
+							failedProjects.set(projectEntry.name, reconcileError);
+						}
+					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
+						await rename(artifactPath, livePath);
+					} else {
+						await rm(artifactPath, { recursive: true, force: true });
+					}
 				}
-			}
+			});
 			await rmdir(projectPath).catch(() => {});
 		}
 		await rmdir(activationRoot).catch(() => {});

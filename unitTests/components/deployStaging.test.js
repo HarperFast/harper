@@ -1495,6 +1495,53 @@ describe('two-phase component directory transaction', function () {
 		}
 	});
 
+	it('waits for the component lock before restoring an activation backup over the live path', async () => {
+		// The sweep renames a backup back over the live path. Run unlocked, a reload-cycle retry could do
+		// that inside an activation's swap window — live momentarily absent, backup present — after which
+		// the in-flight rename fails ENOTEMPTY and its own compensation fails ENOENT. So the sweep has to
+		// hold the same lock every other mutator of that path holds.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		const activationProjectDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationProjectDir, { recursive: true });
+		const backupPath = path.join(activationProjectDir, `.previous-${deploymentId}-1-1-${randomUUID()}`);
+		await fs.mkdir(backupPath, { recursive: true });
+		await fs.writeFile(path.join(backupPath, 'index.js'), "module.exports = 'backup';\n");
+		// The swap window this models: no live directory, only the backup.
+		assert.equal(existsSync(livePath), false);
+
+		let releaseHold;
+		const holdReleased = new Promise((resolve) => (releaseHold = resolve));
+		// Reconcile is started OUTSIDE the holder — awaiting it from inside would deadlock, since the lock
+		// is not reentrant.
+		const holder = withComponentPreparationLock(livePath, () => holdReleased);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+
+		let reconciled = false;
+		const reconcilePromise = reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async () => undefined,
+			async () => {}
+		).then((result) => {
+			reconciled = true;
+			return result;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+
+		assert.equal(reconciled, false, 'the sweep must not finish while the component lock is held');
+		assert.equal(existsSync(livePath), false, 'and must not restore the backup underneath the lock holder');
+		assert.equal(existsSync(backupPath), true, 'leaving the backup for after the lock is released');
+
+		releaseHold();
+		await holder;
+		await reconcilePromise;
+
+		assert.equal(existsSync(backupPath), false, 'once released, the sweep settles the artifact');
+		assert.match(await readMarker(livePath), /backup/, 'restoring the backup over the absent live path');
+		await cleanup(name);
+	});
+
 	// Same contract the extraction scan owes its caller: componentLoader fails startup closed on a
 	// rejection, so an absent retention root (nothing ever retained) must stay distinguishable from one
 	// we could not read, where a component may be mid-revert with no live directory at all.
