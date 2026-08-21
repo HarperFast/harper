@@ -2117,6 +2117,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
@@ -2164,6 +2165,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				reloadCommitBase: true,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2496,7 +2498,8 @@ export function makeTable(options) {
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
-				isCopyApply: options?.isCopyApply === true,
+				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
+				reloadCommitBase: options?.isCopyApply !== true,
 				deferSave: true,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
@@ -3129,8 +3132,7 @@ export function makeTable(options) {
 						}
 					}
 					function writeCommit(storeRecord: boolean) {
-						// Marked (not parked) here: the VT slot holds this write's own intent until commit, so
-						// the transaction's success path does the actual sentinel park.
+						// marked, not parked: the VT slot holds this write's own intent until commit
 						if (storeRecord && isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
@@ -3268,6 +3270,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry,
 				chainsStagedState: true,
+				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
@@ -3276,6 +3279,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
+					write.storedReusedVersion = false; // likewise
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -3296,6 +3300,8 @@ export function makeTable(options) {
 					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
+						// a tie-timestamp tombstone stores under the reused version too (see writeCommit)
+						if (isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 						updateRecord(
 							id,
 							null,

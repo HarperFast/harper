@@ -349,12 +349,12 @@ export type TransactionWrite = {
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
-	// this round stored its record under a version it reused rather than advanced (a resequenced
-	// out-of-order fold); the commit success path parks the unvouchable sentinel for the key. Reset
-	// per commit-handler round, like stagedEntry.
+	// this round stored under a reused version (a resequenced fold), so the commit success path
+	// parks the unvouchable sentinel for the key. Reset per commit-handler round, like stagedEntry.
 	storedReusedVersion?: boolean;
-	// a bulk base-copy snapshot row: keeps its pre-read base instead of the commit-time reload
-	isCopyApply?: boolean;
+	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
+	// save() must reload that base through the committing transaction's snapshot
+	reloadCommitBase?: boolean;
 };
 
 /**
@@ -723,16 +723,34 @@ export class DatabaseTransaction implements Transaction {
 	 * under a reused version (see VERSION_REUSED). The writer parks it because no reader can be
 	 * relied on to: with every worker's cache warm, no read ever decodes the flagged record, and
 	 * the native soft-miss re-confirm keeps vouching the reused version off the stored record.
+	 * Runs after durability, so nothing here may disturb the commit's cleanup.
 	 */
 	private parkReusedVersionSentinels(): void {
-		for (const write of this.writes) {
-			if (write?.storedReusedVersion && !write.skipped && typeof write.store.parkUnvouchable === 'function') {
-				if (!write.store.parkUnvouchable(write.key)) {
-					// A concurrent write's intent holds the slot; if that write aborts, the key stays
-					// vouch-suspect until a decoding read re-parks — logged so the hole is detectable.
-					harperLogger.debug?.('unvouchable sentinel not parked, slot held by a concurrent write', write.key);
+		try {
+			for (const write of this.writes) {
+				if (write?.storedReusedVersion && !write.skipped && typeof write.store.parkUnvouchable === 'function') {
+					const { store, key } = write;
+					if (!store.parkUnvouchable(key)) {
+						// A concurrent write's intent holds the slot; if that write commits, its own cycle
+						// resolves the key, but if it aborts nothing re-parks — warm peers would keep being
+						// vouched the pre-merge value. Retry once the intent has had time to clear, and
+						// escalate to warn: a still-refused park is a silent stale-read hole in production.
+						setTimeout(() => {
+							try {
+								if (!store.parkUnvouchable(key)) {
+									harperLogger.warn?.(
+										`unvouchable sentinel could not be parked for ${store.path ?? ''} key ${String(key)}; warm readers may serve a stale value until the next write to it`
+									);
+								}
+							} catch {
+								/* store closing; nothing to protect */
+							}
+						}, 10).unref?.();
+					}
 				}
 			}
+		} catch (parkError) {
+			harperLogger.debug?.('parking unvouchable sentinels failed', parkError);
 		}
 	}
 
@@ -936,18 +954,14 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
-		// A record write's base must be what this transaction's snapshot holds, not a value the
-		// resource phase read through the cross-worker cache vouch, which can be stale when a
-		// resequenced write reused a version: an incremental update folds CRDT ops and unmentioned
-		// fields from the base, and even a full put diffs indices, blob retention, and residency
-		// against it. Reload with uncachedRead so the vouch is never consulted; a write landing
-		// between this snapshot and commit still surfaces as a conflict and retries. Bulk
-		// copy-apply rows and crash-recovery replays keep their pre-read base (one read per row,
-		// as before): their convergence contract is the post-copy/replay pass, not this reload.
+		// The commit base must come from this transaction's snapshot, never the cross-worker cache
+		// vouch (stale when a resequenced write reused a version); a write landing between this
+		// snapshot and commit still surfaces as a conflict and retries. Replays keep their
+		// pre-read base — their convergence contract is the replay pass itself.
 		if (
 			reloadEntry ||
 			operation.entry === undefined ||
-			(operation.fullUpdate !== undefined && !operation.saved && !operation.isCopyApply && !this.isReplay)
+			(operation.reloadCommitBase && !operation.saved && !this.isReplay)
 		) {
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead: true });
 		}

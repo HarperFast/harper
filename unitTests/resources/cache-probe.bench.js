@@ -33,7 +33,9 @@ async function main() {
 	console.log(`warm getEntry (with probe): ${warmNs.toFixed(0)} ns/op (${(1e9 / warmNs / 1e6).toFixed(2)} M ops/s)`);
 	console.log(`verifyVersion probe alone:  ${probeNs.toFixed(0)} ns/op`);
 	console.log(`probe share of warm read:   ${((probeNs / warmNs) * 100).toFixed(1)}%`);
-	console.log(`estimated pre-change warm:  ${(warmNs - probeNs).toFixed(0)} ns/op → overhead ${((probeNs / (warmNs - probeNs)) * 100).toFixed(1)}%`);
+	console.log(
+		`estimated pre-change warm:  ${(warmNs - probeNs).toFixed(0)} ns/op → overhead ${((probeNs / (warmNs - probeNs)) * 100).toFixed(1)}%`
+	);
 	process.exit(0);
 }
 main().catch((e) => {

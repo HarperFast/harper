@@ -174,8 +174,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				return undefined;
 			}
 			if (entry.version != null && cache) {
-				// Checked ahead of the cacheability gate: a flagged record with a null or primitive
-				// value is just as unvouchable. The re-park covers a slot a read republished.
+				// ahead of the cacheability gate: a flagged null/primitive value is just as unvouchable
 				if (entry.metadataFlags & VERSION_REUSED || entry.version === VERSION_UNVOUCHABLE) {
 					if (!unvouchable) {
 						try {
@@ -186,8 +185,8 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 					}
 					if (cachedValue !== undefined) cache.delete(id);
 				} else if (unvouchable) {
-					// Clean record under a parked sentinel: stay uncached — a JS-side restore would be an
-					// unguarded force-set racing concurrent writes; the key's next write clears the sentinel.
+					// clean record under a parked sentinel: stay uncached (a JS-side slot restore would be
+					// an unguarded force-set racing concurrent writes); the key's next write clears it
 					if (cachedValue !== undefined) cache.delete(id);
 				} else if (entry.value != null && typeof entry.value === 'object') {
 					// Only object values can be weakly cached and mapped back to their Entry;
@@ -209,10 +208,11 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	parkUnvouchable(id: any): boolean {
 		try {
 			this.populateVersion(id, VERSION_UNVOUCHABLE);
+			return this.verifyVersion(id, VERSION_UNVOUCHABLE);
 		} catch {
-			/* never fail a completed commit; the verify below reports the miss */
+			// never fail (or leak) a completed commit over the advisory park
+			return false;
 		}
-		return this.verifyVersion(id, VERSION_UNVOUCHABLE);
 	}
 
 	getSync(id: any, options?: any): any {
