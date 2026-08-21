@@ -122,11 +122,15 @@ suite(
 						const results = await Promise.all(Array.from({ length: HITS }, () => increment(id)));
 						bursting = false;
 						await reader;
-						return { id, acked: results.filter((s) => s === 200).length };
+						return {
+							id,
+							acked: results.filter((s) => s === 200).length,
+							errs: results.filter((s) => s === 'error').length,
+						};
 					})
 				);
 
-				for (const { id, acked } of perWindow) {
+				for (const { id, acked, errs } of perWindow) {
 					// a window whose burst was wholly rejected measures nothing
 					if (acked === 0) {
 						inconclusive++;
@@ -137,13 +141,15 @@ suite(
 						inconclusive++;
 						continue;
 					}
-					if (first.hits === acked) {
+					// a timed-out request may still have been applied, so anything up to acked+errs is
+					// exact-or-explained; only beyond that is a double-apply
+					if (first.hits! >= acked && first.hits! <= acked + errs) {
 						clean++;
 						continue;
 					}
-					if (first.hits! > acked) {
+					if (first.hits! > acked + errs) {
 						over++;
-						anomalyLogs.push(`${id}: OVER first=${first.hits} acked=${acked}`);
+						anomalyLogs.push(`${id}: OVER first=${first.hits} acked=${acked} errs=${errs}`);
 						continue;
 					}
 					const seen: (number | string)[] = [first.hits!];
@@ -164,9 +170,9 @@ suite(
 						}
 						seen.push(g.hits!);
 						finalHits = g.hits;
-						if (g.hits === acked) break;
+						if (g.hits! >= acked) break;
 					}
-					if (finalHits === acked) {
+					if (finalHits! >= acked && finalHits! <= acked + errs) {
 						convergedLate++;
 						anomalyLogs.push(`${id}: CONVERGED_LATE acked=${acked} seen=[${seen.join(',')}]`);
 					} else if (expired) {

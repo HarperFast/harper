@@ -2268,10 +2268,13 @@ export function makeTable(options) {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
+					write.storedReusedVersion = false; // likewise
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
 						write.skipped = true;
 						return;
 					}
+					// a nodeId-won timestamp tie stores at the existing version — a reuse
+					if (isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 					partialRecord ??= null;
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
@@ -2330,7 +2333,10 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
+					write.storedReusedVersion = false; // reset per round
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
+					// a nodeId-won timestamp tie stores at the existing version — a reuse
+					if (isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
@@ -2409,6 +2415,9 @@ export function makeTable(options) {
 				false,
 				null // the audit record value should be empty since there are no changes to the actual data
 			);
+			// stored at the unchanged version — always a reuse, and outside the tracked-write flow
+			// whose commit path would otherwise park it
+			if (isRocksDB) (primaryStore as any).parkUnvouchableWithRetry(existingEntry.key);
 			return true;
 		}
 		/**
