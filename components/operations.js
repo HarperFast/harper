@@ -37,6 +37,7 @@ const {
 	discardProjectStagedApplications,
 	discardProjectActivationArtifacts,
 	updateApplicationLockEntry,
+	withPersistentStateLock,
 	createApplicationActivationTransaction,
 	createApplicationConfigTransaction,
 	getRevertTarget,
@@ -697,7 +698,18 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 	}
 }
 
-const REQUEST_BOOLEAN_FIELDS = ['activate', 'two_phase', 'ignore_replication_errors', 'force', 'restart'];
+// Every boolean in the deploy_component/revert_component schemas. Joi coerces a string `"false"`, but
+// validateBySchema discards `result.value`, so the raw string reaches the handler and reads as truthy.
+// `install_allow_scripts` is the one that matters most: a caller explicitly disabling lifecycle scripts
+// over multipart/form would otherwise run third-party install code with credentials available.
+const REQUEST_BOOLEAN_FIELDS = [
+	'activate',
+	'two_phase',
+	'ignore_replication_errors',
+	'force',
+	'restart',
+	'install_allow_scripts',
+];
 
 function normalizeRequestBooleans(req) {
 	for (const field of REQUEST_BOOLEAN_FIELDS) {
@@ -1401,7 +1413,11 @@ async function writeComponentRootConfig(req, credentialReferences) {
 	// Persist credential references (never tokens) so every cold install of this component — reboot, new
 	// peer, revert — re-resolves the credential from the store.
 	if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
-	await configUtils.addConfig(req.project, applicationConfig);
+	// Same critical section the activation transaction uses. `addConfig` is a read-modify-write of a
+	// file whose entries are per-project, so a one-shot deploy running unlocked can write back a
+	// document it parsed before a concurrent activation or drop committed, resurrecting or dropping
+	// that project's entry.
+	await withPersistentStateLock(() => configUtils.addConfig(req.project, applicationConfig));
 }
 
 // Resolve the tarball to extract from. On the origin, tee req.payload into the row's blob (the
@@ -2063,7 +2079,9 @@ async function dropComponent(req) {
 				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 			}
 
-			configUtils.deleteConfigFromFile([project]);
+			// Under the persistent-state lock for the same reason: an unlocked delete can be clobbered by a
+			// concurrent activation writing back a document that still contains this project.
+			await withPersistentStateLock(async () => configUtils.deleteConfigFromFile([project]));
 		},
 		componentDropLockOptions(project)
 	);

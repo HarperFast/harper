@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const os = require('node:os');
@@ -122,6 +122,28 @@ describe('deploy_component two-phase orchestration', function () {
 		return value;
 	}
 
+	it('normalizes string request booleans, including install_allow_scripts', async () => {
+		// Joi coerces these, but validateBySchema discards `result.value`, so the raw string reaches the
+		// handler. `install_allow_scripts: 'false'` would then read as truthy and run package lifecycle
+		// scripts for a caller that explicitly disabled them — over multipart/form, where every value
+		// arrives as a string.
+		const project = name();
+		const staged = await operations.deployComponent({
+			project,
+			payload: await makePayload('1.0.0'),
+			activate: 'false',
+			install_allow_scripts: 'false',
+		});
+
+		assert.strictEqual(staged.staged, true, "activate:'false' is honored as stage-only, not as a full deploy");
+		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, project)), false, 'so nothing goes live');
+		assert.strictEqual(
+			rows.get(staged.deployment_id).activation_spec.install_allow_scripts,
+			false,
+			'and the activation spec records a real boolean, not the string'
+		);
+	});
+
 	it('stages without touching live and records an immutable activation specification', async () => {
 		const project = name();
 		const result = await operations.deployComponent({
@@ -130,14 +152,14 @@ describe('deploy_component two-phase orchestration', function () {
 			activate: false,
 		});
 
-		assert.equal(result.staged, true);
+		assert.strictEqual(result.staged, true);
 		assert.match(result.deployment_id, /^[0-9a-f-]{36}$/i);
-		assert.equal(existsSync(path.join(COMPONENTS_ROOT, project)), false);
-		assert.equal(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id, project)), true);
+		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, project)), false);
+		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id, project)), true);
 		const row = rows.get(result.deployment_id);
 		assert.ok(row, `deployment row missing; present ids: ${Array.from(rows.keys()).join(', ')}`);
-		assert.equal(row.status, 'staged');
-		assert.deepEqual(row.activation_spec, {
+		assert.strictEqual(row.status, 'staged');
+		assert.deepStrictEqual(row.activation_spec, {
 			project,
 			package: null,
 			install_command: null,
@@ -167,8 +189,8 @@ describe('deploy_component two-phase orchestration', function () {
 		});
 
 		const stagedPath = path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id, project);
-		assert.equal(await fs.readFile(path.join(stagedPath, 'credential-seen'), 'utf8'), 'yes');
-		assert.equal(rows.get(result.deployment_id).activation_spec.credentials, null);
+		assert.strictEqual(await fs.readFile(path.join(stagedPath, 'credential-seen'), 'utf8'), 'yes');
+		assert.strictEqual(rows.get(result.deployment_id).activation_spec.credentials, null);
 		assert.doesNotMatch(JSON.stringify(rows.get(result.deployment_id)), new RegExp(token));
 	});
 
@@ -186,8 +208,8 @@ describe('deploy_component two-phase orchestration', function () {
 		);
 		const activated = await operations.deployComponent({ project, deployment_id: staged.deployment_id });
 
-		assert.equal(activated.activated, true);
-		assert.equal(rows.get(staged.deployment_id).status, 'success');
+		assert.strictEqual(activated.activated, true);
+		assert.strictEqual(rows.get(staged.deployment_id).status, 'success');
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /2.0.0/);
 	});
 
@@ -204,9 +226,9 @@ describe('deploy_component two-phase orchestration', function () {
 			operations.deployComponent({ project, deployment_id: staged.deployment_id }),
 		]);
 
-		assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
-		assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
-		assert.equal(rows.get(staged.deployment_id).status, 'success');
+		assert.strictEqual(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+		assert.strictEqual(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
+		assert.strictEqual(rows.get(staged.deployment_id).status, 'success');
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /duplicate-winner/);
 	});
 
@@ -236,10 +258,10 @@ describe('deploy_component two-phase orchestration', function () {
 		});
 
 		assert.match(result.message, /Successfully deployed/);
-		assert.equal(rows.get(result.deployment_id).status, 'success');
+		assert.strictEqual(rows.get(result.deployment_id).status, 'success');
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /full-deploy/);
-		assert.equal(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id)), false);
-		assert.equal(restartNeeded(), true, 'a new component activated without restart requires one');
+		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, result.deployment_id)), false);
+		assert.strictEqual(restartNeeded(), true, 'a new component activated without restart requires one');
 	});
 
 	// ————————————————————————————————————————————————————————————————————————————
@@ -258,19 +280,19 @@ describe('deploy_component two-phase orchestration', function () {
 
 		const result = await operations.revertComponent({ project, to_deployment_id: first.deployment_id });
 
-		assert.equal(result.reverted, true);
-		assert.equal(result.to_deployment_id, first.deployment_id);
-		assert.equal(result.from_deployment_id, second.deployment_id);
+		assert.strictEqual(result.reverted, true);
+		assert.strictEqual(result.to_deployment_id, first.deployment_id);
+		assert.strictEqual(result.from_deployment_id, second.deployment_id);
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /rev-v1/);
-		assert.equal(rows.get(result.deployment_id).status, 'rolled_back');
-		assert.equal(
+		assert.strictEqual(rows.get(result.deployment_id).status, 'rolled_back');
+		assert.strictEqual(
 			rows.get(result.deployment_id).rollback_of,
 			second.deployment_id,
 			'the audit row records which deployment the rollback took out of service'
 		);
-		assert.equal(fanout.length, 1, 'peers get the revert');
-		assert.equal(fanout[0].operation, 'revert_component');
-		assert.equal(
+		assert.strictEqual(fanout.length, 1, 'peers get the revert');
+		assert.strictEqual(fanout[0].operation, 'revert_component');
+		assert.strictEqual(
 			fanout[0].to_deployment_id,
 			first.deployment_id,
 			'peers are told WHICH version to end on, so the fan-out is idempotent per node'
@@ -286,7 +308,7 @@ describe('deploy_component two-phase orchestration', function () {
 		// The caller lost the first response and retried the identical request.
 		const retry = await operations.revertComponent({ project, to_deployment_id: first.deployment_id });
 
-		assert.equal(retry.reverted, false);
+		assert.strictEqual(retry.reverted, false);
 		assert.match(retry.message, /already running/);
 		assert.match(
 			await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'),
@@ -334,7 +356,7 @@ describe('deploy_component two-phase orchestration', function () {
 		await operations.revertComponent({ project, to_deployment_id: packaged.deployment_id });
 
 		const entry = readConfigFile()?.[project];
-		assert.equal(
+		assert.strictEqual(
 			entry?.package,
 			undefined,
 			'the reverted-to version had no package reference, so the stale one must be gone'
@@ -352,8 +374,8 @@ describe('deploy_component two-phase orchestration', function () {
 			});
 
 			const row = rows.get(result.deployment_id);
-			assert.equal(row.status, 'success');
-			assert.equal(row.payload_blob, null);
+			assert.strictEqual(row.status, 'success');
+			assert.strictEqual(row.payload_blob, null);
 			assert.ok(row.event_log.some((event) => event.event === 'payload_dropped'));
 		} finally {
 			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE, priorMaxSize);
@@ -375,8 +397,8 @@ describe('deploy_component two-phase orchestration', function () {
 			await operations.deployComponent({ project, deployment_id: staged.deployment_id });
 
 			const row = rows.get(staged.deployment_id);
-			assert.equal(row.status, 'success');
-			assert.equal(row.payload_blob, null);
+			assert.strictEqual(row.status, 'success');
+			assert.strictEqual(row.payload_blob, null);
 			assert.ok(row.event_log.some((event) => event.event === 'payload_dropped'));
 		} finally {
 			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_PAYLOADRETENTION_MAXSIZE, priorMaxSize);
@@ -447,11 +469,11 @@ describe('deploy_component two-phase orchestration', function () {
 			operations.deployComponent({ project, deployment_id: staged.deployment_id, restart: true }),
 			/Split nodes: peer-a.*[Rr]oll forward/s
 		);
-		assert.deepEqual(phases, ['activate'], 'restart phase was never sent after the activation gate failed');
-		assert.equal(rows.get(staged.deployment_id).status, 'activating');
-		assert.equal(rows.get(staged.deployment_id).completed_at, null);
+		assert.deepStrictEqual(phases, ['activate'], 'restart phase was never sent after the activation gate failed');
+		assert.strictEqual(rows.get(staged.deployment_id).status, 'activating');
+		assert.strictEqual(rows.get(staged.deployment_id).completed_at, null);
 		assert.ok(rows.get(staged.deployment_id).payload_blob, 'payload remains available to repair a split cluster');
-		assert.equal(rows.get(staged.deployment_id).peer_results[0].node, 'peer-a');
+		assert.strictEqual(rows.get(staged.deployment_id).peer_results[0].node, 'peer-a');
 	});
 
 	it('records success when restart fails after the activation barrier', async () => {
@@ -484,8 +506,8 @@ describe('deploy_component two-phase orchestration', function () {
 			manageThreads.restartWorkers = priorRestartWorkers;
 		}
 
-		assert.deepEqual(phases, ['stage', 'activate', 'restart']);
-		assert.equal(rows.get(deploymentId).status, 'success');
+		assert.deepStrictEqual(phases, ['stage', 'activate', 'restart']);
+		assert.strictEqual(rows.get(deploymentId).status, 'success');
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /activated-before/);
 	});
 
@@ -506,9 +528,9 @@ describe('deploy_component two-phase orchestration', function () {
 			ignore_replication_errors: true,
 		});
 
-		assert.equal(result.activated, true);
-		assert.equal(rows.get(staged.deployment_id).status, 'success');
-		assert.equal(rows.get(staged.deployment_id).peer_results[0].status, 'failed');
+		assert.strictEqual(result.activated, true);
+		assert.strictEqual(rows.get(staged.deployment_id).status, 'success');
+		assert.strictEqual(rows.get(staged.deployment_id).peer_results[0].status, 'failed');
 	});
 
 	it('records and surfaces ignored restart failures after the activation gate', async () => {
@@ -540,11 +562,11 @@ describe('deploy_component two-phase orchestration', function () {
 			manageThreads.restartWorkers = priorRestartWorkers;
 		}
 
-		assert.deepEqual(phases, ['activate', 'restart']);
-		assert.equal(localRestarts, 1);
-		assert.equal(result.activated, true);
-		assert.equal(result.failed_peers[0].node, 'peer-a');
-		assert.equal(rows.get(staged.deployment_id).peer_results[0].status, 'failed');
+		assert.deepStrictEqual(phases, ['activate', 'restart']);
+		assert.strictEqual(localRestarts, 1);
+		assert.strictEqual(result.activated, true);
+		assert.strictEqual(result.failed_peers[0].node, 'peer-a');
+		assert.strictEqual(rows.get(staged.deployment_id).peer_results[0].status, 'failed');
 	});
 
 	it('uses the row-backed immutable specification for trusted peer phases', async () => {
@@ -575,11 +597,11 @@ describe('deploy_component two-phase orchestration', function () {
 			/immutable activation specification/
 		);
 		await executePeerPhase('stage', row.activation_spec);
-		assert.equal(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, staged.deployment_id, project)), true);
+		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, staged.deployment_id, project)), true);
 		await executePeerPhase('activate', row.activation_spec);
 		assert.match(await fs.readFile(path.join(componentPath, 'index.js'), 'utf8'), /peer-phase/);
-		assert.equal(rows.get(staged.deployment_id).status, 'activating');
-		assert.equal(restartNeeded(), true);
+		assert.strictEqual(rows.get(staged.deployment_id).status, 'activating');
+		assert.strictEqual(restartNeeded(), true);
 	});
 
 	it('rebuilds a missing peer stage from the durable deployment payload before activation', async () => {
@@ -606,7 +628,7 @@ describe('deploy_component two-phase orchestration', function () {
 		);
 
 		assert.match(await fs.readFile(path.join(componentPath, 'index.js'), 'utf8'), /rebuilt-peer/);
-		assert.equal(rows.get(staged.deployment_id).status, 'activating');
+		assert.strictEqual(rows.get(staged.deployment_id).status, 'activating');
 	});
 
 	it('waits for the staged row checkpoint when peer activation arrives first', async () => {
@@ -634,7 +656,7 @@ describe('deploy_component two-phase orchestration', function () {
 		);
 
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /lagged-row/);
-		assert.equal(rows.get(staged.deployment_id).status, 'activating');
+		assert.strictEqual(rows.get(staged.deployment_id).status, 'activating');
 	});
 
 	it('recovers a staged package specification for config and peer activation', async () => {
@@ -664,9 +686,9 @@ describe('deploy_component two-phase orchestration', function () {
 
 			await operations.deployComponent({ project, deployment_id: staged.deployment_id });
 
-			assert.equal(readConfigFile()[project].package, packageIdentifier);
-			assert.equal(activationOperation.operation, 'component_deploy_phase');
-			assert.equal(activationOperation.activation_spec.package, packageIdentifier);
+			assert.strictEqual(readConfigFile()[project].package, packageIdentifier);
+			assert.strictEqual(activationOperation.operation, 'component_deploy_phase');
+			assert.strictEqual(activationOperation.activation_spec.package, packageIdentifier);
 		} finally {
 			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
 			else process.env.ROOTPATH = priorRootEnv;
@@ -703,16 +725,16 @@ describe('deploy_component two-phase orchestration', function () {
 
 			await operations.dropComponent({ project });
 
-			assert.equal(rows.get(staged.deployment_id).status, 'failed');
+			assert.strictEqual(rows.get(staged.deployment_id).status, 'failed');
 			const deploymentStagePath = path.join(componentsRoot, DEPLOY_STAGING_DIR, staged.deployment_id);
-			assert.equal(
+			assert.strictEqual(
 				existsSync(deploymentStagePath),
 				false,
 				`staged deployment directory still contains: ${await fs.readdir(deploymentStagePath).catch(() => [])}`
 			);
-			assert.equal(existsSync(path.join(componentsRoot, DEPLOY_ACTIVATION_DIR, project)), false);
+			assert.strictEqual(existsSync(path.join(componentsRoot, DEPLOY_ACTIVATION_DIR, project)), false);
 			const applicationLock = JSON.parse(await fs.readFile(path.join(configRoot, 'harper-application-lock.json')));
-			assert.equal(applicationLock.applications[project], undefined);
+			assert.strictEqual(applicationLock.applications[project], undefined);
 		} finally {
 			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
 			else process.env.ROOTPATH = priorRootEnv;

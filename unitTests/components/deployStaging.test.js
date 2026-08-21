@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const os = require('node:os');
@@ -94,9 +94,9 @@ describe('two-phase component directory transaction', function () {
 
 		const stagedPath = await stageApplication(application, deploymentId);
 
-		assert.equal(stagedPath, stagedApplicationPath(application.dirPath, deploymentId));
+		assert.strictEqual(stagedPath, stagedApplicationPath(application.dirPath, deploymentId));
 		assert.match(await readMarker(stagedPath), /candidate/);
-		assert.equal(existsSync(application.dirPath), false);
+		assert.strictEqual(existsSync(application.dirPath), false);
 		await cleanup(name);
 	});
 
@@ -112,8 +112,8 @@ describe('two-phase component directory transaction', function () {
 		await activateStagedApplication(application, deploymentId);
 
 		assert.match(await readMarker(application.dirPath), /candidate/);
-		assert.equal(existsSync(stagedApplicationPath(application.dirPath, deploymentId)), false);
-		assert.equal(existsSync(stagedApplicationPath(application.dirPath, siblingId)), true);
+		assert.strictEqual(existsSync(stagedApplicationPath(application.dirPath, deploymentId)), false);
+		assert.strictEqual(existsSync(stagedApplicationPath(application.dirPath, siblingId)), true);
 		await cleanup(name);
 	});
 
@@ -126,7 +126,7 @@ describe('two-phase component directory transaction', function () {
 
 		await assert.rejects(activateStagedApplication(application, deploymentId), /staged build is incomplete/);
 
-		assert.equal(existsSync(application.dirPath), false);
+		assert.strictEqual(existsSync(application.dirPath), false);
 		assert.match(await readMarker(stagedPath), /incomplete/);
 		await cleanup(name);
 	});
@@ -143,7 +143,7 @@ describe('two-phase component directory transaction', function () {
 		await activateStagedApplication(application, deploymentId);
 
 		assert.match(await readMarker(application.dirPath), /resumed/);
-		assert.equal(existsSync(activationPath), false);
+		assert.strictEqual(existsSync(activationPath), false);
 		await cleanup(name);
 	});
 
@@ -162,7 +162,7 @@ describe('two-phase component directory transaction', function () {
 		}
 
 		assert.match(await readMarker(application.dirPath), /cleanup-deferred/);
-		assert.equal(existsSync(path.join(stagingRoot, deploymentId)), true, 'cleanup remains retryable garbage');
+		assert.strictEqual(existsSync(path.join(stagingRoot, deploymentId)), true, 'cleanup remains retryable garbage');
 		await cleanup(name);
 	});
 
@@ -200,8 +200,8 @@ describe('two-phase component directory transaction', function () {
 			activateStagedApplication(application, deploymentId),
 		]);
 
-		assert.equal(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
-		assert.equal(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
+		assert.strictEqual(outcomes.filter((outcome) => outcome.status === 'fulfilled').length, 1);
+		assert.strictEqual(outcomes.filter((outcome) => outcome.status === 'rejected').length, 1);
 		assert.match(await readMarker(application.dirPath), /candidate/);
 		await cleanup(name);
 	});
@@ -231,11 +231,11 @@ describe('two-phase component directory transaction', function () {
 			await second.commit();
 			await second.rollback();
 
-			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0', urlPath: '/first' });
+			assert.deepStrictEqual(readConfigFile()[name], { package: 'example@1.0.0', urlPath: '/first' });
 			const lock = JSON.parse(
 				await fs.readFile(path.join(configRoot, 'harper-application-lock.json'), { encoding: 'utf8' })
 			);
-			assert.deepEqual(lock.applications[name], { package: 'example@1.0.0', urlPath: '/first' });
+			assert.deepStrictEqual(lock.applications[name], { package: 'example@1.0.0', urlPath: '/first' });
 		} finally {
 			await second.rollback();
 			await first.rollback();
@@ -257,7 +257,7 @@ describe('two-phase component directory transaction', function () {
 
 		await discardStagedApplication(livePath, deploymentId);
 
-		assert.equal(existsSync(stagedApplicationPath(livePath, deploymentId)), false);
+		assert.strictEqual(existsSync(stagedApplicationPath(livePath, deploymentId)), false);
 		assert.match(await readMarker(livePath), /live/);
 		await cleanup(name);
 	});
@@ -271,8 +271,8 @@ describe('two-phase component directory transaction', function () {
 
 		await discardProjectActivationArtifacts(path.join(COMPONENTS_ROOT, name));
 
-		assert.equal(existsSync(path.join(activationRoot, name)), false);
-		assert.equal(existsSync(path.join(activationRoot, sibling, 'keep')), true);
+		assert.strictEqual(existsSync(path.join(activationRoot, name)), false);
+		assert.strictEqual(existsSync(path.join(activationRoot, sibling, 'keep')), true);
 		await cleanup(name);
 	});
 
@@ -295,9 +295,9 @@ describe('two-phase component directory transaction', function () {
 			async () => {}
 		);
 
-		assert.equal(existsSync(stagedApplicationPath(application.dirPath, keptId)), true);
-		assert.equal(existsSync(stagedApplicationPath(application.dirPath, removedId)), false);
-		assert.deepEqual(result.removed, [removedId]);
+		assert.strictEqual(existsSync(stagedApplicationPath(application.dirPath, keptId)), true);
+		assert.strictEqual(existsSync(stagedApplicationPath(application.dirPath, removedId)), false);
+		assert.deepStrictEqual(result.removed, [removedId]);
 		await cleanup(name);
 	});
 
@@ -327,9 +327,9 @@ describe('two-phase component directory transaction', function () {
 		);
 
 		assert.match(await readMarker(livePath), /candidate/);
-		assert.deepEqual(persisted, [deploymentId]);
-		assert.deepEqual(result.recovered, [deploymentId]);
-		assert.equal(existsSync(activationPath), false);
+		assert.deepStrictEqual(persisted, [deploymentId]);
+		assert.deepStrictEqual(result.recovered, [deploymentId]);
+		assert.strictEqual(existsSync(activationPath), false);
 		await cleanup(name);
 	});
 
@@ -355,10 +355,10 @@ describe('two-phase component directory transaction', function () {
 			async () => persisted++
 		);
 
-		assert.equal(persisted, 1);
-		assert.deepEqual(result.recovered, [deploymentId]);
+		assert.strictEqual(persisted, 1);
+		assert.deepStrictEqual(result.recovered, [deploymentId]);
 		assert.match(await readMarker(livePath), /candidate/);
-		assert.equal(existsSync(activationPath), false);
+		assert.strictEqual(existsSync(activationPath), false);
 		await cleanup(name);
 	});
 
@@ -376,7 +376,7 @@ describe('two-phase component directory transaction', function () {
 		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
 
 		await assert.rejects(stageApplication(application, deploymentId), /staging path is not a directory/);
-		assert.equal(await fs.readFile(path.join(outside, 'sentinel'), 'utf8'), 'keep');
+		assert.strictEqual(await fs.readFile(path.join(outside, 'sentinel'), 'utf8'), 'keep');
 
 		await cleanup(name);
 		await fs.rm(outside, { recursive: true, force: true });
@@ -390,11 +390,11 @@ describe('two-phase component directory transaction', function () {
 		const application = new Application({ name, packageIdentifier: packageDirectory });
 
 		const stagedPath = await stageApplication(application, deploymentId);
-		assert.equal((await fs.lstat(stagedPath)).isSymbolicLink(), true);
+		assert.strictEqual((await fs.lstat(stagedPath)).isSymbolicLink(), true);
 		await activateStagedApplication(application, deploymentId);
 
-		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), true);
-		assert.equal(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'directory-package');
+		assert.strictEqual((await fs.lstat(application.dirPath)).isSymbolicLink(), true);
+		assert.strictEqual(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'directory-package');
 
 		await cleanup(name);
 		await fs.rm(packageDirectory, { recursive: true, force: true });
@@ -419,8 +419,8 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(retained), /v1/);
 
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.live.deployment_id, secondId);
-		assert.equal(target.previous.deployment_id, firstId);
+		assert.strictEqual(target.live.deployment_id, secondId);
+		assert.strictEqual(target.previous.deployment_id, firstId);
 		await cleanup(name);
 	});
 
@@ -431,7 +431,7 @@ describe('two-phase component directory transaction', function () {
 		await stageApplication(application, deploymentId);
 		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
 
-		assert.equal(await getRevertTarget(application.dirPath), undefined);
+		assert.strictEqual(await getRevertTarget(application.dirPath), undefined);
 		await assert.rejects(
 			() => revertApplication(application, randomUUID()),
 			/no previous version is retained/,
@@ -453,8 +453,8 @@ describe('two-phase component directory transaction', function () {
 
 		const result = await revertApplication(application, firstId);
 
-		assert.equal(result.swapped, true);
-		assert.equal(result.fromDeploymentId, secondId);
+		assert.strictEqual(result.swapped, true);
+		assert.strictEqual(result.fromDeploymentId, secondId);
 		assert.match(await readMarker(application.dirPath), /v1/, 'live is the reverted-to version');
 		assert.match(
 			await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)),
@@ -464,7 +464,7 @@ describe('two-phase component directory transaction', function () {
 
 		// Explicitly targeting the other direction rolls forward again.
 		const forward = await revertApplication(application, secondId);
-		assert.equal(forward.swapped, true);
+		assert.strictEqual(forward.swapped, true);
 		assert.match(await readMarker(application.dirPath), /v2/);
 		await cleanup(name);
 	});
@@ -485,7 +485,7 @@ describe('two-phase component directory transaction', function () {
 		// bidirectional toggle would put the rejected v2 back live; an addressed revert must not.
 		const retry = await revertApplication(application, firstId);
 
-		assert.equal(retry.swapped, false, 'a repeated revert to the live version does nothing');
+		assert.strictEqual(retry.swapped, false, 'a repeated revert to the live version does nothing');
 		assert.match(await readMarker(application.dirPath), /v1/, 'still on the reverted-to version');
 		await cleanup(name);
 	});
@@ -523,7 +523,7 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /v3/);
 		assert.match(await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)), /v2/);
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.previous.deployment_id, ids[1], 'v1 is evicted; only v2 stays revertable');
+		assert.strictEqual(target.previous.deployment_id, ids[1], 'v1 is evicted; only v2 stays revertable');
 		await cleanup(name);
 	});
 
@@ -544,7 +544,7 @@ describe('two-phase component directory transaction', function () {
 		assert.match(await readMarker(application.dirPath), /v3/, 'the newest activation is live');
 		assert.match(await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)), /v2/);
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.previous.deployment_id, ids[1], 'only the immediately-previous version is retained');
+		assert.strictEqual(target.previous.deployment_id, ids[1], 'only the immediately-previous version is retained');
 		await cleanup(name);
 	});
 
@@ -572,9 +572,9 @@ describe('two-phase component directory transaction', function () {
 		await activateStagedApplication(application, payloadId, { activationSpec: { package: null } });
 
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.previous.application_config.package, 'stage-fixture@1.0.0');
+		assert.strictEqual(target.previous.application_config.package, 'stage-fixture@1.0.0');
 		const back = await revertApplication(application, packagedId);
-		assert.equal(back.activatedConfig.package, 'stage-fixture@1.0.0');
+		assert.strictEqual(back.activatedConfig.package, 'stage-fixture@1.0.0');
 		await cleanup(name);
 	});
 
@@ -589,7 +589,7 @@ describe('two-phase component directory transaction', function () {
 		await stageApplication(application, deploymentId);
 		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
 
-		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), false);
+		assert.strictEqual((await fs.lstat(application.dirPath)).isSymbolicLink(), false);
 		assert.match(await readMarker(application.dirPath), /candidate/);
 		await cleanup(name);
 	});
@@ -604,7 +604,7 @@ describe('two-phase component directory transaction', function () {
 
 		await extractApplication(application);
 
-		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), false);
+		assert.strictEqual((await fs.lstat(application.dirPath)).isSymbolicLink(), false);
 		assert.match(await readMarker(application.dirPath), /over-dead-link/);
 		await cleanup(name);
 	});
@@ -643,8 +643,8 @@ describe('two-phase component directory transaction', function () {
 		await activateFrom(name, 'quiet', '1.0.0', { withNodeModules: false });
 		const second = await activateFrom(name, 'quiet', '1.0.0', { withNodeModules: false });
 
-		assert.equal(second.isNewComponent, false, 'the second activation is a redeploy');
-		assert.equal(second.packageMetadataChanged, false, 'identical metadata across the swap must stay quiet');
+		assert.strictEqual(second.isNewComponent, false, 'the second activation is a redeploy');
+		assert.strictEqual(second.packageMetadataChanged, false, 'identical metadata across the swap must stay quiet');
 		await cleanup(name);
 	});
 
@@ -653,7 +653,7 @@ describe('two-phase component directory transaction', function () {
 		await activateFrom(name, 'changed', '1.0.0', { withNodeModules: false });
 		const second = await activateFrom(name, 'changed', '2.0.0', { withNodeModules: false });
 
-		assert.equal(second.packageMetadataChanged, true, 'a changed package.json version invalidates loaded code');
+		assert.strictEqual(second.packageMetadataChanged, true, 'a changed package.json version invalidates loaded code');
 		await cleanup(name);
 	});
 
@@ -662,7 +662,7 @@ describe('two-phase component directory transaction', function () {
 		await activateFrom(name, 'opaque', '1.0.0');
 		const second = await activateFrom(name, 'opaque', '1.0.0');
 
-		assert.equal(second.packageMetadataChanged, true, 'a skipped install leaves nothing to compare');
+		assert.strictEqual(second.packageMetadataChanged, true, 'a skipped install leaves nothing to compare');
 		await cleanup(name);
 	});
 
@@ -671,7 +671,7 @@ describe('two-phase component directory transaction', function () {
 		await activateFrom(name, 'nolock', '1.0.0');
 		const second = await activateFrom(name, 'nolock', '1.0.0', { dependencies: { 'some-dep': '1.0.0' } });
 
-		assert.equal(second.packageMetadataChanged, true, 'dependencies with no lockfile are not reproducible');
+		assert.strictEqual(second.packageMetadataChanged, true, 'dependencies with no lockfile are not reproducible');
 		await cleanup(name);
 	});
 
@@ -679,8 +679,8 @@ describe('two-phase component directory transaction', function () {
 		const name = fixtureName();
 		const first = await activateFrom(name, 'brand-new', '1.0.0', { withNodeModules: false });
 
-		assert.equal(first.isNewComponent, true);
-		assert.equal(first.packageMetadataChanged, false, 'nothing to compare against; isNewComponent carries it');
+		assert.strictEqual(first.isNewComponent, true);
+		assert.strictEqual(first.packageMetadataChanged, false, 'nothing to compare against; isNewComponent carries it');
 		await cleanup(name);
 	});
 	// ————————————————————————————————————————————————————————————————————————————
@@ -716,9 +716,9 @@ describe('two-phase component directory transaction', function () {
 
 		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
 
-		assert.equal(failures.size, 0);
+		assert.strictEqual(failures.size, 0);
 		assert.match(await readMarker(application.dirPath), /v2/, 'the interrupted revert is undone');
-		assert.equal(existsSync(holding), false);
+		assert.strictEqual(existsSync(holding), false);
 		await cleanup(name);
 	});
 
@@ -736,22 +736,22 @@ describe('two-phase component directory transaction', function () {
 
 		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
 
-		assert.equal(failures.size, 0);
+		assert.strictEqual(failures.size, 0);
 		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version stays live');
 		assert.match(await readMarker(previousPath), /displaced/, 'the displaced tree is retained again');
-		assert.equal(existsSync(holding), false);
+		assert.strictEqual(existsSync(holding), false);
 
 		// The directories are only half the state. The manifest was written before the swap, so completing
 		// the recovery has to exchange its roles too — otherwise it names the retained tree as live and the
 		// live tree as retained, and the retry below matches its target against the reversed `previous`
 		// entry and swaps the successful revert straight back out.
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.live.deployment_id, first, 'the manifest names the reverted-to version as live');
-		assert.equal(target.previous.deployment_id, second, 'and the displaced version as the retained one');
+		assert.strictEqual(target.live.deployment_id, first, 'the manifest names the reverted-to version as live');
+		assert.strictEqual(target.previous.deployment_id, second, 'and the displaced version as the retained one');
 
 		// Idempotency has to survive the recovery: re-issuing the same addressed revert changes nothing.
 		const retry = await revertApplication(application, first);
-		assert.equal(retry.swapped, false, 'a retry after recovery is a no-op, not a swap back');
+		assert.strictEqual(retry.swapped, false, 'a retry after recovery is a no-op, not a swap back');
 		assert.match(await readMarker(application.dirPath), /v1/, 'still on the reverted-to version');
 		await cleanup(name);
 	});
@@ -765,7 +765,7 @@ describe('two-phase component directory transaction', function () {
 
 		await recoverInterruptedReverts(COMPONENTS_ROOT);
 
-		assert.equal(existsSync(holding), false, 'both slots were occupied, so the holding tree is residue');
+		assert.strictEqual(existsSync(holding), false, 'both slots were occupied, so the holding tree is residue');
 		assert.match(await readMarker(application.dirPath), /v2/, 'live is untouched');
 		await cleanup(name);
 	});
@@ -785,8 +785,8 @@ describe('two-phase component directory transaction', function () {
 
 		await extractApplication(application);
 
-		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), true, 'the new version is linked');
-		assert.equal(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'v2');
+		assert.strictEqual((await fs.lstat(application.dirPath)).isSymbolicLink(), true, 'the new version is linked');
+		assert.strictEqual(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'v2');
 		await cleanup(name);
 		await fs.rm(packageDirectory, { recursive: true, force: true });
 	});
@@ -813,28 +813,28 @@ describe('two-phase component directory transaction', function () {
 			// The version that is live now, and that a revert would be rolling back to.
 			const original = await createApplicationConfigTransaction(name, { package: 'example@1.0.0' });
 			await original.commit();
-			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0' });
-			assert.deepEqual(await readLock(), { package: 'example@1.0.0' });
+			assert.deepStrictEqual(readConfigFile()[name], { package: 'example@1.0.0' });
+			assert.deepStrictEqual(await readLock(), { package: 'example@1.0.0' });
 
 			const reverting = await createApplicationConfigTransaction(name, { package: 'example@2.0.0' });
 			await reverting.commit();
-			assert.deepEqual(readConfigFile()[name], { package: 'example@2.0.0' }, 'both writes moved forward');
-			assert.deepEqual(await readLock(), { package: 'example@2.0.0' });
+			assert.deepStrictEqual(readConfigFile()[name], { package: 'example@2.0.0' }, 'both writes moved forward');
+			assert.deepStrictEqual(await readLock(), { package: 'example@2.0.0' });
 
 			await reverting.rollback();
 
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				readConfigFile()[name],
 				{ package: 'example@1.0.0' },
 				'rollback restores the root config the commit replaced'
 			);
-			assert.deepEqual(await readLock(), { package: 'example@1.0.0' }, 'and the application-lock entry');
+			assert.deepStrictEqual(await readLock(), { package: 'example@1.0.0' }, 'and the application-lock entry');
 
 			// A transaction that never committed must not touch anything on rollback, so compensation on an
 			// early failure cannot clobber a live config.
 			const untouched = await createApplicationConfigTransaction(name, { package: 'example@3.0.0' });
 			await untouched.rollback();
-			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0' }, 'no-op rollback changes nothing');
+			assert.deepStrictEqual(readConfigFile()[name], { package: 'example@1.0.0' }, 'no-op rollback changes nothing');
 		} finally {
 			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
 			else process.env.ROOTPATH = priorRootEnv;
@@ -868,13 +868,17 @@ describe('two-phase component directory transaction', function () {
 			}
 		);
 
-		assert.equal(reconciliation.errors.has(deploymentId), true, 'the failure is reported by deployment');
-		assert.equal(
+		assert.strictEqual(reconciliation.errors.has(deploymentId), true, 'the failure is reported by deployment');
+		assert.strictEqual(
 			reconciliation.failedProjects.get(name)?.message,
 			'simulated activation-persistence failure',
 			'and attributed to the component, so the loader can fail it closed'
 		);
-		assert.equal(reconciliation.recovered.includes(deploymentId), false, 'a failed reconciliation is not "recovered"');
+		assert.strictEqual(
+			reconciliation.recovered.includes(deploymentId),
+			false,
+			'a failed reconciliation is not "recovered"'
+		);
 		await cleanup(name);
 	});
 	it('re-points a dependency link whose absolute target the activation swap invalidated', async () => {
@@ -911,18 +915,18 @@ describe('two-phase component directory transaction', function () {
 		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
 
 		// The dependency has to be resolvable from the LIVE tree, which is the whole point.
-		assert.equal(
+		assert.strictEqual(
 			await fs.readFile(path.join(application.dirPath, 'node_modules', 'probe', 'index.js'), 'utf8'),
 			"module.exports = 'probe';\n",
 			'the staged-path link was re-pointed at the live path'
 		);
-		assert.equal(
+		assert.strictEqual(
 			await fs.readFile(path.join(application.dirPath, 'node_modules', '@scope', 'scoped', 'index.js'), 'utf8'),
 			"module.exports = 'probe';\n",
 			'scoped packages are re-pointed too'
 		);
 		// Untouched: an absolute link to somewhere outside the staging tree is a deliberate choice.
-		assert.equal(
+		assert.strictEqual(
 			await fs.readlink(path.join(application.dirPath, 'node_modules', 'external')),
 			external,
 			'a link outside staging is left exactly as it was'
@@ -954,12 +958,12 @@ describe('two-phase component directory transaction', function () {
 
 		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
 
-		assert.equal(
+		assert.strictEqual(
 			await fs.readlink(path.join(external, 'bait')),
 			externalBaitTarget,
 			'a link inside a symlinked scope directory is never rewritten'
 		);
-		assert.equal(
+		assert.strictEqual(
 			(await fs.lstat(path.join(application.dirPath, 'node_modules', '@scope'))).isSymbolicLink(),
 			true,
 			'the scope link itself is left as a link'
@@ -1036,23 +1040,23 @@ describe('two-phase component directory transaction', function () {
 
 		const firstPass = await recoverInterruptedReverts(COMPONENTS_ROOT);
 
-		assert.equal(firstPass.has(name), true, 'the failed pass is reported, so the component is failed closed');
-		assert.equal(existsSync(holding), true, 'the holding tree survives, so a later pass can still finish');
-		assert.equal(existsSync(markerPath), true, 'and the recovery marker survives with it');
+		assert.strictEqual(firstPass.has(name), true, 'the failed pass is reported, so the component is failed closed');
+		assert.strictEqual(existsSync(holding), true, 'the holding tree survives, so a later pass can still finish');
+		assert.strictEqual(existsSync(markerPath), true, 'and the recovery marker survives with it');
 
 		// Clear the injected fault and run recovery again, as the next process start would.
 		await fs.rm(manifestPath, { recursive: true, force: true });
 		const secondPass = await recoverInterruptedReverts(COMPONENTS_ROOT);
 
-		assert.equal(secondPass.size, 0, 'the second pass completes');
+		assert.strictEqual(secondPass.size, 0, 'the second pass completes');
 		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version is live');
 		assert.match(await readMarker(previousPath), /displaced/, 'the displaced tree is retained again');
-		assert.equal(existsSync(holding), false, 'the holding tree is consumed only once everything is durable');
-		assert.equal(existsSync(markerPath), false, 'and the marker is cleared');
+		assert.strictEqual(existsSync(holding), false, 'the holding tree is consumed only once everything is durable');
+		assert.strictEqual(existsSync(markerPath), false, 'and the marker is cleared');
 		// The marker, not the twice-read manifest, decided the end state — so roles are exchanged once.
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.live.deployment_id, first);
-		assert.equal(target.previous.deployment_id, second);
+		assert.strictEqual(target.live.deployment_id, first);
+		assert.strictEqual(target.previous.deployment_id, second);
 		await cleanup(name);
 	});
 	it('commits config inside the swap, so a revert cannot land config after a later activation', async () => {
@@ -1066,7 +1070,7 @@ describe('two-phase component directory transaction', function () {
 				// still parked, which is what makes this the only safe point to persist config.
 				order.push('commit');
 				assert.match(await readMarker(application.dirPath), /v1/, 'reverted-to version is live at commit time');
-				assert.equal(
+				assert.strictEqual(
 					existsSync(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)),
 					false,
 					'the displaced tree is still in the holding path, not yet retained'
@@ -1074,13 +1078,13 @@ describe('two-phase component directory transaction', function () {
 			},
 		});
 
-		assert.deepEqual(order, ['commit'], 'the hook ran exactly once');
-		assert.equal(result.swapped, true);
-		assert.equal(result.fromDeploymentId, second);
+		assert.deepStrictEqual(order, ['commit'], 'the hook ran exactly once');
+		assert.strictEqual(result.swapped, true);
+		assert.strictEqual(result.fromDeploymentId, second);
 		assert.match(await readMarker(application.dirPath), /v1/);
 		assert.match(await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)), /v2/);
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.live.deployment_id, first);
+		assert.strictEqual(target.live.deployment_id, first);
 		await cleanup(name);
 	});
 
@@ -1103,9 +1107,9 @@ describe('two-phase component directory transaction', function () {
 		const stranded = (await fs.readdir(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR))).filter((entry) =>
 			entry.startsWith('.reverting-')
 		);
-		assert.deepEqual(stranded, [], 'no holding tree or marker is left behind');
+		assert.deepStrictEqual(stranded, [], 'no holding tree or marker is left behind');
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.live.deployment_id, second, 'the manifest still describes the un-reverted state');
+		assert.strictEqual(target.live.deployment_id, second, 'the manifest still describes the un-reverted state');
 		await cleanup(name);
 	});
 
@@ -1124,11 +1128,11 @@ describe('two-phase component directory transaction', function () {
 
 		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
 
-		assert.equal(failures.size, 0);
-		assert.equal(existsSync(orphan), false, 'the orphaned marker is swept');
+		assert.strictEqual(failures.size, 0);
+		assert.strictEqual(existsSync(orphan), false, 'the orphaned marker is swept');
 		// The sweep must not have disturbed the component's actual revert state.
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.previous.deployment_id, first, 'the real retained-previous entry is untouched');
+		assert.strictEqual(target.previous.deployment_id, first, 'the real retained-previous entry is untouched');
 		await cleanup(name);
 	});
 
@@ -1152,7 +1156,7 @@ describe('two-phase component directory transaction', function () {
 
 		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
 
-		assert.equal(
+		assert.strictEqual(
 			await fs.readFile(
 				path.join(application.dirPath, 'node_modules', 'outer', 'node_modules', 'deep', 'index.js'),
 				'utf8'
@@ -1160,7 +1164,7 @@ describe('two-phase component directory transaction', function () {
 			"module.exports = 'deep';\n",
 			'the nested link resolves from the live tree'
 		);
-		assert.equal(
+		assert.strictEqual(
 			await fs.readFile(
 				path.join(application.dirPath, 'node_modules', 'outer', 'node_modules', '@inner', 'scoped', 'index.js'),
 				'utf8'
@@ -1183,18 +1187,18 @@ describe('two-phase component directory transaction', function () {
 
 		const parkedSomething = await discardDirAside(target, name);
 
-		assert.equal(parkedSomething, true);
-		assert.equal(existsSync(target), false, 'the tree is moved out of the way');
+		assert.strictEqual(parkedSomething, true);
+		assert.strictEqual(existsSync(target), false, 'the tree is moved out of the way');
 		// Read before the detached sweep can remove it; if it already has, there is nothing to misclassify.
 		const entries = await fs.readdir(asideDir).catch(() => []);
 		for (const entry of entries) {
-			assert.equal(
+			assert.strictEqual(
 				entry.startsWith(DISCARDED_ASIDE_PREFIX),
 				true,
 				`parked entry ${entry} must carry the discarded prefix, not a recovery-candidate prefix`
 			);
 		}
-		assert.equal(await discardDirAside(target, name), false, 'nothing to park the second time');
+		assert.strictEqual(await discardDirAside(target, name), false, 'nothing to park the second time');
 		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
 	});
 
@@ -1212,8 +1216,8 @@ describe('two-phase component directory transaction', function () {
 				ids.push(deploymentId);
 			}
 			const surviving = ids.filter((id) => existsSync(stagedApplicationPath(application.dirPath, id)));
-			assert.equal(surviving.length, 2, `expected exactly 2 staged builds to survive, got ${surviving.length}`);
-			assert.equal(surviving.includes(ids.at(-1)), true, 'the just-staged build is never evicted');
+			assert.strictEqual(surviving.length, 2, `expected exactly 2 staged builds to survive, got ${surviving.length}`);
+			assert.strictEqual(surviving.includes(ids.at(-1)), true, 'the just-staged build is never evicted');
 		} finally {
 			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, priorMax);
 		}
@@ -1225,7 +1229,7 @@ describe('two-phase component directory transaction', function () {
 		try {
 			for (const value of [undefined, '', '   ', true, [], {}, 'abc', 0, -1]) {
 				environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, value);
-				assert.equal(
+				assert.strictEqual(
 					getStagingRetentionMaxCount(),
 					DEFAULT_STAGING_RETENTION_MAX_COUNT,
 					`${JSON.stringify(value)} must fall back to the default rather than coerce`
@@ -1237,7 +1241,7 @@ describe('two-phase component directory transaction', function () {
 				[2.7, 2],
 			]) {
 				environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, value);
-				assert.equal(getStagingRetentionMaxCount(), expected);
+				assert.strictEqual(getStagingRetentionMaxCount(), expected);
 			}
 		} finally {
 			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, prior);
@@ -1273,7 +1277,7 @@ describe('two-phase component directory transaction', function () {
 
 		assert.match(await readMarker(application.dirPath), /live-v1/, 'the previous release is live again');
 		// The candidate is back in staging and its dependency resolves from there, not from the live path.
-		assert.equal(
+		assert.strictEqual(
 			await fs.readFile(path.join(stagedPath, 'node_modules', 'probe', 'index.js'), 'utf8'),
 			"module.exports = 'probe';\n",
 			'the rolled-back candidate resolves its dependency from staging'
@@ -1282,7 +1286,7 @@ describe('two-phase component directory transaction', function () {
 		// And it can still be activated on a retry.
 		await activateStagedApplication(application, second, { activationSpec: { package: null } });
 		assert.match(await readMarker(application.dirPath), /candidate-v2/);
-		assert.equal(
+		assert.strictEqual(
 			await fs.readFile(path.join(application.dirPath, 'node_modules', 'probe', 'index.js'), 'utf8'),
 			"module.exports = 'probe';\n",
 			'the retry re-points the links at the live path'
@@ -1318,9 +1322,13 @@ describe('two-phase component directory transaction', function () {
 			async (id) => settled.push(id)
 		);
 
-		assert.equal(reconciliation.failedProjects.has(name), false, 'the live component is not failed closed');
-		assert.deepEqual(settled, [deploymentId], 'the unusable candidate row is settled so its payload can be reclaimed');
-		assert.equal(reconciliation.removed.includes(deploymentId), true, 'and its residue is removed');
+		assert.strictEqual(reconciliation.failedProjects.has(name), false, 'the live component is not failed closed');
+		assert.deepStrictEqual(
+			settled,
+			[deploymentId],
+			'the unusable candidate row is settled so its payload can be reclaimed'
+		);
+		assert.strictEqual(reconciliation.removed.includes(deploymentId), true, 'and its residue is removed');
 		assert.match(await readMarker(application.dirPath), /live/, 'the live component is untouched');
 		await cleanup(name);
 	});
@@ -1351,8 +1359,8 @@ describe('two-phase component directory transaction', function () {
 			}
 		);
 
-		assert.equal(reconciliation.errors.has(deploymentId), true, 'the failure is still reported');
-		assert.equal(
+		assert.strictEqual(reconciliation.errors.has(deploymentId), true, 'the failure is still reported');
+		assert.strictEqual(
 			reconciliation.failedProjects.has(name),
 			false,
 			'but it is not attributed to the component, so the healthy live tree still loads'
@@ -1385,12 +1393,12 @@ describe('two-phase component directory transaction', function () {
 		);
 		await fs.chmod(previousRoot, 0o700).catch(() => {});
 
-		assert.equal(committed, 1, 'the commit ran');
-		assert.equal(rolledBack, 1, 'and a post-commit failure rolled it back');
+		assert.strictEqual(committed, 1, 'the commit ran');
+		assert.strictEqual(rolledBack, 1, 'and a post-commit failure rolled it back');
 		assert.match(await readMarker(application.dirPath), /v2/, 'the pre-revert version is live again');
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.live.deployment_id, second, 'the manifest was put back too, so live/manifest agree');
-		assert.equal(target.previous.deployment_id, first);
+		assert.strictEqual(target.live.deployment_id, second, 'the manifest was put back too, so live/manifest agree');
+		assert.strictEqual(target.previous.deployment_id, first);
 		await cleanup(name);
 	});
 
@@ -1413,14 +1421,14 @@ describe('two-phase component directory transaction', function () {
 
 		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
 
-		assert.equal(failures.size, 0);
+		assert.strictEqual(failures.size, 0);
 		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version is live, matching config');
 		assert.match(await readMarker(previousPath), /v2/, 'the displaced tree is retained');
-		assert.equal(existsSync(holding), false);
-		assert.equal(existsSync(`${holding}.recovering.json`), false);
+		assert.strictEqual(existsSync(holding), false);
+		assert.strictEqual(existsSync(`${holding}.recovering.json`), false);
 		const target = await getRevertTarget(application.dirPath);
-		assert.equal(target.live.deployment_id, first);
-		assert.equal(target.previous.deployment_id, second);
+		assert.strictEqual(target.live.deployment_id, first);
+		assert.strictEqual(target.previous.deployment_id, second);
 		await cleanup(name);
 	});
 	it('serializes root-config and application-lock writes on a lock outside this isolate', async () => {
@@ -1449,19 +1457,26 @@ describe('two-phase component directory transaction', function () {
 			// The holder waits on an external signal, and the commit is started OUTSIDE it. Awaiting the
 			// commit from inside would deadlock: the lock is not reentrant, so the holder could not release
 			// until the commit finished and the commit could not start until the holder released.
-			const holder = withComponentPreparationLock(lockPath, () => holdReleased);
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			// Signalled from inside the callback rather than slept on: a fixed delay does not prove the
+			// filesystem lock was actually acquired, so on a loaded runner the commit could win the race.
+			let holderEntered;
+			const entered = new Promise((resolve) => (holderEntered = resolve));
+			const holder = withComponentPreparationLock(lockPath, () => {
+				holderEntered();
+				return holdReleased;
+			});
+			await entered;
 			const commitPromise = transaction.commit().then(() => (committed = true));
 			await new Promise((resolve) => setTimeout(resolve, 200));
-			assert.equal(committed, false, 'the commit must wait while the persistent-state lock is held');
+			assert.strictEqual(committed, false, 'the commit must wait while the persistent-state lock is held');
 
 			releaseHold();
 			await holder;
 			await commitPromise;
-			assert.equal(committed, true, 'and proceed once it is released');
-			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0' });
+			assert.strictEqual(committed, true, 'and proceed once it is released');
+			assert.deepStrictEqual(readConfigFile()[name], { package: 'example@1.0.0' });
 			const lock = JSON.parse(await fs.readFile(lockPath, 'utf8'));
-			assert.deepEqual(lock.applications[name], { package: 'example@1.0.0' });
+			assert.deepStrictEqual(lock.applications[name], { package: 'example@1.0.0' });
 		} finally {
 			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
 			else process.env.ROOTPATH = priorRootEnv;
@@ -1485,8 +1500,8 @@ describe('two-phase component directory transaction', function () {
 			await Promise.all([a.commit(), b.commit()]);
 
 			const lock = JSON.parse(await fs.readFile(path.join(configRoot, 'harper-application-lock.json'), 'utf8'));
-			assert.deepEqual(lock.applications[first], { package: 'a@1.0.0' }, 'the first entry survives');
-			assert.deepEqual(lock.applications[second], { package: 'b@1.0.0' }, 'and so does the second');
+			assert.deepStrictEqual(lock.applications[first], { package: 'a@1.0.0' }, 'the first entry survives');
+			assert.deepStrictEqual(lock.applications[second], { package: 'b@1.0.0' }, 'and so does the second');
 		} finally {
 			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
 			else process.env.ROOTPATH = priorRootEnv;
@@ -1521,13 +1536,81 @@ describe('two-phase component directory transaction', function () {
 			async (id, reason) => settled.push([id, reason])
 		);
 
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			settled,
 			[[strandedId, 'the deploy did not survive a restart']],
 			'only the in-flight row is settled, and with a reason naming the crash'
 		);
-		assert.equal(reconciliation.removed.includes(strandedId), true, 'its staging residue is removed');
-		assert.equal(reconciliation.removed.includes(terminalId), true, "and so is the terminal row's");
+		assert.strictEqual(reconciliation.removed.includes(strandedId), true, 'its staging residue is removed');
+		assert.strictEqual(reconciliation.removed.includes(terminalId), true, "and so is the terminal row's");
+		await cleanup(name);
+	});
+
+	it('does not discard a staged candidate when the completeness probe fails for a reason other than absence', async () => {
+		// The probe used to map every error to "absent", so a transient EACCES/EIO/EMFILE at startup made a
+		// complete release look broken and the staged branch deleted it. Only genuine absence may authorize
+		// destroying a candidate. A self-referencing symlink gives a deterministic ELOOP for this, with no
+		// dependence on permissions or platform.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('staged') });
+		await stageApplication(application, deploymentId);
+		const stagedPath = stagedApplicationPath(application.dirPath, deploymentId);
+		await fs.rm(stagedPath, { recursive: true, force: true });
+		await fs.symlink(stagedPath, stagedPath);
+
+		const settled = [];
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async () => ({ deployment_id: deploymentId, project: name, status: 'staged' }),
+			async () => {},
+			async (id, reason) => settled.push([id, reason])
+		);
+
+		assert.deepStrictEqual(settled, [], 'the row is not settled on an inconclusive probe');
+		assert.strictEqual(reconciliation.removed.includes(deploymentId), false, 'and its tree is not deleted');
+		assert.strictEqual(reconciliation.errors.has(deploymentId), true, 'the failure is reported instead');
+		assert.strictEqual(
+			reconciliation.failedProjects.has(name),
+			false,
+			'a staged candidate never blocks the live component, which is unaffected either way'
+		);
+		await fs.rm(stagedPath, { force: true });
+		await cleanup(name);
+	});
+
+	it('rolls forward an interrupted no-live restore instead of sweeping away its marker', async () => {
+		// The no-live revert branch renames `previous` straight to live because there is nothing to
+		// displace, so it has no holding directory — and its marker is the only evidence. Absence of a
+		// holding directory therefore must not read as an orphaned marker: sweeping it leaves the
+		// component with no live tree at all and no record that a restore was in progress.
+		const name = fixtureName();
+		const { application, first } = await twoActivations(name);
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		const manifest = JSON.parse(await fs.readFile(`${previousPath}.json`, 'utf8'));
+
+		// Crash shape: marker written, live already gone, the retained tree not yet moved into place.
+		await fs.rm(application.dirPath, { recursive: true, force: true });
+		const restoreMarker = `${previousPath}.restoring.recovering.json`;
+		await fs.writeFile(
+			restoreMarker,
+			JSON.stringify({ previous: { deployment_id: null, application_config: null }, live: manifest.previous }, null, 2)
+		);
+
+		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.strictEqual(failures.size, 0);
+		assert.match(await readMarker(application.dirPath), /v1/, 'the retained version is live');
+		assert.strictEqual(existsSync(previousPath), false, 'and is no longer parked under retention');
+		assert.strictEqual(existsSync(restoreMarker), false, 'the marker is cleared only after everything committed');
+		const restored = JSON.parse(await fs.readFile(`${previousPath}.json`, 'utf8'));
+		assert.strictEqual(restored.live.deployment_id, first, 'the manifest names the version the marker named');
+		assert.strictEqual(restored.previous.deployment_id, null, 'with nothing retained behind it');
+		assert.strictEqual(
+			await getRevertTarget(application.dirPath),
+			undefined,
+			'so the component reports as not revertable until its next deploy'
+		);
 		await cleanup(name);
 	});
 
@@ -1545,14 +1628,20 @@ describe('two-phase component directory transaction', function () {
 		await fs.mkdir(backupPath, { recursive: true });
 		await fs.writeFile(path.join(backupPath, 'index.js'), "module.exports = 'backup';\n");
 		// The swap window this models: no live directory, only the backup.
-		assert.equal(existsSync(livePath), false);
+		assert.strictEqual(existsSync(livePath), false);
 
 		let releaseHold;
 		const holdReleased = new Promise((resolve) => (releaseHold = resolve));
 		// Reconcile is started OUTSIDE the holder — awaiting it from inside would deadlock, since the lock
-		// is not reentrant.
-		const holder = withComponentPreparationLock(livePath, () => holdReleased);
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		// is not reentrant. Entry is signalled from inside the callback, not slept on, so the assertions
+		// below cannot pass merely because the sweep lost a timing race.
+		let holderEntered;
+		const entered = new Promise((resolve) => (holderEntered = resolve));
+		const holder = withComponentPreparationLock(livePath, () => {
+			holderEntered();
+			return holdReleased;
+		});
+		await entered;
 
 		let reconciled = false;
 		const reconcilePromise = reconcileStagedApplicationArtifacts(
@@ -1565,15 +1654,15 @@ describe('two-phase component directory transaction', function () {
 		});
 		await new Promise((resolve) => setTimeout(resolve, 300));
 
-		assert.equal(reconciled, false, 'the sweep must not finish while the component lock is held');
-		assert.equal(existsSync(livePath), false, 'and must not restore the backup underneath the lock holder');
-		assert.equal(existsSync(backupPath), true, 'leaving the backup for after the lock is released');
+		assert.strictEqual(reconciled, false, 'the sweep must not finish while the component lock is held');
+		assert.strictEqual(existsSync(livePath), false, 'and must not restore the backup underneath the lock holder');
+		assert.strictEqual(existsSync(backupPath), true, 'leaving the backup for after the lock is released');
 
 		releaseHold();
 		await holder;
 		await reconcilePromise;
 
-		assert.equal(existsSync(backupPath), false, 'once released, the sweep settles the artifact');
+		assert.strictEqual(existsSync(backupPath), false, 'once released, the sweep settles the artifact');
 		assert.match(await readMarker(livePath), /backup/, 'restoring the backup over the absent live path');
 		await cleanup(name);
 	});
@@ -1584,7 +1673,7 @@ describe('two-phase component directory transaction', function () {
 	it('resolves empty when the retention root is absent but rejects when it is unreadable', async () => {
 		const scanRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'revert-scan-'));
 		try {
-			assert.equal((await recoverInterruptedReverts(scanRoot)).size, 0);
+			assert.strictEqual((await recoverInterruptedReverts(scanRoot)).size, 0);
 
 			await fs.writeFile(path.join(scanRoot, DEPLOY_PREVIOUS_DIR), 'not a directory\n');
 			await assert.rejects(() => recoverInterruptedReverts(scanRoot), { code: 'ENOTDIR' });

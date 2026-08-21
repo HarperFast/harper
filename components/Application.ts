@@ -818,13 +818,107 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 		throw error;
 	}
 	// A crash between the final rename and the marker removal leaves a marker whose holding directory is
-	// gone. Nothing would revisit it — the loop below is keyed on finding a holding directory — so sweep
-	// those first rather than leave them to be trusted by a future attempt.
+	// gone. Nothing would revisit it — the swap loop below is keyed on finding a holding directory — so
+	// sweep those first rather than leave them to be trusted by a future attempt.
 	const entryNames = new Set(entries.map((entry) => entry.name));
 	for (const entry of entries) {
 		if (entry.isDirectory() || !entry.name.endsWith(REVERT_RECOVERY_SUFFIX)) continue;
 		const holdingName = entry.name.slice(0, -REVERT_RECOVERY_SUFFIX.length);
-		if (!entryNames.has(holdingName)) await rm(join(previousRoot, entry.name), { force: true }).catch(() => {});
+		// The no-live restore branch has no holding directory by design, so absence is not orphanhood for
+		// its marker. It is recovered on its own terms below.
+		if (holdingName.endsWith(RESTORE_MARKER_INFIX)) continue;
+		if (entryNames.has(holdingName)) continue;
+		const orphanName = REVERTING_NAME_PATTERN.exec(holdingName.slice(REVERTING_PREFIX.length))?.[1];
+		if (!holdingName.startsWith(REVERTING_PREFIX) || !orphanName || !safeComponentName(orphanName)) {
+			await rm(join(previousRoot, entry.name), { force: true }).catch(() => {});
+			continue;
+		}
+		// Decided under the component lock, then re-read: a revert writes this marker immediately before
+		// renaming live into the holding directory, so an unlocked sweep can catch that window and delete
+		// the marker of a revert that is still running — leaving its crash unrecoverable.
+		await withComponentPreparationLock(join(componentsRootDirPath, orphanName), async () => {
+			const stillOrphaned = await lstat(join(previousRoot, holdingName)).then(
+				() => false,
+				(err) => (err as NodeJS.ErrnoException).code === 'ENOENT'
+			);
+			if (stillOrphaned) await rm(join(previousRoot, entry.name), { force: true }).catch(() => {});
+		}).catch((error) => {
+			logger.warn(`Could not settle a stray revert marker for ${orphanName}:`, errorForLog(error as Error));
+		});
+	}
+	// The no-live restore branch: `previous` was renamed straight to live because there was nothing to
+	// displace. Its marker is the only evidence, and rolling forward is the only sound repair — undoing
+	// would leave the component with no live tree at all.
+	for (const entry of entries) {
+		if (entry.isDirectory() || !entry.name.endsWith(REVERT_RECOVERY_SUFFIX)) continue;
+		const markerBase = entry.name.slice(0, -REVERT_RECOVERY_SUFFIX.length);
+		if (!markerBase.endsWith(RESTORE_MARKER_INFIX)) continue;
+		const componentName = markerBase.slice(0, -RESTORE_MARKER_INFIX.length);
+		const markerPath = join(previousRoot, entry.name);
+		if (!safeComponentName(componentName)) {
+			await rm(markerPath, { force: true }).catch(() => {});
+			continue;
+		}
+		const liveDirPath = join(componentsRootDirPath, componentName);
+		try {
+			await withComponentPreparationLock(liveDirPath, async () => {
+				const intended = await readRevertRecoveryMarker(markerPath);
+				if (!intended) {
+					await rm(markerPath, { force: true });
+					return;
+				}
+				const previousPath = previousDirPathFor(liveDirPath);
+				const liveExists = await lstat(liveDirPath).then(
+					() => true,
+					(err) => {
+						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+						throw err;
+					}
+				);
+				const previousExists = await lstat(previousPath).then(
+					() => true,
+					(err) => {
+						if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+						throw err;
+					}
+				);
+				if (!liveExists && !previousExists) {
+					await rm(markerPath, { force: true });
+					throw new Error(
+						`Interrupted restore of ${componentName} has neither a live nor a retained tree; ` +
+							`its bytes are gone and it must be redeployed`
+					);
+				}
+				if (liveExists && previousExists) {
+					// The restore finished and something else has since retained a version. Residue only.
+					await rm(markerPath, { force: true });
+					return;
+				}
+				if (!liveExists) {
+					await mkdir(dirname(liveDirPath), { recursive: true });
+					await rename(previousPath, liveDirPath);
+				}
+				// Idempotent on a repeat pass, and ordered config-then-manifest so the marker outlives both.
+				const configTransaction = await createApplicationConfigTransaction(
+					componentName,
+					intended.live.application_config
+				);
+				await configTransaction.commit();
+				await writeRetainedPreviousManifest(liveDirPath, {
+					previous: { deployment_id: null, application_config: null },
+					live: intended.live,
+				});
+				await rm(markerPath, { force: true });
+				logger.warn(
+					`Completed an interrupted restore of ${componentName}: the retained version is live and its ` +
+						`configuration has been reconciled. It cannot be reverted again until its next deploy`
+				);
+			});
+		} catch (error) {
+			const recoveryError = error instanceof Error ? error : new Error(String(error));
+			failures.set(componentName, recoveryError);
+			logger.error(`Could not recover the interrupted ${componentName} restore:`, errorForLog(recoveryError));
+		}
 	}
 	for (const entry of entries) {
 		if (!entry.isDirectory() || !entry.name.startsWith(REVERTING_PREFIX)) continue;
@@ -2784,14 +2878,31 @@ async function activationArtifacts(componentDirPath: string, deploymentId: strin
 		.map((entry) => join(directory, entry.name));
 }
 
+/**
+ * `lstat`/`stat` where only genuine absence reads as absent. Collapsing every error to "not there"
+ * makes a transient EACCES/EIO/EMFILE look like a missing tree, and the staged-candidate branch
+ * deletes what it believes is unusable — so anything other than ENOENT has to propagate.
+ */
+async function statIfPresent(
+	path: string,
+	followSymlinks = false
+): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {
+	try {
+		return await (followSymlinks ? stat(path) : lstat(path));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+		throw error;
+	}
+}
+
 export async function hasCompleteStagedApplication(stagingDirPath: string): Promise<boolean> {
 	const deploymentDirPath = dirname(stagingDirPath);
 	const [stagingRootStat, deploymentStat, stagedStat, stagedTargetStat, markerStat] = await Promise.all([
-		lstat(dirname(deploymentDirPath)).catch(() => undefined),
-		lstat(deploymentDirPath).catch(() => undefined),
-		lstat(stagingDirPath).catch(() => undefined),
-		stat(stagingDirPath).catch(() => undefined),
-		lstat(join(deploymentDirPath, STAGED_COMPLETE_MARKER)).catch(() => undefined),
+		statIfPresent(dirname(deploymentDirPath)),
+		statIfPresent(deploymentDirPath),
+		statIfPresent(stagingDirPath),
+		statIfPresent(stagingDirPath, true),
+		statIfPresent(join(deploymentDirPath, STAGED_COMPLETE_MARKER)),
 	]);
 	return (
 		!!stagingRootStat?.isDirectory() &&
@@ -3110,6 +3221,16 @@ function activationArtifactDeploymentId(name: string): string | undefined {
 	return DEPLOYMENT_ID_PATTERN.test(deploymentId) ? deploymentId : undefined;
 }
 
+/**
+ * The project a staged deployment belongs to, read from `<staging>/<deploymentId>/<project>`. Used to
+ * attribute a reconciliation failure when the deployment row itself could not be read.
+ */
+async function stagedDeploymentProjectName(deploymentPath: string): Promise<string | undefined> {
+	const entries = await readdir(deploymentPath, { withFileTypes: true }).catch(() => []);
+	const projects = entries.filter((entry) => entry.isDirectory() && safeComponentName(entry.name));
+	return projects.length === 1 ? projects[0].name : undefined;
+}
+
 async function removeActivationArtifacts(componentDirPath: string, deploymentId: string): Promise<void> {
 	for (const artifact of await activationArtifacts(componentDirPath, deploymentId)) {
 		await rm(artifact, { recursive: true, force: true });
@@ -3236,11 +3357,16 @@ export async function reconcileStagedApplicationArtifacts(
 			errors.set(entry.name, reconcileError);
 			// Fail the component closed for an interrupted activation, where the live tree and its durable
 			// configuration can disagree. A confirmed `staged` failure leaves live state consistent, so it
-			// does not. When the lookup itself failed there is no project name to attribute to — but nothing
-			// destructive has run for this entry either, and a non-empty `errors` keeps the reconcile guard
-			// unset so the next reload cycle retries.
+			// does not.
 			if (row?.status === 'activating' && safeComponentName(row?.project)) {
 				failedProjects.set(row.project, reconcileError);
+			} else if (!row) {
+				// The row is what says whether this was an interrupted activation, so an unreadable row is
+				// the one case we cannot rule that out. The project name does not depend on the row — it is
+				// the directory under the deployment id — so attribute from disk rather than fail open and
+				// load a component whose live tree may disagree with its durable config.
+				const project = await stagedDeploymentProjectName(deploymentPath);
+				if (project) failedProjects.set(project, reconcileError);
 			}
 		}
 	}
@@ -3291,6 +3417,16 @@ export async function reconcileStagedApplicationArtifacts(
 						}
 					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
 						await rename(artifactPath, livePath);
+					} else if (!row && artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX)) {
+						// A backup artifact still here means the activation never finished retaining it, so this is
+						// the only copy of the tree it displaced. An absent row is not evidence that copy is
+						// disposable: the lookup returns undefined both for a row retention reclaimed and for a
+						// deployment table that was never provisioned. Keep it and let a pass that can read the
+						// row decide.
+						logger.warn(
+							`Keeping displaced component tree '${artifact.name}' for '${projectEntry.name}': ` +
+								`its deployment row could not be read, so it cannot be confirmed disposable`
+						);
 					} else {
 						await rm(artifactPath, { recursive: true, force: true });
 					}
@@ -3438,10 +3574,14 @@ function persistentStateLockPath(): string {
  * Never call this while already holding it — the file lock is not reentrant. The `*Unlocked` variants
  * exist for callers that are already inside it.
  */
-async function withPersistentStateLock<T>(operation: () => Promise<T>): Promise<T> {
+export async function withPersistentStateLock<T>(operation: () => Promise<T>): Promise<T> {
 	return withComponentPreparationLock(persistentStateLockPath(), operation, {
 		purpose: PERSISTENT_STATE_LOCK_PURPOSE,
 		timeoutMs: 30_000,
+		// Without this, a ticket left behind by a terminated worker still carries this process's pid and
+		// instance nonce, so it reads as live and is never reclaimed — wedging every later activation,
+		// revert and drop on a holder that no longer exists.
+		isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
 	});
 }
 
@@ -3553,6 +3693,9 @@ export async function createApplicationConfigTransaction(
 			// Snapshot and both writes inside one critical section, so a concurrent activation of a different
 			// project cannot land between the read and the write and lose one of the two entries.
 			await withPersistentStateLock(async () => {
+				// Re-checked inside the critical section: the guard above is only a fast path, so two
+				// concurrent commits on this transaction would both pass it and repeat the read-modify-write.
+				if (commitStarted) return;
 				previousConfig = readConfigFile()?.[project];
 				previousLockConfig = await getApplicationLockEntryUnlocked(project);
 				commitStarted = true;

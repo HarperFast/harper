@@ -1,9 +1,9 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const validator = require('#js/components/operationsValidation');
 
-const valid = (result) => assert.equal(result, undefined, `expected valid, got: ${result?.message}`);
+const valid = (result) => assert.strictEqual(result, undefined, `expected valid, got: ${result?.message}`);
 const invalid = (result) => assert.ok(result, 'expected a validation error');
 
 describe('deployComponentValidator two-phase controls', () => {
