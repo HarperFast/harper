@@ -121,7 +121,7 @@ export function operationRegisteredHandler(event: {
 function handleThreadExit(deadThreadId: number) {
 	exitedThreadIds.add(deadThreadId);
 	for (const [name, workerIds] of registeredByWorker) {
-		workerIds.delete(deadThreadId);
+		if (!workerIds.delete(deadThreadId)) continue;
 		// A surviving worker that never declared a permission must not keep the name admissible.
 		if (workerIds.size === 0) dropRegistration(name);
 		else setWorkerGrantable(name, deadThreadId, false);
@@ -144,11 +144,8 @@ function setWorkerGrantable(name: string, threadId: number, grantable: boolean) 
 	if (grantable) {
 		if (!grantableIds) grantableByWorker.set(name, (grantableIds = new Set()));
 		grantableIds.add(threadId);
-	} else {
-		grantableIds?.delete(threadId);
-	}
-	if (grantableIds?.size) registerWorkerGrantableOperation(name);
-	else {
+		registerWorkerGrantableOperation(name);
+	} else if (grantableIds?.delete(threadId) && grantableIds.size === 0) {
 		grantableByWorker.delete(name);
 		unregisterWorkerGrantableOperation(name);
 	}
