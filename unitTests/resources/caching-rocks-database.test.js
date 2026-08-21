@@ -2,9 +2,9 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { VERSION_NOT_UNIQUE_FLAG } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { RocksDatabase, constants } = require('@harperfast/rocksdb-js');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -116,33 +116,68 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(result.name, 'eight updated');
 	});
 
-	it('marks a record whose version was reused by a resequenced write', async function () {
+	it('marks a record whose version was reused by a resequenced write, preserving its expiresAt', async function () {
 		const now = Date.now();
 		const expiresAt = now + 60_000;
-		await TestTable.put(9, { name: 'base', count: 0 });
-		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
-		const inOrder = TestTable.primaryStore.getEntry(9);
-		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50, expiresAt });
-		const resequenced = TestTable.primaryStore.getEntry(9);
+		await TestTable.put(10, { name: 'base', count: 0 });
+		await TestTable.patch(10, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		const inOrder = TestTable.primaryStore.getEntry(10);
+		await TestTable.patch(10, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50, expiresAt });
+		const resequenced = TestTable.primaryStore.getEntry(10);
 		assert.equal(resequenced.version, inOrder.version);
 		assert.equal(resequenced.value.count, 2);
 		assert.equal(resequenced.expiresAt, expiresAt);
-		assert(resequenced.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
+		assert(resequenced.metadataFlags & VERSION_REUSED);
 	});
 
-	it('does not vouch for stale cached data after a version-reusing write', async function () {
-		// A drift between Harper's flag and the native constant would silently disarm the assertions below.
-		assert.equal(constants.VERSION_NOT_UNIQUE_FLAG, VERSION_NOT_UNIQUE_FLAG);
+	it('VT does not vouch for a version a resequenced write reused', async function () {
+		const now = Date.now();
+		await TestTable.put(9, { name: 'base', count: 0 });
+		await TestTable.patch(9, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.get(9); // cache the record and seed the VT slot with its version
+		const inOrder = TestTable.primaryStore.getEntry(9);
+		assert(TestTable.primaryStore.verifyVersion(9, inOrder.version), 'VT should vouch for an in-order version');
+
+		// An out-of-order write merges onto the newer record and is stored under its version, so two
+		// different stored values share that version.
+		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const resequenced = TestTable.primaryStore.getEntry(9);
+		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
+		assert.equal(resequenced.value.count, 2, 'both increments are applied');
+
+		// The version must never be vouched for once two stored values share it: another worker still
+		// holding the pre-merge value would verify it as fresh and serve it, and an addTo folding onto
+		// that stale value silently drops the increment it merged over. Asserting the sentinel rather
+		// than merely "does not verify": any write clears the slot, so the weaker form would pass
+		// without this change, and the sentinel is also what tells the next reader not to republish.
+		assert(
+			!TestTable.primaryStore.verifyVersion(9, resequenced.version),
+			'VT must not vouch for a version shared by two stored values'
+		);
+		assert(
+			TestTable.primaryStore.verifyVersion(9, Number.MAX_SAFE_INTEGER),
+			'reading a resequenced record must leave the slot parked as unvouchable'
+		);
+	});
+
+	it('an in-order write after a resequenced one restores vouching', async function () {
+		const store = TestTable.primaryStore;
 		const now = Date.now();
 		await TestTable.put(11, { name: 'base', count: 0 });
-		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
-		await TestTable.get(11);
-		await TestTable.get(11);
-		const inOrder = TestTable.primaryStore.getEntry(11);
-		assert(TestTable.primaryStore.verifyVersion(11, inOrder.version));
-
+		await TestTable.patch(11, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
 		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
-		assert.equal((await TestTable.get(11)).count, 2);
-		assert(!TestTable.primaryStore.verifyVersion(11, inOrder.version));
+		const reused = store.getEntry(11);
+		assert(!store.verifyVersion(11, reused.version), 'the reused version is not vouched for');
+
+		// The next in-order write advances the version, so the record identifies its own value again
+		// and both the cache and the VT are usable for it. The read that discovers the flag is gone
+		// still asks for no seeding (it was issued while the key was remembered as reused), so it is
+		// the read after it that re-seeds — the same one-read lag as any cold key.
+		await TestTable.patch(11, { name: 'later' }, { timestamp: now + 200 });
+		const advanced = store.getEntry(11);
+		assert(advanced.version > reused.version, 'the in-order write advances the version');
+		assert.equal(advanced.value.count, 2, 'the merged count survives the in-order write');
+		store.getEntry(11);
+		assert(store.verifyVersion(11, advanced.version), 'vouching resumes for a version of its own');
 	});
 });
