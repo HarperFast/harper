@@ -214,7 +214,7 @@ node:
   hostname: server-one
 ```
 
-- `hostname` — This node's identity: it becomes the node's TLS certificate common name and the host that replication advertises to peers and dials to reach this node. Must be a **bare hostname or IP literal** (e.g. `server-one`, `10.0.0.5`, or the unbracketed IPv6 form `::1`) — **not** a URL and **not** `host:port`. Harper **fails to start** if the value carries a scheme, port, path, credentials, query string, or fragment, is a bracketed IPv6 literal (`[::1]`), or is not a string; the startup error names the offending value and the reason. Earlier versions accepted such values and silently corrupted certificate matching and replication — a node configured as `http://host:9926` advertised and dialed a host literally named `http`. The same requirement applies to [`replication.hostname`](#replication). If unset, Harper uses the first valid bare host among `replication.hostname`, the host in `replication.url`, the TLS certificate common name, and the Operations API host, falling back to `127.0.0.1`.
+- `hostname` <VersionBadge type="changed" version="v5.3.0" /> — This node's identity: it becomes the node's TLS certificate common name and the host that replication advertises to peers and dials to reach this node. Must be a **bare hostname or IP literal** (e.g. `server-one`, `10.0.0.5`, or the unbracketed IPv6 form `::1`) — **not** a URL and **not** `host:port`. Harper **fails to start** if the value carries a scheme, port, path, credentials, query string, or fragment, is a bracketed IPv6 literal (`[::1]`), or is not a string; the startup error names the offending value and the reason. Earlier versions accepted such values and silently corrupted certificate matching and replication — a node configured as `http://host:9926` advertised and dialed a host literally named `http`. The same requirement applies to [`replication.hostname`](#replication). If unset, Harper uses the first valid bare host among `replication.hostname`, the host in `replication.url`, the TLS certificate common name, and the Operations API host, falling back to `127.0.0.1`.
 
 ---
 
@@ -231,7 +231,7 @@ replication:
     - wss://server-two:9933
 ```
 
-- `hostname` — This instance's hostname within the cluster. Subject to the same bare hostname or IP literal requirement as [`node.hostname`](#node) — a URL, `host:port`, or non-string value fails startup. When both are set, `node.hostname` wins.
+- `hostname` <VersionBadge type="changed" version="v5.3.0" /> — This instance's hostname within the cluster. Subject to the same bare hostname or IP literal requirement as [`node.hostname`](#node) — a URL, `host:port`, or non-string value fails startup. When both are set, `node.hostname` wins.
 - `url` — WebSocket URL peers use to connect to this instance
 - `databases` — Databases to replicate; _Default_: `"*"` (all). Each entry supports `name` and `sharded`
 - `routes` — Peer nodes; URL strings or `{hostname, port, startTime, revokedCertificates}` objects
