@@ -26,6 +26,17 @@ const GRANTED_USER = 'component_op_granted_user';
 const UNGRANTED_ROLE = 'component_op_ungranted_role';
 const UNGRANTED_USER = 'component_op_ungranted_user';
 const USER_PASS = 'Abc1234!';
+// A trust policy the OIDC operation will accept on every axis except the one under test, so a
+// rejection can only be about the operation name. Shapes taken from the GitHub Actions profile's
+// own requirements: a canonical audience (explicit port, trailing slash) and specific claims.
+const TRUST_POLICY = {
+	issuer: 'https://token.actions.githubusercontent.com',
+	audience: 'https://my-instance.harperdb.io:9925/',
+	claims: {
+		repository_id: '67890',
+		workflow_ref: 'HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main',
+	},
+};
 
 suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 	async function op(body: any): Promise<{ status: number; body: any }> {
@@ -193,6 +204,34 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 
 			const { status, body } = await asUser(UNGRANTED_USER, { operation: GRANTABLE_OP });
 			strictEqual(status, 403, JSON.stringify(body));
+		});
+
+		test('add_oidc_trust accepts the op in a trust policy scope', async () => {
+			// The third main-thread consumer of validateOperations, and the one whose own source
+			// documented this gap as a known limitation until this change.
+			const { status, body } = await op({
+				operation: 'add_oidc_trust',
+				id: 'component-op-policy',
+				...TRUST_POLICY,
+				user: GRANTED_USER,
+				operations: [GRANTABLE_OP],
+			});
+			strictEqual(status, 200, JSON.stringify(body));
+		});
+
+		test('add_oidc_trust still rejects an op name no component registered', async () => {
+			const { status, body } = await op({
+				operation: 'add_oidc_trust',
+				id: 'component-op-bogus-policy',
+				...TRUST_POLICY,
+				user: GRANTED_USER,
+				operations: ['component_registered_never_declared'],
+			});
+			strictEqual(status, 400, JSON.stringify(body));
+			ok(
+				JSON.stringify(body).includes('not a Harper operation'),
+				`expected the trust-policy rejection, got: ${JSON.stringify(body)}`
+			);
 		});
 
 		test('impersonation accepts an inline role naming the op', async () => {
