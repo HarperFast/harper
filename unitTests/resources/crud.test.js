@@ -212,26 +212,24 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			assert.equal(messages.length, 1);
-			// Poll until analytics are flushed (fixed 100ms was too short on a loaded CI runner)
-			let publishRecorded, messageRecorded;
-			for (let i = 0; i < 20; i++) {
-				await new Promise((resolve) => setTimeout(resolve, 50));
-				const analyticsResults = await databases.system.hdb_raw_analytics.search({
-					conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
-				});
-				publishRecorded = undefined;
-				messageRecorded = undefined;
-				for await (let { metrics } of analyticsResults) {
-					publishRecorded ??= metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
-					messageRecorded ??= metrics.find(({ metric, path }) => metric === 'db-message' && path === 'CRUDTable');
-					if (publishRecorded && messageRecorded) break;
-				}
-				if (publishRecorded && messageRecorded) break;
-			}
-			assert(publishRecorded, 'db-write was recorded in analytics');
-			assert(publishRecorded.mean > 20, 'db-write recorded the bytes count');
-			assert(messageRecorded, 'db-message was recorded in analytics');
-			assert(messageRecorded.mean > 20, 'db-message recorded the bytes count');
+			await waitFor(
+				async () => {
+					const analyticsResults = await databases.system.hdb_raw_analytics.search({
+						conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+					});
+					let publishRecorded, messageRecorded;
+					for await (let { metrics } of analyticsResults) {
+						publishRecorded ??= metrics.find(
+							({ metric, path, mean }) => metric === 'db-write' && path === 'CRUDTable' && mean > 20
+						);
+						messageRecorded ??= metrics.find(
+							({ metric, path, mean }) => metric === 'db-message' && path === 'CRUDTable' && mean > 20
+						);
+						if (publishRecorded && messageRecorded) return true;
+					}
+				},
+				{ message: 'db-write and db-message byte counts were recorded in analytics' }
+			);
 		});
 		it('create with auto-id', async function () {
 			let created = await CRUDTable.create({ relatedId: 1, name: 'constructed with auto-id' });
