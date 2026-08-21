@@ -283,7 +283,7 @@ describe('security/impersonation.ts', () => {
 			const result = await applyImpersonation(su, payload);
 			assert.strictEqual(result.username, 'HDB_ADMIN');
 			assert.strictEqual(result.role.permission.super_user, false);
-			assert.strictEqual(result.role.role, '_impersonated');
+			assert.match(result.role.role, /^_impersonated_[0-9a-f]{24}$/);
 			assert.deepStrictEqual(result.role.permission.dev, payload.role.permission.dev);
 		});
 
@@ -342,7 +342,7 @@ describe('security/impersonation.ts', () => {
 
 			const result = await applyImpersonation(su, payload);
 			// Should use inline permissions, not look up 'custom_context' from cache
-			assert.strictEqual(result.role.role, '_impersonated');
+			assert.match(result.role.role, /^_impersonated_[0-9a-f]{24}$/);
 			assert.strictEqual(result.username, 'custom_context');
 			assert.ok(result.role.permission.dev);
 		});
@@ -553,7 +553,7 @@ describe('security/impersonation.ts', () => {
 			};
 
 			const result = await applyImpersonation(su, payload);
-			assert.strictEqual(result.role.role, '_impersonated');
+			assert.match(result.role.role, /^_impersonated_[0-9a-f]{24}$/);
 			assert.ok(result.role.permission.dev);
 		});
 	});
@@ -635,6 +635,85 @@ describe('security/impersonation.ts', () => {
 		it('adds no scope when the authenticating token was unscoped', async () => {
 			const impersonated = await applyImpersonation(makeSuperUser(), INLINE_ROLE);
 			assert.strictEqual(impersonated.tokenOperations, undefined);
+		});
+	});
+
+	describe('buildScopedTokenUser', () => {
+		const { buildScopedTokenUser } = require('#src/security/impersonation');
+
+		before(async () => {
+			await userModule.setUsersWithRolesCache(new Map([['real_user', { username: 'real_user', active: true }]]));
+		});
+
+		it('trusted internal dispatch can mint without an authenticated minter', async () => {
+			const user = await buildScopedTokenUser(
+				undefined,
+				{ username: 'internal-svc', role: { permission: { operations: ['read_only'] } } },
+				true
+			);
+			assert.strictEqual(user.username, 'internal-svc');
+			assert.match(user.role.role, /^_scoped_token_[0-9a-f]{24}$/);
+			assert.strictEqual(user.role.permission.super_user, false);
+		});
+
+		it('untrusted mint without a super_user minter is rejected with 403', async () => {
+			await assert.rejects(
+				() => buildScopedTokenUser(undefined, { role: { permission: { operations: ['read_only'] } } }, false),
+				(err) => err.statusCode === 403
+			);
+		});
+
+		it('trusted mint without any username is rejected', async () => {
+			await assert.rejects(
+				() => buildScopedTokenUser(undefined, { role: { permission: { operations: ['read_only'] } } }, true),
+				(err) => /username/.test(err.message)
+			);
+		});
+
+		it('an attribution username naming an existing user is rejected', async () => {
+			await assert.rejects(
+				() =>
+					buildScopedTokenUser(
+						undefined,
+						{ username: 'real_user', role: { permission: { operations: ['read_only'] } } },
+						true
+					),
+				(err) => /must not name an existing user/.test(err.message)
+			);
+		});
+
+		it('default attribution is the scoped-prefixed minter name', async () => {
+			const minter = makeSuperUser('the_admin');
+			const user = await buildScopedTokenUser(minter, { role: { permission: { operations: ['read_only'] } } });
+			assert.strictEqual(user.username, 'scoped:the_admin');
+		});
+
+		it('identical permission content produces the same synthetic role identity', async () => {
+			const a = await buildScopedTokenUser(
+				undefined,
+				{ username: 'a', role: { permission: { operations: ['read_only'] } } },
+				true
+			);
+			const b = await buildScopedTokenUser(
+				undefined,
+				{ username: 'b', role: { permission: { operations: ['read_only'] } } },
+				true
+			);
+			const c = await buildScopedTokenUser(
+				undefined,
+				{ username: 'c', role: { permission: { operations: ['insert'] } } },
+				true
+			);
+			assert.strictEqual(a.role.role, b.role.role);
+			assert.notStrictEqual(a.role.role, c.role.role);
+		});
+
+		it('permission key order does not change the synthetic role identity', async () => {
+			const p1 = { operations: ['read_only'], structure_user: false };
+			const p2 = { structure_user: false, operations: ['read_only'] };
+			const a = await buildScopedTokenUser(undefined, { username: 'a', role: { permission: p1 } }, true);
+			const b = await buildScopedTokenUser(undefined, { username: 'b', role: { permission: p2 } }, true);
+			assert.strictEqual(a.role.role, b.role.role, 'reordered keys must map to the same cache identity');
 		});
 	});
 });

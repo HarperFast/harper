@@ -430,6 +430,7 @@ requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.UPDATE, new (permission as any)
 module.exports = {
 	verifyPerms,
 	verifyPermsAST,
+	verifyOperationsAllowlist,
 	verifyBulkLoadAttributePerms,
 	registerOperationPermission,
 	unregisterOperationPermission,
@@ -624,6 +625,28 @@ export function verifyPermsAST(ast, userObject, operation, apiOperation = terms.
 }
 
 /**
+ * Gate 1 of the role `operations` allowlist, callable from every authorization path. The SQL path
+ * (chooseOperation → checkASTPermissions) never reaches verifyPerms, so it must call this
+ * directly — otherwise an allowlisted role could reach unlisted operations through `sql`.
+ * Returns null when allowed (or no allowlist present), a PermissionResponseObject denial otherwise.
+ */
+export function verifyOperationsAllowlist(requestJson: any, operationFunctionName: string) {
+	const rolePermission = requestJson.hdb_user?.role?.permission;
+	const allowedOperationsList = rolePermission?.operations;
+	if (allowedOperationsList == null) return null;
+	// _expandedOperations is pre-built at cache-load time (O(1) lookup).
+	// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
+	const allowedOps = rolePermission._expandedOperations ?? expandOperationsPerms(allowedOperationsList);
+	// operationFunctionName is the internal camelCase function name; allowedOps contains snake_case
+	// API names. Resolve via the api_name stored on the permission entry (set at registration time).
+	const opApiName = requiredPermissions.get(operationFunctionName)?.api_name ?? operationFunctionName;
+	if (!allowedOps.has(opApiName)) {
+		return new PermissionResponseObject().handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
+	}
+	return null;
+}
+
+/**
  * Verifies permissions and restrictions for the NoSQL operation based on the user's assigned role.
  *
  * @param requestJson - The request body as json
@@ -679,6 +702,15 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.USER_HAS_NO_PERMS(requestJson.hdb_user?.username));
 	}
 
+	// Gate 1 of the optional `operations` allowlist: when present, only ops explicitly listed (or
+	// expanded from a group) are reachable. This must run before EVERY privilege early-return below
+	// (super_user, structure_user, system-table allowances) — otherwise a role combining one of
+	// those flags with a restrictive allowlist could reach ops outside its list. Gate 2 (the
+	// SU-only-op bypass for explicitly listed ops) stays below, after the ambient privilege checks.
+	const allowlistDenial = verifyOperationsAllowlist(requestJson, op);
+	if (allowlistDenial) return allowlistDenial;
+	const allowedOperationsList = requestJson.hdb_user?.role?.permission?.operations;
+
 	const isSuperUser = !!requestJson.hdb_user?.role?.permission?.super_user;
 	const structureUser = requestJson.hdb_user?.role?.permission?.structure_user;
 	// set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
@@ -729,36 +761,18 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		);
 	}
 
-	// operations is an optional allowlist on the role. When present, it acts as a two-gate check:
-	// Gate 1 — operation allowlist: only ops explicitly listed (or expanded from a group) are reachable.
-	//           Any unlisted op is denied here, before table CRUD checks even run.
-	// Gate 2 — SU bypass: if the op passed gate 1 and is normally restricted to super_user, the explicit
-	//           listing is treated as a deliberate admin grant and allowed immediately (return null).
-	//           Non-SU ops that pass gate 1 fall through to the normal table CRUD checks below.
-	const permission = requestJson.hdb_user?.role?.permission;
-	const operations = permission?.operations;
-	if (operations !== undefined) {
-		// _expandedOperations is pre-built at cache-load time (O(1) lookup).
-		// Fall back to on-demand expansion for inline-asserted roles (e.g. impersonation via hdb_user in body).
-		const allowedOps = permission._expandedOperations ?? expandOperationsPerms(operations);
-		// op is the internal camelCase function name; allowedOps contains snake_case API names.
-		// Resolve via the api_name stored on the permission entry (set at registration time).
-		const opApiName = requiredPermissions.get(op)?.api_name ?? op;
-		// Gate 1: op not in allowlist — deny regardless of table CRUD permissions.
-		if (!allowedOps.has(opApiName)) {
-			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.OP_NOT_IN_OPERATIONS(opApiName));
-		}
-		// Gate 2: op is SU-only but was explicitly granted via operations — allow without super_user.
-		// Without this, the SU check further below would still deny it even though it passed gate 1.
-		// TODO: ops registered with both requires_su AND non-empty CRUD perms have their table-level
-		// CRUD check bypassed here. Should fall through for those instead of returning null
-		// unconditionally. The managed-backup ops share this shape but self-enforce super_user in their
-		// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
-		// regardless; get_backup remains the one that relies solely on this gate. Low risk today but
-		// worth tightening.
-		if (requiredPermissions.get(op)?.requires_su) {
-			return null;
-		}
+	// Gate 2 of the `operations` allowlist (gate 1 ran above, before the privilege early-returns):
+	// the op passed the allowlist, so if it is normally restricted to super_user, the explicit
+	// listing is treated as a deliberate admin grant and allowed immediately (return null).
+	// Non-SU ops that passed gate 1 fall through to the normal table CRUD checks below.
+	// TODO: ops registered with both requires_su AND non-empty CRUD perms have their table-level
+	// CRUD check bypassed here. Should fall through for those instead of returning null
+	// unconditionally. The managed-backup ops share this shape but self-enforce super_user in their
+	// handlers/validators (dataLayer/rocksdbBackup.ts requireSuperUser), so they are not delegable
+	// regardless; get_backup remains the one that relies solely on this gate. Low risk today but
+	// worth tightening.
+	if (allowedOperationsList !== undefined && requiredPermissions.get(op)?.requires_su) {
+		return null;
 	}
 
 	const fullRolePerms = permsTranslator.getRolePermissions(requestJson.hdb_user?.role);

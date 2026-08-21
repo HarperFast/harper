@@ -323,6 +323,56 @@ in write batch", poisoning the whole database env until restart. The regression 
 of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
 bindings).
 
+## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
+
+`create_authentication_tokens` with an inline `role` **object** mints a `sub: 'scoped-operation'`
+JWT that embeds its whole (downgraded, deep-validated) permission set; the bearer needs no
+`hdb_user`/`hdb_role` row and the `username` is attribution only. Minting is super_user-gated
+(or trusted internal dispatch via `isOperationAuthorizationBypassed()`); a string `role` keeps its
+legacy meaning (component-defined token, rejected by `validateOperationToken`). Scoped tokens get
+no refresh token, touch no user record, and are therefore **irrevocable until expiry** — expiry is
+the only control, which is why `auth.ts` evicts cached Bearer identities at exact `authExpiresAt`
+rather than waiting for the auth-cache TTL.
+
+The attribution `username` must NOT name an existing `hdb_user` (rejected at mint; the default is
+`scoped:<minter>`): code paths that rehydrate a user by name would otherwise substitute the real
+principal's permissions for the token's — or fail-closed on the non-existent name. The three known
+by-name sites are handled, all by the same `_scopedToken` short-circuit: the MQTT last-will replay
+(`DurableSubscriptionsSession.ts` persists the scoped role/marker/expiry on the will and skips
+rehydration — and both the restart-replay and the live abnormal-disconnect paths refuse to publish
+a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`Resource.ts`
+`registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
+`list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
+principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
+`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A
+user _created after minting_ with a colliding name is therefore inert at every current site; the
+residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
+
+Scope of the `operations` allowlist: it gates the **operations API** (including the `sql` path,
+which never reaches `verifyPerms` and calls `verifyOperationsAllowlist` directly from
+`chooseOperation`) — it does NOT gate the application/REST/GraphQL/MQTT surfaces, which authorize
+on translated table CRUD permissions only. A scoped token intended to be read-only on app
+endpoints must carry restrictive table permissions; `operations: ['read_only']` alone does not
+constrain REST writes if table perms allow them.
+
+The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
+`permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
+further by `__updatedtime__` + schema). A synthetic role must therefore never carry a constant
+name or a per-request timestamp — two different permission sets would alias one cache slot (a
+same-millisecond `Date.now()` was enough), leaking one principal's translated permissions to
+another. `syntheticRoleName()` derives the name from a hash of the post-downgrade permission
+content with `__updatedtime__: 0`, so identical sets share a slot and distinct sets can't collide;
+`applyImpersonation` re-keys all three impersonation modes the same way (Mode B/C previously wrote
+downgraded copies under the _persisted_ role's name). Synthetic translations live in a separate
+256-entry LRU (`syntheticRolePermsMap`), not the permanent `rolePermsMap` — so >256 concurrently
+live distinct permission sets degrade to per-request translation (a deliberate cliff; raise the
+constant if a legitimate workload hits it). The `_` name prefix is the discriminator; a persisted
+role named with a leading underscore lands in the LRU too (correct, just evictable). Relatedly,
+the role `operations` allowlist gate in `verifyPerms` must stay **ahead of** the ambient privilege
+early-returns (super_user, structure_user, system-table allowances): persisted roles can't combine
+`super_user` with other permission keys, but inline roles can combine `structure_user` with an
+allowlist, and the gate ordering is what keeps unlisted schema ops unreachable.
+
 ## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
 
 A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context
