@@ -491,7 +491,7 @@ export const ASIDE_STAGING_DIR = '.deploy-aside';
 const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
 // Parked and known-disposable at park time (an evicted two-deploys-ago retained-previous). NEVER a
 // recovery candidate — see discardDirAside for why the distinction has to be in the name.
-const DISCARDED_ASIDE_PREFIX = '.discarded-';
+export const DISCARDED_ASIDE_PREFIX = '.discarded-';
 // The holding path a revert's three-way swap parks the outgoing live tree in. Recoverable: if the
 // process dies mid-swap, recoverInterruptedReverts puts it back. See revertApplication.
 const REVERTING_PREFIX = '.reverting-';
@@ -499,6 +499,13 @@ const REVERTING_PREFIX = '.reverting-';
 // anything and removed only once the directory, manifest and config are all durable, so a recovery
 // interrupted part-way is resumable rather than losing its own evidence. See recoverInterruptedReverts.
 const REVERT_RECOVERY_SUFFIX = '.recovering.json';
+
+// The revert-intent marker is named after the holding directory it describes. A fixed per-component
+// path would be reused by every future revert of that component, so an orphan left by one attempt
+// could be trusted by a later unrelated one.
+function revertRecoveryMarkerFor(holdingPath: string): string {
+	return `${holdingPath}${REVERT_RECOVERY_SUFFIX}`;
+}
 // Splits `<componentName>-<uuid>` off a revert holding directory name, anchored on the UUID so a
 // component name containing dashes is preserved intact.
 const REVERTING_NAME_PATTERN = /^(.+)-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -630,7 +637,7 @@ async function pruneStagedBuilds(componentName: string, keepStagingId: string, m
  * version over the current one. `.discarded-` says "never restore this", and cleanupExtractionPaths
  * already removes anything that is not an unretired `.in-progress-`.
  */
-async function discardDirAside(targetDirPath: string, componentName: string): Promise<boolean> {
+export async function discardDirAside(targetDirPath: string, componentName: string): Promise<boolean> {
 	const asideStagingDir = extractionStagingDirectory(targetDirPath);
 	try {
 		// lstat, not access(F_OK): access follows symlinks, so a DANGLING symlink at the path (left by a
@@ -753,6 +760,12 @@ async function retainActivatedPrevious(
 	const liveDirPath = application.dirPath;
 	const previousPath = previousDirPathFor(liveDirPath);
 	try {
+		// The manifest goes FIRST, by being removed. getRevertTarget only checks that a retained tree
+		// exists, so a manifest that outlives its tree is worse than no manifest: it names a deployment id
+		// against bytes that are no longer the ones it describes, and an addressed revert would then either
+		// restore the wrong tree or report "already live" and do nothing. Clearing it means every
+		// intermediate state below reads as "not revertable", which is what the failure path promises.
+		await rm(previousManifestPathFor(liveDirPath), { force: true });
 		// Evict the older retained-previous (two deploys ago) before renaming this one into its place, so
 		// the rename never races an incomplete recursive delete (ENOTEMPTY). Also covers the first-deploy
 		// case, where any retained tree left over from a dropped-and-redeployed component is stale.
@@ -769,6 +782,9 @@ async function retainActivatedPrevious(
 			live: { deployment_id: deploymentId, application_config: activatedConfig ?? null },
 		});
 	} catch (err) {
+		// Best-effort by design: the deploy succeeded, so failing it here would be worse. Drop the manifest
+		// so the component reads as not revertable rather than revertable-to-the-wrong-bytes.
+		await rm(previousManifestPathFor(liveDirPath), { force: true }).catch(() => {});
 		logger.warn(
 			`Deployed ${application.name}, but could not retain its previous version for revert:`,
 			errorForLog(err as Error)
@@ -797,6 +813,15 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return failures;
 		throw error;
+	}
+	// A crash between the final rename and the marker removal leaves a marker whose holding directory is
+	// gone. Nothing would revisit it — the loop below is keyed on finding a holding directory — so sweep
+	// those first rather than leave them to be trusted by a future attempt.
+	const entryNames = new Set(entries.map((entry) => entry.name));
+	for (const entry of entries) {
+		if (entry.isDirectory() || !entry.name.endsWith(REVERT_RECOVERY_SUFFIX)) continue;
+		const holdingName = entry.name.slice(0, -REVERT_RECOVERY_SUFFIX.length);
+		if (!entryNames.has(holdingName)) await rm(join(previousRoot, entry.name), { force: true }).catch(() => {});
 	}
 	for (const entry of entries) {
 		if (!entry.isDirectory() || !entry.name.startsWith(REVERTING_PREFIX)) continue;
@@ -837,25 +862,10 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 					}
 				);
 				if (!previousExists) {
-					// The swap's second rename landed (the reverted-to version is live) and only the retain step
-					// was lost, so finish it — directory, manifest and durable config together.
-					//
-					// The manifest is still the PRE-swap one: revertApplication writes it only after all three
-					// renames, so reaching here means it was never updated. Leaving it alone would be actively
-					// harmful rather than merely stale: it names the version that is now RETAINED as live and the
-					// version that is now LIVE as previous, so a retry of the same addressed revert would match
-					// its target against the reversed `previous` entry and swap the successful revert back out —
-					// destroying the idempotency the addressed target exists to provide. Roles are exchanged here
-					// exactly as revertApplication would have.
-					// The holding directory is the ONLY durable evidence that this recovery is unfinished, so it
-					// must not be consumed until the manifest and config writes are durable too. Otherwise a
-					// failure after the rename leaves nothing for the next start to find: recovery sees a
-					// complete-looking tree and the component loads with whichever write half-landed.
-					//
-					// A recovery marker carries the intended end state across restarts. On re-entry it — not the
-					// manifest — is the source of truth, because a previous attempt may already have exchanged the
-					// manifest, and exchanging an exchanged manifest would flip it back.
-					const recoveryMarkerPath = `${previousPath}${REVERT_RECOVERY_SUFFIX}`;
+					// The reverted-to version is live and only the retain step was lost, so finish it. The
+					// marker is the source of truth over the manifest, because an earlier pass may already have
+					// exchanged the manifest and exchanging it twice flips it back.
+					const recoveryMarkerPath = revertRecoveryMarkerFor(holding);
 					let intended = await readRevertRecoveryMarker(recoveryMarkerPath);
 					if (!intended) {
 						const staleManifest = await readRetainedPreviousManifest(liveDirPath);
@@ -895,6 +905,25 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 	return failures;
 }
 
+/**
+ * Remove a component's retained previous version and its manifest. Both live under the components root
+ * rather than inside the component directory, so dropping the component does not reach them — and a
+ * surviving retained tree lets `revert_component` resurrect a dropped component, re-adding its
+ * root-config and application-lock entries.
+ */
+export async function discardRetainedPrevious(componentDirPath: string): Promise<void> {
+	await rm(previousManifestPathFor(componentDirPath), { force: true });
+	await discardDirAside(previousDirPathFor(componentDirPath), basename(componentDirPath));
+	const previousRoot = join(dirname(componentDirPath), DEPLOY_PREVIOUS_DIR);
+	for (const entry of await readdir(previousRoot, { withFileTypes: true }).catch(() => [])) {
+		// Any in-flight revert artifact for this component is meaningless once it is dropped.
+		if (entry.name.startsWith(`${REVERTING_PREFIX}${basename(componentDirPath)}-`)) {
+			await rm(join(previousRoot, entry.name), { recursive: true, force: true }).catch(() => {});
+		}
+	}
+	await rmdir(previousRoot).catch(() => {});
+}
+
 /** What a component can currently be reverted to, for reporting and for revert targeting. */
 export async function getRevertTarget(
 	componentDirPath: string
@@ -931,7 +960,8 @@ export async function getRevertTarget(
  */
 export async function revertApplication(
 	application: Application,
-	toDeploymentId: string
+	toDeploymentId: string,
+	hooks: { commitPersistentState?: (config: ApplicationConfig | null) => Promise<void> } = {}
 ): Promise<{ swapped: boolean; activatedConfig: ApplicationConfig | null; fromDeploymentId: string | null }> {
 	const liveDirPath = application.dirPath;
 	return withComponentPreparationLock(liveDirPath, async () => {
@@ -978,6 +1008,14 @@ export async function revertApplication(
 				// recoverable by name at startup (recoverInterruptedReverts), which covers the case
 				// compensation cannot: the process dying between renames.
 				const holding = join(dirname(previousPath), `${REVERTING_PREFIX}${basename(liveDirPath)}-${randomUUID()}`);
+				// Written before anything moves: a crash between the renames and the durable writes below
+				// leaves the holding tree AND this marker, which is what lets recoverInterruptedReverts finish
+				// the job. Without it, recovery would re-exchange an already-exchanged manifest.
+				const recoveryMarkerPath = revertRecoveryMarkerFor(holding);
+				await writeJsonAtomically(recoveryMarkerPath, {
+					previous: target.live,
+					live: target.previous,
+				});
 				await rename(liveDirPath, holding);
 				try {
 					await rename(previousPath, liveDirPath);
@@ -992,6 +1030,31 @@ export async function revertApplication(
 					});
 					throw swapError;
 				}
+				// Persistent state commits here, inside the lock and while the holding tree still exists.
+				// Committing it after the lock released let a queued activation swap and commit in between,
+				// leaving that activation's bytes live under this revert's config.
+				try {
+					await hooks.commitPersistentState?.(target.previous.application_config);
+					application.useLiveBuildDir();
+					await writeRetainedPreviousManifest(liveDirPath, {
+						previous: target.live,
+						live: target.previous,
+					});
+				} catch (persistError) {
+					try {
+						await rename(liveDirPath, previousPath);
+						await rename(holding, liveDirPath);
+						await rm(recoveryMarkerPath, { force: true });
+					} catch (restoreError) {
+						throw new AggregateError(
+							[persistError, restoreError],
+							`Reverted ${application.name} but could not persist its configuration or undo the swap; ` +
+								`${holding} still holds the previously-live tree`
+						);
+					}
+					throw persistError;
+				}
+				// Consumes the recovery evidence, so it goes last.
 				try {
 					await rename(holding, previousPath);
 				} catch (retainError) {
@@ -1010,17 +1073,18 @@ export async function revertApplication(
 					}
 					throw retainError;
 				}
+				await rm(recoveryMarkerPath, { force: true });
 			} else {
 				// No live version to preserve; restore the previous into place. Nothing becomes the new
 				// retained previous, so the component can't be reverted again until its next deploy.
 				await rename(previousPath, liveDirPath);
+				await hooks.commitPersistentState?.(target.previous.application_config);
+				application.useLiveBuildDir();
+				await writeRetainedPreviousManifest(liveDirPath, {
+					previous: { deployment_id: null, application_config: null },
+					live: target.previous,
+				});
 			}
-			application.useLiveBuildDir();
-			// Roles exchange: what was live is now the retained previous, and vice versa.
-			await writeRetainedPreviousManifest(liveDirPath, {
-				previous: liveExists ? target.live : { deployment_id: null, application_config: null },
-				live: target.previous,
-			});
 			return {
 				swapped: true,
 				activatedConfig: target.previous.application_config,
@@ -2710,30 +2774,31 @@ async function repointStagedDependencyLinks(stagingDirPath: string, futureLiveDi
 	// Requiring a real directory at each level we descend keeps every candidate under the real root.
 	const nodeModulesStat = await lstat(nodeModulesPath).catch(() => undefined);
 	if (!nodeModulesStat?.isDirectory() || nodeModulesStat.isSymbolicLink()) return 0;
-	let topLevel;
-	try {
-		topLevel = await readdir(nodeModulesPath, { withFileTypes: true });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
-		throw error;
-	}
-	// Package links live at `node_modules/<name>` or, for a scoped package, `node_modules/@scope/<name>`.
+	// Package links live at `node_modules/<name>` or `node_modules/@scope/<name>`, and npm nests a further
+	// `node_modules` under a package whenever hoisting is blocked by a version conflict — routinely so
+	// under workspaces. A link nested that way dangles after the swap exactly like a top-level one, so the
+	// walk has to follow real nested trees rather than stopping at the first two levels.
 	const candidates: string[] = [];
-	for (const entry of topLevel) {
-		if (entry.name.startsWith('.')) continue;
-		if (entry.name.startsWith('@')) {
-			const scopePath = join(nodeModulesPath, entry.name);
-			// Only descend into a REAL directory: a symlinked scope directory belongs to whatever it points
-			// at, not to this component (see the note on nodeModulesStat above).
-			const scopeStat = await lstat(scopePath).catch(() => undefined);
-			if (!scopeStat?.isDirectory() || scopeStat.isSymbolicLink()) continue;
-			for (const scoped of await readdir(scopePath, { withFileTypes: true }).catch(() => [])) {
-				candidates.push(join(scopePath, scoped.name));
+	const collect = async (directoryPath: string): Promise<void> => {
+		for (const entry of await readdir(directoryPath, { withFileTypes: true }).catch(() => [])) {
+			if (entry.name.startsWith('.')) continue;
+			const entryPath = join(directoryPath, entry.name);
+			if (entry.name.startsWith('@')) {
+				// Only descend into a REAL directory: a symlinked scope directory belongs to whatever it points
+				// at, not to this component (see the note on nodeModulesStat above).
+				const scopeStat = await lstat(entryPath).catch(() => undefined);
+				if (scopeStat?.isDirectory() && !scopeStat.isSymbolicLink()) await collect(entryPath);
+				continue;
 			}
-			continue;
+			candidates.push(entryPath);
+			const packageStat = await lstat(entryPath).catch(() => undefined);
+			if (!packageStat?.isDirectory() || packageStat.isSymbolicLink()) continue;
+			const nestedPath = join(entryPath, 'node_modules');
+			const nestedStat = await lstat(nestedPath).catch(() => undefined);
+			if (nestedStat?.isDirectory() && !nestedStat.isSymbolicLink()) await collect(nestedPath);
 		}
-		candidates.push(join(nodeModulesPath, entry.name));
-	}
+	};
+	await collect(nodeModulesPath);
 
 	let repointed = 0;
 	for (const linkPath of candidates) {
@@ -2966,7 +3031,8 @@ async function removeActivationArtifacts(componentDirPath: string, deploymentId:
 export async function reconcileStagedApplicationArtifacts(
 	componentsRootDirPath: string,
 	getDeployment: DeploymentLookup,
-	persistActivation: (row: Record<string, any>) => Promise<void>
+	persistActivation: (row: Record<string, any>) => Promise<void>,
+	settleStagedDeployment?: (deploymentId: string) => Promise<void>
 ): Promise<{
 	recovered: string[];
 	removed: string[];
@@ -3023,7 +3089,16 @@ export async function reconcileStagedApplicationArtifacts(
 			const stagedPath = stagedApplicationPath(componentDirPath, entry.name);
 			if (row.status === 'staged') {
 				if (!(await hasCompleteStagedApplication(stagedPath))) {
-					throw new Error(`Staged deployment '${entry.name}' has no valid component tree for '${row.project}'`);
+					// Only a not-yet-activated candidate is broken; the live tree and its persisted config are
+					// consistent. Failing the component closed here would take a healthy component offline and
+					// keep it offline, because nothing else sweeps a staging directory whose subtree is missing.
+					logger.warn(
+						`Discarding staged deployment '${entry.name}' for '${row.project}': no valid component tree. ` +
+							`The live component is unaffected.`
+					);
+					await settleStagedDeployment?.(entry.name);
+					await rm(deploymentPath, { recursive: true, force: true });
+					removed.push(entry.name);
 				}
 				continue;
 			}
@@ -3046,7 +3121,11 @@ export async function reconcileStagedApplicationArtifacts(
 		} catch (error) {
 			const reconcileError = error instanceof Error ? error : new Error(String(error));
 			errors.set(entry.name, reconcileError);
-			if (safeComponentName(row?.project)) failedProjects.set(row.project, reconcileError);
+			// Fail the component closed ONLY for an interrupted activation, where the live tree and its
+			// durable configuration can disagree. A staged-candidate failure leaves live state consistent.
+			if (row?.status === 'activating' && safeComponentName(row?.project)) {
+				failedProjects.set(row.project, reconcileError);
+			}
 		}
 	}
 

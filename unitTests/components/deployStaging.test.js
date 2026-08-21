@@ -22,6 +22,10 @@ const {
 	createApplicationActivationTransaction,
 	revertApplication,
 	getRevertTarget,
+	discardDirAside,
+	DISCARDED_ASIDE_PREFIX,
+	getStagingRetentionMaxCount,
+	DEFAULT_STAGING_RETENTION_MAX_COUNT,
 	recoverInterruptedReverts,
 	createApplicationConfigTransaction,
 	extractApplication,
@@ -61,19 +65,6 @@ async function makeComponentPayload(marker, version = '1.0.0') {
 
 async function readMarker(directory) {
 	return fs.readFile(path.join(directory, 'index.js'), 'utf8');
-}
-
-// Entries currently parked in a component's `.deploy-aside`. discardDirAside sweeps asynchronously
-// (`void cleanupExtractionPaths(...)`) and that sweep rmdir's the directory once it is empty, so an
-// existsSync-then-readdir races it. An absent directory means everything was already swept, which
-// satisfies every assertion below just as well as an empty one.
-async function parkedAsideEntries(componentName) {
-	try {
-		return await fs.readdir(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, componentName));
-	} catch (error) {
-		if (error.code === 'ENOENT') return [];
-		throw error;
-	}
 }
 
 describe('two-phase component directory transaction', function () {
@@ -549,12 +540,10 @@ describe('two-phase component directory transaction', function () {
 			await activateStagedApplication(application, id, { activationSpec: { package: null } });
 		}
 
-		const parked = await parkedAsideEntries(name);
-		const unretired = parked.filter(
-			(entry) =>
-				entry.startsWith('.in-progress-') && !parked.includes(`.retired-${entry.slice('.in-progress-'.length)}`)
-		);
-		assert.deepEqual(unretired, [], 'an evicted previous is never left looking like a rollback record');
+		assert.match(await readMarker(application.dirPath), /v3/, 'the newest activation is live');
+		assert.match(await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)), /v2/);
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.previous.deployment_id, ids[1], 'only the immediately-previous version is retained');
 		await cleanup(name);
 	});
 
@@ -797,12 +786,6 @@ describe('two-phase component directory transaction', function () {
 
 		assert.equal((await fs.lstat(application.dirPath)).isSymbolicLink(), true, 'the new version is linked');
 		assert.equal(await fs.readFile(path.join(application.dirPath, 'marker.txt'), 'utf8'), 'v2');
-		// Whatever was displaced must have been parked, not recursively removed in place. It is parked as
-		// disposable (`.discarded-`), so startup recovery will never restore it over the new version.
-		const parked = await parkedAsideEntries(name);
-		const recoverable = parked.filter((entry) => entry.startsWith('.in-progress-'));
-		assert.deepEqual(recoverable, [], 'the displaced tree is never left looking like a rollback record');
-
 		await cleanup(name);
 		await fs.rm(packageDirectory, { recursive: true, force: true });
 	});
@@ -1029,8 +1012,10 @@ describe('two-phase component directory transaction', function () {
 		const { application, first, second } = await twoActivations(name);
 		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
 		const manifestPath = `${previousPath}.json`;
-		const markerPath = `${previousPath}.recovering.json`;
 		const holding = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, `.reverting-${name}-${randomUUID()}`);
+		// The marker is named after the holding directory it describes, so an orphan from one attempt can
+		// never be trusted by a later, unrelated revert of the same component.
+		const markerPath = `${holding}.recovering.json`;
 
 		// Crash state: the reverted-to version is live, the displaced tree is still parked.
 		const staleManifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
@@ -1068,5 +1053,193 @@ describe('two-phase component directory transaction', function () {
 		assert.equal(target.live.deployment_id, first);
 		assert.equal(target.previous.deployment_id, second);
 		await cleanup(name);
+	});
+	it('commits config inside the swap, so a revert cannot land config after a later activation', async () => {
+		const name = fixtureName();
+		const { application, first, second } = await twoActivations(name);
+		const order = [];
+
+		const result = await revertApplication(application, first, {
+			commitPersistentState: async () => {
+				// Observed from inside the lock: the reverted-to tree is already live and the displaced tree is
+				// still parked, which is what makes this the only safe point to persist config.
+				order.push('commit');
+				assert.match(await readMarker(application.dirPath), /v1/, 'reverted-to version is live at commit time');
+				assert.equal(
+					existsSync(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)),
+					false,
+					'the displaced tree is still in the holding path, not yet retained'
+				);
+			},
+		});
+
+		assert.deepEqual(order, ['commit'], 'the hook ran exactly once');
+		assert.equal(result.swapped, true);
+		assert.equal(result.fromDeploymentId, second);
+		assert.match(await readMarker(application.dirPath), /v1/);
+		assert.match(await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)), /v2/);
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.live.deployment_id, first);
+		await cleanup(name);
+	});
+
+	it('undoes the swap and leaves nothing revertable-looking when persisting config fails', async () => {
+		const name = fixtureName();
+		const { application, first, second } = await twoActivations(name);
+
+		await assert.rejects(
+			() =>
+				revertApplication(application, first, {
+					commitPersistentState: async () => {
+						throw new Error('simulated config failure');
+					},
+				}),
+			/simulated config failure/
+		);
+
+		assert.match(await readMarker(application.dirPath), /v2/, 'the pre-revert version is live again');
+		assert.match(await readMarker(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name)), /v1/);
+		const stranded = (await fs.readdir(path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR))).filter((entry) =>
+			entry.startsWith('.reverting-')
+		);
+		assert.deepEqual(stranded, [], 'no holding tree or marker is left behind');
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.live.deployment_id, second, 'the manifest still describes the un-reverted state');
+		await cleanup(name);
+	});
+
+	it('sweeps a revert marker whose holding directory is gone', async () => {
+		// A crash between the final rename and the marker removal orphans the marker. Nothing revisits it —
+		// recovery is keyed on finding a holding directory — so it must be swept, or a later unrelated
+		// revert of the same component could be resumed against it.
+		const name = fixtureName();
+		const { application, first } = await twoActivations(name);
+		const orphan = path.join(
+			COMPONENTS_ROOT,
+			DEPLOY_PREVIOUS_DIR,
+			`.reverting-${name}-${randomUUID()}.recovering.json`
+		);
+		await fs.writeFile(orphan, JSON.stringify({ previous: { deployment_id: 'x' }, live: { deployment_id: 'y' } }));
+
+		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
+
+		assert.equal(failures.size, 0);
+		assert.equal(existsSync(orphan), false, 'the orphaned marker is swept');
+		// The sweep must not have disturbed the component's actual revert state.
+		const target = await getRevertTarget(application.dirPath);
+		assert.equal(target.previous.deployment_id, first, 'the real retained-previous entry is untouched');
+		await cleanup(name);
+	});
+
+	it('re-points a nested node_modules dependency link, not just top-level ones', async () => {
+		// npm nests a link under `node_modules/<a>/node_modules/<b>` whenever hoisting is blocked by a
+		// version conflict, and under workspaces routinely. A nested link dangles after the swap exactly
+		// like a top-level one, and the hard-fail above cannot help if it is never enumerated.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('nested') });
+		const stagedPath = await stageApplication(application, deploymentId);
+
+		await fs.mkdir(path.join(stagedPath, 'vendor', 'deep'), { recursive: true });
+		await fs.writeFile(path.join(stagedPath, 'vendor', 'deep', 'index.js'), "module.exports = 'deep';\n");
+		const outerPackage = path.join(stagedPath, 'node_modules', 'outer', 'node_modules');
+		await fs.mkdir(outerPackage, { recursive: true });
+		await fs.symlink(path.join(stagedPath, 'vendor', 'deep'), path.join(outerPackage, 'deep'), 'dir');
+		// A scoped package nested one level further down, to prove the recursion handles both shapes.
+		await fs.mkdir(path.join(outerPackage, '@inner'), { recursive: true });
+		await fs.symlink(path.join(stagedPath, 'vendor', 'deep'), path.join(outerPackage, '@inner', 'scoped'), 'dir');
+
+		await activateStagedApplication(application, deploymentId, { activationSpec: { package: null } });
+
+		assert.equal(
+			await fs.readFile(
+				path.join(application.dirPath, 'node_modules', 'outer', 'node_modules', 'deep', 'index.js'),
+				'utf8'
+			),
+			"module.exports = 'deep';\n",
+			'the nested link resolves from the live tree'
+		);
+		assert.equal(
+			await fs.readFile(
+				path.join(application.dirPath, 'node_modules', 'outer', 'node_modules', '@inner', 'scoped', 'index.js'),
+				'utf8'
+			),
+			"module.exports = 'deep';\n",
+			'a nested scoped link resolves too'
+		);
+		await cleanup(name);
+	});
+
+	it('parks a disposable tree under the discarded prefix, never as a recovery candidate', async () => {
+		// Asserted directly rather than after an activation: discardDirAside sweeps fire-and-forget, so an
+		// after-the-fact directory listing passes vacuously whenever the sweep wins the race and cannot
+		// distinguish correct `.discarded-` parking from a regression that parked as `.in-progress-`.
+		const name = fixtureName();
+		const target = path.join(COMPONENTS_ROOT, `${name}-disposable`);
+		await fs.mkdir(target, { recursive: true });
+		await fs.writeFile(path.join(target, 'index.js'), "module.exports = 'disposable';\n");
+		const asideDir = path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR, `${name}-disposable`);
+
+		const parkedSomething = await discardDirAside(target, name);
+
+		assert.equal(parkedSomething, true);
+		assert.equal(existsSync(target), false, 'the tree is moved out of the way');
+		// Read before the detached sweep can remove it; if it already has, there is nothing to misclassify.
+		const entries = await fs.readdir(asideDir).catch(() => []);
+		for (const entry of entries) {
+			assert.equal(
+				entry.startsWith(DISCARDED_ASIDE_PREFIX),
+				true,
+				`parked entry ${entry} must carry the discarded prefix, not a recovery-candidate prefix`
+			);
+		}
+		assert.equal(await discardDirAside(target, name), false, 'nothing to park the second time');
+		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
+	});
+
+	it('evicts staged builds beyond the retention count and always keeps the newest', async () => {
+		const name = fixtureName();
+		const priorMax = environment.get(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
+		environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, 2);
+		const ids = [];
+		try {
+			const application = new Application({ name, payload: await makeComponentPayload('retained') });
+			for (let index = 0; index < 4; index++) {
+				const deploymentId = randomUUID();
+				application.payload = await makeComponentPayload(`retained-${index}`);
+				await stageApplication(application, deploymentId);
+				ids.push(deploymentId);
+			}
+			const surviving = ids.filter((id) => existsSync(stagedApplicationPath(application.dirPath, id)));
+			assert.equal(surviving.length, 2, `expected exactly 2 staged builds to survive, got ${surviving.length}`);
+			assert.equal(surviving.includes(ids.at(-1)), true, 'the just-staged build is never evicted');
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, priorMax);
+		}
+		await cleanup(name);
+	});
+
+	it('falls back to the default staging retention count for unusable configured values', () => {
+		const prior = environment.get(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
+		try {
+			for (const value of [undefined, '', '   ', true, [], {}, 'abc', 0, -1]) {
+				environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, value);
+				assert.equal(
+					getStagingRetentionMaxCount(),
+					DEFAULT_STAGING_RETENTION_MAX_COUNT,
+					`${JSON.stringify(value)} must fall back to the default rather than coerce`
+				);
+			}
+			for (const [value, expected] of [
+				['3', 3],
+				[3, 3],
+				[2.7, 2],
+			]) {
+				environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, value);
+				assert.equal(getStagingRetentionMaxCount(), expected);
+			}
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, prior);
+		}
 	});
 });

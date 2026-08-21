@@ -571,17 +571,21 @@ export async function claimStagedDeployment(
 // deploymentOperations.ts's guard for the explicit delete_deployment_payload operation.
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
 
-async function settleStagedRows(project: string, keepCount: number): Promise<string[]> {
+async function settleStagedRows(project: string, keepCount: number, keepDeploymentId?: string): Promise<string[]> {
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 	if (!table) return [];
 	const staged: Array<Record<string, any>> = [];
 	for await (const row of table.search([{ attribute: 'project', value: project }])) {
-		if (row?.status === 'staged') staged.push(row);
+		// `started_at` is stamped by whichever node originated the deploy, so clock skew across nodes can
+		// rank a peer-originated row above the one this call just created. Excluding it explicitly is what
+		// stops retention cluster-wide discarding the staging tree for the id being returned to the
+		// operator — the same guarantee pruneStagedBuilds gets from its keepStagingId.
+		if (row?.status === 'staged' && row.deployment_id !== keepDeploymentId) staged.push(row);
 	}
 	staged.sort(
 		(a, b) => (b.started_at ?? 0) - (a.started_at ?? 0) || String(a.deployment_id).localeCompare(b.deployment_id)
 	);
-	const expired = staged.slice(Math.max(0, keepCount));
+	const expired = staged.slice(Math.max(0, keepDeploymentId ? keepCount - 1 : keepCount));
 	for (const row of expired) {
 		await table.patch(row.deployment_id, {
 			status: 'failed',
@@ -592,9 +596,13 @@ async function settleStagedRows(project: string, keepCount: number): Promise<str
 	return expired.map((row) => row.deployment_id);
 }
 
-export async function expireOldStagedDeployments(project: string, maxCount: number): Promise<string[]> {
+export async function expireOldStagedDeployments(
+	project: string,
+	maxCount: number,
+	keepDeploymentId?: string
+): Promise<string[]> {
 	const count = Number.isFinite(maxCount) ? Math.max(1, Math.floor(maxCount)) : 1;
-	return settleStagedRows(project, count);
+	return settleStagedRows(project, count, keepDeploymentId);
 }
 
 export async function invalidateProjectStagedDeployments(project: string): Promise<string[]> {

@@ -347,11 +347,17 @@ const packageCwdForUpload = async (req) => {
 	req._multipart = true;
 };
 
+// `harper revert` uploads nothing, so it has no packaging step — but it still needs the CWD project
+// default every other deploy-family verb gets, or it fails server-side on a missing `project`.
+const prepareRevert = async (req) => {
+	req.project ||= path.basename(process.cwd());
+};
+
 const PREPARE_OPERATION: any = {
 	// deploy_component covers `harper deploy` and `harper stage` (activate:false); packageCwdForUpload
-	// itself skips the upload for a `package` identifier or a `deployment_id` activate. revert takes no
-	// payload, so it needs no prep step.
+	// itself skips the upload for a `package` identifier or a `deployment_id` activate.
 	deploy_component: packageCwdForUpload,
+	revert_component: prepareRevert,
 };
 
 /**

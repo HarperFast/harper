@@ -42,6 +42,7 @@ const {
 	getRevertTarget,
 	getStagingRetentionMaxCount,
 	dropComponentDirectory,
+	discardRetainedPrevious,
 	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	DEPLOY_ACTIVATION_DIR,
@@ -354,15 +355,19 @@ async function dropCustomFunctionProject(req) {
 		if (!(await fs.pathExists(projectDir)) && !(await fs.pathExists(stagingDir))) await fs.stat(projectDir);
 		// Invalidate staged deployments BEFORE the directory goes away, so an activate racing this drop
 		// cannot swap a staged build back into a project that is being deleted.
-		await invalidateProjectStagedDeployments(project);
-		await discardProjectStagedApplications(projectDir);
-		await discardProjectActivationArtifacts(projectDir);
+
 		await withComponentPreparationLock(
 			projectDir,
 			async () => {
 				// Retires any interrupted-extraction aside for this component and renames the live directory
 				// aside before removing it, so a concurrent startup recovery can never restore a tree over a
 				// component that was just dropped.
+				// Inside the lock: an invalidation done before acquiring it leaves a window where a
+				// concurrent stage completes and is then activated over the just-dropped component.
+				await invalidateProjectStagedDeployments(project);
+				await discardProjectStagedApplications(projectDir);
+				await discardProjectActivationArtifacts(projectDir);
+				await discardRetainedPrevious(projectDir);
 				await dropComponentDirectory(projectDir, project, log);
 			},
 			componentDropLockOptions(project)
@@ -691,16 +696,6 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 	}
 }
 
-/**
- * revert_component — swap a component's live version back to its retained previous version
- * (`.deploy-previous/<name>`, kept by the last activate), cluster-wide, then restart. Backs
- * customer-driven rollback (deploy → run your own health checks → revert if unhappy) and a
- * swap-back after a partially-failed activate. The swap is bidirectional, so reverting a revert
- * rolls forward again.
- *
- * Reached two ways: directly by an operator, and by a peer replaying a replicated revert
- * (`_deploymentId` set). deploy_component's `revert_on_failure` path drives it internally.
- */
 function activationSpecFromRequest(req, credentialReferences) {
 	return {
 		project: req.project,
@@ -790,8 +785,8 @@ async function discardDeploymentEverywhere(project, deploymentId, activationSpec
 		.catch(() => {});
 }
 
-async function pruneStagedDeploymentArtifacts(project, activationSpec) {
-	const expired = await expireOldStagedDeployments(project, getStagingRetentionMaxCount());
+async function pruneStagedDeploymentArtifacts(project, activationSpec, keepDeploymentId) {
+	const expired = await expireOldStagedDeployments(project, getStagingRetentionMaxCount(), keepDeploymentId);
 	for (const deploymentId of expired) await discardDeploymentEverywhere(project, deploymentId, activationSpec);
 }
 
@@ -799,7 +794,9 @@ async function restartActivatedComponent(req, deploymentId, project, activationS
 	if (req.restart === true) {
 		emit('phase', { phase: 'restart', status: 'start' });
 		const restartResponse = await server.replication.replicateOperation(
-			buildPhaseOperation('restart', deploymentId, project, activationSpec)
+			buildPhaseOperation('restart', deploymentId, project, activationSpec, {
+				deployment_timeout: req.deployment_timeout,
+			})
 		);
 		const failed = failedPeerResults(restartResponse?.replicated);
 		manageThreads.restartWorkers('http');
@@ -884,7 +881,9 @@ async function deployComponentTwoPhase(req) {
 		if (req.activate === false) {
 			emit('phase', { phase: 'staged', status: 'done' });
 			await recorder.finish('staged');
-			await pruneStagedDeploymentArtifacts(req.project, activationSpec);
+			await pruneStagedDeploymentArtifacts(req.project, activationSpec, recorder.deploymentId).catch((error) =>
+				log.warn('Failed to prune expired staged deployments', error)
+			);
 			await pruneProjectPayloads(req.project, getPayloadRetentionMaxCount()).catch((error) =>
 				log.warn('Failed to prune staged deployment payloads', error)
 			);
@@ -910,7 +909,9 @@ async function deployComponentTwoPhase(req) {
 		});
 		activationCommitted = true;
 		const activateResponse = await server.replication.replicateOperation(
-			buildPhaseOperation('activate', recorder.deploymentId, req.project, activationSpec),
+			buildPhaseOperation('activate', recorder.deploymentId, req.project, activationSpec, {
+				deployment_timeout: req.deployment_timeout,
+			}),
 			{
 				onPeerResult: (result) => {
 					recorder.recordPeer(result);
@@ -1057,7 +1058,9 @@ async function deployComponentActivateExisting(req) {
 	try {
 		const peerResults = [];
 		const activateResponse = await server.replication.replicateOperation(
-			buildPhaseOperation('activate', req.deployment_id, req.project, spec),
+			buildPhaseOperation('activate', req.deployment_id, req.project, spec, {
+				deployment_timeout: req.deployment_timeout,
+			}),
 			{
 				onPeerResult: (result) => {
 					peerResults.push(result);
@@ -1248,43 +1251,26 @@ async function revertComponent(req) {
 			});
 	try {
 		emit('phase', { phase: 'revert', status: 'start' });
-		const result = await revertApplication(application, req.to_deployment_id);
-		if (result.swapped) {
-			// Persist the reverted-to version's config + install lock. Compensating by swapping back is
-			// deliberate: a half-reverted node (new tree live, old config persisted) would reinstall the
-			// wrong version on its next cold start, which is the failure this pairing exists to prevent.
-			//
-			// The transaction is held OUTSIDE the try so the compensation can roll it back. `commit()` makes
-			// two persistent writes (root config, then the boot-time application lock); if the first
-			// succeeds and the second throws, swapping the directories back is not enough on its own —
-			// root config would still name the reverted-to release while the original tree is live again,
-			// which is the very mismatch this pairing exists to prevent, and a cold start could act on it.
-			const configTransaction = await createApplicationConfigTransaction(req.project, result.activatedConfig);
-			try {
-				await configTransaction.commit();
-			} catch (configError) {
-				const compensationErrors = [];
-				// Undo the persistent writes first, then the directory swap, so the node is never left with
-				// the original tree live and the reverted-to configuration persisted.
-				await configTransaction.rollback().catch((rollbackError) => {
-					compensationErrors.push(rollbackError);
-					log.error(`Failed to roll back the ${req.project} revert configuration write`, rollbackError);
-				});
-				await revertApplication(application, result.fromDeploymentId).catch((swapBackError) => {
-					compensationErrors.push(swapBackError);
-					log.error(`Failed to undo the ${req.project} revert after its config write failed`, swapBackError);
-				});
-				if (compensationErrors.length) {
-					throw new ServerError(
-						`Failed to revert ${req.project}: ${configError?.message ?? configError}. Compensation also ` +
-							`failed (${compensationErrors.map((error) => error?.message ?? error).join('; ')}), so this ` +
-							`node may be serving a version its persisted configuration does not name.`,
-						configError?.statusCode
-					);
+		// The config transaction commits inside revertApplication's component lock, between the directory
+		// swap and the manifest write, so the directory, the manifest and root config/application-lock
+		// share one fence. Committing it out here — after the lock released — let a queued activation swap
+		// and commit in the gap, leaving that activation's bytes live under this revert's config.
+		// revertApplication compensates the swap if this throws; rolling the partial config write back is
+		// this transaction's job, since commit() makes two persistent writes and the first can land alone.
+		let configTransaction;
+		const result = await revertApplication(application, req.to_deployment_id, {
+			commitPersistentState: async (activatedConfig) => {
+				configTransaction = await createApplicationConfigTransaction(req.project, activatedConfig);
+				try {
+					await configTransaction.commit();
+				} catch (configError) {
+					await configTransaction.rollback().catch((rollbackError) => {
+						log.error(`Failed to roll back the ${req.project} revert configuration write`, rollbackError);
+					});
+					throw configError;
 				}
-				throw configError;
-			}
-		}
+			},
+		});
 		emit('phase', { phase: 'revert', status: 'done' });
 
 		// Fan out to peers. The operation is idempotent and target-addressed, so a peer that already
@@ -2046,6 +2032,7 @@ async function dropComponent(req) {
 				await invalidateProjectStagedDeployments(project);
 				await discardProjectStagedApplications(componentPath);
 				await discardProjectActivationArtifacts(componentPath);
+				await discardRetainedPrevious(componentPath);
 				// Retires any interrupted-extraction aside and renames the live tree aside before removing
 				// it, so startup recovery can never restore a tree over a dropped component.
 				await dropComponentDirectory(componentPath, project, log);

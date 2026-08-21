@@ -59,7 +59,7 @@ import {
 	recoverInterruptedComponentExtractions,
 	recoverInterruptedReverts,
 } from './Application.ts';
-import { getDeploymentRow } from './deploymentRecorder.ts';
+import { getDeploymentRow, markDeploymentTerminal } from './deploymentRecorder.ts';
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
@@ -200,22 +200,30 @@ export async function loadComponentDirectories(
 	}
 	if (isMainThread && !stagedArtifactsReconciled) {
 		try {
-			const reconciliation = await reconcileStagedApplicationArtifacts(CF_ROUTES_DIR, getDeploymentRow, async (row) => {
-				const transaction = await createApplicationActivationTransaction(row.project, row.activation_spec);
-				try {
-					await transaction.commit();
-				} catch (error) {
+			const settleDiscardedDeployment = async (deploymentId: string) => {
+				await markDeploymentTerminal(deploymentId, 'failed', new Error('staged component tree was not recoverable'));
+			};
+			const reconciliation = await reconcileStagedApplicationArtifacts(
+				CF_ROUTES_DIR,
+				getDeploymentRow,
+				async (row) => {
+					const transaction = await createApplicationActivationTransaction(row.project, row.activation_spec);
 					try {
-						await transaction.rollback();
-					} catch (rollbackError) {
-						throw new AggregateError(
-							[error, rollbackError],
-							`Could not persist or roll back the recovered component activation for '${row.project}'`
-						);
+						await transaction.commit();
+					} catch (error) {
+						try {
+							await transaction.rollback();
+						} catch (rollbackError) {
+							throw new AggregateError(
+								[error, rollbackError],
+								`Could not persist or roll back the recovered component activation for '${row.project}'`
+							);
+						}
+						throw error;
 					}
-					throw error;
-				}
-			});
+				},
+				settleDiscardedDeployment
+			);
 			for (const deploymentId of reconciliation.recovered) {
 				harperLogger.warn(
 					`Rolled forward interrupted component activation '${deploymentId}' on this node; ` +
