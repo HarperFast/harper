@@ -137,7 +137,6 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		});
 
 		test('add_role still rejects an op name no component registered', async () => {
-			// Guards the test above: a validateOperations that stopped running would look like a pass.
 			const { status, body } = await op({
 				operation: 'add_role',
 				role: 'component_op_bogus_role',

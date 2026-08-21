@@ -139,7 +139,6 @@ export function notifyThreadExitedForTest(deadThreadId: number) {
 	handleThreadExit(deadThreadId);
 }
 
-/** Record or retract one thread's grantability claim, then re-derive the mirrored mark from live claims. */
 function setWorkerGrantable(name: string, threadId: number, grantable: boolean) {
 	let grantableIds = grantableByWorker.get(name);
 	if (grantable) {

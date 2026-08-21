@@ -120,7 +120,6 @@ export function unregisterGrantableOperation(name: string): void {
 	dynamicallyRegisteredOps.delete(name);
 }
 
-/** Ownership of the mirror lives in registeredOperations.ts; enforcement stays on the worker. */
 export function registerWorkerGrantableOperation(name: string): void {
 	workerRegisteredOps.add(name);
 }

@@ -236,10 +236,16 @@ describe('Test serverUtilities.js module ', () => {
 		const ROLLED = 'test_cross_thread_rolled_op';
 		const RETRACTED = 'test_cross_thread_retracted_op';
 		const ZOMBIE = 'test_cross_thread_zombie_op';
+		const FAILED_SEND = 'test_cross_thread_failed_send_op';
+		// Tombstones in exitedThreadIds are permanent and module-global, so synthetic ids must be
+		// ones the runtime will never assign to a real worker in this process.
+		const DECLARING_THREAD = 9_000_061;
+		const ROUTING_THREAD = 9_000_062;
+		const DEAD_THREAD = 9_000_071;
+		const SENDER_THREAD = 9_000_081;
 
 		after(function () {
-			// Don't leak these names into the process-global registries for later suites.
-			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE]) {
+			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND]) {
 				unregisterWorkerGrantableOperation(op);
 				unregisterGrantableOperation(op);
 			}
@@ -261,7 +267,6 @@ describe('Test serverUtilities.js module ', () => {
 			});
 
 			assert.notEqual(validateOperations([PLAIN]), null);
-			// The routing half is unaffected — only admissibility is withheld.
 			assert.equal(typeof registeredOperations.getRemoteOperationFunction(PLAIN), 'function');
 		});
 
@@ -295,28 +300,54 @@ describe('Test serverUtilities.js module ', () => {
 		it('stops being grantable once the last declaring worker is gone, even while another still routes it', function () {
 			// Rolling deploy: the new generation keeps the operation but drops requiresSuperUser.
 			registeredOperations.operationRegisteredHandler({
-				message: { name: ROLLED, grantable: true, originator: 61 },
+				message: { name: ROLLED, grantable: true, originator: DECLARING_THREAD },
 			});
 			registeredOperations.operationRegisteredHandler({
-				message: { name: ROLLED, grantable: false, originator: 62 },
+				message: { name: ROLLED, grantable: false, originator: ROUTING_THREAD },
 			});
-			assert.equal(validateOperations([ROLLED]), null, 'still declared by thread 61');
+			assert.equal(validateOperations([ROLLED]), null, 'still declared by the first thread');
 
-			registeredOperations.notifyThreadExitedForTest(61);
+			registeredOperations.notifyThreadExitedForTest(DECLARING_THREAD);
 
 			assert.notEqual(validateOperations([ROLLED]), null, 'no live worker declares it grantable any more');
 			assert.equal(
 				typeof registeredOperations.getRemoteOperationFunction(ROLLED),
 				'function',
-				'thread 62 still routes it'
+				'the surviving worker still routes it'
 			);
 		});
 
+		it('retracts grantability when a failed send prunes the declaring worker', async function () {
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread() {
+					return false;
+				},
+			};
+			try {
+				registeredOperations.operationRegisteredHandler({
+					message: { name: FAILED_SEND, grantable: true, originator: SENDER_THREAD },
+				});
+				assert.equal(validateOperations([FAILED_SEND]), null);
+
+				const forward = registeredOperations.getRemoteOperationFunction(FAILED_SEND, true);
+				await assert.rejects(forward({ operation: FAILED_SEND }), /no worker thread is available/);
+
+				assert.notEqual(
+					validateOperations([FAILED_SEND]),
+					null,
+					'a dead port must retract the claim, not just the route'
+				);
+			} finally {
+				global.threads = originalThreads;
+			}
+		});
+
 		it('ignores an announcement that lost a race with its own thread exit', function () {
-			registeredOperations.notifyThreadExitedForTest(71);
+			registeredOperations.notifyThreadExitedForTest(DEAD_THREAD);
 
 			registeredOperations.operationRegisteredHandler({
-				message: { name: ZOMBIE, grantable: true, originator: 71 },
+				message: { name: ZOMBIE, grantable: true, originator: DEAD_THREAD },
 			});
 
 			assert.notEqual(validateOperations([ZOMBIE]), null, 'a dead thread must not install a grant');
