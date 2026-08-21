@@ -209,8 +209,8 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
 	// Components load per-worker, so a registration made there is invisible to the main-thread
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
-	// so the main thread can forward calls to this worker (#1736), and can mirror the role-allowlist
-	// mark that registerOperationPermission above made only in this thread's scope.
+	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
+	// registerOperationPermission above made only in this thread's scope.
 	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
 };
 

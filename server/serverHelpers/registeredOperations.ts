@@ -11,8 +11,7 @@
  * so a request is sent to exactly ONE registering worker (never broadcast-first-wins).
  *
  *  - Worker: `registerOperation()` announces the name (OPERATION_REGISTERED) to all threads;
- *    only the main thread records it, as name -> Set<threadId>, plus `grantable` (see the
- *    per-worker registration note in server/DESIGN.md).
+ *    only the main thread records it, as name -> Set<threadId>, plus `grantable`.
  *  - Main: on an OPERATION_FUNCTION_MAP miss, `getRemoteOperationFunction()` supplies a forwarding
  *    function that sends the request body (OPERATION_EXECUTE_REQUEST) to one live registering
  *    worker and awaits the correlated OPERATION_EXECUTE_RESPONSE.
@@ -64,10 +63,8 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
-// name -> threadIds that declared it grantable. Tracked per originator rather than per name so the
-// mirrored mark lives exactly as long as a live worker declares it: a rolling deploy whose new
-// generation drops `requiresSuperUser` keeps the routing entry (it still executes) while retracting
-// grantability, which a name-level flag cannot express.
+// Per originator, not per name: a rolling deploy whose new generation drops `requiresSuperUser`
+// must keep routing the name while retracting grantability, which a name-level flag cannot express.
 const grantableByWorker = new Map<string, Set<number>>();
 // Threads already reported dead. Exit notification is deduplicated for the life of the process
 // (manageThreads.notifyThreadExit), so an announcement that lost a race with its own thread's exit
@@ -99,14 +96,11 @@ export function announceRegisteredOperation(name: string, grantable = false) {
  * ITC handler (all threads receive the broadcast; only main records it).
  */
 export function operationRegisteredHandler(event: {
-	message: { name: string; grantable?: boolean; originator: number };
+	message?: { name?: string; grantable?: boolean; originator?: number };
 }) {
 	if (!isMainThread) return;
-	const { name, grantable, originator } = event.message;
+	const { name, grantable, originator } = event?.message ?? {};
 	if (typeof name !== 'string' || typeof originator !== 'number') return;
-	// Arm thread-exit cleanup when the registry gains its first entry, not on the first forward:
-	// a worker that exits before any call would otherwise leave its entries here forever.
-	attachMainListeners();
 	if (exitedThreadIds.has(originator)) {
 		operationLog.debug(`Ignoring operation '${name}' announced by exited worker thread ${originator}`);
 		return;
@@ -114,9 +108,8 @@ export function operationRegisteredHandler(event: {
 	let workerIds = registeredByWorker.get(name);
 	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
 	workerIds.add(originator);
-	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's own
-	// chooseOperation. A re-announcement that no longer declares a permission retracts this
-	// thread's claim rather than leaving a stale one behind.
+	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's
+	// chooseOperation. A re-announcement that drops the permission retracts this thread's claim.
 	setWorkerGrantable(name, originator, grantable === true);
 	operationLog.debug(`Registered operation '${name}' announced by worker thread ${originator}`);
 }
@@ -129,8 +122,7 @@ function handleThreadExit(deadThreadId: number) {
 	exitedThreadIds.add(deadThreadId);
 	for (const [name, workerIds] of registeredByWorker) {
 		workerIds.delete(deadThreadId);
-		// Retract this thread's grantability claim even when others still route the name — a
-		// remaining worker that never declared a permission must not keep it admissible.
+		// A surviving worker that never declared a permission must not keep the name admissible.
 		if (workerIds.size === 0) dropRegistration(name);
 		else setWorkerGrantable(name, deadThreadId, false);
 	}
@@ -207,6 +199,12 @@ function attachMainListeners() {
 	onThreadExit(handleThreadExit);
 }
 
+// Armed at load rather than on first use: serverUtilities imports this module during its own load,
+// before any worker exists. Thread-exit notification fires once per thread and is dropped outright
+// if no listener is attached yet, so a worker dying before its first announcement is processed
+// would otherwise leave a registration nothing could ever clean up.
+if (isMainThread) attachMainListeners();
+
 async function executeRemoteOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {
 	attachMainListeners();
 	const workerIds = registeredByWorker.get(name);
@@ -236,7 +234,10 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 			);
 		}
 		if (!sent) {
+			// The port is gone, so this thread's claims go with it — grantability included, which
+			// handleThreadExit would otherwise not retract while other workers still route the name.
 			workerIds.delete(targetThreadId);
+			setWorkerGrantable(name, targetThreadId, false);
 			continue;
 		}
 		return new Promise((promiseResolve, promiseReject) => {

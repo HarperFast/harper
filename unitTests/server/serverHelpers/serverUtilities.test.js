@@ -246,7 +246,7 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		it('makes a worker-announced declared op grantable on the main thread', function () {
-			assert.notEqual(validateOperations([GRANTABLE]), null, 'name should be unknown before the announcement');
+			assert.notEqual(validateOperations([GRANTABLE]), null);
 
 			registeredOperations.operationRegisteredHandler({
 				message: { name: GRANTABLE, grantable: true, originator: 31 },
@@ -267,7 +267,7 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('keeps a main-thread registration of the same name independent of the worker mirror', function () {
 			// restartWorkers loads root components before draining old workers, so a startOnMainThread
-			// component can register an op a retiring worker also offers.
+			// component can claim a name a retiring worker still offers.
 			registeredOperations.operationRegisteredHandler({
 				message: { name: SHARED, grantable: true, originator: 41 },
 			});
@@ -293,8 +293,7 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		it('stops being grantable once the last declaring worker is gone, even while another still routes it', function () {
-			// The rolling-deploy case: the new generation keeps the operation but drops
-			// requiresSuperUser, so the name must stay routable and stop being grantable.
+			// Rolling deploy: the new generation keeps the operation but drops requiresSuperUser.
 			registeredOperations.operationRegisteredHandler({
 				message: { name: ROLLED, grantable: true, originator: 61 },
 			});
