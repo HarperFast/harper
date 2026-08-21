@@ -65,17 +65,14 @@ describe('test REST calls with cache table', () => {
 		});
 		assert.equal(response.status, 204);
 		start_count = tables.CacheOfResource.sourceGetsPerformed;
-		response = await waitFor(
-			async () => {
-				const cacheResponse = await axios(`${baseUrl}/CacheOfResource/33`, {
-					validateStatus: function (_status) {
-						return true;
-					},
-				});
-				return tables.CacheOfResource.sourceGetsPerformed > start_count ? cacheResponse : false;
+		const expirationBoundary = Date.now();
+		await waitFor(() => Date.now() > expirationBoundary);
+		response = await axios(`${baseUrl}/CacheOfResource/33`, {
+			validateStatus: function (_status) {
+				return true;
 			},
-			{ message: 'max-age=0 cache entry did not refresh from its source' }
-		);
+		});
+		assert(tables.CacheOfResource.sourceGetsPerformed > start_count);
 		assert.equal(response.status, 200);
 	});
 	describe('Cache sourced from HTTP responses', () => {
