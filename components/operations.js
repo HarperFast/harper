@@ -894,10 +894,16 @@ async function deployComponentTwoPhase(req) {
 		}
 		await recorder.checkpoint('staged', 'staged');
 
-		// Settle superseded staged ROWS here, not only on the stage-and-stop return below. `stageApplication`
-		// prunes staged directories on every stage, so gating the row half on `activate: false` let a full
-		// deploy evict trees while their rows still read `staged` cluster-wide — a deployment_id that
-		// list_deployments offers and a later activate cannot use, differently on each node under clock skew.
+		// Settled here, on every successful origin stage, so the ROWS match the staged DIRECTORIES that
+		// `stageApplication` has already pruned under the same policy. Gating this on `activate: false` left
+		// a full deploy evicting trees whose rows still read `staged` cluster-wide — list_deployments
+		// offering a deployment_id whose tree is gone, and a different one per node under clock skew.
+		//
+		// Retention is count-based, so N concurrent deploys of one project can still race for N slots: a
+		// candidate that is `staged` but whose deploy has not yet activated can be expired by a newer
+		// stage. That is inherent to the policy and already true of the directory prune this mirrors —
+		// only rows strictly older than the current request are eligible, which is what keeps a
+		// just-returned deployment safe.
 		await pruneStagedDeploymentArtifacts(req.project, activationSpec, recorder.deploymentId).catch((error) =>
 			log.warn('Failed to prune expired staged deployments', error)
 		);

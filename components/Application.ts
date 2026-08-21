@@ -660,8 +660,11 @@ async function pruneStagedBuilds(componentName: string, keepStagingId: string, m
  * version over the current one. `.discarded-` says "never restore this", and cleanupExtractionPaths
  * already removes anything that is not an unretired `.in-progress-`.
  */
-export async function discardDirAside(targetDirPath: string, componentName: string): Promise<boolean> {
-	const asideStagingDir = extractionStagingDirectory(targetDirPath);
+export async function discardDirAside(
+	targetDirPath: string,
+	componentName: string,
+	asideStagingDir: string = extractionStagingDirectory(targetDirPath)
+): Promise<boolean> {
 	try {
 		// lstat, not access(F_OK): access follows symlinks, so a DANGLING symlink at the path (left by a
 		// prior `file:`-directory deploy whose target was removed) would report ENOENT and be skipped
@@ -709,6 +712,10 @@ type RetainedVersion = {
 type RetainedPreviousManifest = {
 	previous: RetainedVersion;
 	live: RetainedVersion;
+	// Revert recovery markers only, which share this shape: set once the revert's persistent-state commit
+	// has returned. Recovery needs that as a fact rather than inferring it from the manifest, which is
+	// written after the commit and so disagrees with it across a crash in between.
+	persisted?: boolean;
 };
 
 // Absolute path of the retained-previous copy for a component's live directory, and of the sidecar
@@ -776,6 +783,10 @@ async function retainActivatedPrevious(
 ): Promise<void> {
 	const liveDirPath = application.dirPath;
 	const previousPath = previousDirPathFor(liveDirPath);
+	// Whether the displaced tree actually reached the retained slot. If it did, the slot holds exactly what
+	// a manifest would describe, so a later failure must still record it — otherwise the tree sits in place
+	// with no manifest and `getRevertTarget` reports nothing, permanently.
+	let displacedMoved = false;
 	try {
 		// The manifest goes FIRST, by being removed. getRevertTarget only checks that a retained tree
 		// exists, so a manifest that outlives its tree is worse than no manifest: it names a deployment id
@@ -790,6 +801,7 @@ async function retainActivatedPrevious(
 		if (displacedPath) {
 			await mkdir(dirname(previousPath), { recursive: true });
 			await rename(displacedPath, previousPath);
+			displacedMoved = true;
 		}
 		// Written unconditionally: even a first-ever deploy that retained nothing has to record which
 		// deployment is now live, or the NEXT activation cannot name the tree it displaces and the
@@ -806,7 +818,7 @@ async function retainActivatedPrevious(
 		// manifest goes. If the slot is empty, recording the intended state is safe — getRevertTarget
 		// requires a tree, so it still reads as not revertable — and it is the only thing that keeps the
 		// parked backup addressable, letting recovery name the release it holds instead of "unknown".
-		const slotOccupied = !!(await statIfPresent(previousPath));
+		const slotOccupied = !!(await statIfPresent(previousPath)) && !displacedMoved;
 		if (slotOccupied) {
 			await rm(previousManifestPathFor(liveDirPath), { force: true }).catch(() => {});
 		} else {
@@ -967,11 +979,14 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
 					// the persistent side committed and undoing the directories would contradict it.
 					const marker = await readRevertRecoveryMarker(revertRecoveryMarkerFor(holding));
 					const manifest = await readRetainedPreviousManifest(liveDirPath);
+					// `persisted` is the direct signal, written by the revert the moment its commit returned. The
+					// manifest comparison stays as a fallback for markers written before that field existed.
 					const persistedAlreadyExchanged =
 						!!marker &&
-						!!manifest &&
-						manifest.live?.deployment_id === marker.live?.deployment_id &&
-						manifest.previous?.deployment_id === marker.previous?.deployment_id;
+						(marker.persisted === true ||
+							(!!manifest &&
+								manifest.live?.deployment_id === marker.live?.deployment_id &&
+								manifest.previous?.deployment_id === marker.previous?.deployment_id));
 					if (persistedAlreadyExchanged && (await liveComponentPresent(previousDirPathFor(liveDirPath)))) {
 						await mkdir(dirname(liveDirPath), { recursive: true });
 						await rename(previousDirPathFor(liveDirPath), liveDirPath);
@@ -1048,7 +1063,14 @@ export async function recoverInterruptedReverts(componentsRootDirPath: string): 
  */
 export async function discardRetainedPrevious(componentDirPath: string): Promise<void> {
 	await rm(previousManifestPathFor(componentDirPath), { force: true });
-	await discardDirAside(previousDirPathFor(componentDirPath), basename(componentDirPath));
+	// Parked in the COMPONENT's aside. Deriving it from the retained path would create
+	// `.deploy-previous/.deploy-aside`, which startup recovery never sweeps and which then makes the
+	// `rmdir(previousRoot)` below fail ENOTEMPTY — stranding the tree forever.
+	await discardDirAside(
+		previousDirPathFor(componentDirPath),
+		basename(componentDirPath),
+		extractionStagingDirectory(componentDirPath)
+	);
 	const previousRoot = join(dirname(componentDirPath), DEPLOY_PREVIOUS_DIR);
 	for (const entry of await readdir(previousRoot, { withFileTypes: true }).catch(() => [])) {
 		// Any in-flight revert artifact for this component is meaningless once it is dropped.
@@ -1227,6 +1249,15 @@ export async function revertApplication(
 				try {
 					persistAttempted = true;
 					await hooks.commitPersistentState?.(target.previous.application_config);
+					// Recorded as a fact, not inferred later from the manifest. The manifest is written AFTER
+					// this commit, so a crash in between leaves persisted state exchanged while the manifest
+					// still reads pre-revert — and recovery, comparing the two, would undo directories that
+					// config already describes, leaving old code running under new configuration.
+					await writeJsonAtomically(recoveryMarkerPath, {
+						previous: target.live,
+						live: target.previous,
+						persisted: true,
+					});
 					application.useLiveBuildDir();
 					await writeRetainedPreviousManifest(liveDirPath, {
 						previous: target.live,
@@ -3535,7 +3566,6 @@ export async function reconcileStagedApplicationArtifacts(
 						failedProjects.set(projectEntry.name, reconcileError);
 						continue;
 					}
-					const liveStat = await statIfPresent(livePath);
 					const liveUsable = await liveComponentPresent(livePath);
 					if (row?.status === 'activating' && row.project === projectEntry.name && liveUsable) {
 						try {
@@ -3553,7 +3583,10 @@ export async function reconcileStagedApplicationArtifacts(
 							errors.set(deploymentId, reconcileError);
 							failedProjects.set(projectEntry.name, reconcileError);
 						}
-					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
+					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveUsable) {
+						// `!liveUsable` rather than `!liveStat`: a dangling symlink at the live path is an occupant
+						// that cannot serve, and rename replaces it. Keying on lstat left the component pointing
+						// at nothing with its recoverable backup sitting right there.
 						await rename(artifactPath, livePath);
 					} else if (
 						artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) &&

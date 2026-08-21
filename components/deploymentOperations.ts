@@ -118,22 +118,24 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 		// more interval after the request is already settled.
 		let pollTimer: ReturnType<typeof setInterval> | undefined;
 		const liveBuffer: Array<{ t: number; event: { event: string; data: unknown } }> = [];
+		// A terminal signal — either an explicit success/error event from the lifecycle, or the recorder's
+		// `_recorder_finished` sentinel emitted before it unsubscribes.
+		const isTerminalEvent = (e: { event: string; data: unknown }) =>
+			e.event === '_recorder_finished' ||
+			e.event === 'error' ||
+			(e.event === 'phase' &&
+				e.data &&
+				typeof e.data === 'object' &&
+				(e.data as { phase?: string }).phase === 'success');
+		const settleLive = () => {
+			if (liveDone) return;
+			liveDone = true;
+			if (pollTimer) clearInterval(pollTimer);
+			resolveLive?.();
+		};
 		const forwardLive = (e: { event: string; data: unknown }) => {
 			sse.emit(e.event, e.data);
-			// A terminal signal — either explicit success/error event from the lifecycle, or
-			// the recorder's `_recorder_finished` sentinel emitted before it unsubscribes.
-			const isTerminalEvent =
-				e.event === '_recorder_finished' ||
-				e.event === 'error' ||
-				(e.event === 'phase' &&
-					e.data &&
-					typeof e.data === 'object' &&
-					(e.data as { phase?: string }).phase === 'success');
-			if (isTerminalEvent && !liveDone) {
-				liveDone = true;
-				if (pollTimer) clearInterval(pollTimer);
-				resolveLive?.();
-			}
+			if (isTerminalEvent(e)) settleLive();
 		};
 		const unsubscribe = liveEmitter
 			? liveEmitter.subscribe((event) => {
@@ -160,9 +162,13 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 			if (liveEmitter) {
 				await new Promise<void>((resolve) => {
 					resolveLive = resolve;
-					// Flush anything that arrived during replay, filtering to events the replay missed.
+					// Flush anything that arrived during replay, filtering to events the replay missed. A
+					// deduplicated event must still be inspected for terminal-ness: dropping it outright would
+					// lose the only signal that the deployment finished, and the request would then hang until
+					// the fallback timer happened to notice the emitter was gone — or forever, if it had not.
 					for (const buffered of liveBuffer) {
 						if (buffered.t > lastReplayedTs) forwardLive(buffered.event);
+						else if (isTerminalEvent(buffered.event)) settleLive();
 					}
 					if (liveDone) resolve();
 					// Safety net — if the in-memory emitter is dropped (recorder finished or
