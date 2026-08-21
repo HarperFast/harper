@@ -671,15 +671,16 @@ export async function pruneProjectPayloads(project: string, maxCount: number): P
 		// must not be dropped — skip it and let a later prune reclaim it once it settles.
 		if (!TERMINAL_STATUSES.has(row.status)) continue;
 		const size = typeof row.payload_size === 'number' ? row.payload_size : 0;
-		// Copy before mutating: get()/search() rows may be shared or read-only records.
-		const updated: Record<string, any> = { ...row, payload_blob: null };
-		updated.event_log = Array.isArray(row.event_log) ? [...row.event_log] : [];
-		updated.event_log.push({
+		// Patch, not put: writing the whole spread record back would also rewrite fields a concurrent
+		// deploy may have just changed on this row — reverting a status or dropping an error while
+		// reclaiming a tarball. Only these two fields are this prune's business.
+		const eventLog = Array.isArray(row.event_log) ? [...row.event_log] : [];
+		eventLog.push({
 			t: Date.now(),
 			event: 'payload_dropped',
 			data: { payload_size: size, reason: 'payloadRetention_maxCount', max_count: maxCount },
 		});
-		await table.put(updated);
+		await table.patch(row.deployment_id, { payload_blob: null, event_log: eventLog });
 		freed += size;
 	}
 	return freed;

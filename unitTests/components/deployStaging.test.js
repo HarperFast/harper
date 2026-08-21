@@ -1809,6 +1809,47 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 	});
 
+	it('keeps the displaced release ADDRESSABLE when retention failed, not just present', async () => {
+		// Retaining the bytes is only half the job: a manifest that records the displaced release as an
+		// unknown deployment leaves revert_component with nothing to target, so the recovered deploy is
+		// still effectively unrevertable. The failed-retain path therefore records the intended manifest
+		// when the retained slot is empty, and recovery reads the side of it that names the displaced tree.
+		const name = fixtureName();
+		const { application, first, second } = await twoActivations(name);
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+
+		// Rebuild the failed-retain shape by hand: the displaced tree (v1) parked as an activation backup,
+		// the retained slot empty, and the manifest describing the intended end state.
+		const activationProjectDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationProjectDir, { recursive: true });
+		const backupPath = path.join(activationProjectDir, `.previous-${second}-1-1-${randomUUID()}`);
+		await fs.rename(previousPath, backupPath);
+		await fs.writeFile(
+			`${previousPath}.json`,
+			JSON.stringify({
+				previous: { deployment_id: first, application_config: null },
+				live: { deployment_id: second, application_config: null },
+			})
+		);
+
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === second ? { deployment_id: id, project: name, status: 'success' } : undefined),
+			async () => {}
+		);
+
+		assert.deepStrictEqual([...reconciliation.errors.keys()], []);
+		assert.match(await readMarker(previousPath), /v1/, 'the displaced bytes are retained');
+		const target = await getRevertTarget(application.dirPath);
+		assert.strictEqual(
+			target.previous.deployment_id,
+			first,
+			'and the manifest names which deployment they are, so revert_component can address it'
+		);
+		assert.strictEqual(target.live.deployment_id, second);
+		await cleanup(name);
+	});
+
 	it('recovers a revert whose holding tree is itself a symlink', async () => {
 		// A `file:` directory deploy makes the live path a symlink, and the revert renames that live path
 		// into the holding slot — so the holding entry is a symlink, not a directory. Gating the recovery

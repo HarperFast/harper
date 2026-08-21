@@ -114,6 +114,9 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 		let lastReplayedTs = 0;
 		let resolveLive: (() => void) | null = null;
 		let liveDone = false;
+		// Held out here so the terminal-event path can stop it immediately. Otherwise it survives up to one
+		// more interval after the request is already settled.
+		let pollTimer: ReturnType<typeof setInterval> | undefined;
 		const liveBuffer: Array<{ t: number; event: { event: string; data: unknown } }> = [];
 		const forwardLive = (e: { event: string; data: unknown }) => {
 			sse.emit(e.event, e.data);
@@ -128,6 +131,7 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 					(e.data as { phase?: string }).phase === 'success');
 			if (isTerminalEvent && !liveDone) {
 				liveDone = true;
+				if (pollTimer) clearInterval(pollTimer);
 				resolveLive?.();
 			}
 		};
@@ -164,7 +168,7 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 					// Safety net — if the in-memory emitter is dropped (recorder finished or
 					// the process recycled) before signaling, poll the row's status as a
 					// fallback so the client never hangs indefinitely.
-					const pollTimer = setInterval(() => {
+					pollTimer = setInterval(() => {
 						if (liveDone) {
 							clearInterval(pollTimer);
 							return;

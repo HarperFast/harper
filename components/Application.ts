@@ -805,9 +805,24 @@ async function retainActivatedPrevious(
 			live: { deployment_id: deploymentId, application_config: activatedConfig ?? null },
 		});
 	} catch (err) {
-		// Best-effort by design: the deploy succeeded, so failing it here would be worse. Drop the manifest
-		// so the component reads as not revertable rather than revertable-to-the-wrong-bytes.
-		await rm(previousManifestPathFor(liveDirPath), { force: true }).catch(() => {});
+		// Best-effort by design: the deploy succeeded, so failing it here would be worse.
+		//
+		// What the manifest may say depends on what is in the retained slot. If a stale tree still occupies
+		// it, any manifest naming the displaced release would name it against the WRONG bytes, so the
+		// manifest goes. If the slot is empty, recording the intended state is safe — getRevertTarget
+		// requires a tree, so it still reads as not revertable — and it is the only thing that keeps the
+		// parked backup addressable, letting recovery name the release it holds instead of "unknown".
+		const slotOccupied = !!(await statIfPresent(previousPath));
+		if (slotOccupied) {
+			await rm(previousManifestPathFor(liveDirPath), { force: true }).catch(() => {});
+		} else {
+			await writeRetainedPreviousManifest(liveDirPath, {
+				previous: displacedPath ? outgoing : { deployment_id: null, application_config: null },
+				live: { deployment_id: deploymentId, application_config: activatedConfig ?? null },
+			}).catch(async () => {
+				await rm(previousManifestPathFor(liveDirPath), { force: true }).catch(() => {});
+			});
+		}
 		logger.warn(
 			`Deployed ${application.name}, but could not retain its previous version for revert:`,
 			errorForLog(err as Error)
@@ -3040,7 +3055,11 @@ async function repointStagedDependencyLinks(
 		// Belt-and-braces containment: never mutate a path that is not under the real node_modules root.
 		const withinNodeModules = relative(nodeModulesPath, linkPath);
 		if (withinNodeModules.startsWith('..') || isAbsolute(withinNodeModules)) continue;
-		const withinStaging = relative(currentTargetRootPath, target);
+		// Windows returns junction targets from readlink in the `\\?\C:\…` extended-length form. Compared
+		// against a plain root, `relative` sees two different roots and hands back an absolute path, so the
+		// containment test below rejects every junction and silently skips repointing — exactly the links
+		// that dangle after the swap. Strip the prefix so both sides are in the same form.
+		const withinStaging = relative(currentTargetRootPath, stripExtendedLengthPrefix(target));
 		// `..` or an absolute result means the target is outside the staging tree — not ours to touch.
 		if (!withinStaging || withinStaging.startsWith('..') || isAbsolute(withinStaging)) continue;
 		// NOT best-effort. This link is only being touched because activation is about to invalidate its
@@ -3280,6 +3299,11 @@ function activationArtifactDeploymentId(name: string): string | undefined {
 	return DEPLOYMENT_ID_PATTERN.test(deploymentId) ? deploymentId : undefined;
 }
 
+/** `\\?\C:\x` → `C:\x`. Windows readlink reports junctions in the extended-length form. */
+function stripExtendedLengthPrefix(target: string): string {
+	return target.startsWith('\\\\?\\') ? target.slice(4) : target;
+}
+
 /**
  * Whether a usable live component occupies `livePath`. A `file:` directory deploy is materialized as a
  * symlink by design, so requiring a real directory would report a perfectly good live component as
@@ -3308,9 +3332,14 @@ async function retainRecoveredActivation(
 		basename(candidate).startsWith(ACTIVATION_BACKUP_PREFIX)
 	);
 	if (!backupPath) return;
-	// Read before the retain overwrites it: the manifest's `live` is the release this activation displaced.
-	const outgoing: RetainedVersion = (await readRetainedPreviousManifest(componentDirPath).catch(() => undefined))
-		?.live ?? { deployment_id: null, application_config: null };
+	// Which side names the displaced release depends on how far the original activation got. An
+	// untouched pre-activation manifest still has it as `live`; one written by the failed-retain path
+	// above already describes the intended end state, so there it is `previous`. `live` matching the
+	// deployment being recovered is what tells the two apart — without this the recovered manifest
+	// retains the right bytes under a null id, and revert_component cannot address them.
+	const manifest = await readRetainedPreviousManifest(componentDirPath).catch(() => undefined);
+	const displaced = manifest?.live?.deployment_id === deploymentId ? manifest?.previous : manifest?.live;
+	const outgoing: RetainedVersion = displaced ?? { deployment_id: null, application_config: null };
 	await retainActivatedPrevious(
 		new Application({ name: componentName }),
 		backupPath,
