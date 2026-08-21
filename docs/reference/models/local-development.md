@@ -124,6 +124,12 @@ models.registerBackend(
 
 The stub still exercises routing, accounting, and [analytics](./analytics) — only the inference itself is faked.
 
-Two scoping notes. `defineBackend` derives `generate` from a supplied `generateStream` (by draining the stream), but not the reverse — if the suite calls `generateStream()`, give the stub a `generateStream` implementation. And a backend registered under `'generative'` serves only generation: `embed()` resolves the `'embedding'` registry, so embedding tests need their own stub registered with `models.registerBackend('embedding', 'default', …)`.
+Three scoping notes:
+
+**Streaming.** `defineBackend` derives `generate` from a supplied `generateStream` (by draining the stream), but not the reverse — if the suite calls `generateStream()`, give the stub a `generateStream` implementation.
+
+**Embedding.** A backend registered under `'generative'` serves only generation: `embed()` resolves the `'embedding'` registry, so embedding tests need their own stub registered with `models.registerBackend('embedding', 'default', …)`.
+
+**Tool calling.** `defineBackend` defaults the `tools` capability to `false`, and a `generate()` call that declares tools [automatically requires that capability](./routing#capability-routing) — so a tool-calling application fails against this stub up front, before its `generate()` ever runs. Tool-calling tests need a stub defined with `tools: true` whose `generate()` returns the tool-call sequence the test expects; leave the flag off a simple reply stub like this one, where the up-front failure is the honest signal.
 
 As with any registered backend, register the stub during component initialization (for example, in `handleApplication`) rather than at a test file's top level: each worker thread keeps its own registry, so registration must run in every thread that serves requests — see [`registerBackend()`](./backends#registerbackend).
