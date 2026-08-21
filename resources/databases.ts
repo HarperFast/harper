@@ -1805,12 +1805,26 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
+			if (origin === 'cluster') {
+				// A peer-derived definition (DB_SCHEMA handshake, replicated define_schema) can be built
+				// from a mid-create or stale snapshot of the remote table, so it is additive-only: keep
+				// every locally-declared attribute and add any the peer has that we don't. Only local
+				// schema authoring (create_table, @table, defineTable) may remove or redefine attributes.
+				// Without this, a partial peer snapshot racing a local create_table permanently destroyed
+				// the locally-declared attributes it omitted (search then failed with "unknown attribute").
+				const merged = Table.attributes.slice();
+				for (const attribute of attributes) {
+					if (!merged.some((existing) => existing.name === attribute.name)) merged.push(attribute);
+				}
+				attributes = merged;
+			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
 			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
 			// callers that omit the flag (cluster schema-replication, data loader) don't flip a
-			// dynamic table to true via the default at the top of table().
-			if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
+			// dynamic table to true via the default at the top of table(), and on origin so a
+			// peer-derived definition never overrides the local declaration.
+			if (schemaDefinedExplicit && origin !== 'cluster') Table.schemaDefined = schemaDefined;
 			// Refresh class-level schema metadata to track docstring/directive changes across reloads.
 			Table.description = description;
 			Table.properties = properties;
@@ -1965,7 +1979,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
-		for (const { key, value } of attributesDbi.getRange({ start: true })) {
+		// Reconciling away catalog entries absent from `attributes` is reserved for local schema
+		// authoring. A cluster-origin caller works from a merged copy of this worker's (eventually
+		// consistent) attribute list, which can miss a descriptor another thread committed moments
+		// ago — removal here would permanently destroy that just-declared attribute (and its index).
+		const reconcileRemovals = origin !== 'cluster';
+		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
