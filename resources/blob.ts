@@ -2853,7 +2853,10 @@ function inflatesToExactly(filePath: string, size: number): Promise<boolean> {
 		// A zlib error is the answer (body truncated or corrupt); an I/O error is a failure to answer and
 		// must propagate, or a systemic fault would classify a corpus of complete blobs as incomplete.
 		const fail = (error: NodeJS.ErrnoException) => {
+			// Both: pipe() does not tear down the destination when the source errors, so the inflate's
+			// native zlib handle would sit allocated until GC — once per blob, on every backup walk.
 			source.destroy();
+			inflate.destroy();
 			if (error?.code?.startsWith('Z_')) resolve(false);
 			else reject(error);
 		};
