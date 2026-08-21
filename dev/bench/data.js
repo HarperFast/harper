@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787297269295,
+  "lastUpdate": 1787312683854,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13109,6 +13109,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 1127,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "374408e3f377023f992bf4458706450888ee46e0",
+          "message": "fix(status): count all live worker threads for get_status cross-thread aggregation (#1952)\n\n* fix(status): count all live worker threads for get_status cross-thread aggregation\n\nCrossThreadStatusCollector.collect() sized expectedResponses from getWorkerCount(),\nwhich only reports the CALLING thread's own same-type pool -- and falls back to a\nhardcoded 1 when called from the main thread, since main isn't part of any worker\npool. In a normal deployment get_status runs on main while N HTTP workers exist, so\nthe collector capped expectedResponses at 1 and declared the collection complete\nafter the first worker replied, silently dropping every other (and possibly\ndisagreeing) worker's status. Verified live with threads.count=8: get_status's\naggregated component status only ever reflected 1 of 8 workers before this fix.\n\nUse the already-tracked `workers` registry from manageThreads.js (populated on the\nthread that spawns children) instead, excluding job workers since\nbroadcastWithAcknowledgement() never sends them the underlying ITC broadcast.\n\nRefs #1951 (the \"invisible to get_status\" half of that finding; the underlying\ncross-component load-order race that causes workers to diverge in the first place\nis a separate, larger feature gap tracked by #1931 and is not addressed here).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* fix(status): preserve zero eligible responders, drop fragile test timing\n\nAddress get_status cross-thread review findings on PR #1952:\n\n- crossThread.ts sized expectedResponses from workers.filter(...) with a\n  `|| getWorkerCount() || 1` fallback chain, which coerced a genuine zero\n  (threads.count: 0, or a job-worker-only process) back to 1 -- the\n  collector would then wait out the full 5s timeout for a response that\n  never arrives. Replace it with getEligibleBroadcastRecipientCount(), a\n  new manageThreads.js helper that mirrors broadcastWithAcknowledgement()'s\n  own connectedPorts/isJobWorker filter. Since connectedPorts is a full\n  mesh (every thread holds a direct port to every other live thread), this\n  is exact from any calling thread -- main or worker -- and correctly\n  returns 0.\n\n- The new regression test relied on a 50ms setTimeout / 500ms wall-clock\n  deadline, which can flake on a loaded CI runner. Replace it with\n  synchronous handler invocation plus a setImmediate sentinel: since\n  microtasks always drain before any macrotask, asserting the sentinel\n  hasn't fired proves collect() resolved via the response-handler path,\n  deterministically, with no timing race. Add matching zero-responder and\n  job-worker-only coverage.\n\n- The new test's `sinon.stub(manageThreadsModule, 'getWorkerCount')` was\n  both a new-sinon-usage violation (AGENTS.md bans new sinon/rewire in\n  tests) and unnecessary once expectedResponses no longer reads\n  getWorkerCount() at all. Drop it, along with now-dead getWorkerCount\n  stubs in five pre-existing tests in this file, updating them to\n  populate the real (now-exported) connectedPorts array instead -- the\n  same real-module-injection pattern already used for `workers`.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* test(status): restore shared port registry\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix(status): share broadcast recipient filter\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Preserve status across overlapping worker generations\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Preserve worst overlapping status attribution\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-08-21T04:38:01Z",
+          "url": "https://github.com/HarperFast/harper/commit/374408e3f377023f992bf4458706450888ee46e0"
+        },
+        "date": 1787312681891,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 11381,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 9306,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 8326,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 17159488,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2328,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 452128,
             "unit": "ops"
           }
         ]
