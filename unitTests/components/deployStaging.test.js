@@ -340,7 +340,9 @@ describe('two-phase component directory transaction', function () {
 		const activationPath = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
 		await fs.mkdir(livePath, { recursive: true });
 		await fs.writeFile(path.join(livePath, 'index.js'), 'module.exports = "candidate";\n');
-		await fs.mkdir(path.join(activationPath, `.previous-${deploymentId}-crash`), { recursive: true });
+		const backupDir = path.join(activationPath, `.previous-${deploymentId}-crash`);
+		await fs.mkdir(backupDir, { recursive: true });
+		await fs.writeFile(path.join(backupDir, 'index.js'), 'module.exports = "displaced";\n');
 		const row = {
 			deployment_id: deploymentId,
 			project: name,
@@ -359,6 +361,13 @@ describe('two-phase component directory transaction', function () {
 		assert.deepStrictEqual(result.recovered, [deploymentId]);
 		assert.match(await readMarker(livePath), /candidate/);
 		assert.strictEqual(existsSync(activationPath), false);
+		// This crash shape died after the swap but before retention, so the tree under `.previous-*` is the
+		// only copy of what the activation displaced. Clearing it as residue would leave the recovered
+		// deploy permanently unrevertable, which is the whole point of retaining it.
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		assert.match(await readMarker(previousPath), /displaced/, 'the displaced tree is retained, not deleted');
+		const target = await getRevertTarget(livePath);
+		assert.strictEqual(target.live.deployment_id, deploymentId, 'and the manifest names the recovered deployment');
 		await cleanup(name);
 	});
 
@@ -1202,6 +1211,46 @@ describe('two-phase component directory transaction', function () {
 		await fs.rm(path.join(COMPONENTS_ROOT, ASIDE_STAGING_DIR), { recursive: true, force: true });
 	});
 
+	it('does not evict a staged build newer than the one being staged', async () => {
+		// The filesystem half of the retention inversion: a stage delayed behind slow peers finishes with
+		// an older mtime than a sibling that started later and already returned. Filling the retention
+		// budget from "the others" alone always reserved the current build and evicted that newer
+		// sibling's tree, so the deployment the operator was just told about lost its staged bytes.
+		const name = fixtureName();
+		const priorMax = environment.get(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
+		environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, 1);
+		try {
+			const application = new Application({ name, payload: await makeComponentPayload('slow') });
+			const slowId = randomUUID();
+			await stageApplication(application, slowId);
+			application.payload = await makeComponentPayload('newer');
+			const newerId = randomUUID();
+			await stageApplication(application, newerId);
+
+			// Make the newer build unambiguously newer on disk, then re-run the slow stage's prune by
+			// staging it again — which is what a delayed origin resuming its own stage does.
+			const newerPath = stagedApplicationPath(application.dirPath, newerId);
+			const future = new Date(Date.now() + 60_000);
+			await fs.utimes(newerPath, future, future);
+			application.payload = await makeComponentPayload('slow');
+			await stageApplication(application, slowId);
+
+			assert.strictEqual(
+				existsSync(newerPath),
+				true,
+				'the newer sibling survives a prune driven by an older, still-finishing stage'
+			);
+			assert.strictEqual(
+				existsSync(stagedApplicationPath(application.dirPath, slowId)),
+				true,
+				'and the build being staged is kept too'
+			);
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, priorMax);
+		}
+		await cleanup(name);
+	});
+
 	it('evicts staged builds beyond the retention count and always keeps the newest', async () => {
 		const name = fixtureName();
 		const priorMax = environment.get(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
@@ -1543,6 +1592,48 @@ describe('two-phase component directory transaction', function () {
 		);
 		assert.strictEqual(reconciliation.removed.includes(strandedId), true, 'its staging residue is removed');
 		assert.strictEqual(reconciliation.removed.includes(terminalId), true, "and so is the terminal row's");
+		await cleanup(name);
+	});
+
+	it('rolls a crashed activation forward even after boot-time installation recreated the live directory', async () => {
+		// installApplications() runs BEFORE this recovery and recreates a package component from root
+		// config whenever the live path is missing — which is exactly the state an activation that died
+		// between its two renames leaves behind. Resuming that attempt reuses the existing backup, so
+		// nothing moves the recreated tree away and `rename(staging, live)` used to fail ENOTEMPTY. Being
+		// recreated on every boot, that made the component permanently unloadable.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('displaced') });
+		await stageApplication(application, deploymentId);
+		await fs.mkdir(application.dirPath, { recursive: true });
+		await fs.writeFile(path.join(application.dirPath, 'index.js'), "module.exports = 'displaced';\n");
+		application.payload = await makeComponentPayload('candidate');
+		const secondId = randomUUID();
+		await stageApplication(application, secondId);
+
+		// The crash shape: live already moved aside under this deployment's backup, staging not yet moved.
+		const activationDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationDir, { recursive: true });
+		await fs.rename(application.dirPath, path.join(activationDir, `.previous-${secondId}-1-1-${randomUUID()}`));
+		// Then boot-time installation recreates the live directory from root config.
+		await fs.mkdir(application.dirPath, { recursive: true });
+		await fs.writeFile(path.join(application.dirPath, 'index.js'), "module.exports = 'reinstalled';\n");
+
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === secondId ? { deployment_id: secondId, project: name, status: 'activating' } : undefined),
+			async () => {}
+		);
+
+		assert.deepStrictEqual([...reconciliation.errors.keys()], [], 'the roll-forward succeeds');
+		assert.strictEqual(reconciliation.failedProjects.has(name), false, 'so the component is not failed closed');
+		assert.match(await readMarker(application.dirPath), /candidate/, 'the staged candidate is live');
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		assert.match(
+			await readMarker(previousPath),
+			/displaced/,
+			'and the release the activation actually displaced is retained, not the reinstalled tree'
+		);
 		await cleanup(name);
 	});
 

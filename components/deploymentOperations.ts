@@ -164,23 +164,23 @@ export async function handleGetDeployment(req: GetRequest): Promise<any> {
 					// Safety net — if the in-memory emitter is dropped (recorder finished or
 					// the process recycled) before signaling, poll the row's status as a
 					// fallback so the client never hangs indefinitely.
-					const pollTimer = setInterval(async () => {
+					const pollTimer = setInterval(() => {
 						if (liveDone) {
 							clearInterval(pollTimer);
 							return;
 						}
 						const live = getActiveEmitter(req.deployment_id);
-						if (!live || live !== liveEmitter) {
-							clearInterval(pollTimer);
-							const latest = await table.get(req.deployment_id);
-							// `staged` is a valid resting result and `activating` records
-							// uncertain cluster completion. If the original emitter is gone,
-							// there is no local work left to tail in either state.
-							if (latest && !liveDone) {
-								liveDone = true;
-								resolve();
-							}
-						}
+						if (live && live === liveEmitter) return;
+						// The emitter this request was tailing is gone, so there is no local work left to
+						// follow: `staged` is a valid resting result and `activating` records uncertain
+						// cluster completion. Settle unconditionally — including when the row has been
+						// reclaimed — because clearing the timer without resolving hangs the request
+						// forever. Nothing is read here on purpose: an await inside a timer callback can
+						// reject outside the promise being awaited, which is an unhandled rejection AND
+						// leaves this promise unsettled. The row is re-read below for the final payload.
+						clearInterval(pollTimer);
+						liveDone = true;
+						resolve();
 					}, 500);
 				});
 			}

@@ -841,6 +841,42 @@ describe('staged deployment state', () => {
 		assert.strictEqual(installed.mock.rows.get('active').status, 'activating');
 	});
 
+	it('does not expire a newer staged deployment when an older one finishes late', async () => {
+		// A stage that waited on slow peers resumes with an older `started_at` than a stage that started
+		// after it and already returned. Reserving the resuming id by excluding it from the ranking made
+		// retention expire that newer, already-reported deployment — and then discard its staging tree
+		// cluster-wide. Cross-node clock skew on `started_at` produces the same inversion.
+		for (const [id, startedAt] of [
+			['slow-origin', 100],
+			['finished-later', 200],
+		]) {
+			installed.mock.rows.set(id, { deployment_id: id, project: 'app', status: 'staged', started_at: startedAt });
+		}
+
+		assert.deepStrictEqual(
+			await expireOldStagedDeployments('app', 1, 'slow-origin'),
+			[],
+			'neither is surplus: one is newer, the other is the request being returned'
+		);
+		assert.strictEqual(installed.mock.rows.get('finished-later').status, 'staged');
+		assert.strictEqual(installed.mock.rows.get('slow-origin').status, 'staged');
+	});
+
+	it('still expires rows older than both the window and the returning request', async () => {
+		for (const [id, startedAt] of [
+			['ancient', 50],
+			['slow-origin', 100],
+			['finished-later', 200],
+		]) {
+			installed.mock.rows.set(id, { deployment_id: id, project: 'app', status: 'staged', started_at: startedAt });
+		}
+
+		assert.deepStrictEqual(await expireOldStagedDeployments('app', 1, 'slow-origin'), ['ancient']);
+		assert.strictEqual(installed.mock.rows.get('ancient').status, 'failed');
+		assert.strictEqual(installed.mock.rows.get('slow-origin').status, 'staged');
+		assert.strictEqual(installed.mock.rows.get('finished-later').status, 'staged');
+	});
+
 	it('invalidates staged and activating rows when their component is dropped', async () => {
 		for (const status of ['staged', 'activating', 'success']) {
 			installed.mock.rows.set(status, { deployment_id: status, project: 'app', status });

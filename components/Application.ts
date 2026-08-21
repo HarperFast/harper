@@ -589,32 +589,45 @@ async function pruneStagedBuilds(componentName: string, keepStagingId: string, m
 			if ((err as any).code === 'ENOENT') return; // nothing staged yet
 			throw err;
 		}
-		// Collect this component's staged builds: <stagingRoot>/<stagingId>/<name> that still exist.
-		const builds: Array<{ stagingId: string; parentPath: string; mtime: number }> = [];
-		for (const parent of parents) {
-			if (!parent.isDirectory()) continue;
-			const parentPath = join(stagingRoot, parent.name);
-			try {
-				const st = await stat(join(parentPath, componentName));
-				builds.push({ stagingId: parent.name, parentPath, mtime: st.mtimeMs });
-			} catch (err) {
-				if ((err as any).code !== 'ENOENT') throw err; // parent holds a different component; skip
+		// Under the component lock, so two stages of the same component cannot each enumerate before the
+		// other evicts and race their decisions. A lock we cannot get lands in the catch below, which is
+		// right for a disk bound: skipping a prune costs space, not correctness.
+		await withComponentPreparationLock(join(componentsRoot, componentName), async () => {
+			// Collect this component's staged builds: <stagingRoot>/<stagingId>/<name> that still exist.
+			const builds: Array<{ stagingId: string; parentPath: string; mtime: number }> = [];
+			for (const parent of parents) {
+				if (!parent.isDirectory()) continue;
+				const parentPath = join(stagingRoot, parent.name);
+				try {
+					const st = await stat(join(parentPath, componentName));
+					builds.push({ stagingId: parent.name, parentPath, mtime: st.mtimeMs });
+				} catch (err) {
+					if ((err as any).code !== 'ENOENT') throw err; // parent holds a different component; skip
+				}
 			}
-		}
-		// Always keep the build we just made, plus the newest (maxCount - 1) of the OTHERS by mtime; evict
-		// the rest. Computing it as "keep keepStagingId + top-(N-1) others" (rather than "evict everything
-		// past the top N") keeps the count exact even when mtimes tie and the just-built one would
-		// otherwise sort into the eviction window. Await the evictions (best-effort via allSettled) so the
-		// retention count is settled by the time the stage returns.
-		const others = builds.filter((build) => build.stagingId !== keepStagingId).sort((a, b) => b.mtime - a.mtime);
-		const evictions = others
-			.slice(Math.max(0, maxCount - 1))
-			.map((build) =>
-				rm(build.parentPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
-					logger.trace?.(`Deferred prune of staged ${componentName} build ${build.stagingId}: ${err.message}`)
-				)
-			);
-		await Promise.allSettled(evictions);
+			// Keep the build just made, plus anything strictly NEWER than it, plus the newest of the rest up
+			// to the count. Filling from "the others" alone would privilege the current build
+			// unconditionally: a stage delayed behind slow peers finishes with an older mtime than a
+			// sibling that started later and already returned, and that newer sibling's tree would be
+			// evicted. Protecting only *strictly* newer builds keeps the count exact when mtimes tie —
+			// coarse filesystem timestamps routinely tie — where the just-made build could otherwise sort
+			// into the eviction window. Mirrors deploymentRecorder.settleStagedRows.
+			const current = builds.find((build) => build.stagingId === keepStagingId);
+			const others = builds.filter((build) => build.stagingId !== keepStagingId).sort((a, b) => b.mtime - a.mtime);
+			const newerThanCurrent = current ? others.filter((build) => build.mtime > current.mtime) : [];
+			const budget = Math.max(0, maxCount - (current ? 1 : 0) - newerThanCurrent.length);
+			// Awaited (best-effort via allSettled) so the retention count is settled by the time the stage
+			// returns.
+			const evictions = others
+				.filter((build) => !newerThanCurrent.includes(build))
+				.slice(budget)
+				.map((build) =>
+					rm(build.parentPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
+						logger.trace?.(`Deferred prune of staged ${componentName} build ${build.stagingId}: ${err.message}`)
+					)
+				);
+			await Promise.allSettled(evictions);
+		});
 	} catch (err) {
 		logger.trace?.(`Staged-build prune for ${componentName} skipped: ${(err as Error).message}`);
 	}
@@ -2959,7 +2972,7 @@ async function repointStagedDependencyLinks(
 	// machine would otherwise have its target's contents enumerated — and a link in there whose target
 	// happened to point into staging would be removed and recreated, writing outside the component tree.
 	// Requiring a real directory at each level we descend keeps every candidate under the real root.
-	const nodeModulesStat = await lstat(nodeModulesPath).catch(() => undefined);
+	const nodeModulesStat = await statIfPresent(nodeModulesPath);
 	if (!nodeModulesStat?.isDirectory() || nodeModulesStat.isSymbolicLink()) return 0;
 	// Package links live at `node_modules/<name>` or `node_modules/@scope/<name>`, and npm nests a further
 	// `node_modules` under a package whenever hoisting is blocked by a version conflict — routinely so
@@ -2967,21 +2980,31 @@ async function repointStagedDependencyLinks(
 	// walk has to follow real nested trees rather than stopping at the first two levels.
 	const candidates: string[] = [];
 	const collect = async (directoryPath: string): Promise<void> => {
-		for (const entry of await readdir(directoryPath, { withFileTypes: true }).catch(() => [])) {
+		let entries;
+		try {
+			entries = await readdir(directoryPath, { withFileTypes: true });
+		} catch (error) {
+			// Absence is benign; anything else is not. Swallowing an EIO/EACCES here would make the walk
+			// find nothing to repoint and let the activation swap in a tree whose absolute links still
+			// address the staging path — the dangling state this repair exists to prevent.
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+			return;
+		}
+		for (const entry of entries) {
 			if (entry.name.startsWith('.')) continue;
 			const entryPath = join(directoryPath, entry.name);
 			if (entry.name.startsWith('@')) {
 				// Only descend into a REAL directory: a symlinked scope directory belongs to whatever it points
 				// at, not to this component (see the note on nodeModulesStat above).
-				const scopeStat = await lstat(entryPath).catch(() => undefined);
+				const scopeStat = await statIfPresent(entryPath);
 				if (scopeStat?.isDirectory() && !scopeStat.isSymbolicLink()) await collect(entryPath);
 				continue;
 			}
 			candidates.push(entryPath);
-			const packageStat = await lstat(entryPath).catch(() => undefined);
+			const packageStat = await statIfPresent(entryPath);
 			if (!packageStat?.isDirectory() || packageStat.isSymbolicLink()) continue;
 			const nestedPath = join(entryPath, 'node_modules');
-			const nestedStat = await lstat(nestedPath).catch(() => undefined);
+			const nestedStat = await statIfPresent(nestedPath);
 			if (nestedStat?.isDirectory() && !nestedStat.isSymbolicLink()) await collect(nestedPath);
 		}
 	};
@@ -2989,10 +3012,16 @@ async function repointStagedDependencyLinks(
 
 	let repointed = 0;
 	for (const linkPath of candidates) {
-		const linkStat = await lstat(linkPath).catch(() => undefined);
+		const linkStat = await statIfPresent(linkPath);
 		if (!linkStat?.isSymbolicLink()) continue;
-		const target = await readlink(linkPath).catch(() => undefined);
-		if (!target || !isAbsolute(target)) continue;
+		let target;
+		try {
+			target = await readlink(linkPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+			continue;
+		}
+		if (!isAbsolute(target)) continue;
 		// Belt-and-braces containment: never mutate a path that is not under the real node_modules root.
 		const withinNodeModules = relative(nodeModulesPath, linkPath);
 		if (withinNodeModules.startsWith('..') || isAbsolute(withinNodeModules)) continue;
@@ -3062,7 +3091,22 @@ export async function activateStagedApplication(
 			const existingArtifacts = await activationArtifacts(application.dirPath, deploymentId);
 			backupPath = existingArtifacts.find((candidate) => basename(candidate).startsWith(ACTIVATION_BACKUP_PREFIX));
 			newMarkerPath = existingArtifacts.find((candidate) => basename(candidate).startsWith(ACTIVATION_NEW_PREFIX));
-			if (!backupPath && !newMarkerPath) {
+			if (backupPath || newMarkerPath) {
+				// Resuming an attempt that already moved the displaced release aside (or recorded that there
+				// was none). Anything at the live path now therefore arrived AFTER that move, so it is not the
+				// tree this activation displaced: boot-time installApplications() recreates a package component
+				// from root config whenever it finds the path missing, and it runs before this recovery. Left
+				// in place it makes the rename below fail ENOTEMPTY — deterministically, on every boot, because
+				// installation recreates it again each time. Parked rather than deleted; the release this
+				// activation actually displaced is the one already held in the backup.
+				if (await statIfPresent(application.dirPath)) {
+					logger.warn(
+						`Parking an unexpected ${application.name} directory that appeared after this activation ` +
+							`moved the live tree aside; the displaced release is already retained`
+					);
+					await discardDirAside(application.dirPath, application.name);
+				}
+			} else {
 				try {
 					await lstat(application.dirPath);
 					application.isNewComponent = false;
@@ -3222,6 +3266,34 @@ function activationArtifactDeploymentId(name: string): string | undefined {
 }
 
 /**
+ * Finish the retention half of an interrupted activation. The tree the swap displaced is still parked
+ * as `.deploy-activating/<project>/.previous-<id>-…`, and clearing it as residue is exactly what makes
+ * a recovered deploy unrevertable — the crash shape here is "swapped and committed, but died before
+ * retaining". Runs the same protocol a normal activation does, so the manifest describes the tree.
+ */
+async function retainRecoveredActivation(
+	componentDirPath: string,
+	componentName: string,
+	deploymentId: string,
+	activationSpec: Record<string, any> | undefined
+): Promise<void> {
+	const backupPath = (await activationArtifacts(componentDirPath, deploymentId)).find((candidate) =>
+		basename(candidate).startsWith(ACTIVATION_BACKUP_PREFIX)
+	);
+	if (!backupPath) return;
+	// Read before the retain overwrites it: the manifest's `live` is the release this activation displaced.
+	const outgoing: RetainedVersion = (await readRetainedPreviousManifest(componentDirPath).catch(() => undefined))
+		?.live ?? { deployment_id: null, application_config: null };
+	await retainActivatedPrevious(
+		new Application({ name: componentName }),
+		backupPath,
+		deploymentId,
+		activationSpec ? applicationConfigFromActivationSpec(activationSpec) : undefined,
+		outgoing
+	);
+}
+
+/**
  * The project a staged deployment belongs to, read from `<staging>/<deploymentId>/<project>`. Used to
  * attribute a reconciliation failure when the deployment row itself could not be read.
  */
@@ -3347,6 +3419,8 @@ export async function reconcileStagedApplicationArtifacts(
 						throw new Error(`Interrupted activation '${entry.name}' has neither a staged nor live component tree`);
 					}
 					await persistActivation(row);
+					// The swap already happened, so the displaced tree is the rollback source now.
+					await retainRecoveredActivation(componentDirPath, row.project, entry.name, row.activation_spec);
 				});
 				if (ownedByActivation) continue;
 			}
@@ -3408,7 +3482,13 @@ export async function reconcileStagedApplicationArtifacts(
 					if (row?.status === 'activating' && row.project === projectEntry.name && liveStat?.isDirectory()) {
 						try {
 							await persistActivation(row);
-							await rm(artifactPath, { recursive: true, force: true });
+							if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX)) {
+								// The displaced tree, not residue: retaining it is what keeps a recovered deploy
+								// revertable. The retain consumes the artifact, so there is nothing left to remove.
+								await retainRecoveredActivation(livePath, projectEntry.name, deploymentId, row.activation_spec);
+							} else {
+								await rm(artifactPath, { recursive: true, force: true });
+							}
 							recovered.add(deploymentId);
 						} catch (error) {
 							const reconcileError = error instanceof Error ? error : new Error(String(error));

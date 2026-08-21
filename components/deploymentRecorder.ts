@@ -514,6 +514,10 @@ export async function markDeploymentTerminal(
 		update.error = {
 			message: error instanceof Error ? error.message : String(error),
 		};
+	} else {
+		// Cleared, not left alone: a recovery or a successful activate retry moves a row that already
+		// carries a failure, and keeping that object would report success and an error at once.
+		update.error = null;
 	}
 	await table.patch(deploymentId, update);
 }
@@ -576,16 +580,23 @@ async function settleStagedRows(project: string, keepCount: number, keepDeployme
 	if (!table) return [];
 	const staged: Array<Record<string, any>> = [];
 	for await (const row of table.search([{ attribute: 'project', value: project }])) {
-		// `started_at` is stamped by whichever node originated the deploy, so clock skew across nodes can
-		// rank a peer-originated row above the one this call just created. Excluding it explicitly is what
-		// stops retention cluster-wide discarding the staging tree for the id being returned to the
-		// operator — the same guarantee pruneStagedBuilds gets from its keepStagingId.
-		if (row?.status === 'staged' && row.deployment_id !== keepDeploymentId) staged.push(row);
+		if (row?.status === 'staged') staged.push(row);
 	}
 	staged.sort(
 		(a, b) => (b.started_at ?? 0) - (a.started_at ?? 0) || String(a.deployment_id).localeCompare(b.deployment_id)
 	);
-	const expired = staged.slice(Math.max(0, keepDeploymentId ? keepCount - 1 : keepCount));
+	// Keep the request being returned, plus any row strictly NEWER than it, plus the newest of the rest
+	// up to the count. Excluding the current id from the ranking instead would privilege it
+	// unconditionally: a stage that waited on slow peers resumes with an older `started_at`, so with a
+	// retention of 1 it would expire the newer stage that had already completed and been reported to the
+	// operator, then discard its staging tree cluster-wide. `started_at` is stamped by whichever node
+	// originated the deploy, so cross-node clock skew produces the same inversion. Only *strictly* newer
+	// rows are protected, which keeps the count exact when timestamps tie.
+	const current = keepDeploymentId ? staged.find((row) => row.deployment_id === keepDeploymentId) : undefined;
+	const others = staged.filter((row) => row.deployment_id !== keepDeploymentId);
+	const newerThanCurrent = current ? others.filter((row) => (row.started_at ?? 0) > (current.started_at ?? 0)) : [];
+	const budget = Math.max(0, keepCount - (current ? 1 : 0) - newerThanCurrent.length);
+	const expired = others.filter((row) => !newerThanCurrent.includes(row)).slice(budget);
 	for (const row of expired) {
 		await table.patch(row.deployment_id, {
 			status: 'failed',
