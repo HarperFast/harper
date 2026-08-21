@@ -1288,4 +1288,74 @@ describe('two-phase component directory transaction', function () {
 		);
 		await cleanup(name);
 	});
+	it('discards a broken staged candidate without failing the healthy live component closed', async () => {
+		// Only a not-yet-activated candidate is broken here; the live tree and its persisted config are
+		// consistent, so the fail-closed rationale that applies to an interrupted activation does not.
+		// Failing this component would also be permanent: nothing else sweeps a staging directory whose
+		// component subtree is missing.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('live') });
+		await stageApplication(application, deploymentId);
+		await fs.mkdir(application.dirPath, { recursive: true });
+		await fs.writeFile(path.join(application.dirPath, 'index.js'), "module.exports = 'live';\n");
+		// Break the candidate: remove its component subtree but leave the deployment directory behind.
+		await fs.rm(stagedApplicationPath(application.dirPath, deploymentId), { recursive: true, force: true });
+
+		const settled = [];
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async () => ({
+				deployment_id: deploymentId,
+				project: name,
+				status: 'staged',
+				activation_spec: { package: null },
+			}),
+			async () => {
+				throw new Error('activation persistence must not be reached for a staged row');
+			},
+			async (id) => settled.push(id)
+		);
+
+		assert.equal(reconciliation.failedProjects.has(name), false, 'the live component is not failed closed');
+		assert.deepEqual(settled, [deploymentId], 'the unusable candidate row is settled so its payload can be reclaimed');
+		assert.equal(reconciliation.removed.includes(deploymentId), true, 'and its residue is removed');
+		assert.match(await readMarker(application.dirPath), /live/, 'the live component is untouched');
+		await cleanup(name);
+	});
+
+	it('does not fail a component closed when settling a broken staged candidate itself fails', async () => {
+		// The staged branch can still throw — an I/O error on the completeness probe, or on settling or
+		// removing the residue. None of those say the live tree disagrees with its config, so none should
+		// keep the component from loading; only an interrupted activation does.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('live') });
+		await stageApplication(application, deploymentId);
+		await fs.mkdir(application.dirPath, { recursive: true });
+		await fs.writeFile(path.join(application.dirPath, 'index.js'), "module.exports = 'live';\n");
+		await fs.rm(stagedApplicationPath(application.dirPath, deploymentId), { recursive: true, force: true });
+
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async () => ({
+				deployment_id: deploymentId,
+				project: name,
+				status: 'staged',
+				activation_spec: { package: null },
+			}),
+			async () => {},
+			async () => {
+				throw new Error('simulated settle failure');
+			}
+		);
+
+		assert.equal(reconciliation.errors.has(deploymentId), true, 'the failure is still reported');
+		assert.equal(
+			reconciliation.failedProjects.has(name),
+			false,
+			'but it is not attributed to the component, so the healthy live tree still loads'
+		);
+		await cleanup(name);
+	});
 });
