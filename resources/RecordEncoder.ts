@@ -122,20 +122,21 @@ export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
-// Set on a record whose stored version was reused rather than advanced: a resequenced write keeps
-// the (newer) version it merged onto, so one version identifies two different stored values. Read
-// caching's freshness oracle is version equality, so it must neither cache such a record nor let the
-// VerificationTable vouch for that version — otherwise a worker still holding the pre-merge value
-// serves it as fresh, and an addTo folding onto it drops the increment it merged over. Deliberately
-// above every bit the audit extendedType uses (auditStore.ts), which the record metadata word borrows
-// from for HAS_BLOBS/LOCAL_ONLY.
+// A resequenced write keeps the (newer) version it merged onto, so one version identifies two
+// different stored values; read caching's freshness oracle is version equality, so such a record
+// must never be cached or vouched for. Deliberately above every audit extendedType bit, which the
+// record metadata word borrows from for HAS_BLOBS/LOCAL_ONLY.
 export const VERSION_REUSED = 0x10000;
-// Parked in a VerificationTable slot to mark a key unvouchable, since the VT has no invalidate call.
-// It doubles as the cross-worker signal that a key's version identifies more than one stored value:
-// once any worker has parked it, no other worker's read trusts or republishes that version. A
-// timestamp ~285,000 years out — improbable rather than impossible, as write timestamps are
+// Parked in a VerificationTable slot to mark a key unvouchable (the VT has no invalidate call): the
+// cross-worker signal that a key's version identifies more than one stored value. A timestamp
+// ~285,000 years out — improbable rather than impossible, since write timestamps are
 // caller-supplied, so a record read back at exactly this version is never cached either.
 export const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
+// The single definition of "this write stores under a reused version" — the durable VERSION_REUSED
+// bit (recordUpdater) and the post-commit sentinel park (Table's writeCommit) must never diverge.
+export function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
+	return existingEntry?.version != null && newVersion <= existingEntry.version;
+}
 
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
@@ -901,9 +902,8 @@ export function recordUpdater(store, tableId, auditStore) {
 		// A RocksDB write whose version does not advance past the record it replaces stores a second
 		// value under that version, so the version stops identifying one stored value (VERSION_REUSED).
 		// Derived here rather than at the call sites because every record write goes through this one.
-		const versionReused =
-			isRocksDB && record !== undefined && existingEntry?.version != null && newVersion <= existingEntry.version;
-		if (versionReused) metadataInNextEncoding |= VERSION_REUSED;
+		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
+			metadataInNextEncoding |= VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;

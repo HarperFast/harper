@@ -353,6 +353,8 @@ export type TransactionWrite = {
 	// out-of-order fold); the commit success path parks the unvouchable sentinel for the key. Reset
 	// per commit-handler round, like stagedEntry.
 	storedReusedVersion?: boolean;
+	// a bulk base-copy snapshot row: keeps its pre-read base instead of the commit-time reload
+	isCopyApply?: boolean;
 };
 
 /**
@@ -718,18 +720,18 @@ export class DatabaseTransaction implements Transaction {
 
 	/**
 	 * After a successful commit, park the unvouchable sentinel for every key this batch stored
-	 * under a reused version (see VERSION_REUSED): from this moment the key's version identifies
-	 * two stored values, and a worker still holding the pre-merge one must not be told it is
-	 * fresh. The writer parks it — a reader-side park leaves a window in which the native layer
-	 * re-confirms the reused version off the stored record and republishes it, and with every
-	 * worker holding a warm cache no reader ever decodes the record to discover the flag. A slot
-	 * that cannot take the sentinel (a newer write's intent holds it) is left alone: that write's
-	 * own cycle supersedes the sentinel either way.
+	 * under a reused version (see VERSION_REUSED). The writer parks it because no reader can be
+	 * relied on to: with every worker's cache warm, no read ever decodes the flagged record, and
+	 * the native soft-miss re-confirm keeps vouching the reused version off the stored record.
 	 */
 	private parkReusedVersionSentinels(): void {
 		for (const write of this.writes) {
 			if (write?.storedReusedVersion && !write.skipped && typeof write.store.parkUnvouchable === 'function') {
-				write.store.parkUnvouchable(write.key);
+				if (!write.store.parkUnvouchable(write.key)) {
+					// A concurrent write's intent holds the slot; if that write aborts, the key stays
+					// vouch-suspect until a decoding read re-parks — logged so the hole is detectable.
+					harperLogger.debug?.('unvouchable sentinel not parked, slot held by a concurrent write', write.key);
+				}
 			}
 		}
 	}
@@ -934,13 +936,19 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
-		// An incremental (non-full) update stores a record derived from its base — CRDT folds and
-		// unmentioned fields both come from it — so the base must be what this transaction's
-		// snapshot holds, not a value the resource phase read through the cross-worker cache
-		// vouch (which can be stale when a resequenced write reused a version). Reload it here,
-		// and on every retry round, with uncachedRead so the vouch is never consulted; a write
-		// that lands between this snapshot and commit still surfaces as a conflict and retries.
-		if (reloadEntry || operation.entry === undefined || (operation.fullUpdate === false && !operation.saved)) {
+		// A record write's base must be what this transaction's snapshot holds, not a value the
+		// resource phase read through the cross-worker cache vouch, which can be stale when a
+		// resequenced write reused a version: an incremental update folds CRDT ops and unmentioned
+		// fields from the base, and even a full put diffs indices, blob retention, and residency
+		// against it. Reload with uncachedRead so the vouch is never consulted; a write landing
+		// between this snapshot and commit still surfaces as a conflict and retries. Bulk
+		// copy-apply rows and crash-recovery replays keep their pre-read base (one read per row,
+		// as before): their convergence contract is the post-copy/replay pass, not this reload.
+		if (
+			reloadEntry ||
+			operation.entry === undefined ||
+			(operation.fullUpdate !== undefined && !operation.saved && !operation.isCopyApply && !this.isReplay)
+		) {
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead: true });
 		}
 		if (!operation.saved) {

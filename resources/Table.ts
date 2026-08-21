@@ -84,6 +84,7 @@ import {
 	type StructureCounts,
 	entryMap,
 	storedFieldsOnly,
+	versionIsReused,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
@@ -2495,6 +2496,7 @@ export function makeTable(options) {
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
+				isCopyApply: options?.isCopyApply === true,
 				deferSave: true,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
@@ -3026,8 +3028,8 @@ export function makeTable(options) {
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
 					if (residencyId == undefined) {
-						if (entry?.residencyId)
-							(context as any).previousResidency = TableResource.getResidencyRecord(entry.residencyId);
+						if (existingEntry?.residencyId)
+							(context as any).previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 						const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 						if (residency) {
 							if (!residency.includes(server.hostname)) {
@@ -3127,13 +3129,9 @@ export function makeTable(options) {
 						}
 					}
 					function writeCommit(storeRecord: boolean) {
-						// A stored record whose version does not advance past the one it replaces (a resequenced
-						// out-of-order fold) leaves two different values identified by one version. Mark the
-						// write so the transaction's success path parks the unvouchable sentinel for the key —
-						// the writer is the only party that knows before any reader does, and parking cannot
-						// happen earlier because the VT slot holds this write's own intent until commit.
-						if (storeRecord && isRocksDB && existingEntry?.version != null && txnTime <= existingEntry.version)
-							write.storedReusedVersion = true;
+						// Marked (not parked) here: the VT slot holds this write's own intent until commit, so
+						// the transaction's success path does the actual sentinel park.
+						if (storeRecord && isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
