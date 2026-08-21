@@ -75,13 +75,8 @@ export async function compactOnStart() {
 
 			const backupDest = join(rootPath, 'backup', databaseName + '.mdb');
 			const copyDest = join(rootPath, DATABASES_DIR_NAME, databaseName + '-copy.mdb');
-			const copyDatabaseName = databaseName + '-copy';
-			const copyDatabaseRootStores = databases[copyDatabaseName] && getRootStores(databases[copyDatabaseName]);
-			if (
-				copyDatabaseRootStores &&
-				[...copyDatabaseRootStores].some((rootStore) => relative(copyDest, rootStore.path) === '')
-			) {
-				const message = `Skipping compaction of database ${databaseName}: ${copyDatabaseName} is an existing database at the compaction target path; rename it before retrying`;
+			if (existsSync(copyDest)) {
+				const message = `Skipping compaction of database ${databaseName}: ${copyDest} already exists; inspect and rename or remove it before retrying`;
 				hdbLogger.warn(message);
 				console.warn(message);
 				continue;
@@ -103,9 +98,6 @@ export async function compactOnStart() {
 			};
 			compactedDb.set(databaseName, compactionState);
 
-			// A copy target left behind by an interrupted run would be opened and merged into, mixing
-			// stale entries into this compaction's output.
-			await remove(copyDest);
 			await remove(copyDest + '-lock');
 
 			await copyDb(databaseName, copyDest, { blobs: 'preserve-source-roots' });
