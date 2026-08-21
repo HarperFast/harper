@@ -121,12 +121,9 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	 */
 	getEntry(id: any, options?: any): any {
 		this.readCount++;
-		// A commit-path base read must reflect the caller's transaction snapshot. The cache-vouch
-		// fast path answers a different question — "is this worker's cached value the latest
-		// committed?" — and answers even that wrongly for a version a resequenced write reused
-		// (one version, two stored values), so a fold on a vouched base can silently drop the
-		// concurrent update it folded over. Read the store directly and leave the cache and the
-		// VerificationTable untouched (their latest-committed semantics don't fit a snapshot read).
+		// Commit-path base reads must reflect the caller's transaction snapshot; the cache vouch
+		// answers "latest committed" — the wrong question there, and wrong outright for a version a
+		// resequenced write reused — so read the store directly, touching neither cache nor VT.
 		if (options?.uncachedRead) {
 			const raw = options.async ? super.get(id, options) : super.getSync(id, options);
 			return when(raw, (result) => this.#processEntry(result, id));
@@ -144,13 +141,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				? (entryMap.get(cachedValue) as Entry | undefined)
 				: undefined;
 		const expectedVersion = cached?.version;
-		// The parked sentinel is the cross-worker "this key's version must not be vouched for" signal,
-		// and it has to be consulted BEFORE the native get on BOTH the cold and the warm path. Cold,
-		// because the native get would otherwise seed the slot with the version it reads. Warm, because
-		// on a VT miss the native layer re-confirms freshness against the version stored in the record
-		// itself ("soft miss") and republishes it — for a record whose stored version was reused, that
-		// re-vouches a version two different values share, and overwrites the sentinel, so a worker
-		// still holding the pre-merge value would keep being told it is fresh indefinitely.
+		// The sentinel must be consulted before the native get on cold AND warm paths: a cold get
+		// would seed the slot with the version it reads, and a warm get's soft-miss re-confirms
+		// freshness off the stored record's version and republishes it — for a reused version that
+		// overwrites the sentinel and vouches a version two different values share.
 		const unvouchable = cache !== undefined && this.verifyVersion(id, VERSION_UNVOUCHABLE);
 
 		// Build get options, always merging with caller options to preserve
@@ -180,11 +174,8 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				return undefined;
 			}
 			if (entry.version != null && cache) {
-				// Checked before the cacheability gate below: a flagged record with a null or primitive
-				// value is just as unvouchable. Normally the slot already holds the sentinel from the
-				// write; re-park it for a record flagged before this shipped, or one whose slot a read
-				// republished. A store that cannot take it (closing, dropped) must not turn a completed
-				// read into a failed one — not caching is the safe outcome either way.
+				// Checked ahead of the cacheability gate: a flagged record with a null or primitive
+				// value is just as unvouchable. The re-park covers a slot a read republished.
 				if (entry.metadataFlags & VERSION_REUSED || entry.version === VERSION_UNVOUCHABLE) {
 					if (!unvouchable) {
 						try {
@@ -195,10 +186,8 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 					}
 					if (cachedValue !== undefined) cache.delete(id);
 				} else if (unvouchable) {
-					// Clean record under a parked sentinel (a post-commit park raced a newer in-order
-					// write): stay uncached — restoring the real version from JS would be an unguarded
-					// force-set that can overwrite a concurrent write's slot state. The next write to the
-					// key clears the sentinel through its own write cycle and vouching resumes.
+					// Clean record under a parked sentinel: stay uncached — a JS-side restore would be an
+					// unguarded force-set racing concurrent writes; the key's next write clears the sentinel.
 					if (cachedValue !== undefined) cache.delete(id);
 				} else if (entry.value != null && typeof entry.value === 'object') {
 					// Only object values can be weakly cached and mapped back to their Entry;
@@ -214,15 +203,16 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	/**
 	 * Park the unvouchable sentinel for a key whose stored version no longer identifies a single
 	 * value (see VERSION_REUSED). Called by the transaction's commit success path — the writer is
-	 * the only party that knows before any reader decodes the record. A slot that cannot take it
-	 * (a newer write's intent holds it) is left alone: that write's cycle supersedes it anyway.
+	 * the only party that knows before any reader decodes the record. Returns whether the sentinel
+	 * is in place; a slot held by a newer write's intent refuses it.
 	 */
-	parkUnvouchable(id: any): void {
+	parkUnvouchable(id: any): boolean {
 		try {
 			this.populateVersion(id, VERSION_UNVOUCHABLE);
 		} catch {
-			/* a reader that decodes the flagged record re-parks; never fail a completed commit */
+			/* never fail a completed commit; the verify below reports the miss */
 		}
+		return this.verifyVersion(id, VERSION_UNVOUCHABLE);
 	}
 
 	getSync(id: any, options?: any): any {

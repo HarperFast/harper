@@ -6,6 +6,7 @@ const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
+const { VERSION_UNVOUCHABLE } = require('#src/resources/RecordEncoder');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -134,35 +135,27 @@ describe('PrimaryRocksDatabase', function () {
 		const now = Date.now();
 		await TestTable.put(9, { name: 'base', count: 0 });
 		await TestTable.patch(9, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
-		await TestTable.get(9); // cache the record and seed the VT slot with its version
+		await TestTable.get(9);
 		const inOrder = TestTable.primaryStore.getEntry(9);
 		assert(TestTable.primaryStore.verifyVersion(9, inOrder.version), 'VT should vouch for an in-order version');
 
-		// An out-of-order write merges onto the newer record and is stored under its version, so two
-		// different stored values share that version.
+		// out-of-order: merges onto the newer record and stores under its (reused) version
 		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
-		// The WRITE parks the sentinel, before any read decodes the record: a reader-side park leaves
-		// a window in which a worker holding the pre-merge value keeps being confirmed fresh off the
-		// stored record's (reused) version, and with every worker warm no reader ever decodes at all.
+		// Asserted before any read: with every worker warm, no reader ever decodes the flagged
+		// record, so only the writer can park in time.
 		assert(
-			TestTable.primaryStore.verifyVersion(9, Number.MAX_SAFE_INTEGER),
+			TestTable.primaryStore.verifyVersion(9, VERSION_UNVOUCHABLE),
 			'the resequenced write itself must park the unvouchable sentinel'
 		);
 		const resequenced = TestTable.primaryStore.getEntry(9);
 		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
 		assert.equal(resequenced.value.count, 2, 'both increments are applied');
-
-		// The version must never be vouched for once two stored values share it: another worker still
-		// holding the pre-merge value would verify it as fresh and serve it, and an addTo folding onto
-		// that stale value silently drops the increment it merged over. Asserting the sentinel rather
-		// than merely "does not verify": any write clears the slot, so the weaker form would pass
-		// without this change, and the sentinel is also what tells the next reader not to republish.
 		assert(
 			!TestTable.primaryStore.verifyVersion(9, resequenced.version),
 			'VT must not vouch for a version shared by two stored values'
 		);
 		assert(
-			TestTable.primaryStore.verifyVersion(9, Number.MAX_SAFE_INTEGER),
+			TestTable.primaryStore.verifyVersion(9, VERSION_UNVOUCHABLE),
 			'reading a resequenced record must leave the slot parked as unvouchable'
 		);
 	});
@@ -173,11 +166,12 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.get(12); // warm the cache and seed the VT slot
 		const cached = store.getEntry(12);
 		assert(store.verifyVersion(12, cached.version), 'VT vouches for the in-order version');
-
-		// A commit-path base read must come from the store (through the caller's transaction
-		// snapshot), never from the vouch fast path — the vouch answers "latest committed", which
-		// is the wrong question for a snapshot read and wrong outright for a reused version.
+		// The vouch fast path returns the cached object itself, so identity is what distinguishes
+		// the two paths — an equal-values assertion would stay green if uncachedRead regressed
+		// into the vouch path and went back to serving stale commit bases.
+		assert.equal(store.getEntry(12).value, cached.value, 'the vouch path serves the cached object');
 		const direct = store.getEntry(12, { uncachedRead: true });
+		assert.notEqual(direct.value, cached.value, 'uncachedRead must decode from the store, not serve the cache');
 		assert.equal(direct.value.name, 'stored');
 		assert.equal(direct.value.count, 5);
 		assert.equal(direct.version, cached.version, 'the decoded entry carries the stored version');
@@ -192,10 +186,8 @@ describe('PrimaryRocksDatabase', function () {
 		const reused = store.getEntry(11);
 		assert(!store.verifyVersion(11, reused.version), 'the reused version is not vouched for');
 
-		// The next in-order write advances the version, so the record identifies its own value again
-		// and both the cache and the VT are usable for it. The read that discovers the flag is gone
-		// still asks for no seeding (it was issued while the key was remembered as reused), so it is
-		// the read after it that re-seeds — the same one-read lag as any cold key.
+		// the next in-order write gives the record a version of its own; vouching resumes with the
+		// same one-read lag as any cold key
 		await TestTable.patch(11, { name: 'later' }, { timestamp: now + 200 });
 		const advanced = store.getEntry(11);
 		assert(advanced.version > reused.version, 'the in-order write advances the version');
