@@ -2045,6 +2045,13 @@ async function dropComponent(req) {
 			}
 
 			if (!file) {
+				// Persisted state goes FIRST, before anything is destroyed. The root-config entry is the only
+				// thing that can resurrect a dropped component — installApplications() reinstalls whatever it
+				// names — so removing it up front means a crash anywhere below leaves the drop unfinished
+				// (directory still present, re-runnable) instead of finished-then-undone. Both writes are one
+				// transaction, config before the application lock.
+				const dropTransaction = await createApplicationConfigTransaction(project, null);
+				await dropTransaction.commit();
 				// Invalidate staged deployments before the directory goes away, so an activate racing this
 				// drop cannot swap a staged build back into a component that is being dropped.
 				await invalidateProjectStagedDeployments(project);
@@ -2069,15 +2076,9 @@ async function dropComponent(req) {
 
 			if (file) {
 				// Under the persistent-state lock: an unlocked delete can be clobbered by a concurrent
-				// activation writing back a document that still contains this project.
+				// activation writing back a document that still contains this project. A full drop has
+				// already removed its config above.
 				await withPersistentStateLock(async () => configUtils.deleteConfigFromFile([project]));
-			} else {
-				// Both persistent writes as ONE reversible step, config first. Removing the application-lock
-				// entry and the root-config entry separately meant a crash or a failed second write left root
-				// config still naming the package with the live directory already gone — and the next boot's
-				// installApplications() reinstalled the very component that was dropped.
-				const dropTransaction = await createApplicationConfigTransaction(project, null);
-				await dropTransaction.commit();
 			}
 		},
 		componentDropLockOptions(project)

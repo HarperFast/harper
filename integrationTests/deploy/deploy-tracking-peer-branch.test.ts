@@ -160,8 +160,6 @@ suite('Deployment tracking — peer-operation authorization boundary', (ctx: Con
 		strictEqual(response.status, 400, `internal marker should be rejected; got: ${response.rawText}`);
 		strictEqual(response.body.error, "'_deploymentId' is not allowed");
 	});
-	// Peer work rides the trusted-peer-only `component_deploy_phase` operation, which by design cannot be
-	// reached over HTTP with ordinary credentials (the test above pins that), so a peer-branch end-to-end
-	// test has no legitimate entry point in this repo. Peer-side behavior is covered by unit tests that
-	// dispatch the internal operation directly, and end to end by the three-node harper-pro suite.
+	// `component_deploy_phase` is trusted-peer-only and unreachable over HTTP, so a peer-branch
+	// end-to-end test has no entry point here; the three-node harper-pro suite covers it.
 });

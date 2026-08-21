@@ -696,6 +696,51 @@ describe('deploy_component two-phase orchestration', function () {
 		}
 	});
 
+	it('removes the root-config entry before it destroys anything, so a failed drop cannot resurrect', async () => {
+		// The resurrection vector is the root-config entry: installApplications() reinstalls whatever it
+		// names. Doing the persistent writes after the directory removal left a crash window where the
+		// live tree was gone but config still named the package, and the next boot brought the component
+		// back. Config-first inverts the failure: an interrupted drop is unfinished and re-runnable.
+		const project = name();
+		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-drop-crash-'));
+		const componentsRoot = path.join(configRoot, 'components');
+		const configPath = path.join(configRoot, 'harper-config.yaml');
+		const priorRootEnv = process.env.ROOTPATH;
+		const priorRootConfig = getConfigPath(CONFIG_PARAMS.ROOTPATH);
+		const priorComponentsRoot = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+		process.env.ROOTPATH = configRoot;
+		environment.setProperty(CONFIG_PARAMS.ROOTPATH, configRoot);
+		environment.setProperty(CONFIG_PARAMS.COMPONENTSROOT, componentsRoot);
+		await fs.writeFile(configPath, `rootPath: ${JSON.stringify(configRoot)}\n`);
+		try {
+			await fs.mkdir(path.join(componentsRoot, project), { recursive: true });
+			await fs.writeFile(path.join(componentsRoot, project, 'index.js'), "module.exports = 'live';\n");
+			await fs.appendFile(configPath, `${project}:\n  package: some-package@1.0.0\n`);
+			// Make every aside-based teardown step fail: `.deploy-aside` occupied by a file is rejected as
+			// "not a directory", which is the closest deterministic stand-in for dying mid-teardown.
+			await fs.writeFile(path.join(componentsRoot, '.deploy-aside'), 'not a directory\n');
+
+			await assert.rejects(() => operations.dropComponent({ project }));
+
+			assert.strictEqual(
+				(await fs.readFile(configPath, 'utf8')).includes(project),
+				false,
+				'config is already clean, so the next boot cannot reinstall the component'
+			);
+			assert.strictEqual(
+				existsSync(path.join(componentsRoot, project)),
+				true,
+				'and the tree is still there: the drop is unfinished rather than finished-then-undone'
+			);
+		} finally {
+			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
+			else process.env.ROOTPATH = priorRootEnv;
+			environment.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootConfig);
+			environment.setProperty(CONFIG_PARAMS.COMPONENTSROOT, priorComponentsRoot);
+			await fs.rm(configRoot, { recursive: true, force: true });
+		}
+	});
+
 	it('drop_component invalidates staged rows and removes recovery artifacts', async () => {
 		const project = name();
 		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-phase-drop-'));
