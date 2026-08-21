@@ -68,8 +68,22 @@ let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
 let stagedArtifactsReconciled = false;
-let componentLoadGeneration = 0;
+const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
+
+function serializeComponentLoad<T>(appName: string, load: () => Promise<T>): Promise<T> {
+	const previousLoad = componentLoadTails.get(appName);
+	const currentLoad = previousLoad ? previousLoad.then(load) : load();
+	const loadTail = currentLoad.then(
+		() => undefined,
+		() => undefined
+	);
+	componentLoadTails.set(appName, loadTail);
+	void loadTail.then(() => {
+		if (componentLoadTails.get(appName) === loadTail) componentLoadTails.delete(appName);
+	});
+	return currentLoad;
+}
 
 export async function readyComponentModules(
 	serverModules: Iterable<any>,
@@ -151,23 +165,11 @@ export async function loadComponentDirectories(
 	loadedResources?: Resources,
 	readyComponentPromises: ComponentReadyPromises = new WeakMap()
 ) {
-	const loadGeneration = ++componentLoadGeneration;
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
-	const cycleLoadedComponents = loadedComponents;
-	// Three independent crash-recovery passes, in this order:
-	//
-	//   1. recoverInterruptedComponentExtractions — an IN-PLACE preparation (the one-shot deploy path)
-	//      that died mid-swap left the prior tree parked in `.deploy-aside` with no retired marker;
-	//      restore it so the live directory is a known-good tree again.
-	//   2. recoverInterruptedReverts — a revert that died between renames left the outgoing tree parked
-	//      under `.deploy-previous/.reverting-*`, possibly with no live directory at all.
-	//   3. reconcileStagedApplicationArtifacts — a TWO-PHASE activation that died in its swap window
-	//      is rolled forward from its durable deployment row + activation marker.
-	//
-	// The two directory repairs run before the staged reconciliation so its roll-forward decision sees a
-	// settled live directory rather than a half-swapped one. The passes read disjoint directories
+	// Order matters: both directory repairs must settle the live path before the staged reconciliation
+	// decides whether to roll an activation forward. The three passes read disjoint directories
 	// (`.deploy-aside`, `.deploy-previous`, `.deploy-staging`/`.deploy-activating`), so none can claim
 	// another's artifacts — see DESIGN.md, "One contract on .deploy-aside".
 	let failedRecoveries = new Map<string, Error>();
@@ -260,40 +262,38 @@ export async function loadComponentDirectories(
 		if (appWasVisible) {
 			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
 		}
-		void recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
-			.then(async () => {
-				if (loadGeneration !== componentLoadGeneration) return;
-				if (!existsSync(appFolder)) {
-					if (appWasVisible) {
-						statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+		void serializeComponentLoad(appName, () =>
+			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+				.then(async () => {
+					if (!existsSync(appFolder)) {
+						if (appWasVisible) {
+							statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+						}
+						return;
 					}
-					return;
-				}
-				const mountResult = tryRootConfigMount(appName);
-				if (!mountResult.ok) return;
-				const modulesBeforeLoad = new Set(cycleLoadedComponents.keys());
-				await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
-					isRoot: false,
-					autoReload: false,
-					appName,
-					mount: mountResult.mount,
-				});
-				if (loadGeneration !== componentLoadGeneration) return;
-				await readyComponentModules(
-					[...cycleLoadedComponents.keys()].filter((serverModule) => !modulesBeforeLoad.has(serverModule)),
-					readyComponentPromises
-				);
-			})
-			.catch((error) => {
-				const recoveryError = error instanceof Error ? error : new Error(String(error));
-				if (appWasVisible) {
-					componentLifecycle.failed(
+					const mountResult = tryRootConfigMount(appName);
+					if (!mountResult.ok) return;
+					const loadedModules = new Set<any>();
+					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+						isRoot: false,
+						autoReload: false,
 						appName,
-						recoveryError,
-						`Component '${appName}' failed to load after waiting for in-progress preparation`
-					);
-				}
-			});
+						mount: mountResult.mount,
+						collectLoadedModules: loadedModules,
+					});
+					await readyComponentModules(loadedModules, readyComponentPromises);
+				})
+				.catch((error) => {
+					const recoveryError = error instanceof Error ? error : new Error(String(error));
+					if (appWasVisible) {
+						componentLifecycle.failed(
+							appName,
+							recoveryError,
+							`Component '${appName}' failed to load after waiting for in-progress preparation`
+						);
+					}
+				})
+		);
 	};
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
@@ -322,11 +322,16 @@ export async function loadComponentDirectories(
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
 			cfsLoaded.push(
-				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
-					isRoot: false,
-					autoReload: false,
-					appName,
-					mount: mountResult.mount,
+				serializeComponentLoad(appName, () =>
+					loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+						isRoot: false,
+						autoReload: false,
+						appName,
+						mount: mountResult.mount,
+					})
+				).catch((error) => {
+					const loadError = error instanceof Error ? error : new Error(String(error));
+					componentLifecycle.failed(appName, loadError, `Component '${appName}' failed to load`);
 				})
 			);
 		}
@@ -345,16 +350,18 @@ export async function loadComponentDirectories(
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 		if (mountResult.ok) {
 			cfsLoaded.push(
-				loadComponent(hdbAppFolder, resources, hdbAppFolder, {
-					isRoot: false,
-					autoReload: Boolean(process.env.DEV_MODE),
-					appName: hdbAppFolder,
-					mount: mountResult.mount,
-				})
+				serializeComponentLoad(hdbAppFolder, () =>
+					loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
+						isRoot: false,
+						autoReload: Boolean(process.env.DEV_MODE),
+						appName: hdbAppFolder,
+						mount: mountResult.mount,
+					})
+				)
 			);
 		}
 	}
-	return Promise.all(cfsLoaded).then(() => {
+	return await Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
 	});
 }
@@ -625,6 +632,7 @@ export interface LoadComponentOptions {
 	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
 	// across deploys (#1462).
 	collectScopes?: Set<Scope>;
+	collectLoadedModules?: Set<any>;
 	// Routing the operator declared for this application in the root config (`host`/`urlPath` on
 	// the application's entry). Applied to every plugin scope this load creates, and inherited by
 	// components the application itself declares, so the whole subtree moves together.
@@ -656,6 +664,7 @@ export async function loadComponent(
 		autoReload,
 		appName,
 		mount,
+		collectLoadedModules,
 	} = options;
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
@@ -800,6 +809,7 @@ export async function loadComponent(
 								autoReload: false,
 								appName: appName || componentName,
 								collectScopes: options.collectScopes,
+								collectLoadedModules,
 								// `host`/`urlPath` on this entry route the component being loaded. For an
 								// application (no plugin module of its own) that entry is the only place an
 								// operator can say where the app is served — its own config.yaml declares the
@@ -992,6 +1002,7 @@ export async function loadComponent(
 							...componentConfig,
 						})) || extensionModule;
 				loadedComponents.set(extensionModule, true);
+				collectLoadedModules?.add(extensionModule);
 
 				if (
 					(extensionModule.handleFile ||

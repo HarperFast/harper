@@ -5,6 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const { Readable } = require('node:stream');
+const { waitFor } = require('../waitFor.js');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -14,6 +15,7 @@ const {
 	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
 	dropComponentDirectory,
+	makeRollbackPlaceholderMovable,
 	Application,
 } = require('#src/components/Application');
 const { packageDirectory } = require('#src/components/packageComponent');
@@ -71,6 +73,33 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('restores a dangling symlink when payload extraction fails', async function () {
+		if (process.platform === 'win32') this.skip();
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-dangling-symlink-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const missingTarget = path.join(componentsRoot, 'missing-target');
+		const extractionError = new Error('payload delivery failed');
+		await fs.symlink(missingTarget, dirPath, 'dir');
+		const app = new Application({
+			name: 'web',
+			payload: new Readable({
+				read() {
+					this.destroy(extractionError);
+				},
+			}),
+		});
+		app.dirPath = dirPath;
+
+		try {
+			await assert.rejects(() => extractApplication(app), extractionError);
+			assert.strictEqual((await fs.lstat(dirPath)).isSymbolicLink(), true);
+			assert.strictEqual(await fs.readlink(dirPath), missingTarget);
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('removes a partial directory when a first deploy fails', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-new-failure-'));
 		const dirPath = path.join(componentsRoot, 'web');
@@ -87,6 +116,26 @@ describe('extractApplication directory swap', () => {
 			await assert.rejects(() => extractApplication(app), extractionError);
 			await assert.rejects(fs.access(dirPath));
 			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('removes a partial first deploy after an interrupted process restarts', async function () {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-first-deploy-crash-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const stagingDir = path.join(componentsRoot, '.deploy-aside', 'web');
+		const absentMarker = path.join(stagingDir, '.in-progress-123-1-record-prior-absent');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web"');
+		await fs.mkdir(stagingDir, { recursive: true });
+		await fs.writeFile(absentMarker, '');
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0, failures.get('web')?.stack);
+			await assert.rejects(fs.access(dirPath));
+			await assert.rejects(fs.access(stagingDir));
 		} finally {
 			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
@@ -148,6 +197,36 @@ describe('extractApplication directory swap', () => {
 			await assert.rejects(fs.access(path.join(dirPath, 'partial-only.txt')));
 			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
 		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('retires losing recovery candidates so a failed cleanup cannot resurrect them', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-retire-losers-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const stagingDir = path.join(componentsRoot, '.deploy-aside', 'web');
+		const losingAside = path.join(stagingDir, '.in-progress-100-previous');
+		const winningAside = path.join(stagingDir, '.in-progress-200-previous');
+		await fs.mkdir(losingAside, { recursive: true });
+		await fs.writeFile(path.join(losingAside, 'package.json'), '{"name":"web","version":"0.9.0"}\n');
+		await fs.mkdir(winningAside, { recursive: true });
+		await fs.writeFile(path.join(winningAside, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		// Deny the best-effort cleanup permission to empty the losing aside, so it outlives recovery.
+		await fs.chmod(losingAside, 0o500);
+
+		try {
+			assert.strictEqual((await recoverInterruptedComponentExtractions(componentsRoot)).size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await fs.access(losingAside);
+			await fs.access(path.join(stagingDir, '.retired-100-previous'));
+
+			assert.strictEqual((await recoverInterruptedComponentExtractions(componentsRoot)).size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+		} finally {
+			await fs.chmod(losingAside, 0o700).catch(() => {});
 			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
 	});
@@ -222,6 +301,29 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
+	it('recovers a symlinked predecessor after an interrupted deploy', async function () {
+		if (process.platform === 'win32') this.skip();
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-symlink-recovery-'));
+		const previousTarget = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-symlink-target-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(path.dirname(asidePath), { recursive: true });
+		await fs.symlink(previousTarget, asidePath, 'dir');
+		await fs.mkdir(dirPath, { recursive: true });
+		await fs.writeFile(path.join(dirPath, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0, failures.get('web')?.stack);
+			assert.strictEqual((await fs.lstat(dirPath)).isSymbolicLink(), true);
+			assert.strictEqual(await fs.readlink(dirPath), previousTarget);
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(previousTarget, { recursive: true, force: true });
+		}
+	});
+
 	it('defers bulk recovery, then waits for active preparation before recovering the component', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-startup-race-'));
 		const dirPath = path.join(componentsRoot, 'web');
@@ -242,8 +344,8 @@ describe('extractApplication directory swap', () => {
 			await started;
 			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
 			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
-			setTimeout(() => releaseRecovery(), 25);
-			await recoverInterruptedComponentExtraction(componentsRoot, 'web');
+			setTimeout(() => releaseRecovery(), 350);
+			await recoverInterruptedComponentExtraction(componentsRoot, 'web', true, 100);
 			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
 		} finally {
 			releaseRecovery?.();
@@ -252,7 +354,7 @@ describe('extractApplication directory swap', () => {
 		}
 	});
 
-	it('waits for a peer recovery that outlasts the bulk recovery grace period', async function () {
+	it('bounds bulk recovery while a peer recovery remains live', async function () {
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-peer-recovery-'));
 		const dirPath = path.join(componentsRoot, 'web');
 		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
@@ -274,9 +376,20 @@ describe('extractApplication directory swap', () => {
 
 		try {
 			await started;
-			setTimeout(() => releaseRecovery(), 350);
-			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
-			assert.strictEqual(failures.size, 0);
+			let failIfUnbounded;
+			const failures = await Promise.race([
+				recoverInterruptedComponentExtractions(componentsRoot),
+				new Promise((_, reject) => {
+					failIfUnbounded = setTimeout(
+						() => reject(new Error('bulk recovery waited past its bounded lock timeout')),
+						1000
+					);
+				}),
+			]).finally(() => clearTimeout(failIfUnbounded));
+			assert(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
+			releaseRecovery();
+			await recovery;
+			await recoverInterruptedComponentExtraction(componentsRoot, 'web');
 			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
 		} finally {
 			releaseRecovery?.();
@@ -484,6 +597,97 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
 
+	it('makes only the tracked rollback placeholder movable', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-placeholder-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		await fs.mkdir(dirPath, { recursive: true });
+		const placeholder = await fs.lstat(dirPath, { bigint: true });
+
+		try {
+			await fs.chmod(dirPath, 0o000);
+			await makeRollbackPlaceholderMovable(dirPath, { dev: placeholder.dev, ino: placeholder.ino });
+			assert.strictEqual((await fs.lstat(dirPath)).mode & 0o777, 0o700);
+
+			await fs.chmod(dirPath, 0o000);
+			await makeRollbackPlaceholderMovable(dirPath, { dev: placeholder.dev, ino: placeholder.ino + 1n });
+			assert.strictEqual((await fs.lstat(dirPath)).mode & 0o777, 0o000);
+		} finally {
+			await fs.chmod(dirPath, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('adopts an owner-owned rollback placeholder during interrupted recovery', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		this.timeout(15000);
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-placeholder-recovery-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath);
+		await fs.writeFile(path.join(dirPath, 'writer-created'), 'occupied');
+		await fs.chmod(dirPath, 0o100);
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.chmod(dirPath, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('adopts a rollback placeholder interrupted before its restrictive chmod', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		this.timeout(15000);
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-placeholder-chmod-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath, { mode: 0o700 });
+		await fs.writeFile(path.join(dirPath, 'writer-created'), 'occupied');
+		await fs.chmod(dirPath, 0o300);
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.chmod(dirPath, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('adopts a mode-000 directory placeholder left by an interrupted rollback', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
+		this.timeout(15000);
+		// Builds before the placeholder gained its 0o300/0o100 modes left mode-000 directories behind.
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-placeholder-zero-'));
+		const dirPath = path.join(componentsRoot, 'web');
+		const asidePath = path.join(componentsRoot, '.deploy-aside', 'web', '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'package.json'), '{"name":"web","version":"1.0.0"}\n');
+		await fs.mkdir(dirPath, { mode: 0o700 });
+		await fs.writeFile(path.join(dirPath, 'writer-created'), 'occupied');
+		await fs.chmod(dirPath, 0o000);
+
+		try {
+			const failures = await recoverInterruptedComponentExtractions(componentsRoot);
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
+		} finally {
+			await fs.chmod(dirPath, 0o700).catch(() => {});
+			await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
 	it('reclaims a stale aside copy left by an earlier deploy', async function () {
 		this.timeout(20000);
 
@@ -541,16 +745,35 @@ describe('extractApplication directory swap', () => {
 			'wrapper/package.json': '{"name":"web","version":"2.0.0"}\n',
 			'wrapper/index.js': 'module.exports = () => 2;\n',
 		});
-		const app = new Application({
-			name: 'web',
-			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
-		});
+		const archive = await packageDirectory(sourceDir, { skip_node_modules: true });
+		let finishPayload;
+		const payload = Readable.from(
+			(async function* () {
+				yield archive;
+				await new Promise((resolve) => (finishPayload = resolve));
+			})()
+		);
+		const app = new Application({ name: 'web', payload });
 		app.dirPath = dirPath;
 
-		await extractApplication(app);
+		const extraction = extractApplication(app);
+		await waitFor(() =>
+			fs.access(path.join(dirPath, 'wrapper', 'package.json')).then(
+				() => true,
+				() => false
+			)
+		);
+		const liveDirectoryIdentity = await fs.lstat(dirPath, { bigint: true });
+		finishPayload();
+		await extraction;
 
 		assert.strictEqual(JSON.parse(await fs.readFile(path.join(dirPath, 'package.json'), 'utf8')).version, '2.0.0');
 		assert.strictEqual(await fs.readFile(path.join(dirPath, 'index.js'), 'utf8'), 'module.exports = () => 2;\n');
+		if (process.platform === 'win32') {
+			const normalizedDirectoryIdentity = await fs.lstat(dirPath, { bigint: true });
+			assert.strictEqual(normalizedDirectoryIdentity.dev, liveDirectoryIdentity.dev);
+			assert.strictEqual(normalizedDirectoryIdentity.ino, liveDirectoryIdentity.ino);
+		}
 		assert.deepStrictEqual(
 			(await fs.readdir(componentsRoot)).filter((entry) => !entry.startsWith('.')),
 			['web'],
@@ -577,6 +800,7 @@ describe('extractApplication directory swap', () => {
 		assert.strictEqual(app.isNewComponent, true, 'defaults to true before extraction runs');
 		await extractApplication(app);
 		assert.strictEqual(app.isNewComponent, true, 'no prior directory existed, so this is a new component');
+		await assert.rejects(fs.access(path.join(componentsRoot, '.deploy-aside', 'web')));
 
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });
