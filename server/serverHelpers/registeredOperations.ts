@@ -134,7 +134,7 @@ function handleThreadExit(deadThreadId: number) {
 	}
 }
 
-/** Test seam for the cleanup above, which `attachMainListeners` wires to the real thread-exit event. */
+/** `attachMainListeners` wires the same function to the real thread-exit event. */
 export function notifyThreadExitedForTest(deadThreadId: number) {
 	handleThreadExit(deadThreadId);
 }

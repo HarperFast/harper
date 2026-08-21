@@ -298,7 +298,6 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		it('stops being grantable once the last declaring worker is gone, even while another still routes it', function () {
-			// Rolling deploy: the new generation keeps the operation but drops requiresSuperUser.
 			registeredOperations.operationRegisteredHandler({
 				message: { name: ROLLED, grantable: true, originator: DECLARING_THREAD },
 			});
@@ -938,7 +937,15 @@ describe('Test serverUtilities.js module ', () => {
 			// Keep the process-global registries clean — these test-only ops shouldn't leak into other
 			// suites. registerOperation touches three globals (the op-function map plus verifyPerms'
 			// requiredPermissions and the grantable-ops set), so undo all three, not just the map.
-			for (const op of [SU_OP, OPEN_OP, 'test_name_pinning_op', 'shared_op_a', 'shared_op_b', 'dyn_grantable_op']) {
+			for (const op of [
+				SU_OP,
+				OPEN_OP,
+				'test_name_pinning_op',
+				'shared_op_a',
+				'shared_op_b',
+				'dyn_grantable_op',
+				'test_redeclared_op',
+			]) {
 				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
 				op_auth.unregisterOperationPermission(op);
 			}
@@ -971,6 +978,50 @@ describe('Test serverUtilities.js module ', () => {
 			assert.notEqual(validateOperations(['dyn_grantable_op']), null); // unknown name before registration
 			server.registerOperation({ name: 'dyn_grantable_op', execute: async () => ({}), requiresSuperUser: true });
 			assert.equal(validateOperations(['dyn_grantable_op']), null); // grantable after registration
+		});
+
+		it('retracts the permission entry when a re-registration drops requiresSuperUser', function () {
+			// Declaration and enforcement must not disagree: main retracts the grantable mark on the
+			// re-announcement, so a role grant persisted while the op was declared must stop being
+			// honoured here too. Named after the op so verifyPerms resolves the stale entry if it
+			// survives — an anonymous handler would mask the bug rather than test it.
+			const op = 'test_redeclared_op';
+			// eslint-disable-next-line func-names
+			const named = {
+				[op]: async function () {
+					return {};
+				},
+			}[op];
+			server.registerOperation({ name: op, execute: named, requiresSuperUser: true });
+			assert.equal(validateOperations([op]), null, 'grantable while declared');
+			assert.equal(op_auth.verifyPerms(nonSuRequest(op, [op]), op), null, 'granted role may call it');
+
+			server.registerOperation({ name: op, execute: named });
+
+			assert.notEqual(validateOperations([op]), null, 'no longer grantable once undeclared');
+			let threw;
+			try {
+				op_auth.verifyPerms(nonSuRequest(op, [op]), op);
+			} catch (err) {
+				threw = err;
+			}
+			assert.ok(threw, 'a persisted grant must not survive the declaration being dropped');
+			assert.equal(threw.statusCode, 400);
+		});
+
+		it('does not strip a permission entry this API never registered', function () {
+			// Ownership protection, exercised against an independent registrant rather than a real
+			// built-in so the assertion does not depend on mutating shared dispatch state.
+			const op = 'test_independent_registrant_op';
+			op_auth.registerOperationPermission(op, { requiresSu: true });
+			try {
+				server.registerOperation({ name: op, execute: async () => ({}) });
+				assert.equal(validateOperations([op]), null, 'an entry this API did not create must survive');
+				assert.ok(op_auth.verifyPerms(nonSuRequest(op), op), 'and must still gate a non-super_user');
+			} finally {
+				op_auth.unregisterOperationPermission(op);
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+			}
 		});
 
 		it('does not touch handler name or register perms when requiresSuperUser is omitted (opt-in)', function () {
