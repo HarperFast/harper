@@ -41,6 +41,7 @@ describe('copy-db integrity (harper#2048)', () => {
 	let ShortAttributes;
 	let Wide;
 	let deleted_fresh_id;
+	let deleted_backdated_id;
 	let open_copies = [];
 
 	// Short attribute names keep the shared-structures dictionary small (9 bytes for this shape), the
@@ -104,6 +105,20 @@ describe('copy-db integrity (harper#2048)', () => {
 		deleted_fresh_id = 'dup0';
 		await Wide.delete(deleted_fresh_id);
 
+		// A replicated delete can arrive now with an origin version older than retention. LMDB's local
+		// timestamp, not that origin version, determines when its audit entry and tombstone may expire.
+		deleted_backdated_id = 'backdated-delete';
+		const backdated_version = Date.now() - audit_retention_before - 10_000;
+		await Wide.put(
+			deleted_backdated_id,
+			{
+				groupingAttributeName: 'sharedIndexedValue',
+				uniqueAttributeName: 'backdated-delete',
+			},
+			{ timestamp: backdated_version - 1 }
+		);
+		await Wide.delete(deleted_backdated_id, { timestamp: backdated_version });
+
 		blob_root = getBlobPathsForDatabaseName(DATABASE)[0];
 	});
 
@@ -128,6 +143,7 @@ describe('copy-db integrity (harper#2048)', () => {
 		env_mgr.setProperty('storage_path', storage_path_before);
 		env_mgr.setProperty('rootPath', root_path_before);
 		env_mgr.setHdbBasePath(base_path_before);
+		resetDatabases();
 	});
 
 	/**
@@ -175,6 +191,18 @@ describe('copy-db integrity (harper#2048)', () => {
 		assert.ok(entry, 'the delete tombstone should be copied while it is inside audit retention');
 		assert.strictEqual(entry.value, null, 'a tombstone is a null value with a version');
 		assert.ok(entry.version > 0, 'the tombstone keeps its version');
+	});
+
+	it('keeps a freshly applied tombstone whose origin version predates retention', async () => {
+		const cutoff = Date.now() - audit_store.auditRetention;
+		const source_entry = Wide.primaryStore.getEntry(deleted_backdated_id);
+		assert.ok(source_entry.version < cutoff, 'premise: the replicated origin version is already past retention');
+		assert.ok(source_entry.localTime > cutoff, 'premise: the tombstone was applied locally inside retention');
+
+		const copy = await copyForInspection('backdated-tombstone');
+		const copied_entry = copy.primary(Wide.primaryStore).getEntry(deleted_backdated_id);
+		assert.ok(copied_entry, 'the locally fresh tombstone should survive the copy');
+		assert.strictEqual(copied_entry.value, null, 'the copied entry remains a tombstone');
 	});
 
 	it('drops a tombstone that is past the audit-retention window', async () => {

@@ -6,7 +6,7 @@ import {
 	toRocksCompression,
 } from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
-import { isAbsolute, join, relative } from 'path';
+import { isAbsolute, join, relative } from 'node:path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rename, writeFile } from 'node:fs/promises';
@@ -385,18 +385,19 @@ async function copyDbEnvironment(
 		}
 
 		/**
-		 * Whether a stored value is a delete tombstone, decided by decoding it with the live table's
+		 * Return a delete tombstone's local retention timestamp, decided by decoding it with the live table's
 		 * record decoder. Length cannot decide it — a small shared-structures dictionary and a small
 		 * record both land in a tombstone's usual size range — and `decode` returning null is not
 		 * sufficient either, since it also returns null for a record whose shared structure is missing
 		 * on this node. Only a metadata-bearing decode proves a tombstone; anything unprovable is kept.
 		 */
-		function isDeletedRecord(value, primaryStore) {
-			if (!primaryStore?.decoder) return false;
+		function getDeletedRecordTime(value, primaryStore, version) {
+			if (!primaryStore?.decoder) return;
 			try {
-				return primaryStore.decoder.decode(value) === null && lastMetadata?.value === null;
+				if (primaryStore.decoder.decode(value) === null && lastMetadata?.value === null)
+					return lastMetadata.localTime ?? version;
 			} catch {
-				return false;
+				return;
 			}
 		}
 
@@ -421,13 +422,11 @@ async function copyDbEnvironment(
 							// removes it too: dropping a live one loses the delete, letting a peer that
 							// missed it resurrect the record. A tombstone's body is a lone msgpack nil, so
 							// the trailing byte keeps the decode off every other record.
-							if (
-								isPrimary &&
-								typeof key !== 'symbol' &&
-								value?.[value.length - 1] === MSGPACK_NIL &&
-								version < tombstoneCutoff &&
-								isDeletedRecord(value, primaryStore)
-							) {
+							const deletedRecordTime =
+								isPrimary && typeof key !== 'symbol' && value?.[value.length - 1] === MSGPACK_NIL
+									? getDeletedRecordTime(value, primaryStore, version)
+									: undefined;
+							if (deletedRecordTime != null && deletedRecordTime < tombstoneCutoff) {
 								skippedRecord++;
 								continue;
 							}
@@ -463,15 +462,6 @@ async function copyDbEnvironment(
 						}
 					}
 					completed = true;
-					console.log(
-						'finish copying, copied',
-						recordsCopied,
-						'entries, skipped',
-						skippedRecord,
-						'delete records,',
-						bytesCopied,
-						'bytes'
-					);
 				} catch (error) {
 					// Resume from the last key read, never past it: re-copying that key is idempotent (an
 					// identical put, and an identical dupSort pair, is a no-op) while advancing the key
@@ -492,13 +482,22 @@ async function copyDbEnvironment(
 				throw new Error(
 					`Copy of ${sourceDatabase} to ${targetDatabasePath} failed on ${failedRecords} entry/entries after copying ${recordsCopied}`
 				);
+			console.log(
+				'finish copying, copied',
+				recordsCopied,
+				'entries, skipped',
+				skippedRecord,
+				'delete records,',
+				bytesCopied,
+				'bytes'
+			);
 		}
 
 		await written;
 		console.log('copied database ' + sourceDatabase + ' to ' + targetDatabasePath);
 	} finally {
 		transaction.done();
-		targetEnv.close();
+		await targetEnv.close();
 	}
 }
 
