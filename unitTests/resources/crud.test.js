@@ -210,7 +210,7 @@ describe('CRUD operations with the Resource API', () => {
 				id: 'pubsub',
 				name: 'A published message',
 			});
-			await waitFor(() => messages.length === 1);
+			await waitFor(() => messages.length >= 1);
 			assert.equal(messages.length, 1);
 			const observedPublishMeans = new Set();
 			const observedMessageMeans = new Set();
