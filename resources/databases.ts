@@ -1810,11 +1810,14 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// from a mid-create or stale snapshot of the remote table, so it is additive-only: keep
 				// every locally-declared attribute and add any the peer has that we don't. Only local
 				// schema authoring (create_table, @table, defineTable) may remove or redefine attributes.
-				// Without this, a partial peer snapshot racing a local create_table permanently destroyed
-				// the locally-declared attributes it omitted (search then failed with "unknown attribute").
 				const merged = Table.attributes.slice();
 				for (const attribute of attributes) {
-					if (!merged.some((existing) => existing.name === attribute.name)) merged.push(attribute);
+					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
+					if (!existing) merged.push(attribute);
+					else if (attribute.type && existing.type && existing.type !== attribute.type)
+						logger.warn(
+							`Ignoring peer redefinition of ${databaseName}.${tableName}.${attribute.name} (local type '${existing.type}', peer type '${attribute.type}'); the local schema is authoritative`
+						);
 				}
 				attributes = merged;
 			}
@@ -1979,10 +1982,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
-		// Reconciling away catalog entries absent from `attributes` is reserved for local schema
-		// authoring. A cluster-origin caller works from a merged copy of this worker's (eventually
-		// consistent) attribute list, which can miss a descriptor another thread committed moments
-		// ago — removal here would permanently destroy that just-declared attribute (and its index).
+		// Removal reconciliation is reserved for local schema authoring: a cluster-origin caller's
+		// list can miss a descriptor another thread committed moments ago, and removing it here
+		// would permanently destroy that just-declared attribute (and its index).
 		const reconcileRemovals = origin !== 'cluster';
 		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
 			if (value == null) continue;
@@ -2021,8 +2023,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
-				// but other workers' next disk-load re-reads the stale value.
-				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
+				// but other workers' next disk-load re-reads the stale value. Cluster-origin callers are
+				// excluded here too — otherwise a peer's flag would land in the durable descriptor and
+				// override the local declaration on the next reload.
+				const schemaDefinedMismatch =
+					schemaDefinedExplicit && origin !== 'cluster' && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
 					schemaDefinedMismatch ||
