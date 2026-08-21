@@ -29,7 +29,7 @@ describe('update-attributes exclusive lock', () => {
 
 	it('acquires immediately when uncontended and releases on completion', () => {
 		const result = withUpdateAttributesLock(rootStore, `table '${TEST_DB}.Uncontended'`, () => 42);
-		assert.equal(result, 42);
+		assert.strictEqual(result, 42);
 		assert.ok(rootStore.tryLock(LOCK_KEY), 'lock should be free after the callback completed');
 		rootStore.unlock(LOCK_KEY);
 	});
