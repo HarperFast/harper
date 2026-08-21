@@ -3,14 +3,7 @@ import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transa
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
-
-// Parked in a VerificationTable slot to mark a key unvouchable, since the VT has no invalidate call.
-// It doubles as the cross-worker signal that a key's version identifies more than one stored value:
-// once any worker has parked it, no other worker's read asks the native get to publish that version.
-// A timestamp ~285,000 years out — improbable rather than impossible, as write timestamps are
-// caller-supplied, so a record read back at exactly this version is never cached either.
-const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
+import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, VERSION_UNVOUCHABLE, type Entry } from './RecordEncoder.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -128,6 +121,16 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	 */
 	getEntry(id: any, options?: any): any {
 		this.readCount++;
+		// A commit-path base read must reflect the caller's transaction snapshot. The cache-vouch
+		// fast path answers a different question — "is this worker's cached value the latest
+		// committed?" — and answers even that wrongly for a version a resequenced write reused
+		// (one version, two stored values), so a fold on a vouched base can silently drop the
+		// concurrent update it folded over. Read the store directly and leave the cache and the
+		// VerificationTable untouched (their latest-committed semantics don't fit a snapshot read).
+		if (options?.uncachedRead) {
+			const raw = options.async ? super.get(id, options) : super.getSync(id, options);
+			return when(raw, (result) => this.#processEntry(result, id));
+		}
 		const cache = this.#cache;
 		// The cache stores the record *value* (weakly, via setValue) rather than
 		// the Entry: a WeakRef-wrapped value lets the LRFU expirer release it once
@@ -141,24 +144,28 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				? (entryMap.get(cachedValue) as Entry | undefined)
 				: undefined;
 		const expectedVersion = cached?.version;
-		// The native get publishes the version it read into the slot, so a key whose version must not be
-		// vouched for has to be recognised BEFORE the read; withdrawing afterwards leaves it published
-		// in between. The parked sentinel is what makes that recognisable across workers. Asked only on
-		// the path that is about to request publication, and which is paying for a store read anyway; a
-		// read that has a cached version skips the check and can publish once per worker per flag,
-		// since the read that finds the flag drops its cached value and so takes this path next time.
-		const unvouchable = cache !== undefined && expectedVersion == null && this.verifyVersion(id, VERSION_UNVOUCHABLE);
+		// The parked sentinel is the cross-worker "this key's version must not be vouched for" signal,
+		// and it has to be consulted BEFORE the native get on BOTH the cold and the warm path. Cold,
+		// because the native get would otherwise seed the slot with the version it reads. Warm, because
+		// on a VT miss the native layer re-confirms freshness against the version stored in the record
+		// itself ("soft miss") and republishes it — for a record whose stored version was reused, that
+		// re-vouches a version two different values share, and overwrites the sentinel, so a worker
+		// still holding the pre-merge value would keep being told it is fresh indefinitely.
+		const unvouchable = cache !== undefined && this.verifyVersion(id, VERSION_UNVOUCHABLE);
 
 		// Build get options, always merging with caller options to preserve
 		// transaction snapshot. Pass expectedVersion when cached:
 		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
-		// native layer seeds the VT slot in the same call — unless the slot says unvouchable.
+		// native layer seeds the VT slot in the same call.
+		// An unvouchable key takes a plain decoding read: no version trust, no VT seeding.
 		let getOptions: any;
-		if (expectedVersion != null) {
+		if (unvouchable) {
+			getOptions = options;
+		} else if (expectedVersion != null) {
 			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
-		} else if (cache && !unvouchable) {
+		} else if (cache) {
 			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
 		} else {
 			getOptions = options;
@@ -187,6 +194,12 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 						}
 					}
 					if (cachedValue !== undefined) cache.delete(id);
+				} else if (unvouchable) {
+					// Clean record under a parked sentinel (a post-commit park raced a newer in-order
+					// write): stay uncached — restoring the real version from JS would be an unguarded
+					// force-set that can overwrite a concurrent write's slot state. The next write to the
+					// key clears the sentinel through its own write cycle and vouching resumes.
+					if (cachedValue !== undefined) cache.delete(id);
 				} else if (entry.value != null && typeof entry.value === 'object') {
 					// Only object values can be weakly cached and mapped back to their Entry;
 					// primitive/empty values fall through uncached (no fast path, still correct).
@@ -196,6 +209,20 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			}
 			return entry;
 		});
+	}
+
+	/**
+	 * Park the unvouchable sentinel for a key whose stored version no longer identifies a single
+	 * value (see VERSION_REUSED). Called by the transaction's commit success path — the writer is
+	 * the only party that knows before any reader decodes the record. A slot that cannot take it
+	 * (a newer write's intent holds it) is left alone: that write's cycle supersedes it anyway.
+	 */
+	parkUnvouchable(id: any): void {
+		try {
+			this.populateVersion(id, VERSION_UNVOUCHABLE);
+		} catch {
+			/* a reader that decodes the flagged record re-parks; never fail a completed commit */
+		}
 	}
 
 	getSync(id: any, options?: any): any {

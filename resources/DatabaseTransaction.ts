@@ -349,6 +349,10 @@ export type TransactionWrite = {
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
+	// this round stored its record under a version it reused rather than advanced (a resequenced
+	// out-of-order fold); the commit success path parks the unvouchable sentinel for the key. Reset
+	// per commit-handler round, like stagedEntry.
+	storedReusedVersion?: boolean;
 };
 
 /**
@@ -713,6 +717,24 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
+	 * After a successful commit, park the unvouchable sentinel for every key this batch stored
+	 * under a reused version (see VERSION_REUSED): from this moment the key's version identifies
+	 * two stored values, and a worker still holding the pre-merge one must not be told it is
+	 * fresh. The writer parks it — a reader-side park leaves a window in which the native layer
+	 * re-confirms the reused version off the stored record and republishes it, and with every
+	 * worker holding a warm cache no reader ever decodes the record to discover the flag. A slot
+	 * that cannot take the sentinel (a newer write's intent holds it) is left alone: that write's
+	 * own cycle supersedes the sentinel either way.
+	 */
+	private parkReusedVersionSentinels(): void {
+		for (const write of this.writes) {
+			if (write?.storedReusedVersion && !write.skipped && typeof write.store.parkUnvouchable === 'function') {
+				write.store.parkUnvouchable(write.key);
+			}
+		}
+	}
+
+	/**
 	 * Drop this transaction's back-reference from its context once completed (commit or abort),
 	 * so a long-lived context (e.g. an MQTT subscription context held open for the life of a
 	 * suspended delivery loop) doesn't keep pinning a finished transaction in memory. Guarded by
@@ -912,8 +934,14 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
-		if (reloadEntry || operation.entry === undefined) {
-			operation.entry = operation.store.getEntry(operation.key, { transaction });
+		// An incremental (non-full) update stores a record derived from its base — CRDT folds and
+		// unmentioned fields both come from it — so the base must be what this transaction's
+		// snapshot holds, not a value the resource phase read through the cross-worker cache
+		// vouch (which can be stale when a resequenced write reused a version). Reload it here,
+		// and on every retry round, with uncachedRead so the vouch is never consulted; a write
+		// that lands between this snapshot and commit still surfaces as a conflict and retries.
+		if (reloadEntry || operation.entry === undefined || (operation.fullUpdate === false && !operation.saved)) {
+			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead: true });
 		}
 		if (!operation.saved) {
 			operation.saved = true;
@@ -1182,6 +1210,7 @@ export class DatabaseTransaction implements Transaction {
 								if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
+							this.parkReusedVersionSentinels();
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
@@ -1316,6 +1345,7 @@ export class DatabaseTransaction implements Transaction {
 					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
+				this.parkReusedVersionSentinels();
 				this.clearWrites();
 				if (options.doneWriting) this.endScopeOwnership();
 				this.releaseContext(!!options.doneWriting);

@@ -130,6 +130,12 @@ export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
 // above every bit the audit extendedType uses (auditStore.ts), which the record metadata word borrows
 // from for HAS_BLOBS/LOCAL_ONLY.
 export const VERSION_REUSED = 0x10000;
+// Parked in a VerificationTable slot to mark a key unvouchable, since the VT has no invalidate call.
+// It doubles as the cross-worker signal that a key's version identifies more than one stored value:
+// once any worker has parked it, no other worker's read trusts or republishes that version. A
+// timestamp ~285,000 years out — improbable rather than impossible, as write timestamps are
+// caller-supplied, so a record read back at exactly this version is never cached either.
+export const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
 
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.

@@ -141,6 +141,13 @@ describe('PrimaryRocksDatabase', function () {
 		// An out-of-order write merges onto the newer record and is stored under its version, so two
 		// different stored values share that version.
 		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		// The WRITE parks the sentinel, before any read decodes the record: a reader-side park leaves
+		// a window in which a worker holding the pre-merge value keeps being confirmed fresh off the
+		// stored record's (reused) version, and with every worker warm no reader ever decodes at all.
+		assert(
+			TestTable.primaryStore.verifyVersion(9, Number.MAX_SAFE_INTEGER),
+			'the resequenced write itself must park the unvouchable sentinel'
+		);
 		const resequenced = TestTable.primaryStore.getEntry(9);
 		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
 		assert.equal(resequenced.value.count, 2, 'both increments are applied');
@@ -158,6 +165,22 @@ describe('PrimaryRocksDatabase', function () {
 			TestTable.primaryStore.verifyVersion(9, Number.MAX_SAFE_INTEGER),
 			'reading a resequenced record must leave the slot parked as unvouchable'
 		);
+	});
+
+	it('an uncachedRead bypasses the cache vouch and returns the stored record', async function () {
+		const store = TestTable.primaryStore;
+		await TestTable.put(12, { name: 'stored', count: 5 });
+		await TestTable.get(12); // warm the cache and seed the VT slot
+		const cached = store.getEntry(12);
+		assert(store.verifyVersion(12, cached.version), 'VT vouches for the in-order version');
+
+		// A commit-path base read must come from the store (through the caller's transaction
+		// snapshot), never from the vouch fast path — the vouch answers "latest committed", which
+		// is the wrong question for a snapshot read and wrong outright for a reused version.
+		const direct = store.getEntry(12, { uncachedRead: true });
+		assert.equal(direct.value.name, 'stored');
+		assert.equal(direct.value.count, 5);
+		assert.equal(direct.version, cached.version, 'the decoded entry carries the stored version');
 	});
 
 	it('an in-order write after a resequenced one restores vouching', async function () {

@@ -2592,6 +2592,7 @@ export function makeTable(options) {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
+					write.storedReusedVersion = false; // likewise: only the round that commits decides it
 					// The record a preceding write in this transaction left for this key is what this write
 					// applies to (see priorStagedWrite): a staged write is not visible to a read, so without
 					// this the index diff re-removes the values that write already removed and never removes
@@ -3126,6 +3127,13 @@ export function makeTable(options) {
 						}
 					}
 					function writeCommit(storeRecord: boolean) {
+						// A stored record whose version does not advance past the one it replaces (a resequenced
+						// out-of-order fold) leaves two different values identified by one version. Mark the
+						// write so the transaction's success path parks the unvouchable sentinel for the key —
+						// the writer is the only party that knows before any reader does, and parking cannot
+						// happen earlier because the VT slot holds this write's own intent until commit.
+						if (storeRecord && isRocksDB && existingEntry?.version != null && txnTime <= existingEntry.version)
+							write.storedReusedVersion = true;
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
