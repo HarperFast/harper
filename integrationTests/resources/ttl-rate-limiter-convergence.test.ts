@@ -1,15 +1,8 @@
 /**
- * QA-431 companion — convergence classification for the multi-worker counter stress.
- *
- * Amplifies ttl-rate-limiter-concurrent.test.ts subtest (5) (same fixture: 500ms-TTL counter,
- * 4 workers) and adds the two ingredients that made the lost-count defect reproducible: GET
- * pressure DURING each burst (cold reads re-seed the VerificationTable, which is what let a
- * stale cached value be vouched for after a resequenced merge reused a version), and, for any
- * window that reads back short, polling within the TTL window to classify the anomaly:
- *   CONVERGED_LATE — reached acked on a later read: the first read raced still-landing merges.
- *   STUCK_SHORT    — never reached acked before expiry: a durably lost increment (DEFECT).
- * Under 4-CPU-constrained runners the unfixed defect produced 3-15 STUCK_SHORT windows per 900;
- * see the fix PR for the full mechanism (VERSION_REUSED / unvouchable sentinel / uncachedRead).
+ * QA-431 companion — same fixture as ttl-rate-limiter-concurrent.test.ts, with the two
+ * ingredients that make version-reuse cache staleness reproducible: GET pressure DURING each
+ * burst (cold reads re-seed the VerificationTable), and per-window convergence classification —
+ * CONVERGED_LATE (a read raced still-landing merges) vs STUCK_SHORT (a durably lost increment).
  */
 
 import { suite, test, before, after } from 'node:test';
@@ -134,6 +127,11 @@ suite(
 				);
 
 				for (const { id, acked } of perWindow) {
+					// a window whose burst was wholly rejected measures nothing
+					if (acked === 0) {
+						inconclusive++;
+						continue;
+					}
 					const first = await getHits(id);
 					if (first.status !== 200) {
 						inconclusive++;
