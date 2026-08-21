@@ -1495,6 +1495,42 @@ describe('two-phase component directory transaction', function () {
 		}
 	});
 
+	it('settles a crash-stranded in-flight row so its payload stops being retained', async () => {
+		// A node killed mid-stage leaves a `pending`/`staging` row. Reconciliation removes its staging
+		// directory, but payload retention only reclaims rows that reached a terminal status — so leaving
+		// the row in flight pins its tarball on the origin and every peer indefinitely.
+		const name = fixtureName();
+		const strandedId = randomUUID();
+		const terminalId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('stranded') });
+		await stageApplication(application, strandedId);
+		application.payload = await makeComponentPayload('terminal');
+		await stageApplication(application, terminalId);
+		const rows = new Map([
+			[strandedId, { deployment_id: strandedId, project: name, status: 'staging' }],
+			// An already-terminal row is swept the same way but must NOT be re-settled: patching it would
+			// rewrite a successful deploy's status to failed.
+			[terminalId, { deployment_id: terminalId, project: name, status: 'success' }],
+		]);
+
+		const settled = [];
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => rows.get(id),
+			async () => {},
+			async (id, reason) => settled.push([id, reason])
+		);
+
+		assert.deepEqual(
+			settled,
+			[[strandedId, 'the deploy did not survive a restart']],
+			'only the in-flight row is settled, and with a reason naming the crash'
+		);
+		assert.equal(reconciliation.removed.includes(strandedId), true, 'its staging residue is removed');
+		assert.equal(reconciliation.removed.includes(terminalId), true, "and so is the terminal row's");
+		await cleanup(name);
+	});
+
 	it('waits for the component lock before restoring an activation backup over the live path', async () => {
 		// The sweep renames a backup back over the live path. Run unlocked, a reload-cycle retry could do
 		// that inside an activation's swap window — live momentarily absent, backup present — after which

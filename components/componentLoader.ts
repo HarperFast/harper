@@ -209,8 +209,8 @@ export async function loadComponentDirectories(
 	}
 	if (isMainThread && !stagedArtifactsReconciled) {
 		try {
-			const settleDiscardedDeployment = async (deploymentId: string) => {
-				await markDeploymentTerminal(deploymentId, 'failed', new Error('staged component tree was not recoverable'));
+			const settleDiscardedDeployment = async (deploymentId: string, reason: string) => {
+				await markDeploymentTerminal(deploymentId, 'failed', new Error(reason));
 			};
 			const reconciliation = await reconcileStagedApplicationArtifacts(
 				CF_ROUTES_DIR,

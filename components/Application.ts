@@ -3121,7 +3121,7 @@ export async function reconcileStagedApplicationArtifacts(
 	componentsRootDirPath: string,
 	getDeployment: DeploymentLookup,
 	persistActivation: (row: Record<string, any>) => Promise<void>,
-	settleStagedDeployment?: (deploymentId: string) => Promise<void>
+	settleStagedDeployment?: (deploymentId: string, reason: string) => Promise<void>
 ): Promise<{
 	recovered: string[];
 	removed: string[];
@@ -3168,7 +3168,14 @@ export async function reconcileStagedApplicationArtifacts(
 				await withComponentPreparationLock(componentDirPath, async () => {
 					row = await getDeployment(entry.name);
 					shouldRemove = !row || !safeComponentName(row.project) || !['staged', 'activating'].includes(row.status);
-					if (shouldRemove) await rm(deploymentPath, { recursive: true, force: true });
+					if (!shouldRemove) return;
+					// A row still `pending`/`staging` once its staging directory is going away cannot make
+					// progress — the process that owned it is gone. Payload retention only reclaims rows that
+					// reached a terminal status, so leaving it in flight pins its tarball on every node forever.
+					if (row?.status === 'pending' || row?.status === 'staging') {
+						await settleStagedDeployment?.(entry.name, 'the deploy did not survive a restart');
+					}
+					await rm(deploymentPath, { recursive: true, force: true });
 				});
 				if (shouldRemove) {
 					removed.push(entry.name);
@@ -3190,7 +3197,7 @@ export async function reconcileStagedApplicationArtifacts(
 							`Discarding staged deployment '${entry.name}' for '${row.project}': no valid component tree. ` +
 								`The live component is unaffected.`
 						);
-						await settleStagedDeployment?.(entry.name);
+						await settleStagedDeployment?.(entry.name, 'its staged component tree was incomplete');
 						await rm(deploymentPath, { recursive: true, force: true });
 						discarded = true;
 					});
