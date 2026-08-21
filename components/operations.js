@@ -445,6 +445,7 @@ async function packageComponent(req) {
  * @returns {Promise<object>}
  */
 async function deployComponent(req) {
+	normalizeRequestBooleans(req);
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	} else if (req.package) {
@@ -693,6 +694,18 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 		return response;
 	} catch (err) {
 		throw await finalizeDeployFailure({ err, recorder, installCapture, emit });
+	}
+}
+
+const REQUEST_BOOLEAN_FIELDS = ['activate', 'two_phase', 'ignore_replication_errors', 'force', 'restart'];
+
+function normalizeRequestBooleans(req) {
+	for (const field of REQUEST_BOOLEAN_FIELDS) {
+		const value = req[field];
+		if (typeof value !== 'string') continue;
+		const lowered = value.trim().toLowerCase();
+		if (lowered === 'true') req[field] = true;
+		else if (lowered === 'false') req[field] = false;
 	}
 }
 
@@ -1222,6 +1235,7 @@ function isTrustedReplicatedOperation(req) {
  * the restored directory on the next cold start — undoing the rollback.
  */
 async function revertComponent(req) {
+	normalizeRequestBooleans(req);
 	if (req.project) req.project = path.parse(req.project).name;
 	const validation = validator.revertComponentValidator(req);
 	if (validation) throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);

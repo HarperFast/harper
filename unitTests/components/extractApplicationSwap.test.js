@@ -872,4 +872,21 @@ describe('extractApplication directory swap', () => {
 		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		await fs.rm(sourceDir, { recursive: true, force: true });
 	});
+
+	// componentLoader fails startup closed when this scan rejects, so the two outcomes have to stay
+	// distinguishable: an absent staging root is a fresh install with no work, while an unreadable one
+	// means some component may hold a half-extracted tree we could not see.
+	it('resolves empty when the staging root is absent but rejects when it is unreadable', async () => {
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'extract-swap-scan-'));
+
+		assert.strictEqual((await recoverInterruptedComponentExtractions(componentsRoot)).size, 0);
+
+		await fs.writeFile(path.join(componentsRoot, '.deploy-aside'), 'not a directory\n');
+		await assert.rejects(
+			() => recoverInterruptedComponentExtractions(componentsRoot),
+			/staging path is not a directory/
+		);
+
+		await fs.rm(componentsRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+	});
 });

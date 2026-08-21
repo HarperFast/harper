@@ -172,15 +172,19 @@ export async function loadComponentDirectories(
 	// decides whether to roll an activation forward. The three passes read disjoint directories
 	// (`.deploy-aside`, `.deploy-previous`, `.deploy-staging`/`.deploy-activating`), so none can claim
 	// another's artifacts — see DESIGN.md, "One contract on .deploy-aside".
-	let failedRecoveries = new Map<string, Error>();
+	let failedRecoveries: Map<string, Error>;
 	try {
 		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
 	} catch (error) {
-		const recoveryError = error instanceof Error ? error : new Error(String(error));
-		harperLogger.warn(
-			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
-			errorForLog(recoveryError)
+		// The scan itself failed, so we cannot tell WHICH components are mid-extraction and cannot fail just
+		// those closed. A missing staging root is not this case — it returns no work — so reaching here means
+		// the root is unreadable or is not a directory, and any component may hold a half-extracted tree
+		// whose rollback record we could not read. Abort startup, the same way both scans below do.
+		harperLogger.error(
+			'Could not inspect component deploy staging for interrupted extractions:',
+			errorForLog(error as Error)
 		);
+		throw error;
 	}
 	if (isMainThread) {
 		// A revert that died between its renames can leave a component with no live directory at all, with
@@ -192,10 +196,15 @@ export async function loadComponentDirectories(
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
 			}
 		} catch (error) {
+			// The scan itself failed, so we cannot tell WHICH components are mid-revert and cannot fail just
+			// those closed. An interrupted revert can have the reverted-to bytes live with config not yet
+			// committed, so loading everything over unreconciled state is not sound — abort startup instead,
+			// the same way an unreadable staged-artifact scan does below.
 			harperLogger.error(
 				'Could not inspect retained component versions for interrupted reverts:',
 				errorForLog(error as Error)
 			);
+			throw error;
 		}
 	}
 	if (isMainThread && !stagedArtifactsReconciled) {

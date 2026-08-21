@@ -3210,8 +3210,11 @@ export async function reconcileStagedApplicationArtifacts(
 		} catch (error) {
 			const reconcileError = error instanceof Error ? error : new Error(String(error));
 			errors.set(entry.name, reconcileError);
-			// Fail the component closed ONLY for an interrupted activation, where the live tree and its
-			// durable configuration can disagree. A staged-candidate failure leaves live state consistent.
+			// Fail the component closed for an interrupted activation, where the live tree and its durable
+			// configuration can disagree. A confirmed `staged` failure leaves live state consistent, so it
+			// does not. When the lookup itself failed there is no project name to attribute to — but nothing
+			// destructive has run for this entry either, and a non-empty `errors` keeps the reconcile guard
+			// unset so the next reload cycle retries.
 			if (row?.status === 'activating' && safeComponentName(row?.project)) {
 				failedProjects.set(row.project, reconcileError);
 			}
@@ -3233,7 +3236,16 @@ export async function reconcileStagedApplicationArtifacts(
 					await rm(artifactPath, { recursive: true, force: true });
 					continue;
 				}
-				const row = await getDeployment(deploymentId).catch(() => undefined);
+				let row: Record<string, any> | undefined;
+				try {
+					row = await getDeployment(deploymentId);
+				} catch (lookupError) {
+					// Cannot tell absent from unreadable, so destroy nothing and fail the component closed.
+					const reconcileError = lookupError instanceof Error ? lookupError : new Error(String(lookupError));
+					errors.set(deploymentId, reconcileError);
+					failedProjects.set(projectEntry.name, reconcileError);
+					continue;
+				}
 				const livePath = join(componentsRootDirPath, projectEntry.name);
 				const liveStat = await lstat(livePath).catch(() => undefined);
 				if (row?.status === 'activating' && row.project === projectEntry.name && liveStat?.isDirectory()) {
@@ -3380,6 +3392,27 @@ export async function installApplications() {
 // in-memory state rather than a stale snapshot silently clobbering a sibling's just-written change.
 const applicationLockWriteQueues = new Map<string, Promise<void>>();
 
+const PERSISTENT_STATE_LOCK_PURPOSE = 'application-persistent-state';
+
+function persistentStateLockPath(): string {
+	return join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
+}
+
+/**
+ * Serialize a root-config + application-lock read-modify-write across every isolate and process. The
+ * snapshot and both files have to sit inside one critical section: the entries are per-project but the
+ * files are shared, so an unsynchronized read-modify-write drops a sibling project's entry.
+ *
+ * Never call this while already holding it — the file lock is not reentrant. The `*Unlocked` variants
+ * exist for callers that are already inside it.
+ */
+async function withPersistentStateLock<T>(operation: () => Promise<T>): Promise<T> {
+	return withComponentPreparationLock(persistentStateLockPath(), operation, {
+		purpose: PERSISTENT_STATE_LOCK_PURPOSE,
+		timeoutMs: 30_000,
+	});
+}
+
 async function persistApplicationLock(
 	harperApplicationLockPath: string,
 	harperApplicationLock: { applications: Record<string, ApplicationConfig> }
@@ -3427,6 +3460,13 @@ export async function updateApplicationLockEntry(
 	name: string,
 	applicationConfig: ApplicationConfig | undefined
 ): Promise<void> {
+	return withPersistentStateLock(() => updateApplicationLockEntryUnlocked(name, applicationConfig));
+}
+
+async function updateApplicationLockEntryUnlocked(
+	name: string,
+	applicationConfig: ApplicationConfig | undefined
+): Promise<void> {
 	const lockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
 	const previous = applicationLockWriteQueues.get(lockPath) ?? Promise.resolve();
 	const next = previous
@@ -3443,7 +3483,7 @@ export async function updateApplicationLockEntry(
 	await next;
 }
 
-async function getApplicationLockEntry(name: string): Promise<ApplicationConfig | undefined> {
+async function getApplicationLockEntryUnlocked(name: string): Promise<ApplicationConfig | undefined> {
 	const lockPath = join(getConfigValue(CONFIG_PARAMS.ROOTPATH), 'harper-application-lock.json');
 	const previous = applicationLockWriteQueues.get(lockPath) ?? Promise.resolve();
 	let entry: ApplicationConfig | undefined;
@@ -3478,19 +3518,25 @@ export async function createApplicationConfigTransaction(
 	return {
 		async commit() {
 			if (commitStarted) return;
-			previousConfig = readConfigFile()?.[project];
-			previousLockConfig = await getApplicationLockEntry(project);
-			commitStarted = true;
-			if (nextConfig === null) deleteConfigFromFile([project]);
-			else await addConfig(project, nextConfig);
-			await updateApplicationLockEntry(project, nextConfig ?? undefined);
+			// Snapshot and both writes inside one critical section, so a concurrent activation of a different
+			// project cannot land between the read and the write and lose one of the two entries.
+			await withPersistentStateLock(async () => {
+				previousConfig = readConfigFile()?.[project];
+				previousLockConfig = await getApplicationLockEntryUnlocked(project);
+				commitStarted = true;
+				if (nextConfig === null) deleteConfigFromFile([project]);
+				else await addConfig(project, nextConfig);
+				await updateApplicationLockEntryUnlocked(project, nextConfig ?? undefined);
+			});
 		},
 		async rollback() {
 			if (!commitStarted) return;
-			if (previousConfig === undefined) deleteConfigFromFile([project]);
-			else await addConfig(project, previousConfig);
-			await updateApplicationLockEntry(project, previousLockConfig);
-			commitStarted = false;
+			await withPersistentStateLock(async () => {
+				if (previousConfig === undefined) deleteConfigFromFile([project]);
+				else await addConfig(project, previousConfig);
+				await updateApplicationLockEntryUnlocked(project, previousLockConfig);
+				commitStarted = false;
+			});
 		},
 	};
 }

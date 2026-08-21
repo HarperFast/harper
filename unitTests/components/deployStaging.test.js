@@ -36,6 +36,7 @@ const {
 	ASIDE_STAGING_DIR,
 } = require('#src/components/Application');
 const { getConfigPath, readConfigFile } = require('#src/config/configUtils');
+const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const environment = require('#src/utility/environment/environmentManager');
 
@@ -1421,5 +1422,91 @@ describe('two-phase component directory transaction', function () {
 		assert.equal(target.live.deployment_id, first);
 		assert.equal(target.previous.deployment_id, second);
 		await cleanup(name);
+	});
+	it('serializes root-config and application-lock writes on a lock outside this isolate', async () => {
+		// The in-isolate write queue only orders writers within one isolate, but peer phases run in worker
+		// threads and different projects take different component locks — so an unsynchronized
+		// read-modify-write of the shared lock file drops a sibling project's entry. The transaction now
+		// takes a filesystem lock keyed on the lock file itself, which is what makes it cross-isolate.
+		//
+		// Holding that same lock from outside proves the critical section exists: a commit cannot proceed
+		// while it is held. A same-isolate concurrency test could NOT demonstrate this — the in-isolate
+		// queue masks the interleaving, which is exactly why the file lock was needed.
+		const name = fixtureName();
+		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-persist-lock-'));
+		const priorRootEnv = process.env.ROOTPATH;
+		const priorRootConfig = getConfigPath(CONFIG_PARAMS.ROOTPATH);
+		process.env.ROOTPATH = configRoot;
+		environment.setProperty(CONFIG_PARAMS.ROOTPATH, configRoot);
+		await fs.writeFile(path.join(configRoot, 'harper-config.yaml'), `rootPath: ${JSON.stringify(configRoot)}\n`);
+		const lockPath = path.join(configRoot, 'harper-application-lock.json');
+		try {
+			const transaction = await createApplicationConfigTransaction(name, { package: 'example@1.0.0' });
+			let committed = false;
+			let releaseHold;
+			const holdReleased = new Promise((resolve) => (releaseHold = resolve));
+
+			// The holder waits on an external signal, and the commit is started OUTSIDE it. Awaiting the
+			// commit from inside would deadlock: the lock is not reentrant, so the holder could not release
+			// until the commit finished and the commit could not start until the holder released.
+			const holder = withComponentPreparationLock(lockPath, () => holdReleased);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const commitPromise = transaction.commit().then(() => (committed = true));
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			assert.equal(committed, false, 'the commit must wait while the persistent-state lock is held');
+
+			releaseHold();
+			await holder;
+			await commitPromise;
+			assert.equal(committed, true, 'and proceed once it is released');
+			assert.deepEqual(readConfigFile()[name], { package: 'example@1.0.0' });
+			const lock = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+			assert.deepEqual(lock.applications[name], { package: 'example@1.0.0' });
+		} finally {
+			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
+			else process.env.ROOTPATH = priorRootEnv;
+			environment.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootConfig);
+			await fs.rm(configRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a sibling project's application-lock entry across a second project's transaction", async () => {
+		const first = fixtureName();
+		const second = fixtureName();
+		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-persist-sibling-'));
+		const priorRootEnv = process.env.ROOTPATH;
+		const priorRootConfig = getConfigPath(CONFIG_PARAMS.ROOTPATH);
+		process.env.ROOTPATH = configRoot;
+		environment.setProperty(CONFIG_PARAMS.ROOTPATH, configRoot);
+		await fs.writeFile(path.join(configRoot, 'harper-config.yaml'), `rootPath: ${JSON.stringify(configRoot)}\n`);
+		try {
+			const a = await createApplicationConfigTransaction(first, { package: 'a@1.0.0' });
+			const b = await createApplicationConfigTransaction(second, { package: 'b@1.0.0' });
+			await Promise.all([a.commit(), b.commit()]);
+
+			const lock = JSON.parse(await fs.readFile(path.join(configRoot, 'harper-application-lock.json'), 'utf8'));
+			assert.deepEqual(lock.applications[first], { package: 'a@1.0.0' }, 'the first entry survives');
+			assert.deepEqual(lock.applications[second], { package: 'b@1.0.0' }, 'and so does the second');
+		} finally {
+			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
+			else process.env.ROOTPATH = priorRootEnv;
+			environment.setProperty(CONFIG_PARAMS.ROOTPATH, priorRootConfig);
+			await fs.rm(configRoot, { recursive: true, force: true });
+		}
+	});
+
+	// Same contract the extraction scan owes its caller: componentLoader fails startup closed on a
+	// rejection, so an absent retention root (nothing ever retained) must stay distinguishable from one
+	// we could not read, where a component may be mid-revert with no live directory at all.
+	it('resolves empty when the retention root is absent but rejects when it is unreadable', async () => {
+		const scanRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'revert-scan-'));
+		try {
+			assert.equal((await recoverInterruptedReverts(scanRoot)).size, 0);
+
+			await fs.writeFile(path.join(scanRoot, DEPLOY_PREVIOUS_DIR), 'not a directory\n');
+			await assert.rejects(() => recoverInterruptedReverts(scanRoot), { code: 'ENOTDIR' });
+		} finally {
+			await fs.rm(scanRoot, { recursive: true, force: true });
+		}
 	});
 });
