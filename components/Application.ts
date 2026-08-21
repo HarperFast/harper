@@ -2765,8 +2765,12 @@ async function readStagedCompletion(stagingDirPath: string): Promise<{ installat
  * whose targets are relative, or absolute but outside the staging tree (a dependency deliberately
  * linked elsewhere on the machine), are left exactly as they are.
  */
-async function repointStagedDependencyLinks(stagingDirPath: string, futureLiveDirPath: string): Promise<number> {
-	const nodeModulesPath = join(stagingDirPath, 'node_modules');
+async function repointStagedDependencyLinks(
+	treeDirPath: string,
+	futureLiveDirPath: string,
+	currentTargetRootPath: string = treeDirPath
+): Promise<number> {
+	const nodeModulesPath = join(treeDirPath, 'node_modules');
 	// The walk must stay inside the component's own node_modules. `readdir` FOLLOWS symlinks, so a staged
 	// payload shipping `node_modules` (or a `node_modules/@scope`) as a link to somewhere else on the
 	// machine would otherwise have its target's contents enumerated — and a link in there whose target
@@ -2809,7 +2813,7 @@ async function repointStagedDependencyLinks(stagingDirPath: string, futureLiveDi
 		// Belt-and-braces containment: never mutate a path that is not under the real node_modules root.
 		const withinNodeModules = relative(nodeModulesPath, linkPath);
 		if (withinNodeModules.startsWith('..') || isAbsolute(withinNodeModules)) continue;
-		const withinStaging = relative(stagingDirPath, target);
+		const withinStaging = relative(currentTargetRootPath, target);
 		// `..` or an absolute result means the target is outside the staging tree — not ours to touch.
 		if (!withinStaging || withinStaging.startsWith('..') || isAbsolute(withinStaging)) continue;
 		// NOT best-effort. This link is only being touched because activation is about to invalidate its
@@ -2869,6 +2873,7 @@ export async function activateStagedApplication(
 		let backupPath: string | undefined;
 		let newMarkerPath: string | undefined;
 		let swapped = false;
+		let repointedLinks = 0;
 		try {
 			await hooks.beforeSwap?.();
 			const existingArtifacts = await activationArtifacts(application.dirPath, deploymentId);
@@ -2913,10 +2918,10 @@ export async function activateStagedApplication(
 			// dangling; rewriting them to their future live targets now means a failure lands in the catch
 			// below, which restores the previous release rather than leaving a live component that cannot
 			// resolve its dependencies. Done pre-swap for the compensation, not post-swap for convenience.
-			const repointed = await repointStagedDependencyLinks(stagingDirPath, application.dirPath);
-			if (repointed) {
+			repointedLinks = await repointStagedDependencyLinks(stagingDirPath, application.dirPath);
+			if (repointedLinks) {
 				logger.debug?.(
-					`Re-pointed ${repointed} dependency link(s) in ${application.name} from the staging path to the live path`
+					`Re-pointed ${repointedLinks} dependency link(s) in ${application.name} from the staging path to the live path`
 				);
 			}
 			await rename(stagingDirPath, application.dirPath);
@@ -2927,6 +2932,18 @@ export async function activateStagedApplication(
 			if (swapped) {
 				try {
 					await rename(application.dirPath, stagingDirPath);
+				} catch (rollbackError) {
+					rollbackErrors.push(rollbackError);
+				}
+			}
+			if (repointedLinks) {
+				// The candidate is going back to staging, so its links have to point at staging again. Left
+				// aimed at the live path they would resolve against whatever release is live, so a retry of
+				// this same deployment id would validate the staged tree against the wrong bytes.
+				try {
+					// The candidate now sits at the staging path (moved back above, or never swapped), while its
+					// links still point at the live path: walk it there, and aim them back at staging.
+					await repointStagedDependencyLinks(stagingDirPath, stagingDirPath, application.dirPath);
 				} catch (rollbackError) {
 					rollbackErrors.push(rollbackError);
 				}

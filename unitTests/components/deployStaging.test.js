@@ -1242,4 +1242,50 @@ describe('two-phase component directory transaction', function () {
 			environment.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, prior);
 		}
 	});
+	it('leaves a rolled-back candidate re-activatable, with its links aimed at staging again', async () => {
+		// Re-pointing before the swap mutates the staged candidate, so a rollback has to undo it. Left
+		// aimed at the live path the links would resolve against whatever release is live, and a retry of
+		// the same deployment id would validate the staged tree against the wrong bytes.
+		const name = fixtureName();
+		const first = randomUUID();
+		const second = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('live-v1') });
+		await stageApplication(application, first);
+		await activateStagedApplication(application, first, { activationSpec: { package: null } });
+
+		application.payload = await makeComponentPayload('candidate-v2');
+		const stagedPath = await stageApplication(application, second);
+		await fs.mkdir(path.join(stagedPath, 'vendor', 'probe'), { recursive: true });
+		await fs.writeFile(path.join(stagedPath, 'vendor', 'probe', 'index.js'), "module.exports = 'probe';\n");
+		await fs.mkdir(path.join(stagedPath, 'node_modules'), { recursive: true });
+		await fs.symlink(path.join(stagedPath, 'vendor', 'probe'), path.join(stagedPath, 'node_modules', 'probe'), 'dir');
+
+		// Fail after the links were rewritten and the swap landed, so the rollback path runs in full.
+		await assert.rejects(() =>
+			activateStagedApplication(application, second, {
+				activationSpec: { package: null },
+				beforeCommit: async () => {
+					throw new Error('simulated persistent-work failure');
+				},
+			})
+		);
+
+		assert.match(await readMarker(application.dirPath), /live-v1/, 'the previous release is live again');
+		// The candidate is back in staging and its dependency resolves from there, not from the live path.
+		assert.equal(
+			await fs.readFile(path.join(stagedPath, 'node_modules', 'probe', 'index.js'), 'utf8'),
+			"module.exports = 'probe';\n",
+			'the rolled-back candidate resolves its dependency from staging'
+		);
+
+		// And it can still be activated on a retry.
+		await activateStagedApplication(application, second, { activationSpec: { package: null } });
+		assert.match(await readMarker(application.dirPath), /candidate-v2/);
+		assert.equal(
+			await fs.readFile(path.join(application.dirPath, 'node_modules', 'probe', 'index.js'), 'utf8'),
+			"module.exports = 'probe';\n",
+			'the retry re-points the links at the live path'
+		);
+		await cleanup(name);
+	});
 });
