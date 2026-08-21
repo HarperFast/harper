@@ -75,6 +75,17 @@ export async function compactOnStart() {
 
 			const backupDest = join(rootPath, 'backup', databaseName + '.mdb');
 			const copyDest = join(rootPath, DATABASES_DIR_NAME, databaseName + '-copy.mdb');
+			const copyDatabaseName = databaseName + '-copy';
+			const copyDatabaseRootStores = databases[copyDatabaseName] && getRootStores(databases[copyDatabaseName]);
+			if (
+				copyDatabaseRootStores &&
+				[...copyDatabaseRootStores].some((rootStore) => relative(copyDest, rootStore.path) === '')
+			) {
+				const message = `Skipping compaction of database ${databaseName}: ${copyDatabaseName} is an existing database at the compaction target path; rename it before retrying`;
+				hdbLogger.warn(message);
+				console.warn(message);
+				continue;
+			}
 			let recordCount = 0;
 			try {
 				recordCount = await getTotalDBRecordCount(databaseName);

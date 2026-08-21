@@ -3,7 +3,7 @@ const assert = require('assert');
 const path = require('path');
 const sinon = require('sinon');
 const env_mgr = require('#src/utility/environment/environmentManager');
-const { table } = require('#src/resources/databases');
+const { table, getDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const config_utils = require('#src/config/configUtils');
 const copyDB = require('#src/bin/copyDb');
@@ -130,5 +130,43 @@ describe('Test database copy and compact', () => {
 		assert(!console_error_spy.called);
 		assert(stat_after.size <= stat_before_compact.size);
 		assert(await fs.exists(path.join(storage_path, 'backup', 'copy-test.mdb')));
+	});
+
+	it('does not delete a database whose name matches another database compaction target', async () => {
+		const root_path_before = env_mgr.get(CONFIG_PARAMS.ROOTPATH);
+		const collision_root = path.join(storage_path, 'collision-root');
+		const collision_storage_path = path.join(collision_root, 'database');
+		const collision_path = path.join(collision_storage_path, 'collision-source-copy.mdb');
+		env_mgr.setProperty(CONFIG_PARAMS.ROOTPATH, collision_root);
+		env_mgr.setProperty(CONFIG_PARAMS.STORAGE_PATH, collision_storage_path);
+		resetDatabases();
+		try {
+			const CollisionSourceTable = table({
+				table: 'SourceTable',
+				database: 'collision-source',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const CollisionTable = table({
+				table: 'CollisionTable',
+				database: 'collision-source-copy',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+			});
+			await CollisionSourceTable.put({ id: 'source' });
+			await CollisionTable.put({ id: 'preserved', value: 'must survive compaction' });
+			assert.ok(getDatabases()['collision-source-copy'], 'the colliding database should be registered by name');
+			const bytes_before = await fs.readFile(collision_path);
+
+			await copyDB.compactOnStart();
+
+			assert.ok(await fs.exists(collision_path), 'the registered copy-target database should remain on disk');
+			assert.ok(
+				(await fs.readFile(collision_path)).equals(bytes_before),
+				'the registered copy-target database should remain byte-identical'
+			);
+		} finally {
+			env_mgr.setProperty(CONFIG_PARAMS.ROOTPATH, root_path_before);
+			env_mgr.setProperty(CONFIG_PARAMS.STORAGE_PATH, storage_path);
+			resetDatabases();
+		}
 	});
 });
