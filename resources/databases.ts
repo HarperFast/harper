@@ -2023,20 +2023,20 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
-				// but other workers' next disk-load re-reads the stale value. Cluster-origin callers are
-				// excluded here too — otherwise a peer's flag would land in the durable descriptor and
-				// override the local declaration on the next reload.
-				const schemaDefinedMismatch =
-					schemaDefinedExplicit && origin !== 'cluster' && attributeDescriptor.schemaDefined !== schemaDefined;
+				// but other workers' next disk-load re-reads the stale value. The whole settings update is
+				// gated off for cluster-origin callers: their values come from this worker's (possibly
+				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
+				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
-					schemaDefinedMismatch ||
-					(audit !== undefined && audit !== Table.audit) ||
-					(sealed !== undefined && sealed !== Table.sealed) ||
-					(replicate !== undefined && replicate !== Table.replicate) ||
-					(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-					(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-					attribute.type !== attributeDescriptor.type
+					origin !== 'cluster' &&
+					(schemaDefinedMismatch ||
+						(audit !== undefined && audit !== Table.audit) ||
+						(sealed !== undefined && sealed !== Table.sealed) ||
+						(replicate !== undefined && replicate !== Table.replicate) ||
+						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
+						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+						attribute.type !== attributeDescriptor.type)
 				) {
 					const updatedPrimaryAttribute = { ...attributeDescriptor };
 					if (typeof audit === 'boolean') {
@@ -2054,6 +2054,20 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
+				continue;
+			}
+
+			if (origin === 'cluster' && attributeDescriptor) {
+				// Cluster-origin definitions may only create missing descriptors — this worker's snapshot
+				// can lag a newer durable declaration, and rewriting (or reindexing from) it would revert
+				// that declaration. Still register the existing index for this Table instance.
+				if (attribute.indexed) {
+					const dbi = openIndex(dbiKey, rootStore, attribute);
+					if (attributeDescriptor.indexingPID) dbi.isIndexing = true;
+					if (attributeDescriptor.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
+					dbi.indexNulls = attribute.indexNulls;
+					indices[attribute.name] = dbi;
+				}
 				continue;
 			}
 

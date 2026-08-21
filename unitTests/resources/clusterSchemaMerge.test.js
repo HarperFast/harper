@@ -86,6 +86,40 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
+	it('a cluster definition never rewrites an existing durable descriptor from a stale snapshot', async () => {
+		const Stale = table({
+			table: 'ClusterMergeStale',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'score', type: 'String' },
+			],
+		});
+		await catalogFlushed(Stale);
+		// another worker committed a newer declaration; this worker's live list still says String
+		const key = 'ClusterMergeStale/score';
+		const newerDescriptor = { ...Stale.dbisDB.getSync(key), type: 'Int' };
+		const written = Stale.dbisDB.put(key, newerDescriptor);
+		if (written?.then) await written;
+		const After = table({
+			table: 'ClusterMergeStale',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'score', type: 'String' },
+			],
+			origin: 'cluster',
+		});
+		await catalogFlushed(After);
+		assert.strictEqual(
+			After.dbisDB.getSync(key).type,
+			'Int',
+			'a cluster-origin call rewrote a newer durable descriptor from its stale snapshot'
+		);
+	});
+
 	it('local schema authoring still removes attributes it no longer declares', async () => {
 		table({
 			table: 'ClusterMergeLocal',
