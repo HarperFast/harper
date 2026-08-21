@@ -64,6 +64,17 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
+// name -> threadIds that declared it grantable. Tracked per originator rather than per name so the
+// mirrored mark lives exactly as long as a live worker declares it: a rolling deploy whose new
+// generation drops `requiresSuperUser` keeps the routing entry (it still executes) while retracting
+// grantability, which a name-level flag cannot express.
+const grantableByWorker = new Map<string, Set<number>>();
+// Threads already reported dead. Exit notification is deduplicated for the life of the process
+// (manageThreads.notifyThreadExit), so an announcement that lost a race with its own thread's exit
+// would otherwise install an entry no later exit event can ever clean up. Never pruned, and never
+// wrongly rejects a replacement: worker ids are monotonically increasing and not reused in a
+// process, so this grows by one per worker restart (the same reasoning as notifiedDeadThreadIds).
+const exitedThreadIds = new Set<number>();
 const pendingExecutions = new Map<
 	number,
 	{ targetThreadId: number; resolve: (result: any) => void; reject: (error: Error) => void }
@@ -96,22 +107,70 @@ export function operationRegisteredHandler(event: {
 	// Arm thread-exit cleanup when the registry gains its first entry, not on the first forward:
 	// a worker that exits before any call would otherwise leave its entries here forever.
 	attachMainListeners();
+	if (exitedThreadIds.has(originator)) {
+		operationLog.debug(`Ignoring operation '${name}' announced by exited worker thread ${originator}`);
+		return;
+	}
 	let workerIds = registeredByWorker.get(name);
 	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
 	workerIds.add(originator);
 	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's own
-	// chooseOperation.
-	if (grantable) registerWorkerGrantableOperation(name);
+	// chooseOperation. A re-announcement that no longer declares a permission retracts this
+	// thread's claim rather than leaving a stale one behind.
+	setWorkerGrantable(name, originator, grantable === true);
 	operationLog.debug(`Registered operation '${name}' announced by worker thread ${originator}`);
 }
 
 /**
- * Forget an operation whose last registering worker is gone. Both prune paths (thread exit, and a
- * failed send discovering a dead port) must route through here so routing and grantability can
- * never disagree about whether the op is still offered.
+ * A worker that dies mid-execution can never respond, so fail its in-flight forwards rather than
+ * waiting out the timeout, and forget its registrations (a replacement re-registers on load).
+ */
+function handleThreadExit(deadThreadId: number) {
+	exitedThreadIds.add(deadThreadId);
+	for (const [name, workerIds] of registeredByWorker) {
+		workerIds.delete(deadThreadId);
+		// Retract this thread's grantability claim even when others still route the name — a
+		// remaining worker that never declared a permission must not keep it admissible.
+		if (workerIds.size === 0) dropRegistration(name);
+		else setWorkerGrantable(name, deadThreadId, false);
+	}
+	for (const [requestId, pending] of pendingExecutions) {
+		if (pending.targetThreadId === deadThreadId) {
+			pendingExecutions.delete(requestId);
+			pending.reject(new ServerError('The worker thread executing this operation exited', 503));
+		}
+	}
+}
+
+/** Test seam for the cleanup above, which `attachMainListeners` wires to the real thread-exit event. */
+export function notifyThreadExitedForTest(deadThreadId: number) {
+	handleThreadExit(deadThreadId);
+}
+
+/** Record or retract one thread's grantability claim, then re-derive the mirrored mark from live claims. */
+function setWorkerGrantable(name: string, threadId: number, grantable: boolean) {
+	let grantableIds = grantableByWorker.get(name);
+	if (grantable) {
+		if (!grantableIds) grantableByWorker.set(name, (grantableIds = new Set()));
+		grantableIds.add(threadId);
+	} else {
+		grantableIds?.delete(threadId);
+	}
+	if (grantableIds?.size) registerWorkerGrantableOperation(name);
+	else {
+		grantableByWorker.delete(name);
+		unregisterWorkerGrantableOperation(name);
+	}
+}
+
+/**
+ * Forget an operation no live worker offers any more. Both prune paths — thread exit, and a failed
+ * send discovering a dead port — route through here so a name can never keep a route without an
+ * owner. Grantability is dropped per owner instead, in `setWorkerGrantable`.
  */
 function dropRegistration(name: string) {
 	registeredByWorker.delete(name);
+	grantableByWorker.delete(name);
 	unregisterWorkerGrantableOperation(name);
 }
 
@@ -145,21 +204,7 @@ function attachMainListeners() {
 		if (error) pending.reject(new ServerError(error.message, error.statusCode || 500));
 		else pending.resolve(result);
 	});
-	// A worker that dies mid-execution can never respond; fail its in-flight forwards rather
-	// than waiting out the timeout, and forget its registrations (a replacement worker
-	// re-registers on component load).
-	onThreadExit((deadThreadId: number) => {
-		for (const [name, workerIds] of registeredByWorker) {
-			workerIds.delete(deadThreadId);
-			if (workerIds.size === 0) dropRegistration(name);
-		}
-		for (const [requestId, pending] of pendingExecutions) {
-			if (pending.targetThreadId === deadThreadId) {
-				pendingExecutions.delete(requestId);
-				pending.reject(new ServerError('The worker thread executing this operation exited', 503));
-			}
-		}
-	});
+	onThreadExit(handleThreadExit);
 }
 
 async function executeRemoteOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {

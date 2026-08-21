@@ -233,10 +233,13 @@ describe('Test serverUtilities.js module ', () => {
 		const GRANTABLE = 'test_cross_thread_grantable_op';
 		const PLAIN = 'test_cross_thread_plain_op';
 		const SHARED = 'test_cross_thread_shared_op';
+		const ROLLED = 'test_cross_thread_rolled_op';
+		const RETRACTED = 'test_cross_thread_retracted_op';
+		const ZOMBIE = 'test_cross_thread_zombie_op';
 
 		after(function () {
 			// Don't leak these names into the process-global registries for later suites.
-			for (const op of [GRANTABLE, PLAIN, SHARED]) {
+			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE]) {
 				unregisterWorkerGrantableOperation(op);
 				unregisterGrantableOperation(op);
 			}
@@ -253,21 +256,18 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		it('leaves an op that declared no permission ungrantable', function () {
-			// requiresSuperUser omitted means no verifyPerms entry and nothing to grant — the routing
-			// entry must not smuggle the name into the allowlist.
 			registeredOperations.operationRegisteredHandler({
 				message: { name: PLAIN, grantable: false, originator: 31 },
 			});
 
 			assert.notEqual(validateOperations([PLAIN]), null);
-			// A forward is still set up for it, so the routing half is unaffected.
+			// The routing half is unaffected — only admissibility is withheld.
 			assert.equal(typeof registeredOperations.getRemoteOperationFunction(PLAIN), 'function');
 		});
 
 		it('keeps a main-thread registration of the same name independent of the worker mirror', function () {
-			// A hot deploy can load a startOnMainThread component that registers an op a retiring
-			// worker also offers (manageThreads restartWorkers loads root components before draining
-			// the old workers), so the two marks have to survive each other.
+			// restartWorkers loads root components before draining old workers, so a startOnMainThread
+			// component can register an op a retiring worker also offers.
 			registeredOperations.operationRegisteredHandler({
 				message: { name: SHARED, grantable: true, originator: 41 },
 			});
@@ -278,6 +278,54 @@ describe('Test serverUtilities.js module ', () => {
 
 			unregisterGrantableOperation(SHARED);
 			assert.notEqual(validateOperations([SHARED]), null, 'both marks gone should make it ungrantable again');
+		});
+
+		it('retracts grantability when a re-announcement drops the declared permission', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: RETRACTED, grantable: true, originator: 51 },
+			});
+			assert.equal(validateOperations([RETRACTED]), null);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: RETRACTED, grantable: false, originator: 51 },
+			});
+			assert.notEqual(validateOperations([RETRACTED]), null, 'the same thread withdrawing must retract its claim');
+		});
+
+		it('stops being grantable once the last declaring worker is gone, even while another still routes it', function () {
+			// The rolling-deploy case: the new generation keeps the operation but drops
+			// requiresSuperUser, so the name must stay routable and stop being grantable.
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ROLLED, grantable: true, originator: 61 },
+			});
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ROLLED, grantable: false, originator: 62 },
+			});
+			assert.equal(validateOperations([ROLLED]), null, 'still declared by thread 61');
+
+			registeredOperations.notifyThreadExitedForTest(61);
+
+			assert.notEqual(validateOperations([ROLLED]), null, 'no live worker declares it grantable any more');
+			assert.equal(
+				typeof registeredOperations.getRemoteOperationFunction(ROLLED),
+				'function',
+				'thread 62 still routes it'
+			);
+		});
+
+		it('ignores an announcement that lost a race with its own thread exit', function () {
+			registeredOperations.notifyThreadExitedForTest(71);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ZOMBIE, grantable: true, originator: 71 },
+			});
+
+			assert.notEqual(validateOperations([ZOMBIE]), null, 'a dead thread must not install a grant');
+			assert.equal(
+				registeredOperations.getRemoteOperationFunction(ZOMBIE),
+				undefined,
+				'nor a route nothing will ever clean up'
+			);
 		});
 	});
 

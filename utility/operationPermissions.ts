@@ -120,15 +120,11 @@ export function unregisterGrantableOperation(name: string): void {
 	dynamicallyRegisteredOps.delete(name);
 }
 
-/**
- * Mirror a worker's grantable operation so role validation, which runs on the main thread, accepts
- * the name. See server/serverHelpers/registeredOperations.ts — the worker still owns enforcement.
- */
+/** Ownership of the mirror lives in registeredOperations.ts; enforcement stays on the worker. */
 export function registerWorkerGrantableOperation(name: string): void {
 	workerRegisteredOps.add(name);
 }
 
-/** Drop a mirrored name once no worker offers the operation any more. */
 export function unregisterWorkerGrantableOperation(name: string): void {
 	workerRegisteredOps.delete(name);
 }
