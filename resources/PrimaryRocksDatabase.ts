@@ -3,7 +3,14 @@ import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transa
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { assignStoredFields, entryMap, METADATA, type Entry } from './RecordEncoder.ts';
+import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
+
+// Parked in a VerificationTable slot to mark a key unvouchable, since the VT has no invalidate call.
+// It doubles as the cross-worker signal that a key's version identifies more than one stored value:
+// once any worker has parked it, no other worker's read asks the native get to publish that version.
+// A timestamp ~285,000 years out — improbable rather than impossible, as write timestamps are
+// caller-supplied, so a record read back at exactly this version is never cached either.
+const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -134,17 +141,24 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				? (entryMap.get(cachedValue) as Entry | undefined)
 				: undefined;
 		const expectedVersion = cached?.version;
+		// The native get publishes the version it read into the slot, so a key whose version must not be
+		// vouched for has to be recognised BEFORE the read; withdrawing afterwards leaves it published
+		// in between. The parked sentinel is what makes that recognisable across workers. Asked only on
+		// the path that is about to request publication, and which is paying for a store read anyway; a
+		// read that has a cached version skips the check and can publish once per worker per flag,
+		// since the read that finds the flag drops its cached value and so takes this path next time.
+		const unvouchable = cache !== undefined && expectedVersion == null && this.verifyVersion(id, VERSION_UNVOUCHABLE);
 
 		// Build get options, always merging with caller options to preserve
 		// transaction snapshot. Pass expectedVersion when cached:
 		//   VT hit  → native returns FRESH_VERSION_FLAG, no DB read
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
-		// native layer seeds the VT slot in the same call.
+		// native layer seeds the VT slot in the same call — unless the slot says unvouchable.
 		let getOptions: any;
 		if (expectedVersion != null) {
 			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
-		} else if (cache) {
+		} else if (cache && !unvouchable) {
 			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
 		} else {
 			getOptions = options;
@@ -158,11 +172,27 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				if (cache && cachedValue !== undefined) cache.delete(id);
 				return undefined;
 			}
-			// Only object values can be weakly cached and mapped back to their Entry;
-			// primitive/empty values fall through uncached (no fast path, still correct).
-			if (entry.version != null && cache && entry.value != null && typeof entry.value === 'object') {
-				entryMap.set(entry.value, entry);
-				cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+			if (entry.version != null && cache) {
+				// Checked before the cacheability gate below: a flagged record with a null or primitive
+				// value is just as unvouchable. Normally the slot already holds the sentinel from the
+				// write; re-park it for a record flagged before this shipped, or one whose slot a read
+				// republished. A store that cannot take it (closing, dropped) must not turn a completed
+				// read into a failed one — not caching is the safe outcome either way.
+				if (entry.metadataFlags & VERSION_REUSED || entry.version === VERSION_UNVOUCHABLE) {
+					if (!unvouchable) {
+						try {
+							this.populateVersion(id, VERSION_UNVOUCHABLE);
+						} catch {
+							/* leave the slot alone; this record is not cached regardless */
+						}
+					}
+					if (cachedValue !== undefined) cache.delete(id);
+				} else if (entry.value != null && typeof entry.value === 'object') {
+					// Only object values can be weakly cached and mapped back to their Entry;
+					// primitive/empty values fall through uncached (no fast path, still correct).
+					entryMap.set(entry.value, entry);
+					cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+				}
 			}
 			return entry;
 		});
