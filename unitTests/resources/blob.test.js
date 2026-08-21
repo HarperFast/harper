@@ -2102,3 +2102,115 @@ async function streamToBytes(stream) {
 	}
 	return Buffer.concat(chunks);
 }
+
+describe('backup of a blob root during a live write (harper#2262)', () => {
+	const { mkdtempSync, rmSync, writeFileSync, readFileSync: readFileNow, statSync: statNow } = require('node:fs');
+	const { tmpdir } = require('node:os');
+	const { join } = require('node:path');
+	const { snapshotBlobs, blobSnapshotDir } = require('#src/dataLayer/blobBackup');
+	const { getBlobPathsForDatabaseName, getFilePathForBlob: pathForBlob } = require('#src/resources/blob');
+
+	async function waitFor(probe, timeoutMs = 2000) {
+		const deadline = Date.now() + timeoutMs;
+		for (;;) {
+			const value = probe();
+			if (value !== undefined && value !== false) return value;
+			if (Date.now() >= deadline) return undefined;
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+	}
+
+	let SnapshotTest;
+	let backupDir;
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		SnapshotTest = table({
+			table: 'SnapshotTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	beforeEach(() => {
+		backupDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.live-snapshot-'));
+	});
+	afterEach(() => {
+		rmSync(backupDir, { recursive: true, force: true });
+	});
+
+	it('a restored substituted marker reads as retryable, not as absent or corrupt', async () => {
+		// The whole design rests on this: a blob captured as a marker must reach a reader as a 503 it
+		// will retry (and blob repair will heal), never a 404 that a replication peer reads as
+		// "cleanly gone" or a 500 it treats as confidently incomplete.
+		const { createCaptureMarker: mintMarker } = require('#src/resources/blob');
+		await SnapshotTest.put({ id: 'restored', blob: await createBlob(randomBytes(20000)) });
+		const record = await SnapshotTest.get('restored');
+		const filePath = pathForBlob(record.blob);
+
+		writeFileSync(filePath, mintMarker('pending', 'blob was not yet complete when this backup was taken'));
+
+		const reread = await SnapshotTest.get('restored');
+		let status;
+		try {
+			await reread.blob.bytes();
+			assert.fail('reading a PENDING marker should not resolve');
+		} catch (error) {
+			status = error.statusCode ?? error.status;
+		}
+		assert.strictEqual(status, 503, 'a restored marker must classify as retryable');
+	});
+
+	it('a blob that vanished mid-backup is captured terminal, not as a retry that can never succeed', async () => {
+		const { createCaptureMarker: mintMarker } = require('#src/resources/blob');
+		await SnapshotTest.put({ id: 'vanished', blob: await createBlob(randomBytes(20000)) });
+		const filePath = pathForBlob((await SnapshotTest.get('vanished')).blob);
+
+		writeFileSync(filePath, mintMarker('gone', 'blob was deleted while this backup was being taken'));
+
+		let status;
+		try {
+			await (await SnapshotTest.get('vanished')).blob.bytes();
+			assert.fail('reading a terminal marker should not resolve');
+		} catch (error) {
+			status = error.statusCode ?? error.status;
+		}
+		assert.strictEqual(status, 500, 'gone-for-good bytes must read terminal, not retryable');
+	});
+
+	it('never hard-links a blob that a real write is still streaming into', async () => {
+		await SnapshotTest.put({ id: 'settled', blob: await createBlob(randomBytes(4096)) });
+
+		const source = new PassThrough();
+		const growing = createBlob(source, { size: 60000 });
+		const put = SnapshotTest.put({ id: 'streaming', blob: growing });
+		source.write(randomBytes(30000));
+		const livePath = await waitFor(() => {
+			const path = pathForBlob(growing);
+			return path && existsSync(path) && statNow(path).size > 0 ? path : undefined;
+		});
+		assert.ok(livePath, 'the in-flight blob should be on disk with a body before the snapshot runs');
+		const roots = getBlobPathsForDatabaseName(SnapshotTest.primaryStore.rootStore.databaseName);
+		await snapshotBlobs(backupDir, 1, roots);
+
+		const rootIndex = roots.findIndex((root) => livePath.startsWith(root));
+		const relative = livePath.slice(roots[rootIndex].length + 1);
+		const captured = join(blobSnapshotDir(backupDir, 1), String(rootIndex), relative);
+		assert.ok(existsSync(captured), 'the in-flight blob id must still be reserved in the snapshot');
+		assert.notStrictEqual(
+			statNow(captured).ino,
+			statNow(livePath).ino,
+			'the snapshot shared an inode with a blob that was still being written'
+		);
+		const capturedBytes = readFileNow(captured);
+		assert.strictEqual(capturedBytes.readUInt16BE(0), 0xfe, 'expected a PENDING marker');
+
+		source.end(randomBytes(30000));
+		await put;
+
+		assert.strictEqual(readFileNow(livePath).length, 60000 + 8);
+		assert.deepStrictEqual(readFileNow(captured), capturedBytes, 'snapshot bytes changed after the write finished');
+	});
+});
