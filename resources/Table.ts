@@ -132,7 +132,57 @@ const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
-const LOCK_TIMEOUT = 10000;
+export const LOCK_TIMEOUT = 10000;
+const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
+// Pre-encoded lock key, hoisted so the retry loop below does not re-marshal the string on every
+// tryLock attempt. ordered-binary encodes a plain-ASCII string as its raw bytes, so this Buffer
+// addresses the same native lock as the string form.
+const updateAttributesLockKey = Buffer.from(UPDATE_ATTRIBUTES_LOCK);
+const lockWait = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Acquires the exclusive cross-thread 'update-attributes' lock that serializes schema/attribute
+ * updates (and table create/drop) per database. Synchronous by design: the callers cannot yield to
+ * the event loop, and a release by another thread is visible to the retry without yielding (the
+ * lock lives in native shared state). Spins hot only briefly, then blocks this thread in bounded
+ * waits, and throws after `timeout` instead of spinning forever — a holder that never releases
+ * (e.g. a crashed schema operation) previously pinned this worker's core permanently (harper#2251).
+ */
+export function acquireUpdateAttributesLock(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	timeout = LOCK_TIMEOUT
+) {
+	if (rootStore.tryLock(updateAttributesLockKey)) return;
+	const startTime = Date.now();
+	let waitTime = 1;
+	while (!rootStore.tryLock(updateAttributesLockKey)) {
+		const elapsed = Date.now() - startTime;
+		if (elapsed >= timeout) {
+			throw new ServerError(
+				`Timed out after ${elapsed}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder never released it, so this schema/attribute update cannot proceed`
+			);
+		}
+		if (elapsed >= 2) {
+			Atomics.wait(lockWait, 0, 0, Math.min(waitTime, timeout - elapsed));
+			if (waitTime < 16) waitTime *= 2;
+		}
+	}
+}
+
+export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
+	rootStore.unlock(updateAttributesLockKey);
+}
+
+/** Runs `callback` under the exclusive 'update-attributes' lock, releasing it on every exit path. */
+export function withUpdateAttributesLock<T>(rootStore: RocksDatabase, scopeDescription: string, callback: () => T): T {
+	acquireUpdateAttributesLock(rootStore, scopeDescription);
+	try {
+		return callback();
+	} finally {
+		releaseUpdateAttributesLock(rootStore);
+	}
+}
 // Tolerate a redundant column family drop. Drops are broadcast to every worker
 // thread and each holds its own handle to the same underlying family, so a
 // concurrent worker may already have dropped it; the storage engine reports
@@ -1502,14 +1552,12 @@ export function makeTable(options) {
 					// Serialize the drops + catalog removal against a concurrent
 					// same-name create (and completeInterruptedDrop) under the database's
 					// 'update-attributes' exclusive lock - the same lock the create path
-					// holds. It is a synchronous spin lock that blocks the event loop, so
+					// holds. It is a synchronous lock wait that blocks the event loop, so
 					// the locked section MUST stay synchronous: drop with dropSync (as
 					// completeInterruptedDrop does), never an awaited drop(), or a
-					// concurrent create's spin would deadlock waiting on a drop that the
-					// blocked event loop can never resolve.
-					while (!rootStore.tryLock('update-attributes')) {}
-					let removed = false;
-					try {
+					// concurrent create's wait would be stuck on a drop that the blocked
+					// event loop can never resolve, burning its full deadline before failing.
+					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						for (const attribute of attributes) {
 							const index = indices[attribute.name];
 							if (index)
@@ -1524,10 +1572,8 @@ export function makeTable(options) {
 						} catch (error) {
 							ignoreAlreadyDropped(error);
 						}
-						removed = removeTombstonedCatalog();
-					} finally {
-						rootStore.unlock('update-attributes');
-					}
+						return removeTombstonedCatalog();
+					});
 					if (removed) await dbisDb.committed;
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is

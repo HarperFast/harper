@@ -9,7 +9,7 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { makeTable, ignoreAlreadyDropped } from './Table.ts';
+import { makeTable, ignoreAlreadyDropped, acquireUpdateAttributesLock, releaseUpdateAttributesLock } from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import {
 	CONFIG_PARAMS,
@@ -1555,113 +1555,122 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
 	let hasChanges;
-	let releaseExclusiveLock: () => void;
-	if (Table) {
-		primaryKey = Table.primaryKey;
-		if (Table.primaryStore.rootStore.status === 'closed') {
-			throw new Error(`Can not use a closed data store from ${tableName} class`);
-		}
-		// Reject moving the primary key to a different attribute on a table that already has records.
-		// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
-		// leave describe reporting the new attribute while every record — old and newly inserted — stays
-		// keyed by the original one; search_by_id/update/delete by the declared key then all miss. Only
-		// schema-authored callers (@table / defineTable / create_table) reassert the declaration, so
-		// gate on schemaDefinedExplicit to leave cluster schema-replication / data-loader callers alone.
-		// See HarperFast/studio#1199.
-		const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name;
-		if (schemaDefinedExplicit && declaredPrimaryKey && declaredPrimaryKey !== Table.primaryKey) {
-			let hasRecords = false;
-			for (const _entry of Table.primaryStore.getRange({ start: true })) {
-				hasRecords = true;
-				break;
+	let releaseExclusiveLock: (() => void) | undefined;
+	const attributesToIndex = [];
+	const indicesToRemove = [];
+	// Every path that may take the exclusive lock (via exclusiveLock()) runs inside this try; the
+	// single release lives in its finally so no early return or throw can leak the lock — a leaked
+	// lock wedges every later create_table / attribute update on this database (harper#2251).
+	try {
+		if (Table) {
+			primaryKey = Table.primaryKey;
+			if (Table.primaryStore.rootStore.status === 'closed') {
+				throw new Error(`Can not use a closed data store from ${tableName} class`);
 			}
-			if (hasRecords) {
-				throw new ClientError(
-					`Cannot change the primary key of table '${databaseName}.${tableName}' from '${Table.primaryKey}' to ` +
-						`'${declaredPrimaryKey}' because it already contains records. Recreate the table with the new primary ` +
-						`key, or migrate the existing records.`,
-					400
+			// Reject moving the primary key to a different attribute on a table that already has records.
+			// The storage key (Table.primaryKey) is never re-pointed here, so honoring the change would
+			// leave describe reporting the new attribute while every record — old and newly inserted — stays
+			// keyed by the original one; search_by_id/update/delete by the declared key then all miss. Only
+			// schema-authored callers (@table / defineTable / create_table) reassert the declaration, so
+			// gate on schemaDefinedExplicit to leave cluster schema-replication / data-loader callers alone.
+			// See HarperFast/studio#1199.
+			const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name;
+			if (schemaDefinedExplicit && declaredPrimaryKey && declaredPrimaryKey !== Table.primaryKey) {
+				let hasRecords = false;
+				for (const _entry of Table.primaryStore.getRange({ start: true })) {
+					hasRecords = true;
+					break;
+				}
+				if (hasRecords) {
+					throw new ClientError(
+						`Cannot change the primary key of table '${databaseName}.${tableName}' from '${Table.primaryKey}' to ` +
+							`'${declaredPrimaryKey}' because it already contains records. Recreate the table with the new primary ` +
+							`key, or migrate the existing records.`,
+						400
+					);
+				}
+			}
+			// it table already exists, get the split segments setting
+			if (splitSegments == undefined) splitSegments = Table.splitSegments;
+			Table.attributes.splice(0, Table.attributes.length, ...attributes);
+			// Re-assert from the live declaration so a stale value on disk (replicated event,
+			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
+			// callers that omit the flag (cluster schema-replication, data loader) don't flip a
+			// dynamic table to true via the default at the top of table().
+			if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
+			// Refresh class-level schema metadata to track docstring/directive changes across reloads.
+			Table.description = description;
+			Table.properties = properties;
+			Table.hidden = hidden;
+			// undefined means a non-schema caller (add_attribute, cluster schema events) — don't clobber
+			if (cacheControl !== undefined) Table.cacheControl = cacheControl;
+		} else {
+			const auditStore = rootStore.auditStore;
+			primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
+			primaryKey = primaryKeyAttribute.name;
+			primaryKeyAttribute.isPrimaryKey = true;
+			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
+			primaryKeyAttribute.schemaDefined = schemaDefined;
+			// can't change compression after the fact (except threshold), so save only when we create the table
+			primaryKeyAttribute.compression = getDefaultCompression();
+			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
+			audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+			if (expiration) primaryKeyAttribute.expiration = expiration;
+			if (eviction) primaryKeyAttribute.eviction = eviction;
+			// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
+			// a descriptor value carried by cluster schema events; null (schema has no directive)
+			// clears a stale value the carried descriptor may hold
+			if (cacheControl === undefined) cacheControl = primaryKeyAttribute.cacheControl;
+			else if (cacheControl === null) delete primaryKeyAttribute.cacheControl;
+			else primaryKeyAttribute.cacheControl = cacheControl;
+			splitSegments ??= false;
+			primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
+			if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
+			if (typeof replicate === 'boolean') primaryKeyAttribute.replicate = replicate;
+			// An explicit directive PINS this table's encoding: we persist the boolean, so later changes
+			// to the global storage.randomAccessFields default never affect this table. Tables WITHOUT the
+			// directive are intentionally not persisted here — they follow the current global default on
+			// each open (a runtime lever to flip encoding fleet-wide). Switching either way is safe: the
+			// struct READ hook always stays on and struct (0x20-0x3f) vs classic-record (0x40-0x7f) bytes
+			// are disjoint, so already-written records still decode; only the encoding of NEW writes changes.
+			if (typeof randomAccessFields === 'boolean') primaryKeyAttribute.randomAccessFields = randomAccessFields;
+			if (origin) {
+				if (!primaryKeyAttribute.origins) primaryKeyAttribute.origins = [origin];
+				else if (!primaryKeyAttribute.origins.includes(origin)) primaryKeyAttribute.origins.push(origin);
+			}
+			logger.trace(`${tableName} table loading, opening primary store`);
+			const dbiInit = createOpenDBIObject(false, true);
+			dbiInit.compression = primaryKeyAttribute.compression;
+			// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
+			if (typeof primaryKeyAttribute.randomAccessFields === 'boolean')
+				dbiInit.randomAccessStructure = primaryKeyAttribute.randomAccessFields;
+			const dbiName = tableName + '/';
+
+			if (rootStore instanceof RocksDatabase) {
+				attributesDbi = (rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
+					...internalDbiInit,
+					disableWAL: false,
+					name: INTERNAL_DBIS_NAME,
+				} as any);
+			} else {
+				attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(
+					INTERNAL_DBIS_NAME,
+					internalDbiInit as any
 				);
 			}
-		}
-		// it table already exists, get the split segments setting
-		if (splitSegments == undefined) splitSegments = Table.splitSegments;
-		Table.attributes.splice(0, Table.attributes.length, ...attributes);
-		// Re-assert from the live declaration so a stale value on disk (replicated event,
-		// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
-		// callers that omit the flag (cluster schema-replication, data loader) don't flip a
-		// dynamic table to true via the default at the top of table().
-		if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
-		// Refresh class-level schema metadata to track docstring/directive changes across reloads.
-		Table.description = description;
-		Table.properties = properties;
-		Table.hidden = hidden;
-		// undefined means a non-schema caller (add_attribute, cluster schema events) — don't clobber
-		if (cacheControl !== undefined) Table.cacheControl = cacheControl;
-	} else {
-		const auditStore = rootStore.auditStore;
-		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
-		primaryKey = primaryKeyAttribute.name;
-		primaryKeyAttribute.isPrimaryKey = true;
-		primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
-		primaryKeyAttribute.schemaDefined = schemaDefined;
-		// can't change compression after the fact (except threshold), so save only when we create the table
-		primaryKeyAttribute.compression = getDefaultCompression();
-		if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
-		audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
-		if (expiration) primaryKeyAttribute.expiration = expiration;
-		if (eviction) primaryKeyAttribute.eviction = eviction;
-		// persist cacheControl so all threads (and future boots) see it; undefined callers inherit
-		// a descriptor value carried by cluster schema events; null (schema has no directive)
-		// clears a stale value the carried descriptor may hold
-		if (cacheControl === undefined) cacheControl = primaryKeyAttribute.cacheControl;
-		else if (cacheControl === null) delete primaryKeyAttribute.cacheControl;
-		else primaryKeyAttribute.cacheControl = cacheControl;
-		splitSegments ??= false;
-		primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
-		if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
-		if (typeof replicate === 'boolean') primaryKeyAttribute.replicate = replicate;
-		// An explicit directive PINS this table's encoding: we persist the boolean, so later changes
-		// to the global storage.randomAccessFields default never affect this table. Tables WITHOUT the
-		// directive are intentionally not persisted here — they follow the current global default on
-		// each open (a runtime lever to flip encoding fleet-wide). Switching either way is safe: the
-		// struct READ hook always stays on and struct (0x20-0x3f) vs classic-record (0x40-0x7f) bytes
-		// are disjoint, so already-written records still decode; only the encoding of NEW writes changes.
-		if (typeof randomAccessFields === 'boolean') primaryKeyAttribute.randomAccessFields = randomAccessFields;
-		if (origin) {
-			if (!primaryKeyAttribute.origins) primaryKeyAttribute.origins = [origin];
-			else if (!primaryKeyAttribute.origins.includes(origin)) primaryKeyAttribute.origins.push(origin);
-		}
-		logger.trace(`${tableName} table loading, opening primary store`);
-		const dbiInit = createOpenDBIObject(false, true);
-		dbiInit.compression = primaryKeyAttribute.compression;
-		// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
-		if (typeof primaryKeyAttribute.randomAccessFields === 'boolean')
-			dbiInit.randomAccessStructure = primaryKeyAttribute.randomAccessFields;
-		const dbiName = tableName + '/';
+			markInternalDbiNonVersioned(attributesDbi);
 
-		if (rootStore instanceof RocksDatabase) {
-			attributesDbi = (rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
-				...internalDbiInit,
-				disableWAL: false,
-				name: INTERNAL_DBIS_NAME,
-			} as any);
-		} else {
-			attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
-		}
-		markInternalDbiNonVersioned(attributesDbi);
+			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
+			const existingTableMeta = (attributesDbi as any).getSync(dbiName);
+			if (existingTableMeta && !existingTableMeta.dropping) {
+				// table was created while we were setting up; release before the recursive reload — the
+				// lock is not reentrant, so the table() call below must be able to acquire it afresh
+				releaseLock();
+				resetDatabases();
+				return table(tableDefinition);
+			}
 
-		exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
-		const existingTableMeta = (attributesDbi as any).getSync(dbiName);
-		if (existingTableMeta && !existingTableMeta.dropping) {
-			// table was created while we were setting up
-			if (releaseExclusiveLock) releaseExclusiveLock();
-			resetDatabases();
-			return table(tableDefinition);
-		}
-
-		let primaryStore;
-		try {
+			let primaryStore;
 			if (existingTableMeta?.dropping) {
 				// A previous drop of this table was interrupted after its tombstone
 				// was written. Complete it now (under the exclusive lock) so the
@@ -1728,56 +1737,43 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			hasChanges = true;
 
 			attributesDbi.put(dbiName, primaryKeyAttribute);
-		} catch (error) {
-			// A failure while opening/creating the column family or writing the
-			// table id / catalog entry (e.g. into an env poisoned by a prior
-			// dangling column family) must NOT leak the exclusive
-			// 'update-attributes' spin lock. If it leaks, every subsequent
-			// create_table / attribute update on this database spins forever
-			// (a hard wedge that pins a worker at 100% CPU). Release before rethrow.
-			if (releaseExclusiveLock) releaseExclusiveLock();
-			throw error;
 		}
-	}
-	const indices = Table.indices;
-	if (!attributesDbi) {
-		if (rootStore instanceof RocksDatabase) {
-			(rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
-				...internalDbiInit,
-				disableWAL: false,
-				name: INTERNAL_DBIS_NAME,
-			} as any);
-		} else {
-			(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
+		const indices = Table.indices;
+		if (!attributesDbi) {
+			if (rootStore instanceof RocksDatabase) {
+				(rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
+					...internalDbiInit,
+					disableWAL: false,
+					name: INTERNAL_DBIS_NAME,
+				} as any);
+			} else {
+				(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
+			}
+			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
-		attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
-	}
-	Table.dbisDB = attributesDbi;
-	const indicesToRemove = [];
-	for (const { key, value } of attributesDbi.getRange({ start: true })) {
-		if (value == null) continue;
-		let [attributeTableName, attribute_name] = key.toString().split('/');
-		if (attribute_name === '') attribute_name = value.name; // primary key
-		if (attribute_name) {
-			if (attributeTableName !== tableName) continue;
-		} else {
-			// table attribute for a table with no primary key, we don't want to remove this, so continue on
-			continue;
-		}
-		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
-		const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-		if (!attribute || removeIndex) {
-			exclusiveLock();
-			hasChanges = true;
-			if (!attribute) attributesDbi.remove(key);
-			if (removeIndex) {
-				const indexDbi = Table.indices[attributeTableName];
-				if (indexDbi) indicesToRemove.push(indexDbi);
+		Table.dbisDB = attributesDbi;
+		for (const { key, value } of attributesDbi.getRange({ start: true })) {
+			if (value == null) continue;
+			let [attributeTableName, attribute_name] = key.toString().split('/');
+			if (attribute_name === '') attribute_name = value.name; // primary key
+			if (attribute_name) {
+				if (attributeTableName !== tableName) continue;
+			} else {
+				// table attribute for a table with no primary key, we don't want to remove this, so continue on
+				continue;
+			}
+			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
+			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
+			if (!attribute || removeIndex) {
+				exclusiveLock();
+				hasChanges = true;
+				if (!attribute) attributesDbi.remove(key);
+				if (removeIndex) {
+					const indexDbi = Table.indices[attributeTableName];
+					if (indexDbi) indicesToRemove.push(indexDbi);
+				}
 			}
 		}
-	}
-	const attributesToIndex = [];
-	try {
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
@@ -1986,7 +1982,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 		}
 	} finally {
-		if (releaseExclusiveLock) releaseExclusiveLock();
+		releaseLock();
 	}
 	if (hasChanges) {
 		Table.schemaVersion++;
@@ -2017,10 +2013,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	function exclusiveLock() {
 		if (releaseExclusiveLock) return;
 		if (rootStore instanceof RocksDatabase) {
-			while (!rootStore.tryLock('update-attributes')) {} // use a spin lock, we really need an synchronous exclusive lock here
-			releaseExclusiveLock = () => {
-				rootStore.unlock('update-attributes');
-			};
+			// bounded synchronous wait; throws ServerError if the holder never releases (harper#2251)
+			acquireUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`);
+			releaseExclusiveLock = () => releaseUpdateAttributesLock(rootStore);
 		} else {
 			// we only need an exclusive transaction lock in lmdb
 			rootStore.transactionSync(() => {
@@ -2031,6 +2026,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				};
 			});
 		}
+	}
+	// Idempotent so the early-release before the recursive reload above and the structural release
+	// in the finally can both run without double-unlocking (which could release another thread's lock)
+	function releaseLock() {
+		const release = releaseExclusiveLock;
+		releaseExclusiveLock = undefined;
+		if (release) release();
 	}
 }
 /**
