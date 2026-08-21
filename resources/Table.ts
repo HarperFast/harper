@@ -134,19 +134,17 @@ envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 export const LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
-// Pre-encoded lock key, hoisted so the retry loop below does not re-marshal the string on every
-// tryLock attempt. ordered-binary encodes a plain-ASCII string as its raw bytes, so this Buffer
-// addresses the same native lock as the string form.
+// raw ASCII bytes are ordered-binary's encoding of the string, so this addresses the same native
+// lock as string-keyed tryLock/unlock calls
 const updateAttributesLockKey = Buffer.from(UPDATE_ATTRIBUTES_LOCK);
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 
 /**
- * Acquires the exclusive cross-thread 'update-attributes' lock that serializes schema/attribute
- * updates (and table create/drop) per database. Synchronous by design: the callers cannot yield to
- * the event loop, and a release by another thread is visible to the retry without yielding (the
- * lock lives in native shared state). Spins hot only briefly, then blocks this thread in bounded
- * waits, and throws after `timeout` instead of spinning forever — a holder that never releases
- * (e.g. a crashed schema operation) previously pinned this worker's core permanently (harper#2251).
+ * Acquires the exclusive cross-thread 'update-attributes' lock serializing schema/attribute updates
+ * (and table create/drop) per database. The wait is synchronous and blocks the event loop, so the
+ * locked section must stay synchronous too — a release by another thread is observable without
+ * yielding, but any release requiring this thread's own event loop can never arrive. Throws after
+ * `timeout` rather than spinning forever on a holder that never releases (harper#2251).
  */
 export function acquireUpdateAttributesLock(
 	rootStore: RocksDatabase,

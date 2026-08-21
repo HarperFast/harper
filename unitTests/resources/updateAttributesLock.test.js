@@ -16,9 +16,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const TEST_DB = 'test';
 const LOCK_KEY = 'update-attributes';
 
-// Regression tests for harper#2251: the exclusive 'update-attributes' lock must be acquired with a
-// bounded wait (throwing instead of spinning a core forever when the holder never releases) and must
-// be released structurally on every exit path of the schema-update code it guards.
+// harper#2251: bounded acquire (throw instead of spinning a core forever) + structural release
 describe('update-attributes exclusive lock', () => {
 	let rootStore;
 	before(function () {
@@ -96,6 +94,35 @@ describe('update-attributes exclusive lock', () => {
 		rootStore.unlock(LOCK_KEY);
 		// a subsequent schema update must succeed rather than wedge — restore the original definition
 		table({ table: 'LockLeak', database: TEST_DB, attributes });
+	});
+
+	it('a real table() operation fails with ServerError after the full deadline when the lock is wedged', function () {
+		this.timeout(40000);
+		const definition = {
+			table: 'DeadlineWedged',
+			database: TEST_DB,
+			attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
+		};
+		assert.ok(rootStore.tryLock(LOCK_KEY), 'test should be able to wedge the lock');
+		const startTime = Date.now();
+		try {
+			assert.throws(
+				() => table(definition),
+				(error) => {
+					assert.ok(error instanceof ServerError, `expected ServerError, got ${error.constructor.name}`);
+					assert.ok(error.message.includes(LOCK_KEY), 'message should name the lock');
+					assert.ok(error.message.includes(`table '${TEST_DB}.DeadlineWedged'`), 'message should name the table');
+					return true;
+				}
+			);
+			const elapsed = Date.now() - startTime;
+			assert.ok(elapsed >= 9500, `should have waited the full LOCK_TIMEOUT, threw after ${elapsed}ms`);
+			assert.ok(elapsed < 30000, `should throw shortly after the deadline, took ${elapsed}ms`);
+		} finally {
+			rootStore.unlock(LOCK_KEY);
+		}
+		// once the lock is free, the same operation must succeed
+		assert.ok(table(definition), 'create should succeed after the lock is released');
 	});
 
 	it('waits for a briefly-held lock and acquires once the holding thread releases', async function () {

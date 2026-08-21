@@ -1558,9 +1558,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
-	// Every path that may take the exclusive lock (via exclusiveLock()) runs inside this try; the
-	// single release lives in its finally so no early return or throw can leak the lock — a leaked
-	// lock wedges every later create_table / attribute update on this database (harper#2251).
+	// the exclusive lock may only be released via releaseLock() — a leaked lock wedges every later
+	// schema update on this database (harper#2251)
 	try {
 		if (Table) {
 			primaryKey = Table.primaryKey;
@@ -1663,8 +1662,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
 			const existingTableMeta = (attributesDbi as any).getSync(dbiName);
 			if (existingTableMeta && !existingTableMeta.dropping) {
-				// table was created while we were setting up; release before the recursive reload — the
-				// lock is not reentrant, so the table() call below must be able to acquire it afresh
+				// table was created while we were setting up; the lock is not reentrant, so release
+				// before the recursive reload
 				releaseLock();
 				resetDatabases();
 				return table(tableDefinition);
@@ -2013,7 +2012,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	function exclusiveLock() {
 		if (releaseExclusiveLock) return;
 		if (rootStore instanceof RocksDatabase) {
-			// bounded synchronous wait; throws ServerError if the holder never releases (harper#2251)
 			acquireUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`);
 			releaseExclusiveLock = () => releaseUpdateAttributesLock(rootStore);
 		} else {
@@ -2027,8 +2025,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			});
 		}
 	}
-	// Idempotent so the early-release before the recursive reload above and the structural release
-	// in the finally can both run without double-unlocking (which could release another thread's lock)
+	// idempotent: the early release before the recursive reload and the finally both run, and a
+	// second unlock could release another thread's lock
 	function releaseLock() {
 		const release = releaseExclusiveLock;
 		releaseExclusiveLock = undefined;
