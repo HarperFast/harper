@@ -609,17 +609,24 @@ async function pruneStagedBuilds(componentName: string, keepStagingId: string, m
 			// to the count. Filling from "the others" alone would privilege the current build
 			// unconditionally: a stage delayed behind slow peers finishes with an older mtime than a
 			// sibling that started later and already returned, and that newer sibling's tree would be
-			// evicted. Protecting only *strictly* newer builds keeps the count exact when mtimes tie —
-			// coarse filesystem timestamps routinely tie — where the just-made build could otherwise sort
-			// into the eviction window. Mirrors deploymentRecorder.settleStagedRows.
+			// evicted. Only *strictly* newer builds are protected here, unlike the row side, which protects
+			// ties too. mtime granularity ties every build staged in the same tick, so protecting ties on
+			// disk would stop this bound converging at all — four rapid stages under a bound of two would
+			// keep all four. The residual: two stages tying to the millisecond can have the second evict
+			// the first's tree while its row stays `staged`, so activating that id later fails with "no
+			// valid component tree" rather than serving nothing. A clear failure, and the reconcile pass
+			// settles such a row. Sorting breaks ties by stagingId so concurrent prunes choose the same
+			// victims instead of each deleting the other's.
 			const current = builds.find((build) => build.stagingId === keepStagingId);
-			const others = builds.filter((build) => build.stagingId !== keepStagingId).sort((a, b) => b.mtime - a.mtime);
-			const newerThanCurrent = current ? others.filter((build) => build.mtime > current.mtime) : [];
-			const budget = Math.max(0, maxCount - (current ? 1 : 0) - newerThanCurrent.length);
+			const others = builds
+				.filter((build) => build.stagingId !== keepStagingId)
+				.sort((a, b) => b.mtime - a.mtime || a.stagingId.localeCompare(b.stagingId));
+			const protectedBuilds = current ? others.filter((build) => build.mtime > current.mtime) : [];
+			const budget = Math.max(0, maxCount - (current ? 1 : 0) - protectedBuilds.length);
 			// Awaited (best-effort via allSettled) so the retention count is settled by the time the stage
 			// returns.
 			const evictions = others
-				.filter((build) => !newerThanCurrent.includes(build))
+				.filter((build) => !protectedBuilds.includes(build))
 				.slice(budget)
 				.map((build) =>
 					rm(build.parentPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((err) =>
@@ -1177,12 +1184,28 @@ export async function revertApplication(
 				// commit — a manifest write, or the retain rename — has to take config and the application
 				// lock back too, or the directories end up describing one release while the persisted state
 				// names the other, and a cold start reinstalls over the live bytes.
-				let persistCommitted = false;
+				// ATTEMPTED, not committed. The config transaction marks itself started before writing root
+				// config and can reject between that write and the application-lock write, so a rejected
+				// commit may still have changed persisted state. Its rollback is a no-op when nothing was
+				// written, which is what makes calling it after any attempt the safe choice.
+				let persistAttempted = false;
 				let manifestWritten = false;
 				const undoRevert = async (cause: unknown, detail: string): Promise<never> => {
 					const undoErrors: unknown[] = [];
-					if (persistCommitted) {
-						await hooks.rollbackPersistentState?.().catch((rollbackError) => undoErrors.push(rollbackError));
+					if (persistAttempted) {
+						try {
+							await hooks.rollbackPersistentState?.();
+						} catch (rollbackError) {
+							// Persisted state may still name the reverted-to release and we could not take it back.
+							// Moving the directories now would contradict it, so leave the holding tree and the
+							// marker untouched: that is exactly the shape startup recovery rolls forward from.
+							throw new AggregateError(
+								[cause, rollbackError],
+								`Reverted ${application.name} but could not ${detail}, and could not roll its ` +
+									`configuration back. The directories and ${recoveryMarkerPath} are left in place for ` +
+									`startup recovery to finish the revert`
+							);
+						}
 					}
 					if (manifestWritten) {
 						// The manifest currently claims the exchange happened. Put it back before the directories
@@ -1210,8 +1233,8 @@ export async function revertApplication(
 					throw cause;
 				};
 				try {
+					persistAttempted = true;
 					await hooks.commitPersistentState?.(target.previous.application_config);
-					persistCommitted = true;
 					application.useLiveBuildDir();
 					await writeRetainedPreviousManifest(liveDirPath, {
 						previous: target.live,
@@ -1249,8 +1272,19 @@ export async function revertApplication(
 						live: target.previous,
 					});
 				} catch (persistError) {
+					try {
+						await hooks.rollbackPersistentState?.();
+					} catch (rollbackError) {
+						// As in the swap branch: persisted state may name the restored release, so undoing the
+						// rename would contradict it. Leave the marker for startup recovery to roll forward.
+						throw new AggregateError(
+							[persistError, rollbackError],
+							`Restored ${application.name} from its retained version but could not persist its ` +
+								`configuration or roll that back. ${restoreMarkerPath} is left in place for startup ` +
+								`recovery to finish the restore`
+						);
+					}
 					const undoErrors: unknown[] = [];
-					await hooks.rollbackPersistentState?.().catch((rollbackError) => undoErrors.push(rollbackError));
 					await rename(liveDirPath, previousPath).catch((restoreError) => undoErrors.push(restoreError));
 					await rm(restoreMarkerPath, { force: true }).catch(() => {});
 					if (undoErrors.length) {
@@ -3266,6 +3300,18 @@ function activationArtifactDeploymentId(name: string): string | undefined {
 }
 
 /**
+ * Whether a usable live component occupies `livePath`. A `file:` directory deploy is materialized as a
+ * symlink by design, so requiring a real directory would report a perfectly good live component as
+ * missing — and recovery would then treat its displaced release as residue.
+ */
+async function liveComponentPresent(livePath: string): Promise<boolean> {
+	const linkStat = await statIfPresent(livePath);
+	if (!linkStat) return false;
+	if (linkStat.isSymbolicLink()) return !!(await statIfPresent(livePath, true))?.isDirectory();
+	return linkStat.isDirectory();
+}
+
+/**
  * Finish the retention half of an interrupted activation. The tree the swap displaced is still parked
  * as `.deploy-activating/<project>/.previous-<id>-…`, and clearing it as residue is exactly what makes
  * a recovered deploy unrevertable — the crash shape here is "swapped and committed, but died before
@@ -3414,8 +3460,7 @@ export async function reconcileStagedApplicationArtifacts(
 						ownedByActivation = true;
 						return;
 					}
-					const liveStat = await lstat(componentDirPath).catch(() => undefined);
-					if (!liveStat?.isDirectory() || liveStat.isSymbolicLink()) {
+					if (!(await liveComponentPresent(componentDirPath))) {
 						throw new Error(`Interrupted activation '${entry.name}' has neither a staged nor live component tree`);
 					}
 					await persistActivation(row);
@@ -3478,8 +3523,9 @@ export async function reconcileStagedApplicationArtifacts(
 						failedProjects.set(projectEntry.name, reconcileError);
 						continue;
 					}
-					const liveStat = await lstat(livePath).catch(() => undefined);
-					if (row?.status === 'activating' && row.project === projectEntry.name && liveStat?.isDirectory()) {
+					const liveStat = await statIfPresent(livePath);
+					const liveUsable = await liveComponentPresent(livePath);
+					if (row?.status === 'activating' && row.project === projectEntry.name && liveUsable) {
 						try {
 							await persistActivation(row);
 							if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX)) {
@@ -3497,15 +3543,15 @@ export async function reconcileStagedApplicationArtifacts(
 						}
 					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && !liveStat) {
 						await rename(artifactPath, livePath);
-					} else if (!row && artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX)) {
+					} else if (artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) && (!row || !liveUsable)) {
 						// A backup artifact still here means the activation never finished retaining it, so this is
-						// the only copy of the tree it displaced. An absent row is not evidence that copy is
-						// disposable: the lookup returns undefined both for a row retention reclaimed and for a
-						// deployment table that was never provisioned. Keep it and let a pass that can read the
-						// row decide.
+						// the only copy of the tree it displaced. It is deleted only when the state positively says
+						// it is residue. An absent row does not: the lookup returns undefined both for a row
+						// retention reclaimed and for a deployment table that was never provisioned. Neither does
+						// an unusable live path, which is how a crash mid-swap looks.
 						logger.warn(
 							`Keeping displaced component tree '${artifact.name}' for '${projectEntry.name}': ` +
-								`its deployment row could not be read, so it cannot be confirmed disposable`
+								`its deployment row or live tree could not be confirmed, so it is not provably disposable`
 						);
 					} else {
 						await rm(artifactPath, { recursive: true, force: true });

@@ -720,6 +720,10 @@ describe('deploy_component two-phase orchestration', function () {
 				path.join(configRoot, 'harper-application-lock.json'),
 				JSON.stringify({ applications: { [project]: { package: 'stale-package' } } })
 			);
+			// A root-config entry is what makes a dropped component come back: installApplications() reads
+			// it on the next boot and reinstalls the package. Removing it and the application-lock entry as
+			// two separate writes meant a crash or a failed second write left this behind.
+			await fs.appendFile(configPath, `${project}:\n  package: stale-package\n`);
 
 			await operations.dropComponent({ project });
 
@@ -733,6 +737,11 @@ describe('deploy_component two-phase orchestration', function () {
 			assert.strictEqual(existsSync(path.join(componentsRoot, DEPLOY_ACTIVATION_DIR, project)), false);
 			const applicationLock = JSON.parse(await fs.readFile(path.join(configRoot, 'harper-application-lock.json')));
 			assert.strictEqual(applicationLock.applications[project], undefined);
+			assert.strictEqual(
+				(await fs.readFile(configPath, 'utf8')).includes(project),
+				false,
+				'the root-config entry is removed in the same step, so the next boot cannot reinstall the drop'
+			);
 		} finally {
 			if (priorRootEnv === undefined) delete process.env.ROOTPATH;
 			else process.env.ROOTPATH = priorRootEnv;

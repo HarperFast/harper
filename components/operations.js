@@ -431,16 +431,7 @@ async function packageComponent(req) {
  * any credential token into the secrets store (so it lives as a replicated reference, not embedded),
  * then dispatches to the two-phase orchestrator (default) or the legacy one-shot path.
  *
- * Two-phase (stage → activate) builds the incoming version into a hidden staging directory on EVERY
- * node first, verifies it landed everywhere, and only then swaps it live cluster-wide — so a node
- * that can't fetch the package or fails `npm install` fails the deploy while the live component is
- * still untouched on every node, and the go-live window shrinks to a fast atomic directory swap.
- * See stageApplication/activateStagedApplication in components/Application.ts.
- *
- * The request/response contract is unchanged: same inputs (`package`/payload, `restart`,
- * `install_*`, `credentials`, `ignore_replication_errors`, `deployment_timeout`, …), same
- * `deployment_id` in the response, same SSE progress stream (now emitting `stage`/`activate` phases
- * instead of `prepare`/`replicate`). Pass `two_phase: false` to force the legacy one-shot path.
+ * `two_phase: false` forces the one-shot path. See DESIGN.md for the stage/activate protocol.
  *
  * @param req
  * @returns {Promise<object>}
@@ -2063,7 +2054,6 @@ async function dropComponent(req) {
 				// Retires any interrupted-extraction aside and renames the live tree aside before removing
 				// it, so startup recovery can never restore a tree over a dropped component.
 				await dropComponentDirectory(componentPath, project, log);
-				await updateApplicationLockEntry(project, undefined);
 			} else if (await fs.pathExists(pathToComponent)) {
 				await fs.remove(pathToComponent);
 			}
@@ -2077,9 +2067,18 @@ async function dropComponent(req) {
 				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 			}
 
-			// Under the persistent-state lock for the same reason: an unlocked delete can be clobbered by a
-			// concurrent activation writing back a document that still contains this project.
-			await withPersistentStateLock(async () => configUtils.deleteConfigFromFile([project]));
+			if (file) {
+				// Under the persistent-state lock: an unlocked delete can be clobbered by a concurrent
+				// activation writing back a document that still contains this project.
+				await withPersistentStateLock(async () => configUtils.deleteConfigFromFile([project]));
+			} else {
+				// Both persistent writes as ONE reversible step, config first. Removing the application-lock
+				// entry and the root-config entry separately meant a crash or a failed second write left root
+				// config still naming the package with the live directory already gone — and the next boot's
+				// installApplications() reinstalled the very component that was dropped.
+				const dropTransaction = await createApplicationConfigTransaction(project, null);
+				await dropTransaction.commit();
+			}
 		},
 		componentDropLockOptions(project)
 	);

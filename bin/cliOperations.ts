@@ -26,13 +26,9 @@ const OP_ALIASES = {
 	package: 'package_component',
 };
 
-// CLI verbs that map to an operation plus preset properties. `harper stage` and `harper activate` are
-// sugar over `deploy_component` (the stage/activate phases are folded into it; there are no separate
-// stage/activate operations): `harper stage` packages + uploads the incoming version to a hidden
-// staging dir cluster-wide and stops before go-live (`activate: false`), printing the staged
-// deployment_id, and `harper activate deployment_id=<id>` takes that staged deployment live (no
-// upload). `harper revert` is its own operation — `revert_component` — because it is a rollback rather
-// than a deploy phase, and uploads and installs nothing.
+// CLI verbs that map to an operation plus preset properties. `stage` and `activate` are sugar over
+// `deploy_component`, whose phases are folded into it — there are no separate stage/activate
+// operations. `revert` is its own operation because it is a rollback, not a deploy phase.
 const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
 	stage: { operation: 'deploy_component', activate: false, _cliVerb: 'stage' },
 	// `_cliVerb` is a CLI-internal marker (stripped before the request is sent) so verbRequirementError

@@ -1444,6 +1444,86 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 	});
 
+	it('rolls persistent state back when the commit itself rejects, not only when a later step does', async () => {
+		// `createApplicationConfigTransaction.commit()` marks itself started before writing root config and
+		// can reject between that write and the application-lock write. Gating compensation on "the commit
+		// resolved" therefore skipped the rollback for a commit that had already changed persisted state,
+		// and the directories were restored while config still named the reverted-to release — which a cold
+		// start would reinstall over.
+		const name = fixtureName();
+		const { application, second } = await twoActivations(name);
+		let rolledBack = 0;
+		const revertTo = (await getRevertTarget(application.dirPath)).previous.deployment_id;
+
+		await assert.rejects(
+			() =>
+				revertApplication(application, revertTo, {
+					commitPersistentState: async () => {
+						throw new Error('application lock write failed after root config changed');
+					},
+					rollbackPersistentState: async () => {
+						rolledBack++;
+					},
+				}),
+			/application lock write failed/
+		);
+
+		assert.strictEqual(rolledBack, 1, 'a rejected commit is still an attempted commit, so it is rolled back');
+		assert.match(await readMarker(application.dirPath), /v2/, 'and the pre-revert version is live again');
+		const target = await getRevertTarget(application.dirPath);
+		assert.strictEqual(target.live.deployment_id, second);
+		await cleanup(name);
+	});
+
+	it('leaves the holding tree and marker in place when the persistent rollback itself fails', async () => {
+		// Persisted state may name the reverted-to release with no way to take it back. Undoing the
+		// directories then would contradict it, so compensation stops and leaves exactly the shape startup
+		// recovery rolls forward from — rather than restoring the old bytes and consuming the evidence.
+		const name = fixtureName();
+		const { application } = await twoActivations(name);
+		const previousRoot = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR);
+		const revertTo = (await getRevertTarget(application.dirPath)).previous.deployment_id;
+
+		await assert.rejects(
+			() =>
+				revertApplication(application, revertTo, {
+					commitPersistentState: async () => {
+						throw new Error('commit failed');
+					},
+					rollbackPersistentState: async () => {
+						throw new Error('rollback failed too');
+					},
+				}),
+			/left in place for startup recovery/
+		);
+
+		const holdings = (await fs.readdir(previousRoot)).filter(
+			// The marker shares the holding directory's prefix, so exclude it or it counts as a second tree.
+			(entry) => entry.startsWith(`.reverting-${name}-`) && !entry.endsWith('.recovering.json')
+		);
+		assert.strictEqual(holdings.length, 1, 'the holding tree still holds the previously-live bytes');
+		assert.strictEqual(
+			existsSync(path.join(previousRoot, `${holdings[0]}.recovering.json`)),
+			true,
+			'and its marker survives, which is what recovery keys on'
+		);
+		// Live holds the reverted-to bytes and the retained slot is empty: precisely the state recovery
+		// reads as "the revert happened, only the retain step was lost".
+		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version is left live');
+		assert.strictEqual(
+			existsSync(path.join(previousRoot, name)),
+			false,
+			'and the retained slot is empty, because the holding tree has not been moved into it yet'
+		);
+
+		// Recovery finishes what compensation could not.
+		const failures = await recoverInterruptedReverts(COMPONENTS_ROOT);
+		assert.strictEqual(failures.size, 0);
+		assert.match(await readMarker(application.dirPath), /v1/, 'the reverted-to version stays live');
+		assert.match(await readMarker(path.join(previousRoot, name)), /v2/, 'and the displaced tree is retained');
+		await cleanup(name);
+	});
+
 	it('rolls forward an interrupted revert whose compensation had already moved live away', async () => {
 		// Crash shape: config and the manifest committed, then compensation renamed live away before it
 		// could put the holding tree back. Undoing the directories here would contradict the persisted
@@ -1695,6 +1775,42 @@ describe('two-phase component directory transaction', function () {
 			undefined,
 			'so the component reports as not revertable until its next deploy'
 		);
+		await cleanup(name);
+	});
+
+	it('treats a live directory-package symlink as a live component, not a missing one', async () => {
+		// A `file:` directory deploy is materialized as a symlink by design. Requiring a real directory
+		// reported this shape as "neither staged nor live", and the artifact sweep then deleted the
+		// `.previous-*` backup — the only copy of the displaced release — while the component stayed
+		// failed closed. This is the exact post-swap crash state: symlink already renamed live, the
+		// displaced tree still parked, persistence not yet finished.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const livePath = path.join(COMPONENTS_ROOT, name);
+		const linkTarget = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-dirpkg-'));
+		await fs.writeFile(path.join(linkTarget, 'index.js'), "module.exports = 'directory-package';\n");
+		await fs.symlink(linkTarget, livePath);
+		const activationProjectDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationProjectDir, { recursive: true });
+		const backupPath = path.join(activationProjectDir, `.previous-${deploymentId}-1-1-${randomUUID()}`);
+		await fs.mkdir(backupPath, { recursive: true });
+		await fs.writeFile(path.join(backupPath, 'index.js'), "module.exports = 'displaced';\n");
+
+		let persisted = 0;
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === deploymentId ? { deployment_id: id, project: name, status: 'activating' } : undefined),
+			async () => persisted++
+		);
+
+		assert.strictEqual(persisted, 1, 'the activation is finished rather than reported unrecoverable');
+		assert.strictEqual(reconciliation.failedProjects.has(name), false, 'so the component is not failed closed');
+		assert.match(await readMarker(livePath), /directory-package/, 'the symlinked live component is untouched');
+		const previousPath = path.join(COMPONENTS_ROOT, DEPLOY_PREVIOUS_DIR, name);
+		assert.match(await readMarker(previousPath), /displaced/, 'and its displaced release is retained, not deleted');
+
+		await fs.rm(livePath, { force: true });
+		await fs.rm(linkTarget, { recursive: true, force: true });
 		await cleanup(name);
 	});
 

@@ -321,12 +321,11 @@ export const OPERATIONS_ENUM = {
 	PACKAGE_CUSTOM_FUNCTION_PROJECT: 'package_custom_function_project',
 	DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',
 	PACKAGE_COMPONENT: 'package_component',
-	// deploy_component runs a two-phase deploy internally. Peer phases use a distinct operation so
-	// older nodes fail closed instead of interpreting an unknown phase field as a one-shot deploy.
+	// Peer phases get their own operation so an older node fails closed instead of reading an unknown
+	// phase field as a one-shot deploy.
 	DEPLOY_COMPONENT: 'deploy_component',
 	COMPONENT_DEPLOY_PHASE: 'component_deploy_phase',
-	// Put a component's retained previous version back in service cluster-wide. A distinct public
-	// operation rather than a deploy phase: it fetches, resolves and installs nothing.
+	// A public operation rather than a deploy phase: it fetches, resolves and installs nothing.
 	REVERT_COMPONENT: 'revert_component',
 	READ_TRANSACTION_LOG: 'read_transaction_log',
 	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
@@ -591,14 +590,10 @@ export const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_MAXREQUESTBODYSIZE: 'operationsApi_network_maxRequestBodySize',
 	OPERATIONSAPI_COMPONENTFILE_MAXSIZE: 'operationsApi_componentFile_maxSize',
 	DEPLOYMENT_PAYLOADRETENTION_MAXSIZE: 'deployment_payloadRetention_maxSize',
-	// Max stored deployment payloads (tarballs) kept per project. After a successful deploy, the
-	// payload_blob of older deployments beyond this count is dropped; the rows (metadata + event_log)
-	// are always retained. Bounds how much disk retained payloads can occupy per project — N copies of
-	// a large app payload would otherwise compete with the customer's own data for instance quota.
-	// See components/deploymentRecorder.ts (pruneProjectPayloads).
+	// Bounds retained payload tarballs per project. Only the blob is dropped — rows are always kept, so
+	// the audit trail survives.
 	DEPLOYMENT_PAYLOADRETENTION_MAXCOUNT: 'deployment_payloadRetention_maxCount',
-	// Max not-yet-activated staged builds kept per component (`activate: false` stage-and-stops). When a
-	// new stage lands, the oldest beyond this count are evicted. See components/Application.ts.
+	// Bounds not-yet-activated staged builds per component.
 	DEPLOYMENT_STAGINGRETENTION_MAXCOUNT: 'deployment_stagingRetention_maxCount',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',

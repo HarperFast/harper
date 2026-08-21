@@ -160,20 +160,8 @@ suite('Deployment tracking — peer-operation authorization boundary', (ctx: Con
 		strictEqual(response.status, 400, `internal marker should be rejected; got: ${response.rawText}`);
 		strictEqual(response.body.error, "'_deploymentId' is not allowed");
 	});
-	// #2066's two peer-branch end-to-end tests used to drive the peer path by sending `_deploymentId`
-	// on a PUBLIC deploy_component call. That back door is deliberately closed (see the test above):
-	// peer work now rides the trusted-peer-only `component_deploy_phase` operation, which by design
-	// cannot be reached over HTTP with ordinary credentials — so those two tests have no legitimate
-	// entry point here any more. Their coverage lives on:
-	//   - restore-on-failure: unitTests/components/extractApplicationSwap.test.js ("restores the exact
-	//     previous tree when payload extraction fails", "atomically restores the previous tree when
-	//     preparation fails under a live writer", "recovers an interrupted deploy before component
-	//     loading").
-	//   - sourcing the tarball from the row's payload_blob on a peer: the trusted-peer phase tests in
-	//     unitTests/components/deployPhaseOperations.test.js ("uses the row-backed immutable
-	//     specification for trusted peer phases", "rebuilds a missing peer stage from the durable
-	//     deployment payload before activation"), which dispatch the internal operation inside
-	//     runWithOperationAuthorizationBypass.
-	// The bogus-_deploymentId timeout case is likewise covered by the awaitDeploymentRow unit tests
-	// rather than here, where the 120s default would balloon test time.
+	// Peer work rides the trusted-peer-only `component_deploy_phase` operation, which by design cannot be
+	// reached over HTTP with ordinary credentials (the test above pins that), so a peer-branch end-to-end
+	// test has no legitimate entry point in this repo. Peer-side behavior is covered by unit tests that
+	// dispatch the internal operation directly, and end to end by the three-node harper-pro suite.
 });

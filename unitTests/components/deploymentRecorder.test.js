@@ -862,6 +862,22 @@ describe('staged deployment state', () => {
 		assert.strictEqual(installed.mock.rows.get('slow-origin').status, 'staged');
 	});
 
+	it('does not expire a staged row that ties the returning request', async () => {
+		// Two concurrent stages of one component can both reach `staged` in the same millisecond. Treating
+		// a tie as evictable let whichever pruned second mark the other failed and broadcast deletion of
+		// its tree — after that request had already returned the deployment id to its caller.
+		for (const [id, startedAt] of [
+			['tied-a', 500],
+			['tied-b', 500],
+		]) {
+			installed.mock.rows.set(id, { deployment_id: id, project: 'app', status: 'staged', started_at: startedAt });
+		}
+
+		assert.deepStrictEqual(await expireOldStagedDeployments('app', 1, 'tied-a'), []);
+		assert.strictEqual(installed.mock.rows.get('tied-b').status, 'staged');
+		assert.strictEqual(installed.mock.rows.get('tied-a').status, 'staged');
+	});
+
 	it('still expires rows older than both the window and the returning request', async () => {
 		for (const [id, startedAt] of [
 			['ancient', 50],

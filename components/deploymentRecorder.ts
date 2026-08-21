@@ -49,13 +49,11 @@ type DeploymentStatus =
 	| 'pending'
 	| 'extracting'
 	| 'installing'
-	// Two-phase deploy: building the incoming version into staging cluster-wide (stage phase), and the
-	// terminal resting state of a deploy_component stage that has not yet been activated.
 	| 'staging'
+	// A terminal resting state, not a transient one: where a stage-and-stop deploy comes to rest.
 	| 'staged'
 	| 'loading'
 	| 'replicating'
-	// Two-phase deploy: swapping the staged build into the live path cluster-wide (activate phase).
 	| 'activating'
 	// Retained for compatibility with deployment rows written by earlier preview builds.
 	| 'reverting'
@@ -590,13 +588,17 @@ async function settleStagedRows(project: string, keepCount: number, keepDeployme
 	// unconditionally: a stage that waited on slow peers resumes with an older `started_at`, so with a
 	// retention of 1 it would expire the newer stage that had already completed and been reported to the
 	// operator, then discard its staging tree cluster-wide. `started_at` is stamped by whichever node
-	// originated the deploy, so cross-node clock skew produces the same inversion. Only *strictly* newer
-	// rows are protected, which keeps the count exact when timestamps tie.
+	// originated the deploy, so cross-node clock skew produces the same inversion. Ties count as
+	// protected, not evictable: two concurrent stages of one component can both reach `staged` in the
+	// same millisecond, and evicting a tied row would fail a request that is about to return its
+	// deployment id to the caller. The budget subtracts the protected rows, so the retained total still
+	// lands on `keepCount` except when more rows tie-or-exceed the window than fit in it — a temporary
+	// overflow, which is the right way for a disk bound to fail.
 	const current = keepDeploymentId ? staged.find((row) => row.deployment_id === keepDeploymentId) : undefined;
 	const others = staged.filter((row) => row.deployment_id !== keepDeploymentId);
-	const newerThanCurrent = current ? others.filter((row) => (row.started_at ?? 0) > (current.started_at ?? 0)) : [];
-	const budget = Math.max(0, keepCount - (current ? 1 : 0) - newerThanCurrent.length);
-	const expired = others.filter((row) => !newerThanCurrent.includes(row)).slice(budget);
+	const protectedRows = current ? others.filter((row) => (row.started_at ?? 0) >= (current.started_at ?? 0)) : [];
+	const budget = Math.max(0, keepCount - (current ? 1 : 0) - protectedRows.length);
+	const expired = others.filter((row) => !protectedRows.includes(row)).slice(budget);
 	for (const row of expired) {
 		await table.patch(row.deployment_id, {
 			status: 'failed',
