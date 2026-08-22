@@ -144,6 +144,12 @@ describe('contentTypes – application/x-ndjson', function () {
 describe('contentTypes – text/event-stream (SSE)', function () {
 	const handler = contentTypes.get('text/event-stream');
 
+	it('serializes each line of string data as a separate data field', function () {
+		const serialized = handler.serialize({ event: 'payload', data: 'first\nsecond\rthird\r\n' });
+		assert.strictEqual(serialized, 'event: payload\ndata: first\ndata: second\ndata: third\ndata: \n\n');
+		assert.strictEqual(handler.serialize('first\nsecond'), 'data: first\ndata: second\n\n');
+	});
+
 	// #1628: a finite async generator streamed to natural completion must close the SSE
 	// stream cleanly. transformIterable used to hand the terminal `{ value: undefined,
 	// done: true }` step to serialize(), which threw on `undefined.acknowledge` — hanging

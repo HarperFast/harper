@@ -74,6 +74,8 @@ export class ZeroPayload extends ssePayloadResource(0) {}
 // GET /FalsePayload/ — data: false.
 export class FalsePayload extends ssePayloadResource(false) {}
 
+export class MultilineStringPayload extends ssePayloadResource('first line\nsecond line') {}
+
 // GET /IdZeroPayload/ — a real `data` value paired with `id: 0`, a legitimate reconnect cursor.
 export class IdZeroPayload extends Resource {
 	static loadAsInstance = false;

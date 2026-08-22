@@ -125,6 +125,11 @@ const ndjsonHandler = {
 mediaTypes.set('application/x-ndjson', ndjsonHandler);
 mediaTypes.set('application/ndjson', ndjsonHandler);
 
+function serializeSSEData(data: any) {
+	if (typeof data === 'object') data = JSONStringify(data);
+	return 'data: ' + String(data).replace(/\r\n|\r|\n/g, '\ndata: ') + '\n';
+}
+
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
@@ -148,16 +153,13 @@ mediaTypes.set('text/event-stream', {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';
 			if (message.data != null) {
-				let data = message.data;
-				if (typeof data === 'object') data = JSONStringify(data);
-				serialized += 'data: ' + data + '\n';
+				serialized += serializeSSEData(message.data);
 			}
 			if (message.id != null) serialized += 'id: ' + message.id + '\n';
 			if (message.retry != null) serialized += 'retry: ' + message.retry + '\n';
 			return serialized + '\n';
 		} else {
-			if (typeof message === 'object') return `data: ${JSONStringify(message)}\n\n`;
-			return `data: ${message}\n\n`;
+			return serializeSSEData(message) + '\n';
 		}
 	},
 	compressible: false,

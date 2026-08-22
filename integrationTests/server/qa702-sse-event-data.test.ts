@@ -172,8 +172,7 @@ function consumeSse(urlStr: string, authHeaders: Record<string, string>, timeout
 }
 
 // Groups raw SSE bytes into blank-line-delimited { event, data } records (mirrors the
-// unitTests/server/serverHelpers/progressEmitter.test.js parseSSEBlocks helper). Assumes no
-// record's `data` value contains an embedded newline (true for every case in this suite).
+// unitTests/server/serverHelpers/progressEmitter.test.js parseSSEBlocks helper).
 function parseSseBlocks(raw: string): Array<Record<string, string>> {
 	return raw
 		.split('\n\n')
@@ -186,7 +185,8 @@ function parseSseBlocks(raw: string): Array<Record<string, string>> {
 				const field = line.slice(0, colon);
 				let value = line.slice(colon + 1);
 				if (value.startsWith(' ')) value = value.slice(1);
-				out[field] = value;
+				if (field === 'data' && field in out) out.data += '\n' + value;
+				else out[field] = value;
 			}
 			return out;
 		})
@@ -280,6 +280,12 @@ suite(
 			{ name: 'empty string', path: 'EmptyStringPayload', hasData: true, expectedData: '' },
 			{ name: '0', path: 'ZeroPayload', hasData: true, expectedData: '0' },
 			{ name: 'false', path: 'FalsePayload', hasData: true, expectedData: 'false' },
+			{
+				name: 'multiline string',
+				path: 'MultilineStringPayload',
+				hasData: true,
+				expectedData: 'first line\nsecond line',
+			},
 			{
 				name: 'plain object (no "data" key)',
 				path: 'PlainObjectPayload',
