@@ -155,6 +155,10 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 			handler.serialize({ value: 'first\nsecond', type: 'update', timestamp: 1 }),
 			'event: update\ndata: first\ndata: second\nid: 1\n\n'
 		);
+		assert.strictEqual(
+			handler.serialize({ value: 0, type: 'update', timestamp: 1 }),
+			'event: update\ndata: 0\nid: 1\n\n'
+		);
 	});
 
 	// #1628: a finite async generator streamed to natural completion must close the SSE

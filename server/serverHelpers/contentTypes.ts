@@ -126,7 +126,7 @@ mediaTypes.set('application/x-ndjson', ndjsonHandler);
 mediaTypes.set('application/ndjson', ndjsonHandler);
 
 function serializeSSEData(data: any) {
-	if (typeof data === 'object') data = JSONStringify(data);
+	if (typeof data === 'object') return 'data: ' + JSONStringify(data) + '\n';
 	return 'data: ' + String(data).replace(/\r\n|\r|\n/g, '\ndata: ') + '\n';
 }
 
