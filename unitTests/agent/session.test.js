@@ -5,6 +5,7 @@ const {
 	createSession,
 	getSession,
 	listSessions,
+	AGENT_SESSION_ATTRIBUTES,
 	appendMessage,
 	setStatus,
 	addPendingApproval,
@@ -39,7 +40,7 @@ function makeMockTable() {
 				}
 			}
 			if (sort) {
-				rows.sort((a, b) => (a[sort.attribute] - b[sort.attribute]) * (sort.descending ? -1 : 1));
+				rows.sort((a, b) => ((a[sort.attribute] ?? 0) - (b[sort.attribute] ?? 0)) * (sort.descending ? -1 : 1));
 			}
 			return (async function* () {
 				for (const row of rows.slice(0, limit)) yield read(row);
@@ -62,6 +63,18 @@ function makeMockTable() {
 		},
 	};
 }
+
+describe('agent/session table definition', () => {
+	// listSessions sorts on `updatedAt` with no conditions, which Table.search only serves from an
+	// index — without one it throws 404. The mock in the suite below sorts in memory whatever it is
+	// asked to, so it cannot notice the attribute losing `indexed`; this asserts the declaration
+	// the query depends on.
+	it('declares updatedAt as indexed, which listSessions sorts on', () => {
+		const updatedAt = AGENT_SESSION_ATTRIBUTES.find((attribute) => attribute.name === 'updatedAt');
+		assert.ok(updatedAt, 'updatedAt attribute is declared');
+		assert.equal(updatedAt.indexed, true);
+	});
+});
 
 describe('agent/session', () => {
 	let mock;

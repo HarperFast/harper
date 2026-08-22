@@ -16,6 +16,20 @@ import type { AgentMessage, AgentRunStatus, AgentSessionRow, ApprovalRequest } f
 
 let cachedTable: any;
 
+/** `listSessions` sorts on `updatedAt`, which Table.search serves only from an index. */
+export const AGENT_SESSION_ATTRIBUTES = [
+	{ name: 'session_id', isPrimaryKey: true },
+	{ name: 'user', type: 'string', indexed: true },
+	{ name: 'status', type: 'string', indexed: true },
+	{ name: 'messages' },
+	{ name: 'pendingApprovals' },
+	{ name: 'model', type: 'string' },
+	{ name: 'provider', type: 'string' },
+	{ name: 'createdAt', type: 'number', indexed: true },
+	{ name: 'updatedAt', type: 'number', indexed: true },
+	{ name: 'lastError', type: 'string' },
+];
+
 export function getAgentSessionTable(): any {
 	if (cachedTable) return cachedTable;
 	cachedTable = table({
@@ -23,18 +37,7 @@ export function getAgentSessionTable(): any {
 		database: SYSTEM_SCHEMA_NAME,
 		audit: true,
 		trackDeletes: false,
-		attributes: [
-			{ name: 'session_id', isPrimaryKey: true },
-			{ name: 'user', type: 'string', indexed: true },
-			{ name: 'status', type: 'string', indexed: true },
-			{ name: 'messages' },
-			{ name: 'pendingApprovals' },
-			{ name: 'model', type: 'string' },
-			{ name: 'provider', type: 'string' },
-			{ name: 'createdAt', type: 'number', indexed: true },
-			{ name: 'updatedAt', type: 'number', indexed: true },
-			{ name: 'lastError', type: 'string' },
-		],
+		attributes: AGENT_SESSION_ATTRIBUTES,
 	});
 	return cachedTable;
 }
