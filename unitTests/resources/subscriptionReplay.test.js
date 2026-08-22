@@ -657,6 +657,9 @@ describe('Subscription replay', () => {
 				},
 				{ timeout: 5000 }
 			).catch(() => {});
+			// additive settle: a duplicate trailing the last expected delivery can still land; this
+			// can only catch more, never lose events
+			await delay(100);
 			subscription.return?.();
 
 			// the regression we want to catch: a record landing in BOTH history (from cursor's
@@ -685,6 +688,8 @@ describe('Subscription replay', () => {
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
 			await waitFor(() => events.some((e) => e.value?.name === 'inflight_v49'), { timeout: 5000 }).catch(() => {});
+			// additive settle so a duplicate trailing the final version can still surface
+			await delay(100);
 			subscription.return?.();
 
 			const pairs = events.map((e) => `${e.id}:${e.version}`);
