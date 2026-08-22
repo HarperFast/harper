@@ -273,16 +273,26 @@ suite('Configuration', (ctx) => {
 	});
 
 	test('set_configuration writes nothing when a request mixes recognized and unrecognized params', async () => {
+		// Read the current value rather than assuming what an earlier test left behind, so this is
+		// self-contained under isolation or reordering.
+		let before;
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => {
+				before = r.body.logging.rotation.maxSize;
+			})
+			.expect(200);
 		await client
 			.req()
 			.send({ operation: 'set_configuration', logging_rotation_maxSize: '99M', bogus_param: true })
 			.expect((r) => assert.match(r.body.error, /bogus_param/, r.text))
 			.expect(400);
-		// The recognized half of the rejected request must not have landed: still the value set above.
+		// The recognized half of the rejected request must not have landed.
 		await client
 			.req()
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.equal(r.body.logging.rotation.maxSize, '12M', r.text))
+			.expect((r) => assert.equal(r.body.logging.rotation.maxSize, before, r.text))
 			.expect(200);
 	});
 

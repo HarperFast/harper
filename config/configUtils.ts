@@ -753,6 +753,22 @@ function isSuffixEscapedParam(arg: string): boolean {
 	return arg.endsWith('_package') || arg.endsWith('_port');
 }
 
+const MAX_REPORTED_UNRECOGNIZED = 10;
+
+/**
+ * Render unrecognized names for an error that also reaches the operations log: control characters
+ * are stripped so a name containing a newline cannot forge a log line, and the list is capped so a
+ * body carrying thousands of unknown keys cannot produce an unbounded message.
+ */
+function describeUnrecognized(names: string[]): string {
+	const shown = names
+		.slice(0, MAX_REPORTED_UNRECOGNIZED)
+		// eslint-disable-next-line no-control-regex
+		.map((name) => name.replace(/[\u0000-\u001f\u007f]/g, '?'));
+	const remaining = names.length - shown.length;
+	return remaining > 0 ? `${shown.join(', ')} (and ${remaining} more)` : shown.join(', ');
+}
+
 function findUnrecognizedParams(args: object): string[] {
 	let unrecognized;
 	for (const arg in args) {
@@ -1098,7 +1114,7 @@ export async function setConfiguration(setConfigJson) {
 	if (unrecognized.length > 0) {
 		throw handleHDBError(
 			new Error(),
-			`Unable to update config, unrecognized config parameter${unrecognized.length > 1 ? 's' : ''}: ${unrecognized.join(', ')}`,
+			`Unable to update config, unrecognized config parameter${unrecognized.length > 1 ? 's' : ''}: ${describeUnrecognized(unrecognized)}`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
