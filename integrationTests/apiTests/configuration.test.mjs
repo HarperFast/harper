@@ -281,6 +281,9 @@ suite('Configuration', (ctx) => {
 				before = r?.body?.logging?.rotation?.maxSize;
 			})
 			.expect(200);
+		// Without this the optional chaining below turns an unexpected response shape into
+		// `undefined === undefined`, and the atomicity assertion passes having proved nothing.
+		assert.ok(before !== undefined, 'precondition: logging.rotation.maxSize is readable');
 		await client
 			.req()
 			.send({ operation: 'set_configuration', logging_rotation_maxSize: '99M', bogus_param: true })
