@@ -175,3 +175,107 @@ describe('dropDatabase restore serialization', () => {
 		assert.ok(existsSync(reservedDir), 'the reserved dir itself is left in place (used for lifecycle metadata)');
 	});
 });
+
+describe('openBranchDatabase (scope-private graph, harper#643)', () => {
+	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
+	const { mkdtempSync, rmSync } = require('node:fs');
+	const { tmpdir } = require('node:os');
+
+	let checkpointDir;
+	let scratchRoot;
+	before(async function () {
+		this.timeout(30000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const BranchSource = table({
+			table: 'BranchSource',
+			database: 'branchbase',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'note' }],
+		});
+		await BranchSource.put({ id: 'a', note: 'base' });
+		scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.branch-'));
+		checkpointDir = join(scratchRoot, 'checkpoint');
+		await BranchSource.primaryStore.rootStore.createCheckpoint(checkpointDir);
+	});
+
+	afterEach(function () {
+		closeBranchDatabases();
+	});
+
+	after(function () {
+		if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
+	});
+
+	it('serves the base rows under the logical table name', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		assert.ok(branch.tables.BranchSource);
+		const row = await branch.tables.BranchSource.get('a');
+		assert.strictEqual(row?.note, 'base', 'the branch reads the rows the checkpoint captured');
+	});
+
+	it('is invisible to every enumerator of the global databases map', function () {
+		const baseTableClass = databases.branchbase.BranchSource;
+		const globalKeysBefore = Object.keys(databases).length;
+
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		for (const [name, dbTables] of Object.entries(databases)) {
+			assert.notStrictEqual(dbTables, branch.tables, `branch graph reachable as databases.${name}`);
+		}
+		assert.strictEqual(databases.branchbase.BranchSource, baseTableClass);
+		assert.strictEqual(Object.keys(databases).length, globalKeysBefore);
+	});
+
+	it('stamps the branch identity on the store so blob roots do not resolve to the base', function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		assert.strictEqual(branch.rootStore.databaseName, 'appA__branchbase');
+		assert.notStrictEqual(
+			branch.rootStore.databaseName,
+			'branchbase',
+			'sharing the base name would resolve the branch blob roots onto the base directory'
+		);
+	});
+
+	it('refuses a second open of the same directory rather than handing out a rival graph', function () {
+		openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+	});
+
+	it('closes what nothing else can: the store is gone from the env map after close', function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		branch.close();
+
+		assert.doesNotThrow(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			'after close the directory can be opened again'
+		);
+	});
+
+	it('refuses to adopt a directory that is already open as a real database', function () {
+		const basePath = databases.branchbase.BranchSource.primaryStore.rootStore.path;
+		// Its store is shared and closed by closeLoadedDatabases; adopting it would make this handle's
+		// close() tear down a live database.
+		assert.throws(() => openBranchDatabase(basePath, 'branchbase', 'appB__branchbase'), /already open as a database/);
+	});
+
+	it('refuses a store identity that names a real database, which would steal its blob roots', function () {
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'branchbase'),
+			/a database of that name exists/
+		);
+	});
+
+	it('tolerates a repeated close', function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		branch.close();
+		assert.doesNotThrow(() => branch.close(), 'a second close must not close the store twice');
+	});
+
+	it('rejects a path that is not there rather than registering an empty database', function () {
+		const before = Object.keys(databases).length;
+		assert.throws(() => openBranchDatabase(join(checkpointDir, 'nope'), 'branchbase', 'x'), /no directory at/);
+		assert.strictEqual(Object.keys(databases).length, before);
+	});
+});
