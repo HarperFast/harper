@@ -148,6 +148,7 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 		const serialized = handler.serialize({ event: 'payload', data: 'first\nsecond\rthird\r\n' });
 		assert.strictEqual(serialized, 'event: payload\ndata: first\ndata: second\ndata: third\ndata: \n\n');
 		assert.strictEqual(handler.serialize('first\nsecond'), 'data: first\ndata: second\n\n');
+		assert.strictEqual(handler.serialize(Symbol('marker')), 'data: Symbol(marker)\n\n');
 	});
 
 	it('serializes multiline data after normalizing a native subscription message', function () {

@@ -127,8 +127,8 @@ mediaTypes.set('application/ndjson', ndjsonHandler);
 
 function serializeSSEData(data: any) {
 	if (typeof data === 'object') return 'data: ' + JSONStringify(data) + '\n';
-	if (typeof data === 'string') data = data.replace(/\r\n|\r|\n/g, '\ndata: ');
-	return 'data: ' + data + '\n';
+	if (typeof data === 'string') return 'data: ' + data.replace(/\r\n|\r|\n/g, '\ndata: ') + '\n';
+	return 'data: ' + String(data) + '\n';
 }
 
 mediaTypes.set('text/event-stream', {
