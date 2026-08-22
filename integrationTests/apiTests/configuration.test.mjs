@@ -273,8 +273,6 @@ suite('Configuration', (ctx) => {
 	});
 
 	test('set_configuration writes nothing when a request mixes recognized and unrecognized params', async () => {
-		// Read the current value rather than assuming what an earlier test left behind, so this is
-		// self-contained under isolation or reordering.
 		let before;
 		await client
 			.req()

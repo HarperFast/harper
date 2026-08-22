@@ -746,8 +746,7 @@ function lookupConfigParam(arg: string): string | undefined {
 
 /**
  * Component entries (`my-component_package`, `my-component_port`) are operator-named, so they
- * cannot be enumerated in CONFIG_PARAM_MAP and bypass it. Case-sensitive, matching the existing
- * behavior of the write loop this rule was factored out of.
+ * cannot be enumerated in CONFIG_PARAM_MAP and bypass it.
  */
 function isSuffixEscapedParam(arg: string): boolean {
 	return arg.endsWith('_package') || arg.endsWith('_port');
@@ -1108,8 +1107,8 @@ export async function setConfiguration(setConfigJson) {
 		);
 	}
 	// Before any local write: the writer skips names it cannot resolve, so a request mixing
-	// recognized and unrecognized names would otherwise apply the recognized half and report plain
-	// success. Local only — the fan-out below is a separate step and is not made atomic by this.
+	// recognized and unrecognized names would otherwise apply the recognized half and still report
+	// success.
 	const unrecognized = findUnrecognizedParams(configFields);
 	if (unrecognized.length > 0) {
 		throw handleHDBError(

@@ -1467,6 +1467,21 @@ describe('Test configUtils module', () => {
 			it('rejects an inherited Object.prototype name rather than resolving it', async () => {
 				expect(await rejection({ toString: 'x' })).to.include('toString');
 			});
+
+			it('replaces control characters in reported names so a name cannot forge a log line', async () => {
+				const message = await rejection({ 'bad\nname': 1 });
+				expect(message).to.include('bad?name');
+				expect(message).to.not.include('\n');
+			});
+
+			it('caps the reported names so a body full of unknown keys cannot make the message unbounded', async () => {
+				const body = {};
+				for (let i = 0; i < 25; i++) body[`nope_${i}`] = i;
+				const message = await rejection(body);
+				expect(message).to.include('(and 15 more)');
+				expect(message).to.include('nope_0');
+				expect(message).to.not.include('nope_10,');
+			});
 		});
 
 		describe('replicated: true', () => {
