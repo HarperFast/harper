@@ -577,8 +577,6 @@ describe('Subscription replay', () => {
 				inFlight.push(CurrentStateTable.put(14000 + i, { name: 'inflight' + i }));
 			}
 			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
-			// collect()'s quiet window can expire while the 200 puts are still committing; wait for
-			// the commits, then for every key's delivery.
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
@@ -646,8 +644,19 @@ describe('Subscription replay', () => {
 				inFlight.push(CountTable.put(17000 + i, { name: 'count_race_inflight' + i }));
 			}
 			const subscription = await CountTable.subscribe({ previousCount: 10, isCollection: true });
-			const events = await collect(subscription, 250);
+			// The duplicate check below is only sound once every in-flight write's delivery has had
+			// the chance to arrive — collect()'s quiet window returning early made it vacuous.
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			await waitFor(
+				() => {
+					const seen = new Set(events.map((e) => e.id));
+					for (let i = 0; i < 30; i++) if (!seen.has(17000 + i)) return false;
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			// the regression we want to catch: a record landing in BOTH history (from cursor's
@@ -669,8 +678,13 @@ describe('Subscription replay', () => {
 				inFlight.push(RecordTable.put(15000, { name: 'inflight_v' + i }));
 			}
 			const subscription = await RecordTable.subscribe({ id: 15000, startTime: startTime - 1 });
-			const events = await collect(subscription, 250);
+			// Same soundness requirement as the count test above, but rapid same-record versions can
+			// legitimately coalesce, so the only guaranteed delivery is the final version — wait for
+			// it (any cursor/listener duplicate of an earlier version travels with its original).
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			await waitFor(() => events.some((e) => e.value?.name === 'inflight_v49'), { timeout: 5000 }).catch(() => {});
 			subscription.return?.();
 
 			const pairs = events.map((e) => `${e.id}:${e.version}`);

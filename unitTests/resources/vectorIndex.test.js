@@ -1044,11 +1044,13 @@ describe('HNSW entry-point level clamp', () => {
 		T.dropTable();
 	});
 
-	it('caps the first node of an empty index at MAX_LEVEL even when random() returns 0', async () => {
+	it('caps the first node of an empty index at MAX_LEVEL', async () => {
 		const customIndex = T.indices.vector.customIndex;
-		// -Math.log(0) is Infinity; unclamped, the entry-point path would loop forever
-		// initializing per-level connection arrays.
-		customIndex.random = () => 0;
+		// Number.MIN_VALUE draws an unclamped level of ~268 (-ln(5e-324) * mL). A finite draw keeps
+		// a clamp regression a fast assertion failure — random() === 0 (Infinity) would instead wedge
+		// the runner in the synchronous per-level init loop, which is worse than the flake this
+		// branch removes.
+		customIndex.random = () => Number.MIN_VALUE;
 		try {
 			await T.put(1, { vector: [1, 0, 0] });
 		} finally {
