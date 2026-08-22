@@ -1094,6 +1094,12 @@ graphs being identical, though equal metrics do not prove it. It is the expected
 the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
 standard HNSW descends this way.
 
+Greedy-equals-full is statistical, not per-graph: rare level layouts route to a different layer-0
+entry point and displace the tail of the top-k (~2-3% of random 600-node graphs in the unit test's
+corpus). Tests that assert exact result-set equality across search strategies must therefore pin the
+graph: level assignment draws from the instance's `random` property (a test seam defaulting to
+`Math.random`), which the routing test replaces with a seeded PRNG.
+
 ## `efConstruction` and the search-`ef` ceiling both auto-scale with the graph
 
 The connection-building pass selects each node's stored edges from a candidate list of

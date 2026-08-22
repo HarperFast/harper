@@ -948,6 +948,17 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
 			],
 		});
+		// Seed level assignment (mulberry32) so the graph is identical every run. The greedy-vs-full
+		// equality below is only statistically true over random graphs — rare level layouts
+		// legitimately route to a different entry point and change the top-10 tail (flaked ~2-3% of
+		// runs on CI). Pinning the graph keeps the assertion exact without weakening it.
+		let seedState = 0x9e3779b9;
+		T.indices.vector.customIndex.random = () => {
+			seedState = (seedState + 0x6d2b79f5) | 0;
+			let t = Math.imul(seedState ^ (seedState >>> 15), 1 | seedState);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
 		for (let i = 0; i < N; i++) {
 			const a = (i / N) * Math.PI * 2;
 			const b = ((i * 7) % N) / N;

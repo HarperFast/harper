@@ -13,7 +13,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
-suite('Component: risk-query', (ctx: ContextWithHarper) => {
+// Quarantined on Windows: deploy_component (restart:true) hangs server-side after npm pack, which
+// stalls before() on undici's 300s headers timeout and cancels every child test. See
+// https://github.com/HarperFast/harper/issues/2273 — remove the skip when the deploy hang is fixed.
+const skipSuite = process.platform === 'win32';
+
+suite('Component: risk-query', { skip: skipSuite }, (ctx: ContextWithHarper) => {
 	before(async () => {
 		await startHarper(ctx);
 
@@ -27,11 +32,13 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 		strictEqual(body.message, 'Successfully deployed: risk-query, restarting Harper');
 		ok(typeof body.deployment_id === 'string', `expected deployment_id in deploy response, got ${body.deployment_id}`);
 
-		// Poll until the component is ready
+		// Poll until the component is ready. Each probe carries its own abort timeout: without it, a
+		// connection that opens but never sends headers holds fetch for undici's 300s default and
+		// blows past the deadline check (issue #2273's client-side half).
 		const deadline = Date.now() + 30_000;
 		while (true) {
 			try {
-				const check = await fetch(`${ctx.harper.httpURL}/RisqTable/`);
+				const check = await fetch(`${ctx.harper.httpURL}/RisqTable/`, { signal: AbortSignal.timeout(5_000) });
 				if (check.status === 200) break;
 			} catch {
 				// server not yet accepting connections

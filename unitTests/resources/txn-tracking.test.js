@@ -73,14 +73,27 @@ describe('Txn Expiration', () => {
 			assert.equal(lastTxn.startedFrom.method, 'get');
 			assert.equal(lastTxn.timeout, 20);
 		}
-		await Promise.race([delay(50), result]);
-		assert(performedDBInteractions);
+		// Wait on the actual signals instead of racing a fixed 50ms window: under CI contention
+		// the 40ms sleep inside get() overruns the window before the follow-up read/write lands,
+		// and the expiry sweep needs two ~20ms monitor ticks that can also land late. The 500ms
+		// tail inside get() keeps `result` pending, so observing expiry before `result` settles
+		// still proves the txn was expired mid-flight rather than removed by normal completion.
+		let resultSettled = false;
+		result.then(
+			() => (resultSettled = true),
+			() => (resultSettled = true)
+		);
+		await waitFor(() => performedDBInteractions, { message: 'read/write after expiry never completed' });
 		// Check the specific txn we started was expired and removed. Counting against
 		// existingTxns is unreliable: other tests' transactions can expire concurrently and
-		// shift the count underneath us during the 50ms window.
-		assert.ok(
-			!trackedTxns.has(lastTxn),
-			'expected the slow transaction to have been expired and removed from trackedTxns'
+		// shift the count underneath us.
+		const outcome = await waitFor(() => (!trackedTxns.has(lastTxn) ? 'expired' : resultSettled && 'settled'), {
+			message: 'the slow transaction was neither expired nor completed',
+		});
+		assert.equal(
+			outcome,
+			'expired',
+			'expected the slow transaction to have been expired and removed from trackedTxns before get() completed'
 		);
 	});
 	after(function () {

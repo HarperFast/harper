@@ -418,8 +418,25 @@ describe('Subscription replay', () => {
 					await CurrentStateTable.put(7000 + i, { name: 'pp_updated' + i });
 				}
 			})();
-			const events = await collect(subscription, 250);
+			// Attach a listener and wait for every key's final value rather than using collect()'s
+			// quiet-period timer — on a loaded runner the subscription can go quiet longer than the
+			// window while queued updates are still in flight (the same race the two tests above
+			// already moved off of). The timeout path falls through so the per-key asserts below
+			// report exactly which key was stale.
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await concurrentWrites;
+			await waitFor(
+				() => {
+					const finals = new Map();
+					for (const e of events) finals.set(e.id, e);
+					for (let i = 0; i < 50; i++) {
+						if (finals.get(7000 + i)?.value?.name !== 'pp_updated' + i) return false;
+					}
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			// every key 7000..7049 must end up at the updated value as its final delivery

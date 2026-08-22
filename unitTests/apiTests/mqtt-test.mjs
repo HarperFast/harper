@@ -890,7 +890,11 @@ describe('test MQTT connections and commands', function () {
 		const granted = await subscribeAllowingSubackError(clientV5, '+/SimpleRecord/test');
 		assert.equal(granted[0].qos, 0x8f); // assert that the subscription was rejected
 	});
-	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
+	// Quarantined: hung silently to its 20s timeout on CI main (lmdb pass, Node 26) with no
+	// server-side log output; not reproduced in 30 contended local runs. Evidence, hypotheses,
+	// and the reinstatement path (bounded per-step waits) are in
+	// https://github.com/HarperFast/harper/issues/2274 — unskip once the hang is localized.
+	it.skip('subscribe with QoS=1 and reconnect with non-clean session', async function () {
 		this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
 		// this first connection is a tear down to remove any previous durable session with this id
 		let client = await connectAsync(mqttUrl, {
