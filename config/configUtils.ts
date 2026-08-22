@@ -154,7 +154,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	let schemasArgs;
 	for (const arg in args) {
-		let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
+		let configParam = lookupConfigParam(arg);
 
 		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 		if (configParam === CONFIG_PARAMS.DATABASES) {
@@ -169,7 +169,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 			continue;
 		}
 
-		if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+		if (!configParam && isSuffixEscapedParam(arg)) {
 			configParam = arg;
 		}
 
@@ -742,6 +742,36 @@ export function updateConfigObject(param: string, value: any) {
  * @param createBackup - if true backup file is created
  * @param update_config_obj - if true updates the in memory flattened config object
  */
+/**
+ * Canonical config param for an arg name, or `undefined` when the name is not a config param.
+ * `Object.hasOwn` keeps inherited names (`constructor`) from resolving to an `Object.prototype`
+ * member that later fails a `.split('_')` — unreachable over HTTP today, where a body-property
+ * guard rejects `constructor` and the lowercased lookup misses every other inherited name, but
+ * direct callers have no such guard.
+ */
+function lookupConfigParam(arg: string): string | undefined {
+	const name = arg.toLowerCase();
+	return Object.hasOwn(CONFIG_PARAM_MAP, name) ? CONFIG_PARAM_MAP[name] : undefined;
+}
+
+/**
+ * Component entries (`my-component_package`, `my-component_port`) are named by the operator, so
+ * they cannot be enumerated in CONFIG_PARAM_MAP and bypass it. Deliberately case-sensitive:
+ * matching a lowercased name would newly accept `TYPO_PORT`, widening the accepted surface.
+ */
+function isSuffixEscapedParam(arg: string): boolean {
+	return arg.endsWith('_package') || arg.endsWith('_port');
+}
+
+/** Every arg name in `args` that is neither a known config param nor a suffix-escaped one. */
+function findUnrecognizedParams(args: object): string[] {
+	let unrecognized;
+	for (const arg in args) {
+		if (lookupConfigParam(arg) === undefined && !isSuffixEscapedParam(arg)) (unrecognized ??= []).push(arg);
+	}
+	return unrecognized ?? [];
+}
+
 export function updateConfigValue(
 	param: string,
 	value: any,
@@ -794,7 +824,7 @@ export function updateConfigValue(
 		if (skipParamMap) {
 			configParam = param;
 		} else {
-			configParam = CONFIG_PARAM_MAP[param.toLowerCase()];
+			configParam = lookupConfigParam(param);
 			if (configParam === undefined) {
 				throw handleHDBError(
 					new Error(),
@@ -813,7 +843,7 @@ export function updateConfigValue(
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsedArgs) {
-			let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
+			let configParam = lookupConfigParam(arg);
 
 			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
 			if (
@@ -845,7 +875,7 @@ export function updateConfigValue(
 				}
 			}
 
-			if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+			if (!configParam && isSuffixEscapedParam(arg)) {
 				configParam = arg;
 			}
 
@@ -1045,8 +1075,11 @@ export function getConfiguration() {
 
  */
 export async function setConfiguration(setConfigJson) {
+	// `hdb_auth_header` is the legacy spelling of the same internal auth artifact as `hdbAuthHeader`
+	// (still attached to operation objects on the 4.x line); it is a control field, never a config
+	// param, so it is stripped rather than reported as unrecognized below.
 	// eslint-disable-next-line no-unused-vars
-	const { operation, hdb_user, hdbAuthHeader, replicated, ...configFields } = setConfigJson;
+	const { operation, hdb_user, hdbAuthHeader, hdb_auth_header, replicated, ...configFields } = setConfigJson;
 	// Operation-control field, not a config param: enforce boolean (matching other
 	// `replicated` surfaces, e.g. analyticsValidator) before any local write so a
 	// malformed value like the string "false" — which is truthy — can't apply config
@@ -1055,6 +1088,21 @@ export async function setConfiguration(setConfigJson) {
 		throw handleHDBError(
 			new Error(),
 			`'replicated' must be a boolean`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	// Reject the whole request before writing anything locally: the writer skips param names it
+	// cannot resolve, so without this a request mixing recognized and unrecognized names applies
+	// the recognized half and still reports plain success (#2266). Local only — the fan-out below
+	// is a separate step, so this says nothing about cluster-wide atomicity.
+	const unrecognized = findUnrecognizedParams(configFields);
+	if (unrecognized.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Unable to update config, unrecognized config parameter${unrecognized.length > 1 ? 's' : ''}: ${unrecognized.join(', ')}`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,

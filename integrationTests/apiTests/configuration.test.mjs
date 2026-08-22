@@ -256,6 +256,43 @@ suite('Configuration', (ctx) => {
 			.expect(400);
 	});
 
+	test('set_configuration rejects an unrecognized param with 400 instead of reporting success', async () => {
+		await client
+			.req()
+			.send({ operation: 'set_configuration', not_a_real_param: 1 })
+			.expect((r) => assert.match(r.body.error, /unrecognized config parameter: not_a_real_param/, r.text))
+			.expect(400);
+	});
+
+	test('set_configuration names every unrecognized param in one 400', async () => {
+		await client
+			.req()
+			.send({ operation: 'set_configuration', nope_one: 1, nope_two: 2 })
+			.expect((r) => assert.match(r.body.error, /unrecognized config parameters: nope_one, nope_two/, r.text))
+			.expect(400);
+	});
+
+	test('set_configuration writes nothing when a request mixes recognized and unrecognized params', async () => {
+		await client
+			.req()
+			.send({ operation: 'set_configuration', logging_rotation_maxSize: '99M', bogus_param: true })
+			.expect((r) => assert.match(r.body.error, /bogus_param/, r.text))
+			.expect(400);
+		// The recognized half of the rejected request must not have landed: still the value set above.
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.equal(r.body.logging.rotation.maxSize, '12M', r.text))
+			.expect(200);
+	});
+
+	test('set_configuration still accepts an operator-named component _package entry', async () => {
+		await client
+			.req()
+			.send({ 'operation': 'set_configuration', 'integration-probe_package': 'file:./nowhere' })
+			.expect(200);
+	});
+
 	// ── set_configuration + replicated (#660) ───────────────────────────────
 	// Real cluster fan-out lives in harper-pro; without it, the base server's
 	// replication stub rejects a truthy `replicated`. These tests pin the
