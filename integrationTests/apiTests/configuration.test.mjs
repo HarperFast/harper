@@ -297,8 +297,14 @@ suite('Configuration', (ctx) => {
 			.send({ operation: 'get_configuration' })
 			.expect((r) => assert.equal(r.body['integration-probe'].package, 'file:./nowhere', r.text))
 			.expect(200);
-		// Leave no component entry behind for the rest of the suite, or a later restart, to load.
+		// Neutralize rather than remove: set_configuration has no delete, so the entry stays with a
+		// null package, which componentLoader then treats as an application-only entry and skips.
 		await client.req().send({ 'operation': 'set_configuration', 'integration-probe_package': null }).expect(200);
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.equal(r.body['integration-probe'].package, null, r.text))
+			.expect(200);
 	});
 
 	// ── set_configuration + replicated (#660) ───────────────────────────────
