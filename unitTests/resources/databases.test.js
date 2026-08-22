@@ -192,6 +192,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			database: 'branchbase',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'note' }],
 		});
+		if (!(BranchSource.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
 		await BranchSource.put({ id: 'a', note: 'base' });
 		scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.branch-'));
 		checkpointDir = join(scratchRoot, 'checkpoint');
