@@ -286,11 +286,19 @@ suite('Configuration', (ctx) => {
 			.expect(200);
 	});
 
-	test('set_configuration still accepts an operator-named component _package entry', async () => {
+	test('set_configuration still writes an operator-named component _package entry', async () => {
 		await client
 			.req()
 			.send({ 'operation': 'set_configuration', 'integration-probe_package': 'file:./nowhere' })
 			.expect(200);
+		// Status alone would pass even if preflight accepted the name and the write loop dropped it.
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.equal(r.body['integration-probe'].package, 'file:./nowhere', r.text))
+			.expect(200);
+		// Leave no component entry behind for the rest of the suite, or a later restart, to load.
+		await client.req().send({ 'operation': 'set_configuration', 'integration-probe_package': null }).expect(200);
 	});
 
 	// ── set_configuration + replicated (#660) ───────────────────────────────

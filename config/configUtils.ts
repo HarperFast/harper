@@ -273,7 +273,7 @@ export function getDefaultConfig(param: string) {
 		flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
 	}
 
-	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const paramMap = lookupConfigParam(param);
 	if (paramMap === undefined) return undefined;
 
 	return flatDefaultConfigObj[paramMap.toLowerCase()];
@@ -297,7 +297,7 @@ export function getConfigValue(param: string | null | undefined) {
 		return undefined;
 	}
 
-	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const paramMap = lookupConfigParam(param);
 	if (paramMap === undefined) return undefined;
 
 	return flatConfigObj[paramMap.toLowerCase()];
@@ -690,7 +690,7 @@ export function updateConfigObject(param: string, value: any) {
 		flatConfigObj = {};
 	}
 
-	const configObjKey = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const configObjKey = lookupConfigParam(param);
 	if (configObjKey === undefined) {
 		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
 		return;
@@ -735,19 +735,9 @@ export function updateConfigObject(param: string, value: any) {
 }
 
 /**
- * Updates and validates a config value in config file. Can also create a backup of config before updating.
- * @param param - the config value to update
- * @param value - the value to set the config to
- * @param parsedArgs - an object of param/values to update
- * @param createBackup - if true backup file is created
- * @param update_config_obj - if true updates the in memory flattened config object
- */
-/**
  * Canonical config param for an arg name, or `undefined` when the name is not a config param.
- * `Object.hasOwn` keeps inherited names (`constructor`) from resolving to an `Object.prototype`
- * member that later fails a `.split('_')` — unreachable over HTTP today, where a body-property
- * guard rejects `constructor` and the lowercased lookup misses every other inherited name, but
- * direct callers have no such guard.
+ * `Object.hasOwn` because a bare lookup resolves inherited names: `constructor` yields an
+ * `Object.prototype` member that then fails `.split('_')` or `.toLowerCase()`.
  */
 function lookupConfigParam(arg: string): string | undefined {
 	const name = arg.toLowerCase();
@@ -755,15 +745,14 @@ function lookupConfigParam(arg: string): string | undefined {
 }
 
 /**
- * Component entries (`my-component_package`, `my-component_port`) are named by the operator, so
- * they cannot be enumerated in CONFIG_PARAM_MAP and bypass it. Deliberately case-sensitive:
- * matching a lowercased name would newly accept `TYPO_PORT`, widening the accepted surface.
+ * Component entries (`my-component_package`, `my-component_port`) are operator-named, so they
+ * cannot be enumerated in CONFIG_PARAM_MAP and bypass it. Case-sensitive, matching the existing
+ * behavior of the write loop this rule was factored out of.
  */
 function isSuffixEscapedParam(arg: string): boolean {
 	return arg.endsWith('_package') || arg.endsWith('_port');
 }
 
-/** Every arg name in `args` that is neither a known config param nor a suffix-escaped one. */
 function findUnrecognizedParams(args: object): string[] {
 	let unrecognized;
 	for (const arg in args) {
@@ -772,6 +761,14 @@ function findUnrecognizedParams(args: object): string[] {
 	return unrecognized ?? [];
 }
 
+/**
+ * Updates and validates a config value in config file. Can also create a backup of config before updating.
+ * @param param - the config value to update
+ * @param value - the value to set the config to
+ * @param parsedArgs - an object of param/values to update
+ * @param createBackup - if true backup file is created
+ * @param update_config_obj - if true updates the in memory flattened config object
+ */
 export function updateConfigValue(
 	param: string,
 	value: any,
@@ -1075,11 +1072,11 @@ export function getConfiguration() {
 
  */
 export async function setConfiguration(setConfigJson) {
-	// `hdb_auth_header` is the legacy spelling of the same internal auth artifact as `hdbAuthHeader`
-	// (still attached to operation objects on the 4.x line); it is a control field, never a config
-	// param, so it is stripped rather than reported as unrecognized below.
+	// `hdb_auth_header` is the 4.x spelling of `hdbAuthHeader`, and `impersonate` is a generic
+	// operation-body field (server/operationsServer.ts): control fields, never config params.
 	// eslint-disable-next-line no-unused-vars
-	const { operation, hdb_user, hdbAuthHeader, hdb_auth_header, replicated, ...configFields } = setConfigJson;
+	const { operation, hdb_user, hdbAuthHeader, hdb_auth_header, impersonate, replicated, ...configFields } =
+		setConfigJson;
 	// Operation-control field, not a config param: enforce boolean (matching other
 	// `replicated` surfaces, e.g. analyticsValidator) before any local write so a
 	// malformed value like the string "false" — which is truthy — can't apply config
@@ -1094,10 +1091,9 @@ export async function setConfiguration(setConfigJson) {
 			true
 		);
 	}
-	// Reject the whole request before writing anything locally: the writer skips param names it
-	// cannot resolve, so without this a request mixing recognized and unrecognized names applies
-	// the recognized half and still reports plain success (#2266). Local only — the fan-out below
-	// is a separate step, so this says nothing about cluster-wide atomicity.
+	// Before any local write: the writer skips names it cannot resolve, so a request mixing
+	// recognized and unrecognized names would otherwise apply the recognized half and report plain
+	// success. Local only — the fan-out below is a separate step and is not made atomic by this.
 	const unrecognized = findUnrecognizedParams(configFields);
 	if (unrecognized.length > 0) {
 		throw handleHDBError(
