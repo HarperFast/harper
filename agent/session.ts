@@ -77,8 +77,15 @@ export async function getSession(sessionId: string): Promise<AgentSessionRow | u
 export async function listSessions(opts: { limit?: number } = {}): Promise<AgentSessionRow[]> {
 	const limit = opts.limit ?? 100;
 	const out: AgentSessionRow[] = [];
-	for (const entry of getAgentSessionTable().primaryStore.getRange({ reverse: true, limit })) {
-		if (entry.value) out.push(entry.value as AgentSessionRow);
+	// Ordered through the indexed `updatedAt`, not a reverse scan of the primary store: the primary
+	// key is a random UUID, so key order carries no time information and `limit` would truncate an
+	// arbitrary subset rather than dropping the least recent sessions.
+	for await (const row of getAgentSessionTable().search({
+		conditions: [{ attribute: 'updatedAt', comparator: 'greater_than', value: 0 }],
+		sort: { attribute: 'updatedAt', descending: true },
+		limit,
+	})) {
+		if (row) out.push(row as AgentSessionRow);
 	}
 	return out;
 }
