@@ -150,6 +150,13 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 		assert.strictEqual(handler.serialize('first\nsecond'), 'data: first\ndata: second\n\n');
 	});
 
+	it('serializes multiline data after normalizing a native subscription message', function () {
+		assert.strictEqual(
+			handler.serialize({ value: 'first\nsecond', type: 'update', timestamp: 1 }),
+			'event: update\ndata: first\ndata: second\nid: 1\n\n'
+		);
+	});
+
 	// #1628: a finite async generator streamed to natural completion must close the SSE
 	// stream cleanly. transformIterable used to hand the terminal `{ value: undefined,
 	// done: true }` step to serialize(), which threw on `undefined.acknowledge` — hanging
