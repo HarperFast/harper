@@ -77,11 +77,12 @@ export async function getSession(sessionId: string): Promise<AgentSessionRow | u
 export async function listSessions(opts: { limit?: number } = {}): Promise<AgentSessionRow[]> {
 	const limit = opts.limit ?? 100;
 	const out: AgentSessionRow[] = [];
-	// Ordered through the indexed `updatedAt`, not a reverse scan of the primary store: the primary
-	// key is a random UUID, so key order carries no time information and `limit` would truncate an
-	// arbitrary subset rather than dropping the least recent sessions.
+	// Sort with no conditions on purpose: Table.search pushes an order-aligned pseudo-condition when
+	// the sort attribute is indexed, and throws 404 when it is not. Adding a `updatedAt > 0` sentinel
+	// to force the index would make conditions non-empty, so losing `indexed` on the attribute would
+	// silently degrade to decoding every session (full transcripts) and sorting in memory instead of
+	// failing. The sentinel would also drop rows whose updatedAt is absent or 0.
 	for await (const row of getAgentSessionTable().search({
-		conditions: [{ attribute: 'updatedAt', comparator: 'greater_than', value: 0 }],
 		sort: { attribute: 'updatedAt', descending: true },
 		limit,
 	})) {

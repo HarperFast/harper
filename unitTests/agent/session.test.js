@@ -31,8 +31,6 @@ function makeMockTable() {
 		async put(record) {
 			store.set(record.session_id, structuredClone(record));
 		},
-		// Index-ordered scan, the shape Table.search provides when the sort attribute is indexed
-		// and aligned with the leading condition. Models ordering + limit; not the query planner.
 		search({ conditions = [], sort, limit = Infinity } = {}) {
 			let rows = Array.from(store.values());
 			for (const condition of conditions) {
@@ -54,9 +52,8 @@ function makeMockTable() {
 			async get(key) {
 				return read(store.get(key));
 			},
-			// Key-ordered, like the real primary store. Insertion order would make a reverse scan
-			// look time-ordered, which is exactly how the ordering defect in listSessions survived
-			// its own test (harper#2268) — the primary key is a random UUID.
+			// Key-ordered, like the real primary store; insertion order would make a reverse scan
+			// look time-ordered.
 			getRange({ limit = Infinity, reverse } = {}) {
 				const entries = Array.from(store.entries()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 				if (reverse) entries.reverse();
@@ -159,10 +156,8 @@ describe('agent/session', () => {
 		await assert.rejects(resolveApproval(session.session_id, approval.id, true), /already resolved/);
 	});
 
-	// Ids descend while activity time ascends, so key order and time order are exact opposites:
-	// a key-ordered scan and a time-ordered one cannot agree by luck. Ids that ascend alongside
-	// time would let a reverse primary-key scan pass these assertions, which is how the real
-	// random-UUID ordering defect survived a green test.
+	// Ids descend while activity time ascends, so a key-ordered scan and a time-ordered one cannot
+	// agree by luck.
 	async function seedSessionsOldestFirst(count) {
 		const created = [];
 		for (let i = 0; i < count; i++) {
@@ -193,8 +188,6 @@ describe('agent/session', () => {
 		);
 	});
 
-	// Revives a middle session: reviving the one whose id sorts highest would also come back first
-	// under a reverse primary-key scan, so it would not distinguish the two orderings.
 	it('reflects later activity in the order, so a revived old session sorts first', async () => {
 		const oldestFirst = await seedSessionsOldestFirst(3);
 		await appendMessage(oldestFirst[1], { role: 'user', content: 'revived', createdAt: Date.now() });
