@@ -740,6 +740,7 @@ export function updateConfigObject(param: string, value: any) {
  * `Object.prototype` member that then fails `.split('_')` or `.toLowerCase()`.
  */
 function lookupConfigParam(arg: string): string | undefined {
+	if (typeof arg !== 'string') return undefined;
 	const name = arg.toLowerCase();
 	return Object.hasOwn(CONFIG_PARAM_MAP, name) ? CONFIG_PARAM_MAP[name] : undefined;
 }
@@ -749,7 +750,7 @@ function lookupConfigParam(arg: string): string | undefined {
  * cannot be enumerated in CONFIG_PARAM_MAP and bypass it.
  */
 function isSuffixEscapedParam(arg: string): boolean {
-	return arg.endsWith('_package') || arg.endsWith('_port');
+	return typeof arg === 'string' && (arg.endsWith('_package') || arg.endsWith('_port'));
 }
 
 const MAX_REPORTED_UNRECOGNIZED = 10;

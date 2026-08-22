@@ -260,7 +260,7 @@ suite('Configuration', (ctx) => {
 		await client
 			.req()
 			.send({ operation: 'set_configuration', not_a_real_param: 1 })
-			.expect((r) => assert.match(r.body.error, /unrecognized config parameter: not_a_real_param/, r.text))
+			.expect((r) => assert.match(r?.body?.error ?? '', /unrecognized config parameter: not_a_real_param/, r?.text))
 			.expect(400);
 	});
 
@@ -268,7 +268,7 @@ suite('Configuration', (ctx) => {
 		await client
 			.req()
 			.send({ operation: 'set_configuration', nope_one: 1, nope_two: 2 })
-			.expect((r) => assert.match(r.body.error, /unrecognized config parameters: nope_one, nope_two/, r.text))
+			.expect((r) => assert.match(r?.body?.error ?? '', /unrecognized config parameters: nope_one, nope_two/, r?.text))
 			.expect(400);
 	});
 
@@ -278,19 +278,19 @@ suite('Configuration', (ctx) => {
 			.req()
 			.send({ operation: 'get_configuration' })
 			.expect((r) => {
-				before = r.body.logging.rotation.maxSize;
+				before = r?.body?.logging?.rotation?.maxSize;
 			})
 			.expect(200);
 		await client
 			.req()
 			.send({ operation: 'set_configuration', logging_rotation_maxSize: '99M', bogus_param: true })
-			.expect((r) => assert.match(r.body.error, /bogus_param/, r.text))
+			.expect((r) => assert.match(r?.body?.error ?? '', /bogus_param/, r?.text))
 			.expect(400);
 		// The recognized half of the rejected request must not have landed.
 		await client
 			.req()
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.equal(r.body.logging.rotation.maxSize, before, r.text))
+			.expect((r) => assert.strictEqual(r?.body?.logging?.rotation?.maxSize, before, r?.text))
 			.expect(200);
 	});
 
@@ -303,7 +303,7 @@ suite('Configuration', (ctx) => {
 		await client
 			.req()
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.equal(r.body['integration-probe'].package, 'file:./nowhere', r.text))
+			.expect((r) => assert.strictEqual(r?.body?.['integration-probe']?.package, 'file:./nowhere', r?.text))
 			.expect(200);
 		// Neutralize rather than remove: set_configuration has no delete, so the entry stays with a
 		// null package, which componentLoader then treats as an application-only entry and skips.
@@ -311,7 +311,7 @@ suite('Configuration', (ctx) => {
 		await client
 			.req()
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.equal(r.body['integration-probe'].package, null, r.text))
+			.expect((r) => assert.strictEqual(r?.body?.['integration-probe']?.package, null, r?.text))
 			.expect(200);
 	});
 
