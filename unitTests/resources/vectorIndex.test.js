@@ -1025,6 +1025,43 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	});
 });
 
+describe('HNSW entry-point level clamp', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWClampTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+	});
+	after(() => {
+		T.dropTable();
+	});
+
+	it('caps the first node of an empty index at MAX_LEVEL even when random() returns 0', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		// -Math.log(0) is Infinity; unclamped, the entry-point path would loop forever
+		// initializing per-level connection arrays.
+		customIndex.random = () => 0;
+		try {
+			await T.put(1, { vector: [1, 0, 0] });
+		} finally {
+			customIndex.random = Math.random;
+		}
+		let entryLevel;
+		for (const { value } of customIndex.indexStore.getRange({ start: 0, end: Infinity })) {
+			if (value?.level !== undefined) entryLevel = value.level;
+		}
+		assert.strictEqual(entryLevel, 10, `expected the entry point level to be clamped to MAX_LEVEL, got ${entryLevel}`);
+	});
+});
+
 describe('HNSW limit above the resolved search ef', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;

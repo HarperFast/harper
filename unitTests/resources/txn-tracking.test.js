@@ -73,11 +73,8 @@ describe('Txn Expiration', () => {
 			assert.equal(lastTxn.startedFrom.method, 'get');
 			assert.equal(lastTxn.timeout, 20);
 		}
-		// Wait on the actual signals instead of racing a fixed 50ms window: under CI contention
-		// the 40ms sleep inside get() overruns the window before the follow-up read/write lands,
-		// and the expiry sweep needs two ~20ms monitor ticks that can also land late. The 500ms
-		// tail inside get() keeps `result` pending, so observing expiry before `result` settles
-		// still proves the txn was expired mid-flight rather than removed by normal completion.
+		// The 500ms tail inside get() keeps `result` pending, so observing expiry before `result`
+		// settles proves the txn was expired mid-flight rather than removed by normal completion.
 		let resultSettled = false;
 		result.then(
 			() => (resultSettled = true),
@@ -95,6 +92,14 @@ describe('Txn Expiration', () => {
 			'expired',
 			'expected the slow transaction to have been expired and removed from trackedTxns before get() completed'
 		);
+		// Drain the slow get() so its 500ms tail and final read cannot run into the next
+		// describe's expiration settings and freshly re-pathed test DB. On rocksdb the aborted
+		// outer transaction must also surface to the caller.
+		if (SlowResource.primaryStore instanceof RocksDatabase) {
+			await assert.rejects(result, /aborted after exceeding the maximum open-transaction time/);
+		} else {
+			await result.catch(() => {});
+		}
 	});
 	after(function () {
 		setTxnExpiration(30000);

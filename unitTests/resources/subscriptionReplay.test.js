@@ -381,7 +381,19 @@ describe('Subscription replay', () => {
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await concurrentWrites;
-			await delay(200);
+			// wait for every hammered key's final (round-2) value instead of a fixed 200ms — the
+			// queued deliveries can trail the commits on a loaded runner
+			await waitFor(
+				() => {
+					const lastSeen = new Map();
+					for (const e of events) lastSeen.set(e.id, e);
+					for (let i = 100; i < 200; i++) {
+						if (lastSeen.get(6000 + i)?.value?.name !== `rc_v2_${i}`) return false;
+					}
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			// every key in 6000..6199 must appear at least once
@@ -418,11 +430,9 @@ describe('Subscription replay', () => {
 					await CurrentStateTable.put(7000 + i, { name: 'pp_updated' + i });
 				}
 			})();
-			// Attach a listener and wait for every key's final value rather than using collect()'s
-			// quiet-period timer — on a loaded runner the subscription can go quiet longer than the
-			// window while queued updates are still in flight (the same race the two tests above
-			// already moved off of). The timeout path falls through so the per-key asserts below
-			// report exactly which key was stale.
+			// Queued deliveries can trail the commits by more than any quiet window on a loaded
+			// runner, so wait for every key's final value. The timeout falls through so the per-key
+			// asserts below report exactly which key was stale.
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await concurrentWrites;
@@ -567,8 +577,19 @@ describe('Subscription replay', () => {
 				inFlight.push(CurrentStateTable.put(14000 + i, { name: 'inflight' + i }));
 			}
 			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
-			const events = await collect(subscription, 250);
+			// collect()'s quiet window can expire while the 200 puts are still committing; wait for
+			// the commits, then for every key's delivery.
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			await waitFor(
+				() => {
+					const seen = new Set(events.map((e) => e.id));
+					for (let i = 0; i < 200; i++) if (!seen.has(14000 + i)) return false;
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			// every in-flight key must be delivered at least once (duplicates allowed under
