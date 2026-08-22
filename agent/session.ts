@@ -89,7 +89,7 @@ export async function listSessions(opts: { limit?: number } = {}): Promise<Agent
 		sort: { attribute: 'updatedAt', descending: true },
 		limit,
 	})) {
-		if (row) out.push(row as AgentSessionRow);
+		if (row != null) out.push(row as AgentSessionRow);
 	}
 	return out;
 }

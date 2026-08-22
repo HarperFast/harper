@@ -72,7 +72,7 @@ describe('agent/session table definition', () => {
 	it('declares updatedAt as indexed, which listSessions sorts on', () => {
 		const updatedAt = AGENT_SESSION_ATTRIBUTES.find((attribute) => attribute.name === 'updatedAt');
 		assert.ok(updatedAt, 'updatedAt attribute is declared');
-		assert.equal(updatedAt.indexed, true);
+		assert.strictEqual(updatedAt.indexed, true);
 	});
 });
 
@@ -186,7 +186,7 @@ describe('agent/session', () => {
 	it('lists sessions most-recently-updated first, not in primary-key order', async () => {
 		const oldestFirst = await seedSessionsOldestFirst(4);
 		const sessions = await listSessions({ limit: 10 });
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			sessions.map((s) => s.session_id),
 			[...oldestFirst].reverse()
 		);
@@ -195,7 +195,7 @@ describe('agent/session', () => {
 	it('limit keeps the most recent sessions rather than an arbitrary subset', async () => {
 		const oldestFirst = await seedSessionsOldestFirst(5);
 		const sessions = await listSessions({ limit: 2 });
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			sessions.map((s) => s.session_id),
 			[oldestFirst[4], oldestFirst[3]]
 		);
@@ -205,7 +205,7 @@ describe('agent/session', () => {
 		const oldestFirst = await seedSessionsOldestFirst(3);
 		await appendMessage(oldestFirst[1], { role: 'user', content: 'revived', createdAt: Date.now() });
 		const sessions = await listSessions({ limit: 10 });
-		assert.equal(sessions[0].session_id, oldestFirst[1]);
+		assert.strictEqual(sessions[0].session_id, oldestFirst[1]);
 	});
 
 	it('serializes concurrent mutations on the same session (no lost updates)', async () => {
