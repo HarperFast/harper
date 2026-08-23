@@ -457,6 +457,8 @@ export function getDatabases(): Databases {
 			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
 			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
 			if (databaseEntry.name === RESTORE_META_DIR) continue;
+			// branch directories are process-local derivatives, never databases in their own right
+			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
@@ -522,6 +524,7 @@ export function getDatabases(): Databases {
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
+					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
@@ -1002,6 +1005,8 @@ function initStores(
 				tables,
 				tableName,
 				makeTable({
+					// A branch builds into a caller-owned destination; its tables must refuse DDL.
+					isBranch: Boolean(destination),
 					primaryStore,
 					auditStore,
 					audit,
@@ -1030,6 +1035,36 @@ function initStores(
 	return rootStore;
 }
 
+/**
+ * Branch directories live beside the base database's own storage root, never under the HDB root: a
+ * database can be placed on its own volume, and `createCheckpoint` only hardlinks when source and
+ * target share a filesystem — off-volume it degrades to a full byte copy, which is the property the
+ * whole feature rests on.
+ *
+ * Reserved name, so the boot scan can refuse it outright rather than relying on it happening to hold
+ * no CURRENT/MANIFEST at its own level.
+ */
+export const BRANCH_ROOT_DIR = '.harper-branches';
+
+/**
+ * Where one branch of `baseName` lives for this process instance. App and database are separate path
+ * segments: joining them (`<app>__<db>`) is not injective — `(a__b, c)` and `(a, b__c)` collide — so
+ * two declarations could otherwise open the same directory.
+ */
+export function resolveBranchPath(baseName: string, appName: string, instanceId: string): string {
+	for (const [label, segment] of [
+		['application', appName],
+		['database', baseName],
+		['instance', instanceId],
+	]) {
+		if (!segment || segment.includes('/') || segment.includes('\\') || segment === '.' || segment === '..') {
+			throw new Error(`Invalid ${label} name for a branch path: ${JSON.stringify(segment)}`);
+		}
+	}
+	return join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR, instanceId, appName, baseName);
+}
+
+/** A branch's private table graph plus the handle needed to tear it down. */
 export interface BranchDatabase {
 	tables: Tables;
 	rootStore: RootDatabaseKind;
