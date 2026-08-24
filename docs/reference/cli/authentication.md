@@ -104,6 +104,8 @@ Each credential namespace is independent. For example, the CLI never combines `H
 
 The same rule holds for tokens, and for the same reason: whichever namespace supplies a token owns both halves of it. If `HARPER_CLI_OPERATION_TOKEN` were allowed to pair with `CLI_TARGET_REFRESH_TOKEN`, commands would run as the first identity until its operation token expired and then silently continue as the second.
 
+The namespace is chosen by which one is **set**, not by which one has a usable value — so `HARPER_CLI_REFRESH_TOKEN=` (present but empty) claims the choice and shadows a perfectly good `CLI_TARGET_REFRESH_TOKEN`, which is never consulted. The run then falls through to the saved login token. Unset the preferred variable rather than blanking it.
+
 For a pipeline, prefer a token over `HARPER_CLI_PASSWORD`: it is scoped to authentication, it can be revoked without changing the account password, and it cannot be used to log in interactively. See [Token credentials for CI/CD](#token-credentials-for-cicd).
 
 **Example `.env` file**:
@@ -206,7 +208,7 @@ Expose the two values to the deploy step and no other credentials are needed:
     HARPER_CLI_REFRESH_TOKEN: ${{ secrets.HARPER_CLI_REFRESH_TOKEN }}
 ```
 
-**Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. If the refresh token itself is rejected, the command reports that and exits non-zero rather than falling back to another identity.
+**Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. A refresh token the server rejects as expired or invalid (401) stops the command with a non-zero exit and a "run harper login again" message. Any _other_ refresh failure — a 5xx, a timeout, a connection error — is only reported: the command carries on with no bearer token, so it either fails as unauthenticated or, if it happens to carry `username=` and `password=` operation parameters, authenticates as that pair instead. Don't rely on a refresh failure to halt a pipeline.
 
 **A blank token variable is reported, then skipped.** If a namespace is set but empty — the usual shape of a misconfigured CI secret — the CLI warns and continues down the precedence list, so the run proceeds under the saved `harper login` token if that machine has one. The warning is the only thing separating this from silently deploying as whoever last logged in, so treat it as a failure signal in CI rather than assuming a blank secret stops the run.
 
