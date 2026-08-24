@@ -682,7 +682,13 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 		// ProgressEmitter holds function listeners that can't survive the replication channel's
 		// serialization; strip it unconditionally.
 		delete req.progress;
-		if (systemReplicated && recorder && isDeploymentTrackingAvailable()) {
+		if (systemReplicated && recorder && !isDeploymentTrackingAvailable() && recorder.replayablePayload) {
+			// No row exists for peers to read the blob from, and `req.payload` is an EXHAUSTED source by now
+			// — ingest drained it. Replace it with the buffered copy so the bytes actually travel in the
+			// replicated operation; keeping the spent stream would send peers an EOF after this node was
+			// already live.
+			req.payload = recorder.replayablePayload;
+		} else if (systemReplicated && recorder && isDeploymentTrackingAvailable()) {
 			// The hdb_deployment row + payload_blob reach peers via table replication, so peers look up
 			// the payload by deployment_id. Drop req.payload to keep the operation body small.
 			//

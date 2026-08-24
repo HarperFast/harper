@@ -6,6 +6,7 @@ const { existsSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { Readable } = require('node:stream');
 const tarfs = require('tar-fs');
 
 const testUtils = require('../testUtils.js');
@@ -163,9 +164,12 @@ describe('deploy_component two-phase orchestration', function () {
 		};
 		delete databases.system[DEPLOYMENT_TABLE];
 		try {
+			// A real Readable, not a reusable Buffer: ingest DRAINS the source, so a Buffer would hide the
+			// actual failure (peers receiving an exhausted stream / EOF).
+			const bytes = await makePayload('untracked-oneshot');
 			await operations.deployComponent({
 				project,
-				payload: await makePayload('untracked-oneshot'),
+				payload: Readable.from([bytes]),
 				two_phase: false,
 				restart: false,
 			});
@@ -175,11 +179,11 @@ describe('deploy_component two-phase orchestration', function () {
 				'the component goes live locally'
 			);
 			assert.strictEqual(replicated.length, 1, 'the deploy is replicated to peers');
-			assert.notStrictEqual(
-				replicated[0].payload,
-				undefined,
-				'and carries its payload, because no row exists for peers to read the bytes from'
-			);
+			// Assert the BYTES, not merely that the property exists — presence of a spent stream is exactly
+			// the bug this covers.
+			const sent = replicated[0].payload;
+			assert.strictEqual(Buffer.isBuffer(sent), true, `peers must receive replayable bytes, got ${typeof sent}`);
+			assert.strictEqual(Buffer.compare(sent, bytes), 0, 'and the bytes must be the payload that was uploaded');
 		} finally {
 			server.replication.replicateOperation = priorReplicate;
 			databases.system[DEPLOYMENT_TABLE] = priorTable;

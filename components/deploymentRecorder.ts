@@ -119,6 +119,10 @@ export class DeploymentRecorder {
 	private dirty = false;
 	private sealed = false;
 	private flushSuppressed = false;
+	// Set only on the degraded (no-table) ingest path, which buffers the whole upload in memory. The
+	// original source is exhausted by then, so this is the ONLY replayable copy — and with no row for
+	// peers to read a blob from, it is what has to travel in the replicated operation.
+	private bufferedPayload?: Buffer;
 	private readonly ingestTimeoutMs?: number;
 
 	private constructor(deploymentId: string, initial: Record<string, any>, ingestTimeoutMs?: number) {
@@ -234,6 +238,14 @@ export class DeploymentRecorder {
 	 * In-memory sources (a Buffer, or the legacy base64-in-JSON/CBOR body) are already
 	 * materialized by the time they reach us, so they take the simpler buffer path.
 	 */
+	/**
+	 * A replayable copy of the ingested payload, present only when ingest buffered it in memory —
+	 * which is exactly the no-table case, where there is no row for peers to read the bytes from.
+	 */
+	get replayablePayload(): Buffer | undefined {
+		return this.bufferedPayload;
+	}
+
 	async ingestPayload(source: Readable | Buffer | string): Promise<void> {
 		this.flushSuppressed = true;
 		try {
@@ -262,6 +274,7 @@ export class DeploymentRecorder {
 		// already holds. No cap — a large base64-in-JSON body is the caller's choice.
 		if (Buffer.isBuffer(source) || typeof source === 'string') {
 			const buffer = Buffer.isBuffer(source) ? source : Buffer.from(source, 'base64');
+			this.bufferedPayload = buffer;
 			hash.update(buffer);
 			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
 			this.record.payload_hash = hash.digest('hex');
@@ -300,6 +313,7 @@ export class DeploymentRecorder {
 				chunks.push(buf);
 			}
 			const buffer = Buffer.concat(chunks);
+			this.bufferedPayload = buffer;
 			hash.update(buffer);
 			this.record.payload_blob = createBlob(buffer, { type: 'application/gzip' });
 			this.record.payload_hash = hash.digest('hex');
