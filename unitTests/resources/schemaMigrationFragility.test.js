@@ -793,6 +793,21 @@ describe('schema relationship catalog on a legacy named primary descriptor', () 
 		await fs.remove(testRoot);
 	});
 
+	it('refuses a drop whose tombstone could not be durable without leaving one behind', async () => {
+		const dbisDB = source.dbisDB;
+		const originalPut = dbisDB.put;
+		dbisDB.put = async (...args) => originalPut.apply(dbisDB, args);
+		try {
+			await assert.rejects(() => source.dropTable(), /tombstone cannot be made durable/);
+		} finally {
+			dbisDB.put = originalPut;
+		}
+		// the refusal has to happen before the write: a tombstone left behind would make the next load
+		// complete a drop the caller was told did not happen
+		assert.strictEqual(dbisDB.getSync('LegacySource/').dropping, undefined);
+		assert.ok(getDatabases()[DB].LegacySource);
+	});
+
 	// pre-5.x catalogs keep a table's settings on the primary key's own row, but dropTable() always
 	// tombstones the bare row, so a drop in flight is only visible there
 	it('refuses to update a named descriptor while the bare table row carries a drop tombstone', async () => {
