@@ -26,7 +26,7 @@ import * as env from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { sendItcEvent } from '../threads/itc.js';
-import { onMessageByType, onThreadExit } from '../threads/manageThreads.js';
+import { hasThreadExited, onMessageByType, onThreadExit } from '../threads/manageThreads.js';
 import {
 	registerWorkerGrantableOperation,
 	unregisterWorkerGrantableOperation,
@@ -66,12 +66,6 @@ const registeredByWorker = new Map<string, Set<number>>();
 // Per originator, not per name: a rolling deploy whose new generation drops `requiresSuperUser`
 // must keep routing the name while retracting grantability, which a name-level flag cannot express.
 const grantableByWorker = new Map<string, Set<number>>();
-// Threads already reported dead. Exit notification is deduplicated for the life of the process
-// (manageThreads.notifyThreadExit), so an announcement that lost a race with its own thread's exit
-// would otherwise install an entry no later exit event can ever clean up. Never pruned, and never
-// wrongly rejects a replacement: worker ids are monotonically increasing and not reused in a
-// process, so this grows by one per worker restart (the same reasoning as notifiedDeadThreadIds).
-const exitedThreadIds = new Set<number>();
 const pendingExecutions = new Map<
 	number,
 	{ targetThreadId: number; resolve: (result: any) => void; reject: (error: Error) => void }
@@ -101,7 +95,11 @@ export function operationRegisteredHandler(event: {
 	if (!isMainThread) return;
 	const { name, grantable, originator } = event?.message ?? {};
 	if (typeof name !== 'string' || typeof originator !== 'number') return;
-	if (exitedThreadIds.has(originator)) {
+	// An announcement can lose the race with its own thread's exit, and exit notification fires once
+	// per thread, so without this the entry would never be cleaned up. Reads manageThreads' tombstone
+	// rather than keeping a second one: job threads are one-shot workers, so a duplicate here would
+	// grow per completed job, not per worker restart.
+	if (hasThreadExited(originator)) {
 		operationLog.debug(`Ignoring operation '${name}' announced by exited worker thread ${originator}`);
 		return;
 	}
@@ -119,7 +117,6 @@ export function operationRegisteredHandler(event: {
  * waiting out the timeout, and forget its registrations (a replacement re-registers on load).
  */
 function handleThreadExit(deadThreadId: number) {
-	exitedThreadIds.add(deadThreadId);
 	for (const [name, workerIds] of registeredByWorker) {
 		if (!workerIds.delete(deadThreadId)) continue;
 		// A surviving worker that never declared a permission must not keep the name admissible.
@@ -132,10 +129,6 @@ function handleThreadExit(deadThreadId: number) {
 			pending.reject(new ServerError('The worker thread executing this operation exited', 503));
 		}
 	}
-}
-
-export function notifyThreadExitedForTest(deadThreadId: number) {
-	handleThreadExit(deadThreadId);
 }
 
 function setWorkerGrantable(name: string, threadId: number, grantable: boolean) {
