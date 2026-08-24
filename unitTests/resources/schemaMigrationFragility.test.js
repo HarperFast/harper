@@ -559,7 +559,6 @@ describe('schema relationship catalog round-trip', () => {
 				name: 'locations',
 				type: 'array',
 				elements: { type: 'RelationshipLocation' },
-				// the GraphQL parser yields the string "true"; the resolver reads it for truthiness
 				relationship: { from: 'locationIds', filterMissing: true },
 				target: { database: DB, table: 'RelationshipLocation' },
 			},
@@ -621,7 +620,6 @@ describe('schema relationship catalog round-trip', () => {
 		const hydrated = host.attributes.find((attribute) => attribute.name === 'location');
 		resetDatabases();
 		host = getDatabases()[DB].RelationshipHost;
-		// identity, not equality: an unchanged catalog must short-circuit before rebuilding resolvers
 		assert.strictEqual(
 			host.attributes.find((attribute) => attribute.name === 'location'),
 			hydrated

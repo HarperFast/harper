@@ -682,7 +682,9 @@ function hydrateTableRelationships({ table, databaseName, tableName, definitions
 	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
 	for (let index = 0; index < definitions.length; index++) {
 		const definition = definitions[index] as PersistedRelationship;
-		const errorKey = `${databaseName}.${tableName}:${index}`;
+		// keyed by name, not by list position: a reordered list would otherwise inherit the previous
+		// occupant's "already reported" state and swallow a different relationship's failure
+		const errorKey = `${databaseName}.${tableName}:${(definition as any)?.name || index}`;
 		if (!validRelationshipDefinition(definition, definitions, index)) {
 			reportRelationshipError(
 				errorKey,
@@ -2401,9 +2403,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
-		// Relationships belong to the table, not to its primary key attribute: a table with no
-		// declared primary key has no attribute row to carry them, and its descriptor is never
-		// visited by the loop above.
+		// a table with no declared primary key has no attribute row to carry relationships, and the
+		// loop above never visits its descriptor
 		if (relationshipDefinitions) {
 			const relationshipsKey = primaryDescriptorKey();
 			if (!relationshipListsEqual(attributesDbi.getSync(relationshipsKey)?.relationships, relationshipDefinitions)) {

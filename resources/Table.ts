@@ -1502,11 +1502,19 @@ export function makeTable(options) {
 				};
 				if (rootStore instanceof RocksDatabase) {
 					while (!rootStore.tryLock('update-attributes')) {}
+					let tombstoneWrite;
 					try {
-						writeTombstone();
+						tombstoneWrite = writeTombstone();
 					} finally {
 						rootStore.unlock('update-attributes');
 					}
+					// The spin lock cannot be held across an await, so the tombstone's durability here
+					// depends on put being rebound to putSync for RocksDB primary stores. Fail loudly if
+					// that ever stops holding rather than proceeding into the drops with a pending write.
+					if (typeof tombstoneWrite?.then === 'function')
+						throw new Error(
+							`Refusing to drop ${databaseName}.${TableResource.tableName}: the catalog tombstone write is asynchronous, so it cannot be made durable before the column families are dropped`
+						);
 				} else {
 					let tombstoneWrite;
 					rootStore.transactionSync(() => {
