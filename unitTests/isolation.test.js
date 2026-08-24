@@ -26,7 +26,12 @@ describe('unit-test per-PID root isolation', () => {
 		const { spawnSync } = require('node:child_process');
 		const result = spawnSync(
 			process.execPath,
-			['--require', './unitTests/mocha.init.js', '-p', '[process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH]'],
+			[
+				'--require',
+				'./unitTests/mocha.init.js',
+				'-p',
+				'[process.pid, process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH]',
+			],
 			{
 				cwd: path.join(__dirname, '..'),
 				env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
@@ -35,7 +40,10 @@ describe('unit-test per-PID root isolation', () => {
 			}
 		);
 		assert.strictEqual(result.status, 0, result.stderr);
-		assert.strictEqual(result.stdout.trim().split('\n').pop(), '[ undefined, undefined ]');
+		const output = result.stdout.trim().split('\n').pop();
+		const childPid = output.match(/^\[ (\d+),/)?.[1];
+		if (childPid) require('fs-extra').removeSync(path.join(__dirname, 'envDir', childPid));
+		assert.match(output, /^\[ \d+, undefined, undefined \]$/);
 	});
 
 	it('exports ROOTPATH inside the per-PID directory for worker threads and spawned processes', () => {
