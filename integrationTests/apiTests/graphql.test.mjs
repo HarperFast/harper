@@ -155,6 +155,81 @@ suite('GraphQL queries', { skip: skipSuite }, (ctx) => {
 		});
 	});
 
+	test('operations API resolves component relationship attributes in both directions', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'search_by_conditions',
+				table: 'SubObject',
+				get_attributes: ['id', 'relatedId', { name: 'related', select: ['id', 'name'] }],
+				conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: '1' }],
+			})
+			.expect((response) => {
+				assert.equal(response.body[0].related.id, '1', response.text);
+				assert.equal(response.body[0].related.name, 'name-1', response.text);
+			})
+			.expect(200);
+
+		await client
+			.req()
+			.send({
+				operation: 'search_by_conditions',
+				table: 'Related',
+				get_attributes: ['id', { name: 'otherTable', select: ['id', 'relatedId'] }],
+				conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: '1' }],
+			})
+			.expect((response) => {
+				assert.deepStrictEqual(
+					response.body[0].otherTable.map((record) => record.id),
+					['0', '1'],
+					response.text
+				);
+			})
+			.expect(200);
+	});
+
+	test('operations API resolves a relationship named in the bare get_attributes form', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'search_by_conditions',
+				table: 'SubObject',
+				get_attributes: ['id', 'related'],
+				conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: '1' }],
+			})
+			.expect((response) => {
+				assert.equal(response.body[0].related.id, '1', response.text);
+			})
+			.expect(200);
+	});
+
+	test('describe_table lists component relationship attributes', async () => {
+		await client
+			.req()
+			.send({ operation: 'describe_table', table: 'SubObject' })
+			.expect((response) => {
+				const names = response.body.attributes.map((attribute) => attribute.attribute);
+				assert.ok(names.includes('related'), response.text);
+				assert.ok(names.includes('manyToMany'), response.text);
+			})
+			.expect(200);
+	});
+
+	test('operations API rejects an unresolvable attribute in the object form instead of returning null', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'search_by_conditions',
+				table: 'SubObject',
+				get_attributes: ['id', { name: 'notAnAttribute', select: ['id'] }],
+				conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: '1' }],
+			})
+			.expect((response) => {
+				assert.equal(response.body.error, "unknown attribute 'notAnAttribute'", response.text);
+			})
+			.expect(400);
+	});
+
 	test('query by variable non-null no default', async () => {
 		const r = await client
 			.reqGraphQl()

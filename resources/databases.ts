@@ -98,8 +98,70 @@ const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
+const CATALOG_RELATIONSHIP = Symbol('catalog-relationship');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
+
+type RelationshipTarget = { database: string; table: string };
+type PersistedRelationship = {
+	name: string;
+	type: string;
+	elements?: { type: string };
+	relationship: { from?: string; to?: string; filterMissing?: boolean };
+	target: RelationshipTarget;
+};
+
+type RelationshipHydration = {
+	table: any;
+	databaseName: string;
+	tableName: string;
+	definitions: unknown[];
+};
+
+let relationshipsToHydrate: RelationshipHydration[] = [];
+const reportedRelationshipErrors = new Set<string>();
+
+function normalizeRelationships(attributes: any[]): PersistedRelationship[] {
+	const relationships: PersistedRelationship[] = [];
+	for (const attribute of attributes) {
+		const target = attribute.relationshipReference;
+		if (!attribute.relationship || !target) continue;
+		const relationship: PersistedRelationship['relationship'] = {};
+		if (typeof attribute.relationship.from === 'string') relationship.from = attribute.relationship.from;
+		if (typeof attribute.relationship.to === 'string') relationship.to = attribute.relationship.to;
+		if (typeof attribute.relationship.filterMissing === 'boolean')
+			relationship.filterMissing = attribute.relationship.filterMissing;
+		if (!relationship.from && !relationship.to) continue;
+		const definition: PersistedRelationship = {
+			name: attribute.name,
+			type: attribute.type,
+			relationship,
+			target: { database: target.database, table: target.table },
+		};
+		if (attribute.type === 'array') definition.elements = { type: attribute.elements?.type };
+		relationships.push(definition);
+	}
+	return relationships;
+}
+
+function relationshipEquals(left: any, right: any): boolean {
+	return (
+		left?.name === right?.name &&
+		left?.type === right?.type &&
+		left?.elements?.type === right?.elements?.type &&
+		left?.relationship?.from === right?.relationship?.from &&
+		left?.relationship?.to === right?.relationship?.to &&
+		left?.relationship?.filterMissing === right?.relationship?.filterMissing &&
+		left?.target?.database === right?.target?.database &&
+		left?.target?.table === right?.target?.table
+	);
+}
+
+function relationshipListsEqual(left: any, right: PersistedRelationship[]): boolean {
+	if (!Array.isArray(left) || left.length !== right.length) return false;
+	for (let index = 0; index < right.length; index++) if (!relationshipEquals(left[index], right[index])) return false;
+	return true;
+}
 /**
  * The RocksDB block/blob codec for every column family this process opens (`storage.rocks.compression`),
  * or `undefined` to leave rocksdb-js on its own default (lz4 wherever the native build has it).
@@ -435,6 +497,7 @@ export function getDatabases(): Databases {
 	loadedDatabases = true;
 
 	definedDatabases = new Map();
+	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
 	let databasePath = hdbBasePath && join(hdbBasePath, DATABASES_DIR_NAME);
 	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
@@ -581,6 +644,7 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
+	hydrateCatalogRelationships();
 	if (envGet(CONFIG_PARAMS.ANALYTICS_REPLICATE) === false) {
 		if (!NON_REPLICATING_SYSTEM_TABLES.includes('hdb_analytics')) NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
 	} else {
@@ -596,6 +660,129 @@ export function getDatabases(): Databases {
 		}
 	}
 	return databases;
+}
+
+function hydrateCatalogRelationships(): void {
+	for (const hydration of relationshipsToHydrate) {
+		try {
+			hydrateTableRelationships(hydration);
+		} catch {
+			const key = `${hydration.databaseName}.${hydration.tableName}:hydrate`;
+			if (!reportedRelationshipErrors.has(key)) {
+				reportedRelationshipErrors.add(key);
+				logger.error(`Unable to hydrate persisted relationships for ${hydration.databaseName}.${hydration.tableName}`);
+			}
+		}
+	}
+}
+
+function hydrateTableRelationships({ table, databaseName, tableName, definitions }: RelationshipHydration): void {
+	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
+	for (let index = 0; index < definitions.length; index++) {
+		const definition = definitions[index] as PersistedRelationship;
+		const errorKey = `${databaseName}.${tableName}:${index}`;
+		if (!validRelationshipDefinition(definition, definitions, index)) {
+			reportRelationshipError(
+				errorKey,
+				`Ignoring invalid persisted relationship ${databaseName}.${tableName}[${index}]`
+			);
+			continue;
+		}
+		// a live schema attribute of the same name owns the name; the catalog copy is only a stand-in
+		// for threads that never loaded the schema
+		if (table.attributes.some((attribute) => attribute.name === definition.name && !attribute[CATALOG_RELATIONSHIP]))
+			continue;
+		const targetTable = databases[definition.target.database]?.[definition.target.table];
+		if (!targetTable || !relationshipFieldsExist(table, targetTable, definition)) {
+			reportRelationshipError(
+				errorKey,
+				`Unable to hydrate persisted relationship ${databaseName}.${tableName}.${definition.name}: target or foreign key is unavailable`
+			);
+			continue;
+		}
+		reportedRelationshipErrors.delete(errorKey);
+		hydratable.push({ definition, targetTable });
+	}
+
+	const installed = table.attributes.filter((attribute) => attribute[CATALOG_RELATIONSHIP]);
+	if (
+		installed.length === hydratable.length &&
+		hydratable.every(
+			({ definition, targetTable }, index) =>
+				relationshipEquals(installed[index], definition) &&
+				(installed[index].definition || installed[index].elements?.definition)?.tableClass === targetTable
+		)
+	)
+		return;
+
+	const attributes = table.attributes.filter((attribute) => !attribute[CATALOG_RELATIONSHIP]);
+	for (const { definition, targetTable } of hydratable)
+		attributes.push(createCatalogRelationship(definition, targetTable));
+	table.attributes.splice(0, table.attributes.length, ...attributes);
+	table.schemaVersion++;
+	table.updatedAttributes();
+	databaseEventsEmitter.emit('updateTable', table);
+}
+
+function validRelationshipDefinition(definition: any, definitions: unknown[], index: number): boolean {
+	if (!definition || typeof definition !== 'object') return false;
+	const validName = (value: any) => typeof value === 'string' && value.length > 0 && !/[`/]/.test(value);
+	if (!validName(definition.name) || !validName(definition.type)) return false;
+	if (!validName(definition.target?.database) || !validName(definition.target?.table)) return false;
+	if (!definition.relationship || typeof definition.relationship !== 'object') return false;
+	const { from, to, filterMissing } = definition.relationship;
+	if (from !== undefined && !validName(from)) return false;
+	if (to !== undefined && !validName(to)) return false;
+	if (!from && !to) return false;
+	if (filterMissing !== undefined && typeof filterMissing !== 'boolean') return false;
+	if (definition.type === 'array' ? !validName(definition.elements?.type) : definition.elements !== undefined)
+		return false;
+	for (let earlier = 0; earlier < index; earlier++)
+		if ((definitions[earlier] as any)?.name === definition.name) return false;
+	return true;
+}
+
+function relationshipFieldsExist(sourceTable: any, targetTable: any, definition: PersistedRelationship): boolean {
+	if (
+		definition.relationship.from &&
+		!sourceTable.attributes.some((attribute) => attribute.name === definition.relationship.from)
+	)
+		return false;
+	if (
+		definition.relationship.to &&
+		!targetTable.attributes.some((attribute) => attribute.name === definition.relationship.to)
+	)
+		return false;
+	return true;
+}
+
+function createCatalogRelationship(definition: PersistedRelationship, targetTable: any): any {
+	const attribute: any = {
+		name: definition.name,
+		attribute: definition.name,
+		type: definition.type,
+		relationship: { ...definition.relationship },
+		target: { ...definition.target },
+	};
+	const targetDefinition = {
+		tableClass: targetTable,
+		type: targetTable.tableName,
+		attributes: targetTable.attributes,
+	};
+	if (definition.elements) {
+		attribute.elements = { type: definition.elements.type };
+		Object.defineProperty(attribute.elements, 'definition', { value: targetDefinition, configurable: true });
+	} else {
+		Object.defineProperty(attribute, 'definition', { value: targetDefinition, configurable: true });
+	}
+	Object.defineProperty(attribute, CATALOG_RELATIONSHIP, { value: true });
+	return attribute;
+}
+
+function reportRelationshipError(key: string, message: string): void {
+	if (reportedRelationshipErrors.has(key)) return;
+	reportedRelationshipErrors.add(key);
+	logger.error(message);
 }
 
 /**
@@ -1026,6 +1213,15 @@ function initStores(
 			table.schemaVersion = 1;
 			if (!destination) databaseEventsEmitter.emit('updateTable', table);
 		}
+		if (Array.isArray(primaryAttribute.relationships)) {
+			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
+		} else if (primaryAttribute.relationships !== undefined) {
+			reportRelationshipError(
+				`${databaseName}.${tableName}:list`,
+				`Ignoring invalid persisted relationship list for ${databaseName}.${tableName}`
+			);
+			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: [] });
+		}
 	}
 	return rootStore;
 }
@@ -1228,6 +1424,7 @@ interface TableDefinition {
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
+	schemaRelationshipsDefined?: boolean;
 	origin?: string;
 	description?: string;
 	properties?: Record<string, any>;
@@ -1723,6 +1920,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		randomAccessFields,
 		trackDeletes,
 		schemaDefined,
+		schemaRelationshipsDefined,
 		origin,
 		description,
 		properties,
@@ -1755,6 +1953,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
+	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
 	for (const attribute of attributes) {
@@ -1766,6 +1965,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
 	let hasChanges;
+	let refreshRelationshipAttributes = false;
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
@@ -1824,6 +2024,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
+			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
 			// can't change compression after the fact (except threshold), so save only when we create the table
 			primaryKeyAttribute.compression = getDefaultCompression();
 			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
@@ -1990,10 +2192,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
-			if (attribute.relationship || attribute.computed) {
-				hasChanges = true; // need to update the table so the computed properties are translated to property resolvers
-				if (attribute.relationship) continue;
+			if (attribute.relationship) {
+				refreshRelationshipAttributes = true;
+				continue;
 			}
+			if (attribute.computed) hasChanges = true;
 			let dbiKey = tableName + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
@@ -2004,6 +2207,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
 				// but other workers' next disk-load re-reads the stale value.
 				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
+				const relationshipsChanged =
+					relationshipDefinitions &&
+					!relationshipListsEqual(attributeDescriptor.relationships, relationshipDefinitions);
 				// primary key can't change indexing, but settings can change
 				if (
 					schemaDefinedMismatch ||
@@ -2012,9 +2218,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					(replicate !== undefined && replicate !== Table.replicate) ||
 					(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 					(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-					attribute.type !== attributeDescriptor.type
+					attribute.type !== attributeDescriptor.type ||
+					relationshipsChanged
 				) {
-					const updatedPrimaryAttribute = { ...attributeDescriptor };
+					exclusiveLock();
+					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
+					if (!currentPrimaryAttribute || currentPrimaryAttribute.dropping) continue;
+					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing();
 						updatedPrimaryAttribute.audit = audit;
@@ -2025,8 +2235,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
+					if (
+						relationshipDefinitions &&
+						!relationshipListsEqual(currentPrimaryAttribute.relationships, relationshipDefinitions)
+					)
+						updatedPrimaryAttribute.relationships = relationshipDefinitions;
 					hasChanges = true; // send out notification of the change
-					exclusiveLock();
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
@@ -2197,7 +2411,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	} finally {
 		releaseLock();
 	}
-	if (hasChanges) {
+	if (hasChanges || refreshRelationshipAttributes) {
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}
@@ -2210,7 +2424,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		);
 
 	Table.origin = origin;
-	if (hasChanges) {
+	if (hasChanges || refreshRelationshipAttributes) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
 	if (expiration || eviction || scanInterval)

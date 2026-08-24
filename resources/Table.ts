@@ -1477,6 +1477,7 @@ export function makeTable(options) {
 		}
 
 		static async dropTable() {
+			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
 				// destructive work. If the process dies or a column family drop fails
@@ -1485,8 +1486,9 @@ export function makeTable(options) {
 				// completeInterruptedDrop in databases.ts instead of resurrecting
 				// the table.
 				const primaryCatalogKey = TableResource.tableName + '/';
-				const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
-				if (primaryMeta && !primaryMeta.dropping) {
+				const writeTombstone = () => {
+					const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!primaryMeta || primaryMeta.dropping) return;
 					primaryMeta.dropping = true;
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
@@ -1496,11 +1498,21 @@ export function makeTable(options) {
 					// the budget by generation instead makes the new drop's tombstone carry
 					// its own fresh key regardless of what any worker last observed.
 					primaryMeta.dropGeneration = randomUUID();
-					// put is rebound to putSync on RocksDB stores; on LMDB it returns
-					// a promise, so await it to make the tombstone durable before the
-					// destructive work below
-					const tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
-					if (tombstoneWrite?.then) await tombstoneWrite;
+					return (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+				};
+				if (rootStore instanceof RocksDatabase) {
+					while (!rootStore.tryLock('update-attributes')) {}
+					try {
+						writeTombstone();
+					} finally {
+						rootStore.unlock('update-attributes');
+					}
+				} else {
+					let tombstoneWrite;
+					rootStore.transactionSync(() => {
+						tombstoneWrite = writeTombstone();
+					});
+					if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
 				}
 			}
 			// A get() against a sourcedFrom table resolves to its caller before the resolved
@@ -1580,7 +1592,6 @@ export function makeTable(options) {
 					dbisDb.remove(TableResource.tableName + '/');
 					return true;
 				};
-				const rootStore = primaryStore.rootStore;
 				if (rootStore instanceof RocksDatabase) {
 					// Serialize the drops + catalog removal against a concurrent
 					// same-name create (and completeInterruptedDrop) under the database's

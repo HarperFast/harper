@@ -134,30 +134,28 @@ export default function (searchObject: any, type: any) {
 			addConditions(searchObject);
 		}
 
-		let unknownAttributes = _.filter(
-			checkAttributes,
-			(attribute) =>
-				attribute !== '*' &&
-				!attribute.startsWith?.('$') && // meta attributes
-				attribute.attribute !== '*' && // skip check for asterisk attribute
-				!Array.isArray(attribute) &&
-				!attribute.name && // nested attribute
-				!_.some(
-					allTableAttributes,
-					(
-						tableAttribute: any // attribute should match one of the attribute in global
-					) =>
-						tableAttribute === attribute ||
-						tableAttribute.attribute === attribute ||
-						tableAttribute.attribute === (attribute as any).attribute
-				)
-		);
+		// The object/nested form (`{ name, select }`) is resolved by name like the bare form, so it is
+		// checked by name too: leaving it unchecked let an attribute this thread cannot resolve pass
+		// validation and serialize as a null the caller could not distinguish from an absent value.
+		const requestedName = (attribute: any) =>
+			typeof attribute === 'string' ? attribute : (attribute?.name ?? attribute?.attribute);
+		let unknownAttributes = _.filter(checkAttributes, (attribute) => {
+			if (Array.isArray(attribute)) return false;
+			const name = requestedName(attribute);
+			if (typeof name !== 'string' || name === '*' || name.startsWith('$')) return false; // meta attributes
+			return !_.some(
+				allTableAttributes,
+				(
+					tableAttribute: any // attribute should match one of the attribute in global
+				) => tableAttribute === name || tableAttribute.attribute === name
+			);
+		});
 
 		// if any unknown attributes present in the search request then list all indicated as unknown attribute to error message at once split in well format
 		// for instance "unknown attribute a, b and c" or "unknown attribute a"
 		if (unknownAttributes && unknownAttributes.length > 0) {
 			// return error with proper message - replace last comma with and
-			let errorMsg = unknownAttributes.join(', ');
+			let errorMsg = unknownAttributes.map(requestedName).join(', ');
 			errorMsg = errorMsg.replace(/,([^,]*)$/, ' and$1');
 			return new Error(`unknown attribute '${errorMsg}'`);
 		}
