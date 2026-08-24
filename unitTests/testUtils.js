@@ -373,12 +373,8 @@ function setupTestDBPath() {
 		fs.mkdirSync(dbPath, { recursive: true });
 	}
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
-	// Same paths as mocha.init.js (see its header comment): everything — including the
-	// `system` database, which resolves under storage.path exactly like production —
-	// stays inside the per-PID directory. Repointing an already-open `system` is what
-	// the old installed-path preservation logic guarded against; since mocha.init.js
-	// configures these exact paths before any module can open `system`, the paths
-	// never change.
+	// same paths as mocha.init.js (see its header comment); `system` resolves under
+	// storage.path exactly like production
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(dbPath, 'database'));
 	const databasePaths = {
 		data: { path: dbPath },
@@ -424,24 +420,26 @@ async function ensureSystemTables() {
 	} catch (error) {
 		if (!error.message?.includes('already exists')) throw error;
 	}
-	// generateCertsKeys() persists the resulting cert config through the per-PID root's
-	// config file, which mocha.init.js has already written
 	const keys = require('#src/security/keys');
 	await keys.generateCertsKeys();
-	// generateCertsKeys() names its key privateKey.pem — the same name loadCertificates()
-	// registers for an installed config's tls.privateKey in the in-process privateKeys
-	// cache, which then shadows the generated key and pairs the fresh certificates with
-	// the installed root's (unrelated) key: ERR_OSSL_X509_KEY_VALUES_MISMATCH and zero
-	// TLS contexts. Rename the generated key (file and cert records) to a name no config
-	// can claim, so lookups always fall through to the per-PID file it actually matches.
+	// Rename the generated key: generateCertsKeys() names it privateKey.pem, the same name
+	// loadCertificates() registers for any ambient config's tls.privateKey in the
+	// in-process privateKeys cache, which would shadow this key and pair the fresh
+	// certificates with an unrelated one (ERR_OSSL_X509_KEY_VALUES_MISMATCH, zero TLS
+	// contexts). Repoint the per-PID config at the renamed key so cert records, the
+	// config file, and the key watcher agree.
 	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
-	const testKeyName = 'unitTestPrivateKey.pem';
-	fs.renameSync(path.join(keysDir, PRIVATEKEY_PEM_NAME), path.join(keysDir, testKeyName));
+	const testKeyPath = path.join(keysDir, 'unitTestPrivateKey.pem');
+	if (fs.existsSync(path.join(keysDir, PRIVATEKEY_PEM_NAME))) {
+		fs.renameSync(path.join(keysDir, PRIVATEKEY_PEM_NAME), testKeyPath);
+	}
 	for await (const cert of getDatabases().system.hdb_certificate.search([])) {
 		if (cert.private_key_name === PRIVATEKEY_PEM_NAME) {
-			await keys.setCertTable({ ...cert, private_key_name: testKeyName });
+			await keys.setCertTable({ ...cert, private_key_name: 'unitTestPrivateKey.pem' });
 		}
 	}
+	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
+	require('#src/config/configUtils').updateConfigValue(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 	systemSeeded = true;
 }
 

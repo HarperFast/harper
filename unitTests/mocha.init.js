@@ -96,18 +96,21 @@ if (!fs.existsSync(configFilePath)) {
 	fs.writeFileSync(configFilePath, configDoc.toString());
 }
 process.env.ROOTPATH = PID_DIR_PATH;
+// raw env vars outrank every configured path in getDatabases()/resolveDatabaseStorageRoot,
+// so an ambient STORAGE_PATH or SCHEMAS_DATA_PATH from the shell would reopen the
+// installed root despite everything above
+delete process.env.STORAGE_PATH;
+delete process.env.SCHEMAS_DATA_PATH;
 
 // Only now is it safe to load Harper modules
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 
-// Initialize environment manager
 env.initSync();
 
 env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, PID_DIR_PATH);
 env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(PID_DIR_PATH, 'database'));
 
-// Set up database paths
 const databasePaths = {
 	data: { path: PID_DIR_PATH },
 	dev: { path: PID_DIR_PATH },
