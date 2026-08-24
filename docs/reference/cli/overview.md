@@ -161,11 +161,12 @@ Provide credentials via:
 
 - **Dedicated authentication parameters**: Use `auth_username=<user> auth_password=<pass>` for one-off commands
 - **Target URL credentials**: Embed a complete username and password in the URL (supported, but not recommended because URLs are easily exposed)
-- **Environment variables and `.env` files**: Use `HARPER_CLI_TARGET`, `HARPER_CLI_USERNAME`, and `HARPER_CLI_PASSWORD` (recommended for CI/CD and project-specific configuration)
+- **Environment variables and `.env` files**: Use `HARPER_CLI_TARGET` with `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` (project-specific configuration)
+- **Token credentials**: `HARPER_CLI_REFRESH_TOKEN`, provisioned with [`harper login --for-ci`](./authentication.md#token-credentials-for-cicd) (recommended for CI/CD)
 - **Persistent Login**: `harper login` to store tokens (recommended for local development)
 - **Legacy parameters**: `username=<user> password=<pass>` remain a fallback when no higher-priority authentication source is available
 
-Starting in v5.2.0, these sources are resolved in the order shown. See [CLI Authentication](./authentication.md#authentication-precedence) for the complete order, including the preferred and legacy environment-variable namespaces.
+This list is abbreviated and is **not** in precedence order. See [Authentication Precedence](./authentication.md#authentication-precedence) for the resolution order, which changed in v5.2.0, and for the preferred and legacy environment-variable namespaces. Configure one style per context rather than combining them.
 
 **Example: Persistent Login and `.env`**:
 

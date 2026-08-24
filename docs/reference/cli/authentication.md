@@ -55,7 +55,7 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 | A one-off admin command | `auth_username=` / `auth_password=` |
 | Local development       | `harper login`                      |
 
-Setting a token _and_ leaving `username=`/`password=` on the command is the combination that turns a token failure into an identity change rather than an error. One caveat: this rule bounds _which_ credential is used, not whether one is required at all. Against a loopback target Harper authenticates by address, so no choice of style protects you there — see the refresh-behavior note below.
+Setting a token _and_ leaving `username=`/`password=` on the command is the combination that turns a token failure into an identity change rather than an error. One caveat: this rule bounds _which_ credential is used, not what happens when none resolves. A loopback node authorizes a request that arrives with no credential at all as superuser, so the style matters less there than whether a credential is attached — see the refresh-behavior note below.
 :::
 
 Credentials are resolved as a pair and are never combined across sources. An incomplete pair supplied with dedicated authentication parameters or in the target URL causes the command to fail. An incomplete environment-variable pair is skipped with a warning so that a saved login token can still be used.
@@ -237,7 +237,9 @@ A `403`, and any other refresh failure — a 5xx, a timeout, a connection error 
 
 - **Refresh token only** (what `--for-ci` provisions): no bearer token is attached. Against a remote target the command fails as unauthenticated — unless it also carries `username=` and `password=` operation parameters, in which case it authenticates as that pair instead, a different identity than the one you configured.
 - **Refresh token only, against a loopback target**: it does not fail at all. `authentication.authorizeLocal` defaults to `true`, so a request from `127.0.0.1` or `::1` is authenticated as **superuser** with no credential checked. On a self-hosted runner pointed at its own node, an expired token therefore produces a green, fully privileged run rather than an error. This is the failure mode least likely to be noticed.
-- **An expired operation token as well**: that expired token is still attached, so the request goes out carrying it and the server rejects it with `403` — token expiry answers `403` on the operations path too, since both token types are checked by the same validator. You get a rejection rather than a silent identity switch, but do not alarm on `401` for it.
+- **An expired operation token as well**: that token is still attached, so the request carries an `Authorization` header and the server validates it — rejecting it with `403`, since expiry answers `403` on the operations path too. You get a rejection rather than a silent identity switch, but do not alarm on `401` for it.
+
+The difference between those two outcomes is whether an `Authorization` header is sent at all, and it is the hinge for the loopback case above: local authorization is only consulted when a request arrives with **no** credential. A request carrying a token — even an expired one — is validated and rejected on its merits, loopback or not. A request carrying nothing is what a loopback node authorizes as superuser. So the dangerous shape is precisely the refresh-token-only one, where a failed refresh leaves no header to validate.
 
 A `200` response that contains no `operation_token` is not reported at all. A refresh failure therefore does not reliably halt a pipeline, and a zero exit is not proof that the identity you configured is the one that ran.
 
