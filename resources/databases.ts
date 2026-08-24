@@ -1558,8 +1558,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
-	// the exclusive lock may only be released via releaseLock() — a leaked lock wedges every later
-	// schema update on this database (harper#2251)
 	try {
 		if (Table) {
 			primaryKey = Table.primaryKey;

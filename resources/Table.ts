@@ -14,6 +14,7 @@ import {
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
@@ -140,27 +141,29 @@ const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 const updateAttributesLockKey = Buffer.from(UPDATE_ATTRIBUTES_LOCK);
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
 
-/**
- * Acquires the exclusive cross-thread 'update-attributes' lock serializing schema/attribute updates
- * (and table create/drop) per database. The wait is synchronous and blocks the event loop, so the
- * locked section must stay synchronous too — a release by another thread is observable without
- * yielding, but any release requiring this thread's own event loop can never arrive. Throws after
- * `timeout` rather than spinning forever on a holder that never releases (harper#2251).
- */
+class UpdateAttributesLockTimeoutError extends ServerError {
+	code = 'UPDATE_ATTRIBUTES_LOCK_TIMEOUT';
+	retryable = true;
+	constructor(message: string) {
+		super(message, 503);
+		this.name = 'UpdateAttributesLockTimeoutError';
+	}
+}
+
+/** The wait blocks the event loop, so the locked section must stay synchronous. */
 export function acquireUpdateAttributesLock(
 	rootStore: RocksDatabase,
 	scopeDescription: string,
 	timeout = UPDATE_ATTRIBUTES_LOCK_TIMEOUT
 ) {
 	if (rootStore.tryLock(updateAttributesLockKey)) return;
-	const startTime = Date.now();
+	const startTime = performance.now();
 	let waitTime = 1;
 	while (!rootStore.tryLock(updateAttributesLockKey)) {
-		const elapsed = Date.now() - startTime;
+		const elapsed = performance.now() - startTime;
 		if (elapsed >= timeout) {
-			throw new ServerError(
-				`Timed out after ${elapsed}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder never released it, so this schema/attribute update cannot proceed`,
-				503
+			throw new UpdateAttributesLockTimeoutError(
+				`Timed out after ${Math.round(elapsed)}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder did not release it before the deadline, so this schema/attribute update cannot proceed`
 			);
 		}
 		if (elapsed >= 2) {
@@ -174,15 +177,26 @@ export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
 	rootStore.unlock(updateAttributesLockKey);
 }
 
-/** Runs `callback` under the exclusive 'update-attributes' lock, releasing it on every exit path. */
-export function withUpdateAttributesLock<T>(rootStore: RocksDatabase, scopeDescription: string, callback: () => T): T {
+export function withUpdateAttributesLock<Callback extends () => unknown>(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	callback: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
+): ReturnType<Callback> {
 	acquireUpdateAttributesLock(rootStore, scopeDescription);
 	try {
 		const result = callback();
 		if (typeof (result as any)?.then === 'function') {
-			throw new TypeError(`withUpdateAttributesLock callback must be synchronous (${scopeDescription})`);
+			Promise.resolve(result).catch((error) =>
+				logger.error?.(
+					`Async update-attributes callback rejected after its lock was released (${scopeDescription})`,
+					error
+				)
+			);
+			throw new TypeError(
+				`withUpdateAttributesLock callback must be synchronous (${scopeDescription}); asynchronous work may continue after the lock is released`
+			);
 		}
-		return result;
+		return result as ReturnType<Callback>;
 	} finally {
 		releaseUpdateAttributesLock(rootStore);
 	}

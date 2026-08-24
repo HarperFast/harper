@@ -9,6 +9,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 setupTestDBPath();
 setMainIsWorker(true);
 const rootStore = database({ database: 'test', table: null });
+let heldLock = false;
 
 function reportDeadline(action, callback) {
 	const acquired = rootStore.tryLock('update-attributes');
@@ -21,6 +22,8 @@ function reportDeadline(action, callback) {
 			isServerError: caughtError instanceof ServerError,
 			message: caughtError.message,
 			statusCode: caughtError.statusCode,
+			code: caughtError.code,
+			retryable: caughtError.retryable,
 		};
 	} finally {
 		if (acquired) rootStore.unlock('update-attributes');
@@ -31,10 +34,13 @@ function reportDeadline(action, callback) {
 parentPort
 	?.on('message', (message) => {
 		if (message.type === 'hold-lock') {
-			const acquired = rootStore.tryLock('update-attributes');
-			parentPort.postMessage({ type: 'held', acquired });
+			heldLock = rootStore.tryLock('update-attributes');
+			parentPort.postMessage({ type: 'held', acquired: heldLock });
+		} else if (message.type === 'release-lock') {
 			setTimeout(() => {
-				rootStore.unlock('update-attributes');
+				if (heldLock) rootStore.unlock('update-attributes');
+				heldLock = false;
+				parentPort.postMessage({ type: 'released' });
 			}, message.holdTime);
 		} else if (message.type === 'helper-deadline') {
 			reportDeadline(message.type, () =>
@@ -47,7 +53,11 @@ parentPort
 				attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
 			};
 			reportDeadline(message.type, () => table(definition));
-			parentPort.postMessage({ type: 'table-created', created: Boolean(table(definition)) });
+			try {
+				parentPort.postMessage({ type: 'table-created', created: Boolean(table(definition)) });
+			} catch (error) {
+				parentPort.postMessage({ type: 'table-created', created: false, error: error.message });
+			}
 		} else if (message.type === 'shutdown') {
 			process.exit(0);
 		}
