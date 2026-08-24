@@ -401,9 +401,12 @@ function setupTestDBPath() {
  * after setupTestDBPath() instead of borrowing an installed Harper root's system
  * database.
  */
-let systemSeeded = false;
 async function ensureSystemTables() {
-	if (systemSeeded) return;
+	// keyed on actual state, not a process flag: a mid-run tearDownMockDB() can remove the
+	// per-PID root, and a later caller must be able to re-seed it
+	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
+	const testKeyPath = path.join(keysDir, 'unitTestPrivateKey.pem');
+	if (getDatabases().system?.hdb_role && fs.existsSync(testKeyPath)) return;
 	if (!getDatabases().system?.hdb_role) {
 		const mountHdb = require('#src/utility/mount_hdb').default;
 		await mountHdb(env.getHdbBasePath());
@@ -428,8 +431,6 @@ async function ensureSystemTables() {
 	// certificates with an unrelated one (ERR_OSSL_X509_KEY_VALUES_MISMATCH, zero TLS
 	// contexts). Repoint the per-PID config at the renamed key so cert records, the
 	// config file, and the key watcher agree.
-	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
-	const testKeyPath = path.join(keysDir, 'unitTestPrivateKey.pem');
 	if (fs.existsSync(path.join(keysDir, PRIVATEKEY_PEM_NAME))) {
 		fs.renameSync(path.join(keysDir, PRIVATEKEY_PEM_NAME), testKeyPath);
 	}
@@ -440,7 +441,6 @@ async function ensureSystemTables() {
 	}
 	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 	require('#src/config/configUtils').updateConfigValue(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
-	systemSeeded = true;
 }
 
 function sortAsc(data, sort_by) {
