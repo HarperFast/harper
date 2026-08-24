@@ -215,6 +215,10 @@ function snapshotSessions(profile: McpProfile): RegisteredSession[] {
 }
 
 async function refreshSessionUser(record: RegisteredSession): Promise<void> {
+	// A scoped token's username is attribution only — re-resolving it against hdb_user could
+	// substitute a real principal (created later with that name) and advertise a surface the token
+	// never granted. Its embedded role is fixed for the token's life, so there is nothing to refresh.
+	if (record.user?._scopedToken) return;
 	const fresh = await resolveUser(record.user?.username);
 	if (fresh) record.user = fresh;
 }

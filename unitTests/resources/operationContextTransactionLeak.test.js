@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { contextStorage } = require('#src/resources/transaction');
-const { TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
+const { TRANSACTION_STATE, DatabaseTransaction, RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');
 
 // Regression coverage for a transaction-context leak exposed by issue #1591/#1592 (ambient user
 // context for operation handlers) and confirmed against a real 2-node cluster-formation scenario
@@ -136,50 +136,130 @@ describe('Ambient operation context must not couple independent writes (transact
 	// even though the same coalescing was proven to silently drop a write in the live 4-node cluster
 	// integration test (harper-pro's replicationTopology.test.mjs) that originally caught this.
 	//
-	// This test instead asserts the mechanism directly: each independent, no-explicit-context write
-	// must be serviced by its own DatabaseTransaction instance. Resource.ts's dispatcher only ever
-	// assigns a *new* transaction onto the shared ambient context via resources/transaction.ts's
-	// transaction() helper when it takes the "start a transaction" branch; the buggy bare-truthiness
-	// check instead takes the "we are already in a transaction, proceed" branch as soon as
-	// `context.transaction` is set at all, so it never calls transaction() again and the ambient
-	// context's `.transaction` reference never changes for the lifetime of the operation handler —
-	// every subsequent write is coalesced into the exact same instance. With the fix, once the prior
-	// transaction is no longer TRANSACTION_STATE.OPEN, the dispatcher takes the other branch and a
-	// fresh DatabaseTransaction is minted. This invariant fails on the pre-fix code and holds on the
-	// fix, regardless of whether an individual isolated unit test happens to still persist the data.
-	it('services each independent no-explicit-context write with its own DatabaseTransaction instance (mechanism-level)', async () => {
+	// This test originally proved the mechanism via the leftover `.transaction` reference each
+	// write left attached to the shared ambient context after it completed: distinct instances
+	// proved each independent write got its own transaction rather than coalescing into a prior,
+	// already-completed one. That leftover reference no longer survives past completion —
+	// DatabaseTransaction now releases the context's back-reference the instant it completes
+	// (commit or abort; see DatabaseTransaction.ts's releaseContext(), added so a long-lived
+	// context, e.g. an MQTT subscription context, can't keep pinning a finished transaction in
+	// memory).
+	//
+	// That release also means this particular flow (a plain sequential write, no outstanding
+	// iterators) can no longer discriminate a #1591 dispatcher revert: once the prior write's
+	// commit has released the slot to `null`, BOTH the fixed `.open === TRANSACTION_STATE.OPEN`
+	// check and the old, buggy bare-truthiness `if (context?.transaction)` check see the same
+	// falsy value and take the "start a fresh transaction" branch — a revert would still pass the
+	// assertions below. The #1591 scenario (a truthy-but-non-OPEN reference genuinely observed by
+	// the next call) still needs a case where release is deferred past the write that would
+	// wrongly join it — see the search()-iterator test above, which exercises exactly that LINGERING
+	// window. This test's job is narrower: pin that DatabaseTransaction's OWN release invariant
+	// holds for a sequence of independent writes (each is released, and each really is a fresh
+	// instance), which is what the assertions below check.
+	//
+	// Captured by hooking LeakTable.prototype.put — the per-record INSTANCE method Resource.ts's
+	// dispatcher calls from inside the callback it hands to transaction() (resources/Table.ts's
+	// put()), never before. `context.transaction` is unconditionally set before that callback ever
+	// runs (resources/transaction.ts's transaction() assigns it, then invokes the callback), so this
+	// hook point is correct regardless of whatever async work (authorization, resource resolution,
+	// component loading) the dispatcher does on the way there — unlike peeking at the ambient context
+	// synchronously right after issuing the call, which silently assumes no such work is ever async
+	// (it can be, and intermittently was, under CI: a would-be "immediately available" read raced a
+	// pending resolution and observed the write's transaction as not-yet-attached). Scoped to this one
+	// test table's own prototype (an own-property override, shadowing but not touching the shared
+	// `Table` base), so it can't count an unrelated background transaction the way stubbing
+	// `DatabaseTransaction.prototype.setContext` — a hook shared by every table — would.
+	it('releases each independent no-explicit-context write’s transaction from the ambient context once it completes, and each is a genuinely fresh instance (mechanism-level)', async () => {
 		const transactionsSeenAfterEachWrite = [];
-		await serverUtilities.processLocalTransaction(
+		const transactionsStarted = [];
+		const originalPut = LeakTable.prototype.put;
+		LeakTable.prototype.put = function (...args) {
+			transactionsStarted.push(contextStorage.getStore()?.transaction);
+			return originalPut.apply(this, args);
+		};
+		try {
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+				async () => {
+					await LeakTable.put('mech-first', { name: 'first' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+
+					await LeakTable.put('mech-second', { name: 'second' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+
+					await LeakTable.put('mech-third', { name: 'third' });
+					transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
+
+					return { message: 'ok' };
+				}
+			);
+		} finally {
+			LeakTable.prototype.put = originalPut;
+		}
+
+		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
+		assert.strictEqual(
+			afterFirst,
+			RELEASED_TRANSACTION,
+			"the first write's transaction must be released from the ambient context once its commit completes"
+		);
+		assert.strictEqual(
+			afterSecond,
+			RELEASED_TRANSACTION,
+			"the second write's transaction must likewise be released, not left attached for a later write to observe"
+		);
+		assert.strictEqual(
+			afterThird,
+			RELEASED_TRANSACTION,
+			"the third write's transaction must likewise be released, for the same reason"
+		);
+
+		assert.strictEqual(
+			transactionsStarted.length,
+			3,
+			'each independent write must start its own transaction() call — none may join an existing OPEN transaction'
+		);
+		assert.ok(
+			transactionsStarted.every((txn) => txn instanceof DatabaseTransaction),
+			'each write must have a real DatabaseTransaction attached to the ambient context while it runs'
+		);
+		assert.notStrictEqual(
+			transactionsStarted[0],
+			transactionsStarted[1],
+			'the second write must not join the first write’s transaction instance: each independent, ' +
+				'no-explicit-context write must run in its own DatabaseTransaction, not a stale one left over ' +
+				'from a prior, already-completed call on the shared ambient context — this is the #1591 ' +
+				'dispatcher fix (resources/transaction.ts:35’s `.open === OPEN` check), not this PR’s release'
+		);
+		assert.notStrictEqual(
+			transactionsStarted[1],
+			transactionsStarted[2],
+			'the third write must not join the second write’s transaction instance, for the same reason'
+		);
+	});
+
+	// The delivery path: an operations-API handler under processLocalTransaction's ambient context reads
+	// through that context and then commits it itself. transaction.test.js covers the same shape on a
+	// bare `{}` context; only this one exercises the real ambient operation context.
+	it('lets an operation handler commit its ambient context after a static read completed that context’s transaction', async () => {
+		let committed = false;
+		const result = await serverUtilities.processLocalTransaction(
 			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
 			async () => {
-				await LeakTable.put('mech-first', { name: 'first' });
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
-
-				await LeakTable.put('mech-second', { name: 'second' });
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
-
-				await LeakTable.put('mech-third', { name: 'third' });
-				transactionsSeenAfterEachWrite.push(contextStorage.getStore()?.transaction);
-
+				const context = contextStorage.getStore();
+				await LeakTable.get('handler-commit-target');
+				// getUserPermissions()'s shape: bound the transaction the reads above ran in, then carry on.
+				await context.transaction.commit();
+				committed = true;
+				await LeakTable.put('handler-commit-target', { name: 'written after the handler commit' });
+				await context.transaction.commit();
 				return { message: 'ok' };
 			}
 		);
-
-		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
-		assert.ok(afterFirst, 'the first write must leave a transaction attached to the ambient context');
-		assert.ok(afterSecond, 'the second write must leave a transaction attached to the ambient context');
-		assert.ok(afterThird, 'the third write must leave a transaction attached to the ambient context');
-		assert.notStrictEqual(
-			afterFirst,
-			afterSecond,
-			'the second write must not join the first write’s transaction instance: each independent, ' +
-				'no-explicit-context write must run in its own DatabaseTransaction, not a stale one left over ' +
-				'from a prior, already-completed call on the shared ambient context'
-		);
-		assert.notStrictEqual(
-			afterSecond,
-			afterThird,
-			'the third write must not join the second write’s transaction instance, for the same reason'
-		);
+		assert.equal(result?.message, 'ok', 'the handler must not fail on its own mid-handler commit');
+		assert.ok(committed);
+		const record = await LeakTable.get('handler-commit-target');
+		assert.ok(record, 'the write made after the handler’s own commit must persist');
+		assert.equal(record.name, 'written after the handler commit');
 	});
 });

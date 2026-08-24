@@ -42,6 +42,9 @@ const NO_AUTH_OPERATIONS = [
 	terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
 	terms.OPERATIONS_ENUM.LOGIN,
 	terms.OPERATIONS_ENUM.LOGOUT,
+	// The OIDC exchange *is* the authentication (#2171): the caller proves identity with a token
+	// from a trusted issuer, not with Harper credentials it does not have.
+	terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN,
 ];
 
 const UNSAFE_REQUEST_BODY_PROPERTIES = ['__proto__', 'constructor', 'prototype'];
@@ -112,10 +115,10 @@ function authHandler(req, resp, done) {
 	const isAuthOperation = !NO_AUTH_OPERATIONS.includes(req.body.operation);
 	if (
 		isAuthOperation ||
-		// If create token is called without username/password in the body it needs to be authorized
+		// Create token needs to be authorized when called without username/password in the body, or
+		// with an inline role object (scoped-token minting is gated on the authenticated requester)
 		(req.body.operation === terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
-			!req.body.username &&
-			!req.body.password)
+			((!req.body.username && !req.body.password) || (req.body.role && typeof req.body.role === 'object')))
 	) {
 		pAuthorize(req, resp)
 			.then(async (userData) => {

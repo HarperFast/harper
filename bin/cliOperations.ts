@@ -6,10 +6,11 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
-import * as path from 'path';
+import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
+import { execFileSync } from 'node:child_process';
 import { streamPackagedDirectory, packageDirectory, scanPackageDirectory } from '../components/packageComponent.ts';
 import { encode as encodeCbor } from 'cbor-x';
 import { buildMultipartBody } from './multipartBuilder.ts';
@@ -17,6 +18,10 @@ import { parseSSE } from './sseConsumer.ts';
 import { DeployRenderer } from './deployRenderer.ts';
 import { getHdbPid } from '../utility/processManagement/processManagement.js';
 import { initConfig, getConfigPath } from '../config/configUtils.ts';
+// The `deploy setup` seal and this by-reference flag both name the same hdb_secret row, and the
+// server re-derives it from its own request — so the derivation lives in one dependency-free module
+// rather than being restated per caller (it also keeps `components/` off the CLI's import graph).
+import { deriveGitSecretName, directoryProjectName, normalizeGitHost } from '../utility/componentNames.ts';
 
 // Plain name aliases. `revert` is deliberately NOT here — it lives in OP_VERB_PROPS below so it can
 // carry the `_cliVerb` marker its missing-target guard keys on, and buildRequest checks OP_ALIASES
@@ -68,20 +73,51 @@ const LOCAL_NOT_RUNNING_MESSAGE = 'Harper is not running. Use `harperdb run` (or
 // the SSE parser sees no events.
 const SSE_OPERATIONS = new Set(['deploy_component', 'revert_component']);
 
+// The fields that decide *where* an operation connects and *as whom* — see transportContext().
+const CONNECTION_FIELDS = ['target', 'auth_username', 'auth_password', 'rejectUnauthorized'];
+
 // Properties on `req` that the CLI itself uses for transport/UX, not the operations API.
 // They never get serialized into the request body. `username`/`password` are deliberately
 // NOT here: those args are payload fields (e.g. the user add_user/alter_user create/alter),
 // not transport — use `auth_username`/`auth_password` (or env-var/`harper login` auth) to
 // authenticate as a different user than the one being operated on.
 const TRANSPORT_ONLY_FIELDS = new Set([
-	'target',
-	'auth_username',
-	'auth_password',
-	'rejectUnauthorized',
+	...CONNECTION_FIELDS,
 	'json',
 	'skip_node_modules',
 	'skip_symlinks',
+	// deploy-by-reference opt-in: consumed client-side to build `package` (and derive `credentials`),
+	// never sent to the server. (`credentials`, plural, IS a real operation field and is sent.)
+	'by_ref',
+	'ref',
+	'credential',
+	// `deploy setup=true`'s token, read off the parsed request by deploySetup and sealed locally.
+	// Stripping it means a mistyped `setup` — which parses as a bare word and falls through to a real
+	// deploy — can't carry a PAT to the server. Distinct from `credentials[].token`, which is nested
+	// inside a field that IS sent (ingestCredentials seals it server-side) and is only kept out of the
+	// operations log. See OPERATIONS_TAKING_A_TOKEN for the one operation this must not apply to.
+	'token',
 ]);
+
+/**
+ * The connection half of a parsed CLI request, as a base for a *different* operation issued on the
+ * same command's behalf (`harper deploy setup=true` calls get_secrets_public_key and set_secret).
+ * Carrying these over keeps the sub-operation on the caller's target, identity, and TLS strictness;
+ * rebuilding a request with only `target` would silently authenticate with a saved login token
+ * instead of the credentials that were passed explicitly, and would fail against a self-signed
+ * target. Only these fields come along, so the originating command's own args (a deploy's `token`,
+ * `package`, …) never reach the sub-operation's body.
+ */
+function transportContext(req: any): any {
+	const context: any = {};
+	for (const field of CONNECTION_FIELDS) if (req[field] !== undefined) context[field] = req[field];
+	return context;
+}
+
+// Values that are opaque strings, never JSON. buildRequest otherwise JSON-parses every value, which
+// silently rewrites a git ref that happens to look numeric: `ref=1.0` becomes the number 1 (and then
+// the string "1"), so a tag named "1.0" would be resolved as "1". Refs can't be anything but strings.
+const RAW_STRING_FIELDS = new Set(['ref']);
 
 // Streaming (multipart upload + SSE progress) deploy was introduced in 5.1.0. A CLI at >=
 // 5.1 talking to a server < 5.1 must not use it: the older server has no multipart body
@@ -195,10 +231,24 @@ async function* wrapPackagingStream(stream: Readable, projectPath: string): Asyn
 // Build the JSON operation-field set from `req`, dropping the CLI's internal (`_`-prefixed)
 // and transport-only fields so neither the CLI internals nor credentials leak into the
 // request body. Shared by the multipart and legacy-JSON deploy body builders.
+/**
+ * Operations whose own request body has a top-level `token`, which must therefore survive the
+ * transport-only stripping above.
+ *
+ * `exchange_oidc_token` (#2171) is one: the identity token IS the request. The blanket strip was
+ * written when no operation took a top-level `token`, and left this one reaching the server without
+ * the field it requires — so the issuer-agnostic path was unusable through the generic CLI even
+ * though direct HTTP worked. Keyed on the operation rather than dropping the strip, because the
+ * mistyped-`setup` case it guards against is real.
+ */
+const OPERATIONS_TAKING_A_TOKEN = new Set(['exchange_oidc_token']);
+
 function operationFields(req: any): any {
+	const keepsToken = OPERATIONS_TAKING_A_TOKEN.has(req?.operation);
 	const fields: any = {};
 	for (const [key, value] of Object.entries(req)) {
-		if (key.startsWith('_') || TRANSPORT_ONLY_FIELDS.has(key)) continue;
+		if (key.startsWith('_')) continue;
+		if (TRANSPORT_ONLY_FIELDS.has(key) && !(key === 'token' && keepsToken)) continue;
 		fields[key] = value;
 	}
 	return fields;
@@ -274,7 +324,7 @@ function resolveTransportCredentials(req: any, urlCredentials: { username: strin
 // file — the command line already exposes it to shell history and process listings; the log
 // shouldn't be a third copy. This list is by field name, not exhaustive — any future secret-bearing
 // arg (a token, a key) needs to be added here explicitly, or it will reach logger.trace unredacted.
-const SECRET_FIELDS = new Set(['auth_password', 'password']);
+const SECRET_FIELDS = new Set(['auth_password', 'password', 'token']);
 
 // `target=https://admin:secret@host` carries a password too, so masking the userinfo is part of
 // making a target printable — the same string is echoed by the "Connecting to ..." line.
@@ -300,59 +350,330 @@ function redactCredentials(req: any): any {
 	return redacted;
 }
 
-export { cliOperations, buildRequest, redactCredentials, refreshExpiredOperationToken, verbRequirementError };
+export {
+	cliOperations,
+	buildRequest,
+	redactCredentials,
+	refreshExpiredOperationToken,
+	verbRequirementError,
+	transportContext,
+	resolveGitTarget,
+	resolveCredentialHost,
+	deriveGitSecretName,
+};
 
-// Package the current working directory into a multipart tarball upload for deploy_component. Covers
-// `harper deploy` and `harper stage` (deploy_component with activate:false) — both upload the incoming
-// version. Nothing to package when a `package` identifier is given (the server fetches it) or when
-// activating a previously-staged deployment (`deployment_id`, i.e. `harper activate`).
-const packageCwdForUpload = async (req) => {
-	if (req.deployment_id) {
-		req.project ||= path.basename(process.cwd());
-		return;
-	}
-	if (req.package) {
-		return;
-	}
+// --- deploy-by-reference (opt-in via `by_ref=true` / `ref=<committish>`) ----------------------
+// Resolve the app's GitHub repo + commit from the local working copy (or GitHub Actions env) so
+// `harper deploy by_ref=true` deploys a pinned commit by reference instead of uploading a payload
+// blob. Client-side: only the runner has the git context. The no-flag default stays the payload deploy.
 
-	const projectPath = process.cwd();
-	if (!req.project) req.project = path.basename(projectPath);
-	const packageOptions = {
-		skip_node_modules: req.skip_node_modules !== false,
-		skip_symlinks: req.skip_symlinks === true,
-	};
-	// Store path + options for deferred stream creation after the renderer is set up,
-	// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
-	req._projectPath = projectPath;
-	req._packageOptions = packageOptions;
-	// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
-	// total) and the dangling-symlink list — a dangling symlink would otherwise silently
-	// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
-	// them; the list is reused below (no second walk) and warns the user which links were
-	// skipped so the omission is visible.
-	const scan = await scanPackageDirectory(projectPath, packageOptions);
-	req._uploadSizeEstimate = scan.totalSize;
-	req._danglingSymlinks = scan.danglingSymlinks;
-	if (scan.danglingSymlinks.length) {
-		process.stderr.write(
-			`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
-				scan.danglingSymlinks.map((p) => `  ${p}\n`).join('')
+// resolveGitRepo only recognizes GitHub remotes, so every by_ref package clones from this host. The
+// credential host is derived from it rather than taken on the user's word (see resolveCredentialHost).
+const GIT_PACKAGE_HOST = 'github.com';
+// SHA-1 (40) or SHA-256 (64) object IDs. A full object ID is already immutable, so it's the one form
+// of ref that needs no resolution; every other form can move.
+const FULL_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+// `ls-remote` reaches the network, where git will otherwise block indefinitely on an interactive
+// credential prompt the CLI can't render. Fail fast instead, and cap the whole call.
+const NON_INTERACTIVE_GIT_ENV = {
+	GIT_TERMINAL_PROMPT: '0',
+	GIT_ASKPASS: 'echo',
+	SSH_ASKPASS: 'echo',
+	GIT_SSH_COMMAND: 'ssh -oBatchMode=yes',
+};
+const GIT_NETWORK_TIMEOUT_MS = 15000;
+
+function runGit(args: string[]): string {
+	return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+function runGitNetwork(args: string[]): string {
+	return execFileSync('git', args, {
+		encoding: 'utf8',
+		stdio: ['ignore', 'pipe', 'ignore'],
+		env: { ...process.env, ...NON_INTERACTIVE_GIT_ENV },
+		timeout: GIT_NETWORK_TIMEOUT_MS,
+	}).trim();
+}
+
+function resolveGitRepo(): string {
+	if (process.env.GITHUB_REPOSITORY) return process.env.GITHUB_REPOSITORY;
+	let url: string;
+	try {
+		url = runGit(['remote', 'get-url', 'origin']);
+	} catch {
+		throw new Error(
+			'deploy by_ref: no git `origin` remote found — push this project to GitHub, or pass an explicit package=.'
 		);
 	}
-	req._multipart = true;
-};
+	// git@github.com:owner/repo.git | https://github.com/owner/repo(.git) | ssh://…
+	const match = url.match(/github\.com[:/]+([^/]+\/[^/]+?)(?:\.git)?\/?$/i);
+	if (!match) throw new Error(`deploy by_ref: could not parse owner/repo from the origin remote: ${url}`);
+	return match[1];
+}
+
+// Prefer the configured `origin`: it carries whatever credentials, mirrors, and url.insteadOf
+// rewriting the user's git is already set up with. The public URL is only for a checkout that has
+// no remote at all (e.g. CI that exported GITHUB_REPOSITORY without adding one).
+function resolveGitRemote(repo: string): string {
+	try {
+		if (runGit(['remote', 'get-url', 'origin'])) return 'origin';
+	} catch {
+		// No origin.
+	}
+	return `https://${GIT_PACKAGE_HOST}/${repo}.git`;
+}
+
+// A plain clone fetches refs/heads/* and refs/tags/* and nothing else, so those are the only
+// namespaces a deployable ref can live in. A commit named through any other — refs/pull/<n>/head is
+// the one people reach for — pins to a perfectly immutable SHA that the cluster then cannot check
+// out, failing the clone exactly as the pull_request merge commit would. Rejecting the namespace
+// catches that here, where the user can act on it, rather than on the cluster. It can't catch a bare
+// SHA that happens to be unreachable: an object ID carries no namespace to inspect.
+function assertCloneableRefNamespace(ref: string): void {
+	if (!ref.startsWith('refs/') || ref.startsWith('refs/heads/') || ref.startsWith('refs/tags/')) return;
+	throw new Error(
+		`deploy by_ref: ref=${ref} is outside refs/heads/ and refs/tags/, the only namespaces a clone ` +
+			'fetches — the cluster could resolve that commit but never check it out. Pass a branch or tag the ' +
+			'commit is on.'
+	);
+}
+
+// `ls-remote` reports an annotated tag's peeled commit on a trailing `^{}` line — but only when a
+// pattern matches that line, so the peel patterns have to be asked for explicitly. Without them a tag
+// resolves to the *tag object's* ID, which is not a commit the cluster can check out. Every pattern is
+// namespace-qualified: passing the bare `ref` as its own pattern would match any namespace ls-remote
+// happens to serve, which is how an unreachable ref would slip through as a lone "unambiguous" match.
+function resolveRefOnRemote(remote: string, ref: string): string | undefined {
+	const qualified = ref.startsWith('refs/');
+	const patterns = qualified ? [ref, `${ref}^{}`] : [`refs/tags/${ref}`, `refs/tags/${ref}^{}`, `refs/heads/${ref}`];
+	let output: string;
+	try {
+		output = runGitNetwork(['ls-remote', remote, ...patterns]);
+	} catch {
+		return undefined; // unreachable, unauthenticated, or too slow to answer
+	}
+	const shaByRef = new Map<string, string>();
+	for (const line of output.split('\n')) {
+		const [sha, name] = line.split('\t');
+		if (sha && name) shaByRef.set(name, sha);
+	}
+	// Peeled commit first (an annotated tag object isn't checkout-able), then tags over branches, which
+	// is git's own precedence for a bare name (gitrevisions).
+	if (qualified) return shaByRef.get(`${ref}^{}`) ?? shaByRef.get(ref);
+	return shaByRef.get(`refs/tags/${ref}^{}`) ?? shaByRef.get(`refs/tags/${ref}`) ?? shaByRef.get(`refs/heads/${ref}`);
+}
+
+// An explicit ref= is pinned to an immutable SHA, exactly as HEAD is. Cluster peers resolve the
+// package independently, so `ref=main` — or a tag repointed between one peer fetching and another
+// re-fetching after a restart — would otherwise leave nodes running different commits. Resolution is
+// local where possible (`^{commit}` also dereferences annotated tags), then falls back to the remote
+// for a ref this checkout doesn't have (a shallow CI clone has almost none), and fails closed if
+// neither can name a commit: a ref that can't be pinned is the divergence the pin exists to prevent.
+function resolveExplicitRef(ref: string, repo: string): string {
+	// git parses options anywhere in its argv, so a ref spelled like one (`--upload-pack=…`) would be
+	// obeyed as an option instead of resolved. No real ref starts with `-` — git rejects those itself.
+	if (ref.startsWith('-')) throw new Error(`deploy by_ref: invalid ref=${ref} — a git ref cannot start with "-".`);
+	// Checked before local resolution, not just remote: a checkout that has fetched refs/pull/<n>/head
+	// resolves it happily, and the resulting SHA is just as unreachable for the cluster's clone.
+	assertCloneableRefNamespace(ref);
+	try {
+		return runGit(['rev-parse', '--verify', `${ref}^{commit}`]);
+	} catch {
+		// Not in this checkout — try the remote below.
+	}
+	if (FULL_OBJECT_ID.test(ref)) return ref; // already immutable; nothing to pin it to
+	const remote = resolveGitRemote(repo);
+	const resolved = resolveRefOnRemote(remote, ref);
+	if (resolved) return resolved;
+	throw new Error(
+		`deploy by_ref: could not resolve ref=${ref} to a commit, locally or on ${remote}. Peers resolve the ` +
+			'package independently, so a ref that moves would leave them on different commits — run `git fetch` ' +
+			'and retry, or pass a full commit SHA.'
+	);
+}
+
+// GitHub Actions checks out a *synthetic merge commit* on a `pull_request` run: GITHUB_SHA points at
+// refs/pull/<n>/merge, which a plain clone never fetches (its default refspec covers refs/heads/* and
+// refs/tags/* only), so deploying it fails server-side at clone time. The event payload carries the PR
+// head — a real commit on a real branch — so deploy that instead, from the head repo, which for a fork
+// isn't GITHUB_REPOSITORY. See the pull_request section of GitHub's events-that-trigger-workflows docs.
+function resolveActionsPullRequestHead(): { repo: string; committish: string } | undefined {
+	if (!/^refs\/pull\//.test(process.env.GITHUB_REF ?? '')) return undefined;
+	const eventPath = process.env.GITHUB_EVENT_PATH;
+	let head: any;
+	try {
+		if (eventPath) head = JSON.parse(fs.readFileSync(eventPath, 'utf8'))?.pull_request?.head;
+	} catch {
+		// Missing or unparseable payload — the error below is the useful outcome either way.
+	}
+	const committish = typeof head?.sha === 'string' ? head.sha : undefined;
+	const repo = typeof head?.repo?.full_name === 'string' ? head.repo.full_name : undefined;
+	if (!committish || !repo) {
+		throw new Error(
+			`deploy by_ref: GITHUB_SHA on a ${process.env.GITHUB_REF} run is a synthetic merge commit that a plain ` +
+				'clone cannot fetch, and the pull request head could not be read from GITHUB_EVENT_PATH. Pass the ' +
+				'head commit explicitly: ref=${{ github.event.pull_request.head.sha }}.'
+		);
+	}
+	if (repo !== process.env.GITHUB_REPOSITORY) {
+		process.stderr.write(`note: deploying the pull request head from ${repo}, not ${process.env.GITHUB_REPOSITORY}.\n`);
+	}
+	return { repo, committish };
+}
+
+// Repo and commit are resolved together because they aren't independent: on a pull_request run both
+// come from the PR head, and pairing a head SHA with the base repo would name a commit that repo
+// doesn't have.
+function resolveGitTarget(ref: unknown): { repo: string; committish: string } {
+	// `ref` reaches here as a raw string from buildRequest (see RAW_STRING_FIELDS), but a number is
+	// still coerced rather than ignored — prepareDeployByRef is callable with a hand-built req.
+	const refStr = typeof ref === 'string' || typeof ref === 'number' ? String(ref).trim() : '';
+	if (refStr.length > 0) {
+		const repo = resolveGitRepo();
+		return { repo, committish: resolveExplicitRef(refStr, repo) };
+	}
+	const pullRequestHead = resolveActionsPullRequestHead();
+	if (pullRequestHead) return pullRequestHead;
+	const repo = resolveGitRepo();
+	if (process.env.GITHUB_SHA) return { repo, committish: process.env.GITHUB_SHA };
+	try {
+		return { repo, committish: runGit(['rev-parse', 'HEAD']) };
+	} catch {
+		throw new Error('deploy by_ref: could not resolve HEAD — make at least one commit, or pass ref=<sha|tag>.');
+	}
+}
+
+function warnIfWorkingTreeDirty(): void {
+	try {
+		if (runGit(['status', '--porcelain'])) {
+			process.stderr.write(
+				'warning: working tree has uncommitted changes — the cluster deploys the committed (and pushed) commit, so those changes are NOT included.\n'
+			);
+		}
+	} catch {
+		// Not a git repo; resolveGitTarget will surface a clearer error.
+	}
+}
+
+// The likelier by_ref mistake isn't a dirty tree, it's committing and forgetting to push: the
+// cluster clones from the remote, so the SHA simply isn't there and the deploy fails server-side,
+// far from the CLI and with a much less obvious error. Checked against local remote-tracking refs,
+// so it costs no network round-trip — at the price of a false warning when the local view is stale,
+// which the message accounts for.
+function warnIfCommitNotPushed(committish: string): void {
+	try {
+		if (!runGit(['branch', '-r', '--contains', committish])) {
+			process.stderr.write(
+				`warning: commit ${committish.slice(0, 7)} isn't on any remote branch — push it, or the cluster ` +
+					"won't be able to clone it. (If you already pushed, run `git fetch` to refresh your remote refs.)\n"
+			);
+		}
+	} catch {
+		// Not a git repo, or a committish git can't resolve locally (a remote-only ref is expected
+		// to be absent here) — nothing useful to say, and the deploy itself surfaces real errors.
+	}
+}
+
+// The credential only helps if it's for the host the package is cloned from: a `credential=gitlab.com`
+// against a github.com package builds a valid-looking reference the clone never asks for, and the
+// private deploy then fails as if nothing were configured. So the host comes from the package rather
+// than the user — an explicit value is accepted only when it agrees (`credential=github.com` is the
+// documented spelling), and rejected loudly rather than silently producing a mismatched pair.
+function resolveCredentialHost(credential: unknown, packageHost: string): string | undefined {
+	if (credential === undefined || credential === false || credential === '') return undefined;
+	if (credential === true) return packageHost;
+	const host = normalizeGitHost(String(credential));
+	if (host !== packageHost) {
+		throw new Error(
+			`deploy by_ref: credential=${credential} doesn't match the package host ${packageHost} — the clone ` +
+				`authenticates against ${packageHost}, so a credential for another host would never be used. Use ` +
+				'credential=true.'
+		);
+	}
+	return packageHost;
+}
+
+// Opt-in deploy-by-reference: resolve the pinned git ref (+ optional sealed credential) onto `req` —
+// a `git+https` package pinned by SHA, plus a `credentials` reference when `credential=` is set.
+// Exported for unit tests.
+export function prepareDeployByRef(req: any): void {
+	const { repo, committish } = resolveGitTarget(req.ref);
+	warnIfWorkingTreeDirty();
+	// Skipped under GITHUB_SHA: on the one GitHub event where the checked-out commit isn't on a
+	// cloneable branch (pull_request), resolveGitTarget already substitutes the PR head, so what's
+	// left is pushed by construction — and a shallow/detached runner checkout has no remote-tracking
+	// branches to check it against anyway.
+	if (!process.env.GITHUB_SHA) warnIfCommitNotPushed(committish);
+	// The same default the payload deploy and `deploy setup=true` use. A by-reference deploy is the
+	// flow the sealed credential feeds, and `set_secret`'s grant is keyed by project name, so a
+	// package.json-derived name here would ask for a secret granted to a different name whenever a
+	// checkout directory and its package name disagree.
+	if (!req.project) req.project = directoryProjectName();
+	// git+https (not ssh): a private clone is authenticated by a git-host token credential (#1799),
+	// which rides over HTTPS. A public repo needs no credential at all.
+	req.package = `git+https://${GIT_PACKAGE_HOST}/${repo}.git#${committish}`;
+	// `credential=true` attaches the sealed-token reference the cluster resolves at fetch time —
+	// provision it once with `harper deploy setup=true`.
+	const credentialHost = resolveCredentialHost(req.credential, GIT_PACKAGE_HOST);
+	if (credentialHost && req.credentials === undefined) {
+		req.credentials = [{ host: credentialHost, secret: deriveGitSecretName(req.project, credentialHost) }];
+	}
+	process.stderr.write(`Deploying "${req.project}" by reference: ${req.package}\n`);
+}
 
 // `harper revert` uploads nothing, so it has no packaging step — but it still needs the CWD project
 // default every other deploy-family verb gets, or it fails server-side on a missing `project`.
 const prepareRevert = async (req) => {
-	req.project ||= path.basename(process.cwd());
+	req.project ||= directoryProjectName(process.cwd());
 };
 
 const PREPARE_OPERATION: any = {
-	// deploy_component covers `harper deploy` and `harper stage` (activate:false); packageCwdForUpload
-	// itself skips the upload for a `package` identifier or a `deployment_id` activate.
-	deploy_component: packageCwdForUpload,
 	revert_component: prepareRevert,
+	deploy_component: async (req) => {
+		// `harper activate deployment_id=<id>` takes an already-staged build live, so there is nothing to
+		// package — but it still needs the CWD project default every deploy-family verb gets.
+		if (req.deployment_id) {
+			req.project ||= directoryProjectName(process.cwd());
+			return;
+		}
+		if (req.package) {
+			return;
+		}
+
+		// Opt-in: deploy a pinned git commit by reference instead of packaging the working directory.
+		// Templates scaffold `by_ref=true`; without the flag the payload path below is unchanged.
+		if (req.by_ref || req.ref) {
+			prepareDeployByRef(req);
+			return;
+		}
+
+		const projectPath = process.cwd();
+		if (!req.project) req.project = directoryProjectName(projectPath);
+		const packageOptions = {
+			skip_node_modules: req.skip_node_modules !== false,
+			skip_symlinks: req.skip_symlinks === true,
+		};
+		// Store path + options for deferred stream creation after the renderer is set up,
+		// so the pre-gzip onBytes callback can be wired directly to renderer.countUploadBytes.
+		req._projectPath = projectPath;
+		req._packageOptions = packageOptions;
+		// Pre-walk the directory once for both the uncompressed-size estimate (progress bar
+		// total) and the dangling-symlink list — a dangling symlink would otherwise silently
+		// truncate the tarball (tar-fs finalizes early on the broken target). Packaging skips
+		// them; the list is reused below (no second walk) and warns the user which links were
+		// skipped so the omission is visible.
+		const scan = await scanPackageDirectory(projectPath, packageOptions);
+		req._uploadSizeEstimate = scan.totalSize;
+		req._danglingSymlinks = scan.danglingSymlinks;
+		if (scan.danglingSymlinks.length) {
+			process.stderr.write(
+				`warning: skipping ${scan.danglingSymlinks.length} broken symlink(s) — their linked content will NOT be deployed:\n` +
+					scan.danglingSymlinks.map((p) => `  ${p}\n`).join('')
+			);
+		}
+		req._multipart = true;
+	},
 };
 
 /**
@@ -370,10 +691,12 @@ function buildRequest(): any {
 			let [first, ...rest] = arg.split('=');
 			let restStr: any = rest.join('=');
 
-			try {
-				restStr = JSON.parse(restStr);
-			} catch {
-				/* noop */
+			if (!RAW_STRING_FIELDS.has(first)) {
+				try {
+					restStr = JSON.parse(restStr);
+				} catch {
+					/* noop */
+				}
 			}
 
 			req[first] = restStr;
@@ -524,7 +847,8 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
 	// Authentication precedence: explicitly configured credentials (dedicated args, URL
 	// userinfo, env vars) beat everything, then env-var tokens, then the saved `harper login`
-	// token, and only then the legacy `username=`/`password=` payload fallback below. The
+	// token, then a CI identity token exchanged via OIDC (#2171 — ambient, so it ranks below
+	// everything configured), and only then the legacy `username=`/`password=` fallback. The
 	// tokens must outrank that fallback: for add_user/alter_user those args are the credentials
 	// of the user being created/altered, so treating them as auth would authenticate as a user
 	// who doesn't exist yet (or as the wrong identity) instead of using the admin's session.
@@ -559,9 +883,12 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 		const envRefreshToken = tokenPrefix ? process.env[`${tokenPrefix}_REFRESH_TOKEN`]?.trim() : undefined;
 		// A namespace that is set but blank is a broken CI secret, not a request to fall back to
 		// whatever the developer last logged in as — say so rather than switching identity silently.
-		if (tokenPrefix && !envOperationToken && !envRefreshToken) {
+		const tokenNamespaceBlank = !!tokenPrefix && !envOperationToken && !envRefreshToken;
+		if (tokenNamespaceBlank) {
 			console.error(
-				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved login credentials.`
+				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved ` +
+					`login credentials. Workload identity is deliberately NOT used here: a blank token namespace is a ` +
+					`failed secret, and deploying as a different identity would hide that.`
 			);
 		}
 
@@ -579,6 +906,24 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 			if (tokens.operation_token) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
+		} else if (workloadIdentityAvailable() && !tokenNamespaceBlank) {
+			// Last credential source: no configured token, but this runner can prove its identity to
+			// the cluster directly (#2171). Deliberately below the env-var and saved tokens — an
+			// explicitly configured credential should keep working exactly as it did when someone adds
+			// `id-token: write` to a workflow, rather than silently switching which identity deploys.
+			//
+			// `!tokenNamespaceBlank` extends that invariant to the half-configured case. A CI secret
+			// that failed to populate leaves the namespace set but empty; without this, such a run
+			// would quietly deploy as the OIDC policy's user instead of failing, which is the same
+			// silent identity switch in a shape that is harder to notice.
+			// Standard operation timeout, not the caller's — by this point `options.timeout` may carry
+			// the 10-minute SSE timeout for a streaming deploy_component, and the exchange is a small
+			// fast request. Without the override a stalled exchange hangs the deploy for ten minutes,
+			// on the very operation this feature exists to serve. Same reasoning, same fix as
+			// refreshExpiredOperationToken above.
+			const exchangeOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
+			const operationToken = await exchangeWorkloadIdentityForToken(exchangeOptions, target.resolvedTarget);
+			if (operationToken) options.headers.Authorization = `Bearer ${operationToken}`;
 		}
 	}
 	// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's

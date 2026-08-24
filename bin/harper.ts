@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
 import * as cliOperations from './cliOperations.ts';
+import { help } from './help.ts';
 import { packageJson } from '../utility/packageUtils.js';
 import checkNode from '../launchServiceScripts/utility/checkNodeVersion.js';
 import * as hdbTerms from '../utility/hdbTerms.ts';
@@ -12,55 +13,6 @@ const { SERVICE_ACTIONS_ENUM, OPERATIONS_ENUM } = hdbTerms as any;
 if (typeof process.setSourceMapsEnabled === 'function') {
 	process.setSourceMapsEnabled(true); // this is necessary for source maps to work, at least on the main thread.
 }
-
-const HELP = `
-Usage: harperdb [command]
-
-With no command, harper will simply run Harper (in the foreground)
-
-Documentation: https://docs.harperdb.io/
-
-By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
-
-Commands:
-agent [message]                 - Chat with the built-in agent (interactive, or one-shot with a message; alias: chat)
-copy-db <source> <target>       - Copies a database from source path to target path
-dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
-install                         - Install harperdb
-<api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
-                                   To authenticate as a different user than the one being operated on
-                                   (e.g. add_user/alter_user), set HARPER_CLI_USERNAME/HARPER_CLI_PASSWORD
-                                   or run 'harper login'. The equivalent auth_username=<value>
-                                   auth_password=<value> args also work, but a password passed as an
-                                   argument is exposed in shell history, process listings and CI logs.
-                                   A saved login token always outranks username=/password=, so a
-                                   stale token that fails to refresh will 401 rather than falling
-                                   back to them — run 'harper logout' or pass auth_username=/
-                                   auth_password= to override it.
-login [target] [username]       - Login to a remote or local Harper instance
-                                   --for-ci prints the CI/CD credentials (target + long-lived
-                                   refresh token) to stdout in dotenv format, and everything else
-                                   to stderr, so it pipes without the token hitting your screen:
-                                     harper login --for-ci | gh secret set --env-file -
-                                   Log in as a user dedicated to that one CI consumer: Harper
-                                   stores a single refresh token per user, so this revokes any
-                                   refresh token that user already holds — another runner, another
-                                   machine, or an earlier 'harper login' will 401 on its next
-                                   refresh. Two consumers cannot share a user.
-logout [target]                 - Logout from Harper and clear saved JWT
-mcp [subcommand]                - MCP stdio bridge / print-config / doctor (see 'harper mcp help')
-register                        - Register harperdb
-renew-certs                     - Generate a new set of self-signed certificates
-restart                         - Restart the harperdb background process
-run <path>                      - Run the application in the specified path
-start                           - Starts a separate background process for harperdb and CLI will exit
-status                          - Print the status of Harper
-stop                            - Stop the harperdb background process
-help                            - Display this output
-upgrade                         - Upgrade harperdb
-version                         - Print the version
-deploy                          - Deploy the application locally or remotely with target=<remote url>
-`;
 
 /**
  * Format a CLI error for the terminal. Expected, user-facing errors (a `ClientError` from an
@@ -72,6 +24,19 @@ export function formatCliError(error: any): string {
 	const message = `error: ${error?.message ?? error}`;
 	if (error?.stack && typeof error?.statusCode !== 'number') return `${message}\n${error.stack}`;
 	return message;
+}
+
+/**
+ * Whether a `-h`/`--help` anywhere in `argv` should print the top-level help. Returns false for the
+ * subcommands that own their own `--help` — mcp and agent/chat parse `process.argv.slice(3)`
+ * themselves downstream — so `harper mcp --help` reaches the mcp handler instead of this help.
+ */
+export function wantsTopLevelHelp(argv: readonly string[], service: string | undefined): boolean {
+	const delegatesHelp =
+		service === SERVICE_ACTIONS_ENUM.MCP ||
+		service === SERVICE_ACTIONS_ENUM.AGENT ||
+		service === SERVICE_ACTIONS_ENUM.CHAT;
+	return !delegatesHelp && (argv.includes('-h') || argv.includes('--help'));
 }
 
 async function harper() {
@@ -90,13 +55,17 @@ async function harper() {
 
 	let service;
 
-	if (process.argv && process.argv[2] && !process.argv[2].startsWith('-')) {
+	if (process.argv?.[2] && !process.argv[2].startsWith('-')) {
 		service = process.argv[2].toLowerCase();
+	}
+
+	if (wantsTopLevelHelp(process.argv, service)) {
+		return help();
 	}
 
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.HELP:
-			return HELP;
+			return help();
 		case SERVICE_ACTIONS_ENUM.START:
 			return require('./run').launch();
 		case SERVICE_ACTIONS_ENUM.INSTALL:
@@ -201,6 +170,26 @@ async function harper() {
 			return require('./run').main();
 		default:
 			const cliApiOp = cliOperations.buildRequest();
+			// `harper deploy setup=true` provisions an encrypted deploy credential (client-side sealed
+			// token) rather than deploying — an interactive flow, not a single operation call.
+			if (cliApiOp.operation === 'deploy_component' && cliApiOp.setup) {
+				const { deploySetup } = require('./deploySetup');
+				await deploySetup(cliApiOp);
+				return;
+			}
+			// A `token=` that didn't reach the setup flow is a mistyped invocation, not a deploy field —
+			// `harper deploy setup token=…` (no `=true`) parses `setup` as a bare word that buildRequest
+			// drops, so it would otherwise proceed as an ordinary deploy carrying a live credential it has
+			// no use for. Refuse rather than deploy: the token is redacted and never sent either way, but
+			// silently ignoring it would leave the user believing a credential was provisioned.
+			if (cliApiOp.operation === 'deploy_component' && cliApiOp.token !== undefined) {
+				// statusCode so formatCliError prints this as a one-line hint rather than a stack trace —
+				// it's a typo, not a crash.
+				throw Object.assign(
+					new Error('`token=` is only valid with `setup=true` — did you mean `harper deploy setup=true`?'),
+					{ statusCode: 400 }
+				);
+			}
 			logger.trace('calling cli operations with:', cliOperations.redactCredentials(cliApiOp));
 			await cliOperations.cliOperations(cliApiOp);
 			return;

@@ -144,6 +144,7 @@ module.exports = {
 	broadcastWithAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
+	getEligibleBroadcastRecipientThreadIds,
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
@@ -192,6 +193,18 @@ function getWorkerIndex() {
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
+function isEligibleBroadcastRecipient(port) {
+	return !port.isJobWorker;
+}
+function getEligibleBroadcastRecipientThreadIds() {
+	const recipientThreadIds = new Set();
+	for (const port of connectedPorts) {
+		if (isEligibleBroadcastRecipient(port) && port.threadId !== undefined) {
+			recipientThreadIds.add(port.threadId);
+		}
+	}
+	return recipientThreadIds;
+}
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 	module.exports.threadsHaveStarted();
@@ -205,6 +218,7 @@ let workerCount = 1; // should be assigned when workers are created
 const RESERVED_WORKER_DATA_KEYS = [
 	'addPorts',
 	'addThreadIds',
+	'addPortIsJobWorkers',
 	'workerIndex',
 	'workerCount',
 	'name',
@@ -232,6 +246,14 @@ function registerWorkerDataProvider(name, provider) {
 		if (workerDataProviders.get(name) === provider) workerDataProviders.delete(name);
 	};
 }
+// Propagate this thread's in-process config overrides (env.setProperty — installer bootstrap or
+// the unit-test harness's per-run isolation) to every worker spawned from here, so a worker's
+// effective config is never silently whatever happens to be installed on disk. Worker-side replay
+// is environmentManager.ts's applyInheritedConfigOverrides(), invoked from initSync(). Registered
+// on every thread (not just main) so a nested worker-of-a-worker also inherits the full chain.
+// setProperty() clones each value as it records it, so this provider cannot hit the log-and-skip
+// path below — which for this one would mean spawning the worker on the on-disk config.
+registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
 function collectProvidedWorkerData(options) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;
@@ -375,6 +397,7 @@ function startWorker(path, options = {}) {
 			...collectProvidedWorkerData(options),
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
+			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
@@ -706,7 +729,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
 			// the job worker's ACK while the job worker's event loop is busy waiting for the
 			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (port.isJobWorker) continue;
+			if (!isEligibleBroadcastRecipient(port)) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
@@ -834,7 +857,7 @@ if (parentPort && workerData?.addPorts) {
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
-		addPort(port);
+		addPort(port, false, workerData.addPortIsJobWorkers?.[i]);
 	}
 	setInterval(() => {
 		// post our memory usage as a resource report, reporting our memory usage

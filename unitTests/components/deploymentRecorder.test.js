@@ -25,9 +25,14 @@ const {
 	invalidateProjectStagedDeployments,
 	pruneProjectPayloads,
 	getDeploymentRow,
+	ingestTransactionTimeoutMs,
+	DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS,
 } = require('#src/components/deploymentRecorder');
 const { databases } = require('#src/resources/databases');
+const { contextStorage } = require('#src/resources/transaction');
+const { ProgressEmitter } = require('#src/server/serverHelpers/progressEmitter');
 const terms = require('#src/utility/hdbTerms');
+const { waitFor } = require('../waitFor.js');
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
 
@@ -452,6 +457,141 @@ describe('awaitDeploymentRow', () => {
 
 	it('polls once then times out when timeoutMs is 0 and the row is absent', async () => {
 		await assert.rejects(() => awaitDeploymentRow('zero-absent', { timeoutMs: 0 }), /Timed out after 0ms/);
+	});
+});
+
+describe('ingestTransactionTimeoutMs', () => {
+	// Regression guard: `deployment_timeout` also drives the peer-side row/blob wait
+	// (awaitDeploymentRow, above), where 0 means "poll once, don't wait" — a value that must
+	// never also apply to the origin's own payload-ingest write transaction, or a caller
+	// requesting fast-fail peer polling would silently abort a healthy large upload at 0ms.
+	it('floors 0 up to the default instead of passing it through', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(0), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('floors a small explicit value up to the default', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(5000), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('honors an explicit value above the default', () => {
+		const large = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 3;
+		assert.strictEqual(ingestTransactionTimeoutMs(large), large);
+	});
+
+	it('falls back to the default when unset', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(undefined), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('falls back to the default for a non-numeric value', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs('not-a-number'), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+
+	it('falls back to the default for a negative value', () => {
+		assert.strictEqual(ingestTransactionTimeoutMs(-1), DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS);
+	});
+});
+
+describe('DeploymentRecorder.ingestPayload transaction context', () => {
+	it('preserves audit context while isolating the transaction timeout budget', async () => {
+		const configuredBudget = DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS * 2;
+		const ambientTransaction = { marker: 'ambient' };
+		const user = { username: 'deploy-user' };
+		const session = { id: 'session' };
+		const signal = new AbortController().signal;
+		const ambientContext = {
+			user,
+			originatingOperation: 'deploy_component',
+			session,
+			signal,
+			transaction: ambientTransaction,
+			isExplicit: true,
+			authorize: true,
+			timestamp: 42,
+			sourceApply: true,
+			replicatedConfirmation: 2,
+		};
+		let ingestContext;
+		const writeContexts = [];
+		const installed = installMockDeploymentTable();
+		installed.mock.put = async (row) => {
+			const context = contextStorage.getStore();
+			const writeContext = {
+				...context,
+				transactionTimeoutBudget: context?.transaction?.timeoutBudget,
+			};
+			writeContexts.push(writeContext);
+			if (row.payload_blob) {
+				ingestContext = writeContext;
+			}
+			installed.mock.rows.set(row.deployment_id, row);
+		};
+
+		try {
+			await contextStorage.run(ambientContext, async () => {
+				const recorder = await DeploymentRecorder.create({ project: 'p', ingestTimeoutMs: configuredBudget });
+				await recorder.ingestPayload(Buffer.from('payload'));
+			});
+		} finally {
+			installed.restore();
+		}
+
+		assert.ok(ingestContext);
+		assert.strictEqual(ingestContext.user, user);
+		assert.strictEqual(ingestContext.originatingOperation, 'deploy_component');
+		assert.strictEqual(ingestContext.session, session);
+		assert.strictEqual(ingestContext.signal, signal);
+		assert.ok(ingestContext.transaction);
+		assert.notStrictEqual(ingestContext.transaction, ambientTransaction);
+		assert.strictEqual(ingestContext.transactionTimeoutBudget, ingestTransactionTimeoutMs(configuredBudget));
+		assert.strictEqual(ingestContext.isExplicit, undefined);
+		assert.strictEqual(ingestContext.authorize, undefined);
+		assert.strictEqual(ingestContext.timestamp, undefined);
+		assert.strictEqual(ingestContext.sourceApply, undefined);
+		assert.strictEqual(ingestContext.replicatedConfirmation, undefined);
+		assert.strictEqual(ambientContext.transaction, ambientTransaction);
+		assert.strictEqual(ambientTransaction.timeoutBudget, undefined);
+		assert.strictEqual(writeContexts.length, 2);
+		assert.strictEqual(writeContexts[0].transactionTimeoutBudget, 0);
+		assert.ok(writeContexts.every((context) => context.transaction));
+		assert.notStrictEqual(writeContexts[0].transaction, writeContexts[1].transaction);
+		assert.ok(writeContexts.every((context) => context.transaction !== ambientTransaction));
+	});
+
+	it('defers progress flushes until the payload-ingest write settles', async () => {
+		const emitter = new ProgressEmitter();
+		let releaseFlush;
+		const flushGate = new Promise((resolve) => (releaseFlush = resolve));
+		let releaseIngest;
+		const ingestGate = new Promise((resolve) => (releaseIngest = resolve));
+		let putCalls = 0;
+		const installed = installMockDeploymentTable();
+		installed.mock.put = async (row) => {
+			putCalls++;
+			if (putCalls === 2) await flushGate;
+			if (putCalls === 3 && row.payload_blob) await ingestGate;
+			installed.mock.rows.set(row.deployment_id, row);
+		};
+
+		let recorder;
+		try {
+			recorder = await DeploymentRecorder.create({ project: 'p', emitter });
+			emitter.emit('phase', { phase: 'preparing', status: 'start' });
+			await waitFor(() => putCalls === 2);
+			const ingest = recorder.ingestPayload(Buffer.from('payload'));
+			assert.strictEqual(putCalls, 2);
+			releaseFlush();
+			await waitFor(() => putCalls === 3);
+			emitter.emit('phase', { phase: 'uploading', status: 'start' });
+			assert.strictEqual(putCalls, 3);
+			releaseIngest();
+			await ingest;
+			await waitFor(() => putCalls === 4);
+		} finally {
+			releaseFlush?.();
+			releaseIngest?.();
+			await recorder?.finish('failed');
+			installed.restore();
+		}
 	});
 });
 

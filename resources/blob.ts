@@ -12,7 +12,7 @@
  */
 
 import { addExtension, pack, Packr } from 'msgpackr';
-import { readFile, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
+import { readFile, rename, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
 import {
 	close,
 	closeSync,
@@ -27,6 +27,7 @@ import {
 	unlink,
 	readdirSync,
 	existsSync,
+	fstatSync,
 	watch,
 	write,
 	statSync,
@@ -55,7 +56,6 @@ type StorageInfo = {
 	recordId?: number;
 	contentBuffer?: any;
 	source?: Readable;
-	storageBuffer?: Buffer;
 	compress?: boolean;
 	flush?: boolean;
 	start?: number;
@@ -77,6 +77,7 @@ const ERROR_TYPE = 0xff;
 // overwrites this stub; a terminal give-up unlinks the file (→ 404). Distinct from ERROR_TYPE (a permanent
 // corrupt/error stub, replicated as-is). See harper-pro#481.
 const PENDING_TYPE = 0xfe;
+const BLOB_REPAIR_SUFFIX = '.repair';
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
@@ -136,6 +137,65 @@ let currentStore: any; // the root store of the database we are currently encodi
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 // the header is 8 bytes
 const DEFAULT_BLOB_READ_TIMEOUT = 20000;
+/**
+ * Upper bound on the PENDING-marker cleanup barrier in the aborted-save path below. That barrier
+ * defers the save's rejection until the marker write and the lock release have both happened, so
+ * settlement depends on a `writeFile` callback firing. On a wedged volume it may never fire, and an
+ * un-settled `saving` is worse than a late one: on the replication receive path it keeps
+ * `outstandingBlobsToFinish` non-empty, which clamps the resume cursor with no watchdog to release
+ * it. 30s is five orders of magnitude above a working disk's cost for this ~200-byte write, so the
+ * fallback only fires when the write really is not coming back, and stays well inside the 120s
+ * source-idle timeout that would otherwise be the only exit.
+ */
+const PENDING_MARKER_WRITE_TIMEOUT = 30000;
+
+/**
+ * The bounded, once-only cleanup barrier used by the aborted-save PENDING-marker path.
+ *
+ * Contract: `release` runs before `settle`, both run exactly once, and they run no later than
+ * `timeoutMs` even if the caller's completion callback never arrives.
+ *
+ * Ordering matters because a consumer that observes the rejection immediately re-acquires the blob
+ * lock (Pro's in-place repair does exactly this); settling first would make it race a lock this
+ * path still holds. Bounding matters because the completion callback is an `fs` callback that a
+ * wedged volume may never deliver, and an un-settled save clamps the replication resume cursor
+ * with nothing to unclamp it. The once-guard matters because `store.unlock` has no ownership
+ * check, so a timer and a late callback both firing would release a lock another writer has since
+ * taken — invisible to tests, which is why this is guarded rather than merely documented.
+ *
+ * Exported so the ordering, the bound, and the guard can be unit-tested without stalling a real
+ * filesystem write; the production caller is {@link writeBlobWithStream}'s abort branch.
+ */
+export function createPendingMarkerBarrier(options: {
+	release: () => void;
+	settle: () => void;
+	timeoutMs: number;
+	onTimeout?: () => void;
+	onWriteError?: (writeError: unknown) => void;
+}): (writeError?: unknown) => void {
+	let settled = false;
+	const finish = (writeError?: unknown) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		if (writeError) options.onWriteError?.(writeError);
+		options.release();
+		options.settle();
+	};
+	// `finish`'s own guard is what makes double-release impossible; the `settled` check here only
+	// suppresses a spurious `onTimeout` log, and the `clearTimeout` above is tidiness (the timer is
+	// unref'd, so a stray one costs nothing). Verified by mutation: dropping the guard in `finish`
+	// turns the suite red, dropping the `clearTimeout` does not.
+	const timer = setTimeout(() => {
+		if (settled) return;
+		options.onTimeout?.();
+		finish();
+	}, options.timeoutMs);
+	// Never hold the process open for the fallback; it exists to unwedge a caller, not to keep the
+	// event loop alive.
+	timer.unref?.();
+	return finish;
+}
 /**
  * How long a blob read will wait for an in-progress write to finish before giving up. This bounds
  * the read paths — the stream() open-retry loop and the incomplete-content waits — so a blob whose
@@ -444,6 +504,13 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		}
 
 		const filePath = getFilePath(storageInfo);
+		// Retain the file for this read. `start()` runs at construction, so the hold covers the open —
+		// including its retry loop, which waits up to `blobReadTimeout` — and the transfer after it.
+		// The residual gap is decoding the record to getting here, which the retention window covers.
+		// Released on every terminal path: a failed open, a cancel, and closeFd() for everything that
+		// gets as far as a descriptor. Null means reclamation already claimed the file; the open below
+		// then fails with the normal missing-file error.
+		const releaseBlobHold = holdBlobFile(this);
 		let fd: number;
 		let position = 0;
 		let totalContentRead = 0;
@@ -466,6 +533,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				close(fd);
 				fd = null;
 			}
+			releaseBlobHold?.();
 		};
 		let previouslyFinishedWriting = false;
 		const blob = this;
@@ -512,6 +580,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											)
 										: new BlobReadError(`Blob file not found for ${filePath}`, BLOB_GONE_STATUS)
 									: error;
+							releaseBlobHold?.(); // no descriptor was acquired, so closeFd() will not run
 							reject(readError);
 							blob.#onError?.forEach((callback) => callback(readError));
 						} else {
@@ -799,7 +868,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			},
 			cancel() {
 				cancelled = true;
-				closeFd();
+				closeFd(); // releases the hold, including when cancelled before any open succeeded
 				clearTimeout(timer);
 				clearTimeout(openTimer);
 				if (watcher) watcher.close();
@@ -829,7 +898,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			storageInfoForBlob.set(slicedBlob, slicedStorageInfo);
 			if (this.size != undefined)
 				slicedBlob.size = (end == undefined ? this.size : Math.min(end, this.size)) - (start ?? 0);
-		} else if (sourceStorageInfo?.contentBuffer && !sourceStorageInfo.storageBuffer) {
+		} else if (sourceStorageInfo?.contentBuffer) {
 			const slicedStorageInfo = {
 				...sourceStorageInfo,
 				contentBuffer: sourceStorageInfo.contentBuffer.subarray(start, end),
@@ -846,7 +915,244 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		return storageInfoForBlob.get(this)?.saving ?? Promise.resolve();
 	}
 }
-let deletionDelay = 500;
+const DEFAULT_RECLAMATION_DELAY = 2000;
+let reclamationDelayOverride: number | undefined;
+// A held file is reclaimed once its wait reaches this age, so a hold that is never released (an
+// abandoned replication send whose thread died with the lock) cannot pin a file forever. Set above
+// the replication blob timeout (900s) so it cannot expire under a send that is still legitimately
+// running; a cap that fires is logged, since it deletes bytes something claimed to need.
+const RECLAMATION_AGE_CAP = 1_200_000;
+// Backstop poll interval for a held entry: a hold released on another thread cannot notify this one.
+const HELD_RECHECK_INTERVAL = 1000;
+
+interface PendingReclamation {
+	blob: Blob;
+	deadline: number;
+	enqueuedAt: number;
+	supersededAt: number;
+	unlinking?: boolean;
+}
+// Keyed by file path, which is unique per store — a fileId is a per-store counter, so two databases
+// can hold the same one.
+const pendingReclamation = new Map<string, PendingReclamation>();
+let reclamationTimer: NodeJS.Timeout | undefined;
+let nextReclamationDeadline = Infinity;
+// Deadline of the entry at the back of the queue; see enqueue().
+let queueTailDeadline = 0;
+
+/**
+ * How long a superseded blob file stays on disk. Blob deletion is driven by record supersession —
+ * `RecordEncoder` unlinks the prior row's blobs on every write — but the file is opened lazily, by
+ * path, when a consumer calls `stream()`/`bytes()`, so a reader that resolved the record just
+ * before the write opens a file that is already gone. On the HTTP path that ENOENT lands after the
+ * response headers are committed. The delay is what covers that gap, and 500ms was too short for a
+ * slow or backpressured response; the cost of the larger default is only the churn produced within
+ * the window. Configurable via storage.blobRetention; 0 reclaims as soon as the queue drains.
+ */
+function getReclamationDelay(): number {
+	const configured = reclamationDelayOverride ?? envGet(CONFIG_PARAMS.STORAGE_BLOBRETENTION);
+	if (configured == null) return DEFAULT_RECLAMATION_DELAY;
+	const delay = Number(configured);
+	if (!Number.isFinite(delay) || delay < 0) {
+		if (!invalidRetentionLogged) {
+			invalidRetentionLogged = true;
+			logger.warn?.(
+				`Ignoring invalid storage.blobRetention value ${configured}; using the default of ${DEFAULT_RECLAMATION_DELAY}ms`
+			);
+		}
+		return DEFAULT_RECLAMATION_DELAY;
+	}
+	return Math.min(delay, MAX_SET_TIMEOUT_MS);
+}
+let invalidRetentionLogged = false;
+
+// Cross-worker state for one blob file, in the store's shared buffer — the same mechanism the blob
+// file-id allocator above uses. Two Int32 slots:
+//   [HOLDS]      how many consumers are using the file right now, across every worker
+//   [REREFERENCED] set when a record version referencing the file again is written, so the worker
+//                  that queued the reclamation (which may be a different one) drops it
+// A lock cannot express either: it is binary, so it cannot count concurrent holders, and it carries
+// no signal a reclaiming worker can read other than "taken".
+const HOLDS = 0;
+const REREFERENCED = 1;
+// Claimed by a reclaimer that has established there are no holders. A hold that arrives afterwards
+// sees a negative count and knows the file is already going away, which closes the window between
+// checking for holders and unlinking.
+const RECLAIMING = -1 << 20;
+// One fixed table per store rather than a buffer per fileId: `getUserSharedBuffer` documents no
+// eviction, and every other use in Harper keys a small fixed set ('next-id', 'blob-file-id'), so a
+// key per blob would grow without bound on a churning table. Slots are shared by hash, which can
+// only ever over-retain — a collision defers someone else's reclamation, it never unlinks early.
+const HOLD_TABLE_SLOTS = 4096;
+const holdTables = new WeakMap<object, Int32Array>();
+
+function blobHoldTable(store: any): Int32Array {
+	let table = holdTables.get(store);
+	if (!table) {
+		const buffer = store.getUserSharedBuffer('blob-hold-table', new ArrayBuffer(HOLD_TABLE_SLOTS * 8));
+		table = new Int32Array(buffer, 0, HOLD_TABLE_SLOTS * 2);
+		holdTables.set(store, table);
+	}
+	return table;
+}
+
+function blobHoldSlot(fileId: string): number {
+	let hash = 0;
+	for (let i = 0; i < fileId.length; i++) hash = (hash * 31 + fileId.charCodeAt(i)) | 0;
+	return ((hash >>> 0) % HOLD_TABLE_SLOTS) * 2;
+}
+
+/** The two shared counters for a blob file: `[slot + HOLDS]` and `[slot + REREFERENCED]`. */
+function blobHoldState(store: any, fileId: string): { table: Int32Array; slot: number } | undefined {
+	try {
+		return { table: blobHoldTable(store), slot: blobHoldSlot(fileId) };
+	} catch (error) {
+		// A closed store cannot supply the buffer; the caller treats that as "cannot establish state"
+		logger.debug?.('Could not get shared blob hold state', fileId, error);
+		return undefined;
+	}
+}
+
+/** Exposed for tests that need to act as a second worker against the same shared table. */
+export function getBlobHoldStateForTesting(store: any, fileId: string) {
+	return blobHoldState(store, fileId);
+}
+
+/**
+ * Retain a blob file until the returned release function is called (or the age cap is reached), for
+ * a consumer whose need for the bytes outlives the record version that referenced them — primarily
+ * replication, where a peer that has not yet fetched a superseded blob gets a clean 404 from the
+ * sender, classifies it as unrecoverable at source, and advances its resume cursor past a record
+ * whose bytes it will never have (harper-pro#403/#388).
+ *
+ * Counted in shared memory, not in this thread's map: the consumer and the write that supersedes it
+ * routinely run on different worker threads, so a thread-local signal would be invisible to the
+ * thread that does the unlinking.
+ *
+ * Returns null when the file is already being reclaimed — the bytes may be gone, and no hold can
+ * bring them back.
+ */
+export function holdBlobFile(blob: Blob): (() => void) | null {
+	const storageInfo = storageInfoForBlob.get(blob);
+	const fileId = storageInfo?.fileId;
+	const store = storageInfo?.store;
+	if (!fileId || !store) return () => {};
+	const state = blobHoldState(store, fileId);
+	if (!state) return () => {};
+	const { table, slot } = state;
+	if (Atomics.add(table, slot + HOLDS, 1) < 0) {
+		Atomics.sub(table, slot + HOLDS, 1);
+		return null;
+	}
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		if (Atomics.sub(table, slot + HOLDS, 1) === 1) scheduleReclamation(Date.now());
+	};
+}
+
+/**
+ * Whether a record version referencing this file again was written since it was queued — by any
+ * worker. Reading clears it, so the next supersession starts from a clean slate.
+ */
+function consumeRereferenced(storageInfo: StorageInfo | undefined): boolean {
+	const store = storageInfo?.store;
+	const fileId = storageInfo?.fileId;
+	if (!store || !fileId) return false;
+	const state = blobHoldState(store, fileId);
+	if (!state) throw new Error(`Could not read hold state for blob ${fileId}`);
+	return Atomics.exchange(state.table, state.slot + REREFERENCED, 0) === 1;
+}
+
+/**
+ * Whether an open read snapshot can still see the record version that referenced this file. A blob
+ * reference is fixed when a reader's snapshot is taken, not when the record is decoded, so a reader
+ * inside a transaction is entitled to these bytes for as long as its snapshot lives — which is the
+ * gap between resolving a record and calling stream() that a time window can only approximate.
+ *
+ * `getOldestSnapshotTimestamp()` reports the oldest unreleased snapshot in whole unix SECONDS, or 0
+ * when none is held. Reads outside a transaction take no snapshot at all ("no transaction means read
+ * latest", DatabaseTransaction.getReadTxn), and LMDB exposes no equivalent, so both fall through to
+ * the retention window. The second of granularity is padded rather than rounded: a snapshot opened
+ * in the same second as the supersession is treated as possibly older than it.
+ */
+function snapshotStillSees(storageInfo: StorageInfo | undefined, supersededAt: number): boolean {
+	const oldestSnapshotSeconds = storageInfo?.store?.getOldestSnapshotTimestamp?.();
+	if (!oldestSnapshotSeconds) return false;
+	return oldestSnapshotSeconds * 1000 <= supersededAt + 1000;
+}
+
+/** Undo a reclaimer's claim once its unlink has landed, leaving the slot usable again. */
+function releaseReclaimClaim(storageInfo: StorageInfo | undefined): void {
+	const store = storageInfo?.store;
+	const fileId = storageInfo?.fileId;
+	if (!store || !fileId) return;
+	const state = blobHoldState(store, fileId);
+	if (state) Atomics.compareExchange(state.table, state.slot + HOLDS, RECLAIMING, 0);
+}
+
+/**
+ * Whether anything is still using the file. `claim` is for the reclaimer: it atomically takes the
+ * count from 0 to RECLAIMING so a hold cannot be acquired between this check and the unlink.
+ */
+function isBlobHeld(storageInfo: StorageInfo | undefined, claim = false): boolean {
+	const store = storageInfo?.store;
+	const fileId = storageInfo?.fileId;
+	if (!store || !fileId) return false;
+	const state = blobHoldState(store, fileId);
+	if (!state) throw new Error(`Could not read hold state for blob ${fileId}`);
+	if (claim) return Atomics.compareExchange(state.table, state.slot + HOLDS, 0, RECLAIMING) !== 0;
+	return Atomics.load(state.table, state.slot + HOLDS) > 0;
+}
+
+/**
+ * Cancel a queued reclamation because a record version being written references the file again: the
+ * retain-on-update check covers only the write that supersedes, not a file already queued by an
+ * earlier one. Cancelling at encode rather than at commit means an aborted write leaves the file
+ * unreclaimed until the orphan sweeper runs (#2156) — chosen deliberately over the alternative
+ * failure, which is unlinking a file the committed record still points at.
+ *
+ * The signal is recorded in shared memory as well as in this worker's queue, because the worker that
+ * queued the reclamation may not be this one.
+ */
+function cancelBlobReclamation(storageInfo: StorageInfo): void {
+	if (!storageInfo?.fileId || !storageInfo.store) return;
+	const state = blobHoldState(storageInfo.store, storageInfo.fileId);
+	if (state) {
+		if (Atomics.load(state.table, state.slot + HOLDS) < 0) {
+			// Already claimed by a reclaimer: the file is on its way out and the record being written
+			// will reference bytes that are about to disappear. Nothing to cancel; say so rather than
+			// letting it be silent.
+			logger.warn?.(
+				`Blob file ${storageInfo.fileId} is being reclaimed while a record is being written that references it`
+			);
+			return;
+		}
+		Atomics.store(state.table, state.slot + REREFERENCED, 1);
+	}
+	if (pendingReclamation.size === 0) return;
+	let filePath: string;
+	try {
+		filePath = getFilePath(storageInfo);
+	} catch (error) {
+		logger.debug?.('Could not resolve blob path to cancel pending reclamation', error);
+		return;
+	}
+	if (!pendingReclamation.delete(filePath)) return;
+	if (pendingReclamation.size === 0) resetDrainedQueue();
+}
+
+/** A drained queue has no tail to order against and nothing left to wake up for. */
+function resetDrainedQueue(): void {
+	queueTailDeadline = 0;
+	if (reclamationTimer) {
+		clearTimeout(reclamationTimer);
+		reclamationTimer = undefined;
+		nextReclamationDeadline = Infinity;
+	}
+}
+
 /**
  * Delete the file for the blob
  * @param blob
@@ -857,15 +1163,137 @@ export function deleteBlob(blob: Blob): void {
 	if (!filePath) {
 		return;
 	}
-	setTimeout(() => {
-		// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
+	const now = Date.now();
+	const storageInfo = storageInfoForBlob.get(blob);
+	if (storageInfo?.store && storageInfo.fileId) {
+		// A genuine supersession clears any re-reference recorded for an earlier one.
+		const state = blobHoldState(storageInfo.store, storageInfo.fileId);
+		if (state) Atomics.store(state.table, state.slot + REREFERENCED, 0);
+	}
+	// Reusing the queued entry when two writes supersede the same file keeps the age cap measuring
+	// from the first supersession.
+	const pending = pendingReclamation.get(filePath) ?? { blob, deadline: 0, enqueuedAt: now, supersededAt: now };
+	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
+}
+
+/**
+ * (Re-)insert an entry at the back of the queue with a deadline no earlier than the entry already
+ * there. Deadlines are therefore non-decreasing, which is what lets the drain stop at the first
+ * entry not yet due instead of scanning the whole queue on every wakeup — at the cost that a
+ * shortened delay (reconfigured `storage.blobRetention`) takes effect no sooner than the entries
+ * queued ahead of it.
+ */
+function enqueue(filePath: string, pending: PendingReclamation, deadline: number): number {
+	pending.deadline = Math.max(deadline, queueTailDeadline);
+	queueTailDeadline = pending.deadline;
+	pendingReclamation.delete(filePath);
+	pendingReclamation.set(filePath, pending);
+	return pending.deadline;
+}
+
+function scheduleReclamation(deadline: number): void {
+	if (reclamationTimer && deadline >= nextReclamationDeadline) return;
+	if (reclamationTimer) clearTimeout(reclamationTimer);
+	nextReclamationDeadline = deadline;
+	const delay = Math.min(Math.max(0, deadline - Date.now()), MAX_SET_TIMEOUT_MS);
+	reclamationTimer = setTimeout(runReclamation, delay);
+	// Unref-ed: the plain timer this replaced kept the process alive for its 500ms, but the window is
+	// now long enough that doing the same would hold a shutting-down process open for seconds per
+	// drain. A process that exits inside the window leaves its superseded files for the orphan
+	// sweeper — the same outcome as a crash inside the old 500ms, and the safe direction. Flushing
+	// the queue on `beforeExit` is NOT the alternative: that event fires whenever a thread's loop
+	// transiently empties, not only at shutdown, so it deletes files that are still inside their
+	// window or actively held.
+	reclamationTimer.unref?.();
+}
+
+function runReclamation(): void {
+	reclamationTimer = undefined;
+	nextReclamationDeadline = Infinity;
+	const now = Date.now();
+	const ageCap = Math.max(RECLAMATION_AGE_CAP, getReclamationDelay());
+	let earliest = Infinity;
+	for (const [filePath, pending] of pendingReclamation) {
+		if (pending.unlinking) continue;
+		if (pending.deadline > now) {
+			earliest = pending.deadline;
+			break; // insertion order is deadline order; nothing behind this entry is due
+		}
+		const storageInfo = storageInfoForBlob.get(pending.blob);
+		const expired = now - pending.enqueuedAt >= ageCap;
+		let held: boolean;
+		try {
+			if (consumeRereferenced(storageInfo)) {
+				// A record version referencing this file again was written, possibly on another worker.
+				// The file is live; drop the reclamation rather than unlinking under it.
+				pendingReclamation.delete(filePath);
+				continue;
+			}
+			// A snapshot that can still see the superseded version pins the file as surely as a hold.
+			// Checked before claiming so the claim is not taken and immediately handed back.
+			if (!expired && snapshotStillSees(storageInfo, pending.supersededAt)) {
+				const deferred = enqueue(filePath, pending, now + HELD_RECHECK_INTERVAL);
+				if (deferred < earliest) earliest = deferred;
+				continue;
+			}
+			// Claim it in the same operation that establishes there are no holders, so a hold cannot
+			// slip in between. Not claimed once expired: the age cap deliberately reclaims held bytes.
+			held = isBlobHeld(storageInfo, !expired);
+		} catch (error) {
+			// Reading shared state can fail on a closed store, and this is a timer callback: throwing
+			// here takes the worker down. A store that never reopens would retry forever, so an
+			// unreadable entry still ages out through the cap.
+			logger.debug?.('Could not determine blob hold state; deferring reclamation', filePath, error);
+			if (!expired) {
+				const deferred = enqueue(filePath, pending, now + HELD_RECHECK_INTERVAL);
+				if (deferred < earliest) {
+					earliest = deferred;
+				}
+				continue;
+			}
+			held = false;
+		}
+		if (held && !expired) {
+			// A release on this thread reschedules directly; this poll is the backstop for a release on
+			// another thread, and is bounded below because a 0ms delay would spin the timer. Re-queuing
+			// also guarantees the age cap gets a wakeup if the holder never releases.
+			const recheck = Math.min(
+				now + Math.max(getReclamationDelay(), HELD_RECHECK_INTERVAL),
+				pending.enqueuedAt + ageCap
+			);
+			const deferred = enqueue(filePath, pending, recheck);
+			if (deferred < earliest) {
+				earliest = deferred;
+			}
+			continue;
+		}
+		if (held) {
+			logger.warn?.(
+				`Reclaiming blob file ${filePath} after ${Math.round((now - pending.enqueuedAt) / 1000)}s: it is ` +
+					`still held, but has reached the blob retention age cap`
+			);
+		}
+		// Keep the entry until the unlink lands so a concurrent re-reference can tell that the file is
+		// already going away instead of silently adopting a doomed path.
+		pending.unlinking = true;
 		unlink(filePath, (error) => {
+			pendingReclamation.delete(filePath);
+			if (pendingReclamation.size === 0) queueTailDeadline = 0;
+			// Hand the slot back: it is shared by hash, so leaving it claimed would make every later
+			// hold on a colliding fileId report the file as already reclaimed.
+			releaseReclaimClaim(storageInfo);
 			if (error) logger.debug?.('Error trying to remove blob file', error);
 		});
-	}, deletionDelay);
+	}
+	if (earliest !== Infinity) scheduleReclamation(earliest);
 }
-export function setDeletionDelay(delay: number) {
-	deletionDelay = delay;
+
+/**
+ * Test knob: the delay between a blob being superseded and its file being reclaimed. `undefined`
+ * restores the configured value.
+ */
+export function setDeletionDelay(delay: number | undefined) {
+	reclamationDelayOverride = delay;
 }
 export type BlobCreationOptions = {
 	type?: string; // the MIME type of the blob
@@ -1003,59 +1431,59 @@ export function shouldDestroyIdleBlobSource(paused: boolean, bytesWritten: numbe
 	return !(paused && bytesWritten > lastProgressBytes);
 }
 
-function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageInfo): Blob {
+function writeBlobWithStream(
+	blob: Blob,
+	stream: Readable,
+	storageInfo: StorageInfo,
+	options?: {
+		expectedSize?: number | (() => number | undefined);
+		repairTargetPath?: string;
+		repairTempLockKey?: string;
+	}
+): Blob {
+	const repairTargetPath = options?.repairTargetPath;
+	const repairing = repairTargetPath !== undefined;
+	const repairTempLockKey = options?.repairTempLockKey;
 	const { filePath, fileId, store, compress, flush } = storageInfo;
 	storageInfo.saving = new Promise((resolve, reject) => {
-		// pipe the stream to the file
 		const lockKey = fileId + ':blob';
-		if (!store.tryLock(lockKey)) {
-			throw new Error(`Unable to get lock for blob file ${fileId}`);
-		}
-		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
+		let lockAcquired = repairing;
+		let writeStream: ReturnType<typeof createWriteStream>;
 		let wroteSize = false;
-		if (blob.size !== undefined) {
-			// if we know the size, we can write the header immediately
-			writeStream.write(createHeader(blob.size)); // write the default header
-			wroteSize = true;
-		}
-		// Source-idle watchdog: destroys the source if no 'data' arrives for the threshold so pipeline
-		// rejects cleanly. Off unless the owning caller armed this source (or the env override is set);
-		// see getBlobStreamIdleTimeoutMs. On expiry while the stream is paused (pipeline backpressure),
-		// re-arm only if the destination is still draining — bytesWritten advancing since the last arm
-		// means a slow-but-live writeStream, not a wedge. A pause with zero downstream progress for the
-		// whole interval is a genuine stall (disk hang / stuck pipeline) the 'data' re-arm can never
-		// clear — the receive socket stays paused on backpressure that never lifts — so destroy it.
 		let idleTimer: NodeJS.Timeout | undefined;
 		let armIdleTimer: (() => void) | undefined;
-		let lastProgressBytes = 0;
-		const idleTimeoutMs = getBlobStreamIdleTimeoutMs(stream);
-		if (idleTimeoutMs > 0) {
-			armIdleTimer = () => {
-				if (idleTimer) clearTimeout(idleTimer);
-				lastProgressBytes = writeStream.bytesWritten;
-				idleTimer = setTimeout(() => {
-					if (!shouldDestroyIdleBlobSource(stream.isPaused(), writeStream.bytesWritten, lastProgressBytes)) {
-						armIdleTimer?.();
-						return;
-					}
-					stream.destroy(new Error(`Blob source stream idle for ${idleTimeoutMs}ms (fileId=${fileId})`));
-				}, idleTimeoutMs).unref();
-			};
-			stream.on('data', armIdleTimer);
-			// Re-arm on 'resume' too: when backpressure clears, the stream flips to flowing before the
-			// next 'data' fires, so an expiry landing in that window would see isPaused()===false and
-			// destroy a stream that just resumed — give it a fresh window instead.
-			stream.on('resume', armIdleTimer);
-			armIdleTimer();
-		}
+		let idleTimeoutMs = 0;
 		let compressedStream: any;
-		if (compress) {
-			if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
-			compressedStream = createDeflate();
-			pipeline(stream, compressedStream, writeStream, finished);
-		} else {
-			if (!wroteSize) writeStream.write(DEFAULT_HEADER); // write the default header to the file
-			pipeline(stream, writeStream, finished);
+		function unlockWriteLocks() {
+			if (repairTempLockKey) store.unlock(repairTempLockKey);
+			store.unlock(lockKey);
+		}
+		function closeWriteStreamFile() {
+			const fd = (writeStream as any)?.fd;
+			if (fd == null) return;
+			closeSync(fd);
+			(writeStream as any).fd = null;
+		}
+		function failTemporaryRepair(error: unknown) {
+			const removeTemporaryFile = () => {
+				unlink(filePath, (unlinkError) => {
+					if (unlinkError && (unlinkError as { code?: string }).code !== 'ENOENT')
+						logger.debug?.('Error deleting temporary blob repair file', unlinkError);
+					unlockWriteLocks();
+					reject(error);
+				});
+			};
+			if (writeStream && !writeStream.closed && (writeStream as any).fd == null) {
+				writeStream.once('close', removeTemporaryFile);
+				writeStream.destroy();
+				return;
+			}
+			try {
+				closeWriteStreamFile();
+			} catch (closeError) {
+				logger.debug?.('Error closing temporary blob repair file', closeError);
+			}
+			removeTemporaryFile();
 		}
 		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
@@ -1065,8 +1493,7 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			headerView.setBigInt64(0, headerValue);
 			return header;
 		}
-		// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
-		function finished(error?: Error) {
+		function finished(error?: unknown) {
 			if (idleTimer) {
 				clearTimeout(idleTimer);
 				idleTimer = undefined;
@@ -1078,6 +1505,10 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 			}
 			const fd = (writeStream as any).fd;
 			if (error) {
+				if (repairTargetPath) {
+					failTemporaryRepair(error);
+					return;
+				}
 				if (fd) {
 					close(fd);
 					(writeStream as any).fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
@@ -1101,19 +1532,43 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 					// (createWriteStream flags 'w'); a terminal give-up on the receive side unlinks it (→ 404). Build
 					// the header directly rather than via createHeader so its compress-type OR can't collide with the
 					// PENDING type bits.
-					const messageBuffer = Buffer.from(error.toString());
-					const header = new Uint8Array(HEADER_SIZE);
-					new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
-					writeFile(filePath, Buffer.concat([header, messageBuffer]), (writeError: Error) => {
-						if (writeError) logger.debug?.('Error writing pending marker to blob file', writeError);
-						store.unlock(lockKey);
+					// Bounded so a `writeFile` that never calls back cannot leave `saving` un-settled for the
+					// process lifetime. This branch is exactly the replication receive path where that costs
+					// the most: Pro pushes `saving` into `outstandingBlobsToFinish` and `cursorBlockedByBlob()`
+					// holds the resume cursor at `lastDurableSequenceId` while it is non-empty, with nothing to
+					// unclamp it. If the fallback fires, the lock is released while the marker write is still in
+					// flight, so a late-completing write can stamp PENDING over a newer writer's bytes — that
+					// reads as 503 and the blob-gap machinery re-streams it, whereas a permanently clamped
+					// cursor never heals. Bounding is the better failure.
+					const finishPendingMarker = createPendingMarkerBarrier({
+						timeoutMs: PENDING_MARKER_WRITE_TIMEOUT,
+						release: () => store.unlock(lockKey),
+						// The original error, never a timeout error: the receive loop classifies this exact reason
+						// (isReplicationConnectionClosedError / isUnrecoverableSourceBlobError) to decide whether
+						// the resume cursor holds or advances, so substituting one misroutes that decision.
+						settle: () => reject(error),
+						onWriteError: (writeError) => logger.debug?.('Error writing pending marker to blob file', writeError),
+						onTimeout: () =>
+							logger.warn?.(
+								`Timed out after ${PENDING_MARKER_WRITE_TIMEOUT}ms writing the PENDING marker for blob file ${filePath}; ` +
+									`releasing the write lock and failing the save so the caller is not held on an unsettled write`
+							),
 					});
+					try {
+						const messageBuffer = Buffer.from(String(error));
+						const header = new Uint8Array(HEADER_SIZE);
+						new DataView(header.buffer).setBigInt64(0, BigInt(messageBuffer.length) | (BigInt(PENDING_TYPE) << 48n));
+						writeFile(filePath, Buffer.concat([header, messageBuffer]), finishPendingMarker);
+					} catch (writeError) {
+						finishPendingMarker(writeError);
+					}
+					return;
 				} else {
 					store.unlock(lockKey);
 					try {
 						if (statSync(filePath).size === 0) {
 							// if there was an error in the stream, nothing may have been written, so we can write the error message instead
-							const errorBuffer = Buffer.from(error.toString());
+							const errorBuffer = Buffer.from(String(error));
 							writeFile(
 								filePath,
 								Buffer.concat([createHeader(BigInt(errorBuffer.length) + 0xff000000000000n), errorBuffer]),
@@ -1131,9 +1586,52 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 				if (!wroteSize) {
 					wroteSize = true;
 					const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
-					(blob as any).size = size;
+					let expectedSize: number | undefined;
+					try {
+						expectedSize = typeof options?.expectedSize === 'function' ? options.expectedSize() : options?.expectedSize;
+					} catch (error) {
+						finished(error);
+						return;
+					}
+					if (repairing && (expectedSize === undefined || size !== expectedSize)) {
+						finished(
+							new Error(
+								expectedSize === undefined
+									? `Blob repair size unavailable for ${fileId}; wrote ${size}`
+									: `Blob repair size mismatch for ${fileId}: expected ${expectedSize}, wrote ${size}`
+							)
+						);
+						return;
+					}
+					if (!repairing) (blob as any).size = size;
 					write(fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
 					return; // not finished yet, wait for this write and then we are finished
+				}
+				if (repairTargetPath) {
+					const replaceTarget = async () => {
+						try {
+							closeWriteStreamFile();
+							await rename(filePath, repairTargetPath);
+							unlockWriteLocks();
+							resolve();
+						} catch (replaceError) {
+							try {
+								await unlinkPromised(filePath);
+							} catch (unlinkError) {
+								if ((unlinkError as { code?: string }).code !== 'ENOENT')
+									logger.debug?.('Error deleting temporary blob repair file', unlinkError);
+							}
+							unlockWriteLocks();
+							reject(replaceError);
+						}
+					};
+					if (flush) {
+						fdatasync(fd, (syncError) => {
+							if (syncError) failTemporaryRepair(syncError);
+							else void replaceTarget();
+						});
+					} else void replaceTarget();
+					return;
 				}
 				store.unlock(lockKey);
 				if (flush) {
@@ -1151,15 +1649,62 @@ function writeBlobWithStream(blob: Blob, stream: Readable, storageInfo: StorageI
 				}
 			}
 		}
+		try {
+			if (!lockAcquired) {
+				if (!store.tryLock(lockKey)) throw new Error(`Unable to get lock for blob file ${fileId}`);
+				lockAcquired = true;
+			}
+			writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
+			if (blob.size !== undefined && !repairing) {
+				writeStream.write(createHeader(blob.size));
+				wroteSize = true;
+			}
+			let lastProgressBytes = 0;
+			idleTimeoutMs = getBlobStreamIdleTimeoutMs(stream);
+			if (idleTimeoutMs > 0) {
+				armIdleTimer = () => {
+					if (idleTimer) clearTimeout(idleTimer);
+					lastProgressBytes = writeStream.bytesWritten;
+					idleTimer = setTimeout(() => {
+						if (!shouldDestroyIdleBlobSource(stream.isPaused(), writeStream.bytesWritten, lastProgressBytes)) {
+							armIdleTimer?.();
+							return;
+						}
+						stream.destroy(new Error(`Blob source stream idle for ${idleTimeoutMs}ms (fileId=${fileId})`));
+					}, idleTimeoutMs).unref();
+				};
+				stream.on('data', armIdleTimer);
+				stream.on('resume', armIdleTimer);
+				armIdleTimer();
+			}
+			if (compress) {
+				if (!wroteSize) writeStream.write(COMPRESS_HEADER);
+				compressedStream = createDeflate();
+				pipeline(stream, compressedStream, writeStream, finished);
+			} else {
+				if (!wroteSize) writeStream.write(DEFAULT_HEADER);
+				pipeline(stream, writeStream, finished);
+			}
+		} catch (error) {
+			if (idleTimer) clearTimeout(idleTimer);
+			if (repairTargetPath) {
+				failTemporaryRepair(error);
+				return;
+			}
+			writeStream?.destroy();
+			if (lockAcquired) store.unlock(lockKey);
+			reject(error);
+		}
 	});
 	// Mark durable on settle: fileId is assigned as soon as a save STARTS, so pre-commit gating
 	// needs this to tell a durable blob from one still streaming (review on the local-write gate)
-	storageInfo.saving.then(
-		() => {
-			storageInfo.saved = true;
-		},
-		() => {}
-	);
+	if (!repairing)
+		storageInfo.saving.then(
+			() => {
+				storageInfo.saved = true;
+			},
+			() => {}
+		);
 	return blob;
 }
 
@@ -1174,6 +1719,144 @@ export function isSaving(blob: Blob): Promise<void> {
 export function getFilePathForBlob(blob: FileBackedBlob): string {
 	const storageInfo = storageInfoForBlob.get(blob);
 	return storageInfo?.fileId && getFilePath(storageInfo);
+}
+/**
+ * Repairs a damaged file-backed blob under its existing fileId. The damage check and atomic file
+ * replacement share the blob lock, so a failed repair never modifies the referenced file. Callers
+ * must establish an exact record identity tie (same version and source node) and positional blob
+ * pairing before calling. The received byte count must match the reported source size and, when
+ * present, the stored descriptor. On a synchronous `undefined`, no repair started and `source`
+ * remains owned by the caller.
+ */
+export function repairBlobFile(
+	blob: Blob,
+	source: Readable,
+	sourceSize: number | (() => number | undefined) | undefined = (blob as { size?: number }).size
+): Promise<void> | undefined {
+	let blobLockKey: string | undefined;
+	let repairTempLockKey: string | undefined;
+	let blobLockHeld = false;
+	let repairTempLockHeld = false;
+	let locksOwnedByWriter = false;
+	let store: any;
+	try {
+		if (!(blob instanceof FileBackedBlob)) return undefined;
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (!storageInfo?.fileId || !storageInfo.store) return undefined;
+		if (storageInfo.start !== undefined || storageInfo.end !== undefined) return undefined;
+		store = storageInfo.store;
+		storageInfo.filePath ??= getFilePath(storageInfo);
+		const filePath = storageInfo.filePath;
+		const descriptorSize = (blob as { size?: number }).size;
+		if (sourceSize === undefined) return undefined;
+		if (typeof sourceSize === 'number' && descriptorSize !== undefined && sourceSize !== descriptorSize)
+			return undefined;
+		let verifiedSize = typeof sourceSize === 'number' ? sourceSize : undefined;
+		blobLockKey = storageInfo.fileId + ':blob';
+		if (!store.tryLock(blobLockKey)) return undefined;
+		blobLockHeld = true;
+		if (blobFileMissingOrIncomplete(blob) !== true) {
+			store.unlock(blobLockKey);
+			blobLockHeld = false;
+			return undefined;
+		}
+		const fileDir = dirname(filePath);
+		if (!existsSync(fileDir)) ensureDirSync(fileDir);
+		const repairFilePath = filePath + BLOB_REPAIR_SUFFIX;
+		repairTempLockKey = repairFilePath + ':blob';
+		if (!store.tryLock(repairTempLockKey)) {
+			store.unlock(blobLockKey);
+			blobLockHeld = false;
+			return undefined;
+		}
+		repairTempLockHeld = true;
+		const expectedSize =
+			typeof sourceSize === 'function'
+				? () => {
+						const reportedSize = sourceSize();
+						if (reportedSize === undefined)
+							throw new Error(`Blob repair source size unavailable for ${storageInfo.fileId}`);
+						if (descriptorSize !== undefined && reportedSize !== descriptorSize)
+							throw new Error(
+								`Blob repair source size mismatch for ${storageInfo.fileId}: ` +
+									`expected ${descriptorSize}, received ${reportedSize}`
+							);
+						return (verifiedSize = reportedSize);
+					}
+				: sourceSize;
+		const repairStorageInfo = {
+			...storageInfo,
+			filePath: repairFilePath,
+			saving: undefined,
+			flush: true,
+			compress: false,
+		};
+		writeBlobWithStream(blob as any, source, repairStorageInfo, {
+			expectedSize,
+			repairTargetPath: filePath,
+			repairTempLockKey,
+		});
+		locksOwnedByWriter = true;
+		const settled = (repairStorageInfo.saving as Promise<void>).then(() => {
+			if (descriptorSize === undefined) (blob as { size?: number }).size = verifiedSize;
+			logger.warn?.(`Repaired blob file in place: ${storageInfo.fileId} (${filePath})`);
+		});
+		settled.catch(() => {});
+		return settled;
+	} catch (error) {
+		if (!locksOwnedByWriter) {
+			if (repairTempLockHeld) store?.unlock(repairTempLockKey);
+			if (blobLockHeld) store?.unlock(blobLockKey);
+		}
+		logger.warn?.('Unable to start in-place blob repair', error);
+		return undefined;
+	}
+}
+
+export function blobHeaderIndicatesIncomplete(header: Buffer, fileSize: number): boolean {
+	if (fileSize < HEADER_SIZE || header.length < HEADER_SIZE) return true;
+	const type = header.readUInt16BE(0);
+	if (type !== UNCOMPRESSED_TYPE && type !== DEFLATE_TYPE) return true;
+	const storedSize = header.readUIntBE(2, 6);
+	if (storedSize === UNKNOWN_SIZE) return true;
+	return type === UNCOMPRESSED_TYPE && fileSize !== HEADER_SIZE + storedSize;
+}
+
+/**
+ * Whether a file-backed blob's backing file is missing or incomplete on disk — the gate for the
+ * copy-delivery repair. This blocking probe is the locked final recheck after the caller's async
+ * exact-duplicate prefilter. Compressed bodies require the asynchronous repair sweep for
+ * verification. Returns undefined for blobs the question does not apply to.
+ */
+export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
+	try {
+		if (!(blob instanceof FileBackedBlob)) return undefined;
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (!storageInfo?.fileId) return undefined;
+		const filePath = getFilePath(storageInfo);
+		let fd: number;
+		try {
+			fd = openSync(filePath, 'r');
+		} catch (error) {
+			if ((error as { code?: string })?.code === 'ENOENT') return true;
+			logger.debug?.('Unable to open blob file for in-place repair inspection', error);
+			return undefined;
+		}
+		try {
+			const size = fstatSync(fd).size;
+			if (size < HEADER_SIZE) return true;
+			const header = Buffer.allocUnsafe(HEADER_SIZE);
+			if (readSync(fd, header, 0, HEADER_SIZE, 0) < HEADER_SIZE) return true;
+			if (blobHeaderIndicatesIncomplete(header, size)) return true;
+			const descriptorSize = (blob as { size?: number }).size;
+			return descriptorSize !== undefined && header.readUIntBE(2, 6) !== descriptorSize;
+		} finally {
+			closeSync(fd);
+		}
+	} catch (error) {
+		logger.debug?.('Unable to inspect blob file for in-place repair', error);
+		return undefined;
+	}
 }
 export const databasePaths = new Map<RootDatabase, string[]>();
 export function getRootBlobPathsForDB(store: RootDatabase) {
@@ -1740,10 +2423,14 @@ addExtension({
 				throw new Error('No store specified, cannot load blob from storage');
 			}
 		} else {
+			// contentBuffer is a *copy* (copyingUnpacker uses copyBuffers), so it stays valid for the
+			// lifetime of the blob. Do not retain the raw ext-body `buffer` here: it is a view into the
+			// store's read buffer, which is recycled by later reads. Keeping it and re-emitting it on
+			// re-encode (e.g. a read-modify-write / REST PATCH) serialized whatever foreign bytes had
+			// since overwritten that buffer, corrupting the record (harper#2103).
 			storageInfoForBlob.set(blob, {
 				storageIndex: 0,
 				fileId: null,
-				storageBuffer: buffer as any,
 				contentBuffer: blobInfo[1] as any,
 			});
 			blob.size = blobInfo[1]?.length;
@@ -1764,9 +2451,6 @@ addExtension({
 		if (blob.type) options.type = blob.type;
 		if (blob.size !== undefined) options.size = blob.size;
 		if (storageInfo) {
-			if (storageInfo.storageBuffer) {
-				return storageInfo.storageBuffer;
-			}
 			if (
 				storageInfo.contentBuffer &&
 				(storageInfo.contentBuffer?.length < FILE_STORAGE_THRESHOLD || blob.saveInRecord)
@@ -1781,6 +2465,10 @@ addExtension({
 				throw new Error('Unable to save blob without file id');
 			}
 			storageInfo.recordId = encodeForStorageForRecordId;
+			// A record version being written now references this file, so any reclamation queued by an
+			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
+			// write that supersedes, not a file already awaiting reclamation from a previous one.
+			cancelBlobReclamation(storageInfo);
 			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
@@ -1979,6 +2667,20 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				logger.error?.('Error searching audit log for references to potential orphaned blobs failed', error);
 			}
 		}
+		// A file inside its retention window is unreferenced by any live record — which is exactly what
+		// makes it look like an orphan — but it is deliberately still on disk for readers that resolved
+		// the superseded record. Sweeping it here would undo the retention. It is already queued for
+		// reclamation, so leaving it costs nothing.
+		for (const path of pathsToCheck) {
+			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
+		}
+		const repairTempLocks = new Map<string, string>();
+		for (const path of pathsToCheck) {
+			if (!path.endsWith(BLOB_REPAIR_SUFFIX)) continue;
+			const lockKey = path + ':blob';
+			if ((store as any).tryLock(lockKey)) repairTempLocks.set(path, lockKey);
+			else pathsToCheck.delete(path);
+		}
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;
 		for (const path of pathsToCheck) {
@@ -1986,6 +2688,9 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				await unlinkPromised(path);
 			} catch (error) {
 				logger.debug?.('Error deleting file', error);
+			} finally {
+				const lockKey = repairTempLocks.get(path);
+				if (lockKey) (store as any).unlock(lockKey);
 			}
 		}
 		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
@@ -2025,15 +2730,13 @@ async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
 	} finally {
 		closeSync(fd);
 	}
+	if (blobHeaderIndicatesIncomplete(header, fileSize)) return false;
 	const headerValue = new DataView(header.buffer, header.byteOffset, 8).getBigUint64(0);
-	if (Number(headerValue >> 48n) === ERROR_TYPE) return false;
-	if (Number(headerValue >> 48n) === PENDING_TYPE) return false; // half-replicated, bytes still expected (harper-pro#481)
 	// The header size field holds the *uncompressed* content length for both compressed and
 	// uncompressed blobs (writeBlobWithStream stores deflate.bytesWritten, which is the input/
 	// uncompressed byte count). For an uncompressed blob that equals the on-disk body length;
 	// for a compressed blob it does not, so the body length can't be compared to it directly.
 	const size = Number(headerValue & 0xffffffffffffn);
-	if (size === UNKNOWN_SIZE) return false; // in-flight placeholder, header not yet finalized
 	if (header[1] === DEFLATE_TYPE) {
 		// A compressed blob's header size is the uncompressed length, so it can't be compared to the
 		// compressed on-disk body. Verify by streaming the body through inflate and counting the
@@ -2058,7 +2761,7 @@ async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
 			source.pipe(inflate);
 		});
 	}
-	return size === fileSize - HEADER_SIZE;
+	return true;
 }
 
 /**

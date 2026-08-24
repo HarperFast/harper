@@ -9,10 +9,29 @@ const UPGRADE_PROCEED = ['yes', 'y'];
 
 /**
  * Prompt the user before proceeding with a minor version downgrade
- * @param _upgradeObj - {UpgradeObject} Object includes the versions the data and current install are on
+ * @param upgradeObj - {UpgradeObject} Object includes the versions the data and current install are on
  * @returns {Promise<boolean>}
  */
-export async function forceDowngradePrompt(_upgradeObj: any) {
+export async function forceDowngradePrompt(upgradeObj: any) {
+	const override = assignCMDENVVariables(['CONFIRM_DOWNGRADE']);
+	// Without a terminal, prompt.get() blocks on stdin forever (systemd, containers, CI) — and an
+	// override value the prompt library rejects (its pattern is lowercase-only) is deleted and
+	// falls through to that same blocking read. So with no TTY, resolve the answer here and never
+	// reach the prompt (#2046).
+	if (!process.stdin.isTTY) {
+		if (override.CONFIRM_DOWNGRADE === undefined) {
+			throw new Error(
+				`This instance's data was last run on Harper ${upgradeObj.data_version}, which is newer than this installed version ${upgradeObj.upgrade_version}.` +
+					' Running the older version requires confirmation, and there is no interactive terminal to ask on.' +
+					' Set CONFIRM_DOWNGRADE=yes (environment variable or --CONFIRM_DOWNGRADE yes) to proceed with the downgrade,' +
+					` or run Harper ${upgradeObj.data_version} or newer.`
+			);
+		}
+		const answer = override.CONFIRM_DOWNGRADE.toLowerCase();
+		if (UPGRADE_PROCEED.includes(answer)) return true;
+		if (answer === 'no' || answer === 'n') return false;
+		throw new Error(`Unrecognized CONFIRM_DOWNGRADE value '${override.CONFIRM_DOWNGRADE}'; use yes or no.`);
+	}
 	let downgradeMessage =
 		`${os.EOL}` +
 		chalk.bold.green(
@@ -22,7 +41,7 @@ export async function forceDowngradePrompt(_upgradeObj: any) {
 				' backup before proceeding.' +
 				`${os.EOL}`
 		);
-	prompt.override = assignCMDENVVariables(['CONFIRM_DOWNGRADE']);
+	prompt.override = override;
 	prompt.start();
 	prompt.message = downgradeMessage;
 	let downgradeConfirmation = {

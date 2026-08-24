@@ -4,10 +4,31 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { transaction } = require('#src/resources/transaction');
+const { transaction, contextStorage } = require('#src/resources/transaction');
+const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
+const { DatabaseTransaction, RELEASED_TRANSACTION, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
+const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const harperLogger = require('#src/utility/logging/harper_logger');
+const { resetReplayedWritesWarning } = require('#src/resources/DatabaseTransaction');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+// The package blocks deep imports of its package.json, so walk up from the resolved entry point.
+function installedRocksdbVersion() {
+	const { existsSync, readFileSync } = require('node:fs');
+	const { dirname, join } = require('node:path');
+	let dir = dirname(require.resolve('@harperfast/rocksdb-js'));
+	for (let depth = 0; depth < 5; depth++) {
+		const candidate = join(dir, 'package.json');
+		if (existsSync(candidate)) {
+			const parsed = JSON.parse(readFileSync(candidate, 'utf8'));
+			if (parsed.name === '@harperfast/rocksdb-js') return parsed.version;
+		}
+		dir = dirname(dir);
+	}
+	throw new Error('could not resolve the installed @harperfast/rocksdb-js version');
+}
 
 describe('Transactions', () => {
 	let TxnTest, TxnTest2, TxnTest3;
@@ -54,6 +75,119 @@ describe('Transactions', () => {
 		let answer = await TxnTest.get(42);
 		assert.equal(answer.name, 'the answer');
 		assert.equal(answer.computed, 'the answer computed');
+	});
+	it('waits for promise-returning commit callbacks on RocksDB', async function () {
+		if (isLMDB) return this.skip();
+		const transaction = new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		let settled = false;
+		let release;
+		const completion = new Promise((resolve) => (release = resolve)).then(() => {
+			settled = true;
+		});
+		transaction.addWrite({
+			key: 'async-commit-callback',
+			store: TxnTest.primaryStore,
+			commit: () => completion,
+		});
+		const committed = transaction.commit({ doneWriting: true });
+		setImmediate(release);
+		await committed;
+		assert.equal(settled, true, 'commit resolved only after the callback completion settled');
+	});
+	it('surfaces a commit-callback rejection without an unhandled rejection', async function () {
+		// each engine has its own no-op rejection handler on the staged completion
+		// (DatabaseTransaction.stageCompletion, LMDBTransaction's doWrite)
+		const transaction = isLMDB ? new LMDBTransaction() : new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			transaction.addWrite({
+				key: 'rejecting-commit-callback',
+				store: TxnTest.primaryStore,
+				commit: () => {
+					// keyed write: LMDB stages it in the conditional batch, so its aggregating Promise.all is
+					// attached only after that batch resolves — a turn or more after this rejection exists
+					if (isLMDB) TxnTest.primaryStore.put('rejecting-commit-callback', { name: 'staged' });
+					return Promise.reject(new Error('audit write failed'));
+				},
+			});
+			// the staging-to-commit gap: a rejection with no consumer is reported at the end of this turn
+			await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+			assert.deepEqual(unhandled, [], 'the staged completion has a rejection handler before commit');
+			await assert.rejects(
+				() => transaction.commit({ doneWriting: true }),
+				/audit write failed/,
+				'the rejection still propagates out of commit'
+			);
+			// the commit-to-aggregation gap, which is the one LMDB's handler covers
+			await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+			assert.deepEqual(unhandled, [], 'the completion stays handled across the commit aggregation gap');
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+	it('drains staged completions when a transaction is aborted', async function () {
+		if (isLMDB) return this.skip(); // LMDB creates its commit completions at commit time, not at write time
+		const transaction = new DatabaseTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		const warnings = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => warnings.push(args);
+		try {
+			transaction.addWrite({
+				key: 'aborted-commit-callback',
+				store: TxnTest.primaryStore,
+				commit: () => Promise.reject(new Error('audit write failed after abort')),
+			});
+			assert.equal(transaction.completions.length, 1, 'the completion is staged before the abort');
+			assert.ok(transaction.transaction, 'the write-only transaction holds a native handle with no read reference');
+			transaction.abort();
+			assert.equal(transaction.transaction, null, 'the abort releases the native handle rather than leaking it');
+			assert.deepEqual(
+				transaction.completions,
+				[],
+				'an aborted batch cannot carry its completions into a later commit on a reused transaction'
+			);
+			await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+			assert.deepEqual(unhandled, [], 'the abandoned rejection does not escape as an unhandled rejection');
+			assert.ok(
+				warnings.some((args) => /aborted/.test(args[0])),
+				'the abandoned rejection is logged rather than silently dropped'
+			);
+		} finally {
+			harperLogger.warn = originalWarn;
+			process.off('unhandledRejection', onUnhandled);
+		}
+	});
+	it('waits for promise-returning commit callbacks on a keyed LMDB write', async function () {
+		if (!isLMDB) return this.skip();
+		const transaction = new LMDBTransaction();
+		transaction.db = TxnTest.primaryStore;
+		const order = [];
+		let release;
+		const completion = new Promise((resolve) => (release = resolve)).then(() => order.push('completion'));
+		transaction.addWrite({
+			key: 'lmdb-async-commit-callback',
+			store: TxnTest.primaryStore,
+			// keyed write: the conditional batch stages it, so this covers doWrite's non-null-key path
+			commit: () => {
+				TxnTest.primaryStore.put('lmdb-async-commit-callback', { name: 'staged' });
+				return completion;
+			},
+		});
+		// gated on the batch rather than a timer: a fixed delay a loaded runner outruns would pass silently
+		const committed = transaction.commit({ doneWriting: true }).then(() => order.push('commit'));
+		await TxnTest.primaryStore.flushed;
+		assert.deepEqual(order, [], 'commit has not resolved while the callback completion is pending');
+		release();
+		await committed;
+		assert.deepEqual(order, ['completion', 'commit'], 'commit resolved only after the callback completion');
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
@@ -103,6 +237,59 @@ describe('Transactions', () => {
 			sevens.push(seven);
 		}
 		assert.equal(sevens.length, 1);
+	});
+	it('abandons the retained handle writes when a commit with outstanding iterators replays', async function () {
+		// The outstanding-iterators commit branch replays staged writes onto a fresh transaction
+		// and retains the original handle for the iterators; its VT write intents can never be
+		// released by a commit, so the branch must call abandonWrites() (harper#2001). The
+		// release semantics themselves are covered by rocksdb-js's park-wake test; this pins
+		// Harper's side of the contract, including that the native method still exists once the
+		// dependency carrying it is installed — a silent `?.` no-op would leave the wedge live.
+		if (isLMDB) this.skip();
+		const [major, minor] = installedRocksdbVersion().split('.').map(Number);
+		const nativeExpected = major > 2 || (major === 2 && minor >= 7);
+		await TxnTest2.put('aw-seed-1', { name: 'aw-seed' });
+		await TxnTest2.put('aw-seed-2', { name: 'aw-seed' });
+		const context = {};
+		let abandonCalls = 0;
+		let iterator;
+		const replayWarnings = [];
+		// The warning is once per process and the whole suite shares one, so re-arm it here.
+		resetReplayedWritesWarning();
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => replayWarnings.push(args.join(' '));
+		try {
+			await transaction(context, async () => {
+				iterator = TxnTest2.search([], context)[Symbol.asyncIterator]();
+				const first = await iterator.next();
+				assert.ok(!first.done, 'test setup: the iterator must be outstanding at commit');
+				await TxnTest2.put('aw-write', { name: 'aw-write' }, context);
+				const retained = context.transaction.transaction;
+				if (nativeExpected) {
+					assert.equal(
+						typeof retained.abandonWrites,
+						'function',
+						'installed rocksdb-js should expose abandonWrites; without it the call site is a silent no-op'
+					);
+				}
+				const original = retained.abandonWrites?.bind(retained);
+				retained.abandonWrites = function () {
+					abandonCalls++;
+					return original?.();
+				};
+			});
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
+		assert.equal(abandonCalls, 1, 'the replay commit must abandon the retained handle writes');
+		assert.equal(replayWarnings.length, 1, 'the replay must warn the author about the doubled write work');
+		assert.match(replayWarnings[0], /read iterators are still open/);
+		assert.equal((await TxnTest2.get('aw-write')).name, 'aw-write', 'the replayed write must be durable');
+		let remaining = 0;
+		while (!(await iterator.next()).done) {
+			remaining++;
+		}
+		assert.ok(remaining >= 1, 'the retained handle must keep serving the outstanding iterator');
 	});
 	describe('Testing updates', () => {
 		it('Can update with addTo and set', async function () {
@@ -640,6 +827,230 @@ describe('Transactions', () => {
 				await context.transaction.commit();
 				assert.equal((await TxnTest.get(8, context)).name, 'eight changed');
 			});
+		});
+	});
+	// Regression coverage for a context/transaction retention issue found via a production heap
+	// snapshot: a long-lived context (notably an MQTT subscription context, which stays reachable
+	// for the life of a suspended delivery loop long after its transaction() call has returned and
+	// committed) kept pointing at the completed DatabaseTransaction, pinning it in memory. These
+	// tests cover DatabaseTransaction's releaseContext() cleanup, called from both commit completion
+	// paths and abort().
+	describe('Releasing the context back-reference on transaction completion', () => {
+		it('releases the context’s back-reference once the transaction commits', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(90, { name: 'release-on-commit' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			assert.equal((await TxnTest.get(90)).name, 'release-on-commit');
+		});
+		it('releases the context’s back-reference once the transaction aborts', async function () {
+			const context = {};
+			await assert.rejects(
+				transaction(context, async () => {
+					await TxnTest.put(91, { name: 'release-on-abort' }, context);
+					throw new Error('forced abort for test');
+				}),
+				/forced abort for test/
+			);
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			assert.equal(await TxnTest.get(91), undefined);
+		});
+		it('does not clobber a context that has been re-pointed at a different transaction', async function () {
+			const context = {};
+			const original = new DatabaseTransaction();
+			original.setContext(context);
+			context.transaction = original;
+			// Simulate something re-pointing the context at a different DatabaseTransaction (as
+			// resources/Table.ts:5530 and resources/replayLogs.ts:200 can do) before the original
+			// transaction's own completion runs.
+			const replacement = new DatabaseTransaction();
+			context.transaction = replacement;
+			// doneWriting: true mirrors resources/transaction.ts's own final wrapper commit — the
+			// only case releaseContext() ever attempts a release (see DatabaseTransaction.ts).
+			await original.commit({ doneWriting: true });
+			assert.strictEqual(
+				context.transaction,
+				replacement,
+				'a context re-pointed at another transaction must not be clobbered by a stale transaction’s own cleanup'
+			);
+		});
+		it('lets a context be reused for a second transaction() call after the first commits', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(92, { name: 'first txn on shared context' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			await transaction(context, async () => {
+				await TxnTest.put(93, { name: 'second txn on shared context' }, context);
+			});
+			assert.equal((await TxnTest.get(92)).name, 'first txn on shared context');
+			assert.equal((await TxnTest.get(93)).name, 'second txn on shared context');
+		});
+		// The release must not strand a later write on an uncommitted transaction. It cannot:
+		// resources/transaction.ts only reuses a context's transaction while it is OPEN, so a later write
+		// always goes through the transaction() wrapper, which commits in onComplete (or aborts in
+		// onError) by construction.
+		it('keeps post-completion writes on a reused context durable, with nothing left staged', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(94, { name: 'inside txn' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			// Writes made with the SAME context after its transaction completed must still commit.
+			await TxnTest.put(95, { name: 'after commit' }, context);
+			await TxnTest.get(95, context); // a read in between, which also re-enters the dispatcher
+			await TxnTest.put(96, { name: 'after commit again' }, context);
+			assert.equal((await TxnTest.get(94)).name, 'inside txn');
+			assert.equal((await TxnTest.get(95)).name, 'after commit');
+			assert.equal((await TxnTest.get(96)).name, 'after commit again');
+			assert.equal(
+				context.transaction?.writes?.length ?? 0,
+				0,
+				'no write may be left staged on an uncommitted transaction attached to the reused context'
+			);
+		});
+		// A handler with no transaction() wrapper of its own makes a static Resource API call with its
+		// context; Resource.ts services that by minting a transaction ON the context and driving it to a
+		// final commit. The handler may then still commit its own context, per the documented pattern.
+		it('lets a handler commit its context after a nested Resource API call completed that context’s transaction', async function () {
+			const context = {};
+			await TxnTest.get(97, context);
+			assert.strictEqual(
+				context.transaction,
+				RELEASED_TRANSACTION,
+				'premise: the nested get’s own final commit released the slot'
+			);
+			await context.transaction.commit();
+			await TxnTest.put(97, { name: 'after released commit' }, context);
+			await context.transaction.commit();
+			assert.equal((await TxnTest.get(97)).name, 'after released commit');
+		});
+		// A shared, process-wide released transaction must never be claimed as a place to stage writes.
+		it('never lets the released placeholder be claimed or written to', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(98, { name: 'claim check' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			await TxnTest.put(99, { name: 'not staged on the placeholder' }, context);
+			// The write runs on a transaction of its own, which releases the slot back to the placeholder,
+			// so the slot's identity says nothing here — only that the shared instance was never claimed.
+			assert.equal(RELEASED_TRANSACTION.writes.length, 0, 'nothing may ever be staged on the placeholder');
+			assert.equal(RELEASED_TRANSACTION.db, undefined, 'no store may ever claim the placeholder');
+			assert.equal((await TxnTest.get(99)).name, 'not staged on the placeholder');
+		});
+		// One instance is shared by every released context, so each route into its state must fail rather
+		// than write through to all of them.
+		it('refuses every route into the shared placeholder’s state', function () {
+			assert.throws(() => RELEASED_TRANSACTION.addWrite({}), /already completed/);
+			assert.throws(() => RELEASED_TRANSACTION.setContext({}), /shared released transaction/);
+			assert.throws(() => RELEASED_TRANSACTION.writes.push({}), TypeError);
+			assert.throws(() => {
+				'use strict';
+				RELEASED_TRANSACTION.open = TRANSACTION_STATE.OPEN;
+			}, TypeError);
+			assert.equal(RELEASED_TRANSACTION.open, TRANSACTION_STATE.CLOSED);
+		});
+		it('keeps transaction.commit()/abort() throwing for a context that never had a transaction', function () {
+			assert.throws(() => transaction.commit({}), /No active transaction is available to commit/);
+			assert.throws(() => transaction.abort({}), /No active transaction is available to abort/);
+		});
+		it('makes transaction.commit(context) a no-op on a released slot, like the direct form', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(100, { name: 'live' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			assert.deepEqual(await transaction.commit(context), { txnTime: 0 });
+			assert.equal(transaction.abort(context), undefined);
+			assert.equal((await TxnTest.get(100)).name, 'live');
+		});
+		it('stays callable for repeated checkpoint commits inside one scope', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				for (let i = 0; i < 4; i++) {
+					await TxnTest.put(110 + i, { name: `checkpoint-${i}` }, context);
+					await transaction.commit(context);
+				}
+			});
+			for (let i = 0; i < 4; i++) {
+				assert.equal((await TxnTest.get(110 + i))?.name, `checkpoint-${i}`, `row ${i} must persist`);
+			}
+		});
+		// Passing a transaction where a context is expected is a supported form, and on a released context
+		// that argument is the placeholder. Every route that adopts one has to read it as an absent
+		// argument — Resource.create shifts its own arguments and never reaches transactional()'s
+		// normalizer, and transaction() can be handed it directly.
+		it('accepts a released slot wherever a transaction or context is accepted', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(120, { name: 'bare-arg' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			await TxnTest.delete(120, context.transaction);
+			assert.equal(await TxnTest.get(120), undefined, 'the delete must run on a fresh transaction');
+			const createdId = await TxnTest.create({ name: 'created-with-released-slot' }, context.transaction);
+			assert.equal((await TxnTest.get(createdId))?.name, 'created-with-released-slot', 'the create must persist');
+			await transaction(context.transaction, async () => TxnTest.put(121, { name: 'direct' }));
+			assert.equal((await TxnTest.get(121)).name, 'direct');
+		});
+		// A released slot must also be a clean start for a MULTI-STORE transaction: the chain the previous
+		// transaction built (`next`) went with its commit, so the next one has to build its own.
+		it('starts a fresh multi-store chain after the slot is released', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				await TxnTest.put(140, { name: 'store-a' }, context);
+				await TxnTest2.put(140, { name: 'store-b' }, context);
+			});
+			assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+			await transaction(context, async () => {
+				await TxnTest.put(141, { name: 'store-a-again' }, context);
+				await TxnTest2.put(141, { name: 'store-b-again' }, context);
+				assert.equal(context.transaction.next?.next, undefined, 'the chain must not carry links over');
+			});
+			assert.equal((await TxnTest.get(141)).name, 'store-a-again');
+			assert.equal((await TxnTest2.get(141)).name, 'store-b-again');
+		});
+		// "Absent" has to mean the same thing at every route: an absent argument falls through to the
+		// ambient context. Resolving the placeholder to a bare `{}` instead would silently drop the
+		// caller's user, session and timestamp for everything inside.
+		it('keeps the ambient context when a released slot is passed as the context', async function () {
+			const seen = {};
+			await serverUtilities.processLocalTransaction(
+				{ body: { operation: 'test_registered_op', hdb_user: { username: 'ambient_identity' } } },
+				async () => {
+					const context = contextStorage.getStore();
+					await TxnTest.get(130); // completes and releases this context's transaction
+					assert.strictEqual(context.transaction, RELEASED_TRANSACTION);
+					await transaction(context.transaction, async () => {
+						seen.user = contextStorage.getStore()?.user?.username;
+						await TxnTest.put(130, { name: 'ambient' });
+					});
+					await TxnTest.create({ name: 'created-ambient' }, context.transaction);
+					return { message: 'ok' };
+				}
+			);
+			assert.equal(seen.user, 'ambient_identity', 'the ambient user must survive the released-slot route');
+			assert.equal((await TxnTest.get(130)).name, 'ambient');
+		});
+		// #1411: a timeout-poisoned abort must NOT release the context's back-reference. Resource.ts's
+		// dispatcher deliberately keeps joining a `timedOut` transaction (context?.transaction?.timedOut)
+		// so the rest of the logical operation fails atomically, instead of silently starting a fresh
+		// transaction for a write made after the timeout fired (see integrationTests/resources/
+		// txn-overtime-atomicity.test.ts for the end-to-end regression this guards).
+		it('keeps a timeout-poisoned transaction attached to its context so later writes still fail atomically', async function () {
+			const context = {};
+			const txn = new DatabaseTransaction();
+			txn.setContext(context);
+			context.transaction = txn;
+			txn.abortDueToTimeout();
+			assert.strictEqual(
+				context.transaction,
+				txn,
+				'a timed-out transaction must remain attached as a poison tombstone'
+			);
+			assert.strictEqual(context.transaction.timedOut, true);
 		});
 	});
 	describe('Testing updates with extended class with loadAsInstance=false', () => {

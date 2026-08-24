@@ -9,6 +9,7 @@ import { callOperation } from './utility.js';
 import { setupTestApp, baseUrl, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
 import environmentManager from '#src/utility/environment/environmentManager';
 const { get: env_get, setProperty } = environmentManager;
+import { getThisNodeName } from '#src/server/nodeName';
 import { connect, connectAsync } from 'mqtt';
 import { readFileSync } from 'fs';
 import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
@@ -595,11 +596,17 @@ describe('test MQTT connections and commands', function () {
 		}).catch(() => null);
 
 		const private_key_path = env_get('tls_privateKey');
-		let cert, ca;
+		let cert, fallbackCert, ca;
 		for await (const certificate of databases.system.hdb_certificate.search([])) {
 			if (certificate.is_authority) ca = certificate.certificate;
-			else if (certificate.name === 'localhost') cert = certificate.certificate;
+			else {
+				// See the WSS mTLS test below for why a name mismatch can happen and why the fallback
+				// is needed.
+				fallbackCert ??= certificate.certificate;
+				if (certificate.name === getThisNodeName()) cert = certificate.certificate;
+			}
 		}
+		cert ??= fallbackCert;
 		let client = await connectAsync(`mqtts://${testHost}:8884`, {
 			key: readFileSync(private_key_path),
 			cert,
@@ -655,11 +662,22 @@ describe('test MQTT connections and commands', function () {
 			});
 
 			const private_key_path = env_get('tls_privateKey');
-			let cert, ca;
+			let cert, fallbackCert, ca;
 			for await (const certificate of databases.system.hdb_certificate.search([])) {
 				if (certificate.is_authority) ca = certificate.certificate;
-				else if (certificate.name === 'localhost') cert = certificate.certificate;
+				else {
+					// getThisNodeName() is derived from the current effective config (node.hostname, or
+					// a fallback chain through the operations-API listener address), which can differ
+					// from whatever this install's cert was actually generated under — e.g. an install
+					// with no node.hostname set falls back to '127.0.0.1' at cert-generation time, but
+					// this test process's fallback resolves through the harness's overridden, per-run
+					// loopback address instead. Fall back to any non-authority cert (there's exactly one
+					// in a simple, non-replicated install) rather than leaving the client with none.
+					fallbackCert ??= certificate.certificate;
+					if (certificate.name === getThisNodeName()) cert = certificate.certificate;
+				}
 			}
+			cert ??= fallbackCert;
 			let bad_client = await connectAsync(`wss://${testHost}:8885`, {
 				reconnectPeriod: 0,
 				clientId: 'test-bad-mtls',

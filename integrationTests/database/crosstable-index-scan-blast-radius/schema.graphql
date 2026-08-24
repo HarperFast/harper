@@ -1,0 +1,39 @@
+# QA-631 — F-158 (GH #1881) blast-radius characterization.
+#
+# Four tables (A-D) share the same shape in a dedicated
+# "qa631-blast" database, all @export so they get Harper's normal
+# auto-generated REST routes (used for the "ordinary REST client" question).
+# `owner` carries the table name in the ROW. Ownership must not be inferred from the primary
+# key: the keys below deliberately COLLIDE across tables so that a read resolved against a
+# foreign column family finds a real row and returns it, which is #1881's severe mode.
+type TableA @table(database: "qa631-blast") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int @indexed
+	owner: String
+	body: String
+}
+
+type TableB @table(database: "qa631-blast") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int @indexed
+	owner: String
+	body: String
+}
+
+type TableC @table(database: "qa631-blast") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int @indexed
+	owner: String
+	body: String
+}
+
+type TableD @table(database: "qa631-blast") @export {
+	id: ID @primaryKey
+	repositoryId: String @indexed
+	n: Int @indexed
+	owner: String
+	body: String
+}

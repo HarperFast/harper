@@ -292,6 +292,26 @@
 					}
 				},
 				"blobTimeout": { "type": "number", "description": "Max time (ms) to wait for blob transfer. Default: 120000" },
+				"blobGapReconnectMs": {
+					"type": "number",
+					"minimum": 1000,
+					"description": "Time (ms) a replication blob gap may remain connected before reconnecting. Default: blobTimeout"
+				},
+				"copyCursorFlushBytes": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Copied bytes between resume-cursor flushes. Default: 67108864"
+				},
+				"copyCursorFlushIntervalMs": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Maximum time (ms) between copy resume-cursor flushes. Default: 5000"
+				},
+				"copyTimeout": {
+					"type": "number",
+					"minimum": 1,
+					"description": "Time (ms) without copy progress before the connection is terminated. Default: 300000"
+				},
 				"pingInterval": {
 					"type": "number",
 					"minimum": 1,
@@ -507,6 +527,10 @@
 				"blobReadTimeout": {
 					"type": "number",
 					"description": "Max time (ms) a blob read will wait for an in-progress write to finish before failing with a 503, rather than holding the connection. Default: 20000"
+				},
+				"blobRetention": {
+					"type": "number",
+					"description": "How long (ms) a superseded blob file is kept on disk, so a reader that resolved a record just before it was overwritten can still read the bytes. 0 reclaims as soon as the queue drains. Default: 2000"
 				},
 				"pageSize": { "type": "number", "description": "Database page size (bytes). Default: OS default" },
 				"reclamation": {

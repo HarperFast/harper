@@ -507,4 +507,86 @@ suite('Live subscription re-authorization (#1414)', { skip: skipSuite }, (ctx: C
 			`WS subscription kept delivering after bearer token expired (closed=${sub.closed})`
 		);
 	});
+
+	test('a scoped-token subscription survives rechecks and terminates at token expiry', async () => {
+		// A scoped token's attribution username is not a real hdb_user, so the recheck must use the
+		// token's embedded role — not re-resolve by name. Read is granted via the operations allowlist
+		// plus the same table read the other tests use.
+		const tokenResp = await client.req().send({
+			operation: 'create_authentication_tokens',
+			username: 'scoped_collider',
+			role: {
+				permission: {
+					operations: ['read_only'],
+					data: {
+						tables: {
+							Owned: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+			// Long enough that the multi-step recheck phase below (add_role + add_user + sweep +
+			// delivery probe, up to ~8s) completes well before expiry, so the survives-recheck
+			// assertion never races the expiry sweep.
+			expires_in: 20,
+		});
+		strictEqual(tokenResp.status, 200, `scoped token issue failed: ${tokenResp.status} ${tokenResp.text}`);
+		const token = tokenResp.body?.operation_token;
+		const mintedAt = Date.now();
+		ok(token, 'expected a scoped operation_token');
+		strictEqual(tokenResp.body?.refresh_token, undefined, 'scoped token must not carry a refresh token');
+
+		const stream = openSse(restURL, '/Owned/', { Authorization: `Bearer ${token}` });
+		try {
+			await sleep(800); // let the subscription establish
+			const before = stream.count();
+			await insert({ id: `r-${seq++}`, value: 'scoped-before' });
+			ok(
+				await waitFor(() => stream.count() > before, 6000),
+				`expected delivery while scoped token valid, saw ${stream.count()}`
+			);
+
+			// Now create a REAL user colliding with the token's attribution name, holding a role with
+			// NO read on Owned. This both triggers a re-auth sweep and sets up the substitution trap:
+			// if the recheck re-resolved the scoped principal by name it would adopt this user's
+			// (no-read) permissions and terminate the subscription. Continued delivery proves the
+			// embedded scoped role — not the colliding hdb_user — governs the recheck.
+			await client
+				.req()
+				.send({ operation: 'add_role', role: 'scoped_collider_role', permission: { super_user: false } })
+				.expect(200);
+			await client
+				.req()
+				.send({
+					operation: 'add_user',
+					role: 'scoped_collider_role',
+					username: 'scoped_collider',
+					password: 'Collide-pw-1414!',
+					active: true,
+				})
+				.expect(200);
+			await sleep(1500);
+			const afterRecheck = stream.count();
+			await insert({ id: `r-${seq++}`, value: 'scoped-after-recheck' });
+			ok(
+				await waitFor(() => stream.count() > afterRecheck, 5000),
+				'scoped subscription was wrongly re-resolved to the colliding hdb_user (terminated or substituted)'
+			);
+
+			// It must still expire with the token. Anchor on the mint time so the recheck phase's
+			// variable duration can't leave us short: wait until well past the 20s lifetime + sweep.
+			await sleep(Math.max(0, mintedAt + 22000 - Date.now()));
+			const probe = stream.count();
+			await insert({ id: `r-${seq++}`, value: 'scoped-post-expiry' });
+			await sleep(1500);
+			await assertOracleAlive('scoped-token-oracle');
+			strictEqual(
+				stream.count(),
+				probe,
+				`scoped subscription kept delivering after token expiry (${stream.count() - probe} extra)`
+			);
+		} finally {
+			stream.close();
+		}
+	});
 });

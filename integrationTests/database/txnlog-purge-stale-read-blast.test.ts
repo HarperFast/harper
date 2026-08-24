@@ -73,6 +73,18 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'txnlog-purge-stale-read-blast
 const SCHEMA = 'data';
 const TABLE = 'Widget';
 const skipSuite = process.env.HARPER_RUNTIME === 'bun';
+// The lmdb arm is the CONTROL (the phantom under test is RocksDB-specific), and on Windows its
+// seed is not viable at this magnitude: LMDB insert cost there grows superlinearly with database
+// size -- measured 2.7s per 500-record batch at the start and 37.7s by the fifth wave, ~311s for
+// the seed against the rocksdb arm's 28.3s on the same runner, while Linux does both in ~2s
+// (harper#2243). That crosses the seed's per-request budget on a slow runner and reds
+// `Integration Tests 1/6 (Windows)` intermittently on `main`.
+//
+// Skipped rather than shrunk: the control's value is running the SAME workload as the subject, and
+// per-engine record counts would weaken exactly that. The control still runs on every other
+// platform, and LMDB is deprecated, so Windows-specific LMDB coverage buys little. Do NOT "fix"
+// this by raising the timeout -- that keeps ~5 minutes of Windows CI time and adds no signal.
+const skipLmdbArm = process.platform === 'win32';
 
 // DEL range gets bulk-deleted (the subject of this whole suite). KEEP range stays untouched
 // (scoping sanity: proves the delete/read paths aren't just globally broken). Padded payload
@@ -410,7 +422,7 @@ async function assertAbsentEverywhere(
 function defineSuite(engine: 'rocksdb' | 'lmdb') {
 	suite(
 		`QA-782 stale-read blast radius: ordinary table reads after bulk delete [${engine}]`,
-		{ skip: skipSuite },
+		{ skip: skipSuite || (engine === 'lmdb' && skipLmdbArm) },
 		(ctx: ContextWithHarper) => {
 			const findings: string[] = [];
 			const armConfig = {
@@ -535,6 +547,11 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const sqlHits = await sqlByBucket(ctx, 'DEL');
 					findings.push(
 						`2. PRE-DELETE bucket=DEL hit counts: REST-QUERY=${restHits.length} SEARCH-BY-VALUE=${sbvHits.length} SQL=${sqlHits.length} (expect ${DEL_COUNT} each)`
+					);
+					strictEqual(
+						restHits.length,
+						DEL_COUNT,
+						`PRECONDITION: REST bucket=DEL pre-delete must see all ${DEL_COUNT} rows`
 					);
 					strictEqual(
 						sbvHits.length,
@@ -667,16 +684,57 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						`NON-VACUOUS PRECONDITION: WARM read_audit_log(${sampleId}) must see the pre-cutoff insert entry before the purge, got ${JSON.stringify(preWarmEntries)}`
 					);
 
-					const ack = await rawOp(ctx, {
+					// A TABLE-scoped purge is REFUSED on RocksDB as of 4bd781787: all tables in a
+					// database share one transaction log, so honouring `table` would destroy log
+					// entries the caller never asked to delete. LMDB keeps a log per table, so
+					// there the same call is legitimate and still completes. This arm asserted the
+					// pre-fix RocksDB behaviour and went permanently red when the fix landed.
+					const tableScopeRefused = engine === 'rocksdb';
+					const scoped = await rawOp(ctx, {
 						operation: 'delete_transaction_logs_before',
-						...(engine === 'rocksdb' ? { database: SCHEMA } : { schema: SCHEMA, table: TABLE }),
+						schema: SCHEMA,
+						table: TABLE,
 						timestamp: cutoffTimestamp,
 					});
 					ok(
-						ack.status === 200 && ack.body?.job_id,
-						`delete_transaction_logs_before should return a job_id, got ${ack.text.slice(0, 300)}`
+						scoped.status === 200 && scoped.body?.job_id,
+						`table-scoped purge should still ACK with a job_id, got ${scoped.status}: ${scoped.text.slice(0, 300)}`
 					);
-					const jobResult = await pollJob(ctx, ack.body.job_id);
+					// The rejection is enforced when the job RUNS, not when the request is validated,
+					// so the ack is a normal 200 and the refusal only shows up in the job record.
+					const scopedJob = await pollJob(ctx, scoped.body.job_id);
+					if (tableScopeRefused) {
+						ok(
+							scopedJob.status === 'ERROR' && /not supported for RocksDB/i.test(JSON.stringify(scopedJob.message)),
+							`table-scoped purge job must ERROR with the RocksDB refusal, got ${scopedJob.status}: ${scopedJob.message}`
+						);
+					} else {
+						ok(
+							scopedJob.status === 'COMPLETE',
+							`table-scoped purge is supported on ${engine} and should COMPLETE, got ${scopedJob.status}: ${scopedJob.message}`
+						);
+					}
+					findings.push(`5. table-scoped purge on ${engine}: ${scopedJob.status} ${scopedJob.message ?? ''}`);
+
+					// The arm's actual question is whether an audit purge in this process produces the
+					// F-225 phantom, and it needs a purge that actually ran. Where the table-scoped
+					// form was refused, re-issue DATABASE-scoped — the form the refusal directs you
+					// to, and equivalent here because this fixture declares one table in `data`.
+					// Where it was accepted it already did the work, so reusing that job avoids a
+					// second purge finding nothing left to delete.
+					let jobResult = scopedJob;
+					if (tableScopeRefused) {
+						const ack = await rawOp(ctx, {
+							operation: 'delete_transaction_logs_before',
+							schema: SCHEMA,
+							timestamp: cutoffTimestamp,
+						});
+						ok(
+							ack.status === 200 && ack.body?.job_id,
+							`database-scoped delete_transaction_logs_before should return a job_id, got ${ack.text.slice(0, 300)}`
+						);
+						jobResult = await pollJob(ctx, ack.body.job_id);
+					}
 					const entriesDeleted = jobResult.result?.entries_deleted ?? jobResult.result?.transactions_deleted ?? 0;
 					findings.push(`5. audit purge job: status=${jobResult.status} result=${JSON.stringify(jobResult.result)}`);
 					ok(

@@ -1,0 +1,6 @@
+# QA-890 — jsResource fixture requires at least one @table/@export type to be a valid
+# component; this is a minimal placeholder (no table backing is needed for the Resources
+# under test, which are plain streaming Resources, not DB-backed).
+type Placeholder @table @export {
+	id: ID @primaryKey
+}
