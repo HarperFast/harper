@@ -459,6 +459,10 @@ let errorReporter;
 export function setErrorReporter(reporter) {
 	errorReporter = reporter;
 }
+/** So a caller that installs a reporter can put the previous one back when it is done with it. */
+export function getErrorReporter() {
+	return errorReporter;
+}
 
 let compName: string;
 export const getComponentName = () => compName;

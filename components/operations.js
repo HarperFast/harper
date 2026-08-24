@@ -551,6 +551,13 @@ function markRestartRequiredForDeploy(application) {
 async function deployComponentOneShot(req, credentialReferences, isReplicatedExecution) {
 	const { resolveCredentials } = require('./secretOperations.ts');
 
+	// Before ANY work: the rejection should not come after a credential has been ingested into the
+	// secrets store and a durable deployment row created for a deploy that was never allowed. This used
+	// to sit inside the root-config write, which the staged path replaced with the activation
+	// transaction. Package deploys only, exactly as before — a payload deploy has always been allowed
+	// to use a core name.
+	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
+
 	// Create a hdb_deployment row up front so the deploy is observable and auditable even if the CLI
 	// disconnects. The row also holds the payload in a Blob attribute, which doubles as the source for
 	// peer replication and (later) rollback. Only the origin node records — peers replaying the
@@ -583,11 +590,6 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 	if (recorder) req._deploymentId = recorder.deploymentId;
 
 	const emit = (event, data) => emitter?.emit(event, data);
-
-	// Protected core component names. This used to sit inside the root-config write, which the staged
-	// path replaced with the activation transaction — so it is asserted here explicitly, before any work.
-	// Package deploys only, exactly as before: a payload deploy has always been allowed to use the name.
-	if (req.package) assertNotProtectedCoreComponent(req.project, req.force);
 
 	// The payload-via-replicated-row path depends on `system` actually replicating on this node.
 	const systemReplicated = isSystemDatabaseReplicated();
@@ -1040,7 +1042,25 @@ function buildDeployApplication({
 // Load a component directory to surface load-time errors early (throwaway scopes). No-op on the main
 // thread or in safe mode. It loads the STAGED directory, before go-live, where it runs at all — see
 // loads the live directory after in-place prepare.
-async function loadValidateComponent({ dirPath, emit }) {
+// `componentLoader.setErrorReporter` is module-global, so two deploys validating concurrently on the
+// same worker cross-attribute their load failures: B installs its reporter while A is loading, A's
+// error lands in B, and A then activates broken bytes while B rejects a good candidate. Validation is
+// serialized here — it is already the slow path — and the previous reporter is restored, so the global
+// is only ever owned by one in-flight validation.
+let validationChain = Promise.resolve();
+async function loadValidateComponent(args) {
+	const run = validationChain.then(
+		() => loadValidateComponentExclusive(args),
+		() => loadValidateComponentExclusive(args)
+	);
+	validationChain = run.then(
+		() => {},
+		() => {}
+	);
+	return run;
+}
+
+async function loadValidateComponentExclusive({ dirPath, emit }) {
 	if (isMainThread || process.env.HARPER_SAFE_MODE) return;
 	const pseudoResources = new Resources();
 	pseudoResources.isWorker = true;
@@ -1048,6 +1068,7 @@ async function loadValidateComponent({ dirPath, emit }) {
 	const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
 	const { trackScopeClose } = require('./scopeShutdown.ts');
 	let lastError;
+	const priorErrorReporter = componentLoader.getErrorReporter?.();
 	componentLoader.setErrorReporter((error) => (lastError = error));
 	emit('phase', { phase: 'load', status: 'start' });
 	// The Scopes this load creates are throwaway. Collect them (instead of registering for
@@ -1071,7 +1092,11 @@ async function loadValidateComponent({ dirPath, emit }) {
 	});
 	// Track the load+close so a concurrent worker shutdown waits for these scopes to finish disposing.
 	trackScopeClose(validation);
-	await validation;
+	try {
+		await validation;
+	} finally {
+		componentLoader.setErrorReporter(priorErrorReporter);
+	}
 	emit('phase', { phase: 'load', status: 'done' });
 	if (lastError) throw lastError;
 }

@@ -3448,12 +3448,29 @@ export async function reconcileStagedApplicationArtifacts(
 				continue;
 			}
 			const componentDirPath = join(componentsRootDirPath, row.project);
-			if (!['staged', 'activating'].includes(row.status)) {
+			// Local activation evidence is consulted BEFORE any status-based cleanup, because the row is the
+			// less reliable of the two. A crash between the swap and the status/config commit can leave the
+			// row `loading`, already terminal (a replicated origin write), or absent entirely when tracking
+			// is unavailable — while the candidate is live on disk. Deleting staging state on the strength of
+			// that status destroys the only evidence, and the artifact sweep then neither persists config nor
+			// fails the component closed: swapped-in code loads under the previous release's configuration.
+			// Read under the lock so an in-flight activation cannot create artifacts between probe and act.
+			await withComponentPreparationLock(componentDirPath, async () => {
+				activationBegan = (await activationArtifacts(componentDirPath, entry.name)).length > 0;
+			});
+			if (!activationBegan && !['staged', 'activating'].includes(row.status)) {
 				let shouldRemove = false;
 				await withComponentPreparationLock(componentDirPath, async () => {
 					row = await getDeployment(entry.name);
 					shouldRemove = !row || !safeComponentName(row.project) || !['staged', 'activating'].includes(row.status);
 					if (!shouldRemove) return;
+					// Re-read the evidence under this lock too: an activation may have started since the probe
+					// above, and its artifacts outrank the row.
+					if ((await activationArtifacts(componentDirPath, entry.name)).length > 0) {
+						activationBegan = true;
+						shouldRemove = false;
+						return;
+					}
 					// A row still `pending`/`staging` once its staging directory is going away cannot make
 					// progress — the process that owned it is gone. Payload retention only reclaims rows that
 					// reached a terminal status, so leaving it in flight pins its tarball on every node forever.
@@ -3474,7 +3491,6 @@ export async function reconcileStagedApplicationArtifacts(
 			// (over the origin's own row) and left new code live under the previous release's config. An
 			// activation artifact for this deployment is proof the swap began, so it is an interrupted
 			// activation and belongs in the roll-forward path below.
-			activationBegan = (await activationArtifacts(componentDirPath, entry.name)).length > 0;
 			if (row.status === 'staged' && !activationBegan) {
 				if (!(await hasCompleteStagedApplication(stagedPath))) {
 					let discarded = false;
@@ -3504,6 +3520,7 @@ export async function reconcileStagedApplicationArtifacts(
 				// An activation that appeared under the lock belongs in the roll-forward path below.
 				if (!activationBegan) continue;
 			}
+			// Reached for `activating` rows and for ANY row status backed by activation evidence.
 			if (await hasCompleteStagedApplication(stagedPath)) {
 				await activateStagedApplication(new Application({ name: row.project }), entry.name, {
 					beforeCommit: () => persistActivation(row),
