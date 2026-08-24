@@ -8,11 +8,9 @@ const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, 'envDir');
 const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
 
 /**
- * Materializes the per-PID test root: the directory layout config validation expects
- * (as after an install) and the per-PID harper-config.yaml. Idempotent, and callable
- * with no Harper module loaded — mocha.init.js runs it before any Harper import, and
- * ensureSystemTables()/setupTestDBPath() run it again because a mid-run tearDownMockDB()
- * removes the whole per-PID root, config file included.
+ * Materializes the per-PID test root — the directory layout config validation expects and
+ * harper-config.yaml — idempotently and with no Harper module loaded. A mid-run
+ * tearDownMockDB() removes the whole root, so seeding re-runs this before touching config.
  */
 function materializePerPidRoot() {
 	for (const dir of ['database', 'log', 'components', 'keys']) {

@@ -15,8 +15,7 @@ describe('Test isHdbInstalled function', () => {
 	let sandbox;
 	const TEST_ERROR = 'I am a unit test error test';
 
-	// these tests exercise the boot-props install check that mocha.init.js's ROOTPATH export
-	// shadows via noBootFile() (see its header comment) — clear both for this file
+	// exercises the boot-props install check, which mocha.init.js's ROOTPATH export shadows
 	let savedRootPathEnv;
 	before(() => {
 		savedRootPathEnv = process.env.ROOTPATH;

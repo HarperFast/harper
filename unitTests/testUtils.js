@@ -16,6 +16,7 @@ const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
 const { materializePerPidRoot } = require('./perPidRoot.js');
 
 let envMgrInitSyncStub;
+let exitCleanupRegistered;
 
 const MOCK_ARGS_ERROR_MSG =
 	'Null, undefined, and/or empty string argument values not allowed when building mock HDB for testing';
@@ -369,7 +370,6 @@ function getMockTestPath() {
  * @returns String representing the path value to the mock lmdb system directory
  */
 function setupTestDBPath() {
-	// an earlier tearDownMockDB() may have removed the per-PID root, config file included
 	let dbPath = materializePerPidRoot();
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(dbPath, 'database'));
@@ -381,9 +381,14 @@ function setupTestDBPath() {
 	};
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
 	resetDatabases();
-	if (isMainThread) {
+	if (isMainThread && !exitCleanupRegistered) {
+		exitCleanupRegistered = true;
+		// synchronous on purpose: an exit handler cannot await, so the async removal in
+		// tearDownMockDB() would be scheduled and then dropped by process.exit()
 		process.on('exit', function () {
-			tearDownMockDB();
+			try {
+				fs.removeSync(PID_DIR_PATH);
+			} catch {}
 		});
 	}
 	return dbPath;
@@ -399,14 +404,16 @@ function setupTestDBPath() {
  * database.
  */
 async function ensureSystemTables() {
-	// the guard checks the seed's final artifacts on disk/config, so a partial seed — or one
-	// a mid-run tearDownMockDB() removed — re-runs in full; every step below is idempotent
+	// the guard checks the seed's final artifacts — key file, tables, an active admin, and
+	// the config repoint that is its last step — so a partial seed, or one a mid-run
+	// tearDownMockDB() removed, re-runs in full; every step below is idempotent
 	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
 	const testKeyPath = path.join(keysDir, 'unitTestPrivateKey.pem');
 	if (
 		env.get(terms.CONFIG_PARAMS.TLS_PRIVATEKEY) === testKeyPath &&
 		fs.existsSync(testKeyPath) &&
-		getDatabases().system?.hdb_role
+		getDatabases().system?.hdb_role &&
+		(await getDatabases().system.hdb_user?.get('admin'))?.active
 	) {
 		return;
 	}
@@ -443,8 +450,6 @@ async function ensureSystemTables() {
 			await keys.setCertTable({ ...cert, private_key_name: path.basename(testKeyPath) });
 		}
 	}
-	// the in-memory override below doubles as the completion guard above, so the on-disk
-	// config write must come first
 	require('#src/config/configUtils').updateConfigValue(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 }

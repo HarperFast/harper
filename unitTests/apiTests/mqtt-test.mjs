@@ -609,7 +609,6 @@ describe('test MQTT connections and commands', function () {
 		cert ??= fallbackCert;
 		assert.ok(cert, 'expected a non-authority certificate record in system.hdb_certificate');
 		assert.ok(cert.private_key_name, 'expected the certificate record to name its private key file');
-		// resolve the key the same way the server does: by the cert record's key name under <root>/keys
 		const private_key_path = join(env_get('rootPath'), 'keys', cert.private_key_name);
 		let client = await connectAsync(`mqtts://${testHost}:8884`, {
 			key: readFileSync(private_key_path),

@@ -1,8 +1,8 @@
 'use strict';
 
-// Regression coverage for the per-PID root contract mocha.init.js establishes — see its
-// header comment for the contract itself. Nothing here repairs state first: every
-// assertion observes what mocha.init.js left behind, so reverting its pins fails here.
+// Regression coverage for the per-PID root contract mocha.init.js establishes (see its
+// header). The spawned-child test is the load-bearing one: a fresh process with hostile
+// env vars, where no earlier suite can have repaired state before the assertions.
 
 const assert = require('node:assert');
 const path = require('node:path');
@@ -19,29 +19,30 @@ describe('unit-test per-PID root isolation', () => {
 		assert.strictEqual(process.env.SCHEMAS_DATA_PATH, undefined);
 	});
 
-	it('neutralizes ambient storage-path env vars a parent shell exported', function () {
+	it('a fresh process neutralizes ambient env vars and resolves config, storage, and the system database inside its per-PID root', function () {
 		this.timeout(30000);
 		const { spawnSync } = require('node:child_process');
-		const result = spawnSync(
-			process.execPath,
-			[
-				'--require',
-				'./unitTests/mocha.init.js',
-				'-p',
-				'[process.pid, process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH]',
-			],
-			{
-				cwd: path.join(__dirname, '..'),
-				env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
-				encoding: 'utf8',
-				timeout: 25000,
-			}
-		);
+		const probe =
+			'JSON.stringify([process.pid, process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH, ' +
+			"require('#src/utility/environment/environmentManager').getHdbBasePath(), " +
+			"require('#src/config/configUtils').getConfigPath(require('#src/utility/hdbTerms').CONFIG_PARAMS.STORAGE_PATH), " +
+			"require('#src/resources/databases').resolveDatabaseStorageRoot('system')])";
+		const result = spawnSync(process.execPath, ['--require', './unitTests/mocha.init.js', '-p', probe], {
+			cwd: path.join(__dirname, '..'),
+			env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
+			encoding: 'utf8',
+			timeout: 25000,
+		});
 		assert.strictEqual(result.status, 0, result.stderr);
-		const output = result.stdout.trim().split('\n').pop();
-		const childPid = output.match(/^\[ (\d+),/)?.[1];
-		if (childPid) require('fs-extra').removeSync(path.join(__dirname, 'envDir', childPid));
-		assert.match(output, /^\[ \d+, undefined, undefined \]$/);
+		const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot] = JSON.parse(
+			result.stdout.trim().split('\n').pop()
+		);
+		require('fs-extra').removeSync(path.join(__dirname, 'envDir', String(childPid)));
+		assert.strictEqual(storageEnv, null);
+		assert.strictEqual(schemasEnv, null);
+		for (const resolved of [hdbRoot, storagePath, systemRoot]) {
+			assert.ok(typeof resolved === 'string' && resolved.startsWith(ENV_DIR_PATH), String(resolved));
+		}
 	});
 
 	it('exports ROOTPATH inside the per-PID directory for worker threads and spawned processes', () => {

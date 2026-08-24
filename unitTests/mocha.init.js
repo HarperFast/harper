@@ -35,7 +35,7 @@
 const path = require('path');
 const fs = require('fs-extra');
 const { isMainThread } = require('worker_threads');
-const { materializePerPidRoot, PID_DIR_PATH } = require('./perPidRoot.js');
+const { materializePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -73,9 +73,27 @@ process.on('exit', (code) => {
 
 if (isMainThread) {
 	// A stale dir from a recycled PID (a prior run killed before its exit hook) carries a
-	// config, keys, and a seeded system database this run must not inherit. Worker threads
-	// re-run this preload under the same PID, so only the main thread wipes.
+	// config, keys, and a seeded system database this run must not inherit; also reclaim
+	// roots whose owning run is gone, since the exit hook never fires on SIGKILL/OOM.
+	// Worker threads re-run this preload under the same PID, so only the main thread wipes.
 	fs.removeSync(PID_DIR_PATH);
+	let envDirEntries = [];
+	try {
+		envDirEntries = fs.readdirSync(ENV_DIR_PATH);
+	} catch {}
+	for (const name of envDirEntries) {
+		const pid = Number(name);
+		if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+		try {
+			process.kill(pid, 0);
+		} catch (error) {
+			if (error.code === 'ESRCH') {
+				try {
+					fs.removeSync(path.join(ENV_DIR_PATH, name));
+				} catch {}
+			}
+		}
+	}
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;

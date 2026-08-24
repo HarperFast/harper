@@ -739,8 +739,8 @@ export function getEnvCliRootPath() {
  * This is used for running HDB without a boot file
  */
 let noBootFileChecked;
-// test support: the memoized result is derived from the ROOTPATH env var, which the unit-test
-// bootstrap exports only transiently — a value cached during that window must not outlive it
+// test support: the memoized result is derived from the ROOTPATH env var, so a test that
+// clears that variable for its own scope must also drop a value cached while it was set
 export function resetNoBootFileCache() {
 	noBootFileChecked = undefined;
 }

@@ -75,9 +75,7 @@ export async function setupTestApp() {
 	// exit if it is already setup or we are running in the browser
 	if (typeof process === 'undefined') return createdRecords;
 	let path = setupTestDBPath();
-	// Seed the per-PID system database (hdb_role, hdb_user, etc.) so the server boot's
-	// setUsersWithRolesCache() and the tests' role/user operations have their tables,
-	// without ever opening an installed Harper root's system database.
+	// seed the isolated system database (tables, admin user, certs) the server boot expects
 	await ensureSystemTables();
 
 	if (!serverStarted) {
