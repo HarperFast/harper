@@ -207,7 +207,6 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		});
 
 		test('add_oidc_trust accepts the op in a trust policy scope', async () => {
-			// The third main-thread consumer of validateOperations.
 			const { status, body } = await op({
 				operation: 'add_oidc_trust',
 				id: 'component-op-policy',

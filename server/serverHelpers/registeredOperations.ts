@@ -134,7 +134,6 @@ function handleThreadExit(deadThreadId: number) {
 	}
 }
 
-/** `attachMainListeners` wires the same function to the real thread-exit event. */
 export function notifyThreadExitedForTest(deadThreadId: number) {
 	handleThreadExit(deadThreadId);
 }

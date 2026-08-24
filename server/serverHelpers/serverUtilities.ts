@@ -200,10 +200,11 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
 	if (requiresSuperUser === undefined) {
-		// A re-registration that drops the flag must also drop the entry the earlier one installed,
-		// or the declaration and enforcement disagree: main retracts the grantable mark while this
-		// worker keeps honouring an already-persisted role grant. Only names this API registered are
-		// cleared, so a component cannot strip a built-in's permission by re-declaring its name.
+		// A re-registration that drops the flag must also drop the entry the earlier one installed, or
+		// declaration and enforcement disagree: main retracts the grantable mark while this worker keeps
+		// honouring an already-persisted role grant. Scoped to names declared through this API, so one it
+		// never declared is untouched — a component that declared a built-in's name already overwrote
+		// that entry by declaring it, and this only follows.
 		if (declaredPermissionNames.delete(name)) opAuth.unregisterOperationPermission(name);
 	} else {
 		// verifyPerms keys requiredPermissions by the handler's function `.name`, but registered ops
