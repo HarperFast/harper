@@ -140,16 +140,12 @@ export function executeConditions(
 				filtered
 				// recordAccess intentionally omitted: guards run once, at the top level (see above).
 			);
-		return searchByIndex(
-			condition,
-			txn,
-			condition.descending || request.reverse === true,
-			table,
-			request.allowFullScan,
+		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
+			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
-			request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
-		);
+			minResults: request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
+		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
 		return conditions
@@ -233,26 +229,34 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 }
 
 /**
- * Search for records or keys, based on the search condition, using an index if available
+ * Search for records or keys, based on the search condition, using an index if available. The four
+ * leading parameters are required at every call site; everything optional is named, so a new
+ * capability can be added without shifting positions at callers that don't use it.
  * @param searchCondition
  * @param transaction
  * @param reverse
  * @param Table
- * @param allowFullScan
- * @param filtered
+ * @param options
  */
 export function searchByIndex(
 	searchCondition: DirectCondition,
 	transaction: any,
 	reverse: boolean,
 	Table: any,
-	allowFullScan?: boolean,
-	filtered?: any,
-	context?: any,
-	// How many rows the query will ultimately consume (offset + limit), when it is bounded. An
-	// approximate index returns a fixed-size candidate list, so without this a query asking for more
-	// rows than that list holds silently gets a short result set. Only custom indexes read it.
-	minResults?: number
+	{
+		allowFullScan,
+		filtered,
+		context,
+		minResults,
+	}: {
+		allowFullScan?: boolean;
+		filtered?: any;
+		context?: any;
+		// How many rows the query will ultimately consume (offset + limit), when it is bounded. An
+		// approximate index returns a fixed-size candidate list, so without this a query asking for more
+		// rows than that list holds silently gets a short result set. Only custom indexes read it.
+		minResults?: number;
+	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
@@ -284,8 +288,7 @@ export function searchByIndex(
 				transaction,
 				reverse,
 				relatedTable,
-				allowFullScan,
-				joined
+				{ allowFullScan, filtered: joined }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
@@ -302,8 +305,7 @@ export function searchByIndex(
 						transaction,
 						reverse,
 						Table,
-						allowFullScan,
-						joined
+						{ allowFullScan, filtered: joined }
 					);
 				};
 				if (attribute.elements) {
@@ -510,21 +512,23 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const loaded = index.customIndex.search(searchCondition, context, recordFilter, minResults).map((entry) => {
-				// if the custom index returns an entry with metadata, merge it with the loaded entry
-				if (typeof entry === 'object' && entry) {
-					const { key, ...otherProps } = entry;
-					if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-					const loadedEntry = Table.primaryStore.getEntry(key, {
-						transaction: context && Table._readTxnForContext(context),
-					});
-					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
-					freezeRecord(loadedEntry?.value);
-					recordRead(loadedEntry);
-					return { ...otherProps, ...loadedEntry };
-				}
-				return entry;
-			});
+			const loaded = index.customIndex
+				.search(searchCondition, context, { filter: recordFilter, minResults })
+				.map((entry) => {
+					// if the custom index returns an entry with metadata, merge it with the loaded entry
+					if (typeof entry === 'object' && entry) {
+						const { key, ...otherProps } = entry;
+						if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+						const loadedEntry = Table.primaryStore.getEntry(key, {
+							transaction: context && Table._readTxnForContext(context),
+						});
+						if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
+						freezeRecord(loadedEntry?.value);
+						recordRead(loadedEntry);
+						return { ...otherProps, ...loadedEntry };
+					}
+					return entry;
+				});
 			if (index.customIndex.rescoreResults) {
 				const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
 				if (rescored != null) return rescored as any;

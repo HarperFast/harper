@@ -1145,8 +1145,7 @@ describe('HNSW limit above the resolved search ef', () => {
 			customIndex.search(
 				{ target: [1, 0, 0], comparator: 'sort' },
 				{ transaction: undefined },
-				() => true,
-				100_000 // a limit far above anything the index would choose for itself
+				{ filter: () => true, minResults: 100_000 } // a limit far above anything the index would choose for itself
 			);
 		} finally {
 			customIndex.searchLayer = originalSearchLayer;
@@ -2295,7 +2294,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert(results.length > 0, 'expected matching results');
 		assert(
@@ -2314,7 +2313,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			everyTenth
+			{ filter: everyTenth }
 		);
 		assert(
 			results.every((r) => Number(r.key) % 10 === 0),
@@ -2334,7 +2333,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false, ef: 10, filterExpansion: 2 },
 			{ transaction: undefined },
-			matchesNothing
+			{ filter: matchesNothing }
 		);
 		assert.strictEqual(results.length, 0, 'no matches yields an empty result, not an error');
 		assert(results.nodesVisited > 0, 'some nodes were visited');
@@ -2347,7 +2346,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert.strictEqual(typeof results.nodesVisited, 'number');
 		assert.strictEqual(typeof results.filterEvaluations, 'number');
@@ -2363,7 +2362,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert(!results.some((r) => r.key === 10 || r.key === 20), 'deleted nodes must not be returned');
 		assert(
@@ -2378,7 +2377,7 @@ describeUnlessLmdbFilter('HNSW predicate-aware traversal (#1241)', () => {
 		const results = hnsw.search(
 			{ target: [0], comparator: 'sort', descending: false },
 			{ transaction: undefined },
-			even
+			{ filter: even }
 		);
 		assert(
 			results.every((r) => Number(r.key) % 2 === 0),
