@@ -236,26 +236,26 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Can be deferred: The require happens only when `server/serverHelpers/multipartParser.ts` is imported, which is loaded by `registerContentHandlers` at operations-server boot. Realistically always loaded.
 - Eventual removal: Could be replaced by writing our own streaming multipart parser (a few hundred lines plus tests for edge cases) if maintenance ever lapses, or by Node.js's `request.formData()` once that API supports streaming file parts without buffering (currently it doesn't on the standard Node http server interface used by Fastify).
 
-## openai (devDependency)
+## openai (isolated integration-test devDependency)
 
 - Need for usage: Runs the `/v1` gateway acceptance tests through the official, unmodified OpenAI Node.js client (#1616 / #631). The client is intentionally part of the test boundary: it catches compatibility gaps in SDK defaults, request headers, SSE handling, and response decoding that a hand-written `fetch` fixture can reproduce incorrectly.
-- Classification: Development dependency only. It is dynamically imported by the integration suite and is pruned from Harper's published runtime dependency tree.
-- Size/memory cost: The currently locked `openai@7.4.0` is approximately 12.6 MB unpacked (2,710 files). It has no required transitive dependencies; its AWS signing, WebSocket, and Zod integrations are optional peers. Install cost applies to development and CI, and memory cost applies only while the gateway integration suite is running.
+- Classification: Exact-pinned development dependency in `integrationTests/package.json`, with its own `integrationTests/package-lock.json`. Root installs do not include it; one dedicated Node 24 compatibility job installs it with lifecycle scripts disabled. It is dynamically imported only when `HARPER_V1_CLIENT_COMPATIBILITY=1` and is absent from Harper's published runtime dependency tree.
+- Size/memory cost: The locked `openai@7.4.0` is approximately 12.6 MB unpacked (2,710 files). It has no required transitive dependencies; its AWS signing, WebSocket, and Zod integrations are optional peers. Install and memory cost apply only to the opt-in local run or the single compatibility job, not ordinary development installs or the general CI matrix.
 - Security: Official OpenAI package, Apache-2.0 licensed. It handles test credentials and HTTP traffic but is never loaded by Harper at runtime; normal npm supply-chain and update risk remains confined to development and CI.
 - Environment interaction: No binary compilation, global mutation, or polyfill installation. The tests point the client at an isolated local Harper instance rather than the OpenAI service.
 - Overlap: Harper's gateway implementation uses native `fetch`, and most protocol cases are also covered by direct HTTP tests. The SDK remains necessary because its own defaults and decoders are the behavior this acceptance test promises to support.
-- Can be deferred: Yes. It is loaded only by the `/v1` integration suite.
+- Can be deferred: Yes. Run `npm ci --ignore-scripts --prefix integrationTests`, then set `HARPER_V1_CLIENT_COMPATIBILITY=1` when running `integrationTests/server/v1-gateway.test.ts`. Without the flag, the real-client cases are reported as skipped while the raw protocol cases continue to run.
 - Eventual removal: Remove it if unmodified OpenAI-client compatibility is no longer supported or if this acceptance coverage moves to a separately versioned compatibility harness.
 
-## @langchain/openai (devDependency)
+## @langchain/openai (isolated integration-test devDependency)
 
 - Need for usage: Runs chat, streaming-chat, and embeddings acceptance tests through an unmodified LangChain.js client (#1856 / #631). This exposed the gateway's missing `encoding_format: 'base64'` behavior: LangChain's OpenAI embeddings wrapper requests and decodes base64 by default, so a hand-written client would not have caught the silent vector corruption.
-- Classification: Development dependency only. It is dynamically imported by the integration suite and is pruned from Harper's published runtime dependency tree.
-- Size/memory cost: The current lock adds 12 packages and roughly 50 MB unpacked, dominated by `js-tiktoken`, `@langchain/core`, `langsmith`, and a nested `openai@6` client. LangChain's `openai@^6.41.0` range does not accept Harper's direct `openai@7` devDependency, so both SDK majors are installed. Install cost applies to development and CI; memory cost applies only during this integration suite.
+- Classification: Exact-pinned development dependency in `integrationTests/package.json`, sharing the isolated integration-test lockfile and dedicated Node 24 compatibility job with `openai`. Root installs do not include it, lifecycle scripts are disabled during its CI install, and it is absent from Harper's published runtime dependency tree.
+- Size/memory cost: The isolated lock adds 12 packages and roughly 50 MB unpacked, dominated by `js-tiktoken`, `@langchain/core`, `langsmith`, and a nested `openai@6` client. LangChain's `openai@^6.41.0` range does not accept the directly tested `openai@7`, so both SDK majors are installed in `integrationTests/node_modules`. The cost no longer applies to ordinary development installs, build artifacts, or the general CI matrix.
 - Security: The direct package received full Socket scores, but Socket flags transitive `js-tiktoken@1.0.21` as likely obfuscated. Its package size is primarily bundled encoded BPE rank data in ESM and CommonJS builds; inspection found no dynamic code execution, process spawning, or runtime network access in the distribution. The residual supply-chain risk is accepted for this dev-only compatibility test and does not enter Harper's published runtime dependency tree.
 - Environment interaction: No binary compilation, global mutation, or polyfill installation. The tests use an isolated local Harper instance and a minted test operation token.
 - Overlap: It wraps the official OpenAI client and duplicates capabilities that direct HTTP and OpenAI-SDK tests already exercise. That overlap is deliberate: the acceptance criterion is compatibility with LangChain's real adapter behavior, not only with the underlying wire protocol.
-- Can be deferred: Yes. It is loaded only by the `/v1` integration suite.
+- Can be deferred: Yes. It uses the same explicit isolated install and `HARPER_V1_CLIENT_COMPATIBILITY=1` opt-in as the OpenAI client tests.
 - Eventual removal: Remove it if LangChain compatibility is no longer supported or move it to a separately versioned compatibility harness if its transitive graph becomes too costly for every development and CI install.
 
 ## typescript@7 (not a dependency — invoked via npx, pinned separately from the `typescript` devDependency)

@@ -10,6 +10,7 @@
 
 # Dependencies
 /node_modules/
+/integrationTests/node_modules/
 yarn.lock
 pnpm-lock.yaml
 npm-shrinkwrap.json

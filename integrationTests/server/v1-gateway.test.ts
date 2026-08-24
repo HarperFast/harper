@@ -8,10 +8,11 @@
  *   POST /v1/embeddings           — embed a string
  *   POST /v1/chat/completions     — non-streaming and streaming chat
  *
- * The streaming test uses the real OpenAI Node.js SDK to confirm that the
- * SSE framing (openaiStream → serializeStream → HTTP) is parseable by an
- * unmodified OpenAI client. See the SSE serving-path note in chatCompletions.ts
- * for why `stream: true` routes through `post()` rather than `connect()`.
+ * The dedicated client-compatibility lane uses the real OpenAI Node.js SDK to
+ * confirm that the SSE framing (openaiStream → serializeStream → HTTP) is
+ * parseable by an unmodified OpenAI client. See the SSE serving-path note in
+ * chatCompletions.ts for why `stream: true` routes through `post()` rather than
+ * `connect()`.
  *
  * The LangChain.js tests do the same with an unmodified `@langchain/openai`
  * client (chat, streaming chat, embeddings), closing out the #631 acceptance
@@ -35,6 +36,15 @@ import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ECHO_BACKEND_PATH = resolvePath(__dirname, 'fixtures/v1-gateway-test-backend.cjs');
+const CLIENT_COMPATIBILITY_ENABLED = process.env.HARPER_V1_CLIENT_COMPATIBILITY === '1';
+const clientCompatibilityTest = CLIENT_COMPATIBILITY_ENABLED ? test : test.skip;
+
+if (process.env.GITHUB_JOB === 'v1-client-compatibility') {
+	assert.ok(
+		CLIENT_COMPATIBILITY_ENABLED,
+		'v1-client-compatibility must set HARPER_V1_CLIENT_COMPATIBILITY=1 so the real-client tests cannot silently skip'
+	);
+}
 
 function restUrl(ctx: ContextWithHarper, path: string): string {
 	return `${ctx.harper.httpURL}${path}`;
@@ -314,37 +324,40 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 	// POST /v1/chat/completions — streaming via real OpenAI SDK
 	// -----------------------------------------------------------------------
 
-	test('streaming chat completions are parseable by the real OpenAI SDK (stream: true)', async () => {
-		// The OpenAI SDK sends Accept: application/json even for streaming requests,
-		// so the stream: true request lands in post() via Harper's REST layer.
-		// This test validates the full SSE framing path end-to-end.
-		const { OpenAI } = (await import('openai')) as { OpenAI: new (opts: object) => any };
-		const client = new OpenAI({
-			apiKey: await mintOperationToken(ctx),
-			baseURL: `${ctx.harper.httpURL}/v1`,
-		});
+	clientCompatibilityTest(
+		'streaming chat completions are parseable by the real OpenAI SDK (stream: true)',
+		async () => {
+			// The OpenAI SDK sends Accept: application/json even for streaming requests,
+			// so the stream: true request lands in post() via Harper's REST layer.
+			// This test validates the full SSE framing path end-to-end.
+			const { OpenAI } = (await import('openai')) as { OpenAI: new (opts: object) => any };
+			const client = new OpenAI({
+				apiKey: await mintOperationToken(ctx),
+				baseURL: `${ctx.harper.httpURL}/v1`,
+			});
 
-		const chunks: string[] = [];
-		const stream = client.chat.completions.stream({
-			model: 'default',
-			messages: [{ role: 'user', content: 'tell me something' }],
-		});
+			const chunks: string[] = [];
+			const stream = client.chat.completions.stream({
+				model: 'default',
+				messages: [{ role: 'user', content: 'tell me something' }],
+			});
 
-		for await (const chunk of stream) {
-			const delta = chunk.choices[0]?.delta?.content;
-			if (delta) chunks.push(delta);
+			for await (const chunk of stream) {
+				const delta = chunk.choices[0]?.delta?.content;
+				if (delta) chunks.push(delta);
+			}
+
+			const content = chunks.join('');
+			assert.ok(content.length > 0, 'expected non-empty streamed content');
+			assert.ok(content.includes('[echo stream]'), `unexpected content: ${content}`);
+
+			const completion = await stream.finalChatCompletion();
+			assert.equal(completion.object, 'chat.completion');
+			assert.equal(completion.choices[0].finish_reason, 'stop');
 		}
+	);
 
-		const content = chunks.join('');
-		assert.ok(content.length > 0, 'expected non-empty streamed content');
-		assert.ok(content.includes('[echo stream]'), `unexpected content: ${content}`);
-
-		const completion = await stream.finalChatCompletion();
-		assert.equal(completion.object, 'chat.completion');
-		assert.equal(completion.choices[0].finish_reason, 'stop');
-	});
-
-	test('LangChain.js ChatOpenAI completes a chat against Harper (non-streaming)', async () => {
+	clientCompatibilityTest('LangChain.js ChatOpenAI completes a chat against Harper (non-streaming)', async () => {
 		const { ChatOpenAI } = await import('@langchain/openai');
 		const chat = new ChatOpenAI({
 			model: 'default',
@@ -359,7 +372,7 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		assert.ok(res.usage_metadata.total_tokens > 0, 'expected non-zero total_tokens');
 	});
 
-	test('LangChain.js ChatOpenAI streams a chat against Harper', async () => {
+	clientCompatibilityTest('LangChain.js ChatOpenAI streams a chat against Harper', async () => {
 		// LangChain sends stream_options: { include_usage: true } by default; the
 		// gateway ignores unknown request fields, and LangChain tolerates the
 		// absence of a trailing usage chunk.
@@ -381,7 +394,7 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		assert.ok(content.includes('[echo stream]'), `unexpected content: ${content}`);
 	});
 
-	test('LangChain.js OpenAIEmbeddings embeds a query against Harper', async () => {
+	clientCompatibilityTest('LangChain.js OpenAIEmbeddings embeds a query against Harper', async () => {
 		const { OpenAIEmbeddings } = await import('@langchain/openai');
 		const embeddings = new OpenAIEmbeddings({
 			model: 'default',
