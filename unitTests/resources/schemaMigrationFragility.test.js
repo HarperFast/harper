@@ -529,7 +529,9 @@ describe('schema relationship catalog round-trip', () => {
 			type RelationshipHost @table(database: "${DB}") {
 				id: ID @primaryKey
 				locationId: ID @indexed
+				locationIds: [ID] @indexed
 				location: RelationshipLocation @relationship(from: "locationId") @enumerable
+				locations: [RelationshipLocation] @relationship(from: "locationIds", filterMissing: true)
 			}
 		`);
 		host = getDatabases()[DB].RelationshipHost;
@@ -551,6 +553,14 @@ describe('schema relationship catalog round-trip', () => {
 				name: 'location',
 				type: 'RelationshipLocation',
 				relationship: { from: 'locationId' },
+				target: { database: DB, table: 'RelationshipLocation' },
+			},
+			{
+				name: 'locations',
+				type: 'array',
+				elements: { type: 'RelationshipLocation' },
+				// the GraphQL parser yields the string "true"; the resolver reads it for truthiness
+				relationship: { from: 'locationIds', filterMissing: true },
 				target: { database: DB, table: 'RelationshipLocation' },
 			},
 		]);
@@ -641,7 +651,7 @@ describe('schema relationship catalog round-trip', () => {
 	it('does not let a non-authoring attribute update erase relationship definitions', async () => {
 		await host.addAttributes([{ name: 'notes' }]);
 		await host.dbisDB.committed;
-		assert.strictEqual(host.dbisDB.getSync('RelationshipHost/').relationships.length, 1);
+		assert.strictEqual(host.dbisDB.getSync('RelationshipHost/').relationships.length, 2);
 	});
 
 	it('does not overwrite a drop tombstone while reconciling relationships', async () => {
@@ -718,6 +728,71 @@ describe('schema relationship catalog round-trip', () => {
 		resetDatabases();
 		assert.ok(!getDatabases()[DB].RelationshipHost.attributes.some((attribute) => attribute.name === 'location'));
 		assert.ok(!getDatabases()[DB].RelationshipLocation.attributes.some((attribute) => attribute.name === 'hosts'));
+	});
+});
+
+describe('schema relationship catalog on a legacy named primary descriptor', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 'relationshipCatalogLegacyDescriptor';
+	const testRoot = path.resolve(__dirname, '../envDir/relationshipCatalogLegacyDescriptor');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+	let source;
+	let target;
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+		resetDatabases();
+		await loadGQLSchema(`
+			type LegacySource @table(database: "${DB}") {
+				id: ID @primaryKey
+				targetId: ID @indexed
+				target: LegacyTarget @relationship(from: "targetId")
+			}
+			type LegacyTarget @table(database: "${DB}") {
+				id: ID @primaryKey
+				label: String
+			}
+		`);
+		source = getDatabases()[DB].LegacySource;
+		target = getDatabases()[DB].LegacyTarget;
+		await source.dbisDB.committed;
+	});
+
+	after(async () => {
+		await fs.remove(testRoot);
+	});
+
+	// pre-5.x catalogs keep a table's settings on the primary key's own row, but dropTable() always
+	// tombstones the bare row, so a drop in flight is only visible there
+	it('refuses to update a named descriptor while the bare table row carries a drop tombstone', async () => {
+		const original = source.dbisDB.getSync('LegacySource/');
+		await source.dbisDB.put('LegacySource/id', { ...original, attribute: 'id', relationships: [] });
+		await source.dbisDB.put('LegacySource/', { ...original, dropping: true });
+		table({
+			table: 'LegacySource',
+			database: DB,
+			schemaDefined: true,
+			schemaRelationshipsDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'targetId', type: 'ID', indexed: {} },
+				{
+					name: 'target',
+					type: 'LegacyTarget',
+					relationship: { from: 'targetId' },
+					relationshipReference: { database: DB, table: 'LegacyTarget' },
+					definition: { tableClass: target },
+				},
+			],
+		});
+		assert.deepStrictEqual(source.dbisDB.getSync('LegacySource/id').relationships, []);
 	});
 });
 

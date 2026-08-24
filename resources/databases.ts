@@ -129,8 +129,10 @@ function normalizeRelationships(attributes: any[]): PersistedRelationship[] {
 		const relationship: PersistedRelationship['relationship'] = {};
 		if (typeof attribute.relationship.from === 'string') relationship.from = attribute.relationship.from;
 		if (typeof attribute.relationship.to === 'string') relationship.to = attribute.relationship.to;
-		if (typeof attribute.relationship.filterMissing === 'boolean')
-			relationship.filterMissing = attribute.relationship.filterMissing;
+		// the GraphQL parser hands every directive argument over as a string, and the resolver reads
+		// filterMissing for truthiness, so persist what the resolver would see rather than the literal
+		if (attribute.relationship.filterMissing !== undefined)
+			relationship.filterMissing = Boolean(attribute.relationship.filterMissing);
 		if (!relationship.from && !relationship.to) continue;
 		const definition: PersistedRelationship = {
 			name: attribute.name,
@@ -2219,7 +2221,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				) {
 					exclusiveLock();
 					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
-					if (!currentPrimaryAttribute || currentPrimaryAttribute.dropping) continue;
+					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
 					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing();
@@ -2410,7 +2412,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// a missing row means a concurrent drop completed; writing one back would resurrect the table
 				if (
 					currentPrimaryAttribute &&
-					!currentPrimaryAttribute.dropping &&
+					!tableIsDropping(currentPrimaryAttribute, relationshipsKey) &&
 					!relationshipListsEqual(currentPrimaryAttribute.relationships, relationshipDefinitions)
 				) {
 					attributesDbi.put(relationshipsKey, { ...currentPrimaryAttribute, relationships: relationshipDefinitions });
@@ -2446,6 +2448,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;
+	// dropTable() tombstones the bare table row, which is not the row a legacy catalog keeps the
+	// table's settings in, so a drop in flight has to be checked on both.
+	function tableIsDropping(descriptor: any, descriptorKey: string) {
+		if (descriptor?.dropping) return true;
+		return descriptorKey !== tableName + '/' && attributesDbi.getSync(tableName + '/')?.dropping;
+	}
 	// The catalog row initStores() reads a table's settings from: the primary key's own row when it
 	// has one, and the bare table row otherwise.
 	function primaryDescriptorKey() {
