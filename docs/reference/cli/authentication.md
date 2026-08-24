@@ -46,6 +46,18 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 6. A token saved by `harper login`
 7. `username=` and `password=` operation parameters (legacy fallback)
 
+:::tip
+**Configure one credential style per context, not two.** Precedence exists to resolve a conflict, but it resolves it silently, and the ways this page describes for authentication to go wrong all need two styles live at once: a payload `username=`/`password=` pair takes over when a token stops resolving, a blank token variable hands the run to whatever saved login the machine has. Pick one and leave the others unset:
+
+| Context                 | Use                                 |
+| ----------------------- | ----------------------------------- |
+| CI/CD pipeline          | `HARPER_CLI_REFRESH_TOKEN`          |
+| A one-off admin command | `auth_username=` / `auth_password=` |
+| Local development       | `harper login`                      |
+
+Setting a token _and_ leaving `username=`/`password=` on the command is the combination that turns a token failure into an identity change rather than an error.
+:::
+
 Credentials are resolved as a pair and are never combined across sources. An incomplete pair supplied with dedicated authentication parameters or in the target URL causes the command to fail. An incomplete environment-variable pair is skipped with a warning so that a saved login token can still be used.
 
 Entry 5 is not a two-step fallback the way 3 and 4 are: whichever token namespace is merely **set** claims the choice, so a blank `HARPER_CLI_REFRESH_TOKEN` shadows a complete `CLI_TARGET_REFRESH_TOKEN` instead of deferring to it — see below.
@@ -108,7 +120,7 @@ The same rule holds for tokens: whichever namespace supplies a token owns both h
 
 The namespace is chosen by which one is **set**, not by which one has a usable value — so `HARPER_CLI_REFRESH_TOKEN=` (present but empty) claims the choice and shadows a perfectly good `CLI_TARGET_REFRESH_TOKEN`, which is never consulted. The run then falls through to the saved login token. Unset the preferred variable rather than blanking it.
 
-For a pipeline, prefer a token over `HARPER_CLI_PASSWORD`: it is scoped to authentication, it can be revoked without changing the account password, and it cannot be used to log in interactively. See [Token credentials for CI/CD](#token-credentials-for-cicd).
+For a pipeline, a token is the right style: it is scoped to authentication, it can be revoked without changing the account password, and it cannot be used to log in interactively. Use it _instead of_ a password or payload credentials, not alongside them — see [Token credentials for CI/CD](#token-credentials-for-cicd).
 
 **Example `.env` file**:
 
@@ -215,7 +227,7 @@ Expose the two values to the deploy step and no other credentials are needed:
 :::warning
 **An expired refresh token does not stop the command.** Harper answers expiry with `403`, not `401` — `validateRefreshToken` maps `TokenExpiredError` to `FORBIDDEN` — and the CLI's halt branch keys on `401` alone. Expiry is the guaranteed end state of every `--for-ci` token once `refreshTokenTimeout` elapses, so this is the failure a pipeline is most likely to meet, and it takes the continue path below rather than halting.
 
-Do not build a runbook around a non-zero exit at day 31. Watch the operation's own result instead, and keep payload `username=`/`password=` off any command you expect a token to authenticate.
+Do not build a runbook around a non-zero exit at day 31. Watch the operation's own result instead. This is the failure the one-style rule above exists to contain: with no payload credentials on the command, an expired token fails visibly instead of silently changing identity.
 :::
 
 A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
