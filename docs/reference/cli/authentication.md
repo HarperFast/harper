@@ -62,7 +62,7 @@ Credentials are resolved as a pair and are never combined across sources. An inc
 
 Entry 5 is not a two-step fallback the way 3 and 4 are: whichever token namespace is merely **set** claims the choice, so a blank `HARPER_CLI_REFRESH_TOKEN` shadows a complete `CLI_TARGET_REFRESH_TOKEN` instead of deferring to it — see below.
 
-Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts, so token environment variables are deliberately ignored there — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected. Note what that trust means on a self-hosted runner: an unset or blank `target` does not fail. The CLI falls back to the target saved by a previous `harper login` on that machine, and only if there is none does it go local — where it runs as superuser on the socket's ambient trust, with no credential checked at all. So a job that loses its `HARPER_CLI_TARGET` either deploys to whatever remote that runner last logged into, or to the runner's own node. Neither is an error, and the first is the wider blast radius.
+Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts — as, by default, it trusts any loopback address, since `authentication.authorizeLocal` defaults to `true`. Token environment variables are deliberately ignored on the socket path — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected. Note what that trust means on a self-hosted runner: an unset or blank `target` does not fail. The CLI falls back to the target saved by a previous `harper login` on that machine, and only if there is none does it go local — where it runs as superuser on the socket's ambient trust, with no credential checked at all. So a job that loses its `HARPER_CLI_TARGET` either deploys to whatever remote that runner last logged into, or to the runner's own node. Neither is an error, and the first is the wider blast radius.
 
 Before v5.2.0, `username=` and `password=` operation parameters took precedence over environment variables and saved login tokens. This could authenticate an operation as the wrong user when those fields were part of the operation payload, such as the user being created by `add_user`.
 
@@ -198,9 +198,6 @@ Rather than storing an admin password in your CI provider, log in once locally a
 ```bash
 # Set both GitHub Actions secrets in one command — the token is never displayed
 harper login --for-ci | gh secret set --env-file -
-
-# Or copy them to the clipboard to paste in by hand
-harper login --for-ci | pbcopy
 ```
 
 The block it emits:
@@ -210,7 +207,7 @@ HARPER_CLI_TARGET=https://example.com:9925/
 HARPER_CLI_REFRESH_TOKEN=eyJhbGciOi...
 ```
 
-Because stdout carries only these two lines, piping it keeps the token off your screen and out of your shell history — which is not true of copying it out of terminal output by hand. **Pipe it.** There is no guard on a terminal stdout, so running `harper login --for-ci` bare prints the refresh token into your scrollback, where the terminal may persist it. (Interactively the command does first ask you to confirm minting for that user, since doing so revokes any token the user already holds; that prompt is skipped when stdin is not a TTY.) If the cluster returns no refresh token, the command fails rather than emitting a half-block that would "succeed" at storing nothing.
+Because stdout carries only these two lines, piping it into a secret store keeps the token off your screen and out of your shell history. Piping it to the clipboard does not: a clipboard-history tool will keep a copy on disk, and since a user holds exactly one refresh token at a time, that copy is the pipeline's live credential. Pipe it to the thing that will store it — which is not true of copying it out of terminal output by hand. **Pipe it.** There is no guard on a terminal stdout, so running `harper login --for-ci` bare prints the refresh token into your scrollback, where the terminal may persist it. (Interactively the command does first ask you to confirm minting for that user, since doing so revokes any token the user already holds; that prompt is skipped when stdin is not a TTY.) If the cluster returns no refresh token, the command fails rather than emitting a half-block that would "succeed" at storing nothing.
 
 Expose the two values to the deploy step and no other credentials are needed:
 
@@ -232,8 +229,9 @@ Do not build a runbook around a non-zero exit at day 31. Watch the operation's o
 
 A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
 
-- **Refresh token only** (what `--for-ci` provisions): no bearer token is attached. The command either fails as unauthenticated or, if it also carries `username=` and `password=` operation parameters, authenticates as that pair instead — a different identity than the one you configured.
-- **An expired operation token as well**: that expired token is still attached, so the request goes out carrying it and the server rejects it. You get a 401 rather than a silent identity switch.
+- **Refresh token only** (what `--for-ci` provisions): no bearer token is attached. Against a remote target the command fails as unauthenticated — unless it also carries `username=` and `password=` operation parameters, in which case it authenticates as that pair instead, a different identity than the one you configured.
+- **Refresh token only, against a loopback target**: it does not fail at all. `authentication.authorizeLocal` defaults to `true`, so a request from `127.0.0.1` or `::1` is authenticated as **superuser** with no credential checked. On a self-hosted runner pointed at its own node, an expired token therefore produces a green, fully privileged run rather than an error. This is the failure mode least likely to be noticed.
+- **An expired operation token as well**: that expired token is still attached, so the request goes out carrying it and the server rejects it with `403` — token expiry answers `403` on the operations path too, since both token types are checked by the same validator. You get a rejection rather than a silent identity switch, but do not alarm on `401` for it.
 
 A `200` response that contains no `operation_token` is not reported at all. A refresh failure therefore does not reliably halt a pipeline, and a zero exit is not proof that the identity you configured is the one that ran.
 

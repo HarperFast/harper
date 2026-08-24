@@ -174,9 +174,6 @@ Prints `HARPER_CLI_TARGET` and `HARPER_CLI_REFRESH_TOKEN` to **stdout** in `.env
 ```bash
 # Set both GitHub Actions secrets in one command
 harper login --for-ci | gh secret set --env-file -
-
-# Or copy them to paste in by hand
-harper login --for-ci | pbcopy
 ```
 
 Run this as a **dedicated CI user**, not your own account: a user holds only one valid refresh token at a time, so issuing one for CI revokes any other token that user already had. See [Token credentials for CI/CD](authentication.md#token-credentials-for-cicd) for how the CLI consumes these variables and where they sit in authentication precedence.
