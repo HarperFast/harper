@@ -50,7 +50,7 @@ Credentials are resolved as a pair and are never combined across sources. An inc
 
 Entry 5 is not a two-step fallback the way 3 and 4 are: whichever token namespace is merely **set** claims the choice, so a blank `HARPER_CLI_REFRESH_TOKEN` shadows a complete `CLI_TARGET_REFRESH_TOKEN` instead of deferring to it — see below.
 
-Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts, so token environment variables are deliberately ignored there — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected. Note what that trust means on a self-hosted runner: an unset or blank `target` does not fail, it resolves to the local instance and runs as superuser on the socket's ambient trust, with no credential checked at all. A job that loses its `HARPER_CLI_TARGET` deploys to the runner's own node rather than erroring.
+Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts, so token environment variables are deliberately ignored there — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected. Note what that trust means on a self-hosted runner: an unset or blank `target` does not fail. The CLI falls back to the target saved by a previous `harper login` on that machine, and only if there is none does it go local — where it runs as superuser on the socket's ambient trust, with no credential checked at all. So a job that loses its `HARPER_CLI_TARGET` either deploys to whatever remote that runner last logged into, or to the runner's own node. Neither is an error, and the first is the wider blast radius.
 
 Before v5.2.0, `username=` and `password=` operation parameters took precedence over environment variables and saved login tokens. This could authenticate an operation as the wrong user when those fields were part of the operation payload, such as the user being created by `add_user`.
 
@@ -104,7 +104,7 @@ Starting in v5.2.0, a complete environment-variable credential pair takes preced
 
 Each credential namespace is independent. For example, the CLI never combines `HARPER_CLI_USERNAME` with `CLI_TARGET_PASSWORD`. If either namespace supplies only a username or only a password, that incomplete pair is skipped with a warning.
 
-The same rule holds for tokens, and for the same reason: whichever namespace supplies a token owns both halves of it. If `HARPER_CLI_OPERATION_TOKEN` were allowed to pair with `CLI_TARGET_REFRESH_TOKEN`, commands would run as the first identity until its operation token expired and then silently continue as the second.
+The same rule holds for tokens: whichever namespace supplies a token owns both halves of it, so an operation token from one namespace is never paired with a refresh token from the other.
 
 The namespace is chosen by which one is **set**, not by which one has a usable value — so `HARPER_CLI_REFRESH_TOKEN=` (present but empty) claims the choice and shadows a perfectly good `CLI_TARGET_REFRESH_TOKEN`, which is never consulted. The run then falls through to the saved login token. Unset the preferred variable rather than blanking it.
 
@@ -223,9 +223,9 @@ A `403`, and any other refresh failure — a 5xx, a timeout, a connection error 
 - **Refresh token only** (what `--for-ci` provisions): no bearer token is attached. The command either fails as unauthenticated or, if it also carries `username=` and `password=` operation parameters, authenticates as that pair instead — a different identity than the one you configured.
 - **An expired operation token as well**: that expired token is still attached, so the request goes out carrying it and the server rejects it. You get a 401 rather than a silent identity switch.
 
-A `200` response that contains no `operation_token` is not reported at all. So do not rely on a refresh failure to halt a pipeline, and do not read a successful exit as proof that the identity you configured is the one that ran.
+A `200` response that contains no `operation_token` is not reported at all. A refresh failure therefore does not reliably halt a pipeline, and a zero exit is not proof that the identity you configured is the one that ran.
 
-**A blank token variable is reported, then skipped.** If a namespace is set but empty — the usual shape of a misconfigured CI secret — the CLI warns and continues down the precedence list, so the run proceeds under the saved `harper login` token if that machine has one. The warning is the only thing separating this from silently deploying as whoever last logged in, so treat it as a failure signal in CI rather than assuming a blank secret stops the run.
+**A blank token variable is reported, then skipped.** If a namespace is set but empty — the usual shape of a misconfigured CI secret — the CLI warns and continues down the precedence list, so the run proceeds under the saved `harper login` token if that machine has one. Treat that warning as a CI failure signal: a blank secret does not stop the run, it changes which identity performs it.
 
 **Lifetimes.** Operation tokens expire after `authentication.operationTokenTimeout` (default `1d`) and refresh tokens after `authentication.refreshTokenTimeout` (default `30d`). The pipeline needs a new refresh token when that window closes.
 
