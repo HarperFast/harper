@@ -224,7 +224,11 @@ Expose the two values to the deploy step and no other credentials are needed:
 :::warning
 **An expired refresh token does not stop the command.** Harper answers expiry with `403`, not `401`, and the CLI's halt branch keys on `401` alone. This is a defect rather than intended behavior, tracked as [harper#2297](https://github.com/HarperFast/harper/issues/2297); this note should come out when it is fixed. Expiry is the guaranteed end state of every `--for-ci` token once `refreshTokenTimeout` elapses, so this is the failure a pipeline is most likely to meet, and it takes the continue path below rather than halting.
 
-Do not build a runbook around a non-zero exit at day 31. Watch the operation's own result instead — and note that on a **loopback target the operation succeeds**, because `authentication.authorizeLocal` defaults to `true` and grants superuser to any request from `127.0.0.1` or `::1`. Removing payload credentials makes expiry fail visibly against a _remote_ target; it does not help against a local one, where the run comes back green and fully privileged. A self-hosted runner deploying to its own node needs a check on the operation's result, not on its exit code.
+Do not build a runbook around a non-zero exit at day 31 — watch the operation's own result. That is sufficient for a **remote** target, where removing payload credentials makes expiry fail visibly.
+
+It is not sufficient for a **loopback** target. `authentication.authorizeLocal` defaults to `true` and grants superuser to any request from `127.0.0.1` or `::1`, so an expired token there produces a genuinely successful, fully privileged run — indistinguishable from a correctly authenticated one. No check on the exit code or the result can catch it, because there is nothing failing to observe.
+
+The fix is configuration, not monitoring: either do not point CI at a loopback address, or set `authentication.authorizeLocal: false` on any node a runner can reach. Turning it off does not break local `harper` commands — those go over the domain socket, which is trusted by a separate rule.
 :::
 
 A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
