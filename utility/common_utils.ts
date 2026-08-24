@@ -869,4 +869,34 @@ export function convertToMS(interval: any) {
 	}
 	return seconds * 1000;
 }
+
+/**
+ * Render a millisecond duration as a compact human-readable string, e.g. `1d 3h 8m 22s`. Drops only
+ * the leading zero units (`5000` → `5s`, `90000` → `1m 30s`) and floors sub-second, negative, and
+ * non-finite values (`NaN`/`Infinity`, e.g. from `convertToMS('abc')`) to `0s`. Roughly the inverse
+ * of {@link convertToMS}, but caps at days — years/months are ambiguous spans (leap years, 30-day
+ * months) and not meaningful for the elapsed-time readouts this serves.
+ */
+export function prettyDuration(ms: number): string {
+	if (!Number.isFinite(ms)) return '0s';
+	let seconds = Math.max(0, Math.floor(ms / 1000));
+	const days = Math.floor(seconds / 86400);
+	seconds %= 86400;
+	const hours = Math.floor(seconds / 3600);
+	seconds %= 3600;
+	const minutes = Math.floor(seconds / 60);
+	seconds %= 60;
+	const units: [number, string][] = [
+		[days, 'd'],
+		[hours, 'h'],
+		[minutes, 'm'],
+		[seconds, 's'],
+	];
+	const firstIdx = units.findIndex(([value]) => value > 0);
+	const start = firstIdx === -1 ? units.length - 1 : firstIdx;
+	return units
+		.slice(start)
+		.map(([value, unit]) => `${value}${unit}`)
+		.join(' ');
+}
 import * as hdbErrors from './errors/commonErrors.ts';

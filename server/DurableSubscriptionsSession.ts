@@ -32,6 +32,24 @@ function getDurableSession() {
 	return _DurableSession;
 }
 let _LastWill: any;
+/**
+ * A scoped token's only revocation is expiry, so its will must not publish past it. Keyed off the
+ * persisted will principal (not any live session user) so both will paths agree on one source.
+ * Fails closed: a scoped will with no recorded expiry is treated as expired rather than published.
+ */
+function isWillFromExpiredScopedToken(will: any): boolean {
+	const user = will?.user;
+	if (!user?._scopedToken) return false;
+	return !user.authExpiresAt || user.authExpiresAt * 1000 <= Date.now();
+}
+
+/** Drops the runtime-only pre-expanded operations Set so the permission set is storage-safe. */
+function stripRuntimePermissionState(permission: any): any {
+	if (!permission || typeof permission !== 'object') return permission;
+	const { _expandedOperations, ...durable } = permission;
+	return durable;
+}
+
 function getLastWill() {
 	if (!_LastWill) {
 		_LastWill = table({
@@ -56,13 +74,23 @@ if (getWorkerIndex() === 0) {
 		for await (const will of getLastWill().search({})) {
 			const data = will.data;
 			const message = { ...will };
-			if (message.user?.username) message.user = await (server as any).getUser(message.user.username);
 			try {
-				await publishMessage(message, data, message);
+				if (message.user?._scopedToken) {
+					// A scoped token's username is attribution only; never rehydrate it by name (that could
+					// substitute a real principal). The will carries the token's own downgraded role.
+					if (!isWillFromExpiredScopedToken(message)) {
+						await publishMessage(message, data, message);
+					} else warn('Dropping will from an expired scoped token', data);
+				} else {
+					if (message.user?.username) message.user = await (server as any).getUser(message.user.username);
+					await publishMessage(message, data, message);
+				}
+				await getLastWill().delete(will.id);
 			} catch {
+				// One will's publish/delete failure must not abort replay of the rest; the row stays and
+				// is retried on the next restart.
 				warn('Failed to publish will', data);
 			}
-			getLastWill().delete(will.id);
 		}
 	})();
 }
@@ -125,7 +153,22 @@ export async function getSession({
 	}
 	if (will) {
 		will.id = sessionId;
-		will.user = { username: user?.username };
+		// A scoped-token bearer's will must carry the token's own role and expiry: its username is
+		// attribution only and cannot be rehydrated from hdb_user at replay time. Persist only the
+		// durable permission fields — not the runtime-only _expandedOperations Set, which is rebuilt
+		// on read and would not round-trip through storage.
+		will.user = user?._scopedToken
+			? {
+					username: user.username,
+					_scopedToken: true,
+					authExpiresAt: user.authExpiresAt,
+					role: user.role && {
+						role: user.role.role,
+						id: user.role.id,
+						permission: stripRuntimePermissionState(user.role.permission),
+					},
+				}
+			: { username: user?.username };
 		// Must be durably persisted before CONNACK is sent (getSession() resolving is what lets
 		// mqtt.ts send CONNACK). Otherwise a client that connects and then disconnects abruptly
 		// (no DISCONNECT packet) can race ahead of this write: SubscriptionsSession.disconnect()
@@ -382,8 +425,11 @@ class SubscriptionsSession {
 			try {
 				if (!clientTerminated) {
 					const will = await getLastWill().get(this.sessionId);
-					if (will) {
-						await publishMessage(will, will.data, context);
+					if (will && !isWillFromExpiredScopedToken(will)) {
+						// A scoped will authorizes under its own embedded role, never the disconnecting
+						// session's user (which may be a later same-clientId reconnect).
+						const willContext = will.user?._scopedToken ? { ...context, user: will.user } : context;
+						await publishMessage(will, will.data, willContext);
 					}
 				}
 			} finally {

@@ -43,11 +43,16 @@ function dequantizeInt8(q: Int8Array, scale: number): number[] {
 
 // Auto-scaled search ef, used only when an index does not explicitly configure efConstructionSearch
 // and a query does not pass its own ef. A fixed ef makes recall decay as the graph grows (it explores
-// a shrinking fraction of the graph), so ef grows with sqrt(node count), capped to bound search cost.
-// Constants from a recall/latency-vs-N sweep (768-dim cosine, int8): ef≈400 holds ~0.8 recall@10 from
-// 5K–30K, and the recall/latency tradeoff is steep (ef 800 at 30K ≈ 0.92 recall but ~2s p50), so the
-// cap deliberately favors latency — apps wanting higher recall set efConstructionSearch or a per-query
-// ef. Tune as graph build quality / larger-N data improves.
+// a shrinking fraction of the graph), so ef grows with sqrt(node count) in two regimes, with a
+// ceiling to bound search cost. The first regime's constants come from the original recall/latency
+// sweep (5K-30K, 768-dim cosine, int8) and plateau at AUTO_EF_MAX from ~13K nodes; that plateau was
+// calibrated when layers above 0 were searched at the full ef, which made large efs cost seconds.
+// After the greedy-descent fix (#2125) ef 1024 at 5M nodes costs ~45ms, and the measured decay at a
+// pinned 512 (set-recall 0.997 -> 0.955 -> 0.935 across 1M/2M/5M on well-built graphs, #2181) is
+// recall left on the table, so past AUTO_EF_LARGE_REF nodes the scale resumes from that plateau and
+// runs to AUTO_EF_CEILING. Validated against the same sweeps: the second regime resolves 1,145 at
+// 5M, and the measured ef-1024 point there holds 0.985. Apps preferring latency pin
+// efConstructionSearch or a per-query ef; graphs past ~tens of millions of nodes should shard.
 const AUTO_EF_BASE = 100;
 // The index store holds a graph node plus a primary-key mapping per record, so a key count is twice
 // the node count. Sizes here are in nodes; this converts back for the one consumer still calibrated
@@ -58,7 +63,15 @@ const INDEX_KEYS_PER_NODE = 2;
 // a live count, so the resolved ef can differ from that formula by one at a rounding boundary.
 const AUTO_EF_REF = 500;
 const AUTO_EF_MAX = 512;
+// Nodes at which the second regime starts: 512 was measured sufficient through 1M (set-recall
+// 0.997) and short from 2M up, so the resumed curve is anchored to pass through (1M, 512).
+const AUTO_EF_LARGE_REF = 1_000_000;
+const AUTO_EF_CEILING = 2048;
 function autoScaleEf(nodeCount: number): number {
+	if (nodeCount > AUTO_EF_LARGE_REF) {
+		const scaled = Math.round(AUTO_EF_MAX * Math.sqrt(nodeCount / AUTO_EF_LARGE_REF));
+		return Math.min(AUTO_EF_CEILING, scaled);
+	}
 	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EF_REF)));
 	return Math.min(AUTO_EF_MAX, Math.max(AUTO_EF_BASE, scaled));
 }
@@ -69,10 +82,24 @@ function autoScaleEf(nodeCount: number): number {
 const ROUTING_EF = 1;
 // Ceiling on the ef a query's own `offset + limit` can ask for. `limit` is unprivileged and set on
 // every request, so this bounds what a caller can make one thread do synchronously: layer 0 holds
-// `ef` candidates in a sorted array with an O(len) insert. Kept within a small multiple of
-// AUTO_EF_MAX so the worst case stays the same order as the index's own auto-scaled ceiling; a
-// caller who genuinely wants more sets an explicit `ef` and owns the cost.
-const LIMIT_EF_MAX = 4 * AUTO_EF_MAX;
+// `ef` candidates in a sorted array with an O(len) insert. Kept within a small multiple of the
+// index's own auto-scaled ceiling so the worst case stays the same order. Schema and per-query ef
+// pins are authoritative cost ceilings; only an automatically scaled index widens from `limit`.
+const LIMIT_EF_MAX = 2 * AUTO_EF_CEILING;
+// Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
+// At a constant efConstruction, edge quality erodes as the graph grows until true neighbours become
+// unreachable at ANY search ef; the cap bounds per-insert cost. Measurements and policy in
+// DESIGN.md ("efConstruction and the search-ef ceiling both auto-scale with the graph") and #2180.
+const AUTO_EFC_REF = 250_000;
+// Validated to 447 (the 5M point, where the resulting graph held 0.985 set-recall at ef 1024); the
+// headroom to 1024 is the same sqrt curve extrapolated, binding at ~26M nodes. Build cost grows
+// with the curve (N^1.5 total under sqrt scaling), which is why the cap stays finite: past ~tens of
+// millions of nodes, sharded medium graphs beat one huge graph on both build and query cost.
+const AUTO_EFC_MAX = 1024;
+function autoScaleEfConstruction(nodeCount: number): number {
+	const scaled = Math.round(AUTO_EF_BASE * Math.sqrt(Math.max(1, nodeCount / AUTO_EFC_REF)));
+	return Math.min(AUTO_EFC_MAX, Math.max(AUTO_EF_BASE, scaled));
+}
 // How long a resolved graph size is reused before it is looked up again (see approximateNodeCount).
 // ef moves with the square root of the count and is capped, so a slightly stale size is immaterial;
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
@@ -182,22 +209,22 @@ export class HierarchicalNavigableSmallWorld {
 	// a value of 1 is extremely aggressive.
 	optimizeRouting = 0.5;
 	nodesVisitedCount = 0;
-	// Visit-budget multiplier for predicate-aware traversal (#1241). When a filter is selective enough
-	// that layer-0 results never fill `ef`, the "closest candidate worse than worst result" stop rule
-	// never triggers, so maxVisits = ef * filterExpansion caps how many nodes an under-filled filtered
-	// search visits before returning what it has (approximate, like all ANN). It does NOT bound a filter
-	// that fills `ef` — that terminates naturally. Default 24 (not the 8 the design sketch assumed):
-	// this HNSW visits a large fraction of the graph per query, so filling `ef` at selectivity `s` needs
-	// ~ef/s visits; a multiplier of 24 fills down to ~4% selectivity before the budget bites, keeping
-	// recall at or above post-filtering across the range the query planner routes to traversal. Raising
-	// it is nearly free for condition-derived filters (they fill and self-terminate); it mainly trades
-	// latency for recall on selective *function* predicates. Per-query override via the search options.
+	// Visit-budget multiplier for predicate-aware traversal (#1241). Under-filled filtered searches
+	// stop after the resolved budget ef * filterExpansion visits; automatic search ef contributes at
+	// most AUTO_EF_MAX, while explicit schema/query ef remains authoritative. A filter that fills its
+	// candidate list terminates naturally before this bound. Raising the multiplier mainly trades
+	// latency for recall on selective function predicates; 24 fills to roughly 4% selectivity before
+	// the budget binds. Per-query override via the search options.
 	filterExpansion = 24;
 
 	idIncrementer: BigInt64Array | undefined;
 	distance: (a: number[], b: number[]) => number;
 	int8 = true; // store vectors as int8-quantized bins by default; opt out with `quantization: "none"`
-	efSearchConfigured = false; // whether the schema set an explicit search ef; if not, search ef auto-scales with N
+	efSearchConfigured = false; // whether the schema pins search ef directly or through efConstruction
+	efConstructionConfigured = false; // whether the schema set an explicit efConstruction; if not, it auto-scales with N
+	private lastLoggedEfConstruction = 0;
+	private idIncrementerRetryAt = 0;
+	private idIncrementerFailureLogged = false;
 	// Caches the Int8Array-converted clone of a frozen (decoded-from-disk) int8 node, keyed by the
 	// frozen node the object store hands back. WeakMap so entries are collected when the store evicts
 	// the frozen node — without it, every cache hit on a frozen node would re-slice and re-clone.
@@ -212,8 +239,9 @@ export class HierarchicalNavigableSmallWorld {
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
 		this.int8 = options?.quantization !== 'none';
-		// Respect an explicitly-configured search ef (or efConstruction, which seeds it); otherwise auto-scale.
+		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.
 		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
+		this.efConstructionConfigured = options?.efConstruction !== undefined;
 		this.distance =
 			options?.distance === 'euclidean'
 				? euclideanDistance
@@ -258,24 +286,8 @@ export class HierarchicalNavigableSmallWorld {
 		// that won't collide with the node ids, so we can't have a collision with internal
 		if (!nodeId) {
 			if (!vector) return; // didn't exist before, doesn't exist now, nothing to do
-			if (!this.idIncrementer) {
-				let largestNodeId = 0;
-				for (const key of this.indexStore.getKeys({
-					reverse: true,
-					limit: 1,
-					start: Infinity,
-					end: 0,
-					transaction: options.transaction,
-				})) {
-					if (typeof key === 'number') largestNodeId = key;
-				}
-
-				this.idIncrementer = new BigInt64Array([BigInt(largestNodeId) + 1n]);
-				this.idIncrementer = new BigInt64Array(
-					this.indexStore.getUserSharedBuffer('next-id', this.idIncrementer.buffer)
-				);
-			}
-			nodeId = Number(Atomics.add(this.idIncrementer, 0, 1n));
+			this.ensureIdIncrementer(options);
+			nodeId = Number(Atomics.add(this.idIncrementer!, 0, 1n));
 			this.indexStore.put(safeKey, nodeId, options);
 		}
 		const updatedNodes = new Map<number, Node>();
@@ -375,9 +387,25 @@ export class HierarchicalNavigableSmallWorld {
 				connections[i] = [];
 			}
 
-			// Connect the new element to neighbors at its level and below
+			// An update-only worker may not have attached the id counter yet. The healthy path is one
+			// atomic load; a failed attach falls back to the memoized seek and retries after its TTL.
+			let efConstruction = this.efConstruction;
+			if (!this.efConstructionConfigured) {
+				// Graph size only tunes a heuristic; a write must never fail because it could not be resolved.
+				try {
+					efConstruction = autoScaleEfConstruction(this.resolveConstructionNodeCount(options));
+				} catch (error) {
+					logger.debug?.('could not resolve the HNSW construction node count; using the base ef', error);
+				}
+				if (efConstruction > this.efConstruction && this.lastLoggedEfConstruction !== efConstruction) {
+					// once per resolved value per process: makes replica-divergent build quality and the
+					// build-cost ramp diagnosable (the resolved value is otherwise surfaced nowhere)
+					this.lastLoggedEfConstruction = efConstruction;
+					logger.debug?.(`HNSW construction ef auto-scaled to ${efConstruction}`);
+				}
+			}
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, options);
+				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, efConstruction, l, options);
 				neighbors = neighbors.slice(0, this.M << 1) as SearchResults;
 
 				if (neighbors.length === 0 && l === 0) {
@@ -531,8 +559,7 @@ export class HierarchicalNavigableSmallWorld {
 				}
 			}
 			this.indexStore.remove(nodeId, options);
-			// Remove the safeKey→nodeId mapping so the key count used by autoScaleEf stays accurate
-			// and a re-insert of this primary key gets a fresh node rather than the deleted node's id.
+			// A re-insert of this primary key must get a fresh node rather than the deleted node's id.
 			this.indexStore.remove(safeKey, options);
 		}
 		const needsReindexing = new Map();
@@ -717,19 +744,84 @@ export class HierarchicalNavigableSmallWorld {
 	 * measurements behind both. The memo is the only gate on how often the size is resolved; nothing on
 	 * the query path may bypass it, or the O(1) lookup becomes per-query work again.
 	 */
-	private approximateNodeCount(): number {
+	private approximateNodeCount(options?: any): number {
 		const now = Date.now();
 		if (this.nodeCountAt > 0 && now - this.nodeCountAt < NODE_COUNT_TTL) return this.nodeCount;
-		this.nodeCount = this.resolveNodeCount();
+		this.nodeCount = this.resolveNodeCount(options);
 		this.nodeCountAt = now;
 		return this.nodeCount;
 	}
 
+	private resolveConstructionNodeCount(options?: any): number {
+		if (this.idIncrementer) return this.resolveNodeCount();
+		const now = Date.now();
+		if (now >= this.idIncrementerRetryAt) {
+			try {
+				this.ensureIdIncrementer(options);
+				this.idIncrementerRetryAt = 0;
+				this.idIncrementerFailureLogged = false;
+				return this.resolveNodeCount();
+			} catch (error) {
+				this.idIncrementerRetryAt = now + NODE_COUNT_TTL;
+				if (!this.idIncrementerFailureLogged) {
+					this.idIncrementerFailureLogged = true;
+					logger.warn?.('could not attach the shared HNSW id counter; using a memoized node count', error);
+				}
+			}
+		}
+		return this.approximateNodeCount(options);
+	}
+
+	/**
+	 * Create-or-attach the shared id counter, seeded from a one-time reverse seek to the largest node
+	 * id. getUserSharedBuffer returns the existing shared buffer when another worker created it
+	 * first, so the seed only matters for whoever wins the race.
+	 */
+	private ensureIdIncrementer(options?: any): void {
+		if (this.idIncrementer) return;
+		let largestNodeId = 0;
+		for (const key of this.indexStore.getKeys({
+			reverse: true,
+			limit: 1,
+			start: Infinity,
+			end: 0,
+			transaction: options?.transaction,
+		})) {
+			if (typeof key === 'number') largestNodeId = key;
+		}
+		// Never install the counter until the shared attach succeeds: assigning the private seed
+		// array first would, on an attach failure, leave THIS process allocating ids nobody else can
+		// see — cross-worker id collisions. Left unset, the next write simply retries the ensure.
+		const seed = new BigInt64Array([BigInt(largestNodeId) + 1n]);
+		try {
+			const sharedBuffer = this.indexStore.getUserSharedBuffer('next-id', seed.buffer);
+			if (
+				!sharedBuffer ||
+				sharedBuffer.byteLength < BigInt64Array.BYTES_PER_ELEMENT ||
+				sharedBuffer.byteLength % BigInt64Array.BYTES_PER_ELEMENT !== 0
+			) {
+				throw new Error('Shared HNSW id counter buffer is unusable');
+			}
+			this.idIncrementer = new BigInt64Array(sharedBuffer);
+		} catch (error) {
+			// Reuse the transactional seed seek as the degraded count instead of seeking a second time.
+			this.nodeCount = largestNodeId + 1;
+			this.nodeCountAt = Date.now();
+			throw error;
+		}
+	}
+
 	/** O(1) node count — the shared id counter, else a single reverse seek to the largest node id. */
-	private resolveNodeCount(): number {
+	private resolveNodeCount(options?: any): number {
 		if (this.idIncrementer) return Number(Atomics.load(this.idIncrementer, 0));
 		try {
-			for (const key of this.indexStore.getKeys({ reverse: true, limit: 1, start: Infinity, end: 0 })) {
+			for (const key of this.indexStore.getKeys({
+				reverse: true,
+				limit: 1,
+				start: Infinity,
+				end: 0,
+				transaction: options?.transaction,
+			})) {
 				if (typeof key === 'number') return key + 1;
 			}
 		} catch (error) {
@@ -1026,8 +1118,8 @@ export class HierarchicalNavigableSmallWorld {
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
 
 		const options = context.transaction; // should have a nested RocksDB transaction
-		// Resolve search ef: per-query ef wins; else an explicitly-configured efConstructionSearch;
-		// else auto-scale with the graph size so recall holds as the table grows.
+		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
+		// otherwise auto-scale with the graph size so recall holds as the table grows.
 		let effectiveEf = this.efConstructionSearch;
 		const explicitEf = ef !== undefined && ef > 0;
 		if (explicitEf) effectiveEf = ef;
@@ -1040,22 +1132,29 @@ export class HierarchicalNavigableSmallWorld {
 		// to cover the request, up to LIMIT_EF_MAX — `ef` sizes a synchronous traversal that holds every
 		// admitted candidate in a sorted array with an O(len) insert, so an unbounded one lets a plain
 		// `limit` stall the thread. Past the ceiling the result set is still short, as it was before.
-		// A per-query `ef` is left authoritative: it is an explicit cost ceiling, and a caller who sets
-		// one has said what they are willing to spend.
+		// Schema and per-query `ef` pins are authoritative cost ceilings. Only an automatically scaled
+		// index widens toward LIMIT_EF_MAX to cover a larger bounded request.
 		// The ceiling is the only bound: clamping to the graph size as well would need a count exact as
 		// of this query — the memo reads low while a table grows, truncating the very limit this
 		// honours — and an ef above the node count is free, the traversal ending at the graph, not ef.
-		if (minResults !== undefined && !explicitEf && minResults > effectiveEf) {
+		if (minResults !== undefined && !explicitEf && !this.efSearchConfigured && minResults > effectiveEf) {
 			effectiveEf = Math.max(effectiveEf, Math.min(minResults, LIMIT_EF_MAX));
 		}
 		// Predicate-aware traversal budget (#1241): matches accrue slower than visits under a selective
 		// filter, so bound layer-0 work at ef * filterExpansion nodes. Only built when a filter is active.
 		// Deliberately `resolvedEf`, not the limit-widened ef: this budget is what stops a selective
 		// filter crawling the whole graph, and multiplying it by a caller's limit would turn a filtered
-		// vector query into a record-loading scan.
+		// vector query into a record-loading scan. When the ef came from the auto-scale (neither a
+		// per-query ef nor a schema-configured one), its budget contribution is additionally capped at
+		// AUTO_EF_MAX: every budgeted visit is a synchronous record load + predicate evaluation, so the
+		// second-regime search ef (up to AUTO_EF_CEILING) must not silently quadruple the filtered
+		// worst case — the recall decision and the filtered-scan budget are separate decisions. Callers
+		// wanting a deeper filtered search set an explicit ef or filterExpansion, and own the cost.
 		const filterState: FilterState | undefined = filter
 			? {
-					maxVisits: resolvedEf * (filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion),
+					maxVisits:
+						(explicitEf || this.efSearchConfigured ? resolvedEf : Math.min(resolvedEf, AUTO_EF_MAX)) *
+						(filterExpansion && filterExpansion > 0 ? filterExpansion : this.filterExpansion),
 					nodesVisited: 0,
 					filterEvaluations: 0,
 				}

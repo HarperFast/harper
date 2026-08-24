@@ -647,6 +647,266 @@ describe('test validateOperationToken function', () => {
 	});
 });
 
+describe('test scoped tokens (inline role object)', () => {
+	const token_auth_plain = require('#src/security/tokenAuthentication');
+	const SU_MINTER = {
+		username: 'admin_minter',
+		active: true,
+		role: { role: 'super_user', id: 'su-id', permission: { super_user: true } },
+	};
+	const NON_SU_MINTER = {
+		username: 'basic_minter',
+		active: true,
+		role: { role: 'basic', id: 'basic-id', permission: { super_user: false } },
+	};
+	let scopedKeysPath;
+
+	before(async () => {
+		scopedKeysPath = path.join(testUtils.getMockTestPath(), 'keys');
+		fs.mkdirpSync(scopedKeysPath);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPass'), PASSPHRASE_VALUE);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPrivate.key'), PRIVATE_KEY_VALUE);
+		fs.writeFileSync(path.join(scopedKeysPath, '.jwtPublic.key'), PUBLIC_KEY_VALUE);
+		token_auth_plain.clearJWTRSAKeysCache();
+		await user.setUsersWithRolesCache(new Map([['existing_user', { username: 'existing_user', active: true }]]));
+	});
+
+	after(() => {
+		fs.removeSync(scopedKeysPath);
+		token_auth_plain.clearJWTRSAKeysCache();
+	});
+
+	function mint(overrides = {}) {
+		return token_auth_plain.createTokens({
+			hdb_user: SU_MINTER,
+			role: { permission: { operations: ['read_only'] } },
+			...overrides,
+		});
+	}
+
+	it('non-super_user minter is rejected with 403', async () => {
+		let error;
+		try {
+			await mint({ hdb_user: NON_SU_MINTER });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /super_user/);
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('unauthenticated mint is rejected with 403', async () => {
+		let error;
+		try {
+			await mint({ hdb_user: undefined });
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('happy path: single token, no refresh token, scoped-prefixed default attribution', async () => {
+		const result = await mint();
+		assert.notDeepStrictEqual(result.operation_token, undefined);
+		assert.deepStrictEqual(result.refresh_token, undefined);
+
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.sub, 'scoped-operation');
+		assert.deepStrictEqual(payload.username, 'scoped:admin_minter');
+		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
+		assert.deepStrictEqual(payload.super_user, false);
+		assert.deepStrictEqual(payload.role.permission.operations, ['read_only']);
+	});
+
+	it('username is arbitrary attribution and need not exist', async () => {
+		const result = await mint({ username: 'reporting-service' });
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.username, 'reporting-service');
+		assert.deepStrictEqual(payload.minted_by, 'admin_minter');
+	});
+
+	it('an attribution username naming an existing user is rejected', async () => {
+		let error;
+		try {
+			await mint({ username: 'existing_user' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /must not name an existing user/);
+	});
+
+	it('embedded super_user/cluster_user are downgraded at mint', async () => {
+		const result = await mint({
+			role: { permission: { super_user: true, cluster_user: true, operations: ['read_only'] } },
+		});
+		const payload = jwt.decode(result.operation_token);
+		assert.deepStrictEqual(payload.role.permission.super_user, false);
+		assert.deepStrictEqual(payload.role.permission.cluster_user, false);
+	});
+
+	it('password cannot be combined with an inline role', async () => {
+		let error;
+		try {
+			await mint({ password: 'pass' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /password/);
+	});
+
+	it('purpose cannot be combined with an inline role', async () => {
+		let error;
+		try {
+			await mint({ purpose: 'login' });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /purpose/);
+	});
+
+	it('unknown operation names are rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: { operations: ['totally_fake_op'] } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /totally_fake_op/);
+	});
+
+	it('array permission is rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: ['not-an-object'] } });
+		} catch (e) {
+			error = e;
+		}
+		assert.notDeepStrictEqual(error, undefined);
+	});
+
+	it('malformed structure_user type is rejected at mint', async () => {
+		let error;
+		try {
+			await mint({ role: { permission: { structure_user: 'yes' } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.notDeepStrictEqual(error, undefined);
+	});
+
+	it('a permission object producing an oversized token is rejected at mint', async () => {
+		let error;
+		try {
+			// valid but huge: duplicate operation entries are legal, so only the size gate rejects this
+			await mint({ role: { permission: { operations: new Array(800).fill('search_by_value') } } });
+		} catch (e) {
+			error = e;
+		}
+		assert.match(error.message, /exceeds/);
+	});
+
+	it('validateOperationToken accepts a scoped token and builds a synthetic user', async () => {
+		const { operation_token } = await mint({ username: 'svc' });
+		const scopedUser = await token_auth_plain.validateOperationToken(operation_token);
+		assert.deepStrictEqual(scopedUser.username, 'svc');
+		assert.deepStrictEqual(scopedUser.active, true);
+		assert.deepStrictEqual(scopedUser._scopedToken, true);
+		assert.deepStrictEqual(scopedUser._mintedBy, 'admin_minter');
+		assert.match(scopedUser.role.role, /^_scoped_token_[0-9a-f]{24}$/);
+		assert.deepStrictEqual(scopedUser.role.permission.super_user, false);
+		assert.deepStrictEqual(scopedUser.role.permission.cluster_user, false);
+		assert(scopedUser.role.permission._expandedOperations instanceof Set);
+		assert(scopedUser.role.permission._expandedOperations.has('search_by_hash'));
+		assert(!scopedUser.role.permission._expandedOperations.has('insert'));
+	});
+
+	it('distinct permission sets get distinct synthetic role identities; identical sets share', async () => {
+		const tokenA = (await mint({ role: { permission: { operations: ['read_only'] } } })).operation_token;
+		const tokenB = (await mint({ role: { permission: { operations: ['standard_user'] } } })).operation_token;
+		const tokenC = (await mint({ role: { permission: { operations: ['read_only'] } }, username: 'other' }))
+			.operation_token;
+		const userA = await token_auth_plain.validateOperationToken(tokenA);
+		const userB = await token_auth_plain.validateOperationToken(tokenB);
+		const userC = await token_auth_plain.validateOperationToken(tokenC);
+		assert.notDeepStrictEqual(userA.role.role, userB.role.role);
+		assert.deepStrictEqual(userA.role.role, userC.role.role);
+	});
+
+	it('expired scoped token is rejected with 403', async () => {
+		const { operation_token } = await mint({ expires_in: '-1' });
+		let error;
+		try {
+			await token_auth_plain.validateOperationToken(operation_token);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.message, 'token expired');
+		assert.deepStrictEqual(error.statusCode, 403);
+	});
+
+	it('tampered scoped token is rejected', async () => {
+		const { operation_token } = await mint();
+		const parts = operation_token.split('.');
+		const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+		payload.role.permission.operations = ['standard_user'];
+		parts[1] = Buffer.from(JSON.stringify(payload)).toString('base64url');
+		let error;
+		try {
+			await token_auth_plain.validateOperationToken(parts.join('.'));
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+
+	it('scoped token is not accepted as a refresh or login token', async () => {
+		const { operation_token } = await mint();
+		for (const validator of [token_auth_plain.validateRefreshToken, token_auth_plain.validateLoginToken]) {
+			let error;
+			try {
+				await validator(operation_token);
+			} catch (e) {
+				error = e;
+			}
+			assert.deepStrictEqual(error.statusCode, 401);
+		}
+	});
+
+	it('legacy string-role tokens are still rejected by validateOperationToken', async () => {
+		const legacyToken = jwt.sign(
+			{ username: 'existing_user', role: 'component_role' },
+			{ key: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE },
+			{ algorithm: 'RS256', subject: 'operation', expiresIn: '1d' }
+		);
+		let error;
+		try {
+			await token_auth_plain.validateOperationToken(legacyToken);
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+
+	it('a scoped-token bearer cannot self-mint standing tokens for its attribution name', async () => {
+		// the escalation this guards: attribution 'existing_user' does not exist at mint, a real
+		// user with that name is created later, and the passwordless self-mint path would otherwise
+		// resolve to that real user and hand out full operation/refresh tokens.
+		const scopedBearer = {
+			username: 'existing_user',
+			active: true,
+			_scopedToken: true,
+			role: { role: '_scoped_token_x', id: '_scoped_token_x', permission: { operations: ['read_only'] } },
+		};
+		let error;
+		try {
+			await token_auth_plain.createTokens({ hdb_user: scopedBearer });
+		} catch (e) {
+			error = e;
+		}
+		assert.deepStrictEqual(error.statusCode, 401);
+	});
+});
+
 describe('test validateLoginToken function', () => {
 	let rw_get_tokens;
 	let jwt_spy;

@@ -45,6 +45,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from './../apiTests/utils/client.mjs';
+// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
+import { waitForRouteReady } from './../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'eviction-secondary-index');
 const SCHEMA = 'data';
@@ -86,19 +88,8 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 		proc?.stdout?.on('data', (d: Buffer) => (procOutput += d.toString()));
 		proc?.stderr?.on('data', (d: Buffer) => (procOutput += d.toString()));
 
-		// Poll for route readiness (component is pre-installed; no restart needed)
-		{
-			const deadline = Date.now() + 120_000;
-			while (Date.now() < deadline) {
-				try {
-					const probe = await client.reqRest('/Expiring/').timeout(2000);
-					if (probe.status !== 404) break;
-				} catch {
-					/* not ready yet */
-				}
-				await sleep(250);
-			}
-		}
+		// Wait for route readiness (component is pre-installed; no restart needed).
+		await waitForRouteReady(client, '/Expiring/', 120_000);
 	});
 
 	after(async () => {

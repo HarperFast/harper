@@ -52,6 +52,42 @@ describe('cliOperations', () => {
 		fs.ensureDirSync(testDir);
 	});
 
+	// `token` is stripped from every request body as transport-only, so that a mistyped `deploy
+	// setup=...` cannot carry a PAT to the server. exchange_oidc_token is the one operation whose body
+	// legitimately has a top-level `token` — the identity token IS the request — so the strip must not
+	// apply to it, or the issuer-agnostic path is unusable through the generic CLI (#2171).
+	it('sends the token for exchange_oidc_token instead of stripping it', async () => {
+		let sentBody;
+		commonUtilsModule.httpRequest = async (_options, body) => {
+			sentBody = body;
+			return { statusCode: 200, body: JSON.stringify({ operation_token: 'minted' }) };
+		};
+
+		await cliOperationsModule.cliOperations(
+			{ operation: 'exchange_oidc_token', token: 'the-identity-token', target: 'example.com' },
+			true
+		);
+
+		assert.strictEqual(sentBody.operation, 'exchange_oidc_token');
+		assert.strictEqual(sentBody.token, 'the-identity-token', 'the identity token must reach the server');
+	});
+
+	// The other direction: the strip still protects every other operation.
+	it('still strips a top-level token from other operations', async () => {
+		let sentBody;
+		commonUtilsModule.httpRequest = async (_options, body) => {
+			sentBody = body;
+			return { statusCode: 200, body: JSON.stringify({}) };
+		};
+
+		await cliOperationsModule.cliOperations(
+			{ operation: 'test', token: 'a-pat-that-must-not-leave', target: 'example.com' },
+			true
+		);
+
+		assert.strictEqual(sentBody.token, undefined, 'a PAT must not reach the server on other operations');
+	});
+
 	it('Leg 1: should use non-expired token directly', async () => {
 		const target = 'https://example.com:9925/';
 		saveCredentials(target, {
@@ -296,6 +332,159 @@ describe('cliOperations', () => {
 
 			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
 			assert.strictEqual(seenAuth, 'Bearer file-token');
+		});
+	});
+
+	// OIDC trusted publishing (#2171): the runner proves its identity to the cluster instead of
+	// carrying a Harper credential. Ambient, so it ranks below everything explicitly configured.
+	describe('CI identity auth (OIDC)', () => {
+		const target = 'https://example.com:9925/';
+		const envVars = [
+			'HARPER_CLI_OPERATION_TOKEN',
+			'HARPER_CLI_REFRESH_TOKEN',
+			'CLI_TARGET_OPERATION_TOKEN',
+			'CLI_TARGET_REFRESH_TOKEN',
+			'ACTIONS_ID_TOKEN_REQUEST_URL',
+			'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+		];
+		const saved = {};
+		let originalFetch;
+		let identityRequests;
+
+		beforeEach(() => {
+			for (const v of envVars) {
+				saved[v] = process.env[v];
+				delete process.env[v];
+			}
+			process.env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://pipelines.example/idtoken?api-version=2.0';
+			process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'runner-request-token';
+
+			identityRequests = [];
+			originalFetch = globalThis.fetch;
+			globalThis.fetch = async (url) => {
+				identityRequests.push(new URL(String(url)));
+				return new Response(JSON.stringify({ value: 'identity.token.value' }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				});
+			};
+		});
+
+		afterEach(() => {
+			globalThis.fetch = originalFetch;
+			for (const v of envVars) {
+				if (saved[v] === undefined) delete process.env[v];
+				else process.env[v] = saved[v];
+			}
+		});
+
+		it('exchanges a CI identity for an operation token when nothing else is configured', async () => {
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				if (req.operation === 'exchange_oidc_token') {
+					return {
+						statusCode: 200,
+						body: JSON.stringify({ operation_token: 'oidc-op-token', username: 'ci-deploy', policy: 'p' }),
+					};
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			const result = await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.strictEqual(result.success, true);
+			assert.deepStrictEqual(
+				requested.map((r) => r.operation),
+				['exchange_oidc_token', 'test']
+			);
+			assert.strictEqual(requested[1].auth, 'Bearer oidc-op-token');
+			// The audience must be this instance, not the provider's shared default.
+			assert.strictEqual(identityRequests[0].searchParams.get('audience'), target);
+		});
+
+		// Adding `id-token: write` to a workflow that still sets HARPER_CLI_REFRESH_TOKEN must not
+		// silently change which identity deploys.
+		it('leaves a configured env token in charge', async () => {
+			process.env.HARPER_CLI_OPERATION_TOKEN = 'env-op-token';
+			tokenAuthModule.isJWTExpired = () => false;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+
+			assert.deepStrictEqual(
+				requested.map((r) => r.operation),
+				['test']
+			);
+			assert.strictEqual(requested[0].auth, 'Bearer env-op-token');
+			assert.strictEqual(identityRequests.length, 0, 'must not ask the provider for an identity token');
+		});
+
+		it('leaves saved login credentials in charge', async () => {
+			saveCredentials(target, { operation_token: 'file-token', refresh_token: 'file-refresh' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let seenAuth;
+			commonUtilsModule.httpRequest = async (options) => {
+				seenAuth = options.headers.Authorization;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(seenAuth, 'Bearer file-token');
+			assert.strictEqual(identityRequests.length, 0);
+		});
+
+		// Same rationale as the env-var tokens: a local operation is trusted via bypassLocalAuth,
+		// which only applies when no Authorization header is present.
+		it('does not exchange for a local (no-target) operation', async () => {
+			const originalGetHdbPid = processManagementModule.getHdbPid;
+			const originalInitConfig = configUtilsModule.initConfig;
+			const originalGetConfigPath = configUtilsModule.getConfigPath;
+			const socketPath = path.join(testDir, 'oidc-local-check.sock');
+			fs.ensureFileSync(socketPath);
+			configUtilsModule.initConfig = () => {};
+			processManagementModule.getHdbPid = () => 12345;
+			configUtilsModule.getConfigPath = () => socketPath;
+
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			try {
+				await cliOperationsModule.cliOperations({ operation: 'test' }, true);
+			} finally {
+				processManagementModule.getHdbPid = originalGetHdbPid;
+				configUtilsModule.initConfig = originalInitConfig;
+				configUtilsModule.getConfigPath = originalGetConfigPath;
+			}
+
+			assert.strictEqual(identityRequests.length, 0);
+			assert.strictEqual(requested.length, 1);
+			assert.strictEqual(requested[0].auth, undefined);
+		});
+
+		// A rejected exchange must not leave a half-authenticated request; it goes out with no
+		// Authorization header and fails the way an unauthenticated request normally does.
+		it('proceeds unauthenticated when the exchange is rejected', async () => {
+			const requested = [];
+			commonUtilsModule.httpRequest = async (options, req) => {
+				requested.push({ auth: options.headers.Authorization, operation: req.operation });
+				if (req.operation === 'exchange_oidc_token') {
+					return { statusCode: 401, body: JSON.stringify({ error: 'Identity token was rejected' }) };
+				}
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations({ operation: 'test', target: 'example.com' }, true);
+			assert.strictEqual(requested[1].auth, undefined);
 		});
 	});
 
@@ -807,6 +996,73 @@ describe('cliOperations', () => {
 				!consoleErrorLines.some((line) => /^error:\s*aborted\s*$/i.test(line.trim())),
 				`should not surface a bare "aborted" message, got: ${consoleErrorLines}`
 			);
+		});
+	});
+
+	// `deploy setup=true` introduced `token=` as an arg carrying a durable PAT. A mistyped invocation
+	// (`harper deploy setup token=…` — bare `setup` is dropped by buildRequest) falls through to an
+	// ordinary deploy, so the token must not be loggable or serializable on ANY path, not just the
+	// setup one.
+	describe('token= is never logged or sent', () => {
+		it('redacts token in the parsed-request trace log', () => {
+			const redacted = cliOperationsModule.redactCredentials({
+				operation: 'deploy_component',
+				project: 'web',
+				token: 'github_pat_11ABCDE_secret',
+			});
+			assert.strictEqual(redacted.token, '***');
+			assert.strictEqual(redacted.project, 'web', 'non-secret fields still readable in the log');
+		});
+
+		it('strips token from the operation body sent to the server', async () => {
+			saveCredentials('https://example.com:9925/', { operation_token: 'valid-token', refresh_token: 'r' });
+			tokenAuthModule.isJWTExpired = () => false;
+
+			let sentBody;
+			commonUtilsModule.httpRequest = async (_options, body) => {
+				sentBody = body;
+				return { statusCode: 200, body: JSON.stringify({ success: true }) };
+			};
+
+			await cliOperationsModule.cliOperations(
+				{ operation: 'set_secret', name: 'deploy.web.git.github.com', token: 'github_pat_11ABCDE_secret' },
+				true
+			);
+
+			assert.ok(sentBody, 'request body was captured');
+			assert.strictEqual(sentBody.token, undefined, 'token must not reach the wire as an operation field');
+			assert.strictEqual(sentBody.name, 'deploy.web.git.github.com', 'real operation fields still sent');
+		});
+	});
+
+	describe('transportContext', () => {
+		// `harper deploy setup=true` issues get_secrets_public_key + set_secret on the caller's behalf.
+		// Dropping the explicit credentials would silently perform (and audit) those mutations as
+		// whoever the saved login token is; dropping rejectUnauthorized would fail a self-signed target.
+		it('carries the connection fields and nothing else', () => {
+			assert.deepStrictEqual(
+				cliOperationsModule.transportContext({
+					operation: 'deploy_component',
+					setup: true,
+					token: 'ghp_secret',
+					package: 'github:owner/repo',
+					json: true,
+					target: 'https://example.com:9925',
+					auth_username: 'admin',
+					auth_password: 'pw',
+					rejectUnauthorized: false,
+				}),
+				{
+					target: 'https://example.com:9925',
+					auth_username: 'admin',
+					auth_password: 'pw',
+					rejectUnauthorized: false,
+				}
+			);
+		});
+
+		it('omits fields the caller did not supply, so normal resolution (env vars, saved token) still applies', () => {
+			assert.deepStrictEqual(cliOperationsModule.transportContext({ operation: 'set_secret' }), {});
 		});
 	});
 

@@ -1,6 +1,11 @@
 import type { Context } from './ResourceInterface.ts';
 import { _assignPackageExport } from '../globals.js';
-import { DatabaseTransaction, type Transaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	isReleasedTransaction,
+	type Transaction,
+	TRANSACTION_STATE,
+} from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
@@ -25,8 +30,12 @@ export function transaction<T>(
 		asyncStorageContext = contextStorage.getStore();
 		context = asyncStorageContext ?? {};
 	} else {
+		// The released placeholder is an absent argument, not a context: normalized before the fallback
+		// chain below so it resolves to the ambient store exactly as the `null` it replaced did, rather
+		// than to a bare `{}` that would drop the caller's user, session and timestamp.
+		const contextArg = isReleasedTransaction(ctx) ? undefined : ctx;
 		// request argument included, but null or undefined, so maybe create a new one
-		context = ctx ?? (asyncStorageContext = contextStorage.getStore()) ?? {};
+		context = contextArg ?? (asyncStorageContext = contextStorage.getStore()) ?? {};
 	}
 
 	if (typeof callback !== 'function') {
@@ -36,7 +45,9 @@ export function transaction<T>(
 		return callback(context.transaction); // nothing to be done, already in open transaction
 	}
 
-	const transaction = new DatabaseTransaction();
+	// scopeOwned: onComplete/onError below guarantee this instance a final commit or an abort, which is
+	// what lets a mid-scope commit rotate it instead of leaving later writes to commit themselves.
+	const transaction = new DatabaseTransaction({ scopeOwned: true });
 	context.transaction = transaction;
 	if (context.timestamp) transaction.timestamp = context.timestamp;
 	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
@@ -75,6 +86,9 @@ export function transaction<T>(
 
 _assignPackageExport('transaction', transaction);
 
+// Only a context that never had a transaction has none to act on: a completed transaction still in the
+// slot must no-op here, as it always did, or a checkpointing loop that commits every Nth row fails on
+// its second checkpoint.
 transaction.commit = function (contextSource) {
 	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
 	if (!transaction) throw new Error('No active transaction is available to commit');

@@ -15,6 +15,16 @@ const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
 import { findAndValidateUser, type User } from './user.ts';
+import { attachScopeToToken, attachScopeToUser, hasOperationScope } from './operationScope.ts';
+import {
+	WORKLOAD_IDENTITY_CLAIM,
+	attachWorkloadIdentityToUser,
+	isWorkloadIdentityPrincipal,
+	markTokenAsWorkloadIdentity,
+} from './credentialProvenance.ts';
+import { buildScopedTokenUser, syntheticRoleName } from './impersonation.ts';
+import type { ImpersonatePayload } from '../server/operationsServer.ts';
+import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { update } from '../dataLayer/insert.ts';
 import UpdateObject from '../dataLayer/UpdateObject.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -40,6 +50,10 @@ const TOKEN_TYPE = {
 	// TOKEN_TYPE.OPERATION, so validateOperationToken's Bearer-API path rejects it automatically —
 	// it can't be replayed as a general API credential the way a full operation token could.
 	LOGIN: 'login',
+	// Minted by createTokens with an inline `role` object (super_user-gated): the token embeds its
+	// own downgraded permission set and its bearer needs no hdb_user row. Accepted by
+	// validateOperationToken, which builds a synthetic user from the embedded role.
+	SCOPED: 'scoped-operation',
 };
 
 interface JWTRSAKeys {
@@ -51,7 +65,10 @@ interface JWTRSAKeys {
 interface AuthObject {
 	username?: string;
 	password?: string;
-	role?: string;
+	// A string role is stamped into the payload verbatim for component-defined token validation
+	// (such tokens are rejected by validateOperationToken). An object role mints a scoped token —
+	// see TOKEN_TYPE.SCOPED.
+	role?: string | ImpersonatePayload['role'];
 	expires_in?: string | number;
 	hdb_user?: User;
 	// 'login' mints a single short-lived, login-scoped token instead of an operation/refresh pair —
@@ -126,12 +143,41 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		Joi.object({
 			username: Joi.string().optional(),
 			password: Joi.string().optional(),
-			role: Joi.string().optional(),
+			role: Joi.alternatives(Joi.string(), Joi.object()).optional(),
 			expires_in: Joi.alternatives(Joi.string(), Joi.number()).optional(),
 			purpose: Joi.string().valid('login').optional(),
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
+
+	// create_authentication_tokens is NO_AUTH, so verifyPerms — and the token-scope gate inside it —
+	// never runs here. A caller holding a workload-identity token (#2171) must not mint any standing
+	// credential through it: honoring expires_in verbatim turns a minutes-long leak into an
+	// arbitrarily long-lived one, and the refresh_token write below hands out a 30-day credential —
+	// both defeating the exchange's ephemerality guarantee. A CI token needs none of this; it already
+	// holds the operation token the exchange gave it, and gets a fresh one next run.
+	//
+	// Gated on provenance, NOT on the scope: a trust policy carries `operations` only when the
+	// operator opts in, so the ordinary exchanged token is unscoped and a scope-only check would let
+	// exactly the common case through. The scope check stays as well, covering a scoped credential
+	// from any other source.
+	//
+	// First, ahead of the user lookup and the `purpose` branch: this reads only the caller's own
+	// principal, so a refused request should cost no database read and write nothing. That also
+	// covers the login path, where a session is minted from a username alone and so cannot be
+	// narrowed after the fact.
+	// `authObj?.` — a bare createTokens() reaches here, and must still fail as invalid credentials
+	// below rather than as a TypeError out of this guard.
+	if (isWorkloadIdentityPrincipal(authObj?.hdb_user)) {
+		throw new ClientError('a workload identity token cannot mint authentication tokens', HTTP_STATUS_CODES.FORBIDDEN);
+	}
+	if (hasOperationScope((authObj?.hdb_user as any)?.tokenOperations)) {
+		throw new ClientError('a scoped token cannot mint authentication tokens', HTTP_STATUS_CODES.FORBIDDEN);
+	}
+
+	if (authObj?.role && typeof authObj.role === 'object') {
+		return createScopedToken(authObj);
+	}
 
 	let user: any;
 	try {
@@ -141,6 +187,12 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		// without a password (see operationAuthorizationState.ts).
 		let validatePassword: boolean = !isOperationAuthorizationBypassed();
 		if (!authObj.username && !authObj.password) {
+			// A scoped-token bearer must not self-mint: its username is an unverified attribution
+			// label, and resolving it here without a password would hand out standing operation/
+			// refresh tokens for whatever real user later takes that name (privilege escalation).
+			if (authObj.hdb_user?._scopedToken) {
+				throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);
+			}
 			// if the username and password are not provided, use the hdb_user making the request.
 			authObj.username = authObj.hdb_user?.username;
 			// the password would have been checked by authHandler before getting here
@@ -222,6 +274,57 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 }
 
 /**
+ * Mints a scoped token: a single operation-usable JWT that embeds an inline role object, so its
+ * bearer needs no hdb_user or hdb_role row. Requires an authenticated super_user minter (or
+ * trusted internal dispatch). `username` is attribution only, must NOT name an existing user,
+ * and defaults to `scoped:<minter>`. No refresh token is issued and no user record is touched,
+ * so the token is irrevocable until expiry — size expires_in accordingly.
+ */
+// Measured on the signed token (base64url payload + signature), so it reflects what the
+// Authorization header actually carries; keeps tokens inside common 16KB header limits.
+const MAX_SCOPED_TOKEN_LENGTH = 12288;
+
+async function createScopedToken(authObj: AuthObject): Promise<JWTTokens> {
+	if (authObj.password) {
+		throw new ClientError("'password' cannot be combined with an inline 'role' object");
+	}
+	if (authObj.purpose) {
+		throw new ClientError("'purpose' cannot be combined with an inline 'role' object");
+	}
+	const scopedUser = await buildScopedTokenUser(
+		authObj.hdb_user,
+		{ username: authObj.username, role: authObj.role as ImpersonatePayload['role'] },
+		isOperationAuthorizationBypassed()
+	);
+	const keys: JWTRSAKeys = await getJWTRSAKeys();
+	const operationToken = jwt.sign(
+		{
+			username: scopedUser.username,
+			super_user: false,
+			role: { permission: scopedUser.role.permission },
+			minted_by: authObj.hdb_user?.username,
+		},
+		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+		{
+			expiresIn: (authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT) as StringValue,
+			algorithm: RSA_ALGORITHM,
+			subject: TOKEN_TYPE.SCOPED,
+		} satisfies SignOptions
+	);
+	if (operationToken.length > MAX_SCOPED_TOKEN_LENGTH) {
+		throw new ClientError(
+			`the minted token exceeds ${MAX_SCOPED_TOKEN_LENGTH} bytes and would not fit in an Authorization header; reduce the role permission size`
+		);
+	}
+	// role.role is the content hash of the granted permission set — logged so an operator can
+	// correlate outstanding tokens with what they grant.
+	logger.info(
+		`Scoped token minted by "${authObj.hdb_user?.username ?? '<internal>'}" for "${scopedUser.username}" (${scopedUser.role.role})`
+	);
+	return { operation_token: operationToken };
+}
+
+/**
  * Refreshes the operation token using the refresh token.
  * @param tokenObj
  */
@@ -233,8 +336,14 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const decodedJWT = jwt.decode(refresh_token, { json: true });
+	const refreshedPayload: { username: string; super_user: boolean; operations?: string[] } = {
+		username: decodedJWT.username,
+		super_user: decodedJWT.super_user,
+	};
+	// Refreshing a scoped refresh token must not widen back to the full role.
+	attachScopeToToken(refreshedPayload, decodedJWT.operations);
 	const operationToken = jwt.sign(
-		{ username: decodedJWT.username, super_user: decodedJWT.super_user },
+		refreshedPayload,
 		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
 		{
 			expiresIn: OPERATION_TOKEN_TIMEOUT as StringValue,
@@ -244,6 +353,45 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 	);
 
 	return { operation_token: operationToken };
+}
+
+/**
+ * Signs a standalone operation token. No refresh token, no write to the user record.
+ *
+ * createTokens cannot serve this: it overwrites hdb_user.refresh_token as a side effect, silently
+ * revoking whatever credential that user already held (#2018). The OIDC exchange (#2171) exists so
+ * CI holds no durable credential at all, so minting one on its behalf would defeat the point.
+ *
+ * The caller is responsible for having established that the user exists, is active, and is entitled
+ * to this token — nothing here re-checks that.
+ */
+export async function createOperationToken(
+	user: { username: string; super_user: boolean; operations?: string[] },
+	expiresIn: StringValue
+): Promise<string> {
+	const keys: JWTRSAKeys = await getJWTRSAKeys();
+	const payload: { username: string; super_user: boolean; operations?: string[] } = {
+		username: user.username,
+		super_user: user.super_user,
+	};
+	// A narrowing scope, never a grant: verifyPerms intersects it with the user's role. An empty scope
+	// (deny-all) is preserved rather than dropped — attachScopeToToken carries any array, which is
+	// what keeps this from failing open.
+	attachScopeToToken(payload, user.operations);
+	// Unconditional, because every token this function mints is minted without a password — the
+	// caller vouched for the user instead. That is precisely the credential that must not be able to
+	// trade itself for a longer-lived one, whether or not a scope narrows it.
+	markTokenAsWorkloadIdentity(payload);
+
+	return jwt.sign(
+		payload,
+		{ key: keys.privateKey, passphrase: keys.passphrase } satisfies Secret,
+		{
+			expiresIn,
+			algorithm: RSA_ALGORITHM,
+			subject: TOKEN_TYPE.OPERATION,
+		} satisfies SignOptions
+	);
 }
 
 export async function validateOperationToken(token: string): Promise<any> {
@@ -266,10 +414,22 @@ export async function validateLoginToken(token: string): Promise<any> {
 async function validateToken(token: string, tokenType: string): Promise<any> {
 	try {
 		const keys: JWTRSAKeys = await getJWTRSAKeys();
-		const tokenVerified = jwt.verify(token, keys.publicKey, {
-			algorithms: [RSA_ALGORITHM],
-			subject: tokenType,
-		}) as JwtPayload;
+		// The OPERATION type also accepts scoped tokens, so the subject is checked after
+		// verification rather than pinned in the verify options.
+		const tokenVerified = jwt.verify(
+			token,
+			keys.publicKey,
+			tokenType === TOKEN_TYPE.OPERATION
+				? { algorithms: [RSA_ALGORITHM] }
+				: { algorithms: [RSA_ALGORITHM], subject: tokenType }
+		) as JwtPayload;
+
+		if (tokenType === TOKEN_TYPE.OPERATION && tokenVerified.sub === TOKEN_TYPE.SCOPED) {
+			return buildUserFromScopedToken(tokenVerified);
+		}
+		if (tokenVerified.sub !== tokenType) {
+			throw new Error('Invalid token');
+		}
 
 		// If a role is present, it means the token is not an operation token. The validation of
 		// the token will happen in the respective function/component that uses the token.
@@ -282,6 +442,15 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 			throw new Error('Invalid token');
 		}
 
+		// Surfaced as `tokenOperations` rather than merged into role.permission.operations: that field
+		// is not purely narrowing (verifyPerms gate 2 treats an explicit SU-only listing as a grant),
+		// so merging a token scope into it could widen. verifyPerms intersects this separately, ahead
+		// of every bypass.
+		attachScopeToUser(user, tokenVerified.operations);
+		// Provenance rides the same lift: the claim is signed, so a caller cannot strip it to look
+		// like a password-minted principal at createTokens.
+		attachWorkloadIdentityToUser(user, tokenVerified[WORKLOAD_IDENTITY_CLAIM]);
+
 		return user;
 	} catch (err) {
 		logger.warn(err);
@@ -291,6 +460,38 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
+}
+
+/**
+ * Builds the request user for a verified scoped token from its embedded role. No hdb_user lookup:
+ * the signed claims are the whole identity. The downgrade is re-applied here as defense-in-depth,
+ * so no scoped token — whatever minted it — can ever assert super_user or cluster_user.
+ */
+function buildUserFromScopedToken(claims: JwtPayload): User {
+	const embedded = (claims.role as { permission?: Record<string, unknown> })?.permission;
+	if (!embedded || typeof embedded !== 'object' || Array.isArray(embedded) || typeof claims.username !== 'string') {
+		throw new Error('Invalid token');
+	}
+	const permission: Record<string, unknown> = { ...embedded, super_user: false, cluster_user: false };
+	// Hashed from the server-side downgraded clone (before the _expandedOperations Set is attached),
+	// so the memo key reflects the effective permissions — see syntheticRoleName.
+	const roleName = syntheticRoleName('_scoped_token', permission);
+	if (Array.isArray(permission.operations)) {
+		permission._expandedOperations = expandOperationsPerms(permission.operations as string[]);
+	}
+	return {
+		username: claims.username,
+		active: true,
+		_scopedToken: true,
+		_mintedBy: claims.minted_by,
+		role: {
+			permission: permission as User['role']['permission'],
+			role: roleName,
+			id: roleName,
+			__updatedtime__: 0,
+			__createdtime__: 0,
+		},
+	};
 }
 
 /**

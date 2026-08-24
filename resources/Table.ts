@@ -36,7 +36,9 @@ import {
 	DatabaseTransaction,
 	ImmediateTransaction,
 	priorStagedWrite,
+	isReleasedTransaction,
 	TRANSACTION_STATE,
+	writeKeyId,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
@@ -69,7 +71,15 @@ import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.
 import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, RecordObject, type Entry, entryMap } from './RecordEncoder.ts';
+import {
+	recordUpdater,
+	removeEntry,
+	PENDING_LOCAL_TIME,
+	RecordObject,
+	type Entry,
+	type StructureCounts,
+	entryMap,
+} from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -360,6 +370,15 @@ function detectCyclicEnumerable(start: any): boolean {
 }
 
 // #section: setup-and-factory
+/**
+ * Identity for the apply loop's per-key write chain. Never finer-grained than the store's own key
+ * identity or two writes to one record stop chaining; coarser only costs a wasted hop. Numbers and
+ * bigints must go through the encoder: they share a stored key but not a `toString` (`1e21` vs `10n ** 21n`).
+ */
+function chainKeyForId(id: any): string {
+	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
+}
+
 export function makeTable(options) {
 	const {
 		primaryKey,
@@ -706,6 +725,30 @@ export function makeTable(options) {
 					}
 				};
 
+				/** Keeps the writes to any one key in arrival order; see DESIGN.md (harper#2211). */
+				const stageWrite = (event, context) => {
+					let chainKey: string | undefined;
+					try {
+						const Table = event.table ? databases[databaseName][event.table] : TableResource;
+						const id = event.id ?? (event.value ? event.value[Table?.primaryKey] : undefined);
+						if (id != null && typeof id !== 'symbol') chainKey = `${event.table ?? tableName} ${chainKeyForId(id)}`;
+					} catch {
+						// writeUpdate()'s own id resolution fails the same way and reports it
+					}
+					// no record key, nothing to order: publishes and markers stage no record, and an id
+					// writeUpdate can't resolve throws there first
+					if (chainKey === undefined) return writeUpdate(event, context);
+					const chain = (context.writeChain ??= new Map<string, Promise<any>>());
+					const prior = chain.get(chainKey);
+					const staged = prior ? prior.then(() => writeUpdate(event, context)) : writeUpdate(event, context);
+					chain.set(chainKey, staged);
+					// Prune on success only: a rejected entry stays so later writes to the key short-circuit too
+					staged.then(() => {
+						if (chain.get(chainKey) === staged) chain.delete(chainKey);
+					}, noop);
+					return staged;
+				};
+
 				try {
 					const hasSubscribe = source.subscribe;
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
@@ -880,7 +923,7 @@ export function makeTable(options) {
 										}
 									} else {
 										// write in the current transaction if one is in progress
-										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));
+										txnInProgress.writePromises.push(stageWrite(event, txnInProgress));
 										continue;
 									}
 								}
@@ -892,7 +935,7 @@ export function makeTable(options) {
 										const promises: Promise<any>[] = [];
 										for (const write of event.writes) {
 											try {
-												promises.push(writeUpdate(write, event));
+												promises.push(stageWrite(write, event));
 											} catch (error) {
 												(error as Error).message +=
 													' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
@@ -927,7 +970,7 @@ export function makeTable(options) {
 											// event/context as transaction in progress and then future events
 											// are applied with that context until the next transaction begins/ends
 											txnInProgress = event;
-											txnInProgress.writePromises = [writeUpdate(event, event)];
+											txnInProgress.writePromises = [stageWrite(event, event)];
 											return new Promise((resolve) => {
 												// callback for when this transaction is finished (will be called on next txn begin/end).
 												txnInProgress.resolve = () => resolve(Promise.all(txnInProgress.writePromises)); // and make sure we wait for the write update to finish
@@ -3043,6 +3086,7 @@ export function makeTable(options) {
 				key: id,
 				store: primaryStore,
 				entry,
+				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
@@ -4511,7 +4555,7 @@ export function makeTable(options) {
 					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
-					updateRecord(
+					return updateRecord(
 						id,
 						existingEntry?.value ?? null,
 						existingEntry,
@@ -4555,8 +4599,9 @@ export function makeTable(options) {
 				tableTxn.addWrite({
 					key: null,
 					store: primaryStore,
+					skipReplicationConfirmation: true,
 					commit: (txnTime: number, _existingEntry: any, _retry: any, transaction: any) => {
-						updateRecord(
+						return updateRecord(
 							null, // recordId: null — a whole-table signal, not a per-row change
 							undefined, // no record to store: this writes the audit entry only
 							undefined,
@@ -4785,6 +4830,10 @@ export function makeTable(options) {
 			}
 			const stats = primaryStore.getStats();
 			return (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
+		}
+		/** Sizes of this table's durable record-structure dictionaries. */
+		static getStructureCounts(): StructureCounts | undefined {
+			return primaryStore.encoder?.getStructureCounts?.();
 		}
 		static getAuditSize(): number {
 			const stats = auditStore?.getStats();
@@ -5596,6 +5645,7 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
+		if (isReleasedTransaction(transaction)) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
@@ -5611,6 +5661,10 @@ export function makeTable(options) {
 				if (!nextTxn) {
 					// no next one, then add our database
 					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// The chain root, so a link that only ever receives a blind write is supervised by the
+					// long-transaction monitor as part of its logical transaction rather than as its own
+					// timeout root (issue #2231).
+					transaction.next.root = transaction.root ?? transaction;
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;
@@ -5625,6 +5679,9 @@ export function makeTable(options) {
 					// commit is tracked with its own identity (DatabaseTransaction.ts's trackOutstandingCommit),
 					// so a wedged second-store commit is named just as precisely as a wedged first one.
 					transaction.next.startedFrom = transaction.startedFrom;
+					// A second database joined after a mid-scope commit belongs to the same snapshot-free
+					// generation as the head, or its reads would re-pin what the commit just unpinned.
+					transaction.next.snapshotFree = transaction.snapshotFree;
 					if (transaction.open === TRANSACTION_STATE.CLOSED) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
 						transaction.next.open = TRANSACTION_STATE.CLOSED;

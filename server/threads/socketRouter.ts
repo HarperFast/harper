@@ -81,6 +81,31 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	}
 }
 
+/** Resolves on `worker`'s `child_started` message; rejects on a worker `error` or a pre-ready `exit`. */
+export function createWorkerReadyPromise(worker, index) {
+	return new Promise((resolve, reject) => {
+		function cleanup() {
+			worker.removeListener('message', onMessage);
+			worker.removeListener('error', reject);
+			worker.removeListener('exit', onExit);
+		}
+		function onMessage(message) {
+			if (message.type === 'child_started') {
+				cleanup();
+				resolve(worker);
+			}
+		}
+		function onExit(code) {
+			cleanup();
+			reject(new Error(`Worker (index ${index}) exited with code ${code} before reporting ready`));
+		}
+
+		worker.on('message', onMessage);
+		worker.on('error', reject);
+		worker.on('exit', onExit);
+	});
+}
+
 function startHTTPWorker(index, threadCount = 1) {
 	startWorker(join(__dirname, './threadServer.js'), {
 		name: hdbTerms.THREAD_TYPES.HTTP,
@@ -88,19 +113,14 @@ function startHTTPWorker(index, threadCount = 1) {
 		threadCount,
 		async onStarted(worker) {
 			// note that this can be called multiple times, once when started, and again when threads are restarted
-			const ready = new Promise((resolve, reject) => {
-				function onMessage(message) {
-					if (message.type === 'child_started') {
-						worker.removeListener('message', onMessage);
-						resolve(worker);
-					}
-				}
-
-				worker.on('message', onMessage);
-				worker.on('error', reject);
-			});
+			const ready = createWorkerReadyPromise(worker, index);
 			workersReady.push(ready);
-			await ready;
+			try {
+				await ready;
+			} catch {
+				// Already surfaced via workersReady; this call's own promise is fire-and-forget.
+				return;
+			}
 			workers.push(worker);
 			worker.on('exit', removeWorker);
 			worker.on('shutdown', removeWorker);

@@ -10,6 +10,7 @@ import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getDomainSocketPathMaxBytes } from '../utility/domainSocket.ts';
+import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import * as validator from './validationWrapper.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
@@ -52,6 +53,10 @@ const DIRECTORY_PATH_PATTERN = /^(?!\s*$)[^\x00-\x1f\x7f\x80-\x9f\u2028\u2029]+$
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
+// node.hostname / replication.hostname must be a bare host, not a URL (utility/nodeIdentity.ts).
+// `Joi.any` (not `string`) so validateBareHost reports a non-string with its own reason.
+const bareHostConstraints = Joi.any().custom(validateBareHost).optional().empty(null);
+const nodeUrlConstraints = string.custom(validateNodeUrl).optional().empty(null);
 // Controlled-flow ("directional") replication fields. A route's `replicates` is either a boolean
 // (full replication on/off) or an object describing per-direction flow; `sends`/`receives` and
 // `sendsTo`/`receivesFrom` are also accepted as top-level route keys (iterateRoutes normalizes both
@@ -247,8 +252,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			replicate: boolean.optional(),
 		}),
 		replication: Joi.object({
-			hostname: Joi.alternatives(string, number).optional().empty(null),
-			url: string.optional().empty(null),
+			hostname: bareHostConstraints,
+			url: nodeUrlConstraints,
 			port: portConstraints,
 			securePort: portConstraints,
 			routes: array.optional().empty(null),
@@ -258,7 +263,14 @@ export function configValidator(configJson, skipFsValidation = false) {
 			pingInterval: number.min(1).optional().empty(null),
 			pingTimeout: number.min(1).optional().empty(null),
 			copyTimeout: number.min(1).optional().empty(null),
+			blobGapReconnectMs: number.min(1000).optional().empty(null),
+			copyCursorFlushBytes: number.min(1).optional().empty(null),
+			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
+		}).optional(),
+		node: Joi.object({
+			hostname: bareHostConstraints,
+			url: string.optional().empty(null),
 		}).optional(),
 		componentsRoot: rootConstraints.optional(),
 		localStudio: Joi.object({
@@ -395,6 +407,36 @@ function doesPathExist(pathToCheck) {
 	}
 
 	return `Specified path ${pathToCheck} does not exist.`;
+}
+
+function validateBareHost(value, helpers) {
+	const violation = bareHostViolation(value);
+	if (violation) {
+		return helpers.message(
+			`{{#label}} ${violation}; it must be a bare hostname or IP literal (no scheme, port, or path) because it is this node's identity`
+		);
+	}
+	return value;
+}
+
+// A node URL supplies this node's identity via its host (server/nodeName.ts urlToNodeName), so it
+// must have an authority. A hostless scheme ("mailto:", "data:", "file:") parses but has no host.
+// A node URL supplies this node's identity via its host (server/nodeName.ts urlToNodeName). Only
+// reject the unambiguous mistake: a value written as a real URL (with a "//" authority) that still
+// parses to no host. Everything else is deliberately tolerated, because urlToNodeName skips a value
+// it cannot take a host from and identity falls through to another source — a scheme-less
+// "node1.example.com:9933" even parses as a *scheme*, so it is indistinguishable from "mailto:" here,
+// and rejecting that shape would turn a previously harmless config into a boot failure.
+function validateNodeUrl(value, helpers) {
+	if (!value.includes('//')) return value;
+	let host;
+	try {
+		host = new URL(value).hostname;
+	} catch {
+		return value; // unparseable — skipped at runtime, not worth failing the boot over
+	}
+	if (!host) return helpers.message('{{#label}} must be a URL with a host (e.g. "wss://node1.example.com:9933")');
+	return value;
 }
 
 function validatePath(value, helpers) {
