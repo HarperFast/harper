@@ -63,10 +63,10 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
-		it('logs a successful revocation on the default (end()-wrapping) path (regression: the success commit must fire even though end() self-unregisters synchronously before the settle handler runs)', async () => {
-			const originalInfo = hdbLogger.info;
-			const infoMessages = [];
-			hdbLogger.info = (message) => infoMessages.push(message);
+		it('logs a successful revocation at the default warning level on the default (end()-wrapping) path (regression: the success commit must fire even though end() self-unregisters synchronously before the settle handler runs)', async () => {
+			const originalWarn = hdbLogger.warn;
+			const warnMessages = [];
+			hdbLogger.warn = (message) => warnMessages.push(message);
 			try {
 				const subscription = fakeSubscription();
 				register({
@@ -80,12 +80,12 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				await _sweepNow();
 
 				assert.ok(
-					infoMessages.some((message) => message.includes('logged-user')),
-					`expected a success log for the default terminate path, got: ${JSON.stringify(infoMessages)}`
+					warnMessages.some((message) => message.includes('logged-user')),
+					`expected a success log for the default terminate path, got: ${JSON.stringify(warnMessages)}`
 				);
 				assert.strictEqual(_liveSubscriptionCount(), 0);
 			} finally {
-				hdbLogger.info = originalInfo;
+				hdbLogger.warn = originalWarn;
 			}
 		});
 
@@ -290,7 +290,8 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			const subscription = fakeSubscription();
 			const revoke = spyFn();
 			const recheck = spyFn(() => Promise.reject(new Error('recheck must not be called for an expired token')));
-			register({ subscription, username: 'expired', authExpiresAt: 0, recheck, revoke });
+			const nowSec = Math.floor(Date.now() / 1000);
+			register({ subscription, username: 'expired', authExpiresAt: nowSec - 5, recheck, revoke });
 			handles.pop();
 
 			await _sweepNow();
@@ -298,6 +299,20 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(recheck.calls.length, 0);
 			assert.strictEqual(revoke.calls.length, 1);
 			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('keeps a subscription registered while its token remains valid', async () => {
+			const subscription = fakeSubscription();
+			const revoke = spyFn();
+			const recheck = spyFn(() => Promise.resolve(true));
+			const nowSec = Math.floor(Date.now() / 1000);
+			register({ subscription, username: 'still-valid', authExpiresAt: nowSec + 300, recheck, revoke });
+
+			await _sweepNow();
+
+			assert.strictEqual(recheck.calls.length, 1);
+			assert.strictEqual(revoke.calls.length, 0);
+			assert.strictEqual(_liveSubscriptionCount(), 1);
 		});
 
 		it('a throwing revoke leaves the entry registered for retry (fail-closed), and converges once revoke succeeds', async () => {
@@ -360,6 +375,36 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			assert.strictEqual(calls, 2, 'the next sweep must retry a previously rejected revoke');
 			assert.strictEqual(_liveSubscriptionCount(), 1, 'the entry is removed once the async revoke actually succeeds');
+		});
+
+		it('clamps the terminate timeout to the maximum delay supported by setTimeout', async () => {
+			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
+			const originalSetTimeout = global.setTimeout;
+			let observedDelay;
+			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '999999999999';
+			global.setTimeout = (callback, delay, ...args) => {
+				observedDelay = delay;
+				return originalSetTimeout(callback, delay, ...args);
+			};
+			try {
+				register({
+					subscription: fakeSubscription(),
+					username: 'bounded-timeout',
+					authExpiresAt: 0,
+					recheck: async () => true,
+					revoke: spyFn(),
+				});
+				handles.pop();
+
+				await _sweepNow();
+
+				assert.strictEqual(observedDelay, 2_147_483_647);
+				assert.strictEqual(_liveSubscriptionCount(), 0);
+			} finally {
+				global.setTimeout = originalSetTimeout;
+				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
+				else process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = originalTimeout;
+			}
 		});
 
 		it('bounds a never-settling revoke so it cannot wedge the sweep, and other entries are still processed', async () => {
@@ -503,6 +548,39 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 			assert.strictEqual(revoke.calls.length, 0, 'revoke must not fire for an entry the caller already unregistered');
 			assert.strictEqual(_liveSubscriptionCount(), 0);
+		});
+
+		it('does not recheck a snapshotted entry that unregisters before the sweep reaches it', async () => {
+			let releaseFirstRecheck;
+			const firstRecheckGate = new Promise((resolveGate) => {
+				releaseFirstRecheck = resolveGate;
+			});
+			register({
+				subscription: fakeSubscription(),
+				username: 'first',
+				recheck: async () => {
+					await firstRecheckGate;
+					return true;
+				},
+				revoke: spyFn(),
+			});
+			const laterRecheck = spyFn(() => Promise.resolve(true));
+			const laterHandle = register({
+				subscription: fakeSubscription(),
+				username: 'later',
+				recheck: laterRecheck,
+				revoke: spyFn(),
+			});
+
+			const sweepPromise = _sweepNow();
+			await new Promise((resolveTick) => setImmediate(resolveTick));
+			laterHandle.unregister();
+			handles.splice(handles.indexOf(laterHandle), 1);
+			releaseFirstRecheck();
+			await sweepPromise;
+
+			assert.strictEqual(laterRecheck.calls.length, 0);
+			assert.strictEqual(_liveSubscriptionCount(), 1);
 		});
 	});
 });

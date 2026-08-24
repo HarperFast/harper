@@ -16,13 +16,15 @@ import hdbLogger from '../utility/logging/harper_logger.ts';
 
 // Backstop interval; also catches token expiry, which is not event-signaled. Overridable for tests.
 const RECHECK_INTERVAL_MS = Number(process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS) || 30_000;
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 // Bounds how long a caller-supplied terminate/revoke may hold the serialized sweep before being
 // treated as a failure (same fail-closed retry as a throw/rejection). The default terminate settles
 // long before this — it only ever engages for a caller-supplied `revoke` that hangs. Read fresh per
 // call rather than cached at module load, so tests can override it without a require-cache reset.
 function terminateTimeoutMs(): number {
-	return Number(process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS) || 5_000;
+	const timeoutMs = Number(process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS) || 5_000;
+	return Math.min(Math.max(timeoutMs, 1), MAX_TIMEOUT_MS);
 }
 
 interface LiveSubscription {
@@ -251,17 +253,6 @@ function invokeTerminate(entry: LiveSubscription): Promise<void> {
  */
 async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
 	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
-	if (entry.pendingTerminate) {
-		// A prior sweep's attempt is still in flight; its own settle handler (below) commits the
-		// outcome whenever it arrives, so there's nothing to gain by re-invoking or re-racing it — but
-		// silence would be worse than the per-sweep timeout log this replaced: a permanently stuck
-		// revoke would otherwise log exactly once, ever, then vanish. Log cheaply (no wait) instead.
-		safeLog(
-			hdbLogger.error,
-			`liveSubscriptionAuth: terminate for ${entry.username} (${reason}) still pending from an earlier sweep`
-		);
-		return false;
-	}
 
 	const attempt = invokeTerminate(entry);
 	entry.pendingTerminate = attempt;
@@ -269,7 +260,8 @@ async function claimAndTerminate(entry: LiveSubscription, reason: string): Promi
 		() => {
 			if (entry.pendingTerminate === attempt) entry.pendingTerminate = undefined;
 			registry.delete(entry);
-			safeLog(hdbLogger.info, `liveSubscriptionAuth: terminate completed for ${entry.username} (${reason})`);
+			stopIfIdle();
+			safeLog(hdbLogger.warn, `liveSubscriptionAuth: terminate completed for ${entry.username} (${reason})`);
 		},
 		(error) => {
 			if (entry.pendingTerminate === attempt) entry.pendingTerminate = undefined;
@@ -303,11 +295,15 @@ async function sweep(): Promise<void> {
 	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
 	sweeping = true;
 	try {
-		for (const entry of registry) {
+		for (const entry of Array.from(registry)) {
+			if (!registry.has(entry)) continue;
 			if (entry.pendingTerminate) {
 				// A prior sweep's attempt is already deciding this entry's fate; recheck() would only be
 				// a wasted storage read (findAndValidateUser + allowRead) for an outcome we already know.
-				await claimAndTerminate(entry, 'previously pending');
+				safeLog(
+					hdbLogger.error,
+					`liveSubscriptionAuth: terminate for ${entry.username} (previously pending) still pending from an earlier sweep`
+				);
 				continue;
 			}
 			try {
