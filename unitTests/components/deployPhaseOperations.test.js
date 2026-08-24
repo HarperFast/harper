@@ -130,18 +130,41 @@ describe('deploy_component two-phase orchestration', function () {
 		const payload = await makePayload('untracked');
 		const priorTable = databases.system[DEPLOYMENT_TABLE];
 		delete databases.system[DEPLOYMENT_TABLE];
+		const unavailable = (error) => {
+			assert.strictEqual(error.statusCode, 503, `expected 503, got ${error.statusCode}: ${error.message}`);
+			assert.match(error.message, /coordinate through\n?.*hdb_deployment/s);
+			return true;
+		};
 		try {
-			await assert.rejects(
-				() => operations.deployComponent({ project, payload, activate: false }),
-				/require deployment tracking/
-			);
+			await assert.rejects(() => operations.deployComponent({ project, payload, activate: false }), unavailable);
 			await assert.rejects(
 				() => operations.deployComponent({ project, deployment_id: '00000000-0000-4000-8000-000000000000' }),
-				/require deployment tracking/
+				unavailable
 			);
-			await assert.rejects(
-				() => operations.deployComponent({ project, payload, two_phase: true }),
-				/require deployment tracking/
+			await assert.rejects(() => operations.deployComponent({ project, payload, two_phase: true }), unavailable);
+		} finally {
+			databases.system[DEPLOYMENT_TABLE] = priorTable;
+		}
+	});
+
+	it('still allows an explicit two_phase:false deploy when tracking is unavailable', async () => {
+		// The legacy single-phase path is the documented escape hatch: it replicates the whole operation
+		// with its payload rather than coordinating through a row, so it needs no table.
+		const project = name();
+		const priorTable = databases.system[DEPLOYMENT_TABLE];
+		delete databases.system[DEPLOYMENT_TABLE];
+		try {
+			const result = await operations.deployComponent({
+				project,
+				payload: await makePayload('untracked-oneshot'),
+				two_phase: false,
+				restart: false,
+			});
+			assert.ok(result, 'the one-shot path still deploys with no deployment table');
+			assert.match(
+				await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'),
+				/untracked-oneshot/,
+				'and the component actually went live'
 			);
 		} finally {
 			databases.system[DEPLOYMENT_TABLE] = priorTable;

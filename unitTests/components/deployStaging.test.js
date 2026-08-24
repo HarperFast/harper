@@ -1743,6 +1743,42 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 	});
 
+	it('rolls a peer activation forward from local evidence when its row still reads staged', async () => {
+		// A peer swaps WITHOUT writing the deployment row — the origin owns it — so a peer that died
+		// between its swap and its config commit leaves a `staged` row with no staged leaf. That read as a
+		// broken candidate: the row was settled `failed` (replicating over the origin's own row) and the
+		// config was never persisted, so the peer ran new code under the previous release's configuration.
+		// The activation artifact is local proof the swap began and has to outrank the replicated status.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		await stageApplication(application, deploymentId);
+
+		// The peer's post-swap state: candidate live, staged leaf gone, backup parked, row still `staged`.
+		const stagedPath = stagedApplicationPath(application.dirPath, deploymentId);
+		const activationDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationDir, { recursive: true });
+		const backupPath = path.join(activationDir, `.previous-${deploymentId}-1-1-${randomUUID()}`);
+		await fs.mkdir(backupPath, { recursive: true });
+		await fs.writeFile(path.join(backupPath, 'index.js'), "module.exports = 'displaced';\n");
+		await fs.rename(stagedPath, application.dirPath);
+
+		const settled = [];
+		let persisted = 0;
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === deploymentId ? { deployment_id: id, project: name, status: 'staged' } : undefined),
+			async () => persisted++,
+			async (id, reason) => settled.push([id, reason])
+		);
+
+		assert.strictEqual(persisted, 1, 'the interrupted activation persists its configuration');
+		assert.deepStrictEqual(settled, [], 'and the row is NOT settled failed over the origin-owned row');
+		assert.strictEqual(reconciliation.failedProjects.has(name), false);
+		assert.match(await readMarker(application.dirPath), /candidate/, 'the swapped candidate stays live');
+		await cleanup(name);
+	});
+
 	it('rolls forward an interrupted no-live restore instead of sweeping away its marker', async () => {
 		// The no-live revert branch renames `previous` straight to live because there is nothing to
 		// displace, so it has no holding directory — and its marker is the only evidence. Absence of a

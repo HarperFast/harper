@@ -539,29 +539,29 @@ async function deployComponent(req) {
 			HTTP_STATUS_CODES.BAD_REQUEST
 		);
 	}
-	// Separated phases cannot degrade gracefully: `activate: false` returns a deployment_id that only the
-	// row resolves, and `deployment_id` has nothing to look up without it. Failing here beats reporting a
-	// successful stage the cluster can never activate. An explicit `two_phase: true` fails for the same
-	// reason — the caller asked for a protocol that coordinates through the row.
-	const deploymentTracked = isDeploymentTrackingAvailable();
-	if (!isReplicatedExecution && !deploymentTracked && (requestedSeparatedPhase || req.two_phase === true)) {
+	// The separated phases coordinate THROUGH the row, so without it `activate: false` hands back a
+	// deployment_id nothing can resolve — a stage that reports success and can never be activated. Those
+	// requests, and an explicit `two_phase: true`, fail up front.
+	//
+	// The DEFAULT path is deliberately left alone. A default two-phase deploy on an untracked node fails
+	// safely: peers cannot find the row, so the barrier never clears and nothing activates — the origin
+	// does not go live. Routing it to one-shot instead would be the unsafe choice, because that path
+	// consumes the multipart stream into its own blob and strips `req.payload` before replication, so
+	// peers would get neither replayable bytes nor a row while the origin was already live.
+	if (
+		!isReplicatedExecution &&
+		!isDeploymentTrackingAvailable() &&
+		(requestedSeparatedPhase || req.two_phase === true)
+	) {
 		throw handleHDBError(
 			new Error(),
-			`${requestedSeparatedPhase ? 'activate:false and deployment_id' : 'two_phase:true'} require deployment ` +
-				`tracking, but the '${hdbTerms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME}' table is not available on ` +
-				`this node`,
+			`${requestedSeparatedPhase ? 'activate:false and deployment_id' : 'two_phase:true'} coordinate through ` +
+				`the '${hdbTerms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME}' table, which is not available on this ` +
+				`node. Deploy with two_phase:false to use the legacy single-phase path.`,
 			HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 		);
 	}
-	// Unspecified `two_phase` on a node without tracking stays on the one-shot path rather than entering a
-	// protocol that has nowhere to coordinate. Only an explicit request fails loudly, above.
-	if (
-		req.replicated !== false &&
-		!isReplicatedExecution &&
-		req.two_phase !== false &&
-		systemReplicated &&
-		deploymentTracked
-	) {
+	if (req.replicated !== false && !isReplicatedExecution && req.two_phase !== false && systemReplicated) {
 		if (req.deployment_id) return deployComponentActivateExisting(req);
 		return deployComponentTwoPhase(req);
 	}

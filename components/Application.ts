@@ -3465,7 +3465,14 @@ export async function reconcileStagedApplicationArtifacts(
 				}
 			}
 			const stagedPath = stagedApplicationPath(componentDirPath, entry.name);
-			if (row.status === 'staged') {
+			// Local evidence outranks the replicated row's status. A peer swaps WITHOUT writing the row —
+			// the origin owns it — so a peer that died between its swap and its config commit has a
+			// `staged` row and no staged leaf. Read as a broken candidate that settled the row `failed`
+			// (over the origin's own row) and left new code live under the previous release's config. An
+			// activation artifact for this deployment is proof the swap began, so it is an interrupted
+			// activation and belongs in the roll-forward path below.
+			const activationBegan = (await activationArtifacts(componentDirPath, entry.name)).length > 0;
+			if (row.status === 'staged' && !activationBegan) {
 				if (!(await hasCompleteStagedApplication(stagedPath))) {
 					let discarded = false;
 					await withComponentPreparationLock(componentDirPath, async () => {

@@ -608,17 +608,10 @@ export async function recordDeploymentPeers(deploymentId: string, results: unkno
 	await table.patch(deploymentId, { peer_results: peers });
 }
 
-/** Claim a staged deployment for activation while the component preparation lock is held. */
 /**
- * Validate that a staged deployment is available to activate, and — on the ORIGIN — mark the row
- * `activating`.
- *
- * `persist: false` is the peer mode: the same validation, no write. The row is replicated, so every
- * peer patching it makes N+1 writers of one key, and under replication lag a peer's `activating`
- * can land AFTER the origin has written `success` — reverting a converged deploy to a non-terminal
- * status it never leaves. The origin owns the row (as DESIGN.md and revertComponent both state);
- * what a peer actually needs from "claiming" is mutual exclusion against another activation of the
- * same component, and it already holds the component preparation lock for that.
+ * Claim a staged deployment for activation while the component preparation lock is held. On the
+ * ORIGIN this marks the row `activating`; `persist: false` runs the same validation without the
+ * write, because the row is replicated and only the origin owns it. See DESIGN.md.
  */
 /**
  * Whether deployment tracking is provisioned on this node.

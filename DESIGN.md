@@ -218,8 +218,12 @@ a missing `hdb_deployment` table — tracking is observability for a one-shot de
 observability for `activate: false` or activate-by-id, which coordinate _through_ the row: without it
 a stage would return a deployment_id nothing could resolve, so the stage would report success and be
 permanently unactivatable. Those requests, and an explicit `two_phase: true`, fail with 503 when the
-table is absent. An unspecified `two_phase` on such a node stays on the one-shot path rather than
-entering a protocol with nowhere to coordinate.
+table is absent. The DEFAULT path is deliberately left alone: a default two-phase deploy on an
+untracked node fails safely, because peers cannot find the row, the barrier never clears, and nothing
+activates — the origin does not go live. Routing it to one-shot instead would be the unsafe choice,
+since that path consumes the multipart stream into its own blob and strips `req.payload` before
+replication, leaving peers with neither replayable bytes nor a row while the origin was already live.
+`two_phase: false` remains the explicit single-phase escape hatch.
 
 Peer stage/activate/restart messages use the distinct authenticated `component_deploy_phase` operation.
 An older peer therefore rejects the unknown operation instead of ignoring a phase marker and deploying
@@ -531,11 +535,12 @@ names differ (`stage`/`activate` vs the old `prepare`/`replicate`). `two_phase: 
 legacy one-shot path.
 
 **There is only one public operation — `deploy_component`.** The two phases are NOT separate public
-operations; the peer fan-out is `deploy_component` itself tagged with an internal `_phase: 'stage' |
-'activate'` marker (the same `_`-prefixed internal-field convention peers already branch on, alongside
-`_deploymentId`). `deployComponent` dispatches: a replicated execution with `_phase` runs the peer
-stage/activate work (the `component_deploy_phase` operation) and never re-fans; a public call runs
-the origin orchestrator. Two public properties expose the phases when an operator wants them separated
+operations. The peer fan-out is the distinct trusted operation `component_deploy_phase`, which carries
+the phase and the deployment id and is reachable only on the replication path — authorization is
+carried in AsyncLocalStorage (`isOperationAuthorizationBypassed`), not on the request, so it cannot be
+invoked over HTTP with ordinary credentials. Public `_phase` and `_deploymentId` fields are rejected
+outright; an older peer therefore rejects an unknown operation rather than misreading a phase marker as
+a one-shot deploy. A public call runs the origin orchestrator. Two public properties expose the phases when an operator wants them separated
 (e.g. pre-stage the cluster now, flip later — or a CI-stages / approver-activates split): `activate:
 false` stages cluster-wide and stops, returning the `deployment_id` in a `staged` state; passing that
 `deployment_id` back to `deploy_component` (with no new payload) activates the already-staged build.
@@ -566,8 +571,8 @@ component, and it is **not** the watched base of any component's file watcher (t
 each live component dir, `EntryHandler`/`deriveCommonPatternBase`) — so building here fires no
 restart-on-change events and needs no `deploy:start` watcher suppression. That suppression is now
 scoped to `activateStagedApplication`, the only phase that writes the live path. Staging is deterministic
-from the deployment id precisely so the activate phase (a separate replicated `deploy_component`
-invocation on peers, tagged `_phase: 'activate'`) can reconstruct the same path the stage built —
+from the deployment id precisely so the activate phase (a separate `component_deploy_phase` invocation
+on peers) can reconstruct the same path the stage built —
 peers build a fresh `Application` per phase invocation, so there is no shared in-memory handle to rely
 on. The deployment id sits ABOVE the component name (`…/<deploymentId>/<name>`, not
 `…/<name>/<deploymentId>`) for two reasons: the leaf directory's basename is then the real component
