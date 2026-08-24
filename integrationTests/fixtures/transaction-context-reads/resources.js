@@ -148,11 +148,11 @@ export class DashUndrainedThenSearch extends Resource {
 }
 
 // RELEASED-SLOT WRITE — the request transaction closes under an undrained iterator (above), so the
-// static search that follows runs in a nested scope of its own, whose final commit defers releasing
-// the context because that search's iterator is still open. Draining it completes the release
-// mid-handler, and the instance load that follows puts an ImmediateTransaction in the emptied slot.
-// The writes after that must still be durable: they used to stage into that transaction and be
-// dropped by its own commit, with the handler returning 2xx over records that never landed (#2288).
+// search that follows runs in a nested scope whose final commit defers releasing the context;
+// draining that search completes the release mid-handler, and the instance load then puts an
+// ImmediateTransaction in the emptied slot. The writes after that used to be dropped by that
+// transaction's own commit, with the handler still returning 2xx over records that never landed
+// (#2288).
 export class DashReleasedSlotWrite extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
