@@ -63,7 +63,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
-		it('logs a successful revocation at the default warning level on the default (end()-wrapping) path (regression: the success commit must fire even though end() self-unregisters synchronously before the settle handler runs)', async () => {
+		it('logs successful default-path revocation at warning level', async () => {
 			const originalWarn = hdbLogger.warn;
 			const warnMessages = [];
 			hdbLogger.warn = (message) => warnMessages.push(message);
@@ -380,10 +380,10 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 		it('clamps the terminate timeout to the maximum delay supported by setTimeout', async () => {
 			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
 			const originalSetTimeout = global.setTimeout;
-			let observedDelay;
+			const observedDelays = [];
 			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '999999999999';
 			global.setTimeout = (callback, delay, ...args) => {
-				observedDelay = delay;
+				observedDelays.push(delay);
 				return originalSetTimeout(callback, delay, ...args);
 			};
 			try {
@@ -398,7 +398,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 				await _sweepNow();
 
-				assert.strictEqual(observedDelay, 2_147_483_647);
+				assert.ok(observedDelays.includes(2_147_483_647));
 				assert.strictEqual(_liveSubscriptionCount(), 0);
 			} finally {
 				global.setTimeout = originalSetTimeout;

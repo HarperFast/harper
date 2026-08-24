@@ -18,10 +18,7 @@ import hdbLogger from '../utility/logging/harper_logger.ts';
 const RECHECK_INTERVAL_MS = Number(process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS) || 30_000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
-// Bounds how long a caller-supplied terminate/revoke may hold the serialized sweep before being
-// treated as a failure (same fail-closed retry as a throw/rejection). The default terminate settles
-// long before this — it only ever engages for a caller-supplied `revoke` that hangs. Read fresh per
-// call rather than cached at module load, so tests can override it without a require-cache reset.
+// Read fresh per call so tests can override it without resetting the module cache.
 function terminateTimeoutMs(): number {
 	const timeoutMs = Number(process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS) || 5_000;
 	return Math.min(Math.max(timeoutMs, 1), MAX_TIMEOUT_MS);
@@ -35,12 +32,7 @@ interface LiveSubscription {
 	recheck: () => Promise<boolean>;
 	/** Stop delivery and tear down the subscription. May be async (e.g. a shared-feed refcount release). */
 	terminate: () => void | Promise<void>;
-	/**
-	 * The in-flight `terminate()` call, if a prior attempt is still pending (timed out, not settled).
-	 * Reused rather than calling `terminate` again, so a hung `revoke` is never invoked twice for the
-	 * same entry — the seam's documented idempotency invariant is enforced here rather than merely
-	 * assumed of caller code.
-	 */
+	/** The in-flight terminate call, cleared after it settles. */
 	pendingTerminate?: Promise<void>;
 }
 
@@ -48,15 +40,10 @@ function errorMessage(error: unknown): string {
 	try {
 		return error instanceof Error ? error.message : String(error);
 	} catch {
-		// a thrown value whose own String()/toString() throws (e.g. Object.create(null)) must not turn
-		// a contained failure into a new one — this runs inside a sweep catch handler with no outer guard.
 		return '<error message unavailable>';
 	}
 }
 
-// hdbLogger's file-backed transport can itself throw (e.g. ENOSPC/EIO on the underlying
-// fs.appendFileSync) with nothing between it and the caller. A logging call inside a fail-closed
-// catch arm must never be the thing that defeats fail-closed by escaping as a new exception.
 function safeLog(log: ((message: string) => void) | undefined, message: string): void {
 	try {
 		log?.(message);
@@ -90,9 +77,6 @@ let sweeping = false;
 
 const NOOP_HANDLE = { unregister: () => {} };
 
-// sweep()'s own try/finally protects its recheck body, but a throw from claimAndTerminate's fail-
-// closed catch-arm call (e.g. a logger call that itself throws) would otherwise escape as an
-// unhandled rejection from these fire-and-forget triggers.
 function triggerSweep(): void {
 	void sweep().catch((error) => safeLog(hdbLogger.error, `liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`));
 }
@@ -157,10 +141,6 @@ export function registerLiveSubscription(opts: {
 	revoke?: () => void | Promise<void>;
 }): { unregister: () => void } {
 	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
-	// The registry-owned teardown path needs a live, mutable subscription object to wrap; the
-	// caller-owned `revoke` path never touches `subscription` at all (see below), so a caller with no
-	// meaningful subscription object to hand over — the expected shape for a shared feed — isn't held
-	// to that requirement.
 	if (!revoke && (!subscription || typeof subscription !== 'object' || subscription.closed)) return NOOP_HANDLE;
 
 	const entry: LiveSubscription = {
@@ -216,40 +196,9 @@ function invokeTerminate(entry: LiveSubscription): Promise<void> {
 }
 
 /**
- * Remove `entry` and run its terminate/revoke, but only if the caller hasn't already unregistered
- * this entry itself (checked via `registry.has`, not a delete-then-restore, so a failed attempt never
- * revisits the entry within the same sweep pass; it's simply left in place for the next one). This
- * makes revocation fail-closed on *tracking*: a `revoke` that throws, rejects, or never settles (e.g.
- * a shared-feed refcount release hitting a wedged backing store) leaves the entry registered instead
- * of being forgotten, so the next sweep retries — recheck fails the same way, so the retry converges
- * once teardown succeeds.
- *
- * `terminate` is invoked at most once per entry no matter how many sweeps it takes to settle.
- * `entry.pendingTerminate` caches the in-flight attempt, and the commit/failure handler is attached to
- * it ONCE, at creation — it fires whenever the attempt settles (success, rejection, or, for the
- * default terminate, a synchronous self-unregister via `subscription.end`'s wrapper), regardless of
- * whether any sweep is actively awaiting it at that moment. This is what makes a late success (one
- * that lands after this sweep's timeout window closes but before the next sweep starts) commit
- * exactly once instead of being silently discarded and re-invoked. A sweep that finds an attempt
- * already in flight from a previous pass does not re-invoke `terminate`/`revoke` and does not re-race
- * it either — the outcome will be handled by the original handler whenever it settles, and re-racing
- * it would cost another full `terminateTimeoutMs()` of serialized sweep time per stuck entry, every
- * single pass, forever, for a result nothing uses. It does still log on every such sweep (cheaply, no
- * wait) — without that, a permanently stuck `revoke` would log exactly once, ever, then go silent for
- * the rest of the worker's life, which is worse than the cost it replaced.
- *
- * The success log says "terminate completed", not "revoked" — the default terminate (no `revoke`
- * supplied) still swallows `end()`/`close()`/`emit` errors internally, unchanged from #1414, so this
- * module cannot always tell whether delivery actually stopped, only that terminate ran without an
- * error reaching it.
- *
- * Only the FIRST attempt is raced against `terminateTimeoutMs()`: without a bound, a caller-supplied
- * `revoke` that never settles would hold `sweeping` true forever (the `finally` in `sweep()` never
- * runs), silently disabling re-authorization for every subscription on the worker, not just this
- * entry's. `recheck` has the same unbounded-await shape and is NOT similarly bounded here — not
- * because it's safe (production `recheck` bottoms out in `resource.allowRead`, user-overridable
- * application code, same as `revoke`), but because bounding it would change behavior on the DEFAULT
- * (no-`revoke`) path, which this seam's own acceptance contract requires to stay identical to #1414.
+ * Terminate a registered entry and remove it only after success. A rejected attempt remains tracked
+ * for retry; a pending attempt is not invoked again. The settle handler commits a late success even
+ * after the sweep's timeout has elapsed.
  */
 async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
 	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
@@ -276,14 +225,10 @@ async function claimAndTerminate(entry: LiveSubscription, reason: string): Promi
 	try {
 		await withTimeout(attempt, timeoutMs, `terminate timed out after ${timeoutMs}ms`);
 	} catch {
-		// If the attempt itself already rejected, the handler above already logged the definitive
-		// failure and cleared pendingTerminate — nothing more to do. If it's still pending (this is
-		// our own timeout firing, not a rejection), pendingTerminate still points at it; log that this
-		// sweep is still waiting so a persistently hung revoke doesn't go completely silent.
 		if (entry.pendingTerminate === attempt) {
 			safeLog(
 				hdbLogger.error,
-				`liveSubscriptionAuth: terminate for ${entry.username} (${reason}) still pending after ${timeoutMs}ms, will retry next sweep`
+				`liveSubscriptionAuth: terminate for ${entry.username} (${reason}) still pending after ${timeoutMs}ms; awaiting settlement`
 			);
 		}
 		return false;
@@ -298,8 +243,6 @@ async function sweep(): Promise<void> {
 		for (const entry of Array.from(registry)) {
 			if (!registry.has(entry)) continue;
 			if (entry.pendingTerminate) {
-				// A prior sweep's attempt is already deciding this entry's fate; recheck() would only be
-				// a wasted storage read (findAndValidateUser + allowRead) for an outcome we already know.
 				safeLog(
 					hdbLogger.error,
 					`liveSubscriptionAuth: terminate for ${entry.username} (previously pending) still pending from an earlier sweep`
@@ -307,8 +250,6 @@ async function sweep(): Promise<void> {
 				continue;
 			}
 			try {
-				// Read fresh per entry rather than once before the loop: a slow recheck or terminate on
-				// an earlier entry must not leave a later entry's expiry judged against a stale timestamp.
 				const now = Date.now();
 				const expired = entry.authExpiresAt != null && now >= entry.authExpiresAt * 1000;
 				const stillAuthorized = expired ? false : await entry.recheck();
