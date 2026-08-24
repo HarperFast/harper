@@ -202,6 +202,7 @@ describe('update-attributes exclusive lock', () => {
 			acquireUpdateAttributesLock(rootStore, `table '${TEST_DB}.Contended'`);
 			const elapsed = Date.now() - startTime;
 			releaseUpdateAttributesLock(rootStore);
+			assert.ok(elapsed >= 200, `should wait for the holding thread, acquired after ${elapsed}ms`);
 			assert.ok(elapsed < 5000, `should acquire promptly after release, took ${elapsed}ms`);
 		} finally {
 			await workerThread.terminate();
