@@ -5,13 +5,9 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { isReleasedTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
 
-const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
-
-// A table call that finds no transaction on its context — including the released placeholder a
-// completed scope leaves in the slot — gets an ImmediateTransaction from txnForContext, installed on
-// the context and reporting OPEN, so every later call on that context joins it. It is also the only
-// transaction that opens its native handle inside its own commit(), which is what used to leave that
-// handle, and every write staged into it, dropped uncommitted (issue #2288).
+// An ImmediateTransaction is the only transaction that opens its native handle inside its own
+// commit(), which is what used to leave that handle — and every write staged into it — dropped
+// uncommitted (issue #2288).
 describe('Writes through an ImmediateTransaction installed on a context', () => {
 	let A, B, Audited;
 	before(function () {
@@ -47,9 +43,6 @@ describe('Writes through an ImmediateTransaction installed on a context', () => 
 		assert.ok(await A.get('after-release'), 'the write must be durable, not silently discarded');
 	});
 
-	// The two writes of the failing handler, on the same installed transaction. Each commits on its
-	// own — the documented expectation for a context whose transaction has completed — so the second
-	// must not depend on, or disturb, the first.
 	it("commits each of a handler's successive writes, across two tables", async function () {
 		await A.put('seed', { v: 0 }, {});
 		await A.put('staged', { v: 1 }, {});
@@ -65,10 +58,9 @@ describe('Writes through an ImmediateTransaction installed on a context', () => 
 		assert.equal(immediate.writes.length, 0);
 	});
 
-	// The record and its audit/transaction-log entry batch onto the same native handle, so a write
-	// committed through this path must carry its entry too — without it the record would be durable
-	// locally and never replicate, which is worse than the symmetric loss it replaced.
-	(isLMDB ? it.skip : it)('commits the audit entry with the record', async function () {
+	// A record durable locally but carrying no entry would never replicate — worse than the symmetric
+	// loss it replaced.
+	it('commits the audit entry with the record', async function () {
 		await A.put('seed', { v: 0 }, {});
 		const context = {};
 		await installImmediateTransaction(context);
@@ -83,9 +75,9 @@ describe('Writes through an ImmediateTransaction installed on a context', () => 
 		);
 	});
 
-	// The slot reaches the released placeholder mid-handler exactly as it did in production: a commit
-	// made while search iterators are still streaming defers its context release, and the last
-	// iterator to drain completes it — after which the handler is still running and still writing.
+	// How the slot reaches the placeholder in production: a commit made while search iterators are
+	// still streaming defers the context release, and the last iterator to drain completes it — with
+	// the handler still running, and still writing.
 	it('commits writes made after a deferred context release completes mid-handler', async function () {
 		await A.put('seed', { v: 0 }, {});
 		const context = {};
