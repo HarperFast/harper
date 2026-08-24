@@ -1,6 +1,11 @@
 require('../testUtils');
 const assert = require('assert');
-const { RecordEncoder, RecordObject, isMissingStructureError } = require('#src/resources/RecordEncoder');
+const {
+	RecordEncoder,
+	RecordObject,
+	isMissingStructureError,
+	DEFAULT_MAX_TYPED_STRUCTURES,
+} = require('#src/resources/RecordEncoder');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { Encoder } = require('msgpackr');
 
@@ -167,5 +172,168 @@ describe('RecordEncoder missing-structure handling (harper#1163)', () => {
 		assert.strictEqual(enc.decode(truncated), null, 'corrupt (non-structure) decode should still return null');
 		assert.strictEqual(errors.length, 1, 'genuine corruption should use the generic error path');
 		assert.strictEqual(warnings.length, 0, 'genuine corruption should not use the missing-structure warning');
+	});
+});
+
+describe('RecordEncoder structure-dictionary bound & observability (harper#2220)', () => {
+	let warnings, restoreWarn;
+	beforeEach(() => {
+		warnings = [];
+		restoreWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => warnings.push(args);
+	});
+	afterEach(() => {
+		harperLogger.warn = restoreWarn;
+	});
+	const saturationWarnings = () => warnings.filter((w) => /Typed-structure dictionary/.test(w[0]));
+
+	function makeCappedEncoder(store, maxOwnStructures) {
+		return new RecordEncoder({
+			structures: [],
+			randomAccessStructure: true,
+			maxOwnStructures,
+			getStructures: store.get,
+			saveStructures: store.save,
+		});
+	}
+
+	it('defaults the typed-structure dictionary to the documented bound', () => {
+		const enc = makeEncoder(true, sharedStore());
+		assert.strictEqual(enc.maxOwnStructures, DEFAULT_MAX_TYPED_STRUCTURES);
+		assert.strictEqual(enc.getStructureCounts().typedLimit, DEFAULT_MAX_TYPED_STRUCTURES);
+	});
+
+	it('stops minting typed structures at the bound, and past-cap records still round-trip', () => {
+		const enc = makeCappedEncoder(sharedStore(), 4);
+		// Each novel field name is a novel shape, so this would mint 20 structures if uncapped.
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 4, 'dictionary must stop growing at the bound');
+		const bytes = Buffer.from(enc.encode({ beyond: 'the cap' }));
+		assert.deepStrictEqual(enc.decode(bytes), { beyond: 'the cap' }, 'past-cap shapes fall back to plain encoding');
+	});
+
+	it("reports the durable dictionary, not this encoder's own arrays", () => {
+		// The failure this guards: each worker owns its own encoder and loads lazily, so a worker that
+		// never encoded for a store holds empty arrays for a store whose durable dictionary is full.
+		// Reporting the local arrays would tell an operator there is full headroom when there is none.
+		const store = sharedStore();
+		const writer = makeCappedEncoder(store, 8);
+		for (let i = 0; i < 20; i++) writer.encode({ ['f' + i]: i });
+		assert.strictEqual(writer.getStructureCounts().typed, 8);
+
+		const idleWorker = makeCappedEncoder(store, 8);
+		assert.strictEqual(idleWorker.typedStructs.length, 0, 'precondition: this encoder has loaded nothing');
+		assert.strictEqual(idleWorker.getStructureCounts().typed, 8, 'counts must come from the durable payload');
+	});
+
+	it('does not report zero typed structures for a named-only durable payload', () => {
+		// structon keeps this encoder's typed dictionary for the legacy bare-array and cbor-x
+		// {structures} payloads -- both carry named structures only. Reading typed as 0 for those
+		// would show an empty dictionary for a store that is actually saturated.
+		const store = sharedStore();
+		const enc = makeCappedEncoder(store, 8);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.typedStructs.length, 8, 'precondition: this encoder holds a full dictionary');
+
+		store.save(['someNamedStructure']); // legacy bare-array form
+		assert.strictEqual(enc.getStructureCounts().typed, 8, 'bare-array payload must not zero the typed count');
+
+		store.save({ structures: ['someNamedStructure'] }); // cbor-x SharedData form
+		assert.strictEqual(enc.getStructureCounts().typed, 8, 'cbor-x payload must not zero the typed count');
+	});
+
+	it('reports zero for a store whose structures have never been saved', () => {
+		const enc = makeCappedEncoder(sharedStore(), 8);
+		assert.deepStrictEqual(enc.getStructureCounts(), {
+			typed: 0,
+			classic: 0,
+			typedLimit: 8,
+			typedEnabled: true,
+		});
+	});
+
+	it('reports zeros rather than throwing for a store with no shared-structures mechanism', () => {
+		// msgpackr only defines getStructures when the option was supplied, so the captured super is
+		// undefined here; Table.getStructureCounts() is public and must not throw on such a store.
+		const enc = new RecordEncoder({ structures: [], randomAccessStructure: true });
+		const counts = enc.getStructureCounts();
+		assert.strictEqual(counts.typed, 0);
+		assert.strictEqual(counts.classic, 0);
+	});
+
+	it('reports whether typed encoding is enabled at all', () => {
+		// Random-access fields default off (utility/lmdb/OpenDBIObject.ts), so a typed count of 0
+		// against a limit of 256 is the normal state for most tables, not spare headroom.
+		assert.strictEqual(makeEncoder(true, sharedStore()).getStructureCounts().typedEnabled, true);
+		assert.strictEqual(makeEncoder(false, sharedStore()).getStructureCounts().typedEnabled, false);
+	});
+
+	it('reports classic (named-record) structures separately from typed ones', () => {
+		const enc = makeEncoder(false, sharedStore()); // struct hook bails -> msgpackr records mode
+		enc.encode(record);
+		const counts = enc.getStructureCounts();
+		assert.strictEqual(counts.typed, 0, 'records mode must not mint typed structures');
+		assert.ok(counts.classic > 0, 'records mode mints a classic named-record structure');
+	});
+
+	it('warns exactly once when the typed-structure dictionary saturates', () => {
+		const enc = makeCappedEncoder(sharedStore(), 4);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(saturationWarnings().length, 1, 'saturation should be reported once, not per write');
+		assert.match(saturationWarnings()[0][0], /reached its limit of 4 structures/);
+	});
+
+	it('does not warn while the dictionary still has headroom', () => {
+		const enc = makeCappedEncoder(sharedStore(), 64);
+		for (let i = 0; i < 8; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 8);
+		assert.strictEqual(saturationWarnings().length, 0, 'no warning below the bound');
+	});
+
+	it('does not fail the write when the log sink throws on the saturation warning', () => {
+		// The structures are already durably committed by the time this runs, so a failing sink must
+		// not turn a committed save into a reported failure.
+		harperLogger.warn = () => {
+			throw new Error('log sink unavailable');
+		};
+		const enc = makeCappedEncoder(sharedStore(), 4);
+		for (let i = 0; i < 20; i++) enc.encode({ ['f' + i]: i });
+		assert.strictEqual(enc.getStructureCounts().typed, 4);
+		const bytes = Buffer.from(enc.encode({ still: 'writable' }));
+		assert.deepStrictEqual(enc.decode(bytes), { still: 'writable' });
+	});
+
+	it('does not warn when the structure save was declined', () => {
+		// A declined save means the dictionary this encoder holds was never persisted; warning on it
+		// would report saturation of a dictionary that does not exist durably.
+		const enc = new RecordEncoder({
+			structures: [],
+			randomAccessStructure: true,
+			maxOwnStructures: 4,
+			getStructures: () => undefined,
+			saveStructures: () => false,
+		});
+		for (let i = 0; i < 20; i++) {
+			try {
+				enc.encode({ ['f' + i]: i });
+			} catch {
+				// structon surfaces sustained save contention; the point here is the absent warning
+			}
+		}
+		assert.strictEqual(saturationWarnings().length, 0, 'a declined save must not report saturation');
+	});
+
+	it('counts key order and per-field value width as distinct shapes, not just the field set', () => {
+		// The growth driver behind harper#2220: dictionary size is combinatorial in
+		// (field subset) x (key order) x (per-field value width class), not linear in column count.
+		const byOrder = makeEncoder(true, sharedStore());
+		byOrder.encode({ a: 1, b: 1, c: 1 });
+		byOrder.encode({ c: 1, b: 1, a: 1 });
+		assert.strictEqual(byOrder.getStructureCounts().typed, 2, 'same field set, different key order, two shapes');
+
+		const byWidth = makeEncoder(true, sharedStore());
+		byWidth.encode({ id: 'k', v: 1 }); // 1-byte int
+		byWidth.encode({ id: 'k', v: 70000 }); // 4-byte int
+		assert.strictEqual(byWidth.getStructureCounts().typed, 2, 'same field set, different value width, two shapes');
 	});
 });

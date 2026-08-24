@@ -108,6 +108,25 @@ suite('Configuration', (ctx) => {
 			.expect(200);
 	});
 
+	test('describe_table reports record-structure dictionary counts', async () => {
+		// Run against a table that has rows, so a nonzero classic count proves the values are read
+		// from the table's real dictionary rather than plumbed-through defaults.
+		await client
+			.req()
+			.send({ operation: 'describe_table', table: ATTR_TEST_TABLE, schema: SCHEMA })
+			.expect((r) => {
+				assert.equal(typeof r.body.typed_structures_enabled, 'boolean', r.text);
+				assert.equal(typeof r.body.typed_structure_count, 'number', r.text);
+				assert.equal(typeof r.body.typed_structure_limit, 'number', r.text);
+				assert.ok(r.body.typed_structure_limit > 0, r.text);
+				assert.ok(r.body.typed_structure_count <= r.body.typed_structure_limit, r.text);
+				// randomAccessFields defaults off, so a written table's structures are classic ones
+				assert.equal(r.body.typed_structures_enabled, false, r.text);
+				assert.ok(r.body.classic_structure_count > 0, r.text);
+			})
+			.expect(200);
+	});
+
 	// ── AttributeDropTest ───────────────────────────────────────────────────
 
 	test('describe_table AttributeDropTest before creating attribute', async () => {

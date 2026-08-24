@@ -71,7 +71,15 @@ import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.
 import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, RecordObject, type Entry, entryMap } from './RecordEncoder.ts';
+import {
+	recordUpdater,
+	removeEntry,
+	PENDING_LOCAL_TIME,
+	RecordObject,
+	type Entry,
+	type StructureCounts,
+	entryMap,
+} from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -4822,6 +4830,10 @@ export function makeTable(options) {
 			}
 			const stats = primaryStore.getStats();
 			return (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
+		}
+		/** Sizes of this table's durable record-structure dictionaries. */
+		static getStructureCounts(): StructureCounts | undefined {
+			return primaryStore.encoder?.getStructureCounts?.();
 		}
 		static getAuditSize(): number {
 			const stats = auditStore?.getStats();
