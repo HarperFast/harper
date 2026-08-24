@@ -1,4 +1,3 @@
-require('../testUtils');
 const { parentPort } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { database, table } = require('#src/resources/databases');
@@ -58,8 +57,6 @@ parentPort
 			} catch (error) {
 				parentPort.postMessage({ type: 'table-created', created: false, error: error.message });
 			}
-		} else if (message.type === 'shutdown') {
-			process.exit(0);
 		}
 	})
 	.ref();

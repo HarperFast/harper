@@ -290,8 +290,7 @@ synchronous bounded wait (`acquireUpdateAttributesLock` in `Table.ts`: brief hot
 `Atomics.wait` backoff, retryable `ServerError` after the 10s `UPDATE_ATTRIBUTES_LOCK_TIMEOUT` — harper#2251; it used to be
 an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if the holder never
 released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
-`withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock; keep it
-that way (regression suite: `unitTests/resources/updateAttributesLock.test.js`). The locked
+`withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock. The locked
 sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside
 one would stall a concurrent acquirer to its deadline. And dropping then recreating a
 same-named table within one process requires @harperfast/rocksdb-js >= the column-family

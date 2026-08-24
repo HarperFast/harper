@@ -1,4 +1,3 @@
-require('../testUtils');
 const assert = require('assert');
 const { Worker } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
@@ -48,7 +47,6 @@ function runWorkerAction(message, expectedMessageTypes, hardTimeout) {
 	});
 }
 
-// harper#2251: bounded acquire (throw instead of spinning a core forever) + structural release
 describe('update-attributes exclusive lock', () => {
 	let rootStore;
 	before(function () {
@@ -108,11 +106,11 @@ describe('update-attributes exclusive lock', () => {
 			{ name: 'extra', type: 'String', indexed: true },
 		];
 		table({ table: 'LockLeak', database: TEST_DB, attributes });
-		// Reload the schema without 'extra' while the catalog remove throws: table() takes the
-		// exclusive lock just before removing the dropped attribute, so the throw escapes from
-		// inside the locked region and must not leak the lock.
 		const originalRemoveSync = PrimaryRocksDatabase.prototype.removeSync;
+		let heldAtThrow;
 		PrimaryRocksDatabase.prototype.removeSync = function () {
+			heldAtThrow = !rootStore.tryLock(LOCK_KEY);
+			if (!heldAtThrow) rootStore.unlock(LOCK_KEY);
 			throw new Error('simulated catalog failure');
 		};
 		try {
@@ -123,9 +121,9 @@ describe('update-attributes exclusive lock', () => {
 		} finally {
 			PrimaryRocksDatabase.prototype.removeSync = originalRemoveSync;
 		}
+		assert.strictEqual(heldAtThrow, true, 'the throw must escape from inside the locked region');
 		assert.ok(rootStore.tryLock(LOCK_KEY), 'exclusive lock must not leak when table() throws');
 		rootStore.unlock(LOCK_KEY);
-		// a subsequent schema update must succeed rather than wedge — restore the original definition
 		table({ table: 'LockLeak', database: TEST_DB, attributes });
 	});
 
