@@ -48,7 +48,9 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 
 Credentials are resolved as a pair and are never combined across sources. An incomplete pair supplied with dedicated authentication parameters or in the target URL causes the command to fail. An incomplete environment-variable pair is skipped with a warning so that a saved login token can still be used.
 
-Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts, so token environment variables are deliberately ignored there — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected.
+Entry 5 is not a two-step fallback the way 3 and 4 are: whichever token namespace is merely **set** claims the choice, so a blank `HARPER_CLI_REFRESH_TOKEN` shadows a complete `CLI_TARGET_REFRESH_TOKEN` instead of deferring to it — see below.
+
+Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts, so token environment variables are deliberately ignored there — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected. Note what that trust means on a self-hosted runner: an unset or blank `target` does not fail, it resolves to the local instance and runs as superuser on the socket's ambient trust, with no credential checked at all. A job that loses its `HARPER_CLI_TARGET` deploys to the runner's own node rather than erroring.
 
 Before v5.2.0, `username=` and `password=` operation parameters took precedence over environment variables and saved login tokens. This could authenticate an operation as the wrong user when those fields were part of the operation payload, such as the user being created by `add_user`.
 
@@ -196,7 +198,7 @@ HARPER_CLI_TARGET=https://example.com:9925/
 HARPER_CLI_REFRESH_TOKEN=eyJhbGciOi...
 ```
 
-Because stdout carries only these two lines, the token never appears on screen or in your shell history — which is not true of copying it out of terminal output by hand. If the cluster returns no refresh token, the command fails rather than emitting a half-block that would "succeed" at storing nothing.
+Because stdout carries only these two lines, piping it keeps the token off your screen and out of your shell history — which is not true of copying it out of terminal output by hand. **Pipe it.** There is no guard on a terminal stdout, so running `harper login --for-ci` bare prints the refresh token into your scrollback, where the terminal may persist it. (Interactively the command does first ask you to confirm minting for that user, since doing so revokes any token the user already holds; that prompt is skipped when stdin is not a TTY.) If the cluster returns no refresh token, the command fails rather than emitting a half-block that would "succeed" at storing nothing.
 
 Expose the two values to the deploy step and no other credentials are needed:
 
@@ -208,9 +210,15 @@ Expose the two values to the deploy step and no other credentials are needed:
     HARPER_CLI_REFRESH_TOKEN: ${{ secrets.HARPER_CLI_REFRESH_TOKEN }}
 ```
 
-**Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. A refresh token the server rejects as expired or invalid (401) stops the command with a non-zero exit and a "run harper login again" message.
+**Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. A refresh token the server rejects as **malformed or unrecognized** answers `401`, and the CLI stops with a non-zero exit and a "run harper login again" message.
 
-Any _other_ refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
+:::warning
+**An expired refresh token does not stop the command.** Harper answers expiry with `403`, not `401` — `validateRefreshToken` maps `TokenExpiredError` to `FORBIDDEN` — and the CLI's halt branch keys on `401` alone. Expiry is the guaranteed end state of every `--for-ci` token once `refreshTokenTimeout` elapses, so this is the failure a pipeline is most likely to meet, and it takes the continue path below rather than halting.
+
+Do not build a runbook around a non-zero exit at day 31. Watch the operation's own result instead, and keep payload `username=`/`password=` off any command you expect a token to authenticate.
+:::
+
+A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
 
 - **Refresh token only** (what `--for-ci` provisions): no bearer token is attached. The command either fails as unauthenticated or, if it also carries `username=` and `password=` operation parameters, authenticates as that pair instead — a different identity than the one you configured.
 - **An expired operation token as well**: that expired token is still attached, so the request goes out carrying it and the server rejects it. You get a 401 rather than a silent identity switch.

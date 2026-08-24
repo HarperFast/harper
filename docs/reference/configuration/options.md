@@ -107,7 +107,7 @@ authentication:
 - `cacheTTL` — Session cache duration (ms); _Default_: `30000`
 - `enableSessions` — Cookie-based sessions; _Default_: `true`
 - `operationTokenTimeout` — Access token lifetime; _Default_: `1d`
-- `refreshTokenTimeout` — Refresh token lifetime; _Default_: `1d`
+- `refreshTokenTimeout` — Refresh token lifetime; _Default_: `30d`
 - `logging` — Authentication event logging (Added in: v4.6.0); sub-options: `path`, `level`, `tag`, `stdStreams`. See [Logging Configuration](../logging/configuration.md)
 
 ---
