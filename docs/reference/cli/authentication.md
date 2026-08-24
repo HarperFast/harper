@@ -24,7 +24,7 @@ harper get_components
 harper set_configuration logging_level=info
 ```
 
-When no `target` parameter is specified, the CLI defaults to using the local domain socket connection, providing secure, authenticated access to the local Harper instance.
+When no `target` parameter is specified, the CLI falls back to the target saved by a previous `harper login` if there is one, and only otherwise to the local domain socket connection, which gives authenticated access to the local Harper instance. See [Authentication Precedence](#authentication-precedence) for what that means on a shared machine.
 
 ## Remote Operations
 
@@ -232,7 +232,11 @@ The fix is configuration, not monitoring: set **`authentication.authorizeLocal: 
 
 Choosing a non-loopback target is _not_ sufficient on its own. A same-host reverse proxy makes every forwarded request arrive from `127.0.0.1`, so `https://prod:9925` fronted by nginx on the Harper node is still a loopback peer as far as authorization is concerned. See [`authorizeLocal`](../security/configuration.md#authorizelocal), which carries the same warning for local proxies generally.
 
-Turning it off does not break local `harper` commands: those go over the domain socket, which is trusted by a separate rule that this flag does not gate.
+Turning it off does not break local `harper` commands: those go over the operations API domain socket, which is trusted by a separate rule that this flag does not gate.
+
+:::danger
+That separate rule is also the limit of the remediation. A connection arriving on the operations socket is authorized as superuser with no credential, and `authorizeLocal: false` does not change that. So if a reverse proxy's upstream is the operations socket rather than a TCP port, setting the flag closes nothing — every proxied request is still superuser. Do not expose the operations API socket through a proxy, and treat filesystem permissions on it as the access control.
+:::
 :::
 
 A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
