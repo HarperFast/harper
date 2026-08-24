@@ -57,8 +57,6 @@ export class V1Embeddings extends Resource {
 
 		const model = typeof raw.model === 'string' ? raw.model : 'default';
 
-		// The OpenAI Node.js SDK defaults to encoding_format: 'base64' and decodes
-		// the response unconditionally, so this must be honored — see toEmbedResponse.
 		const encodingFormat = raw.encoding_format ?? 'float';
 		if (encodingFormat !== 'float' && encodingFormat !== 'base64') {
 			return badRequest("'encoding_format' must be 'float' or 'base64'");

@@ -335,7 +335,6 @@ export function toChatCompletion(result: GenerateResult, model: string, id?: str
 
 export interface OAIEmbedResponse {
 	object: 'list';
-	/** `embedding` is `number[]` for encoding_format 'float', base64 string for 'base64'. */
 	data: Array<{ embedding: number[] | string; index: number; object: 'embedding' }>;
 	model: string;
 	usage: { prompt_tokens: number; total_tokens: number };
@@ -376,7 +375,7 @@ export function toEmbedResponse(
 	};
 }
 
-/** Base64-encode a vector as little-endian float32 bytes (OpenAI base64 wire format). */
+/** OpenAI base64 uses float32 bytes; Harper's supported targets are little-endian. */
 function toBase64Embedding(vec: Float32Array | number[]): string {
 	const f32 = vec instanceof Float32Array ? vec : Float32Array.from(vec);
 	return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength).toString('base64');

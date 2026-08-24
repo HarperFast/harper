@@ -344,10 +344,6 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		assert.equal(completion.choices[0].finish_reason, 'stop');
 	});
 
-	// -----------------------------------------------------------------------
-	// LangChain.js e2e — unmodified @langchain/openai client (#631 acceptance)
-	// -----------------------------------------------------------------------
-
 	test('LangChain.js ChatOpenAI completes a chat against Harper (non-streaming)', async () => {
 		const { ChatOpenAI } = await import('@langchain/openai');
 		const chat = new ChatOpenAI({
@@ -359,7 +355,6 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		const res = await chat.invoke([{ role: 'user' as const, content: 'hello from langchain' }]);
 		assert.ok(typeof res.content === 'string', `expected string content, got ${typeof res.content}`);
 		assert.ok(res.content.includes('[echo]'), `unexpected content: ${res.content}`);
-		// Usage flows through: gateway usage → OpenAI shape → LangChain usage_metadata
 		assert.ok(res.usage_metadata, 'expected usage_metadata on the AIMessage');
 		assert.ok(res.usage_metadata.total_tokens > 0, 'expected non-zero total_tokens');
 	});
@@ -387,10 +382,6 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 	});
 
 	test('LangChain.js OpenAIEmbeddings embeds a query against Harper', async () => {
-		// The underlying OpenAI SDK defaults to encoding_format: 'base64' when the
-		// caller does not specify one and unconditionally base64-decodes the
-		// response, so this exercises the gateway's base64 encoding path — a
-		// float-array response here would come back silently corrupted.
 		const { OpenAIEmbeddings } = await import('@langchain/openai');
 		const embeddings = new OpenAIEmbeddings({
 			model: 'default',
