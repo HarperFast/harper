@@ -31,9 +31,17 @@ const OP_ALIASES = {
 	package: 'package_component',
 };
 
+// `stage` and `activate` are sugar over `deploy_component` — there are no separate stage/activate
+// operations to find.
 const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
-	// `harper revert` uploads nothing: the version it activates is already on disk. `_cliVerb` is a
-	// CLI-internal marker (stripped before the request is sent) that drives the missing-target guard below.
+	stage: { operation: 'deploy_component', activate: false, _cliVerb: 'stage' },
+	// `_cliVerb` is a CLI-internal marker (stripped before the request is sent) so verbRequirementError
+	// can enforce that `harper activate` carries a deployment_id — without it, deploy_component's generic
+	// "no deployment_id → full deploy" fallback would silently build a brand-new deploy from the CWD.
+	// It also tells the staged-deploy capability probe that this invocation needs two-phase support.
+	activate: { operation: 'deploy_component', _cliVerb: 'activate' },
+	// `harper revert` uploads nothing: the version it activates is already on every node. `_cliVerb`
+	// here only drives the missing-target guard below.
 	revert: { operation: 'revert_component', _cliVerb: 'revert' },
 };
 
@@ -41,6 +49,9 @@ const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
 // verb invoked it). Returns an error message, or null when the request is fine. Pure + exported so it
 // is unit-testable without the network/process-exit machinery in cliOperations.
 function verbRequirementError(req: any): string | null {
+	if (req._cliVerb === 'activate' && !req.deployment_id) {
+		return '`harper activate` requires a deployment_id from a prior `harper stage` — usage: harper activate project=<name> deployment_id=<id>';
+	}
 	// revert_component requires its target so a retry can't toggle the rejected release back in. Caught
 	// here too, so the CLI names the flag instead of surfacing a raw validation error.
 	if (req._cliVerb === 'revert' && !req.to_deployment_id) {
@@ -183,6 +194,22 @@ async function targetSupportsStreamingDeploy(options: any): Promise<boolean> {
 		return versionSupportsStreamingDeploy(version);
 	} catch {
 		return true;
+	}
+}
+
+async function targetSupportsStagedDeploy(options: any): Promise<boolean> {
+	try {
+		const probeOptions = {
+			...options,
+			headers: { ...options.headers, Accept: 'application/json' },
+			timeout: CLI_OPERATION_TIMEOUT_MS,
+		};
+		delete probeOptions.streamResponse;
+		const response = await httpRequest(probeOptions, { operation: 'registration_info' });
+		if (response.statusCode !== 200 || !response.body) return false;
+		return JSON.parse(response.body)?.capabilities?.componentDeployTwoPhase === 1;
+	} catch {
+		return false;
 	}
 }
 
@@ -604,6 +631,12 @@ const prepareRevert = async (req) => {
 const PREPARE_OPERATION: any = {
 	revert_component: prepareRevert,
 	deploy_component: async (req) => {
+		// `harper activate deployment_id=<id>` takes an already-staged build live, so there is nothing to
+		// package — but it still needs the CWD project default every deploy-family verb gets.
+		if (req.deployment_id) {
+			req.project ||= directoryProjectName(process.cwd());
+			return;
+		}
 		if (req.package) {
 			return;
 		}
@@ -921,6 +954,17 @@ async function cliOperations(req: any, skipResponseLog = false) {
 	let options: any, target: any;
 	try {
 		({ options, target } = await resolveRequestOptions(req));
+		// Staged (two-phase) deploy controls must never reach a server that doesn't understand them: an
+		// older target ignores `activate: false`/`deployment_id` and deploys LIVE cluster-wide instead —
+		// the opposite of the operator's intent, silently. Probe before packaging so the refusal costs
+		// nothing. Local (domain-socket) calls hit this same build, so no probe is needed there.
+		const requestsStagedDeploy =
+			req._cliVerb !== undefined || req.activate === false || req.deployment_id !== undefined || req.two_phase === true;
+		if (target && requestsStagedDeploy && !(await targetSupportsStagedDeploy(options))) {
+			throw new Error(
+				`Target Harper does not advertise staged-deploy support; refusing the request because an older server could deploy it live`
+			);
+		}
 		delete req._cliVerb;
 		await PREPARE_OPERATION[req.operation]?.(req);
 		// Streaming deploy (multipart upload + SSE progress) only works against >= 5.1 servers.

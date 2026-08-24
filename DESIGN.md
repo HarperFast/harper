@@ -193,32 +193,50 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
-## Component deploys build off to the side and swap atomically
+## Two-phase component deploys roll forward from a durable activation claim
 
-`deploy_component` prepares the candidate under `.deploy-staging/<deployment UUID>/<project>`, runs
-extract + `npm install` there, validates that it loads, and only then renames it into the live path —
-committing root config and `harper-application-lock.json` in the same compensating transaction. The
-live component keeps serving through the slow, failure-prone work (git clone, registry install), and
-go-live is one atomic rename. A fetch or install failure leaves the running component untouched
-instead of half-replaced in place.
+With `system` database replication enabled, `deploy_component` first prepares the candidate under
+`.deploy-staging/<deployment UUID>/<project>` on every node. The deployment row carries the complete,
+immutable activation specification (package/install settings, routing, credential references, and
+`force`); activate-by-id never accepts replacements for those fields. After every stage response, the
+origin durably checkpoints the row as `staged`. Activation claims that row as `activating` while holding
+the same per-component filesystem lock, then swaps the candidate into the live path and commits root
+config plus `harper-application-lock.json` as one compensating transaction. This ordering is the
+recovery record: startup preserves `staged` candidates, deletes terminal/orphan candidates, and rolls
+an `activating` candidate forward before loading apps.
 
-This is **per node**. The operation replicates as a whole, exactly as the single-phase deploy always
-did, and each node performs its own staged build. There is deliberately no cluster-wide barrier here:
-nothing orders activation across nodes, so two deploys originated concurrently on different nodes can
-still end with different versions live. That ordering guarantee — a leader or a monotonic activation
-epoch — is tracked in #2294, and byte-identical package resolution across nodes in #2295. Both are
-protocol additions that need real multi-node verification, so they are deliberately not attempted
-here.
+**The origin owns the row; a peer's claim is local.** Peers run the same validation before their swap
+but do NOT write the deployment row (`claimStagedDeployment(..., { persist: false })`). The row is
+replicated, so a peer writing it would make N+1 writers of one key — and under replication lag a
+peer's `activating` can land _after_ the origin has written `success`, leaving a converged deploy in a
+non-terminal status it never leaves. What a peer needs from claiming is mutual exclusion against
+another activation of the same component, and the per-component filesystem lock it already holds
+provides exactly that.
 
-The deployment row carries the activation specification (package/install settings, routing, credential
-references, `force`). It is not a coordination channel between nodes; it exists so the deploy is
-observable, so the payload has a durable home, and — the load-bearing part — so startup
-reconciliation can reconcile root config for an activation that was interrupted mid-swap. A row
-without `activation_spec` cannot be recovered, which is why it is written before the build starts.
+**The separated phases require deployment tracking.** `DeploymentRecorder` is deliberately tolerant of
+a missing `hdb_deployment` table — tracking is observability for a one-shot deploy. It is not
+observability for `activate: false` or activate-by-id, which coordinate _through_ the row: without it
+a stage would return a deployment_id nothing could resolve, so the stage would report success and be
+permanently unactivatable. Those requests, and an explicit `two_phase: true`, fail with 503 when the
+table is absent. The DEFAULT path is deliberately left alone: a default two-phase deploy on an
+untracked node fails safely, because peers cannot find the row, the barrier never clears, and nothing
+activates — the origin does not go live. Routing it to one-shot instead would be the unsafe choice,
+since that path consumes the multipart stream into its own blob and strips `req.payload` before
+replication, leaving peers with neither replayable bytes nor a row while the origin was already live.
+`two_phase: false` remains the explicit single-phase escape hatch.
 
-Startup reconciliation is the recovery record: it settles interrupted extractions, finishes or undoes
-interrupted reverts, rolls an interrupted activation forward, and fails a component closed rather than
-loading a live tree whose durable configuration disagrees with it.
+Peer stage/activate/restart messages use the distinct authenticated `component_deploy_phase` operation.
+An older peer therefore rejects the unknown operation instead of ignoring a phase marker and deploying
+the staged build live. Public `_phase`/`_deploymentId` fields are rejected; the latter remains accepted
+only on the authenticated legacy one-shot replication path. Restart is gated until activation responses
+have settled. A partial activation is reported as split-node state and recovered by staging and activating
+a known-good build, or rolled back explicitly with `revert_component`, which is addressed rather than a
+toggle (see "Reversibility" below) so a retry after a lost response cannot reverse the recovery. There is
+deliberately no AUTOMATIC rollback (`revert_on_failure` is rejected): once any node is past the barrier,
+"this peer reported failed" does not mean "this peer did not activate" — a peer can complete its swap and
+then fail the persistent work that follows — so auto-reverting the failed peers would roll an untouched
+node an extra version back and split the cluster three ways. `deployment_stagingRetention_maxCount` bounds resting staged
+trees per component and payload retention is pruned in the same row-aware lifecycle.
 
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
@@ -502,24 +520,93 @@ this fix doesn't attempt to solve. `deploy_component`/`package_component` still 
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
 
-## Staged deploy: build aside, then swap (`components/Application.ts`, `components/operations.js`)
+## Two-phase deploy: stage then activate (`components/Application.ts`, `components/operations.js`)
 
-`deploy_component` builds the incoming version — download/`npm pack` (incl. a git clone), extract,
-`npm install` — into a hidden staging directory, validates that it loads, then atomically renames it
-into the live component path. The live component keeps serving throughout, and a fetch or install
-failure leaves it untouched rather than half-replaced in place. The request/response contract is
-unchanged; only the SSE phase names differ (`stage`/`activate` vs the old `prepare`/`replicate`).
+`deploy_component` runs internally as two replicated phases so a cluster deploy is all-or-nothing at
+the point of go-live. **Phase 1 (stage)** builds the incoming version — download/`npm pack` (incl. a
+git clone), extract, `npm install` — into a hidden staging directory on every node. **Phase 2
+(activate)** atomically renames the staged copy into the live component path and restarts. The origin
+stages locally, **waits for every node to report a successful stage before any node activates**
+(`ignore_replication_errors` opts out of the barrier), then activates. If a node can't fetch the
+package or fails `npm install`, it fails during staging while the live component is still untouched _on
+every node_ — where the old one-shot path could leave a peer half-installed after other peers had
+already restarted onto the new code. The request/response contract is unchanged; only the SSE phase
+names differ (`stage`/`activate` vs the old `prepare`/`replicate`). `two_phase: false` forces the
+legacy one-shot path.
 
-Each node does this for itself: the operation replicates as a whole, as it always did. There is no
-cluster-wide barrier and no private peer operation — ordering activation across nodes (#2294) and
-guaranteeing every node staged the same bytes (#2295) are protocol additions that need real
-multi-node verification, and are deliberately out of scope here.
+**There is only one public operation — `deploy_component`.** The two phases are NOT separate public
+operations. The peer fan-out is the distinct trusted operation `component_deploy_phase`, which carries
+the phase and the deployment id and is reachable only on the replication path — authorization is
+carried in AsyncLocalStorage (`isOperationAuthorizationBypassed`), not on the request, so it cannot be
+invoked over HTTP with ordinary credentials. Public `_phase` and `_deploymentId` fields are rejected
+outright; an older peer therefore rejects an unknown operation rather than misreading a phase marker as
+a one-shot deploy. A public call runs the origin orchestrator. Two public properties expose the phases when an operator wants them separated
+(e.g. pre-stage the cluster now, flip later — or a CI-stages / approver-activates split): `activate:
+false` stages cluster-wide and stops, returning the `deployment_id` in a `staged` state; passing that
+`deployment_id` back to `deploy_component` (with no new payload) activates the already-staged build.
+This was a deliberate API-surface choice (harper#1849 review): peer fan-out needs a wire format, not
+two extra public ops, and folding the phases into `deploy_component` keeps the surface at one op while
+the convergence properties cover the stage-now/activate-later use case. (`revert_component` stays a
+distinct public op — it is a rollback, not a deploy phase.)
 
-**Why staging lives under the components root.** Go-live is `rename(stagingDir, liveDir)`, atomic only
-when both share a filesystem. `os.tmpdir()` is frequently a different mount → `EXDEV` → a slow
-recursive copy at exactly the moment an instant swap is wanted. So staging is a hidden directory under
-the components root: same volume, dot-prefixed so the loader ignores it, and not the watched base of
-any component's watcher, so building there fires no restart-on-change events.
+**Scope of the barrier's guarantee: fetch + install, not load.** The cluster-wide "nobody activates
+until everybody staged" guarantee covers the download/`npm pack` and `npm install` steps — the slow,
+failure-prone work. The pre-go-live component _load_ check (`loadValidateComponent`, which surfaces a
+component that installs cleanly but throws at load) runs during stage on the origin and on any node
+whose stage executes on a worker (e.g. the op-API worker for an `activate: false` stage), but it is a
+no-op on the main thread — and replicated peer stage executions run on the main thread
+(`replicateOperation` → `sendOperationToNode` execute there), where app code deliberately isn't
+loaded. So a load-time-only fault on a peer is not caught by the barrier; it surfaces at
+activate/restart like any other. Gating load-time faults cluster-wide would require dispatching the
+throwaway load to a worker on each peer during stage — a possible follow-up, not done here.
+
+The staging directory (`.deploy-staging/<deploymentId>/<name>`) lives **under the components root**,
+not in `os.tmpdir()`, even though its contents are transient. This is deliberate and load-bearing:
+the go-live step is `rename(stagingDir, liveDir)`, which is only atomic when both paths share a
+filesystem. `os.tmpdir()` is frequently a different mount (tmpfs, a separate volume); a cross-device
+rename throws `EXDEV` and Node has no atomic fallback — you'd be back to a slow recursive copy at the
+exact moment you want the swap to be instantaneous, reintroducing the downtime window the split
+exists to remove. The leading dot keeps `loadComponentDirectories` from loading it as a phantom
+component, and it is **not** the watched base of any component's file watcher (those are rooted at
+each live component dir, `EntryHandler`/`deriveCommonPatternBase`) — so building here fires no
+restart-on-change events and needs no `deploy:start` watcher suppression. That suppression is now
+scoped to `activateStagedApplication`, the only phase that writes the live path. Staging is deterministic
+from the deployment id precisely so the activate phase (a separate `component_deploy_phase` invocation
+on peers) can reconstruct the same path the stage built —
+peers build a fresh `Application` per phase invocation, so there is no shared in-memory handle to rely
+on. The deployment id sits ABOVE the component name (`…/<deploymentId>/<name>`, not
+`…/<name>/<deploymentId>`) for two reasons: the leaf directory's basename is then the real component
+name, which the pre-go-live validation load needs (`componentLoader` keys the `ApplicationScope` and
+status registry off `basename(componentDirectory)`, so a UUID leaf would register the throwaway load
+under a bogus name); and each deploy gets its own parent directory, so a parallel or queued deploy of
+the same component can never share a directory or have its staged build swept by another's cleanup.
+`extractApplication`/`installApplication` build into `application.buildDirPath`, which defaults
+to the live dir (`dirPath`) — this is what keeps the legacy one-shot path, boot-time
+`installApplications`, and the direct `extractApplication` callers unchanged — and is repointed at
+the staging dir only for the duration of a stage.
+
+Two-phase requires the `system` database to be replicated on the origin (`isSystemDatabaseReplicated`),
+since the `hdb_deployment` row's `payload_blob` is how peers fetch the tarball and correlate the two
+phases by deployment id. When `system` is excluded from a narrow `REPLICATION_DATABASES`, or the
+caller passes `two_phase: false`, or the invocation is a peer replaying a one-shot deploy,
+`deploy_component` falls back to `deployComponentOneShot` (the previous behavior, preserved verbatim).
+Cross-version skew is a non-issue by policy — a cluster stays in lockstep on its Harper version, so
+every node understands the `_phase`-tagged `deploy_component` fan-out — which is why there is no
+capability negotiation on it.
+
+**Replicator contract this rides on (`harper-pro/replication/replicator.ts`).**
+`server.replication.replicateOperation(op, {onPeerResult})` fans `op` to every node in `server.nodes`
+in parallel, setting `op.replicated = false` on the copy it sends so a peer never re-fans (the deploy
+handlers additionally detect a replicated execution by the presence of `_deploymentId` — always set on
+the sub-operations — and run the peer stage/activate work off the `_phase` marker without re-fanning). Per-peer failures never throw — `sendOperationToNode` rejections are caught and
+surface as `{status:'failed', reason, node}` entries in the returned `replicated[]` array and via
+`onPeerResult`, which is exactly the shape `DeploymentRecorder.normalizePeerResult` consumes. Peers
+authenticate node-to-node by TLS certificate, and the receive side runs the op via
+`server.operation(data, {user}, !isAuthorizedNode)` — for a trusted cluster node the authorize flag is
+`false`, so a replicated super-user op skips the permission gate. That is why the `_phase`-tagged
+`deploy_component` fan-out and `revert_component` (registered with the same `permission(true, [])`,
+dispatched by `operation` name) replicate without an `hdb_user`, identically to the long-proven
+one-shot `deploy_component` fan-out.
 
 **Reversibility: retained previous + `revert_component`.** `activateStagedApplication` does not discard
 the tree its swap displaced — it retains it as `.deploy-previous/<name>`, evicting the older one so
@@ -568,10 +655,10 @@ swap had not yet placed the reverted-to version (the revert is undone and can be
 retained-previous path when the swap completed and only the retain step was lost. With both slots
 occupied the swap finished and the holding tree is residue, so it is discarded.
 
-**Staged-build retention.** A successful deploy consumes its staged build immediately (activation
-renames it live), so nothing normally accumulates. What does accumulate is the residue of deploys that
-never reached activation — a failed install, a crash between stage and swap — each leaving
-`.deploy-staging/<deploymentId>/<name>` behind. `stageApplication` bounds this: after a successful
+**Staged-build retention.** A full deploy consumes its staged build immediately (activate renames it
+live), so the only builds that accumulate are `activate: false` stage-and-stops that are never
+activated — each leaves `.deploy-staging/<deploymentId>/<name>` in place so a later
+`deploy_component({deployment_id})` can activate it. `stageApplication` bounds this: after a successful
 stage it evicts the oldest not-yet-activated staged builds for that component beyond
 `deployment_stagingRetention_maxCount` (default 5, `pruneStagedBuilds`), always keeping the just-staged
 one and the newest N−1 by mtime. Eviction is best-effort (`allSettled`, trace-logged) but awaited so

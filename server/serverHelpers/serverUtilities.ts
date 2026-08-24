@@ -606,6 +606,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(customFunctionOperations.deployComponent)
 	);
 	opFuncMap.set(
+		terms.OPERATIONS_ENUM.COMPONENT_DEPLOY_PHASE,
+		new OperationFunctionObject(customFunctionOperations.componentDeployPhase)
+	);
+	opFuncMap.set(
 		terms.OPERATIONS_ENUM.REVERT_COMPONENT,
 		new OperationFunctionObject(customFunctionOperations.revertComponent)
 	);

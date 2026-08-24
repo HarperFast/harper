@@ -32,6 +32,7 @@ module.exports = {
 	dropCustomFunctionProjectValidator,
 	packageComponentValidator,
 	deployComponentValidator,
+	componentDeployPhaseValidator,
 	revertComponentValidator,
 	setComponentFileValidator,
 	getComponentFileValidator,
@@ -524,14 +525,31 @@ function deployComponentValidator(req) {
 		deployment_timeout: Joi.number().min(0).optional(),
 		force: Joi.boolean().optional(),
 		ignore_replication_errors: Joi.boolean().optional(),
-		// Automatic rollback is deliberately NOT offered. A node that reports `failed` may still have
-		// completed its swap and then failed the work that follows, so auto-reverting "the nodes that
-		// failed" can roll an untouched node an extra version back. Roll back explicitly, by target, with
-		// revert_component. See DESIGN.md, "Partial activation".
-		revert_on_failure: Joi.any().forbidden().messages({
-			'any.unknown': `'revert_on_failure' is not supported; roll back explicitly with revert_component`,
+		// Stop after the incoming version is staged and verified cluster-wide, without going live. Returns
+		// the staged deployment_id; a later deploy_component with that deployment_id activates it. Defaults
+		// to true (full stage + activate).
+		activate: Joi.boolean().optional(),
+		// Activate a previously-staged deployment (from an `activate: false` stage) cluster-wide. Same safe
+		// charset as `project` because it becomes a staging-dir path segment (`.deploy-staging/<id>/<name>`)
+		// — a `../` value would otherwise resolve the staging source outside `.deploy-staging`.
+		deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
+			'string.pattern.base': `'deployment_id' must be a UUID`,
 		}),
+		// Automatic rollback of a partially-activated cluster is deliberately NOT offered. Once any node
+		// has crossed the activation barrier there is no sound way to know which peers actually swapped:
+		// a peer can complete its swap and then fail the persistent work that follows, so it reports
+		// `failed` while running the new version. Auto-reverting "the peers that failed" would then roll
+		// an untouched node an extra version back and leave the cluster split three ways. A partial
+		// activation therefore stays visibly `activating` and is rolled forward (or reverted explicitly,
+		// by target, with revert_component). See DESIGN.md, "Partial activation".
+		revert_on_failure: Joi.any().forbidden().messages({
+			'any.unknown': `'revert_on_failure' is not supported; recover a partial activation by rolling forward, or roll back explicitly with revert_component`,
+		}),
+		// Opt out of the two-phase (stage-then-activate) deploy and use the legacy one-shot path instead.
+		// Defaults to two-phase.
+		two_phase: Joi.boolean().optional(),
 		_deploymentId: Joi.any().forbidden(),
+		_phase: Joi.any().forbidden(),
 		urlPath: URL_PATH_SCHEMA,
 		host: HOST_SCHEMA,
 		// Deploy credentials. Each entry is npm registry auth (`registry`) or git host auth (`host`,
@@ -544,6 +562,24 @@ function deployComponentValidator(req) {
 		.with('host', 'package');
 
 	return validator.validateBySchema(req, deployProjSchema);
+}
+
+/** Validate the path- and state-selecting fields on the authenticated peer-only deploy operation. */
+function componentDeployPhaseValidator(req) {
+	const phaseSchema = Joi.object({
+		phase: Joi.string().valid('stage', 'activate', 'discard', 'restart').required(),
+		deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).required().messages({
+			'string.pattern.base': `'deployment_id' must be a UUID`,
+		}),
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		activation_spec: Joi.object().required(),
+		deployment_timeout: Joi.number().min(0).optional(),
+	}).unknown(false);
+
+	return validator.validateBySchema(req, phaseSchema);
 }
 
 /**
