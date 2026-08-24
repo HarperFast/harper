@@ -652,6 +652,8 @@ describe('schema relationship catalog round-trip', () => {
 		await host.addAttributes([{ name: 'notes' }]);
 		await host.dbisDB.committed;
 		assert.strictEqual(host.dbisDB.getSync('RelationshipHost/').relationships.length, 2);
+		// the in-memory attribute has to survive too: add_attribute rewrites Table.attributes
+		assert.ok(host.attributes.find((attribute) => attribute.name === 'location')?.resolve);
 	});
 
 	it('does not overwrite a drop tombstone while reconciling relationships', async () => {
