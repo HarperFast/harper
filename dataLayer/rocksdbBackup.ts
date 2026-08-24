@@ -683,8 +683,8 @@ function isRocksDbLockError(error: any): boolean {
  *
  * With blobs included (the default; `excludeBlobs` opts out), the database's file-backed blob roots
  * are appended to the same archive under `blobs/<rootIndex>/<relpath>` so a downloaded backup is a
- * complete Harper database. Blob capture is best-effort point-in-time (the archive contains whatever
- * files exist while it streams); a blob deleted mid-stream is skipped.
+ * complete Harper database. Each enumerated blob is classified before capture; one that is incomplete
+ * or vanishes before it can be opened is represented by a PENDING or ERROR marker at the same path.
  */
 export function createBackupStream(
 	rootStore: RocksDatabase,
@@ -814,8 +814,8 @@ function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> 
 
 /**
  * Append every blob file under the given blob roots to `pack` as `blobs/<rootIndex>/<relpath>`
- * entries. Size is captured at open time and exactly that many bytes are streamed; a file that
- * vanished before it could be opened (a concurrent blob delete) is skipped.
+ * entries. Complete files are streamed at the size captured on open; files that cannot be captured
+ * whole are represented by markers, and repair temporaries are omitted.
  */
 async function appendBlobEntries(pack: Pack, blobRoots: string[]): Promise<void> {
 	for (let index = 0; index < blobRoots.length; index++) {

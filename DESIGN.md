@@ -483,24 +483,23 @@ engine-only backup):
 
 - **Managed backups** snapshot the blob roots to `<backupDir>/blobs/<backupId>/<rootIndex>/<relpath>`
   — a full, non-incremental copy per backup, mirroring the binding's `transaction_logs/<id>/` layout.
-  Files are hard-linked when possible (cheap, no extra space on the same filesystem) and copied when
-  the backup root is on a different filesystem; never symlinked. Hard-linking is safe against later
-  mutation because Harper blobs are content-addressed and write-once (each write allocates a new
-  monotonic file id → a new path; updates/deletes unlink the old path), so a snapshot's hard link
-  keeps the exact bytes even after the live blob is deleted, and no in-place overwrite can alter it.
-  The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create leaves no
-  partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot (so a
-  blob added after the backup is dropped and one deleted after it returns); `delete_backup` /
-  `purge_backups` remove the corresponding snapshot directories.
+  Each enumerated entry is classified before capture: complete blobs and existing abort markers are
+  hard-linked when possible (copied across filesystems), `.repair` temporaries are omitted, and an
+  incomplete blob is replaced by a retryable PENDING (`0xfe`) marker. If a classified blob vanishes
+  before capture, a terminal ERROR (`0xff`) marker preserves its file id. A file reclaimed before its
+  parent directory is read is outside the snapshot. This keeps a snapshot inode from changing as a
+  live write finishes, while complete blobs remain safe to hard-link because published blob paths are
+  write-once. The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create
+  leaves no partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot;
+  `delete_backup` / `purge_backups` remove the corresponding snapshot directories.
 - **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. The
   binding's streaming backup finalizes its tar with exactly a 1024-byte (two-block) end-of-archive
   marker; `createBackupStream` streams the native _plain_ tar while withholding that trailer
   (verifying it is all-zero), appends the blob entries via `tar-stream` (whose `finalize` writes the
   one real trailer), and gzips the combined stream itself when requested — so the binding is always
-  asked for a plain tar and compression happens after the append. No scratch disk. Blob capture is
-  best-effort point-in-time (whatever files exist while it streams; a blob deleted mid-stream is
-  skipped) — Harper does not freeze blob writes for a backup, the same tradeoff the engine makes for
-  the transaction log.
+  asked for a plain tar and compression happens after the append. No scratch disk. The same blob
+  classification rule applies: complete blobs are streamed, incomplete or post-enumeration missing
+  blobs become PENDING/ERROR marker entries, and repair temporaries are omitted.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
 backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
