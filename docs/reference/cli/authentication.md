@@ -55,7 +55,7 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 | A one-off admin command | `auth_username=` / `auth_password=` |
 | Local development       | `harper login`                      |
 
-Setting a token _and_ leaving `username=`/`password=` on the command is the combination that turns a token failure into an identity change rather than an error.
+Setting a token _and_ leaving `username=`/`password=` on the command is the combination that turns a token failure into an identity change rather than an error. One caveat: this rule bounds _which_ credential is used, not whether one is required at all. Against a loopback target Harper authenticates by address, so no choice of style protects you there — see the refresh-behavior note below.
 :::
 
 Credentials are resolved as a pair and are never combined across sources. An incomplete pair supplied with dedicated authentication parameters or in the target URL causes the command to fail. An incomplete environment-variable pair is skipped with a warning so that a saved login token can still be used.
@@ -112,7 +112,7 @@ Starting in v5.2.0, a complete environment-variable credential pair takes preced
 - `HARPER_CLI_USERNAME` and `HARPER_CLI_PASSWORD` - Preferred credential pair for the target.
 - `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD` - Lower-priority legacy credential pair.
 - `HARPER_CLI_REFRESH_TOKEN` - Long-lived token the CLI exchanges for a fresh operation token on each run. `CLI_TARGET_REFRESH_TOKEN` is the legacy equivalent.
-- `HARPER_CLI_OPERATION_TOKEN` - A short-lived operation token supplied directly, for callers that mint their own.
+- `HARPER_CLI_OPERATION_TOKEN` - A short-lived operation token supplied directly, for callers that mint their own. `CLI_TARGET_OPERATION_TOKEN` is the legacy equivalent.
 
 Each credential namespace is independent. For example, the CLI never combines `HARPER_CLI_USERNAME` with `CLI_TARGET_PASSWORD`. If either namespace supplies only a username or only a password, that incomplete pair is skipped with a warning.
 
@@ -224,7 +224,7 @@ Expose the two values to the deploy step and no other credentials are needed:
 :::warning
 **An expired refresh token does not stop the command.** Harper answers expiry with `403`, not `401`, and the CLI's halt branch keys on `401` alone. This is a defect rather than intended behavior, tracked as [harper#2297](https://github.com/HarperFast/harper/issues/2297); this note should come out when it is fixed. Expiry is the guaranteed end state of every `--for-ci` token once `refreshTokenTimeout` elapses, so this is the failure a pipeline is most likely to meet, and it takes the continue path below rather than halting.
 
-Do not build a runbook around a non-zero exit at day 31. Watch the operation's own result instead. This is the failure the one-style rule above exists to contain: with no payload credentials on the command, an expired token fails visibly instead of silently changing identity.
+Do not build a runbook around a non-zero exit at day 31. Watch the operation's own result instead — and note that on a **loopback target the operation succeeds**, because `authentication.authorizeLocal` defaults to `true` and grants superuser to any request from `127.0.0.1` or `::1`. Removing payload credentials makes expiry fail visibly against a _remote_ target; it does not help against a local one, where the run comes back green and fully privileged. A self-hosted runner deploying to its own node needs a check on the operation's result, not on its exit code.
 :::
 
 A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
@@ -242,7 +242,9 @@ A `200` response that contains no `operation_token` is not reported at all. A re
 :::warning
 **Each user holds only one valid refresh token at a time.** Harper stores a single refresh-token hash per user, so minting a new one revokes that user's previous token. A routine local `harper login` as the same account will break a pipeline holding the older token, and the failure only surfaces on the pipeline's next refresh.
 
-Create a **dedicated CI user** and run `harper login --for-ci` as that user. That scopes the pipeline's permissions to what it actually needs, and lets you revoke its access without disturbing anyone else.
+Create a **dedicated CI user** and run `harper login --for-ci` as that user. That scopes the pipeline's permissions to what it actually needs, and confines the blast radius of a leak to that account.
+
+There is no operation that revokes a refresh token directly. To invalidate one, either run `harper login --for-ci` again as that user — minting overwrites the stored hash, so the previous token stops working — or deactivate the user with `alter_user`. `harper logout` is not a revocation: it deletes your local copy and leaves the server-side hash valid.
 :::
 
 #### Method 3: Dedicated Authentication Parameters
