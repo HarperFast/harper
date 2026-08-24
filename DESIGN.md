@@ -159,7 +159,7 @@ Future agents touching `components/deploymentRecorder.ts` for Slice B's streamin
 
 `prepareApplication()` performs one destructive transaction against a component directory: extract the incoming payload, then run its dependency installer. Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
-The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A lock is never stolen from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The bounded wait remains a backstop when owner liveness cannot be established.
+The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
 A plugin load that begins while its component is being deployed waits for that lifecycle to end before
 starting `handleApplication`; if a deploy begins during the load, the plugin timeout counts only active,
@@ -170,6 +170,24 @@ Extraction renames an existing component aside before writing the replacement an
 dependency installation and metadata verification complete. Any preparation failure atomically
 renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
 wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock is still held.
+On non-root POSIX systems, rollback uses a mode-`000` placeholder to keep that writer out between
+retries. Before moving or removing it, rollback verifies the placeholder's device/inode identity and
+restores owner permissions because a cross-parent directory move updates `..` and requires write
+permission on the moved directory.
+The aside name is itself the recovery record: an `.in-progress-*` directory or symlink preserves a
+previous tree, while an `.in-progress-*-prior-absent` file records that a first deploy must remove a
+partial live tree after a crash. A sibling `.retired-*` marker records that the replacement committed.
+Cleanup removes the recovery record before its marker, so an interrupted cleanup cannot make obsolete
+state recoverable.
+Component loading recovers unretired interrupted deploys before scanning the component root, and
+preparation repeats recovery under the same-component lock before reading runtime metadata. A full
+`drop_component` writes retirement markers before deleting the live tree and keeps its filesystem,
+and configuration mutations under that lock, so cleanup residue cannot resurrect a dropped
+component and a concurrent deploy cannot interleave with the drop. Peer replication begins after
+the local lock is released, and each peer serializes its own drop independently. Full-component drops
+rename the live tree into staging before best-effort cleanup, avoiding an in-place recursive-delete
+race with the running worker. Recovery is durable across a process crash. It relies on rename/create
+ordering rather than `fsync`, so a host power loss can lose the marker.
 
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 

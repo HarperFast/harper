@@ -29,8 +29,8 @@ const {
 	streamPackagedDirectory,
 } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
-const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
-const { COMPONENT_PREPARATION_LOCK_DIR } = require('./componentPreparationLock.ts');
+const { Application, prepareApplication, ASIDE_STAGING_DIR, dropComponentDirectory } = require('./Application.ts');
+const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -40,6 +40,21 @@ const {
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
+
+const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+
+function componentDropLockOptions(project) {
+	return {
+		timeoutMs: DROP_COMPONENT_LOCK_TIMEOUT_MS,
+		onWait: (owner) =>
+			log.info(
+				`Waiting to drop ${project} while component preparation is in progress` +
+					(owner ? ` in process ${owner.pid}, thread ${owner.threadId}` : '')
+			),
+		onReleaseError: (error) => log.error(`Failed to release the component preparation lock for ${project}:`, error),
+		isOwnerAlive: (owner) => owner.pid !== process.pid || manageThreads.isThreadRunning(owner.threadId),
+	};
+}
 
 /**
  * Read the settings.js file and return the
@@ -238,14 +253,12 @@ async function addComponent(req) {
 	}
 
 	log.trace(`adding component`);
-	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, install_command, install_timeout, install_allow_scripts } = req;
 
 	const template = req.template || 'https://github.com/harperdb/application-template';
 
 	try {
-		const projectDir = path.join(cfDir, project);
-		fs.mkdirSync(projectDir, { recursive: true });
+		await fs.mkdir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), { recursive: true });
 		const application = new Application({
 			name: project,
 			packageIdentifier: template,
@@ -310,8 +323,16 @@ async function dropCustomFunctionProject(req) {
 
 	try {
 		const projectDir = path.join(cfDir, project);
-		fs.rmSync(projectDir, { recursive: true });
-		let response = await server.replication.replicateOperation(req);
+		const stagingDir = path.join(cfDir, ASIDE_STAGING_DIR, project);
+		if (!(await fs.pathExists(projectDir)) && !(await fs.pathExists(stagingDir))) await fs.stat(projectDir);
+		await withComponentPreparationLock(
+			projectDir,
+			async () => {
+				await dropComponentDirectory(projectDir, project, log);
+			},
+			componentDropLockOptions(project)
+		);
+		const response = await server.replication.replicateOperation(req);
 		response.message = `Successfully deleted project: ${project}`;
 		return response;
 	} catch (err) {
@@ -1168,29 +1189,38 @@ async function dropComponent(req) {
 
 	const { project, file } = req;
 	const projectPath = req.file ? path.join(project, file) : project;
-	const pathToComponent = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
+	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const componentPath = path.join(componentsRoot, project);
+	const pathToComponent = path.join(componentsRoot, projectPath);
 
-	const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-	if (await fs.pathExists(componentSymlink)) {
-		await fs.unlink(componentSymlink);
-	}
+	await withComponentPreparationLock(
+		componentPath,
+		async () => {
+			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+			if (await fs.pathExists(componentSymlink)) {
+				await fs.unlink(componentSymlink);
+			}
 
-	if (await fs.pathExists(pathToComponent)) {
-		await fs.remove(pathToComponent);
-	}
+			if (!file) {
+				await dropComponentDirectory(componentPath, project, log);
+			} else if (await fs.pathExists(pathToComponent)) {
+				await fs.remove(pathToComponent);
+			}
 
-	// Remove the component from the package.json file
-	const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
-	if (await fs.pathExists(packageJsonPath)) {
-		const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
-		if (packageJson?.dependencies?.[project]) {
-			delete packageJson.dependencies[project];
-		}
-		await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
-	}
+			const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+			if (await fs.pathExists(packageJsonPath)) {
+				const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+				if (packageJson?.dependencies?.[project]) {
+					delete packageJson.dependencies[project];
+				}
+				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+			}
 
-	configUtils.deleteConfigFromFile([project]);
-	let response = await server.replication.replicateOperation(req);
+			configUtils.deleteConfigFromFile([project]);
+		},
+		componentDropLockOptions(project)
+	);
+	const response = await server.replication.replicateOperation(req);
 	if (req.restart === true) {
 		manageThreads.restartWorkers('http');
 		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
