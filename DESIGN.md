@@ -505,8 +505,14 @@ other future cause would still report success silently; that's a deferred, separ
 ## Staged deploy: build aside, then swap (`components/Application.ts`, `components/operations.js`)
 
 `deploy_component` builds the incoming version — download/`npm pack` (incl. a git clone), extract,
-`npm install` — into a hidden staging directory, validates that it loads, then atomically renames it
-into the live component path. The live component keeps serving throughout, and a fetch or install
+`npm install` — into a hidden staging directory, then atomically renames it into the live component
+path.
+
+**The pre-swap load check does not run everywhere, and that is not new.** `loadValidateComponent`
+returns immediately on the main thread, and the operations API executes `deploy_component` there — so
+on a node whose deploy runs on the main thread, a candidate that installs cleanly but throws at load
+still reaches the live path. It runs where the deploy executes on a worker (e.g. the op-API worker).
+The staged build bounds the _install_, not the load. The live component keeps serving throughout, and a fetch or install
 failure leaves it untouched rather than half-replaced in place. The request/response contract is
 unchanged; only the SSE phase names differ (`stage`/`activate` vs the old `prepare`/`replicate`).
 
@@ -576,11 +582,11 @@ stage it evicts the oldest not-yet-activated staged builds for that component be
 `deployment_stagingRetention_maxCount` (default 5, `pruneStagedBuilds`), always keeping the just-staged
 one and the newest N−1 by mtime. Eviction is best-effort (`allSettled`, trace-logged) but awaited so
 the count is settled when the stage returns. Retention is deliberately count-only and automatic:
-per the harper#1849 discussion, `hdb_deployment` rows stay as the audit trail (payload blobs already
-self-reclaim by size, `deployment_payloadRetention_maxSize`), and no `delete_deployment` op was added —
-eviction-on-stage keeps the surface at zero new operations. Consequence: activating a `deployment_id`
-that has already aged out of the window fails with "no staged build found" — expected once more than
-`maxCount` newer stages have landed for that component.
+`hdb_deployment` rows stay as the audit trail (payload blobs already self-reclaim by size,
+`deployment_payloadRetention_maxSize`), and no `delete_deployment` op was added — eviction-on-stage
+keeps the surface at zero new operations. Nothing addresses a staged directory by id any more, so
+eviction has no user-visible consequence beyond reclaiming disk; activating a previously staged
+deployment moves to #2301 with the rest of the coordination protocol.
 
 **Payload retention.** Two independent bounds apply to the tarballs stored in `hdb_deployment`'s
 `payload_blob`, and they answer different questions:

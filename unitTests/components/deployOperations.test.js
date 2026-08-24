@@ -418,7 +418,7 @@ describe('deploy_component staged deploy', function () {
 			const staged = await operations.deployComponent({
 				project,
 				payload: await makePayload('drop-stage', '6.0.0'),
-				activate: false,
+				restart: false,
 			});
 			const activationPath = path.join(componentsRoot, DEPLOY_ACTIVATION_DIR, project, 'interrupted');
 			await fs.mkdir(activationPath, { recursive: true });

@@ -51,7 +51,8 @@ type DeploymentStatus =
 	| 'extracting'
 	| 'installing'
 	| 'staging'
-	// A terminal resting state, not a transient one: where a stage-and-stop deploy comes to rest.
+	// Reserved for the coordination protocol (#2301), which is the only producer of a resting `staged`
+	// row. Nothing in this tree leaves a deployment there.
 	| 'staged'
 	| 'loading'
 	| 'replicating'
@@ -572,7 +573,7 @@ export async function getDeploymentRow(deploymentId: string): Promise<Record<str
 /**
  * Best-effort status update for an existing deployment row by id, used when a later operation
  * finishes a deployment the current process didn't record with a live DeploymentRecorder — e.g.
- * `deploy_component({ deployment_id })` activating a build that an earlier stage-and-stop left in the
+ * a build that an earlier stage left in the
  * `staged` state. No-op when the row (or the table) is absent; observability only, so callers treat a
  * failure here as non-fatal.
  */
@@ -623,9 +624,15 @@ export async function recordDeploymentPeers(deploymentId: string, results: unkno
 }
 
 /**
+ * RESERVED FOR #2301 — no caller in this tree.
+ *
  * Claim a staged deployment for activation while the component preparation lock is held. On the
  * ORIGIN this marks the row `activating`; `persist: false` runs the same validation without the
- * write, because the row is replicated and only the origin owns it. See DESIGN.md.
+ * write, because the row is replicated and only the origin owns it.
+ *
+ * Kept here rather than deleted because the coordination protocol PR is stacked directly on this one
+ * and is its only consumer; deleting it here would just mean re-adding it there. Do not assume a
+ * resting `staged` row producer exists in-tree — there isn't one until #2301 lands.
  */
 /**
  * Whether deployment tracking is provisioned on this node.
@@ -676,6 +683,9 @@ export async function claimStagedDeployment(
 // deploymentOperations.ts's guard for the explicit delete_deployment_payload operation.
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
 
+// RESERVED FOR #2301, like claimStagedDeployment above: staged-ROW retention has no caller in this
+// tree, because nothing here leaves a deployment resting in `staged`. Staged DIRECTORY retention
+// (pruneStagedBuilds) is the live one.
 async function settleStagedRows(project: string, keepCount: number, keepDeploymentId?: string): Promise<string[]> {
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 	if (!table) return [];
@@ -726,7 +736,10 @@ export async function invalidateProjectStagedDeployments(project: string): Promi
 	if (!table) return [];
 	const invalidated: string[] = [];
 	for await (const row of table.search([{ attribute: 'project', value: project }])) {
-		if (!['staged', 'activating'].includes(row?.status)) continue;
+		// `staging` counts too: a deploy interrupted mid-stage leaves the row there, and nothing else
+		// settles it — payload retention only reclaims terminal rows, so the tarball would be pinned and
+		// `get_deployment` would never converge for a component that has since been dropped.
+		if (!['staging', 'staged', 'activating'].includes(row?.status)) continue;
 		await table.patch(row.deployment_id, {
 			status: 'failed',
 			completed_at: Date.now(),

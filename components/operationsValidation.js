@@ -532,6 +532,19 @@ function deployComponentValidator(req) {
 			'any.unknown': `'revert_on_failure' is not supported; roll back explicitly with revert_component`,
 		}),
 		_deploymentId: Joi.any().forbidden(),
+		// Removed with the coordination protocol (see #2301). Forbidden rather than dropped, because the
+		// schema allows unknown keys: a caller still sending the unreleased contract would otherwise have
+		// `activate: false` silently ignored and get a full deploy — the opposite of the intent.
+		activate: Joi.any().forbidden().messages({
+			'any.unknown': `'activate' is not supported; staged deploys are tracked in HarperFast/harper#2301`,
+		}),
+		two_phase: Joi.any().forbidden().messages({
+			'any.unknown': `'two_phase' is not supported; every deploy now stages and swaps on each node`,
+		}),
+		deployment_id: Joi.any().forbidden().messages({
+			'any.unknown': `'deployment_id' is not supported; activating a previously staged deployment is tracked in HarperFast/harper#2301`,
+		}),
+		_phase: Joi.any().forbidden(),
 		urlPath: URL_PATH_SCHEMA,
 		host: HOST_SCHEMA,
 		// Deploy credentials. Each entry is npm registry auth (`registry`) or git host auth (`host`,

@@ -473,7 +473,7 @@ async function packageComponent(req) {
 /**
  * Deploy a component. Front door for the deploy family: derives the project name, validates, ingests
  * any credential token into the secrets store (so it lives as a replicated reference, not embedded),
- * then dispatches to the two-phase orchestrator (default) or the legacy one-shot path.
+ * then stages the build and swaps it in.
  *
  * `two_phase: false` forces the one-shot path. See DESIGN.md for the stage/activate protocol.
  *
@@ -503,33 +503,6 @@ async function deployComponent(req) {
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
-	const systemReplicated = isSystemDatabaseReplicated();
-	const requestedSeparatedPhase = req.activate === false || req.deployment_id !== undefined;
-	if (!isReplicatedExecution && req.two_phase === true && req.replicated === false) {
-		throw handleHDBError(
-			new Error(),
-			`two_phase:true requires operation replication to be enabled`,
-			HTTP_STATUS_CODES.BAD_REQUEST
-		);
-	}
-	if (!isReplicatedExecution && req.two_phase === true && !systemReplicated) {
-		throw handleHDBError(
-			new Error(),
-			`two_phase:true requires system database replication to be enabled`,
-			HTTP_STATUS_CODES.BAD_REQUEST
-		);
-	}
-	if (
-		!isReplicatedExecution &&
-		requestedSeparatedPhase &&
-		(req.two_phase === false || req.replicated === false || !systemReplicated)
-	) {
-		throw handleHDBError(
-			new Error(),
-			`activate:false and deployment_id require two-phase deploy with system database replication enabled`,
-			HTTP_STATUS_CODES.BAD_REQUEST
-		);
-	}
 	// Ingest any provided credential token into the secrets store so the credential lives as
 	// replicated ciphertext (reference, not embed); already-reference entries pass through, and with
 	// no custody a literal token stays as a transient, this-node-only fallback (#1158). Peers
@@ -558,7 +531,7 @@ async function deployComponent(req) {
  *
  * Runs per node: each node checks its own directory state, which can differ across the cluster (a
  * component can be new on a peer that never had it and a redeploy on the origin). The one-shot path has
- * extractApplication/prepareApplication set both flags in place; the two-phase path has
+ * extractApplication/prepareApplication set both flags in place; the staged path has
  * activateStagedApplication set them at swap time, comparing the pre-swap live tree against the staged
  * one (staging is always fresh, so extraction never sees the live dir).
  */
@@ -979,7 +952,7 @@ async function restartRevertedComponent(req, emit) {
 	return { restartMessage: '' };
 }
 
-// Shared deploy-family helpers (used by deploy_component, its component_deploy_phase fan-out, and
+// Shared deploy-family helpers (used by deploy_component and
 // revert_component).
 
 // Reject deploying over a protected core component name unless force is set. Lazy-loads
@@ -1065,7 +1038,7 @@ function buildDeployApplication({
 }
 
 // Load a component directory to surface load-time errors early (throwaway scopes). No-op on the main
-// thread or in safe mode. In two-phase this loads the STAGED directory before go-live; in one-shot it
+// thread or in safe mode. It loads the STAGED directory, before go-live, where it runs at all — see
 // loads the live directory after in-place prepare.
 async function loadValidateComponent({ dirPath, emit }) {
 	if (isMainThread || process.env.HARPER_SAFE_MODE) return;

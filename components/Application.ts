@@ -532,7 +532,7 @@ const MAX_INSTALL_COMMANDS = 2;
 //   - Same filesystem as the live path, so the go-live rename() is atomic. An os.tmpdir()
 //     location is frequently a different mount (tmpfs / separate volume); a cross-device
 //     rename throws EXDEV and degrades to a slow recursive copy — reintroducing the very
-//     downtime window the two-phase split exists to remove.
+//     downtime window the staged build exists to remove.
 //   - The leading dot keeps loadComponentDirectories (componentLoader) from loading it as a
 //     phantom component, and it is not the watched base of any component's file watcher
 //     (those are rooted at each live component dir), so building here triggers no
@@ -555,7 +555,7 @@ export const DEPLOY_PREVIOUS_DIR = '.deploy-previous';
 
 // Max not-yet-activated staged builds kept per component before the oldest are evicted on the next
 // stage. A full deploy consumes its staged build immediately (activate renames it live), so this only
-// bounds `activate: false` stage-and-stops that are never activated. Configurable via
+// bounds the residue of stages that never reached activation. Configurable via
 // deployment_stagingRetention_maxCount.
 export const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 
@@ -3813,8 +3813,14 @@ async function persistApplicationLock(
 	await next;
 }
 
-function applicationConfigFromActivationSpec(spec: Record<string, any>): ApplicationConfig | undefined {
-	if (!spec.package) return undefined;
+function applicationConfigFromActivationSpec(
+	spec: Record<string, any> | null | undefined
+): ApplicationConfig | undefined {
+	// A row with no activation spec says nothing about config, so config is a no-op rather than a throw.
+	// Recovery reads `row.activation_spec` from rows it did not write — a row from before the spec was
+	// recorded, or a hand-edited one — and throwing there would fail that component closed on every boot
+	// with no way out but repairing the row by hand.
+	if (!spec?.package) return undefined;
 	const applicationConfig: ApplicationConfig = { package: spec.package };
 	if (spec.install_command !== null || spec.install_timeout !== null || spec.install_allow_scripts !== null) {
 		applicationConfig.install = {};

@@ -906,7 +906,7 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 async function cliOperations(req: any, skipResponseLog = false) {
 	require('dotenv').config();
 
-	// Enforce CLI-verb requirements (e.g. `harper activate` needs a deployment_id) before connecting or
+	// Enforce CLI-verb requirements (e.g. `harper revert` needs a to_deployment_id) before connecting or
 	// packaging, so a mistake fails fast instead of building + uploading a fresh deploy from the CWD.
 	const verbError = verbRequirementError(req);
 	if (verbError) {
