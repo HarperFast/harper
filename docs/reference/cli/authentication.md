@@ -228,7 +228,11 @@ Do not build a runbook around a non-zero exit at day 31 — watch the operation'
 
 It is not sufficient for a **loopback** target. `authentication.authorizeLocal` defaults to `true` and grants superuser to any request from `127.0.0.1` or `::1`, so an expired token there produces a genuinely successful, fully privileged run — indistinguishable from a correctly authenticated one. No check on the exit code or the result can catch it, because there is nothing failing to observe.
 
-The fix is configuration, not monitoring: either do not point CI at a loopback address, or set `authentication.authorizeLocal: false` on any node a runner can reach. Turning it off does not break local `harper` commands — those go over the domain socket, which is trusted by a separate rule.
+The fix is configuration, not monitoring: set **`authentication.authorizeLocal: false`** on any node a runner can reach, and restart Harper — the flag is read once at startup, so a live config change does not take effect for jobs already running against that node.
+
+Choosing a non-loopback target is _not_ sufficient on its own. A same-host reverse proxy makes every forwarded request arrive from `127.0.0.1`, so `https://prod:9925` fronted by nginx on the Harper node is still a loopback peer as far as authorization is concerned. See [`authorizeLocal`](../security/configuration.md#authorizelocal), which carries the same warning for local proxies generally.
+
+Turning it off does not break local `harper` commands: those go over the domain socket, which is trusted by a separate rule that this flag does not gate.
 :::
 
 A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
