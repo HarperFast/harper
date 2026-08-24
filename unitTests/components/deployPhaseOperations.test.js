@@ -147,26 +147,41 @@ describe('deploy_component two-phase orchestration', function () {
 		}
 	});
 
-	it('still allows an explicit two_phase:false deploy when tracking is unavailable', async () => {
-		// The legacy single-phase path is the documented escape hatch: it replicates the whole operation
-		// with its payload rather than coordinating through a row, so it needs no table.
+	it('replicates the payload itself when two_phase:false runs with no deployment table', async () => {
+		// The legacy single-phase path is the documented escape hatch, so it has to actually be safe. It
+		// normally strips `req.payload` because peers read the bytes from the row's payload_blob — but with
+		// no table there is no row, so stripping left peers holding a `_deploymentId`, no bytes and nothing
+		// to resolve, after this node was already live. Asserting on the REPLICATED REQUEST, not just on
+		// local activation: replication is stubbed here, so a local-only assertion proves nothing about peers.
 		const project = name();
 		const priorTable = databases.system[DEPLOYMENT_TABLE];
+		const priorReplicate = server.replication.replicateOperation;
+		const replicated = [];
+		server.replication.replicateOperation = async (op) => {
+			replicated.push(op);
+			return { replicated: [] };
+		};
 		delete databases.system[DEPLOYMENT_TABLE];
 		try {
-			const result = await operations.deployComponent({
+			await operations.deployComponent({
 				project,
 				payload: await makePayload('untracked-oneshot'),
 				two_phase: false,
 				restart: false,
 			});
-			assert.ok(result, 'the one-shot path still deploys with no deployment table');
 			assert.match(
 				await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'),
 				/untracked-oneshot/,
-				'and the component actually went live'
+				'the component goes live locally'
+			);
+			assert.strictEqual(replicated.length, 1, 'the deploy is replicated to peers');
+			assert.notStrictEqual(
+				replicated[0].payload,
+				undefined,
+				'and carries its payload, because no row exists for peers to read the bytes from'
 			);
 		} finally {
+			server.replication.replicateOperation = priorReplicate;
 			databases.system[DEPLOYMENT_TABLE] = priorTable;
 		}
 	});

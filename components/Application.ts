@@ -3437,6 +3437,9 @@ export async function reconcileStagedApplicationArtifacts(
 		}
 		// Declared outside the try so the catch can attribute a reconciliation failure to its component.
 		let row: Record<string, any> | undefined;
+		// Same reason: durable evidence that an activation began, which the catch has to treat exactly like
+		// an `activating` row when deciding whether to fail the component closed.
+		let activationBegan = false;
 		try {
 			row = await getDeployment(entry.name);
 			if (!row || !safeComponentName(row.project)) {
@@ -3471,13 +3474,19 @@ export async function reconcileStagedApplicationArtifacts(
 			// (over the origin's own row) and left new code live under the previous release's config. An
 			// activation artifact for this deployment is proof the swap began, so it is an interrupted
 			// activation and belongs in the roll-forward path below.
-			const activationBegan = (await activationArtifacts(componentDirPath, entry.name)).length > 0;
+			activationBegan = (await activationArtifacts(componentDirPath, entry.name)).length > 0;
 			if (row.status === 'staged' && !activationBegan) {
 				if (!(await hasCompleteStagedApplication(stagedPath))) {
 					let discarded = false;
 					await withComponentPreparationLock(componentDirPath, async () => {
-						// Re-read under the lock. The check above is an unlocked fast path, so an activation may
-						// have swapped this candidate in and cleaned it up since.
+						// Re-read BOTH signals under the lock. The probes above are an unlocked fast path, and an
+						// activation can create its backup and rename the staged tree live in between — settling on
+						// the stale read would patch the origin-owned row `failed` and delete a live activation's
+						// deployment directory.
+						if ((await activationArtifacts(componentDirPath, entry.name)).length > 0) {
+							activationBegan = true;
+							return;
+						}
 						if (await hasCompleteStagedApplication(stagedPath)) return;
 						// Only a not-yet-activated candidate is broken; the live tree and its persisted config are
 						// consistent. Failing the component closed here would take a healthy component offline and
@@ -3492,7 +3501,8 @@ export async function reconcileStagedApplicationArtifacts(
 					});
 					if (discarded) removed.push(entry.name);
 				}
-				continue;
+				// An activation that appeared under the lock belongs in the roll-forward path below.
+				if (!activationBegan) continue;
 			}
 			if (await hasCompleteStagedApplication(stagedPath)) {
 				await activateStagedApplication(new Application({ name: row.project }), entry.name, {
@@ -3527,8 +3537,11 @@ export async function reconcileStagedApplicationArtifacts(
 			// Fail the component closed for an interrupted activation, where the live tree and its durable
 			// configuration can disagree. A confirmed `staged` failure leaves live state consistent, so it
 			// does not.
-			if (row?.status === 'activating' && safeComponentName(row?.project)) {
-				failedProjects.set(row.project, reconcileError);
+			if ((row?.status === 'activating' || activationBegan) && safeComponentName(row?.project)) {
+				// `activationBegan` counts the same as an `activating` row: a swap that already happened is an
+				// interrupted activation whatever the replicated status says, so a rejecting persistence step
+				// must not leave the swapped candidate loading under the previous release's configuration.
+				failedProjects.set(row!.project, reconcileError);
 			} else if (!row) {
 				// The row is what says whether this was an interrupted activation, so an unreadable row is
 				// the one case we cannot rule that out. The project name does not depend on the row — it is

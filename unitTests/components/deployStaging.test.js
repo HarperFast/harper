@@ -1779,6 +1779,38 @@ describe('two-phase component directory transaction', function () {
 		await cleanup(name);
 	});
 
+	it('fails a component closed when the peer-evidence roll-forward cannot persist its configuration', async () => {
+		// The roll-forward path now accepts a `staged` row plus an activation artifact, so its FAILURE has to
+		// fail closed the same way an `activating` row does. Keying attribution on the row status alone let a
+		// rejecting persistence step (disk full, bad activation spec) record an error and still load the
+		// swapped candidate under the previous release's durable configuration.
+		const name = fixtureName();
+		const deploymentId = randomUUID();
+		const application = new Application({ name, payload: await makeComponentPayload('candidate') });
+		await stageApplication(application, deploymentId);
+		const stagedPath = stagedApplicationPath(application.dirPath, deploymentId);
+		const activationDir = path.join(COMPONENTS_ROOT, DEPLOY_ACTIVATION_DIR, name);
+		await fs.mkdir(activationDir, { recursive: true });
+		await fs.mkdir(path.join(activationDir, `.previous-${deploymentId}-1-1-${randomUUID()}`), { recursive: true });
+		await fs.rename(stagedPath, application.dirPath);
+
+		const reconciliation = await reconcileStagedApplicationArtifacts(
+			COMPONENTS_ROOT,
+			async (id) => (id === deploymentId ? { deployment_id: id, project: name, status: 'staged' } : undefined),
+			async () => {
+				throw new Error('activation spec is unusable');
+			}
+		);
+
+		assert.strictEqual(reconciliation.errors.has(deploymentId), true, 'the failure is reported');
+		assert.strictEqual(
+			reconciliation.failedProjects.has(name),
+			true,
+			'and the component does not load with a swapped tree under unreconciled config'
+		);
+		await cleanup(name);
+	});
+
 	it('rolls forward an interrupted no-live restore instead of sweeping away its marker', async () => {
 		// The no-live revert branch renames `previous` straight to live because there is nothing to
 		// displace, so it has no holding directory — and its marker is the only evidence. Absence of a

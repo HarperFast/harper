@@ -682,9 +682,15 @@ async function deployComponentOneShot(req, credentialReferences, isReplicatedExe
 		// ProgressEmitter holds function listeners that can't survive the replication channel's
 		// serialization; strip it unconditionally.
 		delete req.progress;
-		if (systemReplicated && recorder) {
+		if (systemReplicated && recorder && isDeploymentTrackingAvailable()) {
 			// The hdb_deployment row + payload_blob reach peers via table replication, so peers look up
 			// the payload by deployment_id. Drop req.payload to keep the operation body small.
+			//
+			// Gated on the table actually existing. `recorder` is truthy either way — its writes no-op
+			// without the table — so stripping the payload on that alone left peers with a `_deploymentId`,
+			// no bytes, and no row to resolve, after this node was already live. With no row to read from,
+			// the payload has to ride along in the replicated operation, which is what the one-shot path did
+			// before deployment tracking existed.
 			delete req.payload;
 		}
 		const onPeerResult = recorder
