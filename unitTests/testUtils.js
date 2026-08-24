@@ -446,8 +446,10 @@ async function ensureSystemTables() {
 			await keys.setCertTable({ ...cert, private_key_name: 'unitTestPrivateKey.pem' });
 		}
 	}
-	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
+	// on-disk write first: the in-memory override doubles as the completion guard above,
+	// so it must only be observable once the config file is updated too
 	require('#src/config/configUtils').updateConfigValue(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
+	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 }
 
 function sortAsc(data, sort_by) {

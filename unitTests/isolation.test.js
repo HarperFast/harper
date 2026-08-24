@@ -31,6 +31,7 @@ describe('unit-test per-PID root isolation', () => {
 				cwd: path.join(__dirname, '..'),
 				env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
 				encoding: 'utf8',
+				timeout: 25000,
 			}
 		);
 		assert.strictEqual(result.status, 0, result.stderr);
