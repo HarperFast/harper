@@ -228,15 +228,9 @@ Do not build a runbook around a non-zero exit at day 31 — watch the operation'
 
 It is not sufficient for a **loopback** target. `authentication.authorizeLocal` defaults to `true` and grants superuser to any request from `127.0.0.1` or `::1`, so an expired token there produces a genuinely successful, fully privileged run — indistinguishable from a correctly authenticated one. No check on the exit code or the result can catch it, because there is nothing failing to observe.
 
-The fix is configuration, not monitoring: set **`authentication.authorizeLocal: false`** on any node a runner can reach, and restart Harper — the flag is read once at startup, so a live config change does not take effect for jobs already running against that node.
+**The fix is configuration, not monitoring**, and it belongs to the node rather than the CLI: local authorization has to be turned off on any Harper instance a CI runner can reach. `authentication.authorizeLocal: false` closes the loopback-TCP path, but it is not the whole story — the operations API domain socket is trusted by a separate rule the flag does not gate, and a same-host reverse proxy makes ordinary remote traffic arrive as loopback. Get the full picture, and the restart requirement, from [`authorizeLocal`](../security/configuration.md#authorizelocal) before relying on any of it.
 
-Choosing a non-loopback target is _not_ sufficient on its own. A same-host reverse proxy makes every forwarded request arrive from `127.0.0.1`, so `https://prod:9925` fronted by nginx on the Harper node is still a loopback peer as far as authorization is concerned. See [`authorizeLocal`](../security/configuration.md#authorizelocal), which carries the same warning for local proxies generally.
-
-Turning it off does not break local `harper` commands: those go over the operations API domain socket, which is trusted by a separate rule that this flag does not gate.
-
-:::danger
-That separate rule is also the limit of the remediation. A connection arriving on the operations socket is authorized as superuser with no credential, and `authorizeLocal: false` does not change that. So if a reverse proxy's upstream is the operations socket rather than a TCP port, setting the flag closes nothing — every proxied request is still superuser. Do not expose the operations API socket through a proxy, and treat filesystem permissions on it as the access control.
-:::
+The point for a pipeline author is narrower: **an expired token against a node with local authorization enabled produces a successful, fully privileged run.** No exit code and no result check can detect it. If you cannot confirm how local authorization is configured on the node you deploy to, do not rely on token expiry surfacing as a failure.
 :::
 
 A `403`, and any other refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
