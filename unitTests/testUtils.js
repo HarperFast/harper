@@ -440,7 +440,7 @@ async function ensureSystemTables() {
 		// addRole cannot touch an existing row: repair a super_user role whose permission
 		// no longer grants super_user, or the guard above would stay false forever
 		const existing = await getRoleByName('super_user');
-		if (!existing?.permission?.super_user) {
+		if (existing && !existing.permission?.super_user) {
 			await alterRole({ id: existing.id, role: 'super_user', permission: { super_user: true } });
 		}
 	}
