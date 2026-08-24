@@ -172,7 +172,7 @@
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1106.0",
+		"@aws-sdk/lib-storage": "3.1111.0",
 		"@endo/static-module-record": "^1.1.2",
 		"@fastify/autoload": "^6.3.1",
 		"@fastify/compress": "^8.3.1",
@@ -230,7 +230,7 @@
 		"normalize-path": "^3.0.0",
 		"ora": "8.2.0",
 		"ordered-binary": "1.6.1",
-		"papaparse": "5.5.4",
+		"papaparse": "5.6.0",
 		"passport": "0.7.0",
 		"passport-http": "0.3.0",
 		"passport-local": "1.0.0",
