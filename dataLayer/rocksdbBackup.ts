@@ -863,8 +863,6 @@ async function appendBlobEntry(pack: Pack, filePath: string, name: string): Prom
 		disposition = 'capture';
 	}
 	if (disposition === 'skip') return;
-	// A capture can lose the race with a delete between classify and open; those bytes are gone, so it
-	// falls through to a terminal marker rather than dropping the entry and freeing the id.
 	if (disposition === 'capture') {
 		if (await appendBlobFile(pack, filePath, name)) return;
 		disposition = 'gone';

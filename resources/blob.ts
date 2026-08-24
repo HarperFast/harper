@@ -76,7 +76,7 @@ type StorageInfo = {
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
-export const HEADER_SIZE = 8;
+const HEADER_SIZE = 8;
 const UNCOMPRESSED_TYPE = 0;
 const DEFLATE_TYPE = 1;
 const ERROR_TYPE = 0xff;
@@ -88,7 +88,7 @@ const ERROR_TYPE = 0xff;
 // `.repair` temp + rename. Distinct from ERROR_TYPE (a permanent corrupt/error stub, replicated as-is).
 // See harper-pro#481.
 const PENDING_TYPE = 0xfe;
-export const BLOB_REPAIR_SUFFIX = '.repair';
+const BLOB_REPAIR_SUFFIX = '.repair';
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
@@ -1834,9 +1834,7 @@ export function isSystemicIoError(error: unknown): boolean {
 /**
  * How a consumer that captures a blob root (backup snapshot, backup archive) should treat one file.
  * `skip` is not a blob to capture at all; `capture` is safe to take as-is — its bytes will not change,
- * because no path rewrites a published blob file in place; `substitute` must be replaced by a PENDING
- * marker, which keeps the file id reserved (`getNextFileId` recovers the counter by scanning the
- * directory) and keeps the record repairable rather than reading as absent.
+ * because no path rewrites a published blob file in place; `pending` and `gone` require markers.
  */
 export async function classifyBlobFileForCapture(filePath: string): Promise<BlobCaptureDisposition> {
 	if (filePath.endsWith(BLOB_REPAIR_SUFFIX)) return 'skip';
@@ -1846,9 +1844,9 @@ export async function classifyBlobFileForCapture(filePath: string): Promise<Blob
 	try {
 		handle = await openFile(filePath, 'r');
 	} catch (error) {
-		// Deleted between the directory read and here. The checkpointed record may still reference it, so
-		// the id must stay reserved — but these bytes are gone for good, so it is captured terminal
-		// rather than retryable: a PENDING marker would promise a retry that can never succeed.
+		// Reclamation can unlink a superseded blob after the engine checkpoint but before this walk. The
+		// checkpointed record may still reference it, so reserve the id. Treat local absence as terminal
+		// rather than making every read wait for repair; this gives up peer repair of that checkpointed version.
 		if ((error as { code?: string }).code === 'ENOENT') return 'gone';
 		throw error;
 	}
@@ -1879,7 +1877,7 @@ export async function classifyBlobFileForCapture(filePath: string): Promise<Blob
  * rewritten, so a consumer sharing blob inodes can keep them: dropping a PENDING marker downgrades a
  * retryable 503 to a 404 the replication layer reads as "cleanly gone" (harper-pro#481).
  */
-export function blobHeaderIsAbortMarker(header: Buffer): boolean {
+function blobHeaderIsAbortMarker(header: Buffer): boolean {
 	if (header.length < HEADER_SIZE) return false;
 	const type = header.readUInt16BE(0);
 	return type === PENDING_TYPE || type === ERROR_TYPE;

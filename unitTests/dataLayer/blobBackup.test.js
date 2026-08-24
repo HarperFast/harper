@@ -11,6 +11,7 @@ const {
 	deleteBlobSnapshot,
 	purgeBlobSnapshots,
 } = require('#src/dataLayer/blobBackup');
+const { classifyBlobFileForCapture, isSystemicIoError } = require('#src/resources/blob');
 
 // Lay out a blob root the way resources/blob.ts does: files nested a few directories deep by id,
 // each an 8-byte header (type in the top 16 bits, body length in the low 48) followed by the body.
@@ -205,6 +206,21 @@ describe('blobBackup', function () {
 			assert.match(readme, /storage\.blobPaths/);
 			assert.ok(readme.includes(`0 -> ${rootA}`), 'root index 0 must map to the first root');
 			assert.ok(readme.includes(`1 -> ${rootB}`), 'root index 1 must map to the second root');
+			assert.match(readme, /0xfe.*PENDING/);
+			assert.match(readme, /0xff.*ERROR/);
+		});
+	});
+
+	describe('blob capture classification', function () {
+		it('classifies a blob reclaimed before it can be opened as gone', async function () {
+			assert.strictEqual(await classifyBlobFileForCapture(join(rootA, '001/002/003')), 'gone');
+		});
+
+		it('recognizes only host-level I/O errors as systemic', function () {
+			for (const code of ['EMFILE', 'ENFILE', 'ENOSPC', 'EIO', 'EROFS']) {
+				assert.strictEqual(isSystemicIoError(Object.assign(new Error(code), { code })), true);
+			}
+			assert.strictEqual(isSystemicIoError(Object.assign(new Error('permission denied'), { code: 'EACCES' })), false);
 		});
 	});
 
