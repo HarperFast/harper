@@ -23,7 +23,15 @@ authentication:
 
 _Type: boolean — Default: `true`_
 
-Automatically authorizes requests from the loopback IP address (`127.0.0.1`) as the superuser, without requiring credentials. Disable this for any Harper server that may be accessed by untrusted users from the same instance — for example, when using a local proxy or for general server hardening.
+Automatically authorizes requests from the loopback IP address (`127.0.0.1` or `::1`) as the superuser, without requiring credentials. Disable this for any Harper server that may be accessed by untrusted users from the same instance — for example, when using a local proxy or for general server hardening.
+
+Three things to know before relying on either setting:
+
+- **It is read once at startup.** Changing it does not affect a running instance; restart Harper for the new value to take effect.
+- **A same-host reverse proxy makes remote traffic look local.** If a proxy on the Harper node forwards to Harper, requests arrive from `127.0.0.1` however remote the original client was, so leaving this enabled authorizes those clients as superuser. Choosing a non-loopback target URL does not avoid this.
+- **It does not gate the operations API domain socket.** A connection arriving on that socket is authorized as superuser regardless of this setting, which is what lets local `harper` CLI commands work without credentials. Disabling this option therefore does not protect a proxy whose upstream is the socket — do not expose the socket through a proxy, and treat filesystem permissions on it as the access control.
+
+For why this matters to a CI pipeline whose token has expired, see [Token credentials for CI/CD](../cli/authentication.md#token-credentials-for-cicd).
 
 ### `cacheTTL`
 
