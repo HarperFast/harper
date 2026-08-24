@@ -201,9 +201,25 @@ immutable activation specification (package/install settings, routing, credentia
 `force`); activate-by-id never accepts replacements for those fields. After every stage response, the
 origin durably checkpoints the row as `staged`. Activation claims that row as `activating` while holding
 the same per-component filesystem lock, then swaps the candidate into the live path and commits root
-config plus `harper-application-lock.json` as one compensating transaction. Peers make the same local
-claim before their swap. This ordering is the recovery record: startup preserves `staged` candidates,
-deletes terminal/orphan candidates, and rolls an `activating` candidate forward before loading apps.
+config plus `harper-application-lock.json` as one compensating transaction. This ordering is the
+recovery record: startup preserves `staged` candidates, deletes terminal/orphan candidates, and rolls
+an `activating` candidate forward before loading apps.
+
+**The origin owns the row; a peer's claim is local.** Peers run the same validation before their swap
+but do NOT write the deployment row (`claimStagedDeployment(..., { persist: false })`). The row is
+replicated, so a peer writing it would make N+1 writers of one key — and under replication lag a
+peer's `activating` can land _after_ the origin has written `success`, leaving a converged deploy in a
+non-terminal status it never leaves. What a peer needs from claiming is mutual exclusion against
+another activation of the same component, and the per-component filesystem lock it already holds
+provides exactly that.
+
+**The separated phases require deployment tracking.** `DeploymentRecorder` is deliberately tolerant of
+a missing `hdb_deployment` table — tracking is observability for a one-shot deploy. It is not
+observability for `activate: false` or activate-by-id, which coordinate _through_ the row: without it
+a stage would return a deployment_id nothing could resolve, so the stage would report success and be
+permanently unactivatable. Those requests, and an explicit `two_phase: true`, fail with 503 when the
+table is absent. An unspecified `two_phase` on such a node stays on the one-shot path rather than
+entering a protocol with nowhere to coordinate.
 
 Peer stage/activate/restart messages use the distinct authenticated `component_deploy_phase` operation.
 An older peer therefore rejects the unknown operation instead of ignoring a phase marker and deploying

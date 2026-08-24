@@ -61,15 +61,15 @@ describe('deploy_component two-phase orchestration', function () {
 		process.env.HARPER_SAFE_MODE = 'true';
 		// The first component operation completes lazy server initialization, which replaces
 		// databases.system. Run it before installing the table seam used by these tests.
-		const warmupProject = name();
-		const warmup = await operations.deployComponent({
-			project: warmupProject,
+		//
+		// One-shot on purpose: the separated phases now require deployment tracking, and the whole point
+		// of this warmup is that it runs BEFORE the table seam exists. `after` removes the component
+		// directory along with every other fixture name.
+		await operations.deployComponent({
+			project: name(),
 			payload: await makePayload('warmup'),
-			activate: false,
-		});
-		await fs.rm(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, warmup.deployment_id), {
-			recursive: true,
-			force: true,
+			two_phase: false,
+			restart: false,
 		});
 		if (!databases.system) databases.system = {};
 		priorTable = databases.system[DEPLOYMENT_TABLE];
@@ -121,6 +121,32 @@ describe('deploy_component two-phase orchestration', function () {
 		names.push(value);
 		return value;
 	}
+
+	it('refuses a separated-phase deploy when deployment tracking is unavailable', async () => {
+		// `DeploymentRecorder.put()` is tolerant by design, so without this guard `activate: false` returned
+		// a deployment_id that no row could resolve — a stage reporting success that nothing could ever
+		// activate. The separated phases coordinate through the row, so they have to require it.
+		const project = name();
+		const payload = await makePayload('untracked');
+		const priorTable = databases.system[DEPLOYMENT_TABLE];
+		delete databases.system[DEPLOYMENT_TABLE];
+		try {
+			await assert.rejects(
+				() => operations.deployComponent({ project, payload, activate: false }),
+				/require deployment tracking/
+			);
+			await assert.rejects(
+				() => operations.deployComponent({ project, deployment_id: '00000000-0000-4000-8000-000000000000' }),
+				/require deployment tracking/
+			);
+			await assert.rejects(
+				() => operations.deployComponent({ project, payload, two_phase: true }),
+				/require deployment tracking/
+			);
+		} finally {
+			databases.system[DEPLOYMENT_TABLE] = priorTable;
+		}
+	});
 
 	it('settles superseded staged rows on a full deploy, not only on stage-and-stop', async () => {
 		// Staged DIRECTORIES are pruned on every stage, but the row half used to run only on the
@@ -627,7 +653,11 @@ describe('deploy_component two-phase orchestration', function () {
 		assert.strictEqual(existsSync(path.join(COMPONENTS_ROOT, DEPLOY_STAGING_DIR, staged.deployment_id, project)), true);
 		await executePeerPhase('activate', row.activation_spec);
 		assert.match(await fs.readFile(path.join(componentPath, 'index.js'), 'utf8'), /peer-phase/);
-		assert.strictEqual(rows.get(staged.deployment_id).status, 'activating');
+		assert.strictEqual(
+			rows.get(staged.deployment_id).status,
+			'staged',
+			'a peer activates locally without advancing the replicated row — the origin owns it'
+		);
 		assert.strictEqual(restartNeeded(), true);
 	});
 
@@ -655,7 +685,11 @@ describe('deploy_component two-phase orchestration', function () {
 		);
 
 		assert.match(await fs.readFile(path.join(componentPath, 'index.js'), 'utf8'), /rebuilt-peer/);
-		assert.strictEqual(rows.get(staged.deployment_id).status, 'activating');
+		assert.strictEqual(
+			rows.get(staged.deployment_id).status,
+			'staged',
+			'a peer activates locally without advancing the replicated row — the origin owns it'
+		);
 	});
 
 	it('waits for the staged row checkpoint when peer activation arrives first', async () => {
@@ -683,7 +717,11 @@ describe('deploy_component two-phase orchestration', function () {
 		);
 
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /lagged-row/);
-		assert.strictEqual(rows.get(staged.deployment_id).status, 'activating');
+		assert.strictEqual(
+			rows.get(staged.deployment_id).status,
+			'staged',
+			'a peer activates locally without advancing the replicated row — the origin owns it'
+		);
 	});
 
 	it('recovers a staged package specification for config and peer activation', async () => {

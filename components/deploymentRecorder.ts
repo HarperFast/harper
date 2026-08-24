@@ -609,10 +609,34 @@ export async function recordDeploymentPeers(deploymentId: string, results: unkno
 }
 
 /** Claim a staged deployment for activation while the component preparation lock is held. */
+/**
+ * Validate that a staged deployment is available to activate, and — on the ORIGIN — mark the row
+ * `activating`.
+ *
+ * `persist: false` is the peer mode: the same validation, no write. The row is replicated, so every
+ * peer patching it makes N+1 writers of one key, and under replication lag a peer's `activating`
+ * can land AFTER the origin has written `success` — reverting a converged deploy to a non-terminal
+ * status it never leaves. The origin owns the row (as DESIGN.md and revertComponent both state);
+ * what a peer actually needs from "claiming" is mutual exclusion against another activation of the
+ * same component, and it already holds the component preparation lock for that.
+ */
+/**
+ * Whether deployment tracking is provisioned on this node.
+ *
+ * `DeploymentRecorder.put()` is deliberately tolerant — a one-shot deploy still works with no
+ * `hdb_deployment` table, because tracking is observability there. It is NOT observability for the
+ * separated phases: `activate: false` hands the caller a deployment_id that only the row can resolve,
+ * so a stage that reported success would be unactivatable. Callers of the separated phases check this
+ * up front instead of failing later with a missing row.
+ */
+export function isDeploymentTrackingAvailable(): boolean {
+	return !!(databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
+}
+
 export async function claimStagedDeployment(
 	deploymentId: string,
 	project: string,
-	options: { allowActivating?: boolean; waitForStagedMs?: number } = {}
+	options: { allowActivating?: boolean; waitForStagedMs?: number; persist?: boolean } = {}
 ): Promise<Record<string, any>> {
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
 	if (!table) throw new ClientError('Deployment tracking is unavailable; cannot activate a staged deployment');
@@ -634,7 +658,9 @@ export async function claimStagedDeployment(
 	if (row.status !== 'staged') {
 		throw new ClientError(`Deployment '${deploymentId}' is '${row.status}', not staged and available for activation`);
 	}
-	await table.patch(deploymentId, { status: 'activating', phase: 'activate', completed_at: null, error: null });
+	if (options.persist !== false) {
+		await table.patch(deploymentId, { status: 'activating', phase: 'activate', completed_at: null, error: null });
+	}
 	return row;
 }
 

@@ -959,6 +959,52 @@ describe('staged deployment state', () => {
 		assert.strictEqual(installed.mock.rows.get('lagging-1').status, 'activating');
 	});
 
+	it('does not write the deployment row when a peer claims a staged deployment', async () => {
+		// The row is replicated, so a peer patching it makes N+1 writers of one key. Under replication lag
+		// a peer's `activating` can land after the origin has written `success`, leaving a converged deploy
+		// stuck non-terminal. Peers validate and swap under the component preparation lock they already
+		// hold; the origin owns the row.
+		installed.mock.rows.set('peer-claim', {
+			deployment_id: 'peer-claim',
+			project: 'app',
+			status: 'staged',
+			started_at: 1,
+		});
+
+		const row = await claimStagedDeployment('peer-claim', 'app', { persist: false });
+
+		assert.strictEqual(row.deployment_id, 'peer-claim', 'the claim still validates and returns the row');
+		assert.strictEqual(
+			installed.mock.rows.get('peer-claim').status,
+			'staged',
+			'but leaves the status alone for the origin to advance'
+		);
+	});
+
+	it('still marks the row activating when the origin claims', async () => {
+		installed.mock.rows.set('origin-claim', {
+			deployment_id: 'origin-claim',
+			project: 'app',
+			status: 'staged',
+			started_at: 1,
+		});
+
+		await claimStagedDeployment('origin-claim', 'app');
+
+		assert.strictEqual(installed.mock.rows.get('origin-claim').status, 'activating');
+	});
+
+	it('rejects a peer claim for the wrong component even without persisting', async () => {
+		installed.mock.rows.set('mismatch', {
+			deployment_id: 'mismatch',
+			project: 'other',
+			status: 'staged',
+			started_at: 1,
+		});
+
+		await assert.rejects(() => claimStagedDeployment('mismatch', 'app', { persist: false }), /belongs to component/);
+	});
+
 	it('expires only staged rows beyond the per-project count', async () => {
 		for (const [id, startedAt, status = 'staged'] of [
 			['old', 100],

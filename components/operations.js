@@ -63,6 +63,7 @@ const {
 	markDeploymentTerminal,
 	recordDeploymentPeers,
 	claimStagedDeployment,
+	isDeploymentTrackingAvailable,
 	expireOldStagedDeployments,
 	invalidateProjectStagedDeployments,
 	pruneProjectPayloads,
@@ -538,7 +539,29 @@ async function deployComponent(req) {
 			HTTP_STATUS_CODES.BAD_REQUEST
 		);
 	}
-	if (req.replicated !== false && !isReplicatedExecution && req.two_phase !== false && systemReplicated) {
+	// Separated phases cannot degrade gracefully: `activate: false` returns a deployment_id that only the
+	// row resolves, and `deployment_id` has nothing to look up without it. Failing here beats reporting a
+	// successful stage the cluster can never activate. An explicit `two_phase: true` fails for the same
+	// reason — the caller asked for a protocol that coordinates through the row.
+	const deploymentTracked = isDeploymentTrackingAvailable();
+	if (!isReplicatedExecution && !deploymentTracked && (requestedSeparatedPhase || req.two_phase === true)) {
+		throw handleHDBError(
+			new Error(),
+			`${requestedSeparatedPhase ? 'activate:false and deployment_id' : 'two_phase:true'} require deployment ` +
+				`tracking, but the '${hdbTerms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME}' table is not available on ` +
+				`this node`,
+			HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
+		);
+	}
+	// Unspecified `two_phase` on a node without tracking stays on the one-shot path rather than entering a
+	// protocol that has nowhere to coordinate. Only an explicit request fails loudly, above.
+	if (
+		req.replicated !== false &&
+		!isReplicatedExecution &&
+		req.two_phase !== false &&
+		systemReplicated &&
+		deploymentTracked
+	) {
 		if (req.deployment_id) return deployComponentActivateExisting(req);
 		return deployComponentTwoPhase(req);
 	}
@@ -1257,6 +1280,8 @@ async function componentDeployPhase(req) {
 		beforeSwap: async () => {
 			await claimStagedDeployment(req.deployment_id, req.project, {
 				allowActivating: true,
+				// Peer: validate, do not write. The origin owns this row; see claimStagedDeployment.
+				persist: false,
 				waitForStagedMs: coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS),
 			});
 		},
