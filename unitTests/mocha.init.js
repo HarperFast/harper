@@ -81,15 +81,22 @@ if (isMainThread) {
 	try {
 		envDirEntries = fs.readdirSync(ENV_DIR_PATH);
 	} catch {}
+	const staleThreshold = Date.now() - 60 * 60 * 1000;
 	for (const name of envDirEntries) {
 		const pid = Number(name);
 		if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+		const dirPath = path.join(ENV_DIR_PATH, name);
+		// only reclaim roots that are BOTH old and unowned: kill(pid, 0) alone is not a
+		// liveness signal across PID namespaces (a bind-mounted checkout probed from a
+		// container reads every host run as gone), and the age floor also closes the
+		// check-to-remove window against PID reuse
 		try {
+			if (fs.statSync(dirPath).mtimeMs > staleThreshold) continue;
 			process.kill(pid, 0);
 		} catch (error) {
 			if (error.code === 'ESRCH') {
 				try {
-					fs.removeSync(path.join(ENV_DIR_PATH, name));
+					fs.removeSync(dirPath);
 				} catch {}
 			}
 		}

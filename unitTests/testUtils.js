@@ -403,8 +403,17 @@ function setupTestDBPath() {
  * after setupTestDBPath() instead of borrowing an installed Harper root's system
  * database.
  */
+async function seededAdminIsUsable() {
+	const admin = await getDatabases().system.hdb_user?.get('admin');
+	if (!admin?.active) return false;
+	// admin.role holds a role id: a deleted-and-recreated super_user role gets a fresh id,
+	// leaving an active admin that getSuperUser() no longer recognizes
+	const role = admin.role && (await getDatabases().system.hdb_role.get(admin.role));
+	return !!role?.permission?.super_user;
+}
+
 async function ensureSystemTables() {
-	// the guard checks the seed's final artifacts — key file, tables, an active admin, and
+	// the guard checks the seed's final artifacts — key file, tables, a usable admin, and
 	// the config repoint that is its last step — so a partial seed, or one a mid-run
 	// tearDownMockDB() removed, re-runs in full; every step below is idempotent
 	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
@@ -413,7 +422,7 @@ async function ensureSystemTables() {
 		env.get(terms.CONFIG_PARAMS.TLS_PRIVATEKEY) === testKeyPath &&
 		fs.existsSync(testKeyPath) &&
 		getDatabases().system?.hdb_role &&
-		(await getDatabases().system.hdb_user?.get('admin'))?.active
+		(await seededAdminIsUsable())
 	) {
 		return;
 	}
@@ -422,17 +431,26 @@ async function ensureSystemTables() {
 		const mountHdb = require('#src/utility/mount_hdb').default;
 		await mountHdb(env.getHdbBasePath());
 	}
-	const { addRole } = require('#src/security/role');
+	const { addRole, alterRole, getRoleByName } = require('#src/security/role');
 	const user = require('#src/security/user');
 	try {
 		await addRole({ role: 'super_user', permission: { super_user: true } });
 	} catch (error) {
 		if (!error.message?.includes('already exists')) throw error;
+		// addRole cannot touch an existing row: repair a super_user role whose permission
+		// no longer grants super_user, or the guard above would stay false forever
+		const existing = await getRoleByName('super_user');
+		if (!existing?.permission?.super_user) {
+			await alterRole({ id: existing.id, role: 'super_user', permission: { super_user: true } });
+		}
 	}
 	try {
 		await user.addUser({ username: 'admin', password: 'password', role: 'super_user', active: true });
 	} catch (error) {
 		if (!error.message?.includes('already exists')) throw error;
+		// addUser cannot touch an existing row: repair a deactivated admin, or one whose
+		// role id points at a role that no longer exists
+		await user.alterUser({ username: 'admin', password: 'password', role: 'super_user', active: true });
 	}
 	const keys = require('#src/security/keys');
 	await keys.generateCertsKeys();
