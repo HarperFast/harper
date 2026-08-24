@@ -287,7 +287,7 @@ A handful of design points are non-obvious and easy to break:
 
 Two related traps: the create/schema-update path's exclusive `update-attributes` lock is a
 synchronous bounded wait (`acquireUpdateAttributesLock` in `Table.ts`: brief hot spin, then
-`Atomics.wait` backoff, `ServerError` after the 10s `LOCK_TIMEOUT` — harper#2251; it used to be
+`Atomics.wait` backoff, retryable `ServerError` after the 10s `UPDATE_ATTRIBUTES_LOCK_TIMEOUT` — harper#2251; it used to be
 an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if the holder never
 released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
 `withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock; keep it

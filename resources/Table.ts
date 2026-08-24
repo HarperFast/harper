@@ -132,7 +132,8 @@ const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
-export const LOCK_TIMEOUT = 10000;
+const LOCK_TIMEOUT = 10000;
+export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // raw ASCII bytes are ordered-binary's encoding of the string, so this addresses the same native
 // lock as string-keyed tryLock/unlock calls
@@ -149,7 +150,7 @@ const lockWait = new Int32Array(new SharedArrayBuffer(4));
 export function acquireUpdateAttributesLock(
 	rootStore: RocksDatabase,
 	scopeDescription: string,
-	timeout = LOCK_TIMEOUT
+	timeout = UPDATE_ATTRIBUTES_LOCK_TIMEOUT
 ) {
 	if (rootStore.tryLock(updateAttributesLockKey)) return;
 	const startTime = Date.now();
@@ -158,7 +159,8 @@ export function acquireUpdateAttributesLock(
 		const elapsed = Date.now() - startTime;
 		if (elapsed >= timeout) {
 			throw new ServerError(
-				`Timed out after ${elapsed}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder never released it, so this schema/attribute update cannot proceed`
+				`Timed out after ${elapsed}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder never released it, so this schema/attribute update cannot proceed`,
+				503
 			);
 		}
 		if (elapsed >= 2) {
@@ -176,7 +178,11 @@ export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
 export function withUpdateAttributesLock<T>(rootStore: RocksDatabase, scopeDescription: string, callback: () => T): T {
 	acquireUpdateAttributesLock(rootStore, scopeDescription);
 	try {
-		return callback();
+		const result = callback();
+		if (typeof (result as any)?.then === 'function') {
+			throw new TypeError(`withUpdateAttributesLock callback must be synchronous (${scopeDescription})`);
+		}
+		return result;
 	} finally {
 		releaseUpdateAttributesLock(rootStore);
 	}

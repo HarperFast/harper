@@ -9,12 +9,43 @@ const {
 	withUpdateAttributesLock,
 } = require('#src/resources/Table');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-const { ServerError } = require('#src/utility/errors/hdbError');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const TEST_DB = 'test';
 const LOCK_KEY = 'update-attributes';
+
+function runWorkerAction(message, expectedMessageTypes, hardTimeout) {
+	return new Promise((resolve, reject) => {
+		const workerThread = new Worker(__dirname + '/updateAttributesLock-thread.js', {
+			workerData: { addPorts: [] },
+		});
+		const received = [];
+		let finished = false;
+		let timer;
+		const finish = (callback) => {
+			if (finished) return;
+			finished = true;
+			clearTimeout(timer);
+			workerThread.removeAllListeners();
+			workerThread.terminate().then(callback, reject);
+		};
+		timer = setTimeout(
+			() => finish(() => reject(new Error(`worker action '${message.type}' exceeded its ${hardTimeout}ms watchdog`))),
+			hardTimeout
+		);
+		workerThread.on('message', (result) => {
+			if (!expectedMessageTypes.includes(result.type)) return;
+			received.push(result);
+			if (received.length === expectedMessageTypes.length) finish(() => resolve(received));
+		});
+		workerThread.once('error', (error) => finish(() => reject(error)));
+		workerThread.once('exit', (code) =>
+			finish(() => reject(new Error(`worker action '${message.type}' exited before completing (code ${code})`)))
+		);
+		workerThread.postMessage(message);
+	});
+}
 
 // harper#2251: bounded acquire (throw instead of spinning a core forever) + structural release
 describe('update-attributes exclusive lock', () => {
@@ -34,26 +65,16 @@ describe('update-attributes exclusive lock', () => {
 		rootStore.unlock(LOCK_KEY);
 	});
 
-	it('throws ServerError after the deadline when the lock is never released', () => {
-		assert.ok(rootStore.tryLock(LOCK_KEY), 'test should be able to take the lock to wedge it');
-		const startTime = Date.now();
-		try {
-			assert.throws(
-				() => acquireUpdateAttributesLock(rootStore, `table '${TEST_DB}.Wedged'`, 250),
-				(error) => {
-					assert.ok(error instanceof ServerError, `expected ServerError, got ${error.constructor.name}`);
-					assert.ok(error.message.includes(LOCK_KEY), 'message should name the lock');
-					assert.ok(error.message.includes(`table '${TEST_DB}.Wedged'`), 'message should name the table in scope');
-					assert.ok(/\d+ms/.test(error.message), 'message should report the elapsed deadline');
-					return true;
-				}
-			);
-			const elapsed = Date.now() - startTime;
-			assert.ok(elapsed >= 240, `should have waited out the deadline, threw after ${elapsed}ms`);
-			assert.ok(elapsed < 5000, `should throw shortly after the deadline, took ${elapsed}ms`);
-		} finally {
-			rootStore.unlock(LOCK_KEY);
-		}
+	it('throws ServerError after the deadline when the lock is never released', async () => {
+		const [result] = await runWorkerAction({ type: 'helper-deadline', timeout: 250 }, ['deadline-result'], 5000);
+		assert.ok(result.acquired, 'test worker should be able to take the lock to wedge it');
+		assert.ok(result.error.isServerError, 'deadline should throw ServerError');
+		assert.strictEqual(result.error.statusCode, 503);
+		assert.ok(result.error.message.includes(LOCK_KEY), 'message should name the lock');
+		assert.ok(result.error.message.includes(`table '${TEST_DB}.Wedged'`), 'message should name the table in scope');
+		assert.ok(/\d+ms/.test(result.error.message), 'message should report the elapsed deadline');
+		assert.ok(result.elapsed >= 240, `should have waited out the deadline, threw after ${result.elapsed}ms`);
+		assert.ok(result.elapsed < 5000, `should throw shortly after the deadline, took ${result.elapsed}ms`);
 	});
 
 	it('releases the lock when the guarded callback throws', () => {
@@ -65,6 +86,15 @@ describe('update-attributes exclusive lock', () => {
 			/boom/
 		);
 		assert.ok(rootStore.tryLock(LOCK_KEY), 'lock should have been released despite the throw');
+		rootStore.unlock(LOCK_KEY);
+	});
+
+	it('rejects asynchronous guarded callbacks and releases the lock', () => {
+		assert.throws(
+			() => withUpdateAttributesLock(rootStore, `table '${TEST_DB}.Async'`, () => Promise.resolve(42)),
+			/withUpdateAttributesLock callback must be synchronous/
+		);
+		assert.ok(rootStore.tryLock(LOCK_KEY), 'lock should be released after rejecting an asynchronous callback');
 		rootStore.unlock(LOCK_KEY);
 	});
 
@@ -96,33 +126,57 @@ describe('update-attributes exclusive lock', () => {
 		table({ table: 'LockLeak', database: TEST_DB, attributes });
 	});
 
-	it('a real table() operation fails with ServerError after the full deadline when the lock is wedged', function () {
-		this.timeout(40000);
+	it('releases the lock before recursively reloading a concurrently-created table', function () {
+		this.timeout(30000);
 		const definition = {
-			table: 'DeadlineWedged',
+			table: 'ConcurrentCreate',
 			database: TEST_DB,
 			attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
 		};
-		assert.ok(rootStore.tryLock(LOCK_KEY), 'test should be able to wedge the lock');
-		const startTime = Date.now();
+		const originalGetSync = PrimaryRocksDatabase.prototype.getSync;
+		let intercepted = false;
+		PrimaryRocksDatabase.prototype.getSync = function (key) {
+			if (!intercepted && key?.toString() === 'ConcurrentCreate/') {
+				intercepted = true;
+				PrimaryRocksDatabase.prototype.getSync = originalGetSync;
+				return { name: 'id' };
+			}
+			return originalGetSync.apply(this, arguments);
+		};
 		try {
-			assert.throws(
-				() => table(definition),
-				(error) => {
-					assert.ok(error instanceof ServerError, `expected ServerError, got ${error.constructor.name}`);
-					assert.ok(error.message.includes(LOCK_KEY), 'message should name the lock');
-					assert.ok(error.message.includes(`table '${TEST_DB}.DeadlineWedged'`), 'message should name the table');
-					return true;
-				}
-			);
-			const elapsed = Date.now() - startTime;
-			assert.ok(elapsed >= 9500, `should have waited the full LOCK_TIMEOUT, threw after ${elapsed}ms`);
-			assert.ok(elapsed < 30000, `should throw shortly after the deadline, took ${elapsed}ms`);
+			assert.ok(table(definition), 'recursive reload should complete after releasing the non-reentrant lock');
 		} finally {
-			rootStore.unlock(LOCK_KEY);
+			PrimaryRocksDatabase.prototype.getSync = originalGetSync;
 		}
-		// once the lock is free, the same operation must succeed
-		assert.ok(table(definition), 'create should succeed after the lock is released');
+		assert.ok(intercepted, 'test should drive the concurrently-created branch');
+		assert.ok(rootStore.tryLock(LOCK_KEY), 'lock should be free after the recursive reload');
+		rootStore.unlock(LOCK_KEY);
+	});
+
+	it('a real table() operation fails with ServerError after the full deadline when the lock is wedged', async function () {
+		this.timeout(30000);
+		const [deadlineResult, createResult] = await runWorkerAction(
+			{ type: 'table-deadline' },
+			['deadline-result', 'table-created'],
+			20000
+		);
+		assert.ok(deadlineResult.acquired, 'test worker should be able to wedge the lock');
+		assert.ok(deadlineResult.error.isServerError, 'production table() path should throw ServerError');
+		assert.strictEqual(deadlineResult.error.statusCode, 503);
+		assert.ok(deadlineResult.error.message.includes(LOCK_KEY), 'message should name the lock');
+		assert.ok(
+			deadlineResult.error.message.includes(`table '${TEST_DB}.DeadlineWedged'`),
+			'message should name the table'
+		);
+		assert.ok(
+			deadlineResult.elapsed >= 9500,
+			`should have waited the full update-attributes deadline, threw after ${deadlineResult.elapsed}ms`
+		);
+		assert.ok(
+			deadlineResult.elapsed < 20000,
+			`should throw shortly after the deadline, took ${deadlineResult.elapsed}ms`
+		);
+		assert.ok(createResult.created, 'create should succeed after the lock is released');
 	});
 
 	it('waits for a briefly-held lock and acquires once the holding thread releases', async function () {
@@ -134,7 +188,7 @@ describe('update-attributes exclusive lock', () => {
 			const held = await new Promise((resolve, reject) => {
 				workerThread.once('message', resolve);
 				workerThread.once('error', reject);
-				workerThread.postMessage({ type: 'hold-lock', holdTime: 300 });
+				workerThread.postMessage({ type: 'hold-lock', holdTime: 1000 });
 			});
 			assert.ok(held.acquired, 'worker thread should have taken the lock');
 			const startTime = Date.now();
