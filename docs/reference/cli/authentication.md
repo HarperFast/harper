@@ -208,7 +208,14 @@ Expose the two values to the deploy step and no other credentials are needed:
     HARPER_CLI_REFRESH_TOKEN: ${{ secrets.HARPER_CLI_REFRESH_TOKEN }}
 ```
 
-**Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. A refresh token the server rejects as expired or invalid (401) stops the command with a non-zero exit and a "run harper login again" message. Any _other_ refresh failure — a 5xx, a timeout, a connection error — is only reported: the command carries on with no bearer token, so it either fails as unauthenticated or, if it happens to carry `username=` and `password=` operation parameters, authenticates as that pair instead. Don't rely on a refresh failure to halt a pipeline.
+**Refresh behavior.** The CLI mints an operation token from the refresh token when none is supplied, and again whenever the supplied one has expired. A token refreshed from an environment variable is held in memory for that invocation only — nothing is written to `~/.harperdb/credentials.json`, because there is no file entry for an environment-supplied credential. A refresh token the server rejects as expired or invalid (401) stops the command with a non-zero exit and a "run harper login again" message.
+
+Any _other_ refresh failure — a 5xx, a timeout, a connection error — does not stop the command, and what happens next depends on which credentials you supplied:
+
+- **Refresh token only** (what `--for-ci` provisions): no bearer token is attached. The command either fails as unauthenticated or, if it also carries `username=` and `password=` operation parameters, authenticates as that pair instead — a different identity than the one you configured.
+- **An expired operation token as well**: that expired token is still attached, so the request goes out carrying it and the server rejects it. You get a 401 rather than a silent identity switch.
+
+A `200` response that contains no `operation_token` is not reported at all. So do not rely on a refresh failure to halt a pipeline, and do not read a successful exit as proof that the identity you configured is the one that ran.
 
 **A blank token variable is reported, then skipped.** If a namespace is set but empty — the usual shape of a misconfigured CI secret — the CLI warns and continues down the precedence list, so the run proceeds under the saved `harper login` token if that machine has one. The warning is the only thing separating this from silently deploying as whoever last logged in, so treat it as a failure signal in CI rather than assuming a blank secret stops the run.
 
