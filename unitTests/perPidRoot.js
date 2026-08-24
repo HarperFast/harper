@@ -16,6 +16,13 @@ function materializePerPidRoot() {
 	for (const dir of ['database', 'log', 'components', 'keys']) {
 		fs.mkdirSync(path.join(PID_DIR_PATH, dir), { recursive: true });
 	}
+	// heartbeat for mocha.init.js's stale-root sweep: every suite's setupTestDBPath() lands
+	// here, so a live run's root never ages past the sweep's staleness floor, even probed
+	// from a PID namespace where this run's PID is not visible
+	const now = new Date();
+	try {
+		fs.utimesSync(PID_DIR_PATH, now, now);
+	} catch {}
 	const configFilePath = path.join(PID_DIR_PATH, 'harper-config.yaml');
 	if (!fs.existsSync(configFilePath)) {
 		const YAML = require('yaml');
