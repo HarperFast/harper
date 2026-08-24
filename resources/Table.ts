@@ -49,6 +49,7 @@ import {
 	ServerError,
 	AccessViolation,
 	ValidationError,
+	UpdateAttributesLockTimeoutError,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -134,21 +135,13 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+// This bounds schema-lock acquisition; LOCK_TIMEOUT bounds in-flight record writes during a drop.
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // raw ASCII bytes are ordered-binary's encoding of the string, so this addresses the same native
 // lock as string-keyed tryLock/unlock calls
 const updateAttributesLockKey = Buffer.from(UPDATE_ATTRIBUTES_LOCK);
 const lockWait = new Int32Array(new SharedArrayBuffer(4));
-
-class UpdateAttributesLockTimeoutError extends ServerError {
-	code = 'UPDATE_ATTRIBUTES_LOCK_TIMEOUT';
-	retryable = true;
-	constructor(message: string) {
-		super(message, 503);
-		this.name = 'UpdateAttributesLockTimeoutError';
-	}
-}
 
 /** The wait blocks the event loop, so the locked section must stay synchronous. */
 export function acquireUpdateAttributesLock(
