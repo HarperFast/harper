@@ -682,12 +682,13 @@ function hydrateTableRelationships({ table, databaseName, tableName, definitions
 	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
 	for (let index = 0; index < definitions.length; index++) {
 		const definition = definitions[index] as PersistedRelationship;
-		// keyed by name, not by list position: a reordered list would otherwise inherit the previous
-		// occupant's "already reported" state and swallow a different relationship's failure
-		const errorKey = `${databaseName}.${tableName}:${(definition as any)?.name || index}`;
+		// Keyed by name rather than list position, so a reordered list cannot inherit the previous
+		// occupant's reported state and swallow a different relationship's failure — and by reason, so
+		// hydrating one entry does not clear the report of a same-named invalid duplicate.
+		const errorKey = `${databaseName}.${tableName}:${(definition as any)?.name || `#${index}`}`;
 		if (!validRelationshipDefinition(definition, definitions, index)) {
 			reportRelationshipError(
-				errorKey,
+				`${errorKey}:invalid`,
 				`Ignoring invalid persisted relationship ${databaseName}.${tableName}[${index}]`
 			);
 			continue;
@@ -699,12 +700,12 @@ function hydrateTableRelationships({ table, databaseName, tableName, definitions
 		const targetTable = databases[definition.target.database]?.[definition.target.table];
 		if (!targetTable || !relationshipFieldsExist(table, targetTable, definition)) {
 			reportRelationshipError(
-				errorKey,
+				`${errorKey}:unavailable`,
 				`Unable to hydrate persisted relationship ${databaseName}.${tableName}.${definition.name}: target or foreign key is unavailable`
 			);
 			continue;
 		}
-		reportedRelationshipErrors.delete(errorKey);
+		reportedRelationshipErrors.delete(`${errorKey}:unavailable`);
 		hydratable.push({ definition, targetTable });
 	}
 

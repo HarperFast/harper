@@ -1501,20 +1501,20 @@ export function makeTable(options) {
 					return (dbisDb as any).put(primaryCatalogKey, primaryMeta);
 				};
 				if (rootStore instanceof RocksDatabase) {
+					// The spin lock below cannot be held across an await, so a durable tombstone depends on
+					// put being rebound to putSync for RocksDB primary stores (see createOpenDBIObject).
+					// Check that BEFORE writing anything: a tombstone left behind by a refused drop would
+					// delete the table on the next load.
+					if ((dbisDb as any).put !== (dbisDb as any).putSync)
+						throw new Error(
+							`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
+						);
 					while (!rootStore.tryLock('update-attributes')) {}
-					let tombstoneWrite;
 					try {
-						tombstoneWrite = writeTombstone();
+						writeTombstone();
 					} finally {
 						rootStore.unlock('update-attributes');
 					}
-					// The spin lock cannot be held across an await, so the tombstone's durability here
-					// depends on put being rebound to putSync for RocksDB primary stores. Fail loudly if
-					// that ever stops holding rather than proceeding into the drops with a pending write.
-					if (typeof tombstoneWrite?.then === 'function')
-						throw new Error(
-							`Refusing to drop ${databaseName}.${TableResource.tableName}: the catalog tombstone write is asynchronous, so it cannot be made durable before the column families are dropped`
-						);
 				} else {
 					let tombstoneWrite;
 					rootStore.transactionSync(() => {
