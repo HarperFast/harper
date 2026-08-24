@@ -6,6 +6,7 @@
  * - `get_configuration` shape (key sections present)
  * - `read_log` shape
  * - `set_configuration` round-trip and bad-data rejection
+ * - `set_configuration` rejects a `threads.maxHeapMemory` no worker thread could start on
  * - Non-superuser role cannot call `get_configuration` (403)
  *
  * Self-contained setup: creates the `dev` schema and an `AttributeDropTest`
@@ -18,11 +19,16 @@ import assert from 'node:assert';
 import request from 'supertest';
 import { startHarper, teardownHarper } from '@harperfast/integration-testing';
 import { createApiClient } from './utils/client.mjs';
+import { MIN_THREAD_HEAP_MEMORY_MB } from '../../utility/hdbTerms.ts';
 
 const SCHEMA = 'dev';
 const ATTR_TEST_TABLE = 'create_attr_test';
 const DROP_ATTR_TABLE = 'AttributeDropTest';
 const SCHEMALESS_TABLE = 'MqttRetained';
+
+const MIN_HEAP_ERROR = new RegExp(
+	`'threads\\.maxHeapMemory' must be greater than or equal to ${MIN_THREAD_HEAP_MEMORY_MB}`
+);
 
 const TEST_ROLE = 'test_dev_role';
 const TEST_USER = 'test_user';
@@ -375,6 +381,51 @@ suite('Configuration', (ctx) => {
 				assert.equal(r.body.logging.rotation.maxSize, '14M', r.text);
 				assert.equal(r.body.replicated, undefined, r.text);
 			})
+			.expect(200);
+	});
+
+	// ── boot-critical values (harper-pro#558) ───────────────────────────────
+
+	test('set_configuration rejects an unstartable threads.maxHeapMemory with 400', async () => {
+		await client
+			.req()
+			.send({ operation: 'set_configuration', threads_maxHeapMemory: 1 })
+			.expect((r) => assert.match(r.body.error ?? '', MIN_HEAP_ERROR, r.text))
+			.expect(400);
+	});
+
+	test('the rejected threads.maxHeapMemory never reaches configuration', async () => {
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.notEqual(r.body.threads?.maxHeapMemory, 1, r.text))
+			.expect(200);
+	});
+
+	test('set_configuration rejects the whole-section spellings of the same write', async () => {
+		for (const threads of [{ count: 4, maxHeapMemory: 1 }, { maxheapmemory: 8 }, '{"maxHeapMemory":8}']) {
+			await client
+				.req()
+				.send({ operation: 'set_configuration', threads })
+				.expect((r) => assert.match(r.body.error ?? '', MIN_HEAP_ERROR, r.text))
+				.expect(400);
+		}
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.equal(r.body.threads.maxHeapMemory, undefined, r.text))
+			.expect(200);
+	});
+
+	test('set_configuration accepts threads.maxHeapMemory at the minimum', async () => {
+		await client
+			.req()
+			.send({ operation: 'set_configuration', threads_maxHeapMemory: MIN_THREAD_HEAP_MEMORY_MB })
+			.expect(200);
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.equal(r.body.threads.maxHeapMemory, MIN_THREAD_HEAP_MEMORY_MB, r.text))
 			.expect(200);
 	});
 

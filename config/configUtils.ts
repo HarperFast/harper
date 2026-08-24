@@ -25,6 +25,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -1082,6 +1083,43 @@ export function getConfiguration() {
 	return configDoc.toJSON();
 }
 
+// `set_configuration` is the one config writer that also fans out (`replicated: true`), so a value
+// accepted here lands on every peer at once and the next rolling restart takes the whole cluster
+// down together (harper-pro#558). Boot-time writers are deliberately not gated the same way: config
+// that already exists has to stay bootable, so it is recovered at the point of use instead
+// (server/threads/threadHeapMemory.ts).
+function assertThreadHeapMemoryStartable(configFields) {
+	for (const field in configFields) {
+		const configParam = CONFIG_PARAM_MAP[field.toLowerCase()];
+		let configured;
+		if (configParam === CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) configured = configFields[field];
+		else if (configParam === CONFIG_PARAMS.THREADS) configured = readSectionHeapMemory(configFields[field]);
+		else continue;
+		const value = castConfigValue(CONFIG_PARAMS.THREADS_MAXHEAPMEMORY, configured);
+		if (typeof value !== 'number' || isStartableThreadHeapMemory(value)) continue;
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(
+				`'threads.maxHeapMemory' must be greater than or equal to ${hdbTerms.MIN_THREAD_HEAP_MEMORY_MB}`
+			),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+}
+
+// A whole `threads` section reaches the same config key, and `threads` canonicalizes to itself
+// rather than to `threads_count`. It arrives either as an object or as the JSON string
+// castConfigValue parses, and flattenConfig lowercases every key on the way back out, so the nested
+// name has to be matched the same way the top-level one is.
+function readSectionHeapMemory(section) {
+	const parsed = castConfigValue(CONFIG_PARAMS.THREADS, section);
+	if (!hdbUtils.isObject(parsed)) return undefined;
+	for (const key in parsed) if (key.toLowerCase() === 'maxheapmemory') return parsed[key];
+}
+
 /**
  * Set Configuration - this function sets new configuration
  * @param setConfigJson
@@ -1121,6 +1159,7 @@ export async function setConfiguration(setConfigJson) {
 			true
 		);
 	}
+	assertThreadHeapMemoryStartable(configFields);
 	try {
 		updateConfigValue(undefined, undefined, configFields, true);
 		if (replicated) {
