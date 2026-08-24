@@ -149,9 +149,9 @@ GraphQL `@relationship` attributes are live objects in component workers, but th
 
 The primary-descriptor update shares the `update-attributes` serialization boundary with `dropTable()`, re-reads the row after locking, and refuses to replace a drop tombstone. Missing or malformed targets are skipped rather than installed without authorization metadata.
 
-Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only. `validation/searchValidator.ts` is what keeps that honest for any relationship the serving thread cannot resolve: it checks the object/nested `get_attributes` form by name, like the bare form, so an unresolvable attribute is a 400 rather than a null the caller cannot distinguish from an absent value.
+Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Tightening the operations API's object/nested `get_attributes` form to reject names it cannot resolve is NOT an option: `Table.transformEntryForSelect` projects undeclared JSON sub-objects through that same form, so `validation/searchValidator.ts` deliberately leaves it unchecked.
 
-Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior), `../unitTests/validation/searchValidator.test.js` (attribute checking in both `get_attributes` forms), and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
+Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior) and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
 
 ---
 

@@ -607,6 +607,17 @@ describe('schema relationship catalog round-trip', () => {
 		);
 	});
 
+	it('leaves hydrated attributes untouched when nothing about the catalog changed', () => {
+		const hydrated = host.attributes.find((attribute) => attribute.name === 'location');
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		// identity, not equality: an unchanged catalog must short-circuit before rebuilding resolvers
+		assert.strictEqual(
+			host.attributes.find((attribute) => attribute.name === 'location'),
+			hydrated
+		);
+	});
+
 	it('applies related-table permissions to a hydrated resolver', async () => {
 		const target = new RequestTarget('?id=host-1&select(id,location{cloudProvider})');
 		target.checkPermission = true;
@@ -707,6 +718,64 @@ describe('schema relationship catalog round-trip', () => {
 		resetDatabases();
 		assert.ok(!getDatabases()[DB].RelationshipHost.attributes.some((attribute) => attribute.name === 'location'));
 		assert.ok(!getDatabases()[DB].RelationshipLocation.attributes.some((attribute) => attribute.name === 'hosts'));
+	});
+});
+
+describe('schema relationship catalog on a table with no declared primary key', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 'relationshipCatalogNoPrimaryKey';
+	const testRoot = path.resolve(__dirname, '../envDir/relationshipCatalogNoPrimaryKey');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+
+	const schema = (relationship) => `
+		type NoPrimaryKeySource @table(database: "${DB}") {
+			created: Float @createdTime
+			targetId: ID @indexed
+			${relationship}
+		}
+		type NoPrimaryKeyTarget @table(database: "${DB}") {
+			id: ID @primaryKey
+			label: String
+		}
+	`;
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+		resetDatabases();
+		await loadGQLSchema(schema('target: NoPrimaryKeyTarget @relationship(from: "targetId")'));
+		await getDatabases()[DB].NoPrimaryKeySource.dbisDB.committed;
+	});
+
+	after(async () => {
+		await fs.remove(testRoot);
+	});
+
+	it('persists the relationship list even though no attribute row carries it', () => {
+		const source = getDatabases()[DB].NoPrimaryKeySource;
+		assert.strictEqual(source.primaryKey, undefined);
+		assert.deepStrictEqual(
+			source.dbisDB.getSync('NoPrimaryKeySource/').relationships.map((relationship) => relationship.name),
+			['target']
+		);
+	});
+
+	it('updates the persisted list when a later reload changes the schema', async () => {
+		await loadGQLSchema(schema(''));
+		const source = getDatabases()[DB].NoPrimaryKeySource;
+		await source.dbisDB.committed;
+		assert.deepStrictEqual(source.dbisDB.getSync('NoPrimaryKeySource/').relationships, []);
+		resetDatabases();
+		assert.ok(
+			!getDatabases()[DB].NoPrimaryKeySource.attributes.some((attribute) => attribute.name === 'target'),
+			'a dropped relationship must not survive on the catalog'
+		);
 	});
 });
 

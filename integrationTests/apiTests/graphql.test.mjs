@@ -215,21 +215,6 @@ suite('GraphQL queries', { skip: skipSuite }, (ctx) => {
 			.expect(200);
 	});
 
-	test('operations API rejects an unresolvable attribute in the object form instead of returning null', async () => {
-		await client
-			.req()
-			.send({
-				operation: 'search_by_conditions',
-				table: 'SubObject',
-				get_attributes: ['id', { name: 'notAnAttribute', select: ['id'] }],
-				conditions: [{ search_attribute: 'id', search_type: 'equals', search_value: '1' }],
-			})
-			.expect((response) => {
-				assert.equal(response.body.error, "unknown attribute 'notAnAttribute'", response.text);
-			})
-			.expect(400);
-	});
-
 	test('query by variable non-null no default', async () => {
 		const r = await client
 			.reqGraphQl()

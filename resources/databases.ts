@@ -2207,9 +2207,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
 				// but other workers' next disk-load re-reads the stale value.
 				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
-				const relationshipsChanged =
-					relationshipDefinitions &&
-					!relationshipListsEqual(attributeDescriptor.relationships, relationshipDefinitions);
 				// primary key can't change indexing, but settings can change
 				if (
 					schemaDefinedMismatch ||
@@ -2218,8 +2215,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					(replicate !== undefined && replicate !== Table.replicate) ||
 					(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
 					(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-					attribute.type !== attributeDescriptor.type ||
-					relationshipsChanged
+					attribute.type !== attributeDescriptor.type
 				) {
 					exclusiveLock();
 					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
@@ -2235,11 +2231,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
-					if (
-						relationshipDefinitions &&
-						!relationshipListsEqual(currentPrimaryAttribute.relationships, relationshipDefinitions)
-					)
-						updatedPrimaryAttribute.relationships = relationshipDefinitions;
 					hasChanges = true; // send out notification of the change
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
@@ -2408,6 +2399,25 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		// Relationships belong to the table, not to its primary key attribute: a table with no
+		// declared primary key has no attribute row to carry them, and its descriptor is never
+		// visited by the loop above.
+		if (relationshipDefinitions) {
+			const relationshipsKey = primaryDescriptorKey();
+			if (!relationshipListsEqual(attributesDbi.getSync(relationshipsKey)?.relationships, relationshipDefinitions)) {
+				exclusiveLock();
+				const currentPrimaryAttribute = attributesDbi.getSync(relationshipsKey);
+				// a missing row means a concurrent drop completed; writing one back would resurrect the table
+				if (
+					currentPrimaryAttribute &&
+					!currentPrimaryAttribute.dropping &&
+					!relationshipListsEqual(currentPrimaryAttribute.relationships, relationshipDefinitions)
+				) {
+					attributesDbi.put(relationshipsKey, { ...currentPrimaryAttribute, relationships: relationshipDefinitions });
+					hasChanges = true;
+				}
+			}
+		}
 	} finally {
 		releaseLock();
 	}
@@ -2436,6 +2446,16 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;
+	// The catalog row initStores() reads a table's settings from: the primary key's own row when it
+	// has one, and the bare table row otherwise.
+	function primaryDescriptorKey() {
+		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name;
+		if (declaredPrimaryKey) {
+			const attributeKey = tableName + '/' + declaredPrimaryKey;
+			if (attributesDbi.getSync(attributeKey)) return attributeKey;
+		}
+		return tableName + '/';
+	}
 	// Acquire an exclusive lock for attribute updates
 	function exclusiveLock() {
 		if (releaseExclusiveLock) return;
