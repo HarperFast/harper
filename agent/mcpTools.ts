@@ -57,7 +57,7 @@ const AGENT_MCP_TOOLS: Record<string, AgentMcpToolMeta> = {
 		readOnly: true,
 	},
 	list_agent_sessions: {
-		description: 'List built-in-agent sessions, most recent first.',
+		description: 'List built-in-agent sessions, most recently updated first.',
 		inputSchema: {
 			type: 'object',
 			properties: { limit: { type: 'integer', minimum: 1, description: 'Max sessions to return (default 100).' } },
