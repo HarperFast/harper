@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787556878454,
+  "lastUpdate": 1787571833550,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13667,6 +13667,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 3674,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f8a5aa90adb5ef378ecd88710e770ddebcb9be29",
+          "message": "Add scoped authentication tokens (inline role on create_authentication_tokens) (#2176)\n\n* Support minting scoped authentication tokens from an inline role object\n\ncreate_authentication_tokens now accepts a role-shaped object (e.g.\n{ permission: { operations: ['read_only'] } }) and mints a single\n'scoped-operation' JWT that embeds the downgraded permission set, so a\nlimited credential can be issued without a pre-existing hdb_user or\nhdb_role and with an arbitrary attribution username. Minting is\nsuper_user-gated (or trusted internal dispatch); no refresh token is\nissued and no user record is touched.\n\nvalidateOperationToken accepts the new subject and builds a synthetic\nuser from the embedded role. Includes three defense-in-depth fixes\nsurfaced during design review:\n- synthetic (scoped/impersonated) roles get content-derived identities\n  so the permissions-translation memo can never alias two different\n  inline permission sets (or poison a persisted role's entry)\n- the role operations allowlist gate now runs before the ambient\n  privilege early-returns (structure_user etc), so an allowlisted role\n  cannot reach unlisted schema operations\n- cached Bearer identities are evicted exactly at token expiry instead\n  of at the auth-cache TTL\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Document scoped tokens and the synthetic-role identity invariant in DESIGN.md\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address cross-model review: SQL allowlist gate, expired-token rethrow, bounded synthetic memo\n\n- enforce the role operations allowlist on the SQL path (chooseOperation\n  never reaches verifyPerms for sql); exported verifyOperationsAllowlist\n  and added it to the legacy module.exports list that clobbers the ESM\n  exports at runtime\n- rethrow non-invalid-token Bearer failures in auth.ts so an expired\n  token is a 401 credential rejection instead of caching an undefined\n  user (anonymous or TypeError under success audit logging)\n- bound synthetic-role permission translations in an LRU (256 entries)\n  so content-derived role names cannot grow rolePermsMap unboundedly\n- measure the scoped-token size cap on the signed token, log the\n  permission content hash at mint, fix the async-escaped handler test,\n  trim narration comments\n- integration: prove SQL allowlist enforcement and exact expiry through\n  the authorization cache end-to-end\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address round-2 review: attribution collision, allowlist scope docs, stub-free tests\n\n- reject an attribution username that names an existing hdb_user (default\n  is now scoped:<minter>): by-name rehydration paths (MQTT last-will\n  replay) would otherwise substitute the real principal's permissions;\n  the replay site additionally skips rehydration for _scopedToken users\n- document that the operations allowlist gates the operations API + SQL\n  only — application/REST surfaces authorize on table CRUD permissions\n  (DESIGN.md, MCP description, docs)\n- rewrite the scoped-token unit suite stub-free per AGENTS.md (real key\n  files + clearJWTRSAKeysCache + real users cache; legacy token built\n  with jwt.sign directly); document the synthetic-LRU cliff and the\n  '_'-prefix convention in DESIGN.md; trim narration comments\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address round-3 review: persist scoped identity on last wills, plain-require test module\n\n- last-will records for scoped-token bearers now persist the token's\n  role, marker, and expiry; replay uses the embedded role instead of\n  rehydrating by name, and drops wills whose token has expired\n- the scoped-token unit suite uses a plainly-required module instance\n  rather than the file's rewire-loaded one\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address round-4 review: scoped tokens in live-subscription rechecks\n\n- the live-subscription recheck (stale-auth revocation, #1414) no longer\n  re-resolves a scoped-token bearer by name: the embedded role is the\n  identity, expiry is the revocation; by-name lookup either killed a\n  valid scoped subscription (no hdb_user row) or, after a colliding user\n  was created, escalated the subscription to that user's permissions\n- will replay wraps rehydration in the per-will error handling so one\n  failed lookup cannot abort recovery of the remaining wills\n- fix stale JSDoc default-attribution claim; drop a narrating test comment\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* DESIGN.md: record both handled by-name rehydration sites\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address round-5 review: block scoped-token self-mint, add recheck regression coverage\n\n- a scoped-token bearer can no longer use the passwordless self-mint path\n  of create_authentication_tokens: its unverified attribution name would\n  otherwise resolve to (and issue standing operation/refresh tokens for) a\n  real user created with that name after the scoped token was minted\n- integration: a scoped-token live subscription survives an unrelated\n  user-change recheck (proving it is not re-resolved by name) and still\n  terminates at token expiry\n- unit: scoped bearer self-mint is rejected\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address round-6 (cursor-grok): guard third by-name site + will-expiry symmetry\n\ncursor-grok found a third by-name rehydration site the DESIGN.md\ncompleteness claim missed, plus a restart-vs-live will-expiry asymmetry:\n\n- components/mcp/listChanged.ts refreshSessionUser no longer re-resolves a\n  scoped-token session by name (would advertise a later-created colliding\n  user's tool/resource surface). AuthedUser gains the _scopedToken marker\n- the live abnormal-disconnect will publish now honors authExpiresAt for\n  scoped tokens, matching restart replay (was: fires after expiry)\n- DESIGN.md lists all three guarded by-name sites + the self-mint block\n- tests: MCP scoped-session-not-re-resolved unit test; the scoped\n  subscription integration test now creates a REAL colliding user with a\n  no-read role, so continued delivery proves non-substitution; widened\n  its expiry margin to remove the load-sensitive timing window\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address round-7 (cursor-grok): key will expiry off the persisted principal\n\ncursor-grok found the round-6 abnormal-disconnect expiry check keyed off\nthis.user, not the persisted will: a later same-clientId session with no\nwill leaves the prior scoped will row in place, and that session's\nthis.user may be a different non-scoped principal — so the leftover\nscoped will would publish past expiry while restart replay drops it.\n\nBoth paths now share isWillFromExpiredScopedToken(will), keyed off the\npersisted will principal, so they can't diverge again.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Address final-pass review: scoped will publishes under its embedded role\n\nFinal codex+gemini+domain pass on the round-7 will code (adjudicated minor):\n\n- a scoped will now publishes under its OWN embedded role, not this.user:\n  a later same-clientId session (a different, possibly more privileged\n  principal) can read back the prior session's leftover will row and must\n  not gain that principal's permissions. Non-scoped wills unchanged\n- await the will-row deletes in restart replay (symmetry; caught by the\n  worker unhandledRejection guard either way)\n- verifyOperationsAllowlist treats a null operations list like undefined\n  (the SQL call site would otherwise inherit the old gate's TypeError)\n- restore the verifyPerms JSDoc that the extracted helper had orphaned\n- scoped subscription test waits on delivery readiness instead of fixed\n  sleeps; trim review-history-narrating comments\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Polish (final-pass minors): loop-abort, fail-closed expiry, storage-safe will\n\n- restart replay: a single will's publish/delete failure no longer aborts\n  replay of the rest (my prior await-for-symmetry change had let one\n  rejection break the loop); the row stays and retries next restart\n- isWillFromExpiredScopedToken fails closed — a scoped will with no\n  recorded expiry is dropped, not published\n- persist only durable permission fields on a scoped will, stripping the\n  runtime-only _expandedOperations Set (rebuilt on read; not storage-safe)\n- scoped subscription test anchors the expiry wait on mint time so the\n  variable recheck phase can't race it\n- add e2e coverage that a scoped token can invoke an explicitly-listed\n  super_user-only op (gate-2 delegation)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Trim will-context comment to the invariant (review nit)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Canonicalize permission keys before hashing the synthetic role name\n\nAddresses gemini review on #2176: JSON.stringify key order is not\ndeterministic, so two structurally-identical permission sets differing\nonly in key order got distinct synthetic role names — never an aliasing\nbug (distinct name = distinct slot), but it wastes entries in the bounded\nsynthetic-role LRU. Hash a key-sorted canonical form so identical sets\nshare one slot, easing the documented LRU-cliff pressure.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* Trim canonicalJSON docstring to the load-bearing invariant (review nit)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-21T22:06:09Z",
+          "url": "https://github.com/HarperFast/harper/commit/f8a5aa90adb5ef378ecd88710e770ddebcb9be29"
+        },
+        "date": 1787571829912,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 24496,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 17568,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 14208,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 32477120,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 8739,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 2456,
             "unit": "ops"
           }
         ]
