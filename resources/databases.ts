@@ -1055,6 +1055,10 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// The guards below compare against keys in the env map, so two spellings of one directory must
 	// not read as two directories.
 	path = realpathSync(path);
+	// Load the registry FIRST: the guards below read it, and loading is itself what populates
+	// `rocksdbDatabaseEnvs` — running the path guard before the scan would let this branch adopt a
+	// database that the scan then opened at the same path.
+	getDatabases();
 	// A second open would hand back a rival table graph over one shared root store, and the two
 	// callers would disagree about who may close it.
 	if (openBranches.has(path)) throw new Error(`Branch database at ${path} is already open`);
@@ -1076,11 +1080,8 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 		// in the env map with no handle able to close it.
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
-		try {
-			stranded?.close();
-		} catch (closeError) {
-			logger.warn?.(`Error closing partially opened branch database at ${path}`, closeError);
-		}
+		// `tables` holds whatever initStores managed to build before it threw.
+		closeBranchHandles(path, stranded, tables);
 		throw error;
 	}
 	const branch: BranchDatabase = {
@@ -1089,24 +1090,38 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 		close() {
 			if (!openBranches.delete(path)) return; // already closed; closing a store twice is not safe
 			rocksdbDatabaseEnvs.delete(path);
-			// The column families opened for the tables and the audit store hold their own handles, and
-			// closing only the root leaves them behind.
-			for (const store of [(rootStore as any).dbisDb, (rootStore as any).auditStore]) {
-				try {
-					store?.close?.();
-				} catch (error) {
-					logger.warn?.(`Error closing branch column family at ${path}`, error);
-				}
-			}
-			try {
-				rootStore.close();
-			} catch (error) {
-				logger.warn?.(`Error closing branch database at ${path}`, error);
-			}
+			closeBranchHandles(path, rootStore, tables);
 		},
 	};
 	openBranches.set(path, branch);
 	return branch;
+}
+
+/**
+ * Release every RocksDB handle a branch open created. `initStores` opens a column family per table
+ * primary store and per index, on top of the internal-dbis and audit families, so closing only the
+ * root leaves all of them behind — which is why `closeDatabase` walks them individually for a real
+ * database. Shared by `close()` and the partial-open cleanup, so a failure part-way through
+ * `initStores` releases exactly what a success would.
+ */
+function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, tables?: Tables): void {
+	const closeStore = (store: any, description: string) => {
+		try {
+			store?.close?.();
+		} catch (error) {
+			logger.warn?.(`Error closing ${description} for branch database at ${path}`, error);
+		}
+	};
+	for (const tableName in tables ?? {}) {
+		const table: any = (tables as any)[tableName];
+		if (!table?.primaryStore) continue;
+		for (const indexName in table.indices || {})
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		closeStore(table.primaryStore, `table ${tableName}`);
+	}
+	closeStore((rootStore as any)?.dbisDb, 'attributes store');
+	closeStore((rootStore as any)?.auditStore, 'audit store');
+	closeStore(rootStore, 'root store');
 }
 
 /** Close every open branch. Branches are process-local, so this is shutdown, not a data operation. */
