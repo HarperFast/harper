@@ -483,9 +483,13 @@ suite(
 				})
 			);
 
-			// Read final values.
-			for (const { id, acked, errs } of windowResults) {
-				const g = await get(id);
+			// Poll each window for a settled value (see waitForStableGet/leg (3)) rather than a
+			// single immediate read. Concurrent, not sequential: serializing 10 polls could push
+			// later keys' reads past their own 500ms TTL and misreport a clean window as expired.
+			const settled = await Promise.all(windowResults.map(({ id }) => waitForStableGet(id)));
+			for (let i = 0; i < windowResults.length; i++) {
+				const { id, acked, errs } = windowResults[i];
+				const g = settled[i];
 				if (g.status === 404) {
 					// Burst took >500ms and window expired — inconclusive for this probe.
 					windowLogs.push(`${id}: expired(404) acked=${acked} err=${errs} [skip]`);
@@ -505,8 +509,8 @@ suite(
 				} else {
 					windowLogs.push(`${id}: status=${g.status} acked=${acked}`);
 				}
-				await del(id);
 			}
+			await Promise.all(windowResults.map(({ id }) => del(id)));
 
 			log(
 				`\n[QA-431] (5) MULTI-WORKER STRESS (${WINDOWS} windows × ${HITS_PER_WINDOW} hits, ${WORKERS} workers)\n` +

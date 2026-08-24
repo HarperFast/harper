@@ -225,8 +225,23 @@ export async function createUwsServer(options: UwsServerOptions): Promise<{ app:
 	app.any('/*', withBody);
 
 	await new Promise<void>((resolve, reject) => {
-		const onListen = (listenSocket: unknown) =>
-			listenSocket ? resolve() : reject(new Error(`uWS failed to bind ${host ?? ''}:${port ?? socketPath}`));
+		let settled = false;
+		// Backstop against the native listen callback never firing at all — without it, a stuck
+		// bind is indistinguishable from a slow one, and nothing here ever rejects.
+		const bindTimeout = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			reject(
+				new Error(`uWS timed out waiting to bind ${host ?? ''}:${port ?? socketPath} (listen callback never fired)`)
+			);
+		}, 30_000);
+		const onListen = (listenSocket: unknown) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(bindTimeout);
+			if (listenSocket) resolve();
+			else reject(new Error(`uWS failed to bind ${host ?? ''}:${port ?? socketPath}`));
+		};
 		// uWS shares the port across workers (SO_REUSEPORT) by default, matching the Node reusePort path.
 		if (port != null) {
 			if (host) app.listen(host, port, onListen);
