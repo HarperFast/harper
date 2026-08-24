@@ -164,6 +164,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [generate-node-version-matrix, build]
     if: ${{ contains(fromJSON(needs.generate-node-version-matrix.outputs.node-versions), 24) }}
+    env:
+      HARPER_V1_CLIENT_COMPATIBILITY_REQUIRED: 1
 
     steps:
       - name: Checkout code

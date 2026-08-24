@@ -15,8 +15,8 @@
  * `connect()`.
  *
  * The LangChain.js tests do the same with an unmodified `@langchain/openai`
- * client (chat, streaming chat, embeddings), closing out the #631 acceptance
- * criterion "unmodified LangChain.js / OpenAI SDK client completes a chat".
+ * client, covering its chat, streaming chat, and embeddings defaults and
+ * decoders.
  *
  * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because
  * defaultConfig.yaml ships no `modelsGateway` block at all — an absent key is
@@ -37,12 +37,13 @@ import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ECHO_BACKEND_PATH = resolvePath(__dirname, 'fixtures/v1-gateway-test-backend.cjs');
 const CLIENT_COMPATIBILITY_ENABLED = process.env.HARPER_V1_CLIENT_COMPATIBILITY === '1';
+const CLIENT_COMPATIBILITY_REQUIRED = process.env.HARPER_V1_CLIENT_COMPATIBILITY_REQUIRED === '1';
 const clientCompatibilityTest = CLIENT_COMPATIBILITY_ENABLED ? test : test.skip;
 
-if (process.env.GITHUB_JOB === 'v1-client-compatibility') {
+if (CLIENT_COMPATIBILITY_REQUIRED) {
 	assert.ok(
 		CLIENT_COMPATIBILITY_ENABLED,
-		'v1-client-compatibility must set HARPER_V1_CLIENT_COMPATIBILITY=1 so the real-client tests cannot silently skip'
+		'HARPER_V1_CLIENT_COMPATIBILITY_REQUIRED requires HARPER_V1_CLIENT_COMPATIBILITY=1 so the real-client tests cannot silently skip'
 	);
 }
 
