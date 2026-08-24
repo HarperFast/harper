@@ -739,6 +739,11 @@ export function getEnvCliRootPath() {
  * This is used for running HDB without a boot file
  */
 let noBootFileChecked;
+// test support: the memoized result is derived from the ROOTPATH env var, which the unit-test
+// bootstrap exports only transiently — a value cached during that window must not outlive it
+export function resetNoBootFileCache() {
+	noBootFileChecked = undefined;
+}
 export function noBootFile() {
 	if (noBootFileChecked) return noBootFileChecked;
 	const cliEnvRoot = getEnvCliRootPath();

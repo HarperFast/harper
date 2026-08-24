@@ -15,7 +15,14 @@ describe('Test isHdbInstalled function', () => {
 	let sandbox;
 	const TEST_ERROR = 'I am a unit test error test';
 
+	// mocha.init.js exports ROOTPATH to keep the whole run inside the per-PID root; these
+	// tests exercise the boot-props install check that a ROOTPATH env var shadows (via
+	// noBootFile()), so clear it — and the memo derived from it — for this file
+	let savedRootPathEnv;
 	before(() => {
+		savedRootPathEnv = process.env.ROOTPATH;
+		delete process.env.ROOTPATH;
+		require('#src/utility/common_utils').resetNoBootFileCache();
 		sandbox = sinon.createSandbox();
 		fsStatStub = sandbox.stub(fs, 'statSync');
 		envStub = sandbox.stub(envMangr, 'get');
@@ -32,6 +39,8 @@ describe('Test isHdbInstalled function', () => {
 	});
 
 	after(() => {
+		if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
+		require('#src/utility/common_utils').resetNoBootFileCache();
 		sandbox.restore();
 	});
 

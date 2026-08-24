@@ -4,23 +4,36 @@
  * initialize database connections (like security/auth.ts) don't fail
  * during module loading.
  *
- * IMPORTANT: This pre-seeds DATABASES to an empty per-PID test directory,
- * which is appropriate for unit tests that mock out the DB layer. The
- * apiTests suite (`test:unit:apitests`) instead boots a real Harper server
- * and relies on the actual installed system database (with hdb_role,
- * hdb_user, etc.) being discoverable by `getDatabases()` in
- * `apiTests/setupTestApp.mjs` before its own `setupTestDBPath()` runs. If
- * we override DATABASES here, that preservation step has nothing to
- * preserve and `setUsersWithRolesCache()` fails with "Table hdb_role not
- * found". So skip the override when mocha was invoked against apiTests.
+ * Every database — including `system` — resolves inside the per-PID test
+ * directory, so a unit run never opens an installed Harper root (whose
+ * RocksDB LOCK is exclusive: borrowing it makes unit runs fail whenever a
+ * running Harper or a leaked test process holds it). Suites that need the
+ * system tables to exist seed them into the per-PID directory via
+ * ensureSystemTables() in testUtils.js.
+ *
+ * The per-PID config file plus the ROOTPATH environment variable must be in
+ * place BEFORE any Harper module loads: config resolution
+ * (configUtils.getConfigFilePath) and the logger's file stream bind to
+ * ROOTPATH at first initialization, so setting it late leaves the run
+ * reading the installed root's config and appending to its hdb.log.
+ * ROOTPATH stays exported for the whole run — worker threads a test spawns
+ * and mid-run config/logger re-initializations must resolve the per-PID
+ * root too. The few test files that specifically exercise boot-props-based
+ * resolution (which a ROOTPATH env var shadows) clear the variable and the
+ * noBootFile() memo for their own scope.
+ *
+ * storage.path is pinned to <pid dir>/database (the same layout the config
+ * template yields, asserted absolutely so an inherited config can never
+ * point the database scan anywhere else). `system` — and any ad-hoc
+ * database a test creates — resolves under it, exactly like production.
+ * Keep it distinct from the per-PID directory itself: the databases-config
+ * scan in getDatabases() loads every RocksDB directory under a configured
+ * path as that database, so databases placed next to data/dev/test/test2's
+ * configured path would be aliased into them on any resetDatabases().
  */
 
 const path = require('path');
 const fs = require('fs-extra');
-const env = require('#src/utility/environment/environmentManager');
-const terms = require('#src/utility/hdbTerms');
-
-const isApiTestRun = process.argv.some((arg) => typeof arg === 'string' && arg.includes('apiTests'));
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -56,27 +69,49 @@ process.on('exit', (code) => {
 	process.exitCode = 1;
 });
 
-if (!isApiTestRun) {
-	const UNIT_TEST_DIR = __dirname;
-	const ENV_DIR_NAME = 'envDir';
-	const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
-	const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
+const UNIT_TEST_DIR = __dirname;
+const ENV_DIR_NAME = 'envDir';
+const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
+const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
 
-	// Initialize environment manager
-	env.initSync();
-
-	// Set up the base test database path
-	if (!fs.existsSync(PID_DIR_PATH)) {
-		fs.mkdirSync(PID_DIR_PATH, { recursive: true });
-	}
-	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, PID_DIR_PATH);
-
-	// Set up database paths
-	const databasePaths = {
-		data: { path: PID_DIR_PATH },
-		dev: { path: PID_DIR_PATH },
-		test: { path: PID_DIR_PATH },
-		test2: { path: PID_DIR_PATH },
-	};
-	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
+if (!fs.existsSync(PID_DIR_PATH)) {
+	fs.mkdirSync(PID_DIR_PATH, { recursive: true });
 }
+// config validation requires the configured paths to exist, as after an install
+for (const dir of ['database', 'log', 'components', 'keys']) {
+	fs.mkdirSync(path.join(PID_DIR_PATH, dir), { recursive: true });
+}
+const configFilePath = path.join(PID_DIR_PATH, 'harper-config.yaml');
+if (!fs.existsSync(configFilePath)) {
+	const YAML = require('yaml');
+	const configDoc = YAML.parseDocument(
+		fs.readFileSync(path.join(UNIT_TEST_DIR, '../static/defaultConfig.yaml'), 'utf8')
+	);
+	configDoc.setIn(['rootPath'], PID_DIR_PATH);
+	// resolve the path fields the installer's config validation would otherwise fill in
+	configDoc.setIn(['componentsRoot'], 'components');
+	configDoc.setIn(['logging', 'root'], 'log');
+	configDoc.setIn(['logging', 'rotation', 'path'], 'log');
+	configDoc.setIn(['storage', 'path'], 'database');
+	fs.writeFileSync(configFilePath, configDoc.toString());
+}
+process.env.ROOTPATH = PID_DIR_PATH;
+
+// Only now is it safe to load Harper modules
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
+
+// Initialize environment manager
+env.initSync();
+
+env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, PID_DIR_PATH);
+env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(PID_DIR_PATH, 'database'));
+
+// Set up database paths
+const databasePaths = {
+	data: { path: PID_DIR_PATH },
+	dev: { path: PID_DIR_PATH },
+	test: { path: PID_DIR_PATH },
+	test2: { path: PID_DIR_PATH },
+};
+env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);

@@ -10,8 +10,9 @@ const { table: ensure_table, resetDatabases } = require('#src/resources/database
 const terms = require('#src/utility/hdbTerms');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const { isMainThread } = require('node:worker_threads');
-const { getDatabases, databases } = require('#src/resources/databases');
+const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
+const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
 
 let envMgrInitSyncStub;
 
@@ -350,10 +351,6 @@ function setTestPath(testPath) {
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(testPath, 'database'));
 	fs.mkdirpSync(testPath);
-	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
-	if (systemPath) {
-		env.setProperty(terms.CONFIG_PARAMS.DATABASES, { system: { path: path.dirname(systemPath) } });
-	}
 	fs.writeFileSync(path.join(testPath, 'harperdb-config.yaml'), JSON.stringify({}));
 }
 
@@ -376,17 +373,19 @@ function setupTestDBPath() {
 		fs.mkdirSync(dbPath, { recursive: true });
 	}
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
+	// Same paths as mocha.init.js (see its header comment): everything — including the
+	// `system` database, which resolves under storage.path exactly like production —
+	// stays inside the per-PID directory. Repointing an already-open `system` is what
+	// the old installed-path preservation logic guarded against; since mocha.init.js
+	// configures these exact paths before any module can open `system`, the paths
+	// never change.
+	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(dbPath, 'database'));
 	const databasePaths = {
 		data: { path: dbPath },
 		dev: { path: dbPath },
 		test: { path: dbPath },
 		test2: { path: dbPath },
 	};
-	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
-	if (systemPath) {
-		// do NOT change an existing system path, really confuses the system
-		databasePaths.system = { path: path.dirname(systemPath) };
-	}
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
 	resetDatabases();
 	if (isMainThread) {
@@ -395,6 +394,55 @@ function setupTestDBPath() {
 		});
 	}
 	return dbPath;
+}
+
+/**
+ * Seeds the per-PID system database the way an install would: the standard system tables
+ * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which
+ * authorizeLocal/getSuperUser() need to authorize local requests), and self-signed
+ * certificates (which the TLS servers, e.g. MQTT's secure port, need). Suites that
+ * exercise code requiring the system tables (e.g. setUsersWithRolesCache) call this
+ * after setupTestDBPath() instead of borrowing an installed Harper root's system
+ * database.
+ */
+let systemSeeded = false;
+async function ensureSystemTables() {
+	if (systemSeeded) return;
+	if (!getDatabases().system?.hdb_role) {
+		const mountHdb = require('#src/utility/mount_hdb').default;
+		await mountHdb(env.getHdbBasePath());
+	}
+	const { addRole } = require('#src/security/role');
+	const user = require('#src/security/user');
+	try {
+		await addRole({ role: 'super_user', permission: { super_user: true } });
+	} catch (error) {
+		if (!error.message?.includes('already exists')) throw error;
+	}
+	try {
+		await user.addUser({ username: 'admin', password: 'password', role: 'super_user', active: true });
+	} catch (error) {
+		if (!error.message?.includes('already exists')) throw error;
+	}
+	// generateCertsKeys() persists the resulting cert config through the per-PID root's
+	// config file, which mocha.init.js has already written
+	const keys = require('#src/security/keys');
+	await keys.generateCertsKeys();
+	// generateCertsKeys() names its key privateKey.pem — the same name loadCertificates()
+	// registers for an installed config's tls.privateKey in the in-process privateKeys
+	// cache, which then shadows the generated key and pairs the fresh certificates with
+	// the installed root's (unrelated) key: ERR_OSSL_X509_KEY_VALUES_MISMATCH and zero
+	// TLS contexts. Rename the generated key (file and cert records) to a name no config
+	// can claim, so lookups always fall through to the per-PID file it actually matches.
+	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
+	const testKeyName = 'unitTestPrivateKey.pem';
+	fs.renameSync(path.join(keysDir, PRIVATEKEY_PEM_NAME), path.join(keysDir, testKeyName));
+	for await (const cert of getDatabases().system.hdb_certificate.search([])) {
+		if (cert.private_key_name === PRIVATEKEY_PEM_NAME) {
+			await keys.setCertTable({ ...cert, private_key_name: testKeyName });
+		}
+	}
+	systemSeeded = true;
 }
 
 function sortAsc(data, sort_by) {
@@ -557,7 +605,7 @@ module.exports = {
 	setTestPath,
 	getMockTestPath,
 	setupTestDBPath,
-	setupTestDBPath,
+	ensureSystemTables,
 	sortAsc,
 	sortDesc,
 	sortAttrKeyMap,

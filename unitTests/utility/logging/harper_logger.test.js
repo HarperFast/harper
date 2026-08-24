@@ -158,7 +158,20 @@ describe('Test harper_logger module', () => {
 		restoreLogConfig = pinLogConfig();
 	});
 
+	// mocha.init.js exports ROOTPATH to keep the whole run inside the per-PID root; these
+	// tests (via requireUncached copies) exercise initLogSettings' boot-props-based
+	// resolution, which a ROOTPATH env var shadows — clear it, and the noBootFile() memo
+	// derived from it, for this file
+	let savedRootPathEnv;
+	before(() => {
+		savedRootPathEnv = process.env.ROOTPATH;
+		delete process.env.ROOTPATH;
+		require('#src/utility/common_utils').resetNoBootFileCache();
+	});
+
 	after(() => {
+		if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
+		require('#src/utility/common_utils').resetNoBootFileCache();
 		sandbox.restore();
 		restoreLogConfig?.();
 	});

@@ -308,12 +308,6 @@ export function initTestEnvironment(testConfigObj: any = {}) {
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, TEST_HDB_PATH);
 		setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, TEST_HDB_PATH);
-		const systemPath =
-			typeof (globalThis as any).databases !== 'undefined' &&
-			(globalThis as any).databases.system?.hdb_user?.primaryStore?.path;
-		if (systemPath) {
-			setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, { system: { path: path.dirname(systemPath) } });
-		}
 
 		if (https_enabled) {
 			setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, get(hdbTerms.CONFIG_PARAMS.HTTP_PORT));
