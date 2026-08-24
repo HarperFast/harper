@@ -153,8 +153,6 @@ module.exports = {
 	registerWorkerDataProvider,
 	onThreadExit,
 	hasThreadExited,
-	// Exported so tests can drive the real exit path rather than a module-local stand-in; the
-	// dedupe above makes a spurious call a no-op.
 	notifyThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
