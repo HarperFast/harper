@@ -154,7 +154,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	let schemasArgs;
 	for (const arg in args) {
-		let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
+		let configParam = lookupConfigParam(arg);
 
 		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 		if (configParam === CONFIG_PARAMS.DATABASES) {
@@ -169,7 +169,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 			continue;
 		}
 
-		if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+		if (!configParam && isSuffixEscapedParam(arg)) {
 			configParam = arg;
 		}
 
@@ -273,7 +273,7 @@ export function getDefaultConfig(param: string) {
 		flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
 	}
 
-	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const paramMap = lookupConfigParam(param);
 	if (paramMap === undefined) return undefined;
 
 	return flatDefaultConfigObj[paramMap.toLowerCase()];
@@ -297,7 +297,7 @@ export function getConfigValue(param: string | null | undefined) {
 		return undefined;
 	}
 
-	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const paramMap = lookupConfigParam(param);
 	if (paramMap === undefined) return undefined;
 
 	return flatConfigObj[paramMap.toLowerCase()];
@@ -690,7 +690,7 @@ export function updateConfigObject(param: string, value: any) {
 		flatConfigObj = {};
 	}
 
-	const configObjKey = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const configObjKey = lookupConfigParam(param);
 	if (configObjKey === undefined) {
 		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
 		return;
@@ -732,6 +732,49 @@ export function updateConfigObject(param: string, value: any) {
 		if (value === undefined) delete node[leaf];
 		else node[leaf] = value;
 	}
+}
+
+/**
+ * Canonical config param for an arg name, or `undefined` when the name is not a config param.
+ * `Object.hasOwn` because a bare lookup resolves inherited names: `constructor` yields an
+ * `Object.prototype` member that then fails `.split('_')` or `.toLowerCase()`.
+ */
+function lookupConfigParam(arg: string): string | undefined {
+	if (typeof arg !== 'string') return undefined;
+	const name = arg.toLowerCase();
+	return Object.hasOwn(CONFIG_PARAM_MAP, name) ? CONFIG_PARAM_MAP[name] : undefined;
+}
+
+/**
+ * Component entries (`my-component_package`, `my-component_port`) are operator-named, so they
+ * cannot be enumerated in CONFIG_PARAM_MAP and bypass it.
+ */
+function isSuffixEscapedParam(arg: string): boolean {
+	return typeof arg === 'string' && (arg.endsWith('_package') || arg.endsWith('_port'));
+}
+
+const MAX_REPORTED_UNRECOGNIZED = 10;
+
+/**
+ * Render unrecognized names for an error that also reaches the operations log: control characters
+ * are stripped so a name containing a newline cannot forge a log line, and the list is capped so a
+ * body carrying thousands of unknown keys cannot produce an unbounded message.
+ */
+function describeUnrecognized(names: string[]): string {
+	const shown = names
+		.slice(0, MAX_REPORTED_UNRECOGNIZED)
+		// eslint-disable-next-line no-control-regex
+		.map((name) => name.replace(/[\u0000-\u001f\u007f]/g, '?'));
+	const remaining = names.length - shown.length;
+	return remaining > 0 ? `${shown.join(', ')} (and ${remaining} more)` : shown.join(', ');
+}
+
+function findUnrecognizedParams(args: object): string[] {
+	let unrecognized;
+	for (const arg in args) {
+		if (lookupConfigParam(arg) === undefined && !isSuffixEscapedParam(arg)) (unrecognized ??= []).push(arg);
+	}
+	return unrecognized ?? [];
 }
 
 /**
@@ -794,7 +837,7 @@ export function updateConfigValue(
 		if (skipParamMap) {
 			configParam = param;
 		} else {
-			configParam = CONFIG_PARAM_MAP[param.toLowerCase()];
+			configParam = lookupConfigParam(param);
 			if (configParam === undefined) {
 				throw handleHDBError(
 					new Error(),
@@ -813,7 +856,7 @@ export function updateConfigValue(
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsedArgs) {
-			let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
+			let configParam = lookupConfigParam(arg);
 
 			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
 			if (
@@ -845,7 +888,7 @@ export function updateConfigValue(
 				}
 			}
 
-			if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+			if (!configParam && isSuffixEscapedParam(arg)) {
 				configParam = arg;
 			}
 
@@ -1045,8 +1088,11 @@ export function getConfiguration() {
 
  */
 export async function setConfiguration(setConfigJson) {
+	// `hdb_auth_header` is the 4.x spelling of `hdbAuthHeader`, and `impersonate` is a generic
+	// operation-body field (server/operationsServer.ts): control fields, never config params.
 	// eslint-disable-next-line no-unused-vars
-	const { operation, hdb_user, hdbAuthHeader, replicated, ...configFields } = setConfigJson;
+	const { operation, hdb_user, hdbAuthHeader, hdb_auth_header, impersonate, replicated, ...configFields } =
+		setConfigJson;
 	// Operation-control field, not a config param: enforce boolean (matching other
 	// `replicated` surfaces, e.g. analyticsValidator) before any local write so a
 	// malformed value like the string "false" — which is truthy — can't apply config
@@ -1055,6 +1101,20 @@ export async function setConfiguration(setConfigJson) {
 		throw handleHDBError(
 			new Error(),
 			`'replicated' must be a boolean`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	// Before any local write: the writer skips names it cannot resolve, so a request mixing
+	// recognized and unrecognized names would otherwise apply the recognized half and still report
+	// success.
+	const unrecognized = findUnrecognizedParams(configFields);
+	if (unrecognized.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Unable to update config, unrecognized config parameter${unrecognized.length > 1 ? 's' : ''}: ${describeUnrecognized(unrecognized)}`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
