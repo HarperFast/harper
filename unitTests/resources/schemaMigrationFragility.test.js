@@ -712,6 +712,30 @@ describe('schema relationship catalog round-trip', () => {
 		assert.ok(host.attributes.find((attribute) => attribute.name === 'location')?.definition?.tableClass === location);
 	});
 
+	it('re-points a hydrated resolver at a recreated target table', async () => {
+		const firstTarget = location;
+		await location.dropTable();
+		resetDatabases();
+		table({
+			table: 'RelationshipLocation',
+			database: DB,
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'cloudProvider', indexed: true },
+			],
+		});
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		location = getDatabases()[DB].RelationshipLocation;
+		assert.notStrictEqual(location, firstTarget, 'the drop must have produced a new table class');
+		assert.strictEqual(
+			host.attributes.find((attribute) => attribute.name === 'location')?.definition?.tableClass,
+			location
+		);
+		await location.put({ id: 'loc-1', cloudProvider: 'linode' });
+	});
+
 	it('authoritatively removes relationship definitions when the GraphQL schema drops them', async () => {
 		await loadGQLSchema(`
 			type RelationshipLocation @table(database: "${DB}") {
