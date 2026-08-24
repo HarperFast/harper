@@ -402,11 +402,18 @@ function setupTestDBPath() {
  * database.
  */
 async function ensureSystemTables() {
-	// keyed on actual state, not a process flag: a mid-run tearDownMockDB() can remove the
-	// per-PID root, and a later caller must be able to re-seed it
+	// keyed on the seed's final artifact (the config repoint at the bottom), not a process
+	// flag: a mid-run tearDownMockDB() can remove the per-PID root, and a partial seed must
+	// re-run in full — every step below is individually idempotent
 	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
 	const testKeyPath = path.join(keysDir, 'unitTestPrivateKey.pem');
-	if (getDatabases().system?.hdb_role && fs.existsSync(testKeyPath)) return;
+	if (
+		env.get(terms.CONFIG_PARAMS.TLS_PRIVATEKEY) === testKeyPath &&
+		fs.existsSync(testKeyPath) &&
+		getDatabases().system?.hdb_role
+	) {
+		return;
+	}
 	if (!getDatabases().system?.hdb_role) {
 		const mountHdb = require('#src/utility/mount_hdb').default;
 		await mountHdb(env.getHdbBasePath());

@@ -21,6 +21,22 @@ describe('unit-test per-PID root isolation', () => {
 		assert.strictEqual(process.env.SCHEMAS_DATA_PATH, undefined);
 	});
 
+	it('neutralizes ambient storage-path env vars a parent shell exported', function () {
+		this.timeout(30000);
+		const { spawnSync } = require('node:child_process');
+		const result = spawnSync(
+			process.execPath,
+			['--require', './unitTests/mocha.init.js', '-p', '[process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH]'],
+			{
+				cwd: path.join(__dirname, '..'),
+				env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
+				encoding: 'utf8',
+			}
+		);
+		assert.strictEqual(result.status, 0, result.stderr);
+		assert.strictEqual(result.stdout.trim().split('\n').pop(), '[ undefined, undefined ]');
+	});
+
 	it('exports ROOTPATH inside the per-PID directory for worker threads and spawned processes', () => {
 		assert.ok(process.env.ROOTPATH?.startsWith(ENV_DIR_PATH), process.env.ROOTPATH);
 	});
