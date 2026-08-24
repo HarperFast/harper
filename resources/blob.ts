@@ -1824,7 +1824,7 @@ export function repairBlobFile(
 	}
 }
 
-/** Host-level failures, not file-level: they will hit every entry, so a consumer must fail the capture. */
+/** Fail-closed storage and descriptor errors that must abort the capture instead of producing an unverified backup. */
 const SYSTEMIC_IO_ERRORS = new Set(['EMFILE', 'ENFILE', 'ENOSPC', 'EIO', 'EROFS']);
 
 export function isSystemicIoError(error: unknown): boolean {
@@ -1860,11 +1860,10 @@ export async function classifyBlobFileForCapture(filePath: string): Promise<Blob
 	}
 	if (blobHeaderIsAbortMarker(header)) return 'capture';
 	if (blobHeaderIndicatesIncomplete(header, fileSize)) return 'pending';
-	// A deflate header records the *uncompressed* length and is final from the first byte, so a growing
-	// compressed body is invisible to the size check above and has to be read. There is no sound cheap
-	// proxy: an mtime window would exempt a stalled write, which the byte-copying capture paths would
-	// then truncate. Compression is opt-in per createBlob and unused inside Harper, so this reads
-	// nothing on an ordinary corpus.
+	// Once stamped, a deflate header records the *uncompressed* length, so a torn compressed body left
+	// by an unclean shutdown can pass the size check above. Verify the stream rather than assuming the
+	// repair sweep has already run. Compression is opt-in per createBlob and unused inside Harper, so
+	// this reads nothing on an ordinary corpus.
 	if (header[1] !== DEFLATE_TYPE) return 'capture';
 	const uncompressedSize = Number(
 		new DataView(header.buffer, header.byteOffset, HEADER_SIZE).getBigUint64(0) & 0xffffffffffffn
@@ -1885,9 +1884,9 @@ function blobHeaderIsAbortMarker(header: Buffer): boolean {
 
 /**
  * What a consumer capturing a blob root should do with one file. `pending` is a blob that was not
- * whole *yet* (retryable 503); `gone` is one whose bytes are unrecoverable (terminal 500). Both still
- * put a file at the id, because `getNextFileId` recovers the counter by scanning the directory and an
- * absent file lets a restored record's id be reissued.
+ * whole *yet* (retryable 503); `gone` is absent from this capture and represented as terminal 500.
+ * Both still put a file at the id, because `getNextFileId` recovers the counter by scanning the
+ * directory and an absent file lets a restored record's id be reissued.
  */
 export type BlobCaptureDisposition = 'skip' | 'capture' | 'pending' | 'gone';
 
