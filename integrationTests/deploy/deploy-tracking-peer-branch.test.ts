@@ -1,7 +1,7 @@
 /**
  * Deployment tracking — peer-operation authorization boundary.
  *
- * In a real multi-node deploy, the origin sends a private `component_deploy_phase`
+ * In a real multi-node deploy, the origin replicates the whole `deploy_component`
  * operation and the peer reads the tarball from the replicated
  * `hdb_deployment.payload_blob` row. The authorization-bypass context that admits that
  * operation exists only around trusted replication dispatch, so an HTTP caller must not
@@ -160,6 +160,6 @@ suite('Deployment tracking — peer-operation authorization boundary', (ctx: Con
 		strictEqual(response.status, 400, `internal marker should be rejected; got: ${response.rawText}`);
 		strictEqual(response.body.error, "'_deploymentId' is not allowed");
 	});
-	// `component_deploy_phase` is trusted-peer-only and unreachable over HTTP, so a peer-branch
-	// end-to-end test has no entry point here; the three-node harper-pro suite covers it.
+	// Peer behavior is the replicated `deploy_component` operation itself, so there is no private
+	// peer entry point to drive here; the three-node harper-pro suite covers real replication.
 });

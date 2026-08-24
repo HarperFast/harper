@@ -5,7 +5,6 @@ const path = require('node:path');
 const fs = require('fs-extra');
 const os = require('node:os');
 const { Readable } = require('node:stream');
-const { decode: decodeCbor } = require('cbor-x');
 const { saveCredentials } = require('#src/bin/cliCredentials');
 const cliOperationsModule = require('#src/bin/cliOperations');
 const commonUtilsModule = require('#src/utility/common_utils');
@@ -13,7 +12,6 @@ const tokenAuthModule = require('#src/security/tokenAuthentication');
 const packageComponentModule = require('#src/components/packageComponent');
 const processManagementModule = require('#src/utility/processManagement/processManagement');
 const configUtilsModule = require('#src/config/configUtils');
-const { DeployRenderer } = require('#src/bin/deployRenderer');
 
 // Thrown by the mocked process.exit below so a call to it unwinds the async
 // cliOperations() call (rather than actually terminating the test runner) and
@@ -513,273 +511,6 @@ describe('cliOperations', () => {
 			// The `:` in `user:password` used to defeat the default-port heuristic, so this target
 			// was contacted on 443 while being emitted as :9925.
 			assert.strictEqual(seen.port, '9925');
-		});
-	});
-
-	describe('deploy_component cross-version compatibility', () => {
-		const target = 'https://example.com:9925/';
-		let originalPackageDirectory;
-		let originalScan;
-
-		beforeEach(() => {
-			saveCredentials(target, { operation_token: 'valid-token', refresh_token: 'refresh-token' });
-			tokenAuthModule.isJWTExpired = () => false;
-			originalPackageDirectory = packageComponentModule.packageDirectory;
-			originalScan = packageComponentModule.scanPackageDirectory;
-		});
-
-		afterEach(() => {
-			packageComponentModule.packageDirectory = originalPackageDirectory;
-			packageComponentModule.scanPackageDirectory = originalScan;
-		});
-
-		// Streams an SSE `done` event so the modern (>= 5.1) deploy path can read its result.
-		const sseDoneResponse = (result) =>
-			Object.assign(Readable.from([`event: done\ndata: ${JSON.stringify({ result })}\n\n`]), {
-				statusCode: 200,
-				headers: { 'content-type': 'text/event-stream' },
-			});
-
-		it('downgrades a package deploy to legacy JSON when the target is < 5.1', async () => {
-			const calls = [];
-			commonUtilsModule.httpRequest = async (options, req) => {
-				calls.push({ options, req });
-				if (req.operation === 'registration_info') {
-					return { statusCode: 200, body: JSON.stringify({ version: '5.0.31' }) };
-				}
-				return { statusCode: 200, body: JSON.stringify({ message: 'Successfully deployed', success: true }) };
-			};
-
-			const result = await cliOperationsModule.cliOperations(
-				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
-				true
-			);
-
-			// Probe first, then the deploy.
-			assert.strictEqual(calls[0].req.operation, 'registration_info');
-			assert.strictEqual(calls[0].options.streamResponse, undefined);
-			const deploy = calls[1];
-			// No streaming negotiation against the old server.
-			assert.strictEqual(deploy.options.headers.Accept, undefined);
-			assert.strictEqual(deploy.options.streamResponse, undefined);
-			// Body is a plain JSON object, not a multipart stream, and carries no transport-only fields.
-			assert.strictEqual(typeof deploy.req.pipe, 'undefined');
-			assert.strictEqual(deploy.req.operation, 'deploy_component');
-			assert.strictEqual(deploy.req._legacyDeploy, undefined);
-			assert.strictEqual(deploy.req._multipart, undefined);
-			assert.strictEqual(result.success, true);
-		});
-
-		it('downgrades a directory deploy to a CBOR binary payload when the target is < 5.1', async () => {
-			const fakeTarball = Buffer.from('fake-tarball-bytes');
-			packageComponentModule.scanPackageDirectory = async () => ({
-				totalSize: fakeTarball.length,
-				danglingSymlinks: [],
-			});
-			packageComponentModule.packageDirectory = async () => fakeTarball;
-
-			const calls = [];
-			commonUtilsModule.httpRequest = async (options, req) => {
-				calls.push({ options, req });
-				if (req.operation === 'registration_info') {
-					return { statusCode: 200, body: JSON.stringify({ version: '5.0.31' }) };
-				}
-				return { statusCode: 200, body: JSON.stringify({ message: 'Successfully deployed', success: true }) };
-			};
-
-			const result = await cliOperationsModule.cliOperations(
-				{ operation: 'deploy_component', project: 'widget', target: 'example.com' },
-				true
-			);
-
-			const deploy = calls[1];
-			assert.strictEqual(deploy.options.streamResponse, undefined);
-			// Multipart was abandoned in favor of a CBOR body carrying the tarball as a
-			// native binary Buffer — the transport pre-5.1 servers decode directly.
-			assert.strictEqual(deploy.options.headers['Content-Type'], 'application/cbor');
-			assert.ok(Buffer.isBuffer(deploy.req), 'CBOR body should be a Buffer');
-			const decoded = decodeCbor(deploy.req);
-			assert.ok(Buffer.isBuffer(decoded.payload), 'decoded payload should be a Buffer');
-			assert.strictEqual(decoded.payload.toString(), 'fake-tarball-bytes');
-			assert.strictEqual(decoded.operation, 'deploy_component');
-			assert.strictEqual(decoded._multipart, undefined);
-			assert.strictEqual(result.success, true);
-		});
-
-		it('keeps the streaming deploy path when the target is >= 5.1', async () => {
-			const calls = [];
-			commonUtilsModule.httpRequest = async (options, req) => {
-				calls.push({ options, req });
-				if (req.operation === 'registration_info') {
-					return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
-				}
-				return sseDoneResponse({ message: 'Successfully deployed', success: true });
-			};
-
-			const result = await cliOperationsModule.cliOperations(
-				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
-				true
-			);
-
-			const deploy = calls[1];
-			assert.strictEqual(deploy.options.headers.Accept, 'text/event-stream');
-			assert.strictEqual(deploy.options.streamResponse, true);
-			assert.strictEqual(result.success, true);
-		});
-
-		it('does not downgrade when the version probe fails (assumes modern)', async () => {
-			const calls = [];
-			commonUtilsModule.httpRequest = async (options, req) => {
-				calls.push({ options, req });
-				if (req.operation === 'registration_info') {
-					return { statusCode: 404, body: 'not found' };
-				}
-				return sseDoneResponse({ message: 'Successfully deployed', success: true });
-			};
-
-			const result = await cliOperationsModule.cliOperations(
-				{ operation: 'deploy_component', package: '@scope/widget', project: 'widget', target: 'example.com' },
-				true
-			);
-
-			const deploy = calls[1];
-			assert.strictEqual(deploy.options.headers.Accept, 'text/event-stream');
-			assert.strictEqual(result.success, true);
-		});
-
-		it('fails closed on every staged-deploy control against a target without two-phase capability', async () => {
-			const originalExit = process.exit;
-			const originalConsoleError = console.error;
-			const errors = [];
-			const calls = [];
-			process.exit = (code) => {
-				throw new ProcessExitSignal(code);
-			};
-			console.error = (...args) => errors.push(args.join(' '));
-			commonUtilsModule.httpRequest = async (options, req) => {
-				calls.push({ options, req });
-				return { statusCode: 200, body: JSON.stringify({ version: '5.1.7' }) };
-			};
-			try {
-				for (const request of [
-					{ package: '@scope/widget', activate: false, _cliVerb: 'stage' },
-					{ package: '@scope/widget', activate: false },
-					{ deployment_id: '41faded8-6cf5-4a2a-95f8-863e7ea498fa' },
-					{ package: '@scope/widget', two_phase: true },
-				]) {
-					await assert.rejects(
-						cliOperationsModule.cliOperations(
-							{
-								operation: 'deploy_component',
-								project: 'widget',
-								target: 'example.com',
-								...request,
-							},
-							true
-						),
-						ProcessExitSignal
-					);
-				}
-			} finally {
-				process.exit = originalExit;
-				console.error = originalConsoleError;
-			}
-
-			assert.deepStrictEqual(
-				calls.map(({ req }) => req.operation),
-				Array(4).fill('registration_info'),
-				'only one capability probe per request reached the target'
-			);
-			assert.match(errors.join('\n'), /does not advertise staged-deploy support/);
-		});
-
-		it('renders stage phase events and strips its CLI-only verb marker', async () => {
-			const calls = [];
-			const rendered = [];
-			const originalRenderEvent = DeployRenderer.prototype.renderEvent;
-			DeployRenderer.prototype.renderEvent = function (message) {
-				rendered.push(message.event);
-			};
-			commonUtilsModule.httpRequest = async (options, req) => {
-				calls.push({ options, req });
-				if (req.operation === 'registration_info') {
-					return {
-						statusCode: 200,
-						body: JSON.stringify({
-							version: '5.2.0',
-							capabilities: { componentDeployTwoPhase: 1 },
-						}),
-					};
-				}
-				return Object.assign(
-					Readable.from([
-						'event: phase\ndata: {"phase":"stage","status":"start"}\n\n',
-						'event: done\ndata: {"result":{"staged":true}}\n\n',
-					]),
-					{ statusCode: 200, headers: { 'content-type': 'text/event-stream' } }
-				);
-			};
-			let result;
-			try {
-				result = await cliOperationsModule.cliOperations(
-					{
-						operation: 'deploy_component',
-						project: 'widget',
-						package: '@scope/widget',
-						activate: false,
-						_cliVerb: 'stage',
-						target: 'example.com',
-					},
-					true
-				);
-			} finally {
-				DeployRenderer.prototype.renderEvent = originalRenderEvent;
-			}
-
-			const deploy = calls.at(-1);
-			assert.strictEqual(deploy.req._cliVerb, undefined);
-			assert.strictEqual(deploy.req.activate, false);
-			assert.deepStrictEqual(rendered, ['phase', 'done']);
-			assert.strictEqual(result.staged, true);
-		});
-
-		it('defaults the activate project from the current directory', async () => {
-			const calls = [];
-			const projectDir = path.join(testDir, 'activate-project');
-			fs.ensureDirSync(projectDir);
-			const priorCwd = process.cwd();
-			commonUtilsModule.httpRequest = async (options, req) => {
-				calls.push({ options, req });
-				if (req.operation === 'registration_info') {
-					return {
-						statusCode: 200,
-						body: JSON.stringify({
-							version: '5.2.0',
-							capabilities: { componentDeployTwoPhase: 1 },
-						}),
-					};
-				}
-				return Object.assign(Readable.from(['event: done\ndata: {"result":{"activated":true}}\n\n']), {
-					statusCode: 200,
-					headers: { 'content-type': 'text/event-stream' },
-				});
-			};
-			try {
-				process.chdir(projectDir);
-				await cliOperationsModule.cliOperations(
-					{
-						operation: 'deploy_component',
-						deployment_id: '41faded8-6cf5-4a2a-95f8-863e7ea498fa',
-						_cliVerb: 'activate',
-						target: 'example.com',
-					},
-					true
-				);
-			} finally {
-				process.chdir(priorCwd);
-			}
-
-			assert.strictEqual(calls.at(-1).req.project, 'activate-project');
 		});
 	});
 
@@ -1767,7 +1498,7 @@ describe('cliOperations', () => {
 	});
 });
 
-describe('deploy CLI verbs (stage / activate fold into deploy_component)', () => {
+describe('harper revert CLI verb', () => {
 	const { buildRequest, verbRequirementError } = cliOperationsModule;
 	let savedArgv;
 	beforeEach(() => {
@@ -1775,32 +1506,6 @@ describe('deploy CLI verbs (stage / activate fold into deploy_component)', () =>
 	});
 	afterEach(() => {
 		process.argv = savedArgv;
-	});
-
-	it('`stage` maps to deploy_component with activate:false', () => {
-		process.argv = ['node', 'harper', 'stage', 'project=my_app'];
-		const req = buildRequest();
-		assert.strictEqual(req.operation, 'deploy_component');
-		assert.strictEqual(req.activate, false);
-	});
-
-	it('`activate` with a deployment_id maps to deploy_component and passes the verb guard', () => {
-		process.argv = ['node', 'harper', 'activate', 'project=my_app', 'deployment_id=abc-123'];
-		const req = buildRequest();
-		assert.strictEqual(req.operation, 'deploy_component');
-		assert.strictEqual(req.deployment_id, 'abc-123');
-		assert.strictEqual(verbRequirementError(req), null);
-	});
-
-	it('`activate` WITHOUT a deployment_id is rejected (would otherwise become a full deploy from the CWD)', () => {
-		process.argv = ['node', 'harper', 'activate', 'project=my_app'];
-		const req = buildRequest();
-		assert.match(verbRequirementError(req), /deployment_id/);
-	});
-
-	it('verbRequirementError ignores non-activate deploys', () => {
-		assert.strictEqual(verbRequirementError({ operation: 'deploy_component' }), null);
-		assert.strictEqual(verbRequirementError({ operation: 'deploy_component', activate: false }), null);
 	});
 
 	it('`revert` maps to revert_component and carries the verb marker', () => {

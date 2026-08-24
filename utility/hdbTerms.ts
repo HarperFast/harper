@@ -323,10 +323,7 @@ export const OPERATIONS_ENUM = {
 	PACKAGE_CUSTOM_FUNCTION_PROJECT: 'package_custom_function_project',
 	DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',
 	PACKAGE_COMPONENT: 'package_component',
-	// Peer phases get their own operation so an older node fails closed instead of reading an unknown
-	// phase field as a one-shot deploy.
 	DEPLOY_COMPONENT: 'deploy_component',
-	COMPONENT_DEPLOY_PHASE: 'component_deploy_phase',
 	// A public operation rather than a deploy phase: it fetches, resolves and installs nothing.
 	REVERT_COMPONENT: 'revert_component',
 	READ_TRANSACTION_LOG: 'read_transaction_log',
