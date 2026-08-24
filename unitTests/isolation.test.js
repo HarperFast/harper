@@ -1,13 +1,11 @@
 'use strict';
 
-// Regression coverage for the per-PID root contract mocha.init.js establishes (see its
-// header comment): a unit run must never resolve a database, config, or log path into an
-// installed Harper root — including via ambient STORAGE_PATH/SCHEMAS_DATA_PATH env vars,
-// which outrank every configured path in getDatabases()/resolveDatabaseStorageRoot.
+// Regression coverage for the per-PID root contract mocha.init.js establishes — see its
+// header comment for the contract itself. Nothing here repairs state first: every
+// assertion observes what mocha.init.js left behind, so reverting its pins fails here.
 
 const assert = require('node:assert');
 const path = require('node:path');
-const { setupTestDBPath } = require('./testUtils.js');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { getConfigPath } = require('#src/config/configUtils');
@@ -57,7 +55,6 @@ describe('unit-test per-PID root isolation', () => {
 	});
 
 	it('resolves every configured database — system included — inside the per-PID directory', () => {
-		setupTestDBPath();
 		const databases = env.get(terms.CONFIG_PARAMS.DATABASES);
 		for (const name in databases) {
 			assert.ok(databases[name].path.startsWith(ENV_DIR_PATH), `${name}: ${databases[name].path}`);

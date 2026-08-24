@@ -34,6 +34,8 @@
 
 const path = require('path');
 const fs = require('fs-extra');
+const { isMainThread } = require('worker_threads');
+const { materializePerPidRoot, PID_DIR_PATH } = require('./perPidRoot.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -69,32 +71,13 @@ process.on('exit', (code) => {
 	process.exitCode = 1;
 });
 
-const UNIT_TEST_DIR = __dirname;
-const ENV_DIR_NAME = 'envDir';
-const ENV_DIR_PATH = path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
-const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
-
-if (!fs.existsSync(PID_DIR_PATH)) {
-	fs.mkdirSync(PID_DIR_PATH, { recursive: true });
+if (isMainThread) {
+	// A stale dir from a recycled PID (a prior run killed before its exit hook) carries a
+	// config, keys, and a seeded system database this run must not inherit. Worker threads
+	// re-run this preload under the same PID, so only the main thread wipes.
+	fs.removeSync(PID_DIR_PATH);
 }
-// config validation requires the configured paths to exist, as after an install
-for (const dir of ['database', 'log', 'components', 'keys']) {
-	fs.mkdirSync(path.join(PID_DIR_PATH, dir), { recursive: true });
-}
-const configFilePath = path.join(PID_DIR_PATH, 'harper-config.yaml');
-if (!fs.existsSync(configFilePath)) {
-	const YAML = require('yaml');
-	const configDoc = YAML.parseDocument(
-		fs.readFileSync(path.join(UNIT_TEST_DIR, '../static/defaultConfig.yaml'), 'utf8')
-	);
-	configDoc.setIn(['rootPath'], PID_DIR_PATH);
-	// resolve the path fields the installer's config validation would otherwise fill in
-	configDoc.setIn(['componentsRoot'], 'components');
-	configDoc.setIn(['logging', 'root'], 'log');
-	configDoc.setIn(['logging', 'rotation', 'path'], 'log');
-	configDoc.setIn(['storage', 'path'], 'database');
-	fs.writeFileSync(configFilePath, configDoc.toString());
-}
+materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;
 // raw env vars outrank every configured path in getDatabases()/resolveDatabaseStorageRoot,
 // so an ambient STORAGE_PATH or SCHEMAS_DATA_PATH from the shell would reopen the
@@ -102,7 +85,6 @@ process.env.ROOTPATH = PID_DIR_PATH;
 delete process.env.STORAGE_PATH;
 delete process.env.SCHEMAS_DATA_PATH;
 
-// Only now is it safe to load Harper modules
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 

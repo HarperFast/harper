@@ -13,6 +13,7 @@ const { isMainThread } = require('node:worker_threads');
 const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
+const { materializePerPidRoot } = require('./perPidRoot.js');
 
 let envMgrInitSyncStub;
 
@@ -368,13 +369,9 @@ function getMockTestPath() {
  * @returns String representing the path value to the mock lmdb system directory
  */
 function setupTestDBPath() {
-	let dbPath = PID_DIR_PATH;
-	if (!fs.existsSync(dbPath)) {
-		fs.mkdirSync(dbPath, { recursive: true });
-	}
+	// an earlier tearDownMockDB() may have removed the per-PID root, config file included
+	let dbPath = materializePerPidRoot();
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
-	// same paths as mocha.init.js (see its header comment); `system` resolves under
-	// storage.path exactly like production
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(dbPath, 'database'));
 	const databasePaths = {
 		data: { path: dbPath },
@@ -402,9 +399,8 @@ function setupTestDBPath() {
  * database.
  */
 async function ensureSystemTables() {
-	// keyed on the seed's final artifact (the config repoint at the bottom), not a process
-	// flag: a mid-run tearDownMockDB() can remove the per-PID root, and a partial seed must
-	// re-run in full — every step below is individually idempotent
+	// the guard checks the seed's final artifacts on disk/config, so a partial seed — or one
+	// a mid-run tearDownMockDB() removed — re-runs in full; every step below is idempotent
 	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
 	const testKeyPath = path.join(keysDir, 'unitTestPrivateKey.pem');
 	if (
@@ -414,6 +410,7 @@ async function ensureSystemTables() {
 	) {
 		return;
 	}
+	materializePerPidRoot();
 	if (!getDatabases().system?.hdb_role) {
 		const mountHdb = require('#src/utility/mount_hdb').default;
 		await mountHdb(env.getHdbBasePath());
@@ -443,11 +440,11 @@ async function ensureSystemTables() {
 	}
 	for await (const cert of getDatabases().system.hdb_certificate.search([])) {
 		if (cert.private_key_name === PRIVATEKEY_PEM_NAME) {
-			await keys.setCertTable({ ...cert, private_key_name: 'unitTestPrivateKey.pem' });
+			await keys.setCertTable({ ...cert, private_key_name: path.basename(testKeyPath) });
 		}
 	}
-	// on-disk write first: the in-memory override doubles as the completion guard above,
-	// so it must only be observable once the config file is updated too
+	// the in-memory override below doubles as the completion guard above, so the on-disk
+	// config write must come first
 	require('#src/config/configUtils').updateConfigValue(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 }
