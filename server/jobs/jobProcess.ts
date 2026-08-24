@@ -9,6 +9,8 @@ import harperLogger from '../../utility/logging/harper_logger.ts';
 import * as globalSchema from '../../utility/globalSchema.ts';
 import * as user from '../../security/user.ts';
 import * as serverUtils from '../serverHelpers/serverUtilities.ts';
+import { runWithDispatchedOperation } from '../serverHelpers/operationAuthorizationState.ts';
+import { stripSuppliedParsedSqlObject } from '../serverHelpers/requestSanitization.ts';
 import moment from 'moment';
 import * as jobs from './jobs.ts';
 import { cloneDeep } from 'lodash';
@@ -54,12 +56,16 @@ const JOB_ID = JOB_NAME.substring(4);
 			throw new Error('Did not find job request in hdb_job table, unable to proceed');
 		}
 		request = cloneDeep(request);
+		// The worker re-enters from the persisted row rather than re-dispatching, so a row queued before
+		// the dispatch-time strip existed — or written directly — is sanitized here.
+		stripSuppliedParsedSqlObject(request);
 
 		const operation = serverUtils.getOperationFunction(request);
 		harperLogger.trace('Running operation:', request.operation, 'for job', JOB_ID);
 
-		// Run the job operation.
-		const results = await operation.job_operation_function(request);
+		const results = await runWithDispatchedOperation(request.operation, () =>
+			operation.job_operation_function(request)
+		);
 		harperLogger.trace('Result from job:', JOB_ID, results);
 
 		jobObj.status = hdbTerms.JOB_STATUS_ENUM.COMPLETE;
