@@ -146,3 +146,36 @@ export class DashUndrainedThenSearch extends Resource {
 		return { variant: 'undrained-then-search', companyId, txnOpenAfter, count: snapshots.length, snapshots };
 	}
 }
+
+// RELEASED-SLOT WRITE — the request transaction closes under an undrained iterator (above), so the
+// static search that follows runs in a nested scope of its own, whose final commit defers releasing
+// the context because that search's iterator is still open. Draining it completes the release
+// mid-handler, and the instance load that follows puts an ImmediateTransaction in the emptied slot.
+// The writes after that must still be durable: they used to stage into that transaction and be
+// dropped by its own commit, with the handler returning 2xx over records that never landed (#2288).
+export class DashReleasedSlotWrite extends Resource {
+	static loadAsInstance = false;
+	async get(query) {
+		const suffix = paramId(query) ?? 'x';
+		const ctx = this.getContext();
+		const held = tables.ScoreSnapshot.search({
+			conditions: [{ attribute: 'companyId', comparator: 'equals', value: 'atomic-co' }],
+		});
+		const holdIterator = held[Symbol.asyncIterator]();
+		await holdIterator.next();
+		await transaction.commit(this);
+		while (!(await holdIterator.next()).done);
+
+		const nested = tables.ScoreSnapshot.search({
+			conditions: [{ attribute: 'companyId', comparator: 'equals', value: 'atomic-co' }],
+		});
+		const nestedIterator = nested[Symbol.asyncIterator]();
+		while (!(await nestedIterator.next()).done);
+
+		await tables.Company.getResource('c1', ctx, {});
+		const txnAfterInstall = ctx?.transaction?.constructor?.name;
+		await tables.Company.put({ id: `released-company-${suffix}`, name: 'kept' });
+		await tables.ScoreSnapshot.put({ id: `released-snap-${suffix}`, companyId: 'atomic-co', score: 3 });
+		return { variant: 'released-slot-write', suffix, txnAfterInstall };
+	}
+}

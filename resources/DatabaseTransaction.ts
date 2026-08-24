@@ -855,6 +855,13 @@ export class DatabaseTransaction implements Transaction {
 					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
 					return this.commit(options);
 				}
+				// save() opens and attaches this transaction's native handle when it had none — which is
+				// every commit on an ImmediateTransaction, whose getReadTxn never opens one — so the loop
+				// above can be what created the handle now holding every staged write. Committing the
+				// local captured before the loop would commit nothing and let the detach below drop that
+				// handle: no error, no log, the caller's await resolving on a write that never landed
+				// (issue #2288).
+				if (!transaction) transaction = this.transaction;
 				this.open = TRANSACTION_STATE.CLOSED;
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.
