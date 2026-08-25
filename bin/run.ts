@@ -52,22 +52,24 @@ function addUnhandleRejectionListener() {
 function addExitListeners() {
 	if (!skipExitListeners) {
 		const removeHdbPid = () => {
-			beginProcessShutdown();
-			fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
-			process.exit(0);
+			try {
+				fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
+			} catch (error) {
+				hdbLogger.error('Unable to remove the Harper pid file during shutdown', error);
+			}
 		};
 		process.on('exit', () => {
+			beginProcessShutdown();
 			removeHdbPid();
 		});
-		process.on('SIGINT', () => {
+		const exit = () => {
+			beginProcessShutdown();
 			removeHdbPid();
-		});
-		process.on('SIGQUIT', () => {
-			removeHdbPid();
-		});
-		process.on('SIGTERM', () => {
-			removeHdbPid();
-		});
+			process.exit(0);
+		};
+		process.on('SIGINT', exit);
+		process.on('SIGQUIT', exit);
+		process.on('SIGTERM', exit);
 	}
 }
 
