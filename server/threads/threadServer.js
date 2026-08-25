@@ -260,7 +260,7 @@ function startServers() {
 		.catch((error) => {
 			const failedPhase = startupPhase;
 			reportStartupPhase(`failed during ${failedPhase}`);
-			harperLogger.error(`HTTP worker startup failed during ${failedPhase}`, error);
+			harperLogger.fatal(`HTTP worker startup failed during ${failedPhase}`, error);
 			if (isMainThread) throw error;
 			realExit(1);
 		});
