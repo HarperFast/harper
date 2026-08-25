@@ -480,6 +480,11 @@ async function runNpmPack(
 // during a deploy swap (see extractApplication). The leading dot keeps
 // loadComponentDirectories from loading its contents as components.
 export const ASIDE_STAGING_DIR = '.deploy-aside';
+// Hidden directory under the components root holding per-deployment candidate builds. A candidate is
+// extracted, installed AND validated here, and only then renamed into the live path, so the previous
+// version keeps serving through the slow, failure-prone work. Dot-prefixed so the three scans over the
+// components root (componentLoader, componentEnvPrepass, resolvePreload) skip it.
+export const DEPLOY_STAGING_DIR = '.deploy-staging';
 const IN_PROGRESS_ASIDE_PREFIX = '.in-progress-';
 const RETIRED_ASIDE_PREFIX = '.retired-';
 const PRIOR_ABSENT_RECORD_SUFFIX = '-prior-absent';
@@ -603,20 +608,14 @@ function canonicalizeJSON(value: any): any {
  * This method may be called from any Harper thread. Same-component calls are serialized across
  * threads by the preparation lock below.
  */
-export async function extractApplication(
-	application: Application,
-	deferCommit = false
-): Promise<ExtractionTransaction | undefined> {
-	// Can't specify neither
-	if (!application.payload && !application.packageIdentifier) {
-		throw new Error('Either payload or package must be provided');
-	}
+type ResolvedTarball = { tarball: Readable; tarballPath?: string; shouldDeleteTarball: boolean };
 
-	// Can't specify both
-	if (application.payload && application.packageIdentifier) {
-		throw new Error('Both payload and package cannot be provided');
-	}
-	// Resolve the tarball from the input
+/**
+ * Turn a component's `payload` or `package` into a readable tarball stream. Pure input resolution: it
+ * touches neither the live tree nor any staging directory, which is what lets both the in-place extraction
+ * path and a candidate build share it.
+ */
+async function resolveApplicationTarball(application: Application): Promise<ResolvedTarball> {
 	let tarballPath: string | undefined;
 	let tarball: Readable;
 	let shouldDeleteTarball = false;
@@ -722,6 +721,57 @@ export async function extractApplication(
 		}
 	}
 
+	return { tarball, tarballPath, shouldDeleteTarball };
+}
+
+/**
+ * Extract a tarball into `targetDirPath`, flattening the single wrapping directory npm pack produces.
+ * `scratchDirPath` must be on the same filesystem as the target: the flatten is done by renaming the
+ * wrapper out and back rather than copying, so it stays atomic per entry. Windows moves the children
+ * individually because renaming a directory over its own parent's path fails there.
+ */
+async function extractTarballInto(
+	tarball: Readable,
+	targetDirPath: string,
+	scratchDirPath: string
+): Promise<string | undefined> {
+	await mkdir(targetDirPath, { recursive: true });
+	await pipeline(tarball, gunzip(), extract(targetDirPath));
+
+	const extracted = await readdir(targetDirPath, { withFileTypes: true });
+	if (extracted.length === 1 && extracted[0].isDirectory()) {
+		const topLevelDirPath = join(targetDirPath, extracted[0].name);
+		if (process.platform === 'win32') {
+			for (const childName of await readdir(topLevelDirPath)) {
+				await rename(join(topLevelDirPath, childName), join(targetDirPath, childName));
+			}
+			await rmdir(topLevelDirPath);
+		} else {
+			const tempDirPath = join(scratchDirPath, `.normalize-${process.pid}-${Date.now()}-${randomUUID()}`);
+			await rename(topLevelDirPath, tempDirPath);
+			await rmdir(targetDirPath);
+			await rename(tempDirPath, targetDirPath);
+			return tempDirPath;
+		}
+	}
+	return undefined;
+}
+
+export async function extractApplication(
+	application: Application,
+	deferCommit = false
+): Promise<ExtractionTransaction | undefined> {
+	// Can't specify neither
+	if (!application.payload && !application.packageIdentifier) {
+		throw new Error('Either payload or package must be provided');
+	}
+
+	// Can't specify both
+	if (application.payload && application.packageIdentifier) {
+		throw new Error('Both payload and package cannot be provided');
+	}
+	// Resolve the tarball from the input
+	const { tarball, tarballPath, shouldDeleteTarball } = await resolveApplicationTarball(application);
 	// Replace any existing component directory atomically instead of clearing it in
 	// place. A previous version's worker can still be running and actively writing
 	// into this directory — e.g. a live Next.js app writing into `.next/cache` — and
@@ -771,27 +821,11 @@ export async function extractApplication(
 		if (asidePath) application.isNewComponent = false;
 
 		try {
-			await mkdir(application.dirPath, { recursive: true });
-			await pipeline(tarball, gunzip(), extract(application.dirPath));
-
-			const extracted = await readdir(application.dirPath, { withFileTypes: true });
-			if (extracted.length === 1 && extracted[0].isDirectory()) {
-				const topLevelDirPath = join(application.dirPath, extracted[0].name);
-				if (process.platform === 'win32') {
-					for (const childName of await readdir(topLevelDirPath)) {
-						await rename(join(topLevelDirPath, childName), join(application.dirPath, childName));
-					}
-					await rmdir(topLevelDirPath);
-				} else {
-					await ensureExtractionStagingDirectory(asideStagingDir);
-					const tempDirPath = join(asideStagingDir, `.normalize-${process.pid}-${Date.now()}-${randomUUID()}`);
-					transactionPaths.add(tempDirPath);
-					await rename(topLevelDirPath, tempDirPath);
-					await rmdir(application.dirPath);
-					await rename(tempDirPath, application.dirPath);
-					transactionPaths.delete(tempDirPath);
-				}
-			}
+			// The scratch dir for the pack-wrapper flatten has to be on the component root's filesystem, and
+			// is a transaction path so a crash mid-flatten is cleaned up with the rest.
+			await ensureExtractionStagingDirectory(asideStagingDir);
+			const normalizeTempPath = await extractTarballInto(tarball, application.dirPath, asideStagingDir);
+			if (normalizeTempPath) transactionPaths.add(normalizeTempPath);
 		} catch (error) {
 			try {
 				await rollbackExtractedDirectory(application, asideStagingDir, asidePath, transactionPaths, false);
@@ -830,6 +864,16 @@ export async function extractApplication(
 	};
 	if (deferCommit) return transaction;
 	await transaction.commit();
+}
+
+/** The deployment directory holding one candidate build: `<root>/.deploy-staging/<deploymentId>`. */
+function candidateDeploymentDirPath(componentDirPath: string, deploymentId: string): string {
+	return join(dirname(componentDirPath), DEPLOY_STAGING_DIR, deploymentId);
+}
+
+/** Where a candidate build lives: `<root>/.deploy-staging/<deploymentId>/<component>`. */
+export function candidateApplicationPath(componentDirPath: string, deploymentId: string): string {
+	return join(candidateDeploymentDirPath(componentDirPath, deploymentId), basename(componentDirPath));
 }
 
 function extractionStagingDirectory(componentDirPath: string): string {
