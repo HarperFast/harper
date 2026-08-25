@@ -4,8 +4,8 @@ const { mkdtempSync, mkdirSync, symlinkSync, realpathSync, writeFileSync, rmSync
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 
-// A symlink named `RUNNER~1` pointing at a long-named directory is the closest host-independent
-// model of the Windows 8.3 alias this exists for: `realpathSync.native` rewrites the component.
+// A symlink named `RUNNER~1` pointing at a long-named directory models the Windows 8.3 alias this
+// exists for: `realpathSync.native` rewrites the component.
 describe('watchPath', () => {
 	let root;
 	let longDirectory;
@@ -46,8 +46,6 @@ describe('watchPath', () => {
 		});
 
 		it('resolves a leaf that does not exist yet through its directory', () => {
-			// libuv compares only the parent-directory prefix, so a watcher armed before its config file
-			// is written still gets a path that cannot trip the assertion.
 			assert.strictEqual(
 				canonicalizeWatchPath(join(aliasLink, 'not-written-yet.yaml'), 'win32'),
 				join(longDirectory, 'not-written-yet.yaml')

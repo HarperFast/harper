@@ -807,8 +807,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											readMore(resolve, reject);
 										} else if (!resumeIfWriterFinished()) {
 											if (!watcher) {
-												// No watcher could be armed, so nothing will wake this read. Poll on the same
-												// short backoff and the same no-progress deadline resumeIfWriterFinished uses,
+												// Nothing will wake this read, so poll on the deadline resumeIfWriterFinished uses
 												// rather than sitting out the full read timeout and 503-ing a healthy write.
 												if (Date.now() >= incompleteDeadline) {
 													onError(
