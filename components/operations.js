@@ -1580,13 +1580,6 @@ async function dropComponent(req) {
 			}
 
 			if (!file) {
-				// Persisted state goes FIRST, before anything is destroyed. The root-config entry is the only
-				// thing that can resurrect a dropped component — installApplications() reinstalls whatever it
-				// names — so removing it up front means a crash anywhere below leaves the drop unfinished
-				// (directory still present, re-runnable) instead of finished-then-undone. Both writes are one
-				// transaction, config before the application lock.
-				const dropTransaction = await createApplicationConfigTransaction(project, null);
-				await dropTransaction.commit();
 				// Invalidate staged deployments before the directory goes away, so an activate racing this
 				// drop cannot swap a staged build back into a component that is being dropped.
 				await invalidateProjectStagedDeployments(project);
@@ -1596,6 +1589,16 @@ async function dropComponent(req) {
 				// Retires any interrupted-extraction aside and renames the live tree aside before removing
 				// it, so startup recovery can never restore a tree over a dropped component.
 				await dropComponentDirectory(componentPath, project, log);
+				// The directory goes FIRST and the config entry only after, because applications in the
+				// components root load by directory scan — the root-config entry is what CONSTRAINS where one
+				// is served (host/urlPath), not what makes it load. Dropping config first leaves a window
+				// where the tree is still discoverable with its mount gone, so a crash there resurrects the
+				// component served on every host. Losing the operator's isolation is worse than a drop that
+				// has to be re-run, which is what this ordering leaves instead: tree gone, entry present,
+				// re-runnable — and the same residual `main` has today. Both writes are one transaction,
+				// config before the application lock.
+				const dropTransaction = await createApplicationConfigTransaction(project, null);
+				await dropTransaction.commit();
 			} else if (await fs.pathExists(pathToComponent)) {
 				await fs.remove(pathToComponent);
 			}

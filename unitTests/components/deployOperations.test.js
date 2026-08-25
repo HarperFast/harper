@@ -357,11 +357,12 @@ describe('deploy_component staged deploy', function () {
 		assert.match(await fs.readFile(path.join(COMPONENTS_ROOT, project, 'index.js'), 'utf8'), /trusted-one-shot/);
 	});
 
-	it('removes the root-config entry before it destroys anything, so a failed drop cannot resurrect', async () => {
-		// The resurrection vector is the root-config entry: installApplications() reinstalls whatever it
-		// names. Doing the persistent writes after the directory removal left a crash window where the
-		// live tree was gone but config still named the package, and the next boot brought the component
-		// back. Config-first inverts the failure: an interrupted drop is unfinished and re-runnable.
+	it('never leaves a component discoverable with its routing config already gone', async () => {
+		// Applications in the components root load by DIRECTORY SCAN; the root-config entry is what
+		// constrains where one is served (host/urlPath). So the state to make unreachable is tree-present
+		// with entry-gone — a crash there resurrects the component on every host, silently dropping the
+		// isolation the operator configured. The tree is parked first and the entry removed only after,
+		// which leaves the opposite (and merely re-runnable) partial state instead.
 		const project = name();
 		const configRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'harper-drop-crash-'));
 		const componentsRoot = path.join(configRoot, 'components');
@@ -383,15 +384,13 @@ describe('deploy_component staged deploy', function () {
 
 			await assert.rejects(() => operations.dropComponent({ project }));
 
+			const treePresent = existsSync(path.join(componentsRoot, project));
+			const entryPresent = (await fs.readFile(configPath, 'utf8')).includes(project);
+			assert.strictEqual(treePresent, true, 'teardown failed, so the live tree is still on disk');
 			assert.strictEqual(
-				(await fs.readFile(configPath, 'utf8')).includes(project),
-				false,
-				'config is already clean, so the next boot cannot reinstall the component'
-			);
-			assert.strictEqual(
-				existsSync(path.join(componentsRoot, project)),
+				entryPresent,
 				true,
-				'and the tree is still there: the drop is unfinished rather than finished-then-undone'
+				'and its routing entry survived with it — a discoverable tree must never outlive its mount'
 			);
 		} finally {
 			if (priorRootEnv === undefined) delete process.env.ROOTPATH;

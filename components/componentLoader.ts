@@ -68,7 +68,6 @@ const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
-let stagedArtifactsReconciled = false;
 const componentLoadTails = new Map<string, Promise<void>>();
 type ComponentReadyPromises = WeakMap<object, Promise<void>>;
 
@@ -208,7 +207,12 @@ export async function loadComponentDirectories(
 			throw error;
 		}
 	}
-	if (isMainThread && !stagedArtifactsReconciled) {
+	// Every main-thread load cycle, not just the first. A reload cycle (loadComponentDirectories +
+	// restartWorkers) runs long after startup, and an activation that failed at runtime AND failed to
+	// compensate leaves exactly the inconsistent staged/live/backup state this pass exists to settle.
+	// Skipping it there would load the candidate against old or partial configuration until a cold
+	// restart. Idempotent and cheap once settled: the scan is a readdir of a directory this pass empties.
+	if (isMainThread) {
 		try {
 			const settleDiscardedDeployment = async (deploymentId: string, reason: string) => {
 				await markDeploymentTerminal(deploymentId, 'failed', new Error(reason));
@@ -272,9 +276,6 @@ export async function loadComponentDirectories(
 			for (const [project, error] of reconciliation.failedProjects) {
 				if (!failedRecoveries.has(project)) failedRecoveries.set(project, error);
 			}
-			// Only a clean pass retires the one-shot guard, so a later reload cycle retries instead of
-			// leaving a component permanently unrecovered and permanently unloadable.
-			if (reconciliation.errors.size === 0) stagedArtifactsReconciled = true;
 		} catch (error) {
 			// The scan itself failed, so we cannot tell WHICH components are affected and cannot fail just
 			// those closed. Abort startup rather than load every component over possibly-unreconciled state.

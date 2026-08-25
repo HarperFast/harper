@@ -3146,8 +3146,12 @@ export async function activateStagedApplication(
 		await ensureSecureDirectory(activationDir, true, 'Component activation staging path');
 		// Who is live right now, so the tree this activation displaces stays addressable for revert. Read
 		// before the swap, since the swap is what makes it "previous".
-		const outgoing: RetainedVersion = (await readRetainedPreviousManifest(application.dirPath).catch(() => undefined))
-			?.live ?? {
+		// NOT caught: the reader already maps a missing manifest to undefined, so anything it throws is a
+		// real read failure (EACCES, EIO, corrupt JSON). Treating those as "no manifest" would record the
+		// outgoing release as `deployment_id: null` and let retention overwrite the addressable previous
+		// version with an unaddressable one — losing revert silently. Failing here is before the swap, so
+		// the live component keeps serving.
+		const outgoing: RetainedVersion = (await readRetainedPreviousManifest(application.dirPath))?.live ?? {
 			// No manifest yet: either a first-ever deploy, or a component last activated by a Harper that
 			// predates retention. Record the config it is running so a revert can still restore that, even
 			// though its deployment id is unknowable and so cannot be a revert target.
@@ -3382,7 +3386,7 @@ async function retainRecoveredActivation(
 	// above already describes the intended end state, so there it is `previous`. `live` matching the
 	// deployment being recovered is what tells the two apart — without this the recovered manifest
 	// retains the right bytes under a null id, and revert_component cannot address them.
-	const manifest = await readRetainedPreviousManifest(componentDirPath).catch(() => undefined);
+	const manifest = await readRetainedPreviousManifest(componentDirPath);
 	const displaced = manifest?.live?.deployment_id === deploymentId ? manifest?.previous : manifest?.live;
 	const outgoing: RetainedVersion = displaced ?? { deployment_id: null, application_config: null };
 	await retainActivatedPrevious(
@@ -3641,7 +3645,7 @@ export async function reconcileStagedApplicationArtifacts(
 						artifact.name.startsWith(ACTIVATION_BACKUP_PREFIX) &&
 						row &&
 						liveUsable &&
-						(await readRetainedPreviousManifest(livePath).catch(() => undefined))?.live?.deployment_id === deploymentId
+						(await readRetainedPreviousManifest(livePath))?.live?.deployment_id === deploymentId
 					) {
 						// The activation finished — settled row, good live tree — but a backup is still parked,
 						// which only happens when `retainActivatedPrevious` failed inside its best-effort catch.
