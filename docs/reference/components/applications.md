@@ -157,7 +157,7 @@ This resolves the repository's `origin` remote and the current commit, then depl
 **Parameters**:
 
 - `by_ref` - Build the package reference from the local repository.
-- `ref` _(optional)_ - Deploy a specific commit, tag, or branch instead of `HEAD`. Resolved to a commit SHA before it ships. Implies `by_ref`.
+- `ref` _(optional)_ - Deploy a specific commit, tag, or branch instead of `HEAD`. Resolved to a commit SHA before it is sent to the cluster. Implies `by_ref`.
 - `credential` _(optional)_ - Set to `true` to authenticate the clone with the stored credential for the repository's host. Omit for public repositories.
 
 ```sh
