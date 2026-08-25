@@ -63,7 +63,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
-		it('logs successful default-path revocation at warning level', async () => {
+		it('logs a warning when it revokes on the default path', async () => {
 			const originalWarn = hdbLogger.warn;
 			const warnMessages = [];
 			hdbLogger.warn = (message) => warnMessages.push(message);
@@ -81,7 +81,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 
 				assert.ok(
 					warnMessages.some((message) => message.includes('logged-user')),
-					`expected a success log for the default terminate path, got: ${JSON.stringify(warnMessages)}`
+					`expected a revocation log for the default terminate path, got: ${JSON.stringify(warnMessages)}`
 				);
 				assert.strictEqual(_liveSubscriptionCount(), 0);
 			} finally {
@@ -315,209 +315,92 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 1);
 		});
 
-		it('a throwing revoke leaves the entry registered for retry (fail-closed), and converges once revoke succeeds', async () => {
+		it('a throwing revoke is contained and does not disturb other subscribers sharing the object', async () => {
 			const subscription = fakeSubscription();
-			let calls = 0;
 			const revoke = () => {
-				calls++;
-				if (calls === 1) throw new Error('revoke failed mid-teardown (e.g. a shared-feed refcount decrement)');
+				throw new Error('revoke failed mid-teardown (e.g. a shared-feed refcount decrement)');
 			};
 			const revokeOther = spyFn();
 			register({
 				subscription,
-				username: 'throws-once-on-revoke',
+				username: 'throws-on-revoke',
 				authExpiresAt: 0,
 				recheck: async () => true,
 				revoke,
 			});
+			handles.pop(); // sweep untracks this entry itself
 			register({ subscription, username: 'other', recheck: async () => true, revoke: revokeOther });
 			assert.strictEqual(_liveSubscriptionCount(), 2);
 
-			await _sweepNow(); // revoke throws; fail-closed must not silently drop tracking
+			await _sweepNow();
 
-			assert.strictEqual(calls, 1);
 			assert.strictEqual(revokeOther.calls.length, 0, 'other subscribers sharing the object must not be revoked');
-			assert.strictEqual(_liveSubscriptionCount(), 2, 'a failed revoke must leave the entry registered');
-
-			await _sweepNow(); // the next sweep retries; this time revoke succeeds
-
-			assert.strictEqual(calls, 2, 'the next sweep must retry a previously failed revoke');
-			assert.strictEqual(_liveSubscriptionCount(), 1, 'the entry is removed once revoke actually succeeds');
+			assert.strictEqual(subscription.end.calls.length, 0, 'the shared subscription must not be ended');
+			assert.strictEqual(_liveSubscriptionCount(), 1, 'the revoked entry is untracked; the other stays registered');
 		});
 
-		it('an async revoke that rejects is contained (no unhandled rejection), leaves the entry registered for retry, and converges once it succeeds', async () => {
+		it('an async revoke that rejects is contained (no unhandled rejection) and is not retried', async () => {
 			const subscription = fakeSubscription();
 			let calls = 0;
 			const revoke = async () => {
 				calls++;
-				if (calls === 1) throw new Error('shared-feed release failed (e.g. backing store timeout)');
+				throw new Error('shared-feed release failed (e.g. backing store timeout)');
 			};
-			const revokeOther = spyFn();
 			register({
 				subscription,
-				username: 'async-revoke-throws-once',
+				username: 'async-revoke-rejects',
 				authExpiresAt: 0,
 				recheck: async () => true,
 				revoke,
 			});
-			register({ subscription, username: 'other', recheck: async () => true, revoke: revokeOther });
-			assert.strictEqual(_liveSubscriptionCount(), 2);
+			handles.pop();
 
-			// If the rejection escaped as an unhandled rejection, testUtils' handler would throw and
-			// fail this test — awaiting here alone proves it stayed contained inside claimAndTerminate.
+			// If the rejection escaped, testUtils' unhandled-rejection handler would fail this test.
 			await _sweepNow();
+			await new Promise((resolveTick) => setImmediate(resolveTick)); // let the rejection settle
 
 			assert.strictEqual(calls, 1);
-			assert.strictEqual(revokeOther.calls.length, 0, 'other subscribers sharing the object must not be revoked');
-			assert.strictEqual(_liveSubscriptionCount(), 2, 'a rejected revoke must leave the entry registered');
+			assert.strictEqual(_liveSubscriptionCount(), 0);
 
-			await _sweepNow(); // the next sweep retries; this time revoke succeeds
+			await _sweepNow();
 
-			assert.strictEqual(calls, 2, 'the next sweep must retry a previously rejected revoke');
-			assert.strictEqual(_liveSubscriptionCount(), 1, 'the entry is removed once the async revoke actually succeeds');
+			assert.strictEqual(calls, 1, 'a rejected revoke is best effort: the registry does not retry it');
 		});
 
-		it('clamps the terminate timeout to the maximum delay supported by setTimeout', async () => {
-			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
-			const originalSetTimeout = global.setTimeout;
-			const observedDelays = [];
-			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '999999999999';
-			global.setTimeout = (callback, delay, ...args) => {
-				observedDelays.push(delay);
-				return originalSetTimeout(callback, delay, ...args);
+		it('a never-settling revoke cannot wedge the sweep or block the entries after it', async () => {
+			let hangingCalls = 0;
+			const hangingRevoke = () => {
+				hangingCalls++;
+				return new Promise(() => {}); // never settles
 			};
-			try {
-				register({
-					subscription: fakeSubscription(),
-					username: 'bounded-timeout',
-					authExpiresAt: 0,
-					recheck: async () => true,
-					revoke: spyFn(),
-				});
-				handles.pop();
+			const otherRevoke = spyFn();
+			register({
+				subscription: fakeSubscription(),
+				username: 'hangs-on-revoke',
+				authExpiresAt: 0,
+				recheck: async () => true,
+				revoke: hangingRevoke,
+			});
+			register({
+				subscription: fakeSubscription(),
+				username: 'other',
+				authExpiresAt: 0,
+				recheck: async () => true,
+				revoke: otherRevoke,
+			});
+			handles.length = 0; // sweep untracks both entries itself
+			assert.strictEqual(_liveSubscriptionCount(), 2);
 
-				await _sweepNow();
+			// Without terminate being fire-and-forget, this await would never resolve — the point of the test.
+			await _sweepNow();
 
-				assert.ok(observedDelays.includes(2_147_483_647));
-				assert.strictEqual(_liveSubscriptionCount(), 0);
-			} finally {
-				global.setTimeout = originalSetTimeout;
-				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
-				else process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = originalTimeout;
-			}
-		});
+			assert.strictEqual(hangingCalls, 1);
+			assert.strictEqual(otherRevoke.calls.length, 1, 'a hung revoke must not block later entries in the same sweep');
+			assert.strictEqual(_liveSubscriptionCount(), 0);
 
-		it('bounds a never-settling revoke so it cannot wedge the sweep, and other entries are still processed', async () => {
-			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
-			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '30';
-			try {
-				const hangingSubscription = fakeSubscription();
-				const otherSubscription = fakeSubscription();
-				let hangingCalls = 0;
-				const hangingRevoke = () => {
-					hangingCalls++;
-					return new Promise(() => {}); // never settles
-				};
-				const otherRevoke = spyFn();
-				register({
-					subscription: hangingSubscription,
-					username: 'hangs-on-revoke',
-					authExpiresAt: 0,
-					recheck: async () => true,
-					revoke: hangingRevoke,
-				});
-				register({
-					subscription: otherSubscription,
-					username: 'other',
-					authExpiresAt: 0,
-					recheck: async () => true,
-					revoke: otherRevoke,
-				});
-				assert.strictEqual(_liveSubscriptionCount(), 2);
+			await _sweepNow(); // the sweep loop is not wedged; nothing is left to re-invoke
 
-				// Without the timeout bound, this await would never resolve — the whole point of the test.
-				await _sweepNow();
-
-				assert.strictEqual(hangingCalls, 1);
-				assert.strictEqual(otherRevoke.calls.length, 1, 'a hung revoke must not block other entries in the same sweep');
-				assert.strictEqual(_liveSubscriptionCount(), 1, 'the hung entry stays registered; the other is revoked');
-
-				// A second sweep must not re-invoke the still-hanging revoke — it stays registered
-				// (nothing decides it's dead), but every sweep still logs it so a permanently stuck entry
-				// doesn't go completely silent after one line.
-				const originalError = hdbLogger.error;
-				const errorMessages = [];
-				hdbLogger.error = (message) => errorMessages.push(message);
-				try {
-					await _sweepNow();
-				} finally {
-					hdbLogger.error = originalError;
-				}
-				assert.strictEqual(hangingCalls, 1, 'a second sweep must not re-invoke a still-hanging revoke');
-				assert.ok(
-					errorMessages.some((message) => message.includes('hangs-on-revoke')),
-					`expected a per-sweep visibility log for the still-stuck entry, got: ${JSON.stringify(errorMessages)}`
-				);
-			} finally {
-				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
-				else process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = originalTimeout;
-			}
-		});
-
-		it('does not re-invoke a still-pending revoke on retry, and commits once it eventually resolves', async () => {
-			const originalTimeout = process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
-			process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '20';
-			try {
-				const subscription = fakeSubscription();
-				let calls = 0;
-				let resolveRevoke;
-				const revoke = () => {
-					calls++;
-					return new Promise((resolveP) => {
-						resolveRevoke = resolveP;
-					});
-				};
-				register({ subscription, username: 'slow-revoke', authExpiresAt: 0, recheck: async () => true, revoke });
-				handles.pop();
-
-				await _sweepNow(); // times out (revoke hasn't settled yet); invoked once
-				assert.strictEqual(calls, 1);
-				assert.strictEqual(_liveSubscriptionCount(), 1);
-
-				// Still pending: must not invoke revoke again, and — since the settle handler (not this
-				// wait) is what commits the eventual outcome — must not re-race the timeout either. Rather
-				// than asserting a tight wall-clock margin (AGENTS.md flags exactly that pattern as a
-				// flakiness root cause), raise the timeout enormously and race the sweep against a short
-				// deterministic marker: an implementation that re-raced the pending attempt could not win
-				// that race, no matter how loaded the test runner is.
-				process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = '100000';
-				const outcome = await Promise.race([
-					_sweepNow().then(() => 'sweep'),
-					new Promise((resolveMarker) => setTimeout(() => resolveMarker('marker'), 250)),
-				]);
-				assert.strictEqual(outcome, 'sweep', 'a sweep finding an already-pending attempt must not re-race the timeout');
-				assert.strictEqual(calls, 1, 'a still-pending revoke must not be invoked a second time');
-				assert.strictEqual(_liveSubscriptionCount(), 1);
-
-				// Resolve on its own, with no sweep actively awaiting it — models the realistic case where
-				// the underlying call finishes sometime in the ~30s gap between sweeps, not synchronously
-				// adjacent to one. The settle handler must commit the removal on its own; an implementation
-				// that only committed from inside an active sweep's await would miss this and later
-				// re-invoke revoke, discarding the success that already happened.
-				resolveRevoke();
-				await new Promise((resolveTick) => setImmediate(resolveTick));
-
-				assert.strictEqual(calls, 1, 'the late success must be committed without any sweep watching it');
-				assert.strictEqual(_liveSubscriptionCount(), 0, 'the entry must be removed as soon as the attempt settles');
-
-				await _sweepNow(); // a further sweep must not touch it again — already gone
-
-				assert.strictEqual(calls, 1, 'the entry is removed without ever calling revoke a second time');
-				assert.strictEqual(_liveSubscriptionCount(), 0);
-			} finally {
-				if (originalTimeout === undefined) delete process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS;
-				else process.env.HARPER_SUBSCRIPTION_TERMINATE_TIMEOUT_MS = originalTimeout;
-			}
+			assert.strictEqual(hangingCalls, 1);
 		});
 
 		it('does not terminate an entry the caller already unregistered while its recheck was still in flight', async () => {
