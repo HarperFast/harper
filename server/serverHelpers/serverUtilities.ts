@@ -51,6 +51,7 @@ import {
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -247,14 +248,10 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
 			const sql = require('../../sqlTranslator/index');
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
+			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
+			stripSuppliedParsedSqlObject(json);
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
-			// NOTE: a job's SQL is re-parsed from its nested search_operation when the job runs, so the
-			// check there sees `sql` rather than the job's own operation. Carrying the real one on the
-			// request was tried and reverted: on the direct-SQL path the request is the client's body,
-			// so any property consulted by that check is forgeable, and it is the only gate on that
-			// path. This changes no outcome today — the branch that would act on the denial is dead
-			// (#2202) — but #2202 needs an unforgeable carrier before making it live.
 			if (!bypassAuth) {
 				// The SQL path never reaches verifyPerms, so the role `operations` allowlist must be
 				// enforced here — otherwise an allowlisted role reaches unlisted operations via `sql`.

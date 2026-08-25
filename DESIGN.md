@@ -391,6 +391,80 @@ early-returns (super_user, structure_user, system-table allowances): persisted r
 `super_user` with other permission keys, but inline roles can combine `structure_user` with an
 allowlist, and the gate ordering is what keeps unlisted schema ops unreachable.
 
+## The dispatched API operation is carried on async context, never on the request (`server/serverHelpers/operationAuthorizationState.ts`)
+
+`verifyPermsAST`'s token-scope check has to be told which top-level API operation the caller
+invoked, because the scope is written in that namespace (`sql`, `export_local`, ...). Two things
+make that awkward:
+
+1. On the **direct-SQL** path, the object handed to `checkASTPermissions` _is_ the client's request
+   body, and this check is the only gate there (`chooseOperation`'s `sql` branch is mutually
+   exclusive with its `verifyPerms` call). Any field read off that object is therefore a way to
+   name whichever operation the caller's scope happens to allow and run arbitrary SQL under it.
+   `jsonMessage.operation` is safe only because dispatch already routed on that same field, so it
+   cannot disagree with the operation running. Never add another.
+2. A **job** re-parses its SQL from the nested `search_operation` in a _different_ async context —
+   `executeJob` persists the request and hands off to the job runner, and `jobProcess.ts` re-enters
+   from the `hdb_job` record. So a store established around the originating request cannot reach
+   it, and the re-parse would be judged as `sql` rather than as the job's own operation.
+
+The carrier is therefore established **in the job worker**, by `runWithDispatchedOperation`, from
+the same `request.operation` that `getOperationFunction` just resolved the handler from. That
+identity is the whole basis for trusting it: the value naming the operation and the value selecting
+the code cannot diverge. A new carrier must preserve that property — an added request property, a
+`search_operation` field, or a persisted `parsed_sql_object` would not.
+
+This lives in the same `AsyncLocalStorage` as the auth bypass rather than a second store, so
+`processAST` reads the state once. `runWithOperationAuthorizationBypass` **preserves** an existing
+carrier on both branches. That is deliberate and was initially got wrong: its enforced branch is not
+a bypass, so a job handler dispatching a nested _authorized_ operation lands there, and dropping the
+carrier would judge that job's re-parsed SQL as the inner `sql` and refuse it partway through its own
+work. The consequence to know is the other direction — a nested dispatch inside a job is judged
+against the **outer** job's operation for any `evaluateSQL` that does not pass through
+`chooseOperation`. It allocates only when a carrier is present; with none, two shared frozen objects
+serve the common path. All four stores are frozen, so `getOperationAuthorizationState()` cannot hand
+a mutable one to a caller.
+
+It has four call sites, and they are not all dispatch wrappers: `server.operation()`
+(`serverUtilities.ts`), the ITC path (`registeredOperations.ts`), the legacy SQL engine
+(`sqlEngine/diff/differential.ts`), and Harper's own `hdb_job` query (`server/jobs/jobs.ts`) — that
+last one **is** reached from the ops-API dispatch, via `search_jobs_by_start_date` →
+`handleGetJobsByStartDate` → `getJobsInDateRange`.
+
+Harper's own internal SQL takes the bypass, not the carrier. `getJobsInDateRange` runs a fixed
+`system.hdb_job` query through `evaluateSQL` beneath a handler the caller was already authorized for,
+and `SqlSearchObject` hardcodes `operation: 'sql'` — so the same mismatch applies, but the answer
+differs, and the reason is easy to get backwards. `verifyPermsAST`'s super_user early return is
+`isSuperUser && !isSuSystemOperation`, so a `system` schema is **exempt** from it and the table check
+genuinely runs. A carrier would therefore put Harper's own query through `hasPermissions` on
+`system.hdb_job`, which passes only because `appendSystemTablesToRole` grants `system.*.read` to a
+hydrated super_user — a super_user principal without an appended `permission.system` (an
+impersonation payload, or any path that skips user-cache hydration) would start getting 403s on an
+operation it is entitled to. The bypass also states the actual intent: the statement is Harper's, not
+the caller's. Wrap the individual statement, not the function — a later caller-dependent statement
+must not inherit it.
+
+A second body field has to be neutralized for any of this to hold: `evaluateSQL` trusts a supplied
+`parsed_sql_object` verbatim and skips parsing, `chooseOperation` overwrites only the **top-level**
+one, and `dataLayer/export.ts` hands the nested `search_operation` straight to `evaluateSQL`. So a
+body-supplied `search_operation.parsed_sql_object` carrying `permissions_checked: true` would run an
+arbitrary AST with the check skipped. `chooseOperation` deletes it, forcing the worker to re-parse
+from the `sql` string that dispatch authorized — the nested object is never overwritten the way the
+top-level one is, because nothing downstream should read one at all.
+
+What is untestable is not the carrier's contract — unit tests cover that by calling
+`runWithDispatchedOperation` directly — but that `jobProcess` is what establishes it. Delete that call
+and those tests stay green. The carrier only changes an outcome through `tokenScopeDenial`, which is
+inert unless the principal carries `tokenOperations`, and that property has exactly one origin: an
+OIDC trust-policy exchange, for which there is no integration harness.
+
+Three different mechanisms are easy to conflate here. `tokenOperations` above is the **OIDC token
+operation scope** (#2174). An **inline-role scoped token** (`create_authentication_tokens` with a
+`role` object) is not the same thing and cannot substitute, because `createScopedToken` mints it
+`super_user: false`, so it cannot invoke a `requires_su` operation such as `export_local` at all.
+**Table permissions** are a third, and also cannot substitute — see the system-schema exemption
+above. See #2298.
+
 ## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
 
 A renewed **certificate** and a renewed **private key** reach a worker's live TLS secure context

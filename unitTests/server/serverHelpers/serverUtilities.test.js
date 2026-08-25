@@ -76,10 +76,8 @@ describe('Test serverUtilities.js module ', () => {
 
 		// The token scope's "can only ever subtract" invariant, asserted where it is ENFORCED rather
 		// than where it is computed (#2171/#2174). This is the front door for an export job carrying
-		// nested SQL: the job is gated here, before it is ever queued, and the check inside the job's
-		// own SQL execution is a dead branch (#2202). So this gate is the whole safety argument, and
-		// the rest of the scope suite only asserts that a denial object comes back — not that anyone
-		// throws on it.
+		// nested SQL: the job is gated here, before it is ever queued, and again inside the worker
+		// when it re-parses (#2202).
 		function exportJobRequest(tokenOperations, sql) {
 			const request = testUtils.deepClone(TEST_JSON_SUPER_USER);
 			request.operation = 'export_local';
@@ -110,6 +108,27 @@ describe('Test serverUtilities.js module ', () => {
 			assert.doesNotThrow(() =>
 				serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'SELECT * FROM data.dog'))
 			);
+		});
+
+		// evaluateSQL trusts a supplied parsed_sql_object verbatim, and export.ts hands the nested
+		// search_operation straight to it — so a body-supplied one carrying permissions_checked would
+		// execute an AST the worker never checked. The authorized `sql` string is what must survive.
+		it('discards a body-supplied parsed_sql_object on the nested search_operation', function () {
+			const request = exportJobRequest(['export_local'], 'SELECT * FROM data.dog');
+			request.search_operation.parsed_sql_object = {
+				variant: 'select',
+				permissions_checked: true,
+				ast: { statements: [{ forged: true }] },
+			};
+
+			serverUtilities.chooseOperation(request);
+
+			assert.strictEqual(
+				request.search_operation.parsed_sql_object,
+				undefined,
+				'a forged nested parsed_sql_object must not reach the job worker'
+			);
+			assert.strictEqual(request.search_operation.sql, 'SELECT * FROM data.dog');
 		});
 	});
 
@@ -234,6 +253,40 @@ describe('Test serverUtilities.js module ', () => {
 				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
 			});
 			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
+		});
+
+		it('scopes the dispatched operation across awaits and concurrent runs', async function () {
+			const { runWithDispatchedOperation, getOperationAuthorizationState } = operationAuthorizationState;
+			const operationDuring = async (apiOperation) =>
+				runWithDispatchedOperation(apiOperation, async () => {
+					await Promise.resolve();
+					return getOperationAuthorizationState()?.apiOperation;
+				});
+
+			assert.deepStrictEqual(await Promise.all([operationDuring('export_local'), operationDuring('export_to_s3')]), [
+				'export_local',
+				'export_to_s3',
+			]);
+			assert.strictEqual(getOperationAuthorizationState()?.apiOperation, undefined);
+		});
+
+		it('keeps the dispatched operation across a nested enforced dispatch', async function () {
+			const { runWithDispatchedOperation, runWithOperationAuthorizationBypass, getOperationAuthorizationState } =
+				operationAuthorizationState;
+
+			// The enforced branch is not a bypass: a job handler dispatching a nested authorized
+			// operation must not lose the carrier, or its re-parsed SQL is judged as the inner `sql`.
+			const enforced = await runWithDispatchedOperation('export_local', () =>
+				runWithOperationAuthorizationBypass(false, () => getOperationAuthorizationState())
+			);
+			assert.strictEqual(enforced.bypassAuth, false);
+			assert.strictEqual(enforced.apiOperation, 'export_local');
+
+			const bypassed = await runWithDispatchedOperation('export_local', () =>
+				runWithOperationAuthorizationBypass(true, () => getOperationAuthorizationState())
+			);
+			assert.strictEqual(bypassed.bypassAuth, true);
+			assert.strictEqual(bypassed.apiOperation, 'export_local');
 		});
 	});
 
