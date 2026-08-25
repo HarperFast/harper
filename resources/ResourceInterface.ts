@@ -76,6 +76,11 @@ export interface Context {
 	 * so there the completed transaction itself stays in the slot — also safe to call, but retained.
 	 * `null` was the previous released marker and is still accepted defensively.
 	 *
+	 * A read that resolves a transaction without going through the static-API wrappers (an instance load,
+	 * for one) replaces a released or never-set slot with an ImmediateTransaction, which commits every
+	 * write as it is made. `transaction()` and the static API start their own scope rather than joining
+	 * that, so an explicit `transaction()` is atomic on a released slot as it is on a fresh one.
+	 *
 	 * A transaction its own handler commits mid-scope is rotated to a fresh open generation, so the rest
 	 * of that scope's writes are committed — or rolled back — with the scope's final commit rather than
 	 * each committing itself immediately. Two cases keep the older per-write behavior: a commit made

@@ -87,6 +87,56 @@ Both orders are now pinned. `addWrite` defers a write whose earlier same-key wri
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
 
+## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
+
+`txnForContext` builds an `ImmediateTransaction` for a context slot that is empty or holds
+`RELEASED_TRANSACTION`, and installs it there — reached by anything that resolves a transaction without
+going through the static-API wrappers, an instance load (`getResource`) being the common one. That
+instance reports `open === OPEN`, but its `save()` **is** the commit (`saveCommits`), and nothing owns a
+final commit or abort for it.
+
+`TRANSACTION_STATE.OPEN` therefore carries two meanings that are not interchangeable: "will accept a
+write" and "stages writes for an owner that will commit or abort them as a unit". Both join sites —
+`transaction()` and the `transactional` dispatcher — ask `isJoinableScope()` for the second, not the
+first. Joining on OPEN alone meant `transaction(ctx, …)` ran its callback and returned without ever
+reaching its own `commit({ doneWriting: true })`: every write self-committed, a throw partway left the
+earlier ones durable, and `onError`'s abort never ran — silently, with the handler returning success
+(harper#2292, seen live on 5.2.5).
+
+Two things follow from the same invariant:
+
+- A chained link (`transaction.next`, a second database) inherits the head's commit discipline: under a
+  self-committing head it is another `ImmediateTransaction`, transitively down the chain. Such a link is
+  CLOSED once it has committed, and a further write through it would commit on a native handle nothing
+  awaits (harper#2323), so a spent one — closed, no handle, no pending writes — is dropped from the chain
+  and rebuilt rather than handed back. A staging link
+  there is only swept up if the head's own database is written again (its commit cascades the chain), so
+  a handler that writes the second database last silently loses that write.
+- A deferred write (`deferSave`, which is every `_writeUpdate`) is only _triggered_ by
+  `resource.save()`; it lives in the `writes` of whichever transaction `addWrite` put it in
+  (`operation.stagedIn`). So `save()` can run after the context has moved on to a different
+  transaction, which a scope opening in between now makes routine. A joinable scope **takes the write
+  over**: `detachWrite` from the holder, `addWrite` onto the scope, and `priorWrite` cleared. Every
+  commit path decides what to stage, what to replay onto a fresh handle for outstanding iterators, what
+  to roll back and whose blobs to reclaim from `writes` alone, so a write in two lists is either
+  committed twice or dropped by whichever list is consulted first; and the per-key basis chain belongs
+  to the holder, so keeping it would diff the merge and the secondary index against a record that may
+  never land. Otherwise the write stays with its holder, the transaction whose commit will see it. Never
+  taken over from a `sourceApply` or `isReplay` holder: that never-drop-on-conflict policy lives on the
+  transaction and would not travel with the write (harper-pro#348). And only where `addWrite` runs the
+  write — `LMDBTransaction`'s never does (its commit applies `writes`), so on LMDB the holder always keeps
+  it (`stagesWriteOnSave`). A write whose holder has already **finished** is not revived — it is dropped,
+  as it was before any of this — because an aborted holder has already reclaimed that write's blobs, so
+  committing it now would store a record pointing at deleted files. `validate` receives the transaction that is
+  committing the write (`committedBy`) rather than closing over the one that staged it, so overload
+  accounting, the replay marker and a no-op write's removal all follow the takeover.
+
+Ownership is deliberately **not** the test. A context pre-seeded with an externally driven
+`DatabaseTransaction` (`replayLogs.ts`, `Table.ts`) is not `scopeOwned`, yet it still owns the writes the
+static API gives it and its own `commit()`/`abort()` still governs them; gating on `scopeOwned` would
+move those writes onto a transaction the caller does not hold. Writes made with no scope at all keep
+committing per write.
+
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
 When `migrateOnStart` opens a source LMDB primary store to read records out for the RocksDB copy, it constructs an `OpenDBIObject` and calls `sourceRootStore.openDB(key, dbiInit)`. Critically, the per-attribute `compression` setting from the corresponding `__dbis__` entry must be assigned onto `dbiInit` before that call — `dbiInit.compression = attribute.compression`. Without it, lmdb-js doesn't install its decompression layer; every read on the DBI returns raw compressed bytes. msgpackr then misreads bytes in the `0x40–0x7F` range as shared-structure refs, calls `loadStructures` → decodes the (also compressed) structures buffer → finds more bytes in that range → recurses → stack overflow.

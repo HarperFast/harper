@@ -36,6 +36,7 @@ import {
 	DatabaseTransaction,
 	ImmediateTransaction,
 	priorStagedWrite,
+	isJoinableScope,
 	isReleasedTransaction,
 	TRANSACTION_STATE,
 	writeKeyId,
@@ -1881,7 +1882,28 @@ export function makeTable(options) {
 		}
 		#saveOperation(operation: any) {
 			const transaction = txnForContext(this.getContext());
-			if (transaction.save) return transaction.save(operation) || operation.promise || operation.result;
+			const holder = operation.stagedIn;
+			// never-drop-on-conflict lives on the transaction and would not travel with the write, so an
+			// apply or a replay keeps it (harper-pro#348)
+			const holderOwnsPolicy = holder?.sourceApply || holder?.isReplay;
+			// stagesWriteOnSave: LMDBTransaction's addWrite never runs the write (its commit applies
+			// `writes`), so handing it one is a dead end
+			if (
+				holder &&
+				holder !== transaction &&
+				!holderOwnsPolicy &&
+				transaction.stagesWriteOnSave &&
+				isJoinableScope(transaction)
+			) {
+				holder.detachWrite(operation);
+				// The basis chain belongs to the holder: derived from a write this scope cannot commit, the
+				// merge and index diff would be relative to a record that may never land.
+				operation.priorWrite = undefined;
+				operation.deferSave = false;
+				return when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+			}
+			const owner = holder ?? transaction;
+			if (owner.save) return owner.save(operation) || operation.promise || operation.result;
 		}
 
 		addTo(property: any, value: any) {
@@ -2322,11 +2344,11 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				deferSave: true,
-				validate: (txnTime) => {
+				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
-							transaction.checkOverloaded();
+							committedBy.checkOverloaded();
 							// A record must be a plain object. Reject primitive, string/number, bare-binary,
 							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
 							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
@@ -2364,7 +2386,7 @@ export function makeTable(options) {
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
-							if (!transaction.isReplay) this.validate(recordUpdate, !fullUpdate);
+							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
@@ -2399,7 +2421,7 @@ export function makeTable(options) {
 							// TODO: else freeze after we have applied the changes
 						}
 					} else {
-						(transaction as any).removeWrite?.(write);
+						(committedBy as any).removeWrite?.(write);
 						return false;
 					}
 				},
@@ -2442,6 +2464,7 @@ export function makeTable(options) {
 					let incrementalUpdateToApply: boolean;
 
 					this.#savingOperation = null;
+					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
@@ -5657,10 +5680,33 @@ export function makeTable(options) {
 				// See if this is a transaction for our database and if so, use it
 				if (transaction.db?.path === primaryStore.path) return transaction;
 				// try the next one:
-				const nextTxn = transaction.next;
+				let nextTxn = transaction.next;
+				// A self-committing link is CLOSED once it has committed, and a further write through it
+				// commits on a native handle nothing awaits (#2323). Spent — closed, handle detached, none of
+				// its OWN writes left (hasPendingWrites walks successors, which is not this question) — it
+				// holds nothing, so drop it. A run of them can be spent, hence the loop. A timeout-poisoned
+				// link is kept: reusing it is what makes the rest of the operation fail atomically (#1411).
+				while (
+					nextTxn?.saveCommits &&
+					nextTxn.open !== TRANSACTION_STATE.OPEN &&
+					!nextTxn.timedOut &&
+					!nextTxn.transaction &&
+					!nextTxn.writes.some((write) => write)
+				) {
+					transaction.next = nextTxn.next;
+					nextTxn = transaction.next;
+				}
 				if (!nextTxn) {
 					// no next one, then add our database
-					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// A staging link under a self-committing head is committed only if the head's own database
+					// is written again and cascades the chain, so a handler writing this one last loses it (#2292).
+					transaction.next = transaction.saveCommits
+						? ((isRocksDB
+								? new ImmediateTransaction(primaryStore as any)
+								: new ImmediateLMDBTransaction(primaryStore as any)) as any)
+						: isRocksDB
+							? new DatabaseTransaction()
+							: new LMDBTransaction();
 					// The chain root, so a link that only ever receives a blind write is supervised by the
 					// long-transaction monitor as part of its logical transaction rather than as its own
 					// timeout root (issue #2231).
@@ -5682,8 +5728,11 @@ export function makeTable(options) {
 					// A second database joined after a mid-scope commit belongs to the same snapshot-free
 					// generation as the head, or its reads would re-pin what the commit just unpinned.
 					transaction.next.snapshotFree = transaction.snapshotFree;
-					if (transaction.open === TRANSACTION_STATE.CLOSED) {
+					if (transaction.open === TRANSACTION_STATE.CLOSED && !transaction.next.saveCommits) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
+						// Never onto a self-committing link: CLOSED is what routes its first write through the
+						// commit re-entry that drops the native commit promise (#2323), and it commits per write
+						// regardless of this state.
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
 					transaction = transaction.next;
