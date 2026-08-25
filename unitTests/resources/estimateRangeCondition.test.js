@@ -191,6 +191,9 @@ describe('estimateCondition range estimates (real stores)', () => {
 				{ name: 'name', indexed: true },
 			],
 		});
+		// HARPER_STORAGE_ENGINE=lmdb runs this same suite against index stores with no
+		// estimateCount, where every range falls back to the flat heuristic
+		if (typeof T.indices.score.estimateCount !== 'function') return this.skip();
 		let last;
 		for (let i = 0; i < N; i++) {
 			last = T.put({ id: i, score: i, name: `name-${String(i).padStart(6, '0')}` });
