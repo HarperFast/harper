@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { overlayRootEnvConfig, isRootConfigFilename } from '../config/harperConfigEnvVars.ts';
 
 export interface Config {
@@ -84,6 +85,8 @@ export class CannotSetPropertyError extends Error {
  */
 export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#filePath: string;
+	#watchPath: string;
+	#watchPathRequiresPolling: boolean;
 	#watcher!: FSWatcher;
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
@@ -100,6 +103,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
+		const watchTarget = resolveWatchTarget(filePath);
+		this.#watchPath = watchTarget.path;
+		this.#watchPathRequiresPolling = watchTarget.mustPoll;
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
@@ -114,9 +120,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#openWatcher() {
 		this.#openCount++;
 		this.#watcher = chokidar
-			.watch(this.#filePath, {
+			.watch(this.#watchPath, {
 				persistent: false,
-				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
+				...(this.#usingPolling || this.#watchPathRequiresPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			})
 			.on('add', this.#handleChange.bind(this))
 			.on('change', this.#handleChange.bind(this))

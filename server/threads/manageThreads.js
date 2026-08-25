@@ -23,6 +23,8 @@ const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
+const { resolveWatchTarget } = require('../../utility/watchPath.ts');
+const { DIRECTORY_POLLING_FALLBACK_OPTIONS } = require('../../utility/watcherFallback.ts');
 let importModules;
 function getImportModules() {
 	if (importModules === undefined)
@@ -1252,9 +1254,11 @@ if (isMainThread) {
 	const ignoredPaths = ['node_modules', '.git'];
 	const watchDir = async (dir, beforeRestartCallback) => {
 		if (beforeRestartCallback) beforeRestart = beforeRestartCallback;
+		const watchTarget = resolveWatchTarget(dir);
 		chokidar
-			.watch(dir, {
+			.watch(watchTarget.path, {
 				persistent: false,
+				...(watchTarget.mustPoll ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
 					return ignoredPaths.some((ignoredPath) => path.includes(ignoredPath));
 				},

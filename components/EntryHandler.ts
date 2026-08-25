@@ -15,6 +15,7 @@ import {
 	isWatcherExhaustionError,
 	warnWatcherFallback,
 } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 
 export interface BaseEntry {
 	stats?: Stats;
@@ -536,19 +537,22 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			readFailures: new Map(),
 		};
 
-		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
+		// chokidar reports every path — to `ignored` and to the event handlers — relative to `cwd`,
+		// so the predicate's bases must be derived from the same canonicalized directory.
+		const watchTarget = resolveWatchTarget(this.#component.directory);
+		const watchDirectory = watchTarget.path;
+		const normalizedDirectory = watchDirectory.replace(/\\/g, '/');
+		const normalizedBases = this.#component.patternBases.map((base) => join(watchDirectory, base).replace(/\\/g, '/'));
 
 		this.#openCount++;
 		const watcher = (this.#watcher = chokidar
 			.watch(this.#component.commonPatternBase, {
-				cwd: this.#component.directory,
+				cwd: watchDirectory,
 				persistent: false,
 				followSymlinks: false,
-				...(this.#usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
+				...(this.#usingPolling || watchTarget.mustPoll ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
-					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
-					const normalizedDirectory = this.#component.directory.replace(/\\/g, '/');
 
 					// Determine the path relative to the component directory. Leading '/' is preserved
 					// (or empty when the path *is* the component directory) so the regex anchors below

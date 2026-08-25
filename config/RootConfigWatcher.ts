@@ -4,9 +4,12 @@ import { getConfigFilePath } from './configUtils.ts';
 import { EventEmitter, once } from 'node:events';
 import { parse } from 'yaml';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
+	#watchPath: string;
+	#watchPathRequiresPolling: boolean;
 	#watcher!: FSWatcher;
 	#config: any;
 	#usingPolling: boolean;
@@ -17,6 +20,9 @@ export class RootConfigWatcher extends EventEmitter {
 	constructor() {
 		super();
 		this.#configFilePath = getConfigFilePath();
+		const watchTarget = resolveWatchTarget(this.#configFilePath);
+		this.#watchPath = watchTarget.path;
+		this.#watchPathRequiresPolling = watchTarget.mustPoll;
 		this.#usingPolling = false;
 		this.#closed = false;
 		this.ready = once(this, 'ready');
@@ -26,9 +32,9 @@ export class RootConfigWatcher extends EventEmitter {
 	#openWatcher() {
 		this.#openCount++;
 		this.#watcher = chokidar
-			.watch(this.#configFilePath, {
+			.watch(this.#watchPath, {
 				persistent: false,
-				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
+				...(this.#usingPolling || this.#watchPathRequiresPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			})
 			.on('add', this.handleChange.bind(this))
 			.on('change', this.handleChange.bind(this))

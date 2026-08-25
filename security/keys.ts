@@ -33,6 +33,8 @@ export const getPrivateKeys = () => privateKeys;
 import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
 import { isMainThread } from 'worker_threads';
+import { POLLING_FALLBACK_OPTIONS } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
@@ -355,7 +357,11 @@ function loadAndWatch(path, loadCert, type) {
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
-	watch(path, { persistent: false }).on('change', loadFile);
+	const watchTarget = resolveWatchTarget(path);
+	watch(watchTarget.path, { persistent: false, ...(watchTarget.mustPoll ? POLLING_FALLBACK_OPTIONS : {}) }).on(
+		'change',
+		loadFile
+	);
 
 	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers
 	// receive cert updates via the hdb_certificate table subscription, so polling the cert file on
