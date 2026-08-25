@@ -709,7 +709,11 @@ The user the policy names is the privilege boundary: a matching run gets that us
 	"audience": "https://my-instance.harperdb.io:9925/",
 	"user": "ci-deploy",
 	"operations": ["deploy_component", "get_deployment", "restart_service"],
-	"claims": { "repository_id": "67890", "environment": "production" }
+	"claims": {
+		"repository_id": "67890",
+		"workflow_ref": "HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main",
+		"environment": "production"
+	}
 }
 ```
 
@@ -735,9 +739,11 @@ A scoped token also cannot trade itself for a browser session: `create_authentic
 
 A constrained claim that is **absent** from the token fails rather than passes, so a policy cannot be weakened by an issuer that stops emitting a claim.
 
+**An http(s) audience must be the exact string the CI client asks for**, which means an explicit port and a trailing slash — `https://my-instance.example.com:9925/`, not `https://my-instance.example.com`. This is checked for **every** issuer, not only GitHub Actions, and the shorter form is rejected at write time. The audience is matched byte-for-byte at verification, and the CLI requests its token for the normalized target, which supplies `:9925` and the trailing slash — so a policy written without them could never authenticate. An audience that is not an http(s) URL (an `api://` identifier, a bare GUID) is not constrained.
+
 **The audience should identify this instance.** For GitHub Actions, Harper rejects the provider's shared default — anything shaped like `https://github.com/<owner>` — because that value is shared by every repository under the owner, so accepting it would make a token minted by any of them valid here.
 
-That check is a guard against the one known-dangerous value, not a proof of correctness: Harper does not compare the audience against its own identity, so an arbitrary or mistyped value is accepted at write time and instead fails to match at exchange time, when the CLI derives the audience from its target URL. Use the instance URL your CI targets. For an issuer with no registered profile the audience is not checked for specificity at all, and the required `sub` pin is what binds the policy to one principal.
+That check is a guard against the one known-dangerous value, not a proof of correctness: Harper does not compare the audience against its own identity, so an arbitrary or mistyped value is accepted at write time and instead fails to match at exchange time, when the CLI derives the audience from its target URL. Use the instance URL your CI targets. For an issuer with no registered profile the audience is not checked for _specificity_ — the canonical-form rule above still applies — and the required `sub` pin is what binds the policy to one principal.
 
 ##### Policy specificity for GitHub Actions
 
@@ -809,6 +815,8 @@ Lists every policy, **including disabled ones**, sorted by `id`. **super_user on
 ```
 
 Returns `{ "policies": [ ... ] }`. Each entry carries `id`, `issuer`, `audience`, `claims`, `user`, `operations` (`null` when unscoped), `enabled`, `description`, `updated_by`, and timestamps.
+
+An entry may also carry **`invalid_reason`** — set when the policy cannot currently authenticate anyone, because it is malformed or because the user it names was deleted or deactivated after the policy was written. Check for it first when diagnosing a rejected exchange: the exchange will not say what failed, so a policy you expected to match that carries an `invalid_reason` is the fastest explanation available.
 
 #### `drop_oidc_trust`
 

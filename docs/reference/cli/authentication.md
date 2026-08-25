@@ -50,11 +50,11 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 :::tip
 **Configure one credential style per context, not two.** Precedence exists to resolve a conflict, but it resolves it silently, and the ways this page describes for authentication to go wrong all need two styles live at once: a payload `username=`/`password=` pair takes over when a token stops resolving, a blank token variable hands the run to whatever saved login the machine has. Pick one and leave the others unset:
 
-| Context                 | Use                                 |
-| ----------------------- | ----------------------------------- |
-| CI/CD pipeline          | `HARPER_CLI_REFRESH_TOKEN`          |
-| A one-off admin command | `auth_username=` / `auth_password=` |
-| Local development       | `harper login`                      |
+| Context                 | Use                                                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| CI/CD pipeline          | [Workload identity](#workload-identity-oidc) where the runtime supports it; otherwise `HARPER_CLI_REFRESH_TOKEN` |
+| A one-off admin command | `auth_username=` / `auth_password=`                                                                              |
+| Local development       | `harper login`                                                                                                   |
 
 Setting a token _and_ leaving `username=`/`password=` on the command is the combination that turns a token failure into an identity change rather than an error. One caveat: this rule bounds _which_ credential is used, not what happens when none resolves. A loopback node authorizes a request that arrives with no credential at all as superuser, so the style matters less there than whether a credential is attached — see the refresh-behavior note below.
 :::
