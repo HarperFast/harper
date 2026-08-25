@@ -437,6 +437,20 @@ export function serialize(responseData, request, responseObject) {
 
 let asyncSerializations: Promise<void>[];
 /**
+ * Get the message serializer for a request's negotiated content type, memoized on the request.
+ * The returned function is the registered per-content-type serializer, so its identity keys the
+ * content type. Caching serialized output across requests under that key is only valid because the
+ * built-in serializers are pure functions of their argument — a component registering a serializer
+ * into `server.contentTypes` whose output depends on anything else would not be shareable.
+ * @param request
+ */
+export function getMessageSerializer(request?: Request): (message: any) => Buffer | string {
+	if (!request) return JSONStringify;
+	let serialize = (request as any).serialize;
+	if (!serialize) serialize = (request as any).serialize = findBestSerializer(request).serializer.serialize;
+	return serialize;
+}
+/**
  * Serialize a message, may be use multiple times (like with WebSockets)
  * @param message
  * @param request
@@ -450,18 +464,7 @@ export function serializeMessage(
 	if (message?.contentType != null && message.data != null) return message.data;
 	asyncSerializations = inAsyncContinuation ? undefined : [];
 	try {
-		let serialized: Buffer | string;
-		if (request) {
-			let serialize = (request as any).serialize;
-			if (serialize) serialized = serialize(message);
-			else {
-				const serializer = findBestSerializer(request);
-				serialize = (request as any).serialize = serializer.serializer.serialize;
-				serialized = serialize(message);
-			}
-		} else {
-			serialized = JSONStringify(message);
-		}
+		const serialized: Buffer | string = getMessageSerializer(request)(message);
 		if (asyncSerializations?.length > 0)
 			// if there were any serialization attempts that must wait for async work to be done, we wait now and then retry the serialization
 			return (asyncSerializations.length === 1 ? asyncSerializations[0] : Promise.all(asyncSerializations)).then(() =>

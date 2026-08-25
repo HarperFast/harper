@@ -57,8 +57,9 @@ benchmarks/ycsb/results/
 benchmarks/ycsb/bench-out/
 benchmarks/compression/results/
 
-# northwind export_local test artifact
-test_export.json.json
+# export_local integration-test artifacts — these tests pass `path: './'`, so the export lands in
+# the repo root and a `git add -A` after a test run commits it
+test_export*.json
 
 # dev-mode boots (harper dev <fixture>) symlink node_modules/harper into the
 # fixture component dir; keep those out of commits

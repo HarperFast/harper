@@ -207,7 +207,7 @@ describe('pure-ESM package resolution', () => {
 	// Regression test for https://github.com/HarperFast/harper/issues/826
 	// Pure-ESM packages have an exports map with only "import" conditions and no "require".
 	// createRequire().resolve() (CJS resolver) throws ERR_PACKAGE_PATH_NOT_EXPORTED for these;
-	// the fix returns the raw specifier so createModule() falls through to dynamic import().
+	// the fallback walks the package exports map using ESM conditions.
 	it('should import a pure-ESM package (exports map with only "import" conditions, no "require")', async () => {
 		const runtimeRoot = join(__dirname, 'fixtures', 'esm-only-test');
 		const resolutions = [];
@@ -221,6 +221,7 @@ describe('pure-ESM package resolution', () => {
 		expect(result.value).to.equal('esm-only');
 		expect(resolutions).not.to.include('pure-esm-pkg');
 		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/package.json'))).to.equal(true);
+		expect(loadedModules.some((url) => url.endsWith('/pure-esm-pkg/index.js'))).to.equal(true);
 	});
 
 	it('uses the ESM fallback for Bun MODULE_NOT_FOUND errors from bare packages', async () => {
