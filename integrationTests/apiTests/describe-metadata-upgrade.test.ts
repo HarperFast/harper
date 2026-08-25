@@ -7,7 +7,7 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -40,7 +40,8 @@ graphqlSchema:
   files: '*.graphql'
 `;
 
-const PINNED_DATA_DIR = mkdtempSync(join(tmpdir(), 'describe-metadata-upgrade-'));
+// Node 24's libuv asserts when a recursive watcher is rooted at Windows' 8.3 %TEMP% path.
+const PINNED_DATA_DIR = realpathSync.native(mkdtempSync(join(tmpdir(), 'describe-metadata-upgrade-')));
 
 async function describeAll(client: ReturnType<typeof createApiClient>) {
 	const res = await client.req().send({ operation: 'describe_all' });
