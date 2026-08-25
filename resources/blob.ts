@@ -786,16 +786,23 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 										// the file is not finished being written, watch the file for changes to resume reading
 										// set up a watcher to be notified of file changes
 										watchTarget ??= resolveWatchTarget(filePath);
-										watcher = watchTarget.mustPoll
-											? undefined
-											: watch(watchTarget.path, { persistent: false }, () => {
-													if (watcher) {
-														watcher.close();
-														watcher = null;
-														clearTimeout(timer); // clear it
-														readMore(resolve, reject);
-													}
-												});
+										try {
+											// fs.watch throws synchronously when the OS watcher pool is exhausted (EMFILE/
+											// ENOSPC); the poll below is the same recovery the unwatchable path already takes.
+											watcher = watchTarget.mustPoll
+												? undefined
+												: watch(watchTarget.path, { persistent: false }, () => {
+														if (watcher) {
+															watcher.close();
+															watcher = null;
+															clearTimeout(timer); // clear it
+															readMore(resolve, reject);
+														}
+													});
+										} catch (error) {
+											logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
+											watcher = undefined;
+										}
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
