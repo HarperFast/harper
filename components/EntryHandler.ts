@@ -537,8 +537,8 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			readFailures: new Map(),
 		};
 
-		// chokidar reports every path — to `ignored` and to the event handlers — relative to `cwd`,
-		// so the predicate's bases must be derived from the same canonicalized directory.
+		// `ignored` receives absolute paths built from `cwd`, so its bases must come from the same
+		// directory spelling. Event paths are relative to `cwd`, so reads below stay on `this.directory`.
 		const watchTarget = resolveWatchTarget(this.#component.directory);
 		const watchDirectory = watchTarget.path;
 		const normalizedDirectory = watchDirectory.replace(/\\/g, '/');

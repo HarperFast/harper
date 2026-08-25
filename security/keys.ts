@@ -340,7 +340,7 @@ const certificateWatchPollers = new Map<string, () => void>();
  */
 function loadAndWatch(path, loadCert, type) {
 	let lastModified;
-	const loadFile = (path, stats) => {
+	const loadFile = (path, stats?) => {
 		try {
 			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
 			// stat the file here when it's missing — otherwise the inotify fast path would throw and
@@ -360,7 +360,9 @@ function loadAndWatch(path, loadCert, type) {
 	const watchTarget = resolveWatchTarget(path);
 	watch(watchTarget.path, { persistent: false, ...(watchTarget.mustPoll ? POLLING_FALLBACK_OPTIONS : {}) }).on(
 		'change',
-		loadFile
+		// The event carries the watched spelling, which is not the configured one once canonicalized;
+		// reload through the configured path so a retargeted link is followed.
+		() => loadFile(path)
 	);
 
 	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers

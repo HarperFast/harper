@@ -51,7 +51,7 @@ import { get as envGet, getHdbBasePath } from '../utility/environment/environmen
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
-import { canonicalizeWatchPath } from '../utility/watchPath.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 import type { RootDatabase } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 import { getHeapStatistics } from 'node:v8';
@@ -536,8 +536,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		let totalContentRead = 0;
 		let watcher: FSWatcher;
 		// Resolved once per read: the stall path below re-arms the watcher on every retry.
-		let watchPath: string | undefined;
-		let watchPathResolved = false;
+		let watchTarget: { path: string; mustPoll: boolean };
 		let timer: NodeJS.Timeout;
 		// The start() open-retry timer lives in a different scope/phase than pull()'s `timer`; track it
 		// separately so a cancel() during the file-creation wait clears it instead of leaking an fd (#1457).
@@ -787,20 +786,17 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 										};
 										// the file is not finished being written, watch the file for changes to resume reading
 										// set up a watcher to be notified of file changes
-										if (!watchPathResolved) {
-											watchPathResolved = true;
-											watchPath = canonicalizeWatchPath(filePath);
-										}
-										watcher =
-											watchPath &&
-											watch(watchPath, { persistent: false }, () => {
-												if (watcher) {
-													watcher.close();
-													watcher = null;
-													clearTimeout(timer); // clear it
-													readMore(resolve, reject);
-												}
-											});
+										watchTarget ??= resolveWatchTarget(filePath);
+										watcher = watchTarget.mustPoll
+											? undefined
+											: watch(watchTarget.path, { persistent: false }, () => {
+													if (watcher) {
+														watcher.close();
+														watcher = null;
+														clearTimeout(timer); // clear it
+														readMore(resolve, reject);
+													}
+												});
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
@@ -811,6 +807,22 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											}
 											readMore(resolve, reject);
 										} else if (!resumeIfWriterFinished()) {
+											if (!watcher) {
+												// No watcher could be armed, so nothing will wake this read. Poll on the same
+												// short backoff and the same no-progress deadline resumeIfWriterFinished uses,
+												// rather than sitting out the full read timeout and 503-ing a healthy write.
+												if (Date.now() >= incompleteDeadline) {
+													onError(
+														new BlobReadError(
+															`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`,
+															BLOB_UNAVAILABLE_STATUS
+														)
+													);
+												} else {
+													timer = setTimeout(() => readMore(resolve, reject), 20).unref();
+												}
+												return;
+											}
 											// set a timer for the watcher too. A write that stalls past the bound returns a
 											// prompt 503 (retryable) instead of holding the connection for the full 60s (#1423).
 											timer = setTimeout(() => {

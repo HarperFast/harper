@@ -1,9 +1,13 @@
 import { realpathSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
 import { loggerWithTag } from './logging/harper_logger.ts';
 
 const watchPathLogger = loggerWithTag('watcher');
 let canonicalizationWarned = false;
+
+// An 8.3 alias component (`RUNNER~1`) — the only form GetLongPathNameW rewrites, and so the only
+// one that can break the prefix comparison below. A long name that merely contains `~1` is a false
+// positive that costs one realpath.
+const SHORT_NAME_COMPONENT = /(?:^|[\\/])[^\\/]*~\d+[^\\/]*(?=[\\/]|$)/;
 
 /**
  * Canonicalize an absolute path before it is handed to a native file watch (`fs.watch`, directly or
@@ -15,37 +19,30 @@ let canonicalizationWarned = false;
  * comparison, and the assertion aborts the process rather than failing the watch, so a short path
  * reaching a native watch takes down the whole server (harper#2234).
  *
- * Returns `undefined` when the long form cannot be established, because a path we cannot prove is
- * canonical is exactly the one that must never reach a native watch. A leaf that does not exist yet
- * (a config file whose watcher is armed before it is written) resolves through its deepest existing
- * ancestor; any other failure fails closed.
+ * Only a path carrying an 8.3 component is touched at all: everything else is returned as given,
+ * which keeps `realpathSync.native`'s symlink resolution — a behavior change of its own — off every
+ * path that cannot abort. Plain `realpathSync` is not a substitute for it: that resolves symlinks
+ * but leaves 8.3 names intact.
  *
- * Windows-only: elsewhere `realpathSync.native` would additionally resolve symlinks, which changes
- * which tree an npm-linked component watches. Plain `realpathSync` is not a substitute — it resolves
- * symlinks but leaves 8.3 names intact.
+ * Returns `undefined` when the long form cannot be established, including when the resolved path is
+ * still short, because a path we cannot prove is expanded is exactly the one that must never reach a
+ * native watch.
  */
 export function canonicalizeWatchPath(watchPath: string, platform: string = process.platform): string | undefined {
-	if (platform !== 'win32') return watchPath;
-	let unresolvedSuffix = '';
-	let candidate = watchPath;
-	while (true) {
-		try {
-			const canonical = realpathSync.native(candidate);
-			return unresolvedSuffix ? join(canonical, unresolvedSuffix) : canonical;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
-			const parent = dirname(candidate);
-			if (parent === candidate) return undefined;
-			unresolvedSuffix = unresolvedSuffix ? join(basename(candidate), unresolvedSuffix) : basename(candidate);
-			candidate = parent;
-		}
+	if (platform !== 'win32' || !SHORT_NAME_COMPONENT.test(watchPath)) return watchPath;
+	let canonical: string;
+	try {
+		canonical = realpathSync.native(watchPath);
+	} catch {
+		return undefined;
 	}
+	return SHORT_NAME_COMPONENT.test(canonical) ? undefined : canonical;
 }
 
 /**
- * Watch target for a chokidar/`fs.watch` call: the canonical path when one could be established,
- * otherwise the original path with `mustPoll`, which callers turn into their polling options.
- * Polling never arms a native watch, so it cannot hit the abort.
+ * Watch target for a chokidar/`fs.watch` call: the canonical path, or the original path with
+ * `mustPoll`, which callers turn into their polling options. Polling stats the file instead of
+ * arming a native watch, so it cannot reach the abort.
  */
 export function resolveWatchTarget(watchPath: string): { path: string; mustPoll: boolean } {
 	const canonical = canonicalizeWatchPath(watchPath);
@@ -53,14 +50,13 @@ export function resolveWatchTarget(watchPath: string): { path: string; mustPoll:
 	if (!canonicalizationWarned) {
 		canonicalizationWarned = true;
 		watchPathLogger.warn?.(
-			`Could not resolve the canonical form of ${watchPath}. Falling back to polling-based watching ` +
-				'for affected watchers, because a non-canonical path handed to a native Windows watch aborts the process.'
+			`Could not resolve the long-path form of ${watchPath}. Falling back to polling-based watching for ` +
+				'affected watchers, because handing a Windows 8.3 short path to a native watch aborts the process.'
 		);
 	}
 	return { path: watchPath, mustPoll: true };
 }
 
-// Test-only hook to reset the one-time warning gate between cases.
 export function _resetForTests(): void {
 	canonicalizationWarned = false;
 }
