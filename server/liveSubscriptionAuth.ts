@@ -129,13 +129,15 @@ function stopIfIdle(): void {
  * mutate state shared across them — `registerLiveSubscriptionForContext` in resources/Resource.ts
  * mutates `context.user` to the freshly-rechecked principal, which is safe only because each context
  * today belongs to exactly one subscriber; (3) `revoke` must be idempotent and safe to run concurrently
- * with the caller's own teardown — a *rejected* attempt is retried on the next sweep (see
- * `claimAndTerminate`), an attempt that never settles is not retried and the entry is not rechecked
- * again, and `unregister()` racing an in-flight `revoke` is only closed up to the point the await
- * begins, not for the remainder of it.
+ * with the caller's own teardown — a *rejected* attempt is re-invoked on the next sweep, but only if
+ * that sweep's `recheck` again denies, so a subscription whose permission was restored in between is
+ * left half-torn-down and treated as healthy; an attempt that never settles is not retried at all and
+ * the entry is never rechecked again; and `unregister()` racing an in-flight `revoke` is only closed
+ * up to the point the await begins, not for the remainder of it.
  */
 export function registerLiveSubscription(opts: {
-	subscription: any;
+	/** Optional when `revoke` is supplied: a revoke-only registrant may own no subscription object. */
+	subscription?: any;
 	username: string;
 	authExpiresAt?: number;
 	recheck: () => Promise<boolean>;
