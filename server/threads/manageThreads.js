@@ -513,10 +513,10 @@ async function restartWorkers(
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		for (let worker of workers.slice(0)) {
-			if (processShuttingDown) break;
+			if (processShuttingDown && startReplacementThreads) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
-			if (overlapping && startReplacementThreads && canPreStartReplacement) {
+			if (overlapping && startReplacementThreads && canPreStartReplacement && !processShuttingDown) {
 				// Overlapping restart: start the replacement and wait until it is accepting connections
 				// *before* shutting down the worker it replaces. The replacement joins the (SO_REUSEPORT)
 				// listener group while the old worker is still serving, so the pool never loses capacity

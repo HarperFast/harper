@@ -13,8 +13,10 @@ on:
       - package.json
       - package-lock.json
       - build-tools/**
-      - bin/**
-      - server/threads/**
+      - bin/restart.ts
+      - bin/restartExitWatchdog.ts
+      - server/threads/manageThreads.js
+      - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
   push:
     branches: [main]
@@ -24,8 +26,10 @@ on:
       - package.json
       - package-lock.json
       - build-tools/**
-      - bin/**
-      - server/threads/**
+      - bin/restart.ts
+      - bin/restartExitWatchdog.ts
+      - server/threads/manageThreads.js
+      - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
 
 concurrency:
@@ -149,6 +153,18 @@ jobs:
           docker stop --time 15 harper-smoke
           test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
 
+          docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
+            harperfast/harper:smoke-test -c 'printf "1\n" > /home/harperdb/harper/hdb.pid'
+          docker start harper-smoke
+          for i in $(seq 1 30); do
+            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then break; fi
+            sleep 1
+          done
+          test -n "$(docker ps --filter name=harper-smoke --filter status=running -q)"
+          docker stop --time 15 harper-smoke
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
+
       - name: Teardown (default runtime)
         if: always()
         run: docker rm -f harper-smoke 2>/dev/null || true
@@ -169,10 +185,10 @@ jobs:
             if [ -n "$code" ] && [ "$code" != "000" ]; then break; fi
             sleep 1
           done
-          curl -sS --max-time 5 -u admin:password \
+          curl -sS --fail-with-body --max-time 5 -u admin:password \
             -H 'Content-Type: application/json' \
             -d '{"operation":"restart"}' \
-            http://localhost:19925/ || true
+            http://localhost:19925/
           for i in $(seq 1 70); do
             if ! docker ps --filter name=harper-restart-smoke --filter status=running -q | grep -q .; then break; fi
             sleep 1
@@ -184,6 +200,28 @@ jobs:
       - name: Teardown (restart runtime)
         if: always()
         run: docker rm -f harper-restart-smoke 2>/dev/null || true
+
+      - name: Restart watchdog force-kills a wedged Harper child
+        if: steps.build.outcome == 'success' && (success() || failure())
+        run: |
+          docker run -d --name harper-watchdog-smoke \
+            --entrypoint /usr/bin/tini \
+            harperfast/harper:smoke-test \
+            -g -- node -e '
+              const { armRestartExitWatchdog } = require("/home/harperdb/.npm-global/lib/node_modules/harper/dist/bin/restartExitWatchdog.js");
+              if (!armRestartExitWatchdog(1000)) process.exit(2);
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+            '
+          for i in $(seq 1 10); do
+            if ! docker ps --filter name=harper-watchdog-smoke --filter status=running -q | grep -q .; then break; fi
+            sleep 1
+          done
+          test -z "$(docker ps --filter name=harper-watchdog-smoke --filter status=running -q)"
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-watchdog-smoke)" = "137"
+
+      - name: Teardown (watchdog fault injection)
+        if: always()
+        run: docker rm -f harper-watchdog-smoke 2>/dev/null || true
 
       # Runs regardless of whether the default-runtime leg above passed -- otherwise a
       # flaky/failed default boot silently skips this leg on the exact runs where a
