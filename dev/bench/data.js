@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787658173274,
+  "lastUpdate": 1787658178089,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -16257,6 +16257,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1083.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "26cfee8f1e45a59281420ebeb184d5c98d5de58e",
+          "message": "Release v5.2.5",
+          "timestamp": "2026-08-25T05:23:31Z",
+          "url": "https://github.com/HarperFast/harper/commit/26cfee8f1e45a59281420ebeb184d5c98d5de58e"
+        },
+        "date": 1787658176796,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 5157.53,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 5157.53,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 499.2,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1351.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 2766,
             "unit": "ms"
           }
         ]
