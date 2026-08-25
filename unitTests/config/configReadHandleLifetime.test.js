@@ -131,6 +131,30 @@ describe('root config read handle lifetime', () => {
 		assert.strictEqual(watcher.get(['enabled']), false);
 	});
 
+	it('OptionsWatcher can still recover after an error-bearing read exhausted its budget', async () => {
+		const watcher = new OptionsWatcher('test-component', configFilePath, undefined, true);
+		openWatchers.push(watcher);
+		await watcher.ready;
+		watcher.on('error', () => {});
+
+		// An unreadable file drains the budget on its own: each re-read fails and arms the next.
+		clearPartialReadWarning(configFilePath);
+		rmSync(configFilePath);
+		mkdirSync(configFilePath);
+		await watcher._handleChangeForTests();
+		await waitFor(() => isPartialReadWarned(configFilePath), { message: 'the error path never gave up' });
+
+		// The repair can be observed mid-write too, so the budget has to be back.
+		rmSync(configFilePath, { recursive: true });
+		writeFileSync(configFilePath, '');
+		await watcher._handleChangeForTests();
+		assert.strictEqual(watcher.get(['enabled']), true, 'the half-written repair must not be adopted');
+
+		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
+		await once(watcher, 'change');
+		assert.strictEqual(watcher.get(['enabled']), false);
+	});
+
 	it('OptionsWatcher applies a root-config change before the change handler returns', async () => {
 		const watcher = new OptionsWatcher('test-component', configFilePath, undefined, true);
 		openWatchers.push(watcher);

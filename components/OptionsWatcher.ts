@@ -191,6 +191,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			this.#partialRead.gaveUp();
 			return;
 		}
+		// Same give-up as the empty case, so the budget is restored for the repair: the write that
+		// fixes the file can itself be read mid-write. The error still takes the scope's route.
+		this.#partialRead.gaveUp(error);
 		this.#handleReadError(error);
 	}
 
