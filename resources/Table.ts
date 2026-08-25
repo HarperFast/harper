@@ -4164,23 +4164,25 @@ export function makeTable(options) {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
-			// The explicit row filter participates in query execution: it is pushed into HNSW
-			// traversal for vector sorts, applied after conditions otherwise, and checked again after
-			// cache/source materialization below. A policy error aborts the query instead of silently
-			// returning a partial result set.
-			const boundRowFilter = rowFilter
-				? (record: any) => {
-						const result = rowFilter(record, context as Context);
-						if (typeof (result as any)?.then === 'function') {
-							(result as any).then(undefined, () => {});
-							throw new ClientError('rowFilter must be synchronous');
+			// The reference above is owed until an iterator returns it, and the query execution below can
+			// throw (a bad condition, a policy error) long before there is a result set to own it. Hand it
+			// back on that path: leaving it outstanding makes a later abort() classify the transaction as
+			// iterator-bearing and retain the native handle until the monitor's next tick.
+			let results;
+			try {
+				// The explicit row filter participates in query execution: it is pushed into HNSW
+				// traversal for vector sorts, applied after conditions otherwise, and checked again after
+				// cache/source materialization below. A policy error aborts the query instead of silently
+				// returning a partial result set.
+				const boundRowFilter = rowFilter
+					? (record: any) => {
+							const result = rowFilter(record, context as Context);
+							if (typeof (result as any)?.then === 'function') {
+								(result as any).then(undefined, () => {});
+								throw new ClientError('rowFilter must be synchronous');
+							}
+							return Boolean(result);
 						}
-						return Boolean(result);
-					}
-				: undefined;
-			const recordAccess =
-				boundRowFilter || typeof target.vectorFilter === 'function'
-					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
 			const entries = executeConditions(
 				conditions,
@@ -4347,6 +4349,10 @@ export function makeTable(options) {
 			// Recorded ownership: if the request dies before anything consumes these results, the
 			// transaction closes them itself rather than leaving its read snapshot pinned.
 			txn.registerReadIterator(results);
+		} catch (error) {
+				txn.doneReadTxn();
+				throw error;
+			}
 			results.selectApplied = true;
 			results.getColumns = getColumns;
 			return results;
