@@ -168,6 +168,8 @@ function closeServers() {
 	return Promise.all(promises);
 }
 
+const STARTUP_READY_TIMEOUT_MS = 600_000;
+let startupDeadline;
 function startServers() {
 	// A worker that has not yet posted child_started owns no ref'd handle: addPort()
 	// (manageThreads) unrefs parentPort, component watchers are persistent:false, and the
@@ -178,6 +180,17 @@ function startServers() {
 	// handshake and aborting the whole node's startup. Hold a ref for the entire pre-ready
 	// window; the SHUTDOWN path unrefs it for graceful exit as before.
 	parentPort?.ref();
+	// The ref also means a load that HANGS (or a sync throw swallowed by the uncaughtException
+	// handler) would park this worker forever where it previously drained and failed loudly, so
+	// bound the pre-ready window. Deliberately far above restartWorkers' 60s replacement-worker
+	// backstop: timing out here aborts the whole node's startup, so a slow-but-succeeding boot
+	// must never be killed.
+	if (parentPort && !startupDeadline) {
+		startupDeadline = setTimeout(() => {
+			harperLogger.fatal(`Worker ${threadId} did not become ready within ${STARTUP_READY_TIMEOUT_MS}ms`);
+			realExit(1);
+		}, STARTUP_READY_TIMEOUT_MS);
+	}
 	const rootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 	if (rootPath) {
 		try {
@@ -193,8 +206,7 @@ function startServers() {
 			// parked forever (and main awaiting workersReady) instead of failing startup fast.
 			// Main-as-worker (no parentPort) propagates to its caller's own exit path instead.
 			if (!parentPort) throw err;
-			console.error(`Failed to load components on worker ${threadId}`, err);
-			harperLogger.fatal('Failed to load root components during worker startup', err);
+			harperLogger.fatal(`Failed to load root components on worker ${threadId}`, harperLogger.errorForLog(err));
 			realExit(1);
 		})
 		.then(() => {
@@ -252,6 +264,7 @@ function startServers() {
 							console.error('Error displaying start-up log', err);
 						}
 					}
+					clearTimeout(startupDeadline);
 					parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 				})
 				.catch((err) => {

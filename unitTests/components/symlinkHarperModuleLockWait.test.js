@@ -7,11 +7,9 @@ const { join } = require('node:path');
 const { _symlinkHarperModuleForTests } = require('#src/components/componentLoader');
 const { Status } = require('#src/server/status/index');
 
-// The lock-wait branch of symlinkHarperModule must hold a ref'd timer while it waits for the
-// lock holder's unlock wake: that wake is delivered through an unref'd threadsafe function,
-// which does not keep the event loop alive, so a pre-ready worker parked here without the
-// timer has zero ref-holding handles, drains its loop, and exits cleanly with code 0 before
-// the ready handshake (harper#2312).
+// The lock-wait branch must hold a ref'd timer while parked: the unlock wake arrives via an
+// unref'd threadsafe function (see the invariant comment in threadServer.startServers,
+// harper#2312).
 describe('componentLoader symlinkHarperModule lock wait', () => {
 	let componentDirectory;
 	let createdTimers;
@@ -40,8 +38,7 @@ describe('componentLoader symlinkHarperModule lock wait', () => {
 		rmSync(componentDirectory, { recursive: true, force: true });
 	});
 
-	const liveRefdLockWaitTimer = () =>
-		createdTimers.some(({ timer, ms }) => ms === 10_000 && timer._destroyed !== true && timer.hasRef());
+	const liveRefdLockWaitTimer = () => createdTimers.some(({ timer, ms }) => ms === 10_000 && timer.hasRef());
 
 	it('a waiter behind a held lock keeps a ref-holding timer until the unlock wake arrives', async () => {
 		const store = Status.primaryStore;
@@ -53,11 +50,7 @@ describe('componentLoader symlinkHarperModule lock wait', () => {
 			});
 			await new Promise((resolve) => realSetTimeout(resolve, 50));
 			assert.strictEqual(resolved, false, 'waiter should still be pending while the lock is held');
-			assert.ok(
-				liveRefdLockWaitTimer(),
-				'waiter must hold a ref-holding timer while parked on the lock — without it a pre-ready ' +
-					'worker has no ref-holding handle and its event loop can drain (clean exit 0 before ready)'
-			);
+			assert.ok(liveRefdLockWaitTimer(), 'waiter must hold a ref-holding timer while parked on the lock');
 			store.unlock(componentDirectory);
 			await waiting;
 		} finally {

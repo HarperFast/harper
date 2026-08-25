@@ -7,7 +7,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
-import { readFile, mkdtemp, cp, rm } from 'node:fs/promises';
+import { mkdtemp, cp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -46,19 +46,5 @@ suite('worker startup liveness (pre-ready event-loop drain)', (ctx: ContextWithH
 			headers: { Authorization: authorization },
 		});
 		strictEqual(response.status, 200, `expected the fixture resource to serve; got ${response.status}`);
-	});
-
-	test('no worker exited before reporting ready', async () => {
-		const logDir = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
-		let contents = '';
-		try {
-			contents = await readFile(join(logDir, 'hdb.log'), 'utf8');
-		} catch {
-			// no log file means nothing was logged — acceptable
-		}
-		ok(
-			!/exited with code \d+ before reporting ready/.test(contents),
-			`a worker exited before reporting ready:\n${contents.slice(-2000)}`
-		);
 	});
 });

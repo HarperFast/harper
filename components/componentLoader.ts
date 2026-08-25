@@ -397,12 +397,11 @@ function symlinkHarperModule(componentDirectory: string) {
 		const lockAcquired = store.tryLock(componentDirectory, onUnlocked);
 
 		if (!lockAcquired) {
-			// The lock holder performs the fixup; just wait for its unlock. The timer both bounds
-			// the wait if the holder dies without unlocking and — because the unlock wake arrives
-			// via an unref'd threadsafe function — keeps this pre-ready worker's event loop alive
-			// so it cannot drain and cleanly exit (code 0) before the ready handshake. Timing out
-			// resolves rather than rejects: the fixup is idempotent maintenance another thread
-			// already ran or the next load re-runs, never worth failing the component load over.
+			// The lock holder performs the fixup; wait for its unlock. The timer bounds the wait if
+			// the holder dies without unlocking, and must stay ref'd: the unlock wake arrives via an
+			// unref'd threadsafe function (see the invariant comment in threadServer.startServers).
+			// Timing out resolves rather than rejects: the fixup is idempotent maintenance, never
+			// worth failing the component load over.
 			timeout = setTimeout(() => {
 				harperLogger.warn(
 					`Timed out waiting for another thread to verify the harper module link in ${componentDirectory}; continuing with the link in its current state`
@@ -452,7 +451,6 @@ function symlinkHarperModule(componentDirectory: string) {
 	});
 }
 
-// Test-only: exercises the lock-wait branch directly (unitTests/components/symlinkHarperModuleLockWait.test.js).
 export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
 /**
