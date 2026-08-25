@@ -937,18 +937,69 @@ async function identifyRollbackPlaceholder(
 	return undefined;
 }
 
+/**
+ * Create a hidden staging directory and confirm it is the one we created: a real directory rather than a
+ * symlink or junction substituted underneath us, restricted to the owner. Re-checked at every use rather
+ * than once per deploy, because the gap between checking and writing is the exploitable part.
+ */
+async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
+	await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+	const stagingStat = await lstat(stagingDir);
+	if (!stagingStat.isDirectory() || stagingStat.isSymbolicLink()) {
+		throw new Error(`Component deploy staging path is not a directory: ${stagingDir}`);
+	}
+	if (process.platform !== 'win32' && (stagingStat.mode & 0o777) !== 0o700) {
+		await chmod(stagingDir, 0o700).catch((error) =>
+			logger.warn(`Could not restrict component deploy staging permissions for ${stagingDir}:`, errorForLog(error))
+		);
+	}
+}
+
 async function ensureExtractionStagingDirectory(asideStagingDir: string): Promise<void> {
 	for (const stagingDir of [dirname(asideStagingDir), asideStagingDir]) {
-		await mkdir(stagingDir, { recursive: true, mode: 0o700 });
-		const stagingStat = await lstat(stagingDir);
-		if (!stagingStat.isDirectory() || stagingStat.isSymbolicLink()) {
-			throw new Error(`Component deploy staging path is not a directory: ${stagingDir}`);
+		await ensureSecureStagingDirectory(stagingDir);
+	}
+}
+
+/**
+ * Build a deploy candidate at `.deploy-staging/<deploymentId>/<component>`, leaving the live tree
+ * completely untouched — this is what lets the previous version keep serving through the clone, the
+ * extraction and the dependency install.
+ *
+ * Failure needs no compensation, which is the whole point: nothing about the live component was modified,
+ * so the abandoned candidate is simply removed and the error propagates.
+ */
+export async function buildCandidateApplication(application: Application, deploymentId: string): Promise<string> {
+	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
+	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
+	await ensureSecureStagingDirectory(dirname(deploymentDirPath));
+	await ensureSecureStagingDirectory(deploymentDirPath);
+	try {
+		// A candidate directory left by an earlier attempt on this same id would otherwise be extracted
+		// into rather than replaced.
+		await rm(candidateDirPath, { recursive: true, force: true });
+		const { tarball, tarballPath, shouldDeleteTarball } = await resolveApplicationTarball(application);
+		try {
+			await extractTarballInto(tarball, candidateDirPath, deploymentDirPath);
+		} finally {
+			if (!tarball.destroyed) tarball.destroy();
+			if (shouldDeleteTarball && tarballPath) {
+				await rm(tarballPath, { force: true }).catch((error) =>
+					application.logger.warn(`Failed to remove temporary package ${tarballPath}:`, error)
+				);
+			}
 		}
-		if (process.platform !== 'win32' && (stagingStat.mode & 0o777) !== 0o700) {
-			await chmod(stagingDir, 0o700).catch((error) =>
-				logger.warn(`Could not restrict component deploy staging permissions for ${stagingDir}:`, errorForLog(error))
-			);
-		}
+		await installApplication(application, candidateDirPath);
+		return candidateDirPath;
+	} catch (error) {
+		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(
+			(cleanupError) =>
+				application.logger.warn(
+					`Failed to remove the abandoned deploy candidate at ${deploymentDirPath}:`,
+					cleanupError
+				)
+		);
+		throw error;
 	}
 }
 
