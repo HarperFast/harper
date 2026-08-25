@@ -214,12 +214,6 @@ jobs:
       matrix:
         release: ${{ fromJson(needs.plan.outputs.targets) }}
 
-    # Two PRs milestoned for the same line would otherwise both ff-push it and
-    # the loser's push is rejected. Serialize on the release branch, not the PR.
-    concurrency:
-      group: release-push-${{ matrix.release }}
-      cancel-in-progress: false
-
     env:
       RELEASE_BRANCH: ${{ matrix.release }}
       STICKY_MARKER: '<!-- release-cherry-pick:${{ matrix.release }} -->'
@@ -363,7 +357,7 @@ jobs:
           done
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$CONFLICTS" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
+          if [ -z "$CONFLICTS" ] && [ -z "$EXCLUDED_MERGES" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
             echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
             echo "no_op=true" >> "$GITHUB_OUTPUT"
             # An earlier run may have pushed a branch that is now redundant.
@@ -394,14 +388,33 @@ jobs:
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
 
-          # If the release branch moved between the pick and the push, the
-          # fast-forward no longer applies; re-fetch and rebuild rather than
-          # failing the step with no comment on the PR.
+          # Another PR milestoned for this line can land between the pick and
+          # the push, and a branch built on the old tip can never fast-forward
+          # onto the new one. Rebuild the picks onto the current tip and retry.
+          # (A `concurrency` group would not fix this: GitHub keeps only one
+          # pending job per group and cancels the rest, which loses a landing
+          # silently — worse than a loud retry.)
+          PICK_FLAGS="${{ steps.pick.outputs.pick_flags }}"
+          PICK_SHAS="${{ steps.pick.outputs.pick_shas }}"
           PUSHED=false
-          for _ in 1 2 3; do
+          REBUILD_CONFLICT=false
+          for ATTEMPT in 1 2 3; do
             git fetch origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}"
+            if [ "$ATTEMPT" -gt 1 ]; then
+              git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
+              for SHA in $PICK_SHAS; do
+                # shellcheck disable=SC2086
+                if ! git cherry-pick $PICK_FLAGS "$SHA"; then
+                  git cherry-pick --abort 2>/dev/null || true
+                  REBUILD_CONFLICT=true
+                  break
+                fi
+              done
+              [ "$REBUILD_CONFLICT" = true ] && break
+              git push --force origin "$BRANCH"
+            fi
             git checkout -B "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
-            if ! git merge --ff-only "$BRANCH"; then break; fi
+            if ! git merge --ff-only "$BRANCH"; then continue; fi
             if git push origin "$RELEASE_BRANCH"; then PUSHED=true; break; fi
           done
 
@@ -410,8 +423,13 @@ jobs:
             BODY=$(printf '%s\n## Release cherry-pick `%s`: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
           else
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: NOT landed\n\n`%s` moved while this pick was in flight and the branch [`%s`](../tree/%s) no longer fast-forwards onto it.\n\nRe-run the cherry-pick workflow for this PR (`workflow_dispatch`, `pr_number=%s`) to rebuild it against the current `%s`.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
+            if [ "$REBUILD_CONFLICT" = true ]; then
+              WHY=$(printf 'another change landed on `%s` first and these commits no longer apply cleanly on top of it' "$RELEASE_BRANCH")
+            else
+              WHY=$(printf '`%s` kept moving while this pick was in flight' "$RELEASE_BRANCH")
+            fi
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: NOT landed\n\n`%s` was **not** updated — %s.\n\nRe-run the cherry-pick workflow for this PR (`workflow_dispatch`, `pr_number=%s`) to rebuild [`%s`](../tree/%s) against the current `%s`.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$WHY" "$PR_NUMBER" "$BRANCH" "$BRANCH" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 1
           fi
@@ -452,10 +470,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IS_MERGED: ${{ steps.pick.outputs.is_merged }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
+          EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
           CONFLICTS="${{ steps.pick.outputs.conflicts }}"
+
+          # A branch can be both conflicted AND incomplete. Resolving the
+          # markers does not restore a resolution that lived only in a merge
+          # commit, so say so wherever this branch is described.
+          MERGE_WARN=""
+          if [ -n "$EXCLUDED_MERGES" ]; then
+            MERGE_WARN=$(printf '\n\n> Additionally, merge commit(s) `%s` could not be replayed. If any of them resolved a conflict, that resolution is **not** on this branch — resolving the markers below will not restore it.' "$EXCLUDED_MERGES")
+          fi
 
           if [ "$IS_MERGED" = "true" ]; then
             # PR already merged — open a release-branch PR so the conflict can
@@ -467,14 +494,14 @@ jobs:
                 --base "$RELEASE_BRANCH" \
                 --head "$BRANCH" \
                 --title "cherry-pick: ${PR_TITLE} (conflicts → ${RELEASE_BRANCH})" \
-                --body "$(printf 'Cherry-pick of PR #%s onto \`%s\` produced conflicts on commit(s): \`%s\`.\n\nResolve the conflict markers on branch \`%s\` and merge this PR.\n\n@claude please review branch \`%s\` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto \`%s\`. Post the suggested patch as a comment here — do not push.\n' \
-                  "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")")
+                --body "$(printf 'Cherry-pick of PR #%s onto \`%s\` produced conflicts on commit(s): \`%s\`.%s\n\nResolve the conflict markers on branch \`%s\` and merge this PR.\n\n@claude please review branch \`%s\` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto \`%s\`. Post the suggested patch as a comment here — do not push.\n' \
+                  "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")")
             fi
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
           else
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
           fi
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
