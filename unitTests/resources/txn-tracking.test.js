@@ -793,10 +793,8 @@ describe('Disconnect abort', () => {
 				await delay(10);
 				await DisconnectResource.put(504, { name: 'too late' }, context); // must throw, not commit
 			}),
-			// RocksDB rejects with requestAbortedError ("disconnected"). LMDB's own overridden
-			// addWrite/commit don't consult the `disconnected` poison flag, but they already reject on
-			// `open === CLOSED` (which txnForContext does propagate to a chain link created after the
-			// poisoning) with their own pre-existing, differently-worded error — both block the write.
+			// Both engines' addWrite consults `disconnected`; LMDB can also reach its own pre-existing
+			// `open === CLOSED` rejection first, depending on which link the write lands on.
 			/disconnected|no longer open/
 		);
 		assert.ok((await DisconnectResource.get(502)) == null, 'the poisoned first write must not commit either');
@@ -974,6 +972,80 @@ describe('Disconnect abort', () => {
 		}
 		assert.ok(seen.length > 1, 'the iterator must resume after the transaction settled');
 		assert.equal(getReadTransaction(context.transaction), undefined, 'finishing it releases the native handle');
+	});
+
+	// The point-of-no-return spare must not be permanent. commitsInFlight is only decremented when the
+	// attempt settles, so a commit that never settles would otherwise make every later poison — timeout
+	// and disconnect alike — a no-op, and the write intents it holds would never come back. That is
+	// harper#2001's wedge reached from the other side, so the monitor bounds the deferral.
+	it('escalates to a real abort when a poisoned commit never settles', async function () {
+		setDisconnectExpiration(50);
+		try {
+			const ac = new AbortController();
+			const context = { signal: ac.signal };
+			await assert.rejects(
+				transaction(context, async (txn) => {
+					await DisconnectResource.put(570, { name: 'never settles' }, context);
+					// A pre-commit completion that never resolves — the shape a hung source `before` hook
+					// takes on a caching-table write.
+					txn.stageCompletion(new Promise(() => {}));
+					// On LMDB the write (and the monitor registration) lives one link into the chain.
+					const { txn: writeLink } = getReadTransaction(context.transaction);
+					txn.commit().catch(() => {});
+					ac.abort();
+					assert.equal(txn.disconnected, true, 'the disconnect poisons even though it cannot abort yet');
+					await waitFor(() => writeLink.timedOut === true, {
+						message: 'the monitor must stop deferring and abort a commit that never settles',
+					});
+					await waitFor(() => !getReadTransaction(context.transaction), {
+						message: 'the escalated abort must release the write intents',
+					});
+					throw new Error('handler done');
+				}),
+				/handler done/
+			);
+			assert.ok((await DisconnectResource.get(570)) == null, 'the wedged write must not commit');
+		} finally {
+			setDisconnectExpiration(30000);
+		}
+	});
+
+	// The head marks itself CLOSED and detaches its handle as soon as its own commit starts, while a
+	// second database's link is still holding uncommitted writes for the cascade. Without the deferral
+	// the monitor reads that as "nothing left to supervise" and releases the chained link's handle,
+	// dropping its writes even though the head's commit succeeds.
+	it('does not unsupervise a multi-store chain while the head commit is in flight', async function () {
+		if (isLMDB) return; // gating a native handle's commit; LMDB commits through the store's batch
+		const SecondDbResource = table({
+			table: 'DisconnectSecondDbTable',
+			database: 'test2',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		setDisconnectExpiration(50);
+		try {
+			const context = {};
+			await transaction(context, async (txn) => {
+				await DisconnectResource.put(580, { name: 'head write' }, context);
+				await SecondDbResource.put(580, { name: 'chained write' }, context);
+				const nativeTransaction = context.transaction.transaction;
+				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+				let releaseNativeCommit;
+				const gate = new Promise((resolve) => (releaseNativeCommit = resolve));
+				nativeTransaction.commit = () => gate.then(nativeCommit);
+				const committing = txn.commit({ doneWriting: true });
+				await delay(180); // several monitor ticks while the head's commit is outstanding
+				releaseNativeCommit();
+				await committing;
+			});
+			assert.equal((await DisconnectResource.get(580))?.name, 'head write');
+			assert.equal(
+				(await SecondDbResource.get(580))?.name,
+				'chained write',
+				"the chained store's writes must survive a head commit that outlives a monitor tick"
+			);
+		} finally {
+			setDisconnectExpiration(30000);
+		}
 	});
 
 	// The reviewer's probe on this PR, kept as a regression: a write plus an undrained iterator, left

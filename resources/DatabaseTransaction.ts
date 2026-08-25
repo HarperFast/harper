@@ -462,6 +462,11 @@ export class DatabaseTransaction implements Transaction {
 	// chain, and cleared once that attempt settles. It is what lets the head's cascade into `next`
 	// finish, without also excusing a link the monitor poisoned BEFORE any commit started.
 	declare poisonedMidCommit?: boolean;
+	// Root-only: consecutive monitor ticks that found this chain past its open-transaction limit with a
+	// commit still in flight. Bounded by MAX_DEFERRED_POISON_TICKS so a commit that never settles cannot
+	// make the point-of-no-return spare permanent — that would leave write intents held forever, which is
+	// the wedge harper#2001 is about.
+	declare deferredPoisonTicks?: number;
 	// Root-only: a write-bearing commit attempt is in flight on this chain. See isCommittingWrites().
 	declare committingWrites?: boolean;
 
@@ -563,6 +568,10 @@ export class DatabaseTransaction implements Transaction {
 	 * reclamation path is an onDone() an abandoned request leaves nobody to call.
 	 */
 	registerReadIterator(iterator: OwnedReadIterator): void {
+		// A transaction with no handle of its own (an ImmediateTransaction, which a context reuses for
+		// every search it makes) has nothing to reclaim and is in no monitor's registry, so an entry here
+		// would never be swept — it would just pin every partially-consumed result set on that context.
+		if (!this.transaction && !this.readTxn) return;
 		(this.ownedReadIterators ??= new Set()).add(iterator);
 	}
 
@@ -977,7 +986,7 @@ export class DatabaseTransaction implements Transaction {
 	 * outcome. Asked of the whole chain, not just this link: the head commits its own writes and then
 	 * cascades into `next`, so that cascade is a continuation of one logical commit, not a fresh one.
 	 */
-	private isChainCommitting(): boolean {
+	isChainCommitting(): boolean {
 		for (let txn: DatabaseTransaction = this.root ?? this; txn; txn = txn.next) {
 			if (txn.commitsInFlight) return true;
 		}
@@ -1035,6 +1044,7 @@ export class DatabaseTransaction implements Transaction {
 		// during the finished attempt must reject it like any other poisoned commit.
 		const root = this.root ?? this;
 		root.committingWrites = false;
+		root.deferredPoisonTicks = 0;
 		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) txn.poisonedMidCommit = false;
 	}
 
@@ -1584,8 +1594,8 @@ export class DatabaseTransaction implements Transaction {
 	 * torn-out handle into a success the caller cannot trust. Accepted consequence: a write whose commit
 	 * had already started can land after the client is gone.
 	 */
-	abortAndPoison(reason: 'timedOut' | 'disconnected'): void {
-		const committing = this.isChainCommitting();
+	abortAndPoison(reason: 'timedOut' | 'disconnected', force?: boolean): void {
+		const committing = !force && this.isChainCommitting();
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			txn[reason] = true;
 			if (committing) txn.poisonedMidCommit = true;
@@ -1602,9 +1612,14 @@ export class DatabaseTransaction implements Transaction {
 			}
 		}
 	}
-	/** The long-transaction monitor calls this when a write-bearing transaction stays open too long. */
-	abortDueToTimeout(): void {
-		this.abortAndPoison('timedOut');
+	/**
+	 * The long-transaction monitor calls this when a write-bearing transaction stays open too long.
+	 * `force` overrides the in-flight-commit spare: the monitor uses it once a commit has failed to
+	 * settle for MAX_DEFERRED_POISON_TICKS, because holding write intents forever is worse than aborting
+	 * under a commit that is evidently not coming back.
+	 */
+	abortDueToTimeout(force?: boolean): void {
+		this.abortAndPoison('timedOut', force);
 	}
 	/** resources/transaction.ts calls this when the request's client disconnects mid-handler (harper#2001). */
 	abortDueToDisconnect(): void {
@@ -1763,6 +1778,45 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 	return false;
 }
 
+/**
+ * A commit that entered its attempt owns the outcome (see abortAndPoison), so the monitor defers rather
+ * than aborting under it — but only for a bounded number of ticks. Past that the commit is not coming
+ * back, and its write intents are worth more than its outcome.
+ */
+const MAX_DEFERRED_POISON_TICKS = 2;
+
+/**
+ * True when this tick must leave `txn` alone because a commit attempt on its chain has not reached a
+ * native outcome. Also covers the head that detached its handle for an in-flight commit: without this,
+ * the CLOSED/`!transaction` arm below reads that as "nothing left to supervise" and releases a chained
+ * link's still-uncommitted handle.
+ */
+function deferForCommitInFlight(txn: DatabaseTransaction, url: string | undefined): boolean {
+	if (!txn.isChainCommitting()) return false;
+	const root = txn.root ?? txn;
+	root.deferredPoisonTicks = (root.deferredPoisonTicks ?? 0) + 1;
+	if (root.deferredPoisonTicks > MAX_DEFERRED_POISON_TICKS) {
+		harperLogger.error(
+			`Transaction exceeded the open-transaction limit with a commit that has not settled after ${MAX_DEFERRED_POISON_TICKS} further checks; aborting it to release its write intents, from table: ${
+				(txn.db as any)?.name + (url ? ' path: ' + url : '')
+			}`
+		);
+		try {
+			txn.abortDueToTimeout(true);
+		} catch (error) {
+			harperLogger.debug?.('Error aborting a transaction whose commit never settled', error);
+		}
+		return true;
+	}
+	harperLogger.warn?.(
+		`Transaction exceeded the open-transaction limit while its commit is still in flight; deferring, from table: ${
+			(txn.db as any)?.name + (url ? ' path: ' + url : '')
+		}`
+	);
+	txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
+	return true;
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
@@ -1779,6 +1833,7 @@ function startMonitoringTxns() {
 			if (txn.writeTimeout > 0) txn.writeTimeout -= txnExpiration;
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
+				if (deferForCommitInFlight(txn, url)) return;
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
 					if (!txn.transaction) {
 						// Nothing left to supervise, and this is the registry's only unconditional exit:

@@ -399,11 +399,42 @@ export class ImmediateTransaction extends LMDBTransaction {
 let txnExpiration = 30000;
 let timer;
 
+/** See the RocksDB monitor's constant of the same name (resources/DatabaseTransaction.ts). */
+const MAX_DEFERRED_POISON_TICKS = 2;
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
+				// A commit that entered its attempt owns the outcome (DatabaseTransaction.abortAndPoison), so
+				// defer rather than re-entering commit() under it. Bounded: LMDB leaves `open` OPEN for the
+				// whole write commit, so without the escalation a commit that never settles would hold its
+				// write intents forever. The counter lives on the chain root and resets when a commit settles.
+				if (txn.isChainCommitting()) {
+					const root = txn.root ?? txn;
+					root.deferredPoisonTicks = (root.deferredPoisonTicks ?? 0) + 1;
+					if (root.deferredPoisonTicks > MAX_DEFERRED_POISON_TICKS) {
+						harperLogger.error(
+							`Transaction exceeded the open-transaction limit with a commit that has not settled after ${MAX_DEFERRED_POISON_TICKS} further checks; aborting it to release its write intents, from table: ${
+								(txn.db as any)?.name + (url ? ' path: ' + url : '')
+							}`
+						);
+						try {
+							txn.abortDueToTimeout(true);
+						} catch (error) {
+							harperLogger.debug?.('Error aborting a transaction whose commit never settled', error);
+						}
+					} else {
+						harperLogger.warn?.(
+							`Transaction exceeded the open-transaction limit while its commit is still in flight; deferring, from table: ${
+								(txn.db as any)?.name + (url ? ' path: ' + url : '')
+							}`
+						);
+						txn.timeout = txnExpiration;
+					}
+					continue;
+				}
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
 					// Only reachable through abort(true), which retained the snapshot for read iterators
 					// that own it. Nothing else here can reclaim it: the branches below would re-enter

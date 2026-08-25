@@ -149,16 +149,21 @@ export function transaction<T>(
 		abortAndThrow(error);
 	}
 	function abortAndThrow(error): never {
-		try {
-			// "retain only while read iterators still own the handle", the same rule
-			// abortAfterCommitError uses — so the two layers cannot undo each other one frame apart.
-			transaction.abort(true);
-		} catch (abortError) {
-			harperLogger.debug?.('aborting transaction after an error', abortError);
+		// A commit attempt that has not reached its native outcome owns its own teardown — a handler that
+		// fired txn.commit() without awaiting it can get here while it is still running, and aborting
+		// would clear the writes it is committing and abort the handle it is committing them through.
+		if (!transaction.isChainCommitting()) {
+			try {
+				// "retain only while read iterators still own the handle", the same rule
+				// abortAfterCommitError uses — so the two layers cannot undo each other one frame apart.
+				transaction.abort(true);
+			} catch (abortError) {
+				harperLogger.debug?.('aborting transaction after an error', abortError);
+			}
+			// Nothing was returned, so no live response can own an iterator opened inside this call: hand
+			// their read references back now, or the retained handle waits on an onDone() nobody will call.
+			transaction.closeOwnedReadIterators();
 		}
-		// Nothing was returned, so no live response can own an iterator opened inside this call: hand
-		// their read references back now, or the retained handle waits on an onDone() nobody will call.
-		transaction.closeOwnedReadIterators();
 		throw error;
 	}
 }
