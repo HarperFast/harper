@@ -1,8 +1,9 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { forComponent } = require('#src/utility/logging/harper_logger');
 
 // A cluster-origin definition (replication's DB_SCHEMA handshake / replicated define_schema) is a
 // snapshot of a peer's eventually-consistent view — it can be captured mid-create or applied by a
@@ -118,6 +119,90 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			'Int',
 			'a cluster-origin call rewrote a newer durable descriptor from its stale snapshot'
 		);
+	});
+
+	it('logs every peer difference it discards, not only a type conflict', async () => {
+		const storageLogger = forComponent('storage');
+		const originalWarn = storageLogger.warn;
+		const warnings = [];
+		storageLogger.warn = (...args) => warnings.push(args);
+		try {
+			table({
+				table: 'ClusterMergeDiscard',
+				database: 'test',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'label', type: 'String' },
+				],
+			});
+			table({
+				table: 'ClusterMergeDiscard',
+				database: 'test',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'label', type: 'String', indexed: true, nullable: false },
+				],
+				origin: 'cluster',
+			});
+		} finally {
+			storageLogger.warn = originalWarn;
+		}
+		const discardWarnings = warnings
+			.map(([message]) => message)
+			.filter((message) => typeof message === 'string' && message.includes('ClusterMergeDiscard.label'));
+		assert.strictEqual(
+			discardWarnings.length,
+			1,
+			`a discarded peer redefinition must be logged: ${JSON.stringify(warnings)}`
+		);
+		assert.match(discardWarnings[0], /indexed/, 'the warning must name the discarded `indexed` difference');
+		assert.match(discardWarnings[0], /nullable/, 'the warning must name the discarded `nullable` difference');
+	});
+
+	it('recovers an abandoned index build even though the peer definition itself is not applied', async () => {
+		const attributes = [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'tag', type: 'String', indexed: true },
+		];
+		const Indexed = table({ table: 'ClusterMergeRecovery', database: 'test', schemaDefined: true, attributes });
+		let lastPut;
+		for (let i = 0; i < 10; i++) lastPut = Indexed.put({ id: 'k-' + i, tag: i % 2 ? 'odd' : 'even' });
+		await lastPut;
+		if (Indexed.indexingOperation) await Indexed.indexingOperation;
+		const completedBuild = Indexed.indexingOperation;
+
+		// A build abandoned by a dead process: the durable descriptor still carries its PID, so the
+		// index is parked with isIndexing pinned on until some caller re-triggers the backfill.
+		const key = 'ClusterMergeRecovery/tag';
+		const abandoned = { ...Indexed.dbisDB.getSync(key), indexingPID: 999999 };
+		const written = Indexed.dbisDB.put(key, abandoned);
+		if (written?.then) await written;
+		resetDatabases();
+
+		const Recovered = table({
+			table: 'ClusterMergeRecovery',
+			database: 'test',
+			schemaDefined: true,
+			attributes: attributes.map((attribute) => ({ ...attribute })),
+			origin: 'cluster',
+		});
+		assert.notStrictEqual(
+			Recovered.indexingOperation,
+			completedBuild,
+			'a cluster-origin call must still recover an index build abandoned by a dead process'
+		);
+		await Recovered.indexingOperation;
+		assert.strictEqual(
+			Recovered.indices.tag.isIndexing,
+			false,
+			'the recovered index must clear isIndexing; otherwise every query on it fails with IndexRebuildingError'
+		);
+		const odds = [];
+		for await (const record of Recovered.search({ conditions: [{ attribute: 'tag', value: 'odd' }] }))
+			odds.push(record);
+		assert.strictEqual(odds.length, 5, 'the recovered backfill must index every record');
 	});
 
 	it('local schema authoring still removes attributes it no longer declares', async () => {

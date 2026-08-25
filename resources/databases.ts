@@ -354,6 +354,10 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
+// The attribute definition fields a cluster-origin merge compares. The merge itself is name-only, so
+// a peer value that differs from the locally declared one is discarded; every one of these can change
+// query behavior (above all `indexed`), which is why the discard is logged rather than silent.
+const PEER_REDEFINABLE_FIELDS = ['type', 'indexed', 'nullable', 'enumerable', 'elements', 'properties', 'embed'];
 // How many times the schema load will try to finish a tombstoned drop before
 // giving up for the rest of this process's lifetime. A drop that fails once
 // almost always fails identically forever - the usual cause is a RocksDB
@@ -1813,10 +1817,25 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				const merged = Table.attributes.slice();
 				for (const attribute of attributes) {
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
-					if (!existing) merged.push(attribute);
-					else if (attribute.type && existing.type && existing.type !== attribute.type)
+					if (!existing) {
+						merged.push(attribute);
+						continue;
+					}
+					// Report every discarded difference, not just a type conflict: two nodes that receive the
+					// same peer definitions in a different order keep different index sets (a dropped `indexed`
+					// is the divergence that costs a query its index), and this warn is the only signal of it.
+					const discarded = PEER_REDEFINABLE_FIELDS.filter(
+						(field) =>
+							attribute[field] !== undefined && JSON.stringify(attribute[field]) !== JSON.stringify(existing[field])
+					);
+					if (discarded.length > 0)
 						logger.warn(
-							`Ignoring peer redefinition of ${databaseName}.${tableName}.${attribute.name} (local type '${existing.type}', peer type '${attribute.type}'); the local schema is authoritative`
+							`Ignoring peer redefinition of ${databaseName}.${tableName}.${attribute.name} (${discarded
+								.map(
+									(field) =>
+										`${field}: local ${JSON.stringify(existing[field])}, peer ${JSON.stringify(attribute[field])}`
+								)
+								.join('; ')}); the local schema is authoritative`
 						);
 				}
 				attributes = merged;
@@ -2061,14 +2080,37 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// Cluster-origin definitions may only create missing descriptors — this worker's snapshot
 				// can lag a newer durable declaration, and rewriting (or reindexing from) it would revert
 				// that declaration. Still register the existing index for this Table instance.
-				if (attribute.indexed) {
-					const dbi = openIndex(dbiKey, rootStore, attribute);
-					if (attributeDescriptor.indexingPID) dbi.isIndexing = true;
-					if (attributeDescriptor.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
-					dbi.indexNulls = attribute.indexNulls;
-					indices[attribute.name] = dbi;
+				// An abandoned index build is the one thing this path must still act on: its three signals
+				// are read from the durable descriptor rather than from the caller's snapshot, and skipping
+				// them leaves `isIndexing` pinned on below with nothing left to clear it, so every query on
+				// the attribute fails with IndexRebuildingError for the life of the worker.
+				const abandonedIndexBuild =
+					attribute.indexed &&
+					(attributeDescriptor.indexingFailed ||
+						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
+						attributeDescriptor.restartNumber < (workerData?.restartNumber ?? manageThreads.restartNumber));
+				if (!abandonedIndexBuild) {
+					if (attribute.indexed) {
+						const dbi = openIndex(dbiKey, rootStore, attribute);
+						// openIndex resolved indexFormat for a versioned-capable index; persist it when the
+						// descriptor predates the field (a field this descriptor lacks, not a rewrite of one it
+						// has). Without it an empty index resolves 'versioned' here, writes versioned nodes, and
+						// re-derives 'legacy' on the next load — see indexFormatNeedsPersist below.
+						if (attribute.indexFormat != null && attributeDescriptor.indexFormat == null) {
+							exclusiveLock();
+							const durableDescriptor = attributesDbi.getSync(dbiKey);
+							if (durableDescriptor && durableDescriptor.indexFormat == null) {
+								hasChanges = true;
+								attributesDbi.put(dbiKey, { ...durableDescriptor, indexFormat: attribute.indexFormat });
+							}
+						}
+						if (attributeDescriptor.indexingPID) dbi.isIndexing = true;
+						if (attributeDescriptor.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
+						dbi.indexNulls = attribute.indexNulls;
+						indices[attribute.name] = dbi;
+					}
+					continue;
 				}
-				continue;
 			}
 
 			// note that non-indexed attributes do not need a dbi
