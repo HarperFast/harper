@@ -68,11 +68,17 @@ export function transaction<T>(
 	// exclusion the monitor already makes.
 	//
 	// No `signal.aborted` fast path: unlike the monitor (a fresh timer each tick), an AbortSignal stays
-	// aborted forever once fired, and the same signal can be shared by later transaction() calls on the
-	// same context (ALS inheritance, a spread-copied context) — including deliberate post-disconnect
-	// compensation work (a `finally` releasing a claim). Only a disconnect that happens WHILE this
-	// specific transaction is open should poison it; one that already happened before it was created
-	// should not.
+	// aborted forever once fired, and the same signal is shared by later transaction() calls on the same
+	// context (ALS inheritance, a spread-copied context). Only a disconnect that happens WHILE this
+	// specific transaction is open poisons it; one that already happened before it was created does not.
+	//
+	// That is NOT an escape hatch for post-disconnect compensation work, and the two call styles differ:
+	// abort() keeps the poisoned instance on the context (DatabaseTransaction.abort's releaseContext
+	// call), and Resource.ts's `transactional` joins a `disconnected` transaction deliberately, so
+	// `tables.Claims.delete(id)` in a `finally` throws requestAbortedError, while an explicit
+	// `transaction(context, () => tables.Claims.delete(id))` — which joins only an OPEN transaction —
+	// starts a fresh one and commits. Compensation work that must survive a disconnect has to run on a
+	// context of its own until there is an explicit opt-out (see DESIGN.md).
 	const signal = context.signal;
 	let onDisconnect: (() => void) | undefined;
 
@@ -142,10 +148,18 @@ export function transaction<T>(
 	}
 	function abortAndThrow(error): never {
 		try {
-			transaction.abort(transaction.timedOut || transaction.disconnected);
+			// `true` is "retain only while read iterators still own the native handle", not "always
+			// retain" — the same rule DatabaseTransaction.abortAfterCommitError applies, so the two layers
+			// can no longer undo each other's retention one frame apart.
+			transaction.abort(true);
 		} catch (abortError) {
 			harperLogger.debug?.('aborting transaction after an error', abortError);
 		}
+		// This call returned nothing to anyone, so no live response can still own an iterator opened
+		// inside it: hand back their read references now. Without this the retained handle has no
+		// reclamation path at all — the only thing that returns a reference is an onDone() nobody is
+		// left to call — and the read snapshot stays pinned until the monitor's backstop notices.
+		transaction.closeOwnedReadIterators();
 		throw error;
 	}
 }

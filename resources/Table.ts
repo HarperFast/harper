@@ -3658,8 +3658,13 @@ export function makeTable(options) {
 				);
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
+				txn.unregisterReadIterator(results);
 				txn.doneReadTxn();
 			};
+			// The transaction owns this reference until onDone returns it. Registering makes that
+			// ownership recoverable: if the request dies before anything consumes the results, the
+			// transaction can close them itself instead of leaving its read snapshot pinned forever.
+			txn.registerReadIterator(results);
 			results.selectApplied = true;
 			results.getColumns = getColumns;
 			return results;
