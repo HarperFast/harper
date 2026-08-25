@@ -354,10 +354,19 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-// The attribute definition fields a cluster-origin merge compares. The merge itself is name-only, so
-// a peer value that differs from the locally declared one is discarded; every one of these can change
-// query behavior (above all `indexed`), which is why the discard is logged rather than silent.
-const PEER_REDEFINABLE_FIELDS = ['type', 'indexed', 'nullable', 'enumerable', 'elements', 'properties', 'embed'];
+// Kept in step with the `commonChanged` comparison below (plus `indexed`): the fields that decide
+// whether a definition is a redefinition. A cluster-origin merge discards these rather than applying
+// them, so a difference is reported instead.
+const PEER_REDEFINABLE_FIELDS = [
+	'type',
+	'indexed',
+	'nullable',
+	'enumerable',
+	'version',
+	'elements',
+	'properties',
+	'embed',
+];
 // How many times the schema load will try to finish a tombstoned drop before
 // giving up for the rest of this process's lifetime. A drop that fails once
 // almost always fails identically forever - the usual cause is a RocksDB
@@ -1810,10 +1819,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			if (origin === 'cluster') {
-				// A peer-derived definition (DB_SCHEMA handshake, replicated define_schema) can be built
-				// from a mid-create or stale snapshot of the remote table, so it is additive-only: keep
-				// every locally-declared attribute and add any the peer has that we don't. Only local
-				// schema authoring (create_table, @table, defineTable) may remove or redefine attributes.
+				// A peer-derived definition is only a snapshot of the peer's view, so it is additive-only:
+				// see the additive-only section of DESIGN.md for the invariant and its costs.
 				const merged = Table.attributes.slice();
 				for (const attribute of attributes) {
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
@@ -1821,12 +1828,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						merged.push(attribute);
 						continue;
 					}
-					// Report every discarded difference, not just a type conflict: two nodes that receive the
-					// same peer definitions in a different order keep different index sets (a dropped `indexed`
-					// is the divergence that costs a query its index), and this warn is the only signal of it.
+					// Nodes that apply the same peer definitions in a different order keep different index sets,
+					// and this warn is the only signal of it. An absent field and an explicit falsy one mean the
+					// same thing, so only a difference either side actually declares is reported.
 					const discarded = PEER_REDEFINABLE_FIELDS.filter(
 						(field) =>
-							attribute[field] !== undefined && JSON.stringify(attribute[field]) !== JSON.stringify(existing[field])
+							(attribute[field] || existing[field]) &&
+							JSON.stringify(attribute[field]) !== JSON.stringify(existing[field])
 					);
 					if (discarded.length > 0)
 						logger.warn(
@@ -2001,9 +2009,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
-		// Removal reconciliation is reserved for local schema authoring: a cluster-origin caller's
-		// list can miss a descriptor another thread committed moments ago, and removing it here
-		// would permanently destroy that just-declared attribute (and its index).
+		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
+		// reconciliation is reserved for local schema authoring.
 		const reconcileRemovals = origin !== 'cluster';
 		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
 			if (value == null) continue;
@@ -2077,25 +2084,29 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 
 			if (origin === 'cluster' && attributeDescriptor) {
-				// Cluster-origin definitions may only create missing descriptors — this worker's snapshot
-				// can lag a newer durable declaration, and rewriting (or reindexing from) it would revert
-				// that declaration. Still register the existing index for this Table instance.
-				// An abandoned index build is the one thing this path must still act on: its three signals
-				// are read from the durable descriptor rather than from the caller's snapshot, and skipping
-				// them leaves `isIndexing` pinned on below with nothing left to clear it, so every query on
-				// the attribute fails with IndexRebuildingError for the life of the worker.
+				// Cluster-origin definitions may only create missing descriptors — this caller's snapshot can
+				// lag a newer durable declaration, and rewriting (or reindexing from) it would revert that
+				// declaration. The existing index still has to be registered for this Table instance.
 				const abandonedIndexBuild =
 					attribute.indexed &&
 					(attributeDescriptor.indexingFailed ||
 						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
 						attributeDescriptor.restartNumber < (workerData?.restartNumber ?? manageThreads.restartNumber));
-				if (!abandonedIndexBuild) {
+				if (abandonedIndexBuild) {
+					// Recovery is the exception, because skipping it leaves `isIndexing` pinned on with nothing
+					// left to clear it: every query on the attribute would fail with IndexRebuildingError for the
+					// life of the worker. Recovery re-persists the descriptor (here and again from runIndexing),
+					// so re-seed the live definition from disk first and rebuild the durable declaration rather
+					// than this caller's snapshot of it.
+					exclusiveLock();
+					Object.assign(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
+				} else {
 					if (attribute.indexed) {
 						const dbi = openIndex(dbiKey, rootStore, attribute);
-						// openIndex resolved indexFormat for a versioned-capable index; persist it when the
-						// descriptor predates the field (a field this descriptor lacks, not a rewrite of one it
-						// has). Without it an empty index resolves 'versioned' here, writes versioned nodes, and
-						// re-derives 'legacy' on the next load — see indexFormatNeedsPersist below.
+						// openIndex resolved indexFormat for a versioned-capable index. Persisting it here adds a
+						// field the descriptor lacks rather than rewriting one it has, and without it an empty
+						// index resolves 'versioned', writes versioned nodes, then re-derives 'legacy' on the next
+						// load — see indexFormatNeedsPersist below.
 						if (attribute.indexFormat != null && attributeDescriptor.indexFormat == null) {
 							exclusiveLock();
 							const durableDescriptor = attributesDbi.getSync(dbiKey);

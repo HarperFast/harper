@@ -1,14 +1,12 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, resetDatabases } = require('#src/resources/databases');
+const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 
-// A cluster-origin definition (replication's DB_SCHEMA handshake / replicated define_schema) is a
-// snapshot of a peer's eventually-consistent view — it can be captured mid-create or applied by a
-// worker whose thread-local map missed a concurrent local create — so table() must apply it
-// additively, never removing or redefining what the local schema declares.
+// Covers the additive-only invariant documented in DESIGN.md: a definition carrying origin 'cluster'
+// is a snapshot of a peer's eventually-consistent view, so it may add but never remove or redefine.
 describe('cluster-origin schema definitions are additive-only', () => {
 	before(() => {
 		setupTestDBPath();
@@ -142,7 +140,18 @@ describe('cluster-origin schema definitions are additive-only', () => {
 				schemaDefined: true,
 				attributes: [
 					{ name: 'id', type: 'ID', isPrimaryKey: true },
-					{ name: 'label', type: 'String', indexed: true, nullable: false },
+					{ name: 'label', type: 'String', indexed: true, nullable: true },
+				],
+				origin: 'cluster',
+			});
+			// an explicit falsy value against a local declaration that omits the field is not a difference
+			table({
+				table: 'ClusterMergeDiscard',
+				database: 'test',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'label', type: 'String', indexed: false },
 				],
 				origin: 'cluster',
 			});
@@ -173,13 +182,13 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		if (Indexed.indexingOperation) await Indexed.indexingOperation;
 		const completedBuild = Indexed.indexingOperation;
 
-		// A build abandoned by a dead process: the durable descriptor still carries its PID, so the
-		// index is parked with isIndexing pinned on until some caller re-triggers the backfill.
+		// A build abandoned by a dead process, on a descriptor another worker re-declared (nullable: false)
+		// after this worker's live list was loaded: the index is parked with isIndexing pinned on, and the
+		// recovery must rebuild the durable declaration rather than this caller's stale snapshot of it.
 		const key = 'ClusterMergeRecovery/tag';
-		const abandoned = { ...Indexed.dbisDB.getSync(key), indexingPID: 999999 };
+		const abandoned = { ...Indexed.dbisDB.getSync(key), nullable: false, indexingPID: 999999 };
 		const written = Indexed.dbisDB.put(key, abandoned);
 		if (written?.then) await written;
-		resetDatabases();
 
 		const Recovered = table({
 			table: 'ClusterMergeRecovery',
@@ -194,6 +203,12 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			'a cluster-origin call must still recover an index build abandoned by a dead process'
 		);
 		await Recovered.indexingOperation;
+		await catalogFlushed(Recovered);
+		assert.strictEqual(
+			Recovered.dbisDB.getSync(key).nullable,
+			false,
+			'recovery rewrote a newer durable declaration with the stale snapshot of the calling worker'
+		);
 		assert.strictEqual(
 			Recovered.indices.tag.isIndexing,
 			false,
