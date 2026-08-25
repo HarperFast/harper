@@ -256,6 +256,33 @@ describe('Writes after a mid-scope commit rejoin the scope', () => {
 		);
 	});
 
+	rocksOnly('aborts every store when an unowned commit fails', async function () {
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = A.primaryStore.store.db;
+		const context = { transaction: new DatabaseTransaction() };
+		await A.put('unowned-failure', { v: 1 }, context);
+		await Other.put('unowned-failure', { v: 1 }, context);
+		const root = context.transaction;
+		const chained = root.next;
+		let forcedFailures = 0;
+		try {
+			Transaction.prototype.commit = function (...args) {
+				if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+				forcedFailures++;
+				return Promise.reject(Object.assign(new Error('forced terminal failure'), { code: 'ERR_CORRUPTION' }));
+			};
+			await assert.rejects(root.commit({ doneWriting: true }), /forced terminal failure/);
+		} finally {
+			Transaction.prototype.commit = originalCommit;
+		}
+		assert.ok(forcedFailures > 0, 'premise: the first store’s native commit must have failed');
+		assert.equal(chained.open, TRANSACTION_STATE.CLOSED, 'the failed commit must abort its chained store');
+		assert.equal(chained.hasPendingWrites(), false, 'the chained store must discard its staged writes');
+		assert.equal(await A.get('unowned-failure'), undefined);
+		assert.equal(await Other.get('unowned-failure'), undefined);
+	});
+
 	it('does not resume a transaction with no owning scope', async function () {
 		const context = {};
 		await transaction(context, async () => {

@@ -1357,9 +1357,9 @@ export class DatabaseTransaction implements Transaction {
 		if (completions.length > 0) {
 			this.setCommitPhase(true);
 		}
-		return when(
-			completions.length > 0 ? Promise.all(completions) : null,
-			() => {
+		let commitResult: MaybePromise<CommitResolution>;
+		try {
+			commitResult = when(completions.length > 0 ? Promise.all(completions) : null, () => {
 				if (completions.length > 0) this.setCommitPhase(false);
 				// The transaction can be aborted underneath us while we are parked in the await above — by the
 				// monitor once the commit phase outlives its grace, or through the multi-store poison chain.
@@ -1671,9 +1671,8 @@ export class DatabaseTransaction implements Transaction {
 									harperLogger.debug?.('aborting transaction after failed commit', abortError);
 								}
 								// A terminal failure is just as final as a success — release the context's
-								// back-reference here too, or transaction.ts's onComplete() (which has no
-								// rejection handler of its own) would leave a long-lived context pinning this
-								// CLOSED wrapper forever.
+								// back-reference while handling the native transaction. performCommit's outer
+								// rejection handler then aborts the wrapper and its linked chain.
 								// A failed commit must never be followed by a resumed segment: this generation is
 								// finished and its durability is unknown, so ownership goes with it.
 								this.endScopeOwnership();
@@ -1752,12 +1751,17 @@ export class DatabaseTransaction implements Transaction {
 				}
 				this.completeMidScopeCommit(options);
 				return txnResolution;
-			},
-			(error) => {
+			});
+		} catch (error) {
+			this.setCommitPhase(false);
+			this.abortAfterCommitError(error);
+		}
+		if ((commitResult as Promise<CommitResolution>)?.then)
+			return (commitResult as Promise<CommitResolution>).catch((error) => {
 				this.setCommitPhase(false);
 				this.abortAfterCommitError(error);
-			}
-		);
+			});
+		return commitResult;
 	}
 	/**
 	 * A successful commit that is NOT the scope's final one leaves the scope still running and still
