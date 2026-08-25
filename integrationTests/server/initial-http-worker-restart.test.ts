@@ -1,3 +1,8 @@
+/**
+ * Verifies HTTP startup recovers when the initial primary worker exits before it reports ready
+ * (#1827, #2129): a replacement worker should still bring the slot to ready and pick up scheduler
+ * jobs, and the log should record that the crash happened before readiness, not after.
+ */
 import { after, before, suite, test } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { existsSync } from 'node:fs';
@@ -57,8 +62,6 @@ suite('HTTP worker startup recovery (#1827)', { skip: skipSuite }, (ctx: Context
 				ticks = (await response.json()) as any[];
 				if (ticks.some((tick) => tick.jobName === 'tick')) break;
 			} catch (error) {
-				// A connection refused here means the replacement worker is not accepting yet, which is
-				// what the deadline is for. Keep the last one so a wholly unreachable server reports why.
 				lastError = error;
 			}
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
