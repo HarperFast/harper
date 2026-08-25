@@ -269,7 +269,11 @@ jobs:
           EXCLUDED_MERGES=""
           HOLD=""
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
+          {
+            echo "pr_title<<PR_TITLE_EOF"
+            echo "$PR_TITLE"
+            echo "PR_TITLE_EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "is_merged=$IS_MERGED" >> "$GITHUB_OUTPUT"
 
           git fetch origin "+refs/heads/main:refs/remotes/origin/main" \
@@ -321,6 +325,7 @@ jobs:
                 PICK_SHAS="$MERGE_SHA"
                 HOLD="the PR has no replayable non-merge commits, so this branch was built from the merge commit alone"
               elif [ -n "$EXCLUDED_MERGES" ]; then
+              echo "pushed=false" >> "$GITHUB_OUTPUT"
                 # Nothing replayable and a merge that resolved something: the
                 # change exists only where it cannot be picked from.
                 HOLD=$(printf 'the only commits in range are merge commit(s) `%s`, which resolved content of their own' "$EXCLUDED_MERGES")
@@ -359,6 +364,7 @@ jobs:
 
           # Force-push (we rewrite this branch on each push to the PR)
           git push --force origin "$BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       # ── Already-present path: nothing to land, say so and stop ──────────
       - name: Report no-op
@@ -443,14 +449,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
           HOLD: ${{ steps.pick.outputs.hold }}
+          PUSHED: ${{ steps.pick.outputs.pushed }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
           HELD_BODY=$(printf 'Cherry-pick of PR #%s onto `%s` applied cleanly, but it is **not** provably the whole change: %s.\n\nIf a merge commit resolved a conflict, that resolution is not on this branch. Confirm the change is complete, then merge this PR.\n' \
             "$PR_NUMBER" "$RELEASE_BRANCH" "$HOLD")
-          # An empty range never pushed a branch, so there is nothing to open
-          # a PR from — report the hold on the original PR and stop.
-          if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+          # An empty range never pushed a branch, so there is nothing to open a
+          # PR from. Trust what this run did rather than probing the remote — a
+          # branch left by an earlier run would otherwise be mistaken for it.
+          if [ "$PUSHED" != true ]; then
             BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nNothing could be cherry-picked onto `%s`: %s.\n\n`%s` was **not** updated. Apply this change by hand if it belongs on that line.\n' \
               "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
@@ -609,3 +617,19 @@ jobs:
           esac
 
           post_sticky "tests $STATUS_LINE" "Integration tests: **$STATUS_LINE** — $RUN_URL"
+
+      # Every step above carries a bare `if:`, which implies success() — so a
+      # failed pick would report nothing and leave the previous sticky comment
+      # still promising the fast-forward. The classifier exists to make that
+      # class of failure loud; this keeps it loud one layer up.
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -f "$RUNNER_TEMP/upsert-sticky-comment.js" ] || exit 0
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: failed\n\nThe cherry-pick job for `%s` did not complete, so `%s` was **not** updated.\n\nRun: %s\n\nRe-run once the cause is addressed (`workflow_dispatch`, `pr_number=%s`).\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$RUN_URL" "$PR_NUMBER")
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
