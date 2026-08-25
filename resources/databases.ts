@@ -3,7 +3,7 @@ import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
 import { join, extname, basename } from 'path';
-import { existsSync, readdirSync, readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
@@ -30,7 +30,9 @@ const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { deleteRootBlobPathsForDB } from './blob.ts';
+import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
+import { removeStorageReclamation } from '../server/storageReclamation.ts';
+import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
@@ -454,6 +456,7 @@ export function getDatabases(): Databases {
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
+			if (isOpenBranchPath(dbPath)) continue;
 
 			if (
 				databaseEntry.isFile() &&
@@ -516,6 +519,7 @@ export function getDatabases(): Databases {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
+					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
 					} else {
@@ -637,14 +641,19 @@ export function readMetaDb(
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
 
-		return initStores(path, rootStore, databaseName, defaultTable, auditPath, isLegacy);
+		return initStores(path, rootStore, databaseName, { defaultTable, auditPath, isLegacy });
 	} catch (error) {
 		error.message += ` opening database ${path}`;
 		throw error;
 	}
 }
 
-function readRocksMetaDb(path: string, defaultTable?: string, databaseName: string = DEFAULT_DATABASE_NAME) {
+function readRocksMetaDb(
+	path: string,
+	defaultTable?: string,
+	databaseName: string = DEFAULT_DATABASE_NAME,
+	{ destination, storeName, openedStores }: Pick<InitStoresOptions, 'destination' | 'storeName' | 'openedStores'> = {}
+) {
 	try {
 		logger.trace(`loading rocksdb database: ${path}`);
 
@@ -657,14 +666,16 @@ function readRocksMetaDb(path: string, defaultTable?: string, databaseName: stri
 
 		let rootStore: RocksRootDatabase | undefined = rocksdbDatabaseEnvs.get(path);
 		if (rootStore) {
-			initStores(path, rootStore, databaseName, defaultTable);
+			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
 		} else {
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
-			initStores(path, rootStore, databaseName, defaultTable);
-			// Skip transaction log replay in read-only mode
+			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
+			// a caller-owned graph is replayed into as well: nothing else will ever replay this store.
+			// `replayLogs` is a no-op off the main thread, so a branch opened on a worker sees only
+			// what the checkpoint's SSTs hold — see the note on `openBranchDatabase`
 			if (!isReadOnlyMode()) {
-				replayLogs(rootStore, databases[databaseName]);
+				replayLogs(rootStore, destination ?? databases[databaseName]);
 			}
 		}
 		return rootStore;
@@ -674,14 +685,32 @@ function readRocksMetaDb(path: string, defaultTable?: string, databaseName: stri
 	}
 }
 
+interface InitStoresOptions {
+	defaultTable?: string;
+	auditPath?: string;
+	isLegacy?: boolean;
+	/** Build the Table classes here instead of the global `databases` map, and emit no global event. */
+	destination?: Tables;
+	/**
+	 * Identity stamped on the root store, when it must differ from the logical `databaseName` the
+	 * Table classes carry. `getRootBlobPathsForDB` resolves blob directories from it.
+	 */
+	storeName?: string;
+	/**
+	 * Every column family opened here is appended, so a caller can release the ones a failure left
+	 * unreachable — a table's stores are opened well before `setTable` publishes it into the graph.
+	 */
+	openedStores?: any[];
+}
+
 function initStores(
 	path: string,
 	rootStore: RootDatabaseKind,
 	databaseName: string,
-	defaultTable?: string,
-	auditPath?: string,
-	isLegacy?: boolean
+	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
 ) {
+	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
+	rootStore.databaseName = storeName ?? databaseName;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
@@ -721,7 +750,8 @@ function initStores(
 		}
 	}
 
-	const tables = ensureDB(databaseName);
+	const tables = destination ?? ensureDB(databaseName);
+	if (destination && !destination[DEFINED_TABLES]) destination[DEFINED_TABLES] = new Set<string>();
 	const definedTables = tables[DEFINED_TABLES];
 	(definedTables as any).rootStore = rootStore;
 	const tablesToLoad = new Map<string, any>();
@@ -871,18 +901,14 @@ function initStores(
 			// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
 			if (typeof primaryAttribute.randomAccessFields === 'boolean')
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
-			if (rootStore instanceof RocksDatabase) {
-				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
-					rootStore
-				);
-			} else {
-				primaryStore = handleLocalTimeForGets(
-					(rootStore as any).openDB(primaryAttribute.key, dbiInit as any),
-					rootStore
-				);
-			}
-			rootStore.databaseName = databaseName;
+			// recorded before the wrapper below, which is the only thing between the native open and
+			// the only list a failed open can release it from
+			const opened =
+				rootStore instanceof RocksDatabase
+					? openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any)
+					: (rootStore as any).openDB(primaryAttribute.key, dbiInit as any);
+			openedStores?.push(opened);
+			primaryStore = handleLocalTimeForGets(opened, rootStore);
 			primaryStore.tableId = tableId;
 		}
 		let attributesUpdated: boolean;
@@ -893,6 +919,7 @@ function initStores(
 				if (!attribute.isPrimaryKey && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 					if (!indices[attribute.name]) {
 						const dbi = openIndex(attribute.key, rootStore, attribute);
+						openedStores?.push(dbi);
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
 					}
@@ -993,10 +1020,178 @@ function initStores(
 				})
 			);
 			table.schemaVersion = 1;
-			databaseEventsEmitter.emit('updateTable', table);
+			if (!destination) databaseEventsEmitter.emit('updateTable', table);
 		}
 	}
 	return rootStore;
+}
+
+export interface BranchDatabase {
+	tables: Tables;
+	rootStore: RootDatabaseKind;
+	close(): void;
+}
+
+/** `undefined` marks a path reserved by an open still in flight, which owns it just as firmly. */
+const openBranches = new Map<string, BranchDatabase | undefined>();
+/** Store identities in use, so two branches cannot resolve one set of blob roots. */
+const openBranchIdentities = new Set<string>();
+
+/**
+ * True when `dbPath` is a directory an open branch owns. The database scan opens any directory that
+ * holds CURRENT + MANIFEST-*, and harper#643 places a branch inside the directory it walks, so
+ * without this a rescan would rebuild the branch's tables into the global map, overwrite the store
+ * identity its blob roots resolve from, and hand its store to `closeLoadedDatabases`.
+ */
+function isOpenBranchPath(dbPath: string): boolean {
+	if (openBranches.size === 0) return false;
+	// the literal path first: `rocksdbDatabaseEnvs` is keyed by it too, so a directory unlinked under
+	// a live branch handle (realpathSync then throws) must not read as unowned
+	if (openBranches.has(dbPath)) return true;
+	try {
+		return openBranches.has(realpathSync(dbPath));
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A branch identity resolves its blob roots through `join(…, 'blobs', storeName)`, so it must be a
+ * single path segment: `schemaRegex`, which every other database name is validated against, plus the
+ * dot segments and backslash that regex permits but a path component must not be.
+ */
+function assertLegalBranchName(name: string, description: string): void {
+	if (
+		!name ||
+		name.length > commonValidators.schema_length.maximum ||
+		!schemaRegex.test(name) ||
+		name.includes('\\') ||
+		name === '.' ||
+		name === '..'
+	) {
+		throw new Error(`Cannot use '${name}' as a branch ${description}: it is not a legal database name`);
+	}
+}
+
+/**
+ * Open a RocksDB directory as a **scope-private** database: its Table classes are built into an
+ * object the caller owns and nothing is registered in the global `databases` map, so no enumerator
+ * of that map — analytics, `describe_all`, worker teardown, replication — can observe it.
+ *
+ * `databaseName` is the *logical* name the application knows (`data`), so its schema and code need
+ * no changes. `storeName` is the branch's own identity and is what `getRootBlobPathsForDB` resolves
+ * blob directories from, which is how a branch gets its own blob roots rather than writing into the
+ * base's.
+ *
+ * The caller owns the returned handle; the only thing that closes it on the caller's behalf is
+ * `closeBranchDatabases`, which `closeLoadedDatabases` runs at thread teardown so a branch left open
+ * on an exiting worker does not leak its handles into the process-global RocksDB registry.
+ *
+ * NOT YET SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
+ * `dropTable()` or equivalent through one resolves against the global schema and would delete the
+ * live base Table class. Nothing calls this yet; the scope wiring that first exposes a branch to
+ * application code must gate schema operations before it does (harper#643).
+ *
+ * A branch's blob roots start empty, so a row whose blob was written before the checkpoint reads
+ * back as a missing file until harper#644 links the base's blob tree into them. Non-blob rows are
+ * unaffected, for reads and writes alike.
+ *
+ * A branch is the checkpoint's SST content plus, on the main thread only, its transaction-log tail:
+ * `replayLogs` is a no-op off the main thread and nothing else will ever replay a private store. It
+ * is also not awaited, so `close()` can race a replay still writing — neither is a problem while
+ * nothing calls this, and both are decisions the scope wiring has to settle (harper#643).
+ */
+export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
+	assertLegalBranchName(databaseName, 'logical database name');
+	assertLegalBranchName(storeName, 'store identity');
+	if (!existsSync(path)) throw new Error(`Cannot open branch database: no directory at ${path}`);
+	// the guards compare against env-map keys, so two spellings of one directory must not read as two
+	path = realpathSync(path);
+	// FIRST: the guards below read the registry, and loading is itself what populates
+	// `rocksdbDatabaseEnvs`. Claiming the path ahead of this scan would make the scan skip it, which
+	// also means a directory that IS a real database no longer reads as one — so the pre-open window
+	// where the scan can adopt a branch directory stays open, by choice (harper#643).
+	getDatabases();
+	// a rival graph over one shared root store; the two callers would disagree about who may close it
+	if (openBranches.has(path)) throw new Error(`Branch database at ${path} is already open`);
+	// a loaded database's store is closed by `closeLoadedDatabases`, so adopting it would mean this
+	// handle's `close()` tears down a live database
+	if (rocksdbDatabaseEnvs.has(path)) throw new Error(`Cannot branch ${path}: it is already open as a database`);
+	// `storeName` picks the blob roots, and blob file ids restart from each store's own checkpointed
+	// counter, so two holders of one identity write the same file paths and truncate each other
+	if (databases[storeName] || definedDatabases?.has(storeName) || openBranchIdentities.has(storeName)) {
+		throw new Error(`Cannot use '${storeName}' as a branch store identity: it is already in use`);
+	}
+
+	const tables: Tables = Object.create(null);
+	// initStores opens a table's column families well before `setTable` publishes it into `tables`,
+	// so the graph is not a complete record of what a failed open must release
+	const openedStores: any[] = [];
+	let rootStore: RootDatabaseKind;
+	// claim the path before the open, not after: readRocksMetaDb registers the store in
+	// `rocksdbDatabaseEnvs` partway through, so anything re-entering `database()` during initStores
+	// would otherwise find the branch's store on an unowned path
+	openBranches.set(path, undefined);
+	openBranchIdentities.add(storeName);
+	try {
+		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
+	} catch (error) {
+		openBranches.delete(path);
+		openBranchIdentities.delete(storeName);
+		const stranded = rocksdbDatabaseEnvs.get(path);
+		rocksdbDatabaseEnvs.delete(path);
+		closeBranchHandles(path, stranded, openedStores);
+		throw error;
+	}
+	let closed = false;
+	const branch: BranchDatabase = {
+		tables,
+		rootStore,
+		close() {
+			// guard on the handle, not on the registrations: those are keyed by path, and a closed
+			// branch frees its path, so a stale handle would otherwise tear down its successor
+			if (closed) return;
+			closed = true;
+			openBranches.delete(path);
+			openBranchIdentities.delete(storeName);
+			rocksdbDatabaseEnvs.delete(path);
+			closeBranchHandles(path, rootStore, openedStores);
+		},
+	};
+	openBranches.set(path, branch);
+	return branch;
+}
+
+/**
+ * Release everything a branch open created. Each table's primary store and each index is its own
+ * column family, on top of the internal-dbis and audit families, so closing the root alone leaves
+ * all of them behind — which is why `closeDatabase` walks them individually for a real database.
+ * Two process-global registrations outlive the stores as well, neither with a lifetime of its own:
+ * a storage-reclamation handler per store path, whose closure pins the now-closed store, and the
+ * memoized blob roots in `databasePaths`. A real database is opened once per thread; harper#643
+ * makes branch open/close routine, so both would grow with branch churn.
+ */
+function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
+	const reclamationPaths = new Set<string>([path]);
+	const closeStore = (store: any, description: string) => {
+		if (store?.path) reclamationPaths.add(store.path);
+		try {
+			store?.close?.();
+		} catch (error) {
+			logger.warn(`Error closing ${description} for branch database at ${path}`, error);
+		}
+	};
+	for (const store of openedStores) closeStore(store, 'column family');
+	closeStore((rootStore as any)?.dbisDb, 'attributes store');
+	closeStore((rootStore as any)?.auditStore, 'audit store');
+	closeStore(rootStore, 'root store');
+	if (rootStore) databasePaths.delete(rootStore as RootDatabase);
+	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
+}
+
+/** Branches are process-local, so this is shutdown, not a data operation. */
+export function closeBranchDatabases(): void {
+	for (const branch of [...openBranches.values()]) branch?.close();
 }
 
 export function resetDatabases() {
@@ -1141,6 +1336,14 @@ export function database({ database: databaseName, table: tableName }) {
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
 	if (useRocksdb) {
 		const path = join(databasePath, tablePath ? tableName : databaseName);
+		// the scan is not the only way to reach a branch's directory: a branch leaves its store in
+		// `rocksdbDatabaseEnvs`, so without this an on-demand open would staple it onto
+		// `definedDatabases` and the next `closeDatabase` would close it under the live handle
+		if (isOpenBranchPath(path)) {
+			const error: any = new Error(`Database '${databaseName}' is open as a scope-private branch`);
+			error.statusCode = 409;
+			throw error;
+		}
 		rootStore = rocksdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// this on-demand open (create_table/create_database and friends) must not resurrect a
@@ -1344,8 +1547,12 @@ export function closeDatabase(databaseName: string): boolean {
  * database is closed). The `system` database is intentionally left open: it is non-enumerable here
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
  * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
+ *
+ * Branches are invisible to the loop below but hold handles from the same registry, so this — the
+ * thread's one teardown entry point — closes them too.
  */
 export function closeLoadedDatabases(): void {
+	closeBranchDatabases();
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
