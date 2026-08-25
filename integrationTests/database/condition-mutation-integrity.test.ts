@@ -116,10 +116,18 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 	});
 
 	// ---------- HTTP helpers ------------------------------------------------------------
+	// On a non-200 the body carries the reason the route rejected the call; read it into the
+	// assertion message instead of leaving a bare status (and an unconsumed body) behind.
+	async function assertOK(res: Response, what: string): Promise<any> {
+		if (res.status !== 200) {
+			const text = await res.text().catch(() => '<unreadable body>');
+			strictEqual(res.status, 200, `${what} should return 200, got ${res.status}: ${text}`);
+		}
+		return res.json();
+	}
 	async function getJSON(path: string): Promise<any> {
 		const res = await fetch(`${httpURL}${path}`, { headers: { Authorization: AUTH } });
-		strictEqual(res.status, 200, `GET ${path} should return 200`);
-		return res.json();
+		return assertOK(res, `GET ${path}`);
 	}
 	async function postJSON(path: string, body: unknown): Promise<any> {
 		const res = await fetch(`${httpURL}${path}`, {
@@ -127,8 +135,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 			headers: { 'Content-Type': 'application/json', 'Authorization': AUTH },
 			body: JSON.stringify(body),
 		});
-		strictEqual(res.status, 200, `POST ${path} should return 200`);
-		return res.json();
+		return assertOK(res, `POST ${path}`);
 	}
 	function snapshot(which: 'live' | 'concurrent' | 'arrayForm'): Promise<any> {
 		return getJSON(`/Snapshot/?which=${which}`);

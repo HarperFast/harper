@@ -117,13 +117,18 @@ async function readDoc(ctx: ContextWithHarper, id: string): Promise<Record<strin
 		}),
 	});
 	const text = await res.text();
-	let rows: unknown[];
+	// Throw rather than fall back to null on an error/unparsable response: null is this oracle's
+	// "row is absent" answer, so swallowing a 500 here would let a broken read-back masquerade as
+	// a successful denial and turn every persistence assertion below into a vacuous pass.
+	if (!res.ok) throw new Error(`search_by_value read-back for ${id} failed: ${res.status} ${text}`);
+	let rows: unknown;
 	try {
 		rows = JSON.parse(text);
 	} catch {
-		return null;
+		throw new Error(`search_by_value read-back for ${id} returned non-JSON: ${res.status} ${text}`);
 	}
-	return Array.isArray(rows) && rows.length > 0 ? (rows[0] as Record<string, unknown>) : null;
+	if (!Array.isArray(rows)) throw new Error(`search_by_value read-back for ${id} returned non-array: ${text}`);
+	return rows.length > 0 ? (rows[0] as Record<string, unknown>) : null;
 }
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
@@ -162,9 +167,9 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				},
 			}),
 		});
-		await roleRes.body?.cancel();
+		const roleResBody = await roleRes.text();
 		log(`add_role: ${roleRes.status}`);
-		strictEqual(roleRes.status, 200, 'add_role should succeed');
+		strictEqual(roleRes.status, 200, `add_role should succeed, got ${roleRes.status}: ${roleResBody}`);
 
 		const userRes = await fetch(new URL('', ctx.harper.operationsAPIURL), {
 			method: 'POST',
@@ -177,9 +182,9 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				active: true,
 			}),
 		});
-		await userRes.body?.cancel();
+		const userResBody = await userRes.text();
 		log(`add_user: ${userRes.status}`);
-		strictEqual(userRes.status, 200, 'add_user should succeed');
+		strictEqual(userRes.status, 200, `add_user should succeed, got ${userRes.status}: ${userResBody}`);
 
 		// Seed rows.
 		const insertRes = await fetch(new URL('', ctx.harper.operationsAPIURL), {
@@ -195,9 +200,9 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				],
 			}),
 		});
-		await insertRes.body?.cancel();
+		const insertResBody = await insertRes.text();
 		log(`insert rows: ${insertRes.status}`);
-		strictEqual(insertRes.status, 200, 'seed insert should succeed');
+		strictEqual(insertRes.status, 200, `seed insert should succeed, got ${insertRes.status}: ${insertResBody}`);
 
 		// Poll until Doc route is ready.
 		const deadline = Date.now() + 30_000;
