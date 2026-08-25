@@ -833,9 +833,12 @@ user-visible in four ways worth knowing before changing the entrypoint:
   `process.pid <= 1`, and the SIGKILL it delivers would be ignored by PID 1 anyway (the kernel
   drops unhandled signals to the init process). Harper being a _child_ is what makes a wedged
   restart teardown forcibly exit rather than hang until the orchestrator's own timeout.
-- **`-g` forwards `docker stop`'s SIGTERM to the whole process group**, not just Harper. Component
-  subprocesses that previously only saw their parent go away now receive SIGTERM directly. This is
-  the boundary most likely to change behaviour for a component that forks children.
+- **`-g` forwards `docker stop`'s SIGTERM to Harper's process group**, not just Harper. This reaches
+  descendants a component spawns in-group — they now receive SIGTERM directly instead of only seeing
+  their parent go away — and is the boundary most likely to change behaviour for such a component. It
+  does **not** reach Harper-managed subprocesses: `utility/processManagement/processManagement.js`
+  forks them `detached: true`, which `setsid()`s them into their own group and session, so tini's
+  group signal never arrives.
 - **`docker exec … ps` and anything keying off PID 1** now sees `tini`, not `node`.
 - **`docker run --init` nests a second init** above `tini`. Harmless, but redundant.
 

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 import hdbLogger from '../utility/logging/harper_logger.ts';
 
@@ -51,34 +51,16 @@ export async function armRestartExitWatchdog(timeoutMs: number) {
 				windowsHide: true,
 			}
 		);
+		// Before the pid check: a spawn failure (EMFILE on the very wedged process this bounds) emits
+		// 'error' asynchronously, and an unhandled one becomes an uncaughtException mid-teardown.
+		watchdog.once('error', (error) => hdbLogger.warn('Restart exit watchdog failed', error));
 		if (watchdog.pid === undefined) {
 			hdbLogger.warn('Restart exit watchdog failed to start');
 			return false;
 		}
 		watchdog.unref();
 
-		const ready = await new Promise<boolean>((resolve) => {
-			let settled = false;
-			const settle = (value: boolean) => {
-				if (settled) return;
-				settled = true;
-				clearTimeout(readyTimer);
-				resolve(value);
-			};
-			const readyTimer = setTimeout(() => settle(false), WATCHDOG_READY_TIMEOUT_MS);
-			readyTimer.unref();
-			let output = '';
-			watchdog.stdout.on('data', (chunk) => {
-				output += chunk;
-				if (output.includes(WATCHDOG_READY_TOKEN)) settle(true);
-			});
-			// Any of these means the script gave up before it could bound anything.
-			watchdog.once('error', (error) => {
-				hdbLogger.warn('Restart exit watchdog failed', error);
-				settle(false);
-			});
-			watchdog.once('exit', () => settle(false));
-		});
+		const ready = await waitForWatchdogReady(watchdog);
 		// The token is the last thing the script writes to stdout; the force-kill diagnostic goes to the
 		// inherited stderr so it survives a wedged Harper event loop.
 		watchdog.stdout.destroy();
@@ -93,4 +75,25 @@ export async function armRestartExitWatchdog(timeoutMs: number) {
 		hdbLogger.warn('Restart exit watchdog failed to start', error);
 		return false;
 	}
+}
+
+export function waitForWatchdogReady(watchdog: ChildProcess, timeoutMs = WATCHDOG_READY_TIMEOUT_MS) {
+	return new Promise<boolean>((resolve) => {
+		let settled = false;
+		const settle = (value: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(readyTimer);
+			resolve(value);
+		};
+		const readyTimer = setTimeout(() => settle(false), timeoutMs);
+		readyTimer.unref();
+		let output = '';
+		watchdog.stdout?.on('data', (chunk) => {
+			output += chunk;
+			if (output.includes(WATCHDOG_READY_TOKEN)) settle(true);
+		});
+		watchdog.once('error', () => settle(false));
+		watchdog.once('exit', () => settle(false));
+	});
 }

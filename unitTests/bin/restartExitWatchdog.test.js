@@ -29,7 +29,8 @@ describe('restart exit watchdog', () => {
 
 	// The readiness token is what stops arming from reporting success in an environment where the
 	// script gives up: every one of its give-up paths is a silent `exit 0`, so a watchdog that never
-	// emits the token must never be reported armed.
+	// emits the token must never be reported armed. These cover both halves of that — the script
+	// withholding the token, and the caller treating a token-less child as unarmed.
 	it('withholds its readiness token when the shell cannot find sleep', async function () {
 		if (process.platform !== 'linux') this.skip();
 		this.timeout(30000);
@@ -43,5 +44,26 @@ describe('restart exit watchdog', () => {
 		const [code] = await once(script, 'close');
 		assert.equal(code, 0);
 		assert.ok(!output.includes(WATCHDOG_READY_TOKEN), `watchdog reported ready without sleep: ${output}`);
+	});
+
+	describe('readiness handshake', () => {
+		const { WATCHDOG_READY_TOKEN, waitForWatchdogReady } = require('#src/bin/restartExitWatchdog');
+		const shell = (script) => spawn('/bin/sh', ['-c', script], { stdio: ['ignore', 'pipe', 'ignore'] });
+
+		it('reports ready once the token arrives', async () => {
+			const child = shell(`echo ${WATCHDOG_READY_TOKEN}; sleep 30`);
+			assert.equal(await waitForWatchdogReady(child, 10000), true);
+			child.kill('SIGKILL');
+		});
+
+		it('reports not ready when the child gives up before the token', async () => {
+			assert.equal(await waitForWatchdogReady(shell('exit 0'), 10000), false);
+		});
+
+		it('reports not ready when the child neither emits the token nor exits', async () => {
+			const child = shell('sleep 30');
+			assert.equal(await waitForWatchdogReady(child, 200), false);
+			child.kill('SIGKILL');
+		});
 	});
 });
