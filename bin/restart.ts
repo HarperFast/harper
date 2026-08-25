@@ -56,11 +56,11 @@ async function restart(req: any) {
 
 	if (isMainThread) {
 		hdbLogger.notify(RESTART_RESPONSE);
-		if (process.env.HARPER_EXIT_ON_RESTART) armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS);
 
 		if (envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 
 		setTimeout(async () => {
+			if (process.env.HARPER_EXIT_ON_RESTART) armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS);
 			// It seems like you should just be able to start the other process and kill this process and everything should
 			// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
 			// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting

@@ -28,6 +28,11 @@ describe('terminal worker shutdown', () => {
 		});
 	});
 
+	it('does not respawn a worker that exits unexpectedly after terminal shutdown begins', async function () {
+		this.timeout(30000);
+		assert.deepEqual(await runHarness('unexpected'), { starts: 1, workersAfterExit: 0 });
+	});
+
 	it('allows worker creation after a scoped shutdown', async function () {
 		this.timeout(30000);
 		assert.deepEqual(await runHarness('scoped'), { workerCreationAllowed: true });
