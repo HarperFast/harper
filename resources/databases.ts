@@ -901,18 +901,14 @@ function initStores(
 			// per-table override of the storage.randomAccessFields default (see OpenDBIObject)
 			if (typeof primaryAttribute.randomAccessFields === 'boolean')
 				dbiInit.randomAccessStructure = primaryAttribute.randomAccessFields;
-			if (rootStore instanceof RocksDatabase) {
-				primaryStore = handleLocalTimeForGets(
-					openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any),
-					rootStore
-				);
-			} else {
-				primaryStore = handleLocalTimeForGets(
-					(rootStore as any).openDB(primaryAttribute.key, dbiInit as any),
-					rootStore
-				);
-			}
-			openedStores?.push(primaryStore);
+			// recorded before the wrapper below, which is the only thing between the native open and
+			// the only list a failed open can release it from
+			const opened =
+				rootStore instanceof RocksDatabase
+					? openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any)
+					: (rootStore as any).openDB(primaryAttribute.key, dbiInit as any);
+			openedStores?.push(opened);
+			primaryStore = handleLocalTimeForGets(opened, rootStore);
 			primaryStore.tableId = tableId;
 		}
 		let attributesUpdated: boolean;
@@ -1111,8 +1107,10 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	if (!existsSync(path)) throw new Error(`Cannot open branch database: no directory at ${path}`);
 	// the guards compare against env-map keys, so two spellings of one directory must not read as two
 	path = realpathSync(path);
-	// FIRST: loading is itself what populates `rocksdbDatabaseEnvs`, so a path guard ahead of the
-	// scan could adopt a database that the scan then opens at this path
+	// FIRST: the guards below read the registry, and loading is itself what populates
+	// `rocksdbDatabaseEnvs`. Claiming the path ahead of this scan would make the scan skip it, which
+	// also means a directory that IS a real database no longer reads as one — so the pre-open window
+	// where the scan can adopt a branch directory stays open, by choice (harper#643).
 	getDatabases();
 	// a rival graph over one shared root store; the two callers would disagree about who may close it
 	if (openBranches.has(path)) throw new Error(`Branch database at ${path} is already open`);
