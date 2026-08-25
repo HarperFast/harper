@@ -8,7 +8,12 @@ import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
-import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import {
+	POLLING_FALLBACK_OPTIONS,
+	PartialReadRetry,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { overlayRootEnvConfig, isRootConfigFilename } from '../config/harperConfigEnvVars.ts';
 
@@ -97,6 +102,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#closed: boolean;
 	#openCount: number = 0;
 	#pendingReads: Set<Promise<void>> = new Set();
+	#partialRead = new PartialReadRetry();
 	ready: Promise<any[]>;
 
 	constructor(name: string, filePath: string, logger?: Logger, isRootConfig?: boolean) {
@@ -136,8 +142,22 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	// in place, never by rename-over, so they keep the non-blocking read and its drain.
 	#handleChange() {
 		if (this.#isRootConfig) {
+			let contents: string;
 			try {
-				this.#applyContents(readFileSync(this.#filePath, 'utf-8'));
+				contents = readFileSync(this.#filePath, 'utf-8');
+			} catch (error) {
+				this.#handleReadError(error);
+				return;
+			}
+			// An in-place writer can be observed mid-write, and treating that as the file's real
+			// content would drop the scope's config; chokidar may emit nothing further for it.
+			if (!contents) {
+				this.#partialRead.schedule(() => this.#handleChange());
+				return;
+			}
+			this.#partialRead.settled();
+			try {
+				this.#applyContents(contents);
 			} catch (error) {
 				this.#handleReadError(error);
 			}
@@ -438,6 +458,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	 */
 	close(): Promise<this> {
 		this.#closed = true;
+		this.#partialRead.cancel();
 		const pendingReads = [...this.#pendingReads];
 		const watcherClose = Promise.resolve(this.#watcher.close()).catch(() => {});
 

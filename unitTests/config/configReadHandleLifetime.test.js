@@ -68,6 +68,24 @@ describe('root config read handle lifetime', () => {
 		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: true } });
 	});
 
+	it('RootConfigWatcher recovers a change it first observed as a half-written file', async () => {
+		// A synchronous read can catch an in-place writer between its truncate and its write, and
+		// chokidar may emit nothing further for that write — so an unusable read must be retried
+		// rather than dropped, or the watcher serves stale config indefinitely.
+		const watcher = new RootConfigWatcher();
+		openWatchers.push(watcher);
+		await watcher.ready;
+
+		writeFileSync(configFilePath, '');
+		watcher.handleChange();
+		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: true } }, 'must not adopt an empty read');
+
+		const changed = once(watcher, 'change');
+		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
+		const [updated] = await changed;
+		assert.deepStrictEqual(updated, { 'test-component': { enabled: false } });
+	});
+
 	it('OptionsWatcher applies a root-config change before the change handler returns', async () => {
 		const watcher = new OptionsWatcher('test-component', configFilePath, undefined, true);
 		openWatchers.push(watcher);

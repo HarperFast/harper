@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs';
 import { getConfigFilePath } from './configUtils.ts';
 import { EventEmitter, once } from 'node:events';
 import { parse } from 'yaml';
-import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import {
+	POLLING_FALLBACK_OPTIONS,
+	PartialReadRetry,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 
 export class RootConfigWatcher extends EventEmitter {
@@ -14,6 +19,7 @@ export class RootConfigWatcher extends EventEmitter {
 	#usingPolling: boolean;
 	#closed: boolean;
 	#openCount: number = 0;
+	#partialRead = new PartialReadRetry();
 	ready: Promise<any[]>;
 
 	constructor() {
@@ -87,9 +93,10 @@ export class RootConfigWatcher extends EventEmitter {
 	handleChange() {
 		try {
 			const data = readFileSync(this.#configFilePath, 'utf-8');
-			if (!data) return;
+			if (!data) return this.#partialRead.schedule(() => this.handleChange());
 
 			const config = parse(data);
+			this.#partialRead.settled();
 
 			if (!this.#config) {
 				this.#config = config;
@@ -99,13 +106,13 @@ export class RootConfigWatcher extends EventEmitter {
 
 			this.emit('change', (this.#config = config));
 		} catch {
-			// A read or parse failure here is transient (mid-write, or the install window);
-			// the next watcher event re-reads.
+			this.#partialRead.schedule(() => this.handleChange());
 		}
 	}
 
 	close() {
 		this.#closed = true;
+		this.#partialRead.cancel();
 		this.#watcher.close();
 		this.#config = undefined;
 		this.emit('close');

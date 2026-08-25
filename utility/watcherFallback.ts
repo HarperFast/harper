@@ -32,6 +32,9 @@ export function isWatcherExhaustionError(error: unknown): boolean {
  * host is already under resource pressure. A second-scale interval keeps CPU
  * cost bounded; the alternative is to lose change events entirely.
  */
+const PARTIAL_READ_REREAD_DELAY_MS = 20;
+const PARTIAL_READ_MAX_REREADS = 10;
+
 export const POLLING_FALLBACK_OPTIONS = {
 	usePolling: true,
 	interval: 1000,
@@ -71,4 +74,36 @@ export function warnWatcherFallback(watchedPath: string): void {
 // Test-only hook to reset the one-time warning gate between cases.
 export function _resetForTests(): void {
 	exhaustionWarned = false;
+}
+
+/**
+ * A config file replaced in place (truncate, then write) can be read back empty or
+ * half-written, and chokidar may emit nothing further for that write — so a watcher that
+ * simply drops the unusable read would serve stale config until something else touched the
+ * file. Re-read on a later turn instead, bounded so a genuinely empty or corrupt file cannot
+ * spin. Callers read synchronously, so the descriptor still never outlives a single turn.
+ */
+export class PartialReadRetry {
+	#timer?: ReturnType<typeof setTimeout>;
+	#remaining: number = PARTIAL_READ_MAX_REREADS;
+
+	schedule(reread: () => void) {
+		if (this.#timer || this.#remaining <= 0) return;
+		this.#remaining--;
+		this.#timer = setTimeout(() => {
+			this.#timer = undefined;
+			reread();
+		}, PARTIAL_READ_REREAD_DELAY_MS);
+		this.#timer.unref?.();
+	}
+
+	settled() {
+		this.#remaining = PARTIAL_READ_MAX_REREADS;
+	}
+
+	cancel() {
+		if (this.#timer) clearTimeout(this.#timer);
+		this.#timer = undefined;
+		this.#remaining = 0;
+	}
 }
