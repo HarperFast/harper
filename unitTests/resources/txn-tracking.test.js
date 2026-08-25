@@ -102,8 +102,8 @@ describe('Txn Expiration', () => {
 		}
 	});
 	after(function () {
-		// the 20ms limit above went to whichever engine is active; both module globals are
-		// process-wide, so both are restored rather than leaking 20ms into the rest of the run
+		// both expiration globals are process-wide, and the 20ms above went to whichever engine
+		// is active, so restoring only one leaks it into every later test on the other pass
 		setTxnExpiration(30000);
 		setLMDBTxnExpiration(30000);
 	});

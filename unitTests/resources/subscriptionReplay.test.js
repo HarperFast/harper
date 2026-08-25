@@ -216,7 +216,6 @@ describe('Subscription replay', () => {
 				},
 				{ timeout: 5000 }
 			).catch(() => {});
-			// additive settle: a duplicate trailing the last expected delivery can still land
 			await delay(100);
 			subscription.return?.();
 
@@ -683,8 +682,10 @@ describe('Subscription replay', () => {
 			// The duplicate check below is only sound once every delivery that is coming has come.
 			// It cannot wait for all 30 in-flight ids: one that commits before the cursor's snapshot
 			// and falls outside previousCount is legitimately never delivered (running this test
-			// alone, 17000-17002 never arrive). Deliveries follow commit order, so a record written
-			// after the in-flight writes settle bounds them — once it arrives, they have all arrived.
+			// alone, 17000-17002 never arrive). A record written after they settle bounds them
+			// instead: the previousCount cursor collects its history from a snapshot taken before
+			// subscribe() resolves, so it cannot deliver this record, and the queue that will is
+			// drained in commit order.
 			await CountTable.put(17999, { name: 'count_race_sentinel' });
 			await waitFor(() => events.some((e) => e.id === 17999), {
 				timeout: 5000,
@@ -719,8 +720,9 @@ describe('Subscription replay', () => {
 			await Promise.all(inFlight);
 			// Same soundness requirement as the count test above. Rapid same-record versions can
 			// legitimately coalesce, so no in-flight version is guaranteed to be delivered on its
-			// own; a version written after they all settle is (any cursor/listener duplicate of an
-			// earlier version travels with its original, so it precedes the sentinel).
+			// own; a version written after they all settle is. The cursor captures this record's
+			// entry before subscribe() resolves, so it cannot deliver that later version — it
+			// arrives through the commit-ordered queue, after every in-flight delivery.
 			await RecordTable.put(15000, { name: 'inflight_sentinel' });
 			await waitFor(() => events.some((e) => e.value?.name === 'inflight_sentinel'), {
 				timeout: 5000,
@@ -1086,7 +1088,6 @@ describe('Subscription replay', () => {
 				},
 				{ timeout: 10000 }
 			).catch(() => {});
-			// additive settle: a duplicate trailing the last delivery can still land
 			await delay(100);
 			subscription.return?.();
 

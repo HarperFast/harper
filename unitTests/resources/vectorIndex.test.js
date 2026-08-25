@@ -1025,7 +1025,7 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 					customIndex.searchLayer = originalSearchLayer;
 				}
 			} finally {
-				T.dropTable();
+				await T.dropTable();
 			}
 		}
 	});
