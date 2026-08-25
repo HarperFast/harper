@@ -180,12 +180,18 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
 	const { mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
+	const { registryStatus } = require('@harperfast/rocksdb-js');
+
+	// the real observable for a released handle: rocksdb-js's registry is process-global and its
+	// refCount only drops to zero once every column family opened under a path has been closed
+	const refCountFor = (dbPath) => registryStatus().find((entry) => entry.path === dbPath)?.refCount ?? 0;
 
 	let checkpointDir;
 	let scratchRoot;
+	let databasesDir;
 	before(async function () {
 		this.timeout(30000);
-		setupTestDBPath();
+		databasesDir = setupTestDBPath();
 		setMainIsWorker(true);
 		const BranchSource = table({
 			table: 'BranchSource',
@@ -268,10 +274,87 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		);
 	});
 
+	it('releases every native handle it opened, not just the root', function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const branchPath = branch.rootStore.path;
+		assert.ok(refCountFor(branchPath) > 0, 'the branch should hold native handles while open');
+
+		branch.close();
+
+		// a per-table column family left open keeps the process-global refCount above zero, which is
+		// what distinguishes a released handle from a leaked one
+		assert.strictEqual(refCountFor(branchPath), 0, 'close() must release every column family it opened');
+	});
+
 	it('tolerates a repeated close', function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		branch.close();
 		assert.doesNotThrow(() => branch.close(), 'a second close must not close the store twice');
+		assert.strictEqual(refCountFor(branch.rootStore.path), 0, 'a second close must not double-release');
+	});
+
+	it('is not adopted back into the global map when the database scan reruns', async function () {
+		this.timeout(30000);
+		// harper#643 puts a branch directory inside the directory getDatabases() walks, so the first
+		// resetDatabases() after a branch opens is the case that would rebuild it globally
+		const probeDir = join(databasesDir, 'branchscanprobe');
+		rmSync(probeDir, { recursive: true, force: true });
+		let branch;
+		try {
+			await databases.branchbase.BranchSource.primaryStore.rootStore.createCheckpoint(probeDir);
+			branch = openBranchDatabase(probeDir, 'branchbase', 'appA__scanprobe');
+
+			resetDatabases();
+
+			for (const [name, dbTables] of Object.entries(databases)) {
+				for (const tableName in dbTables) {
+					assert.notStrictEqual(
+						dbTables[tableName]?.primaryStore?.rootStore,
+						branch.rootStore,
+						`the rescan adopted the branch store as databases.${name}.${tableName}`
+					);
+				}
+			}
+			assert.strictEqual(
+				branch.rootStore.databaseName,
+				'appA__scanprobe',
+				'adoption would overwrite the store identity the branch blob roots resolve from'
+			);
+		} finally {
+			branch?.close();
+			rmSync(probeDir, { recursive: true, force: true });
+		}
+	});
+
+	it('deregisters the storage-reclamation handler its stores registered', async function () {
+		const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+		const queried = [];
+		setAvailableSpaceRatioGetter(async (path) => {
+			queried.push(path);
+			return 1;
+		});
+		try {
+			const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+			const branchPath = branch.rootStore.path;
+			await runReclamationHandlers();
+			assert.ok(queried.includes(branchPath), 'opening a branch registers a reclamation handler for its path');
+
+			branch.close();
+			queried.length = 0;
+			await runReclamationHandlers();
+
+			// registration is process-global and keyed by path, and its closure pins the closed store,
+			// so an open/close cycle that leaves it behind grows unboundedly with branch churn
+			assert.ok(!queried.includes(branchPath), 'close() must drop the handler pinning the closed store');
+		} finally {
+			setAvailableSpaceRatioGetter();
+		}
+	});
+
+	it('rejects a store identity that would resolve blob roots outside the blobs directory', function () {
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', '..'), /not a legal database name/);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'a/b'), /not a legal database name/);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', ''), /not a legal database name/);
 	});
 
 	it('rejects a path that is not there rather than registering an empty database', function () {

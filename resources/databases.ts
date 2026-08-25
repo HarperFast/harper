@@ -30,7 +30,9 @@ const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { deleteRootBlobPathsForDB } from './blob.ts';
+import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
+import { removeStorageReclamation } from '../server/storageReclamation.ts';
+import { schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
@@ -454,6 +456,7 @@ export function getDatabases(): Databases {
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
+			if (isOpenBranchPath(dbPath)) continue;
 
 			if (
 				databaseEntry.isFile() &&
@@ -516,6 +519,7 @@ export function getDatabases(): Databases {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
+					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
 					} else {
@@ -1032,6 +1036,33 @@ export interface BranchDatabase {
 const openBranches = new Map<string, BranchDatabase>();
 
 /**
+ * True when `dbPath` is a directory an open branch owns. The database scan opens any directory that
+ * holds CURRENT + MANIFEST-*, and harper#643 places a branch inside the directory it walks, so
+ * without this the first `resetDatabases()` after a branch is open would rebuild that branch's tables
+ * into the global map, overwrite the store identity its blob roots resolve from, and hand its store
+ * to `closeLoadedDatabases`.
+ */
+function isOpenBranchPath(dbPath: string): boolean {
+	if (openBranches.size === 0) return false;
+	try {
+		return openBranches.has(realpathSync(dbPath));
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A branch identity resolves its blob roots through `join(…, 'blobs', storeName)`, so it must be a
+ * single path segment: `schemaRegex`, which every other database name is validated against, plus the
+ * dot segments and backslash that regex permits but a path component must not be.
+ */
+function assertLegalBranchName(name: string, description: string): void {
+	if (!name || !schemaRegex.test(name) || name.includes('\\') || name === '.' || name === '..') {
+		throw new Error(`Cannot use '${name}' as a branch ${description}: it is not a legal database name`);
+	}
+}
+
+/**
  * Open a RocksDB directory as a **scope-private** database: its Table classes are built into an
  * object the caller owns and nothing is registered in the global `databases` map, so no enumerator
  * of that map — analytics, `describe_all`, worker teardown, replication — can observe it.
@@ -1041,8 +1072,10 @@ const openBranches = new Map<string, BranchDatabase>();
  * blob directories from, which is how a branch gets its own blob roots rather than writing into the
  * base's.
  *
- * The caller owns the returned handle. `closeLoadedDatabases` walks `databases` and therefore cannot
- * see a branch, so nothing else will close it.
+ * The caller owns the returned handle: no enumerator of `databases` can reach a branch, so nothing
+ * closes it on the caller's behalf except `closeBranchDatabases`, which `closeLoadedDatabases` runs
+ * at thread teardown so a branch left open on an exiting worker does not leak its process-global
+ * RocksDB handles.
  *
  * NOT YET SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
  * `dropTable()` or equivalent through one resolves against the global schema and would delete the
@@ -1051,6 +1084,8 @@ const openBranches = new Map<string, BranchDatabase>();
  * (harper#643).
  */
 export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
+	assertLegalBranchName(databaseName, 'logical database name');
+	assertLegalBranchName(storeName, 'store identity');
 	if (!existsSync(path)) throw new Error(`Cannot open branch database: no directory at ${path}`);
 	// The guards below compare against keys in the env map, so two spellings of one directory must
 	// not read as two directories.
@@ -1098,14 +1133,20 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 }
 
 /**
- * Release every RocksDB handle a branch open created. `initStores` opens a column family per table
- * primary store and per index, on top of the internal-dbis and audit families, so closing only the
- * root leaves all of them behind — which is why `closeDatabase` walks them individually for a real
- * database. Shared by `close()` and the partial-open cleanup, so a failure part-way through
+ * Release everything a branch open created. `initStores` opens a column family per table primary
+ * store and per index, on top of the internal-dbis and audit families, so closing only the root
+ * leaves all of them behind — which is why `closeDatabase` walks them individually for a real
+ * database. It also leaves two process-global registrations behind the stores it closes, neither of
+ * which has a lifetime of its own: a storage-reclamation handler per store path, whose closure pins
+ * the now-closed store, and the memoized blob roots in `databasePaths`. A real database is opened
+ * once per thread, but harper#643 makes branch open/close routine, so both would grow with branch
+ * churn. Shared by `close()` and the partial-open cleanup, so a failure part-way through
  * `initStores` releases exactly what a success would.
  */
 function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, tables?: Tables): void {
+	const reclamationPaths = new Set<string>([path]);
 	const closeStore = (store: any, description: string) => {
+		if (store?.path) reclamationPaths.add(store.path);
 		try {
 			store?.close?.();
 		} catch (error) {
@@ -1122,6 +1163,8 @@ function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, tables?:
 	closeStore((rootStore as any)?.dbisDb, 'attributes store');
 	closeStore((rootStore as any)?.auditStore, 'audit store');
 	closeStore(rootStore, 'root store');
+	if (rootStore) databasePaths.delete(rootStore as RootDatabase);
+	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
 }
 
 /** Close every open branch. Branches are process-local, so this is shutdown, not a data operation. */
@@ -1474,8 +1517,13 @@ export function closeDatabase(databaseName: string): boolean {
  * database is closed). The `system` database is intentionally left open: it is non-enumerable here
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
  * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
+ *
+ * Branches are not in `databases` and so are invisible to the loop below, but they hold handles from
+ * the same process-global registry — this is the thread's one teardown entry point, so it closes
+ * them too rather than leaving a rule for the next exit path to remember.
  */
 export function closeLoadedDatabases(): void {
+	closeBranchDatabases();
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
