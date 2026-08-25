@@ -50,11 +50,11 @@ describe('Writes through an ImmediateTransaction installed on a context', () => 
 		const immediate = await installImmediateTransaction(context);
 
 		await A.patch({ id: 'staged', v: 2 }, context);
-		assert.equal(immediate.writes.length, 0, 'each write commits individually, clearing what it committed');
 		await B.put('second-table', { v: 3 }, context);
 
 		assert.equal((await A.get('staged')).v, 2, 'the update must be durable');
 		assert.ok(await B.get('second-table'), 'and so must the write that follows it');
+		assert.equal(immediate.open, TRANSACTION_STATE.OPEN, 'neither write may have been folded into it');
 		assert.equal(immediate.writes.length, 0);
 	});
 
