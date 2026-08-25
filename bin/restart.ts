@@ -11,7 +11,7 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
-import { unlinkSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
 envMgr.initSync();
@@ -76,7 +76,7 @@ async function restart(req: any) {
 				await closeServers();
 				await processMan.cleanupChildrenProcesses(false);
 				// remove pid file so it doesn't trip up the launch
-				unlinkSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE));
+				rmSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), { force: true });
 				hdbLogger.debug('Starting new process...');
 				if (process.env.HARPER_EXIT_ON_RESTART) {
 					// use this to exit the process so that it will be restarted by the

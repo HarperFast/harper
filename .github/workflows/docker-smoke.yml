@@ -175,6 +175,8 @@ jobs:
 
           docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
             harperfast/harper:smoke-test -c 'printf "1\n" > /home/harperdb/harper/hdb.pid'
+          docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
+            harperfast/harper:smoke-test -c 'test "$(cat /home/harperdb/harper/hdb.pid)" = 1'
           docker start harper-smoke
           for i in $(seq 1 30); do
             code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
