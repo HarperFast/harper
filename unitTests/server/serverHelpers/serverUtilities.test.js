@@ -238,8 +238,8 @@ describe('Test serverUtilities.js module ', () => {
 		const RETRACTED = 'test_cross_thread_retracted_op';
 		const ZOMBIE = 'test_cross_thread_zombie_op';
 		const FAILED_SEND = 'test_cross_thread_failed_send_op';
-		// Tombstones in exitedThreadIds are permanent and module-global, so synthetic ids must be
-		// ones the runtime will never assign to a real worker in this process.
+		// Thread-exit tombstones are permanent and process-global, so synthetic ids must be ones the
+		// runtime will never assign to a real worker.
 		const DECLARING_THREAD = 9_000_061;
 		const ROUTING_THREAD = 9_000_062;
 		const DEAD_THREAD = 9_000_071;
