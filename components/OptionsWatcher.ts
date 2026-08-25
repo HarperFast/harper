@@ -104,7 +104,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#closed: boolean;
 	#openCount: number = 0;
 	#pendingReads: Set<Promise<void>> = new Set();
-	#partialRead = new PartialReadRetry();
+	#partialRead: PartialReadRetry;
 	ready: Promise<any[]>;
 
 	constructor(name: string, filePath: string, logger?: Logger, isRootConfig?: boolean) {
@@ -113,6 +113,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#filePath = filePath;
 		const watchTarget = resolveWatchTarget(filePath);
 		this.#watchPath = watchTarget.path;
+		this.#partialRead = new PartialReadRetry(filePath);
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
@@ -139,15 +140,13 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	// The root config reads synchronously so its descriptor cannot outlive this turn - see the
-	// invariant on atomicWriteFile. Application configs keep the non-blocking read and its drain.
+	// invariant on atomicWriteFile.
 	#handleChange() {
 		if (this.#isRootConfig) {
 			this.#applyRead(() => readFileSync(this.#filePath, 'utf-8'));
 			return;
 		}
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
-			// Application configs are rewritten in place, so they see the half-written snapshots
-			// the retry exists for; only the read itself differs between the two paths.
 			.then((contents) => this.#applyRead(() => contents))
 			.catch((error) => this.#recoverOrReport(error))
 			.finally(() => {
@@ -179,8 +178,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		try {
 			this.#applyParsed(this.#overlayEnvConfig(parsed));
 		} catch (error) {
-			// Applying is past the point where an incomplete file is a possible explanation, so
-			// a listener's throw keeps the watcher's established error route rather than a retry.
+			// Applying is past the point where an incomplete file could explain a failure, so a
+			// listener's throw keeps the error route rather than being retried.
 			this.emit('error', error);
 		}
 	}

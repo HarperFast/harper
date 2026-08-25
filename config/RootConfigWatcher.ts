@@ -22,7 +22,7 @@ export class RootConfigWatcher extends EventEmitter {
 	#usingPolling: boolean;
 	#closed: boolean;
 	#openCount: number = 0;
-	#partialRead = new PartialReadRetry();
+	#partialRead: PartialReadRetry;
 	ready: Promise<any[]>;
 
 	constructor() {
@@ -30,6 +30,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#configFilePath = getConfigFilePath();
 		const watchTarget = resolveWatchTarget(this.#configFilePath);
 		this.#watchPath = watchTarget.path;
+		this.#partialRead = new PartialReadRetry(this.#configFilePath);
 		this.#usingPolling = watchTarget.mustPoll;
 		this.#closed = false;
 		this.ready = once(this, 'ready');
@@ -120,8 +121,6 @@ export class RootConfigWatcher extends EventEmitter {
 			}
 			this.emit('change', (this.#config = config));
 		} catch (error) {
-			// The watcher's own state is already updated; a listener's bug must not be replayed
-			// as if the file were incomplete, nor escape into the chokidar callback.
 			warnWatcherListenerError(this.#configFilePath, error);
 		}
 	}

@@ -85,8 +85,13 @@ export function _resetForTests(): void {
  * spin. Callers read synchronously, so the descriptor still never outlives a single turn.
  */
 export class PartialReadRetry {
+	#filePath: string;
 	#timer?: ReturnType<typeof setTimeout>;
 	#remaining: number = PARTIAL_READ_MAX_REREADS;
+
+	constructor(filePath: string) {
+		this.#filePath = filePath;
+	}
 
 	/** False once the budget is spent, so the caller can fall back to its own error handling. */
 	schedule(reread: () => void): boolean {
@@ -106,6 +111,9 @@ export class PartialReadRetry {
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = undefined;
 		this.#remaining = PARTIAL_READ_MAX_REREADS;
+		// The file recovered, so the next time it breaks is a new incident and has to be reported
+		// again rather than silenced by the warning it emitted weeks ago.
+		partialReadWarned.delete(this.#filePath);
 	}
 
 	cancel() {
@@ -137,6 +145,11 @@ export function warnPartialReadGaveUp(filePath: string, error?: unknown) {
 	// while one that reads empty is a writer that never finished.
 	const cause = error ? `: ${(error as Error).message ?? error}` : ' that were empty or incomplete';
 	fallbackLogger.warn(`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} unusable reads${cause}`);
+}
+
+/** Test-only: whether a give-up warning for this file is currently suppressed as a duplicate. */
+export function isPartialReadWarned(filePath: string): boolean {
+	return partialReadWarned.has(filePath);
 }
 
 /**
