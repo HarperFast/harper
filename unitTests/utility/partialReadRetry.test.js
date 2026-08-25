@@ -4,12 +4,34 @@ const {
 	warnPartialReadGaveUp,
 	isPartialReadWarned,
 	clearPartialReadWarning,
+	describeReadFailure,
 } = require('#src/utility/watcherFallback');
+const { parse } = require('yaml');
 const { waitFor } = require('../waitFor');
 
 // The retry is a timer, so "it fired" is a condition to wait for; "it fired only once" is a
 // non-event, which is the one case AGENTS.md reserves a fixed settle for.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
+
+describe('describeReadFailure', () => {
+	it('reports where a config file failed to parse, never what it contains', () => {
+		let description;
+		try {
+			parse('operationsApi:\n  password: hunter2-super-secret\n  port: [unclosed\n');
+			assert.fail('the fixture must not parse');
+		} catch (error) {
+			description = describeReadFailure(error);
+		}
+
+		// The parser's own message quotes the offending source lines, which is why it is not used.
+		assert.match(description, /line \d+, column \d+/);
+		assert.doesNotMatch(description, /hunter2|password|unclosed/);
+	});
+
+	it('reports a read error by its code', () => {
+		assert.strictEqual(describeReadFailure(Object.assign(new Error('nope'), { code: 'EACCES' })), 'EACCES');
+	});
+});
 
 describe('PartialReadRetry', () => {
 	it('re-reads once for a burst of unusable reads, not once per event', async () => {

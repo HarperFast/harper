@@ -157,10 +157,23 @@ export function warnPartialReadGaveUp(filePath: string, error?: unknown): boolea
 	if (partialReadWarned.has(filePath)) return false;
 	partialReadWarned.add(filePath);
 	// The cause matters to whoever has to fix it: a file that never parses is a typo to correct,
-	// while one that reads empty is a writer that never finished.
-	const cause = error ? `: ${(error as Error).message ?? error}` : ' that were empty or incomplete';
+	// while one that reads empty is a writer that never finished. Report the kind and position
+	// only — a YAML parse error's message quotes the offending source, and this file holds
+	// credentials.
+	const cause = error ? `: ${describeReadFailure(error)}` : ' that were empty or incomplete';
 	fallbackLogger.warn(`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} unusable reads${cause}`);
 	return true;
+}
+
+/**
+ * The kind and position of a failed config read, never its content: a YAML parse error's message
+ * quotes the offending source lines, and these files hold credentials.
+ */
+export function describeReadFailure(error: unknown): string {
+	if (typeof error !== 'object' || error === null) return 'unusable';
+	const { name, code, linePos } = error as { name?: string; code?: string; linePos?: { line: number; col: number }[] };
+	const at = linePos?.[0] ? ` at line ${linePos[0].line}, column ${linePos[0].col}` : '';
+	return `${code ?? name ?? 'unusable'}${at}`;
 }
 
 /** Test-only: whether a give-up warning for this file is currently suppressed as a duplicate. */
