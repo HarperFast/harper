@@ -178,9 +178,8 @@ function terminateEntry(
 async function sweep(): Promise<void> {
 	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
 	sweeping = true;
-	// Per-subscriber revocation lines are info, which the shipped default (logging.level: warn) drops.
-	// One aggregate per pass carries the same news at the level operators actually read, without
-	// turning a mass role change into one warn per subscriber.
+	// the per-subscriber lines are info, which the shipped default (logging.level: warn) drops; one
+	// aggregate keeps the pass visible without making a mass role change a warn per subscriber
 	const revokedByReason = new Map<string, number>();
 	const countRevocation = (reason: string) => revokedByReason.set(reason, (revokedByReason.get(reason) ?? 0) + 1);
 	try {
@@ -213,7 +212,9 @@ async function sweep(): Promise<void> {
 			const breakdown = Array.from(revokedByReason, ([reason, count]) => `${reason}: ${count}`).join(', ');
 			safeLog(
 				hdbLogger.warn,
-				`liveSubscriptionAuth: revoked ${total} live subscription${total === 1 ? '' : 's'} (${breakdown})`
+				// "revoking", like the per-subscriber line: teardown is dispatched, not awaited, and a
+				// failure surfaces on its own error line
+				`liveSubscriptionAuth: revoking ${total} live subscription${total === 1 ? '' : 's'} (${breakdown})`
 			);
 		}
 	}

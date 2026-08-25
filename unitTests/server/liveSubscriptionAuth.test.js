@@ -98,7 +98,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 					`routine expiry must warn once per sweep, got: ${JSON.stringify(warnMessages)}`
 				);
 				assert.ok(
-					warnMessages[0].includes('revoked 3 live subscriptions') && warnMessages[0].includes('token expired: 3'),
+					warnMessages[0].includes('revoking 3 live subscriptions') && warnMessages[0].includes('token expired: 3'),
 					`the aggregate must carry the count and reasons, got: ${warnMessages[0]}`
 				);
 				assert.strictEqual(_liveSubscriptionCount(), 0);
