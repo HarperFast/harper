@@ -178,6 +178,11 @@ function terminateEntry(
 async function sweep(): Promise<void> {
 	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
 	sweeping = true;
+	// Per-subscriber revocation lines are info, which the shipped default (logging.level: warn) drops.
+	// One aggregate per pass carries the same news at the level operators actually read, without
+	// turning a mass role change into one warn per subscriber.
+	const revokedByReason = new Map<string, number>();
+	const countRevocation = (reason: string) => revokedByReason.set(reason, (revokedByReason.get(reason) ?? 0) + 1);
 	try {
 		// snapshot bounds the pass to entries present at its start; the has() guards cover the rest
 		for (const entry of Array.from(registry)) {
@@ -186,15 +191,31 @@ async function sweep(): Promise<void> {
 				const expired = entry.authExpiresAt != null && Date.now() >= entry.authExpiresAt * 1000;
 				const stillAuthorized = expired ? false : await entry.recheck();
 				if (!registry.has(entry)) continue;
-				if (expired || !stillAuthorized) terminateEntry(entry, expired ? 'token expired' : 'no longer authorized');
+				if (expired || !stillAuthorized) {
+					const reason = expired ? 'token expired' : 'no longer authorized';
+					terminateEntry(entry, reason);
+					countRevocation(reason);
+				}
 			} catch (error) {
 				// fail closed: if authorization can't be confirmed, revoke
-				if (registry.has(entry)) terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn);
+				if (registry.has(entry)) {
+					terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn);
+					countRevocation('recheck error');
+				}
 			}
 		}
 	} finally {
 		sweeping = false;
 		stopIfIdle();
+		if (revokedByReason.size > 0) {
+			let total = 0;
+			for (const count of revokedByReason.values()) total += count;
+			const breakdown = Array.from(revokedByReason, ([reason, count]) => `${reason}: ${count}`).join(', ');
+			safeLog(
+				hdbLogger.warn,
+				`liveSubscriptionAuth: revoked ${total} live subscription${total === 1 ? '' : 's'} (${breakdown})`
+			);
+		}
 	}
 }
 

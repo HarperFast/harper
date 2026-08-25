@@ -66,7 +66,7 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
-		it('logs an expected revocation at info, not warn', async () => {
+		it('logs each expected revocation at info and one aggregate warn per sweep', async () => {
 			const originalInfo = hdbLogger.info;
 			const originalWarn = hdbLogger.warn;
 			const infoMessages = [];
@@ -74,14 +74,10 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			hdbLogger.info = (message) => infoMessages.push(message);
 			hdbLogger.warn = (message) => warnMessages.push(message);
 			try {
-				const subscription = fakeSubscription();
-				register({
-					subscription,
-					username: 'logged-user',
-					authExpiresAt: 0,
-					recheck: async () => true,
-				});
-				handles.pop();
+				for (const username of ['logged-user', 'logged-user-2', 'logged-user-3']) {
+					register({ subscription: fakeSubscription(), username, authExpiresAt: 0, recheck: async () => true });
+					handles.pop();
+				}
 
 				await _sweepNow();
 
@@ -89,10 +85,41 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 					infoMessages.some((message) => message.includes('logged-user')),
 					`expected a revocation log for the default terminate path, got: ${JSON.stringify(infoMessages)}`
 				);
-				assert.deepStrictEqual(warnMessages, [], 'routine expiry must not warn once per subscriber');
+				assert.strictEqual(
+					infoMessages.filter((message) => message.includes('revoking subscription')).length,
+					3,
+					`expected one info line per revoked subscriber, got: ${JSON.stringify(infoMessages)}`
+				);
+				// the default logging level drops info, so the pass must still be visible at warn — once,
+				// not once per subscriber
+				assert.strictEqual(
+					warnMessages.length,
+					1,
+					`routine expiry must warn once per sweep, got: ${JSON.stringify(warnMessages)}`
+				);
+				assert.ok(
+					warnMessages[0].includes('revoked 3 live subscriptions') && warnMessages[0].includes('token expired: 3'),
+					`the aggregate must carry the count and reasons, got: ${warnMessages[0]}`
+				);
 				assert.strictEqual(_liveSubscriptionCount(), 0);
 			} finally {
 				hdbLogger.info = originalInfo;
+				hdbLogger.warn = originalWarn;
+			}
+		});
+
+		it('does not log an aggregate for a sweep that revokes nothing', async () => {
+			const originalWarn = hdbLogger.warn;
+			const warnMessages = [];
+			hdbLogger.warn = (message) => warnMessages.push(message);
+			try {
+				register({ subscription: fakeSubscription(), username: 'stays', recheck: async () => true });
+
+				await _sweepNow();
+
+				assert.deepStrictEqual(warnMessages, []);
+				assert.strictEqual(_liveSubscriptionCount(), 1);
+			} finally {
 				hdbLogger.warn = originalWarn;
 			}
 		});
