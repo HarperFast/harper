@@ -98,6 +98,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		while (Date.now() < deadline) {
 			try {
 				const res = await fetch(`${httpURL}/Product/`, { headers: { Authorization: AUTH } });
+				await res.body?.cancel();
 				if (res.status !== 404) {
 					ready = true;
 					break;

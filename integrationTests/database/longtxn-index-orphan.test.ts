@@ -101,6 +101,7 @@ suite(
 						headers: { Authorization: client.headers.Authorization },
 						signal: AbortSignal.timeout(3_000),
 					});
+					await probe.body?.cancel();
 					if (probe.status === 200) {
 						ready = true;
 						break;

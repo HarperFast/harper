@@ -162,6 +162,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				},
 			}),
 		});
+		await roleRes.body?.cancel();
 		log(`add_role: ${roleRes.status}`);
 		strictEqual(roleRes.status, 200, 'add_role should succeed');
 
@@ -176,6 +177,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				active: true,
 			}),
 		});
+		await userRes.body?.cancel();
 		log(`add_user: ${userRes.status}`);
 		strictEqual(userRes.status, 200, 'add_user should succeed');
 
@@ -193,6 +195,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 				],
 			}),
 		});
+		await insertRes.body?.cancel();
 		log(`insert rows: ${insertRes.status}`);
 		strictEqual(insertRes.status, 200, 'seed insert should succeed');
 

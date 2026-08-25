@@ -107,6 +107,7 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 					headers: { Authorization: auth },
 					signal: AbortSignal.timeout(3_000),
 				});
+				await probe.body?.cancel();
 				if (probe.status !== 404) {
 					ready = true;
 					break;
@@ -284,10 +285,11 @@ suite(`QA-670 harper#1896 vs F-175 phantom-null [${ENGINE}]`, { skip: skipSuite 
 		// (ensureLoadedFromSource -> TableResource.evict()), NOT the background sweep (scanInterval:300s).
 		await sleep(2_500);
 		for (const id of evictIds) {
-			await fetch(`${httpURL}/EvictTable/${id}`, {
+			const r = await fetch(`${httpURL}/EvictTable/${id}`, {
 				headers: { Authorization: auth },
 				signal: AbortSignal.timeout(5_000),
 			});
+			await r.body?.cancel();
 		}
 		// give the fire-and-forget evict() commits a moment to land
 		const deadline = Date.now() + 15_000;
