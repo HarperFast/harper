@@ -346,18 +346,18 @@ Added in: v5.0.0
 
 ```yaml
 applications:
-  lockdown: freeze
-  moduleLoader: vm
+  lockdown: freeze-after-load
+  moduleLoader: vm-current-context
   dependencyLoader: auto
   allowedSpawnCommands:
     - npm
     - node
 ```
 
-- `lockdown` — Indicates if intrinsic/built-in objects should be locked down/frozen. This provides additional security and protection against prototype pollution attacks. The options can be `freeze` (default, which freezes the important built-in objects, without interfering with most packages), 'none', or 'ses' (lockdown provided by `ses` package, which is more strict).
-- `moduleLoader` — The method used to load modules (and isolate the application). The default is `vm`, which uses Node's VM to load modules. This can also be set to `native` (use standard Node module loader), or `compartment`, which uses the `ses` implementation of the proposed `Compartment` functionality.
+- `lockdown` — Indicates if intrinsic/built-in objects should be locked down/frozen. This provides additional security and protection against prototype pollution attacks. The default is `freeze-after-load`, which freezes the important built-in objects once all components have loaded, so component initialization can still modify them. This can also be set to `freeze` (freeze before any application code loads), `none`, or `ses` (lockdown provided by the `ses` package, which is more strict). See [Intrinsic Lockdown](/release-notes/v5-lincoln/v5-migration#intrinsic-lockdown).
+- `moduleLoader` — The method used to load modules (and isolate the application). The default is `vm-current-context`, which uses Node's VM module loader in Harper's own context so applications share JavaScript intrinsics. This can also be set to `vm` (VM loader with a separate context and its own intrinsics per application), `native` (standard Node module loader), or `compartment`, which uses the `ses` implementation of the proposed `Compartment` functionality. See [Module Loader Modes](/release-notes/v5-lincoln/v5-migration#module-loader-modes).
 - `dependencyLoader` — The application module loader can be used to load packages/dependencies (installed as `dependencies` from the package.json). The default is 'auto', which only use the VM module loader if the package specifies `harper` as a dependency. This can also be set to `app` to always use the application module loader or `native` to always native module loader for packages.
-- `allowedSpawnCommands` - This lists the specific commands that can be spawned by the application (using `child_process`'s `spawn()`, `exec()`, and `execFile()` functions). You can add commands that you are application will need to launch (this is to protect against malicious code spawning processes).
+- `allowedSpawnCommands` - This lists the specific commands that can be spawned by the application (using `child_process`'s `spawn()` and `execFile()` functions). You can add commands that your application will need to launch (this is to protect against malicious code spawning processes). Only the first token of the command is matched, spawning also requires a mandatory `name` option, and the call is subject to a node-wide single-process lock — see [Child Processes](../components/javascript-environment.md#child-processes) for the full contract.
 
 ## Component Configuration
 
