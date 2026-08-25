@@ -171,10 +171,7 @@ describe('estimateCondition range estimates', () => {
 	});
 });
 
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const supportsEstimateCount = typeof RocksDatabase.prototype.estimateCount === 'function';
-
-(supportsEstimateCount ? describe : describe.skip)('estimateCondition range estimates (real stores)', () => {
+describe('estimateCondition range estimates (real stores)', () => {
 	const { setupTestDBPath } = require('../testUtils');
 	const { table } = require('#src/resources/databases');
 	const { setMainIsWorker } = require('#js/server/threads/manageThreads');

@@ -1,4 +1,6 @@
 import {
+	type CountEstimate,
+	type CountEstimateOptions,
 	DBI,
 	type StoreIteratorOptions,
 	type StorePutOptions,
@@ -41,6 +43,22 @@ export class RocksIndexStore extends RocksDatabase {
 	}
 
 	/**
+	 * Estimate the entry count of a range of indexed values. Bounds must widen to
+	 * `[value, MAXIMUM_KEY]` composite bounds exactly as `getRange` does, rather than the base
+	 * implementation's encoded-byte successor of the bare indexed value.
+	 */
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
+		let { start, end, exclusiveStart, inclusiveEnd, reverse } = options ?? {};
+		if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
+			start = [start, MAXIMUM_KEY];
+		}
+		if ((reverse ? !inclusiveEnd : inclusiveEnd) && end !== undefined) {
+			end = [end, MAXIMUM_KEY];
+		}
+		return super.estimateCount({ ...options, start, end });
+	}
+
+	/**
 	 * Translate a put with indexed value and primary key to an underlying put
 	 * @param indexedValue - ignored, only used by LMDB
 	 * @param primaryKey
@@ -64,18 +82,6 @@ export class RocksIndexStore extends RocksDatabase {
 	removeSync(indexedValue: any, primaryKey: Id, options?: StoreRemoveOptions) {
 		super.removeSync([indexedValue, primaryKey], options);
 	}
-}
-
-// Bounds on indexed values must widen to [value, MAXIMUM_KEY] composite bounds (as in getRange),
-// not the base implementation's encoded-byte successor. Assigned conditionally so
-// `typeof store.estimateCount === 'function'` stays a capability probe on older rocksdb-js.
-if (typeof (RocksDatabase.prototype as any).estimateCount === 'function') {
-	(RocksIndexStore.prototype as any).estimateCount = function estimateCount(options?: any) {
-		let { start, end, exclusiveStart, inclusiveEnd } = options ?? {};
-		if (exclusiveStart && start !== undefined) start = [start, MAXIMUM_KEY];
-		if (inclusiveEnd && end !== undefined) end = [end, MAXIMUM_KEY];
-		return (RocksDatabase.prototype as any).estimateCount.call(this, { start, end });
-	};
 }
 
 /**

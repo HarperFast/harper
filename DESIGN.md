@@ -1275,20 +1275,21 @@ report standing, since it is shared with every other watcher of that file; closi
 
 `estimateCondition` estimates range comparators (`starts_with`/`prefix`, the `between` family,
 `lt`/`le`/`gt`/`ge`) via the store's `estimateCount({start, end, …}) → { count, confidence }`
-(rocksdb-js ≥ #778) instead of flat table fractions, blended as
+(rocksdb-js ≥ 2.8.0) instead of flat table fractions, blended as
 `round(confidence × count + (1 − confidence) × fraction-heuristic)` so a low-confidence estimate
 degrades to the historical behavior rather than replacing it. Invariants that are easy to break:
 
-- **Capability is feature-detected per store** (`typeof store.estimateCount === 'function'`), and
-  the `RocksIndexStore` override is assigned conditionally for the same reason — do not define it
-  unconditionally or the probe lies on older rocksdb-js. The result shape is validated
-  (`Number.isFinite(count)`, `0 ≤ confidence ≤ 1`) and the native call is try/caught because a
-  caret bump can activate this path on an image rebuild without a code change.
+- **Capability is feature-detected per store** (`typeof store.estimateCount === 'function'`)
+  because LMDB-backed and custom index stores do not implement it. The result shape is validated
+  (`Number.isFinite(count)`, `0 ≤ confidence ≤ 1`) and the native call is try/caught, so a store
+  that answers differently — or one closing concurrently — degrades the plan to the fraction
+  heuristic instead of NaN-poisoning condition ordering.
 - **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
   comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
-  execution truncates + filters (wider range than the estimable one). `RocksIndexStore` widens
-  value-space bounds to `[value, MAXIMUM_KEY]` composite bounds — the base implementation's
-  byte-successor semantics would exclude the wrong entries on composite `[value, primaryKey]` keys.
+  execution truncates + filters (wider range than the estimable one). `RocksIndexStore.estimateCount`
+  widens value-space bounds to `[value, MAXIMUM_KEY]` composite bounds, mirroring its `getRange`
+  translation (reverse flip included) — the base implementation's byte-successor semantics would
+  exclude the wrong entries on composite `[value, primaryKey]` keys.
 - **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
   the filter-only convention (`contains`/`ends_with`): the negated flag always forces
   `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —

@@ -1122,6 +1122,7 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	const attributeName = condition[0] ?? condition.attribute;
 	const isPrimaryKey = attributeName === table.primaryKey;
 	const store = isPrimaryKey ? table.primaryStore : table.indices[attributeName];
+	// LMDB-backed and custom index stores don't implement estimateCount
 	if (typeof store?.estimateCount !== 'function') return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
@@ -1188,7 +1189,7 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 		// a concurrently closing/dropped store must degrade the plan, not fail the query
 		return undefined;
 	}
-	// The dependency pin can activate this path on an image rebuild; never trust the shape blind.
+	// LMDB and custom index stores may expose their own estimateCount; validate the contract.
 	if (!Number.isFinite(count) || !(confidence >= 0 && confidence <= 1)) return undefined;
 	const heuristic = fraction * estimatedEntryCount(table.primaryStore) + 1;
 	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
