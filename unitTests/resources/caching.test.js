@@ -8,6 +8,8 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { VERSION_NOT_UNIQUE_FLAG } = require('#src/resources/RecordEncoder');
 const { INVALIDATED } = require('#src/resources/Table');
+const { exportIdMapping } = require('#src/resources/nodeIdMapping');
+const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor.js');
 
 describe('Caching', () => {
@@ -21,8 +23,19 @@ describe('Caching', () => {
 		sourceResponses = 0;
 	let swrEnabled = true;
 	let sourceGate = null; // when set, SwrQueryTable's source defers responding until the test releases it
+	let ConflictSideEffectTable;
 	let conflictSourceRequest;
+	let conflictSourceWriteId = null; // when set, the conflict source writes this row inside its own transaction
 	let conflictTimestamp = 0;
+	// Apply a record the way replication does, attributed to `nodeId`, so a version tie against a fill is
+	// resolved against a *peer's* identity rather than this node's own.
+	async function applyFromPeer(id, record, timestamp, nodeId) {
+		const context = { source: {}, timestamp };
+		await transaction(context, async () => {
+			const resource = await ConflictCachingTable.getResource(id, context);
+			return resource._writeUpdate(id, record, true, { isNotification: true, nodeId });
+		});
+	}
 	function nextConflictTimestamp() {
 		return (conflictTimestamp = Math.max(
 			conflictTimestamp + 1000,
@@ -106,6 +119,11 @@ describe('Caching', () => {
 				{ name: 'createdAt', type: 'Date', assignCreatedTime: true },
 			],
 		});
+		ConflictSideEffectTable = table({
+			table: 'ConflictSideEffectTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
 		ConflictCachingTable.sourcedFrom({
 			get(id, context) {
 				return new Promise((resolve) => {
@@ -113,6 +131,13 @@ describe('Caching', () => {
 						id,
 						timestamp: context.timestamp,
 						respond(value, lastModified) {
+							// a source that writes while resolving does so in the source's own transaction
+							if (conflictSourceWriteId != null)
+								ConflictSideEffectTable.put(
+									conflictSourceWriteId,
+									{ id: conflictSourceWriteId, name: 'side-effect' },
+									context
+								);
 							context.lastModified = lastModified;
 							resolve(value);
 						},
@@ -671,6 +696,129 @@ describe('Caching', () => {
 			indexed.map((record) => record.id),
 			[id]
 		);
+	});
+
+	it('caps a source-reported version ahead of local time so later local writes still land', async function () {
+		const id = 621;
+		conflictSourceRequest = null;
+		// no request timestamp: the ceiling is local time, which is what a skewed source clock outruns
+		const fill = ConflictCachingTable.get(id);
+		await waitFor(() => conflictSourceRequest?.id === id);
+		const futureVersion = Date.now() + 10_000_000; // ~2.8h ahead
+		conflictSourceRequest.respond({ id, name: 'source-future' }, futureVersion);
+		assert.equal((await fill).name, 'source-future');
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		const filled = ConflictCachingTable.primaryStore.getEntry(id);
+		assert(
+			filled.version < futureVersion,
+			`a future source version (${futureVersion}) must not become the record version (${filled.version})`
+		);
+		// the point of the cap: an ordinary local write is not resequenced away behind the source's floor
+		await ConflictCachingTable.put(id, { id, name: 'later-write' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'later-write', {
+			message: 'a local write after a future-dated fill must not be silently discarded',
+		});
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version > filled.version);
+	});
+
+	it('keeps a raced record when a first fill ties its version', async function () {
+		const id = 622;
+		// The raced record is attributed to a peer whose name sorts *before* this node's, so
+		// precedesExistingVersion() would break the tie in the fill's favor here and in the peer's favor
+		// on a node whose name sorts before it — the divergence the fill guard must not depend on.
+		const peerNodeId = ConflictCachingTable.auditStore.ensureLogExists('!tie-peer');
+		const localNodeName = Object.keys(exportIdMapping(ConflictCachingTable.auditStore)).find(
+			(name) => name !== '!tie-peer'
+		);
+		assert('!tie-peer' < localNodeName, 'the peer node name must sort before this node for this test to bite');
+		const sourceTimestamp = nextConflictTimestamp();
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: sourceTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		await applyFromPeer(id, { id, name: 'raced-tie' }, sourceTimestamp, peerNodeId);
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'raced-tie');
+		const racedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert.equal(racedEntry.version, sourceTimestamp);
+		conflictSourceRequest.respond({ id, name: 'source-tie' }, sourceTimestamp);
+		assert.equal((await fill).name, 'source-tie');
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'raced-tie');
+		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, racedEntry.version);
+	});
+
+	it('converges on the same entry whether the raced write lands during or after the fill', async function () {
+		// The same two effects (a first fill at `sourceVersion`, a local write at `writeVersion`) applied in
+		// both orders must leave the same (version, value) — the property the single-ordering tests above
+		// each pin one instance of. Two replicas resolving the same missing key see exactly this pair of
+		// orderings when a write races the fetch on one of them.
+		let id = 630;
+		// a base in the past: the source-version cap is local time, so a future base would clamp the
+		// reported versions together and collapse the two cases this is comparing
+		const base = Date.now() - 60_000;
+		const commitWrite = async (key, record, timestamp) => {
+			const context = { timestamp };
+			await transaction(context, () => {
+				ConflictCachingTable.put(key, record, context);
+			});
+		};
+		for (const sourceWins of [true, false]) {
+			const results = [];
+			const sourceVersion = sourceWins ? base + 100 : base;
+			const writeVersion = sourceWins ? base : base + 100;
+			for (const writeDuringFetch of [true, false]) {
+				const key = id++;
+				const fillWith = { id: key, name: 'source' };
+				const writeWith = { id: key, name: 'write' };
+				conflictSourceRequest = null;
+				const fill = ConflictCachingTable.get(key, { timestamp: base });
+				await waitFor(() => conflictSourceRequest?.id === key);
+				if (writeDuringFetch) {
+					// the write is already committed when the fill's commit transaction reloads the entry
+					await commitWrite(key, writeWith, writeVersion);
+					conflictSourceRequest.respond(fillWith, sourceVersion);
+					await fill;
+					await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(key));
+				} else {
+					// the fill commits first and the write is resequenced against it
+					conflictSourceRequest.respond(fillWith, sourceVersion);
+					await fill;
+					await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(key));
+					await commitWrite(key, writeWith, writeVersion);
+				}
+				const entry = ConflictCachingTable.primaryStore.getEntry(key);
+				results.push({ name: entry.value.name, version: entry.version });
+			}
+			assert.deepEqual(
+				results[0],
+				results[1],
+				`fill@${sourceWins ? 'newer' : 'older'} must converge regardless of when the raced write lands`
+			);
+			assert.equal(results[0].name, sourceWins ? 'source' : 'write');
+		}
+	});
+
+	it('does not backdate a write the source performs while resolving', async function () {
+		const id = 640;
+		const sideId = 641;
+		const requestTimestamp = Date.now() - 3_600_000; // an hour-old request/transaction timestamp
+		const before = Date.now();
+		conflictSourceWriteId = sideId;
+		try {
+			conflictSourceRequest = null;
+			const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+			await waitFor(() => conflictSourceRequest?.id === id);
+			assert.equal(conflictSourceRequest.timestamp, undefined);
+			conflictSourceRequest.respond({ id, name: 'source-with-write' });
+			await fill;
+			await waitFor(() => ConflictSideEffectTable.primaryStore.getSync(sideId)?.name === 'side-effect');
+			const sideEntry = ConflictSideEffectTable.primaryStore.getEntry(sideId);
+			assert(
+				sideEntry.version >= before,
+				`a source-side write must carry its own transaction time (${sideEntry.version}), not the inherited request timestamp (${requestTimestamp})`
+			);
+		} finally {
+			conflictSourceWriteId = null;
+		}
 	});
 
 	it('Source throw error', async function () {

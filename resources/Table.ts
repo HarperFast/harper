@@ -485,6 +485,7 @@ export function makeTable(options) {
 	if (!properties) properties = projectAttributesToProperties(attributes);
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
+	let warnedFutureSourceVersion = false; // likewise, for a source clock ahead of ours (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
@@ -6092,7 +6093,25 @@ export function makeTable(options) {
 						Number.isFinite(reportedVersion) &&
 						reportedVersion > 0 &&
 						reportedVersion <= MAX_DATE_TIMESTAMP;
-					sourceVersion = validReportedVersion ? reportedVersion : sourceTimestamp;
+					if (validReportedVersion) {
+						// A record version is also this node's ordering token (precedesExistingVersion), so a
+						// source-reported version ahead of local time would make every subsequent local write look
+						// out-of-order and be discarded until wall-clock caught up — freezing the row. Honor what
+						// the source reports, but never beyond now.
+						const versionCeiling = Math.max(sourceTimestamp, Date.now());
+						sourceVersion = Math.min(reportedVersion, versionCeiling);
+						if (sourceVersion !== reportedVersion) {
+							logger.trace?.(
+								`Capping future source version for ${tableName} id ${id}: ${reportedVersion} -> ${sourceVersion}`
+							);
+							if (!warnedFutureSourceVersion) {
+								warnedFutureSourceVersion = true;
+								logger.warn?.(
+									`The source for ${tableName} reported a lastModified ahead of local time (${new Date(reportedVersion).toISOString()}) for id ${id}; capping cached record versions at local time`
+								);
+							}
+						}
+					} else sourceVersion = sourceTimestamp;
 					hasChanges = invalidated || (validReportedVersion && reportedVersion > existingVersion) || !existingRecord;
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
@@ -6221,18 +6240,27 @@ export function makeTable(options) {
 					nodeName: 'source',
 					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
+						const racedVersion = existingEntry?.version;
+						// A first fill may replace a record that raced it only when its candidate version strictly
+						// orders after that record. The comparison has to be replica-independent, so a tie leaves the
+						// raced record in place: precedesExistingVersion() would break the tie with *this* node's
+						// name, and a fill from a shared source has no node identity of its own, so two replicas
+						// resolving the same tie could keep different values at the same version.
+						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
 						if (
-							existingEntry?.version !== existingVersion &&
-							(existingVersion != null || !updatedRecord || precedesExistingVersion(sourceVersion, existingEntry) <= 0)
+							racedVersion !== existingVersion &&
+							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
+							(existingVersion != null || !updatedRecord || !replacesRacedRecord)
 						) {
+							logger.trace?.(
+								`Discarding resolved record from source with id: ${id}, source version: ${sourceVersion}, current version: ${racedVersion}`
+							);
 							sourceWrite.skipped = true;
 							return;
 						}
 						const currentRecord = existingEntry?.value;
 						const recordVersion =
-							isRocksDB && existingEntry?.version != null
-								? Math.max(sourceVersion, existingEntry.version)
-								: sourceVersion;
+							isRocksDB && racedVersion != null ? Math.max(sourceVersion, racedVersion) : sourceVersion;
 						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
 						if (updatedRecord) {
 							if (existingEntry) {

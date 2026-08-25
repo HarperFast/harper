@@ -49,13 +49,24 @@ the source responds, a valid positive, finite, Date-representable `sourceContext
 record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the
 existing version.
 
+The candidate is capped at local time (`max(reserved token, Date.now())`). A record's version is also
+this node's ordering token — `precedesExistingVersion()` compares a write's transaction timestamp
+against it — so a source that reports a `lastModified` ahead of local time (a skewed origin clock)
+would otherwise make every later local write to that row look out-of-order and be discarded until
+wall-clock caught up. Capping costs the shared-version property only for that misbehaving case, and
+the cap is logged.
+
 The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction
 keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB
 stores the source candidate directly, preserving its separate source-version/local-time semantics;
 only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
 
 Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the
-fetch. First fills may replace a raced record only when their candidate version orders after it. A
+fetch. First fills may replace a raced record only when their candidate version is strictly greater
+than the raced record's. The comparison is deliberately not `precedesExistingVersion()`: that breaks
+a version tie with the _executing_ node's name, and a fill from a shared source carries no node
+identity of its own, so two replicas resolving the same tie could keep different values at the same
+version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A
 RocksDB replacement whose candidate cannot advance the current version stores at the current version
 and carries `VERSION_NOT_UNIQUE_FLAG`; [rocksdb-js#766](https://github.com/HarperFast/rocksdb-js/pull/766)
 then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
