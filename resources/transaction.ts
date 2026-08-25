@@ -55,27 +55,13 @@ export function transaction<T>(
 	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
 
-	// Abort promptly on client disconnect (harper#2001) instead of waiting on the callback or the
-	// long-transaction monitor. `signal` is unset for non-request contexts. Removed at the top of
-	// onComplete/onError so it can only fire while the callback is still pending.
-	//
-	// Gated the same way the long-transaction monitor gates abortDueToTimeout (DatabaseTransaction.ts's
-	// startMonitoringTxns): only a write-bearing transaction is poisoned. A read-only transaction (e.g. a
-	// large search()/export) can have live iterators streaming through its native handle — aborting mid-
-	// stream would free that handle out from under them, not just close it early. sourceApply/isReplay
-	// transactions (replication peer / external caching source / crash-recovery replay) have no resume
-	// path, so dropping their write on disconnect would diverge them permanently (harper-pro#348) — same
-	// exclusion the monitor already makes.
-	//
-	// No `signal.aborted` fast path: unlike the monitor (a fresh timer each tick), an AbortSignal stays
-	// aborted forever once fired, and the same signal is shared by later transaction() calls on the same
-	// context (ALS inheritance, a spread-copied context). Only a disconnect that happens WHILE this
-	// specific transaction is open poisons it; one that already happened before it was created does not.
-	//
-	// That is not an escape hatch for compensation work: abort() leaves the poisoned instance on the
-	// context and Resource.ts joins it, so a `finally` write through the static API throws while the
-	// same write wrapped in transaction() (which joins only an OPEN transaction) starts a fresh one and
-	// commits. Compensation that must survive a disconnect needs its own context — DESIGN.md.
+	// Abort promptly on client disconnect (harper#2001) rather than waiting on the callback or the
+	// long-transaction monitor. Gated like the monitor gates abortDueToTimeout: write-bearing only, never
+	// sourceApply/isReplay (no resume path, harper-pro#348). No `signal.aborted` fast path — a signal
+	// stays aborted forever and later transaction() calls share it, so only a disconnect that happens
+	// while THIS transaction is open poisons it. That is not a compensation-work escape hatch, and the
+	// static-API and transaction() spellings of the same post-disconnect write behave oppositely.
+	// DESIGN.md carries the full reasoning for all three.
 	const signal = context.signal;
 	let onDisconnect: (() => void) | undefined;
 
@@ -86,17 +72,14 @@ export function transaction<T>(
 				? callback(transaction)
 				: contextStorage.run(context, () => callback(transaction));
 		if ((result as any)?.then) {
-			// A synchronous callback can't yield to the event loop, so an abort event physically cannot
-			// fire during it — only arm the listener once we know the callback is still in flight. Safe to
-			// do here (rather than before calling callback) because no microtask has run yet.
+			// A synchronous callback cannot yield to the event loop, so arming before it would be pure
+			// overhead; no microtask has run yet, so nothing was missed.
 			if (signal) {
 				onDisconnect = () => {
 					try {
-						// isCommittingWrites() is the second half of the write-bearing test, not a redundancy:
-						// an explicit in-handler commit() marks itself CLOSED and clears its staged writes
-						// before the native commit settles, so in that window the checks above see an idle
-						// read-only transaction and would let the scope rotate open again and commit later
-						// writes for a client that is already gone.
+						// isCommittingWrites() is not redundant: commit() marks itself CLOSED and clears its
+						// staged writes before the native commit settles, so for that whole window a
+						// write-bearing transaction reads as idle and read-only.
 						if (
 							!transaction.sourceApply &&
 							!transaction.isReplay &&
@@ -152,7 +135,12 @@ export function transaction<T>(
 		// A commit attempt that has not reached its native outcome owns its own teardown — a handler that
 		// fired txn.commit() without awaiting it can get here while it is still running, and aborting
 		// would clear the writes it is committing and abort the handle it is committing them through.
-		if (!transaction.isChainCommitting()) {
+		// Ownership of the scope still ends here, or that attempt would rotate the instance back OPEN with
+		// no wrapper left to commit or abort it; abandonScope() also defers the iterator cleanup below to
+		// the point where the attempt settles.
+		if (transaction.isChainCommitting()) {
+			transaction.abandonScope();
+		} else {
 			try {
 				// "retain only while read iterators still own the handle", the same rule
 				// abortAfterCommitError uses — so the two layers cannot undo each other one frame apart.

@@ -848,10 +848,26 @@ describe('Disconnect abort', () => {
 		assert.equal((await DisconnectResource.get(503))?.name, 'normal');
 	});
 
-	// harper#2047 (owner decision): entry into an explicit in-handler commit() is the point of no
-	// return. A disconnect that lands after it poisons the transaction for everything that follows, but
-	// must not tear the started attempt's handle out mid-flight — the accepted consequence is that the
-	// already-started write can still land after the client is gone.
+	// The read reference is taken at the top of search() and only owned by a result set at the bottom.
+	// A query that faults in between owes it back, or the next abort() reads the transaction as
+	// iterator-bearing and retains its native handle until the monitor's next tick.
+	it('returns the read reference when the query faults before a result set exists', async function () {
+		const context = {};
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(600, { name: 'seed' }, context);
+				await DisconnectResource.search(
+					{ conditions: [{ attribute: 'name', comparator: 'nonsense', value: 1 }] },
+					context
+				);
+			})
+		);
+		assertChainReleased(context.transaction);
+	});
+
+	// Entry into an explicit in-handler commit() is the point of no return: a later disconnect poisons
+	// everything that follows but must not tear the started attempt's handle out, so its write can land
+	// after the client is gone.
 	it('lets an explicit commit already in flight reach its outcome, rejecting only later work', async function () {
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
@@ -925,11 +941,9 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(533)) == null, 'the post-commit write must not land');
 	});
 
-	// The deliberate limit of the no-sticky-fast-path rule, pinned so it cannot change by accident: an
-	// AbortSignal stays aborted forever, so a transaction created after the disconnect never sees an
-	// 'abort' event and is NOT poisoned. That is what keeps post-disconnect compensation work runnable
-	// (there is no ignoreSignal opt-out yet); the cost is that such a transaction falls back to the
-	// long-transaction monitor, as it did before harper#2047.
+	// The deliberate limit of the no-sticky-fast-path rule, pinned so it cannot change by accident: a
+	// transaction created after the disconnect never sees an 'abort' event and is NOT poisoned, which is
+	// what keeps post-disconnect compensation work runnable. It falls back to the monitor instead.
 	it('does not poison a transaction created after the client already disconnected', async function () {
 		const ac = new AbortController();
 		ac.abort();
@@ -986,6 +1000,10 @@ describe('Disconnect abort', () => {
 			await assert.rejects(
 				transaction(context, async (txn) => {
 					await DisconnectResource.put(570, { name: 'never settles' }, context);
+					// An undrained iterator too: the force-abort retains its handle, so the monitor must
+					// stop deferring afterwards and go on to reclaim it.
+					const results = await DisconnectResource.search({}, context);
+					await results[Symbol.asyncIterator]().next();
 					// A pre-commit completion that never resolves — the shape a hung source `before` hook
 					// takes on a caching-table write.
 					txn.stageCompletion(new Promise(() => {}));
@@ -1008,6 +1026,36 @@ describe('Disconnect abort', () => {
 		} finally {
 			setDisconnectExpiration(30000);
 		}
+	});
+
+	// The wrapper cannot abort a commit it did not await, but its scope is still over. Without giving
+	// up scope ownership, that attempt's own mid-scope rotation reopens the instance with no wrapper
+	// left to commit or abort it, and the next transaction() on the same context joins it and never
+	// commits — a silent write loss reported as success.
+	it('does not leave a rotated-open transaction behind when the callback throws mid-commit', async function () {
+		const context = {};
+		let releaseCommitGate;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(590, { name: 'fire and forget' }, context);
+				txn.stageCompletion(new Promise((resolve) => (releaseCommitGate = resolve)));
+				txn.commit().catch(() => {});
+				throw new Error('handler threw mid-commit');
+			}),
+			/handler threw mid-commit/
+		);
+		releaseCommitGate();
+		await waitFor(() => context.transaction.open !== TRANSACTION_STATE.OPEN, {
+			message: 'an abandoned scope must not be rotated back open by its own in-flight commit',
+		});
+		await transaction(context, async () => {
+			await DisconnectResource.put(591, { name: 'second scope' }, context);
+		});
+		assert.equal(
+			(await DisconnectResource.get(591))?.name,
+			'second scope',
+			'a later transaction on the same context must get a wrapper that commits'
+		);
 	});
 
 	// The head marks itself CLOSED and detaches its handle as soon as its own commit starts, while a
@@ -1048,10 +1096,9 @@ describe('Disconnect abort', () => {
 		}
 	});
 
-	// The reviewer's probe on this PR, kept as a regression: a write plus an undrained iterator, left
-	// idle past the open-transaction limit, with NO disconnect involved. Poisoning retains the handle for
-	// the iterator that owns it, so the monitor has to be the terminating condition — without one the
-	// read snapshot is pinned for the life of the process.
+	// A write plus an undrained iterator, idle past the open-transaction limit, with NO disconnect: the
+	// poison retains the handle for the iterator that owns it, so the monitor is the only terminating
+	// condition and without one the read snapshot is pinned for the life of the process.
 	it('reclaims a timed-out transaction whose iterator is never drained', async function () {
 		setDisconnectExpiration(50);
 		try {

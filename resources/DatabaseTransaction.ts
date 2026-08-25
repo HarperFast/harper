@@ -465,8 +465,14 @@ export class DatabaseTransaction implements Transaction {
 	// Root-only: consecutive monitor ticks that found this chain past its open-transaction limit with a
 	// commit still in flight. Bounded by MAX_DEFERRED_POISON_TICKS so a commit that never settles cannot
 	// make the point-of-no-return spare permanent — that would leave write intents held forever, which is
-	// the wedge harper#2001 is about.
+	// the wedge harper#2001 is about. `poisonEscalated` records that the bound was reached, so the monitor
+	// stops deferring for good: the hung attempt never decrements commitsInFlight, so without it every
+	// later tick would re-force the same abort and never reach the arm that reclaims the read snapshot.
 	declare deferredPoisonTicks?: number;
+	declare poisonEscalated?: boolean;
+	// Root-only: the owning scope ended while a commit was in flight, so the wrapper could neither abort
+	// it nor close the iterators it owns. Both are finished by endCommitAttempt() when the attempt settles.
+	declare scopeAbandoned?: boolean;
 	// Root-only: a write-bearing commit attempt is in flight on this chain. See isCommittingWrites().
 	declare committingWrites?: boolean;
 
@@ -1045,7 +1051,25 @@ export class DatabaseTransaction implements Transaction {
 		const root = this.root ?? this;
 		root.committingWrites = false;
 		root.deferredPoisonTicks = 0;
+		root.poisonEscalated = false;
 		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) txn.poisonedMidCommit = false;
+		if (root.scopeAbandoned) {
+			root.scopeAbandoned = false;
+			root.closeOwnedReadIterators();
+		}
+	}
+
+	/**
+	 * The scope that owned this transaction ended while a commit attempt was still in flight, so the
+	 * wrapper could not abort it. Surrender scope ownership now: the attempt's own
+	 * rotateAfterMidScopeCommit would otherwise reopen an instance with no wrapper left to commit or
+	 * abort it, and the next transaction() on that context would join it and never commit. Iterator
+	 * cleanup is deferred to endCommitAttempt(), since closing them mid-attempt can pull the handle the
+	 * commit is still staging through.
+	 */
+	abandonScope(): void {
+		(this.root ?? this).scopeAbandoned = true;
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) txn.endScopeOwnership();
 	}
 
 	/**
@@ -1792,10 +1816,14 @@ const MAX_DEFERRED_POISON_TICKS = 2;
  * link's still-uncommitted handle.
  */
 function deferForCommitInFlight(txn: DatabaseTransaction, url: string | undefined): boolean {
-	if (!txn.isChainCommitting()) return false;
 	const root = txn.root ?? txn;
+	// Once escalated, never defer again: the hung attempt never decrements commitsInFlight, so deferring
+	// on it forever would re-force the same abort every tick and never reach the arm that reclaims the
+	// read snapshot the force-abort deliberately retained for its iterators.
+	if (root.poisonEscalated || !txn.isChainCommitting()) return false;
 	root.deferredPoisonTicks = (root.deferredPoisonTicks ?? 0) + 1;
 	if (root.deferredPoisonTicks > MAX_DEFERRED_POISON_TICKS) {
+		root.poisonEscalated = true;
 		harperLogger.error(
 			`Transaction exceeded the open-transaction limit with a commit that has not settled after ${MAX_DEFERRED_POISON_TICKS} further checks; aborting it to release its write intents, from table: ${
 				(txn.db as any)?.name + (url ? ' path: ' + url : '')
@@ -1806,7 +1834,7 @@ function deferForCommitInFlight(txn: DatabaseTransaction, url: string | undefine
 		} catch (error) {
 			harperLogger.debug?.('Error aborting a transaction whose commit never settled', error);
 		}
-		return true;
+		return false; // fall through this same tick so the CLOSED arm reclaims what the abort retained
 	}
 	harperLogger.warn?.(
 		`Transaction exceeded the open-transaction limit while its commit is still in flight; deferring, from table: ${

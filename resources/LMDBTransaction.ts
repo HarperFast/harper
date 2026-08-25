@@ -317,7 +317,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 					if (options) options.retries = retries + 1;
 					else options = { retries: 1 };
-					return this.commit(options); // try again
+					// A continuation, not a fresh attempt: a poison that landed mid-commit must not abandon
+					// the retry ladder (DESIGN.md's "a retry continuation is never abandoned").
+					return this.commit({ ...options, continuation: true }); // try again
 				}
 			});
 		}
@@ -411,10 +413,13 @@ function startMonitoringTxns() {
 				// defer rather than re-entering commit() under it. Bounded: LMDB leaves `open` OPEN for the
 				// whole write commit, so without the escalation a commit that never settles would hold its
 				// write intents forever. The counter lives on the chain root and resets when a commit settles.
-				if (txn.isChainCommitting()) {
-					const root = txn.root ?? txn;
+				const root = txn.root ?? txn;
+				if (!root.poisonEscalated && txn.isChainCommitting()) {
 					root.deferredPoisonTicks = (root.deferredPoisonTicks ?? 0) + 1;
 					if (root.deferredPoisonTicks > MAX_DEFERRED_POISON_TICKS) {
+						// Escalate once and stop deferring: the hung attempt never decrements commitsInFlight,
+						// so deferring on it forever would never reach the CLOSED arm that reclaims the snapshot.
+						root.poisonEscalated = true;
 						harperLogger.error(
 							`Transaction exceeded the open-transaction limit with a commit that has not settled after ${MAX_DEFERRED_POISON_TICKS} further checks; aborting it to release its write intents, from table: ${
 								(txn.db as any)?.name + (url ? ' path: ' + url : '')
@@ -432,8 +437,8 @@ function startMonitoringTxns() {
 							}`
 						);
 						txn.timeout = txnExpiration;
+						continue;
 					}
-					continue;
 				}
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
 					// Only reachable through abort(true), which retained the snapshot for read iterators
