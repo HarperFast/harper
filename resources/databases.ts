@@ -354,9 +354,8 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-// What makes up a declaration: the `commonChanged` comparison below, plus the two index flags (an
-// index built without null entries must not be re-registered as null-capable). A cluster-origin merge
-// discards these rather than applying them, so a difference is reported instead.
+// The `commonChanged` comparison below, plus the two index flags — an index built without null entries
+// must not be re-registered as null-capable.
 const PEER_REDEFINABLE_FIELDS = [
 	'type',
 	'indexed',
@@ -369,9 +368,8 @@ const PEER_REDEFINABLE_FIELDS = [
 	'embed',
 ];
 
-// Restate an attribute from its catalog descriptor, dropping fields the descriptor no longer carries.
 // A cluster-origin caller's list can predate a declaration another thread has already committed, so on
-// that path the descriptor — not the caller — decides what the attribute is.
+// that path the descriptor — not the caller — decides what the attribute is, in both directions.
 function applyDurableDeclaration(attribute: any, descriptor: any) {
 	for (const field of PEER_REDEFINABLE_FIELDS) {
 		if (field in descriptor) attribute[field] = descriptor[field];
