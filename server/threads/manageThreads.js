@@ -47,6 +47,7 @@ const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
+let processShuttingDown = false;
 const connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
 // Threads get 10s to die before they're forced. In dev (`harper dev`) we widen this: a reload's old
@@ -151,6 +152,7 @@ module.exports = {
 	setTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	beginProcessShutdown,
 	registerWorkerDataProvider,
 	onThreadExit,
 	registerProcessGroup,
@@ -325,6 +327,11 @@ listenersByType.set(THREAD_INFO, null);
 listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
 function startWorker(path, options = {}) {
+	if (processShuttingDown) {
+		const error = new Error('Cannot start a worker while the Harper process is shutting down');
+		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
+		throw error;
+	}
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -436,7 +443,7 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
-		if (!worker.wasShutdown && options.autoRestart !== false) {
+		if (!processShuttingDown && !worker.wasShutdown && options.autoRestart !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
@@ -470,6 +477,7 @@ async function restartWorkers(
 	startReplacementThreads = true
 ) {
 	if (isMainThread) {
+		if (processShuttingDown && startReplacementThreads) return;
 		try {
 			// we do this because it is possible for a component to chdir to itself, get re-deployed and then the cwd
 			// inode link is invalid and it can cause a lot of problems. But process.cwd() still returns the path, for
@@ -507,6 +515,8 @@ async function restartWorkers(
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		for (let worker of workers.slice(0)) {
+			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
+			if (processShuttingDown && startReplacementThreads) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			if (overlapping && startReplacementThreads && canPreStartReplacement) {
@@ -591,7 +601,7 @@ async function restartWorkers(
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
-			if (overlapping && startReplacementThreads && !canPreStartReplacement) worker.startCopy();
+			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) worker.startCopy();
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
@@ -628,7 +638,7 @@ async function restartWorkers(
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
-					if (!overlapping && startReplacementThreads) worker.startCopy();
+					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
 					resolve();
 				});
 			});
@@ -651,7 +661,11 @@ async function restartWorkers(
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }
+function beginProcessShutdown() {
+	processShuttingDown = true;
+}
 async function shutdownWorkersNow(name) {
+	if (name == null) beginProcessShutdown();
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	if (isBun) {
 		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead

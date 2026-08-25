@@ -83,6 +83,12 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `threads/itc.js`           | Inter-thread comms primitives.                           |
 | `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.      |
 
+Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.js`.
+Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
+calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it.
+`shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
+and it force-terminates the remaining worker set rather than waiting for application drain hooks.
+
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
