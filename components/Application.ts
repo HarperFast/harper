@@ -23,6 +23,7 @@ import {
 	lstat,
 	mkdir,
 	mkdtemp,
+	open,
 	readdir,
 	readFile,
 	rename,
@@ -866,6 +867,105 @@ export async function extractApplication(
 	await transaction.commit();
 }
 
+// Written into a candidate's deployment directory once its build and its validation have BOTH succeeded.
+// Roll-forward authority: recovery may activate an interrupted candidate only if this is present.
+const CANDIDATE_COMPLETE_MARKER = '.complete';
+// Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
+// tree and configuration together — instead of inferring intent from filesystem shape alone.
+const ACTIVATION_JOURNAL = 'activation.json';
+const ACTIVATION_JOURNAL_VERSION = 1;
+
+/**
+ * Best-effort fsync of a directory, so a rename or create has a chance of reaching stable storage.
+ * Best-effort by necessity: Node cannot open a directory for fsync on Windows, and some filesystems
+ * reject it. The activation protocol is therefore built to never DEPEND on directory-entry durability —
+ * roll-forward requires the journal and the candidate and its complete marker to all be observable, so a
+ * lost directory update degrades to a roll back rather than to a wrong decision.
+ */
+async function syncDirectory(dirPath: string): Promise<void> {
+	let handle;
+	try {
+		handle = await open(dirPath, 'r');
+	} catch {
+		return;
+	}
+	try {
+		await handle.sync();
+	} catch {
+		// Unsupported here; see above.
+	} finally {
+		await handle.close();
+	}
+}
+
+/** Write a small control file and fsync it before its parent, so it cannot appear empty after a crash. */
+async function writeControlFileDurably(filePath: string, contents: string): Promise<void> {
+	const handle = await open(filePath, 'wx', 0o600);
+	try {
+		await handle.writeFile(contents, 'utf8');
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await syncDirectory(dirname(filePath));
+}
+
+type ActivationJournal = {
+	v: number;
+	component: string;
+	candidateId: string;
+	// This component's root-config entry ONLY, never a whole-file snapshot: two components activating at
+	// once would each restore a snapshot predating the other's write and delete its entry. `null` means
+	// the component had (or should have) no entry. Credential REFERENCES only, never resolved tokens.
+	configBefore: Record<string, any> | null;
+	configAfter: Record<string, any> | null;
+};
+
+function candidateCompleteMarkerPath(componentDirPath: string, deploymentId: string): string {
+	return join(candidateDeploymentDirPath(componentDirPath, deploymentId), CANDIDATE_COMPLETE_MARKER);
+}
+
+function activationJournalPath(componentDirPath: string, deploymentId: string): string {
+	return join(candidateDeploymentDirPath(componentDirPath, deploymentId), ACTIVATION_JOURNAL);
+}
+
+/**
+ * Read an activation journal. Absent is `undefined` — no activation was attempted. Anything else THROWS:
+ * a truncated or unknown-version journal is an interrupted activation whose intent cannot be read, and
+ * both guesses are destructive (publish a rejected release, or discard a good one), so the component is
+ * failed closed instead.
+ */
+async function readActivationJournal(journalPath: string): Promise<ActivationJournal | undefined> {
+	let raw: string;
+	try {
+		raw = await readFile(journalPath, 'utf8');
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+		throw error;
+	}
+	let parsed: any;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (error) {
+		throw new Error(`Activation journal ${journalPath} could not be parsed: ${errorMessage(error)}`);
+	}
+	if (parsed?.v !== ACTIVATION_JOURNAL_VERSION) {
+		throw new Error(
+			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${ACTIVATION_JOURNAL_VERSION}`
+		);
+	}
+	if (typeof parsed.component !== 'string' || !parsed.component || typeof parsed.candidateId !== 'string') {
+		throw new Error(`Activation journal ${journalPath} does not identify its component and candidate`);
+	}
+	if (parsed.configBefore !== null && typeof parsed.configBefore !== 'object') {
+		throw new Error(`Activation journal ${journalPath} has a malformed configBefore`);
+	}
+	if (parsed.configAfter !== null && typeof parsed.configAfter !== 'object') {
+		throw new Error(`Activation journal ${journalPath} has a malformed configAfter`);
+	}
+	return parsed as ActivationJournal;
+}
+
 /** The deployment directory holding one candidate build: `<root>/.deploy-staging/<deploymentId>`. */
 function candidateDeploymentDirPath(componentDirPath: string, deploymentId: string): string {
 	return join(dirname(componentDirPath), DEPLOY_STAGING_DIR, deploymentId);
@@ -969,6 +1069,316 @@ async function ensureExtractionStagingDirectory(asideStagingDir: string): Promis
  * Failure needs no compensation, which is the whole point: nothing about the live component was modified,
  * so the abandoned candidate is simply removed and the error propagates.
  */
+/** The single component directory inside a candidate deployment directory, when there is exactly one. */
+async function candidateComponentName(deploymentDirPath: string): Promise<string | undefined> {
+	const entries = await readdir(deploymentDirPath, { withFileTypes: true }).catch(() => []);
+	const components = entries.filter((entry) => entry.isDirectory());
+	return components.length === 1 ? components[0].name : undefined;
+}
+
+/** In-progress rollback records in a component's aside directory, newest first. */
+async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]> {
+	const entries = await readdir(asideStagingDir, { withFileTypes: true }).catch(() => []);
+	return entries
+		.filter((entry) => entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX))
+		.map((entry) => join(asideStagingDir, entry.name))
+		.sort()
+		.reverse();
+}
+
+/**
+ * Settle activations a crash interrupted, before anything loads. Runs on the main thread at startup.
+ *
+ * Returns failures keyed by COMPONENT so the caller can fail exactly those closed and still load every
+ * healthy sibling — a single unreadable journal must not take down the whole node, and must not let a
+ * component load over state nobody reconciled.
+ *
+ * `publishConfig` applies one component's root-config entry (`null` removes it). It is supplied by the
+ * caller so this module stays out of the business of deciding config policy.
+ */
+export async function recoverInterruptedActivations(
+	componentsRootDirPath: string,
+	publishConfig: (component: string, entry: Record<string, any> | null) => Promise<void>
+): Promise<Map<string, Error>> {
+	const failures = new Map<string, Error>();
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	let deployments;
+	try {
+		deployments = await readdir(stagingRoot, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return failures;
+		throw error;
+	}
+
+	for (const deployment of deployments) {
+		if (!deployment.isDirectory()) continue;
+		const deploymentDirPath = join(stagingRoot, deployment.name);
+		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
+		const fail = (component: string, error: unknown) => {
+			const failure = error instanceof Error ? error : new Error(String(error));
+			if (!failures.has(component)) failures.set(component, failure);
+			logger.error(`Could not settle the interrupted activation of ${component}:`, errorForLog(failure));
+		};
+
+		let journal: ActivationJournal | undefined;
+		try {
+			journal = await readActivationJournal(journalPath);
+		} catch (error) {
+			// The journal itself is unreadable, so its component has to be inferred from the tree it was
+			// going to activate. A deployment directory holding no component tree leaves only its id.
+			fail((await candidateComponentName(deploymentDirPath)) ?? deployment.name, error);
+			continue;
+		}
+		if (!journal) {
+			// No activation was ever attempted: build residue, or a candidate abandoned mid-build. The
+			// legacy in-place recovery owns any aside it left, so there is nothing to settle here.
+			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			continue;
+		}
+		try {
+			const settling = journal;
+			await withComponentPreparationLock(
+				join(componentsRootDirPath, settling.component),
+				() => settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, settling, publishConfig),
+				{ purpose: 'activation-recovery' }
+			);
+		} catch (error) {
+			// The journal named its component, so attribution is exact however the settle failed.
+			fail(journal.component, error);
+		}
+	}
+	return failures;
+}
+
+/**
+ * One interrupted activation, under the component preparation lock. Ambiguity exists only while the live
+ * path is absent, and there the `complete` marker is the roll-forward authority: without it the candidate
+ * was never validated, so the committed tree in the aside wins. Every branch is idempotent, so a crash
+ * during recovery is settled by the next run.
+ */
+async function settleInterruptedActivation(
+	componentsRootDirPath: string,
+	deploymentDirPath: string,
+	journal: ActivationJournal,
+	publishConfig: (component: string, entry: Record<string, any> | null) => Promise<void>
+): Promise<void> {
+	const liveDirPath = join(componentsRootDirPath, journal.component);
+	const candidateDirPath = join(deploymentDirPath, journal.component);
+	const asideStagingDir = extractionStagingDirectory(liveDirPath);
+	const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
+
+	const exists = async (path: string) =>
+		lstat(path).then(
+			() => true,
+			(error) => {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+				throw error;
+			}
+		);
+	const liveExists = await exists(liveDirPath);
+	const candidateExists = await exists(candidateDirPath);
+	const candidateComplete = await exists(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER));
+	const asideRecords = await inProgressAsideRecords(asideStagingDir);
+
+	const rollForward = async () => {
+		if (!liveExists) await rename(candidateDirPath, liveDirPath);
+		await syncDirectory(componentsRootDirPath);
+		await publishConfig(journal.component, journal.configAfter ?? null);
+		for (const record of asideRecords) await retireExtractionAside(record);
+	};
+	const rollBack = async (restoreFrom?: string) => {
+		if (restoreFrom) {
+			await rename(restoreFrom, liveDirPath);
+			await syncDirectory(componentsRootDirPath);
+		}
+		await publishConfig(journal.component, journal.configBefore ?? null);
+		for (const record of asideRecords) await rm(record, { recursive: true, force: true });
+	};
+
+	if (!liveExists) {
+		if (candidateExists && candidateComplete) {
+			await rollForward();
+		} else {
+			// The tree that was moved aside is the last committed one. A `-prior-absent` record means there
+			// was nothing live to begin with, so rolling back means leaving the component absent.
+			const restorable = asideRecords.find((record) => !record.endsWith(PRIOR_ABSENT_RECORD_SUFFIX));
+			if (!restorable && !asideRecords.length) {
+				throw new Error(
+					`Cannot settle the interrupted activation of ${journal.component}: it has neither a live tree, ` +
+						`a complete candidate, nor a rollback record, so no version of it can be recovered`
+				);
+			}
+			await rollBack(restorable);
+		}
+	} else if (candidateExists) {
+		// Never activated, or already rolled back. Either way the live tree stands and the candidate goes.
+		await rollBack();
+	} else {
+		// The candidate is already live; only the tail of the transaction was lost.
+		await rollForward();
+	}
+
+	await rm(journalPath, { force: true });
+	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+}
+
+type CandidateActivation = {
+	/** This component's root-config entry as it stands now, so a roll back can put it back. */
+	configBefore?: Record<string, any> | null;
+	/** What the entry should say once the candidate is live. `null` removes it. */
+	configAfter?: Record<string, any> | null;
+	/** Publishes `configAfter`. Called after the tree is live and before the aside is retired. */
+	publishConfig?: (entry: Record<string, any> | null) => Promise<void>;
+};
+
+/** Mark a candidate build+validation complete. Idempotent, so a retried activation is not a failure. */
+async function markCandidateComplete(componentDirPath: string, deploymentId: string): Promise<void> {
+	try {
+		await writeControlFileDurably(candidateCompleteMarkerPath(componentDirPath, deploymentId), '');
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+	}
+}
+
+/**
+ * Make a built and validated candidate live, as one compensating transaction over three effects: the live
+ * tree moves aside, the candidate takes its place, and the component's root-config entry is published.
+ *
+ * The `complete` marker and the activation journal are written and fsynced BEFORE the first rename, so a
+ * crash anywhere below is recoverable — see `recoverInterruptedActivation` for the state matrix. Ordering
+ * is deliberate: config is published only once the candidate is actually live, because a config entry that
+ * outlives the tree it names is what makes a rejected release come back at the next restart.
+ */
+export async function activateCandidateApplication(
+	application: Application,
+	deploymentId: string,
+	activation: CandidateActivation = {}
+): Promise<void> {
+	const liveDirPath = application.dirPath;
+	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
+	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
+	const asideStagingDir = extractionStagingDirectory(liveDirPath);
+
+	const candidateStat = await lstat(candidateDirPath).catch((error) => {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+		throw error;
+	});
+	if (!candidateStat?.isDirectory()) {
+		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
+	}
+
+	await markCandidateComplete(liveDirPath, deploymentId);
+	const journalPath = activationJournalPath(liveDirPath, deploymentId);
+	try {
+		await writeControlFileDurably(
+			journalPath,
+			JSON.stringify({
+				v: ACTIVATION_JOURNAL_VERSION,
+				component: application.name,
+				candidateId: deploymentId,
+				configBefore: activation.configBefore ?? null,
+				configAfter: activation.configAfter ?? null,
+			})
+		);
+	} catch (error) {
+		// An existing journal is a retry of this same activation, not a conflict.
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+	}
+
+	await ensureExtractionStagingDirectory(asideStagingDir);
+	const liveExists = await lstat(liveDirPath).then(
+		() => true,
+		(error) => {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+			throw error;
+		}
+	);
+	application.isNewComponent = !liveExists;
+
+	// B1 — the live tree moves aside. It stays the rollback source until B4 retires it.
+	let asidePath: string | undefined;
+	let priorAbsentRecordPath: string | undefined;
+	if (liveExists) {
+		asidePath = join(asideStagingDir, `${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`);
+		await rename(liveDirPath, asidePath);
+	} else {
+		priorAbsentRecordPath = join(
+			asideStagingDir,
+			`${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}${PRIOR_ABSENT_RECORD_SUFFIX}`
+		);
+		await writeFile(priorAbsentRecordPath, '', { flag: 'wx', mode: 0o600 });
+	}
+	await syncDirectory(dirname(liveDirPath));
+
+	const restoreLive = async () => {
+		if (asidePath) await rename(asidePath, liveDirPath);
+		else if (priorAbsentRecordPath) await rm(priorAbsentRecordPath, { force: true });
+		await syncDirectory(dirname(liveDirPath));
+	};
+
+	// B2 — the candidate becomes live.
+	try {
+		await rename(candidateDirPath, liveDirPath);
+		await syncDirectory(dirname(liveDirPath));
+	} catch (error) {
+		await compensate(error, 'move the candidate into place', restoreLive, application);
+		throw error;
+	}
+
+	// B3 — config is published only now, with the tree it describes already serving.
+	if (activation.publishConfig) {
+		try {
+			await activation.publishConfig(activation.configAfter ?? null);
+		} catch (error) {
+			await compensate(
+				error,
+				'publish the component configuration',
+				async () => {
+					await rename(liveDirPath, candidateDirPath);
+					await restoreLive();
+				},
+				application
+			);
+			throw error;
+		}
+	}
+
+	// B4/B5/B6 — past the point of no return. Each of these failing leaves a state recovery settles
+	// forward on the next start, so they are logged rather than thrown: the deploy has succeeded.
+	try {
+		await retireExtractionAside(asidePath ?? priorAbsentRecordPath!);
+	} catch (error) {
+		application.logger.warn(`Deployed ${application.name} but could not retire its rollback record:`, error);
+	}
+	await rm(journalPath, { force: true }).catch((error) =>
+		application.logger.warn(`Deployed ${application.name} but could not remove its activation journal:`, error)
+	);
+	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+		application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
+	);
+}
+
+/**
+ * Undo an activation effect, folding a compensation failure into the original error rather than replacing
+ * it — the first error is what the operator needs, the second is why the node still needs attention.
+ */
+async function compensate(
+	error: unknown,
+	what: string,
+	undo: () => Promise<void>,
+	application: Application
+): Promise<void> {
+	try {
+		await undo();
+	} catch (undoError) {
+		throw new AggregateError(
+			[error, undoError],
+			`Failed to ${what} for ${application.name}: ${errorMessage(error)}; ` +
+				`also failed to restore the previous version: ${errorMessage(undoError)}`
+		);
+	}
+}
+
 export async function buildCandidateApplication(application: Application, deploymentId: string): Promise<string> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
