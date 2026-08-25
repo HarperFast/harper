@@ -245,7 +245,7 @@ const BLOB_CORRUPT_STATUS = 500;
  * watcher: a callback from one it has already replaced must not act, or it would close the live
  * watcher and start a second read at the same position. `onFailure` runs only for a live watcher
  * that fails after registration — a registration that throws latches `mustPoll` and leaves the
- * caller in its own no-watcher branch. `watchFile` is injectable so those paths are testable.
+ * caller in its own no-watcher branch.
  */
 export function watchInProgressFile(
 	filePath: string,

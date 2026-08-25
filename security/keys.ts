@@ -375,7 +375,8 @@ function loadAndWatch(path, loadCert, type) {
 					if (usingPolling || liveWatcher !== opened) return;
 					warnWatcherFallback(path);
 					usingPolling = true;
-					Promise.resolve(opened.close())
+					Promise.resolve()
+						.then(() => opened.close())
 						.catch(() => {})
 						.then(openWatcher)
 						.catch(() => {});

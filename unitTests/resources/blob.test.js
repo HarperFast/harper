@@ -2286,8 +2286,6 @@ describe('backup of a blob root during a live write (harper#2262)', () => {
 	});
 });
 
-// A normal read cannot reach these paths — they need an exhausted OS watcher pool — so they are
-// driven through the injectable `watchFile` seam.
 describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 	const ORIGINAL_PATH = '/blobs/RUNNER~1/00/01';
 	const CANONICAL_PATH = '/blobs/runneradmin/00/01';

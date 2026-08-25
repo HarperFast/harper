@@ -1277,7 +1277,8 @@ if (isMainThread) {
 						if (usingPolling || liveWatcher !== opened) return;
 						warnWatcherFallback(dir);
 						usingPolling = true;
-						Promise.resolve(opened.close())
+						Promise.resolve()
+							.then(() => opened.close())
 							.catch(() => {})
 							.then(openWatcher)
 							.catch(() => {});
