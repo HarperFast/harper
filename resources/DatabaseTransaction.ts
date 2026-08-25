@@ -992,15 +992,18 @@ export class DatabaseTransaction implements Transaction {
 	 * Whether any link of this multi-store chain has a commit attempt that has not reached a native
 	 * outcome. Asked of the whole chain, not just this link: the head commits its own writes and then
 	 * cascades into `next`, so that cascade is a continuation of one logical commit, not a fresh one.
-	 * Walked from the root AND from here, because a settling commit detaches `next` first.
+	 * Walked from here as well when a settling commit has already detached this link from that chain.
 	 */
 	isChainCommitting(): boolean {
+		let attached = false;
 		for (let txn: DatabaseTransaction = this.root ?? this; txn; txn = txn.next) {
 			if (txn.commitsInFlight) return true;
+			if (txn === this) attached = true;
 		}
-		// And from here: a commit detaches `next` before it settles, so a link asked about itself is no
-		// longer reachable from the root while its own attempt is exactly the one that must not be torn
-		// out. Usually the same walk, since `this` is usually the root.
+		if (attached) return false;
+		// Only a link a settling commit already detached needs its own walk, and its own attempt is
+		// exactly the one that must not be torn out from under it. The ordinary case — asked of the root,
+		// or of a link still on the chain — is answered by the single walk above.
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			if (txn.commitsInFlight) return true;
 		}
