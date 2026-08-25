@@ -372,12 +372,16 @@ describe('Subscription replay', () => {
 			await Promise.all(inFlight);
 			// Wait for every in-flight write to be delivered rather than guessing a fixed
 			// duration — the fixed wait raced loaded runners and was the source of the
-			// intermittent "missing id" failures.
-			await waitFor(() => {
-				const seen = new Set(events.map((e) => e.id));
-				for (let i = 0; i < 200; i++) if (!seen.has(20000 + i)) return false;
-				return true;
-			});
+			// intermittent "missing id" failures. The timeout falls through so the per-id
+			// asserts below name whichever write was lost instead of reporting a bare timeout.
+			await waitFor(
+				() => {
+					const seen = new Set(events.map((e) => e.id));
+					for (let i = 0; i < 200; i++) if (!seen.has(20000 + i)) return false;
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
