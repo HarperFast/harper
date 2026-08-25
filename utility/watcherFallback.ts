@@ -117,10 +117,13 @@ export class PartialReadRetry {
 	}
 
 	/**
-	 * The budget is spent. Distinct from `settled()`: the file has not recovered, so the report
-	 * stands for every other watcher of it. Returns whether this give-up was the one reported.
+	 * The budget is spent. Distinct from `settled()` in that the report stands — the file has not
+	 * recovered, and it is shared with every other watcher of it. The budget itself is restored,
+	 * because the next event may be the repair, and that repair can be observed mid-write too.
+	 * Returns whether this give-up was the one reported.
 	 */
 	gaveUp(error?: unknown): boolean {
+		this.#remaining = PARTIAL_READ_MAX_REREADS;
 		return warnPartialReadGaveUp(this.#filePath, error);
 	}
 

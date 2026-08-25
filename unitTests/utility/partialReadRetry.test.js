@@ -96,6 +96,24 @@ describe('PartialReadRetry', () => {
 		assert.strictEqual(new PartialReadRetry(path).gaveUp(), true, 'so the next incident reports again');
 	});
 
+	it('restores the budget when it gives up, so a later repair is not missed', async () => {
+		// The repair can itself be observed mid-write, which is the case the retry exists for — a
+		// watcher left with no budget would drop it and chokidar may emit nothing further.
+		const retry = new PartialReadRetry('/nonexistent/repaired.yaml');
+		let rereads = 0;
+		for (let attempt = 1; retry.schedule(() => rereads++); attempt++) {
+			assert.ok(attempt <= 50, 'the budget must be bounded');
+			await waitFor(() => rereads === attempt, { message: `re-read ${attempt} never fired` });
+		}
+		retry.gaveUp();
+
+		assert.strictEqual(
+			retry.schedule(() => rereads++),
+			true,
+			'the next incident needs its own budget'
+		);
+	});
+
 	it('stops re-reading after close', async () => {
 		const retry = new PartialReadRetry('/nonexistent/config.yaml');
 		let rereads = 0;
