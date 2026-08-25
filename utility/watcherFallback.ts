@@ -88,6 +88,7 @@ export class PartialReadRetry {
 	#filePath: string;
 	#timer?: ReturnType<typeof setTimeout>;
 	#remaining: number = PARTIAL_READ_MAX_REREADS;
+	#closed = false;
 
 	constructor(filePath: string) {
 		this.#filePath = filePath;
@@ -95,6 +96,7 @@ export class PartialReadRetry {
 
 	/** False once the budget is spent, so the caller can fall back to its own error handling. */
 	schedule(reread: () => void): boolean {
+		if (this.#closed) return false;
 		if (this.#timer) return true;
 		if (this.#remaining <= 0) return false;
 		this.#remaining--;
@@ -123,14 +125,16 @@ export class PartialReadRetry {
 	 * Returns whether this give-up was the one reported.
 	 */
 	gaveUp(error?: unknown): boolean {
+		if (this.#closed) return false;
 		this.#remaining = PARTIAL_READ_MAX_REREADS;
 		return warnPartialReadGaveUp(this.#filePath, error);
 	}
 
+	/** Terminal: the watcher is closing, so nothing may re-arm the re-read or report on it. */
 	cancel() {
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = undefined;
-		this.#remaining = 0;
+		this.#closed = true;
 	}
 }
 

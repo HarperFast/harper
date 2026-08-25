@@ -127,5 +127,11 @@ describe('PartialReadRetry', () => {
 			retry.schedule(() => rereads++),
 			false
 		);
+		// Close is terminal: giving up restores the budget, and must not do so after close.
+		assert.strictEqual(retry.gaveUp(), false);
+		assert.strictEqual(
+			retry.schedule(() => rereads++),
+			false
+		);
 	});
 });
