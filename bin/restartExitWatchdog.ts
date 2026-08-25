@@ -32,11 +32,12 @@ export function armRestartExitWatchdog(timeoutMs: number) {
 
 	try {
 		const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+		const watchdogPath = ['/usr/bin', '/bin', process.env.PATH].filter(Boolean).join(':');
 		const watchdog = spawn(
 			'/bin/sh',
 			['-c', WATCHDOG_SCRIPT, 'harper-restart-exit-watchdog', String(process.pid), String(timeoutSeconds)],
 			{
-				env: { PATH: '/usr/bin:/bin' },
+				env: { PATH: watchdogPath },
 				stdio: ['ignore', 'ignore', 'inherit'],
 				windowsHide: true,
 			}
