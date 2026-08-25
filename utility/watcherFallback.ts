@@ -152,6 +152,11 @@ export function isPartialReadWarned(filePath: string): boolean {
 	return partialReadWarned.has(filePath);
 }
 
+/** Test-only: forget that this file was reported, so a suite can start from a known state. */
+export function clearPartialReadWarning(filePath: string) {
+	partialReadWarned.delete(filePath);
+}
+
 /**
  * A listener that throws while applying new config is a bug in that listener, not evidence the
  * file was half-written — the watcher's own state is already updated, so it keeps going.

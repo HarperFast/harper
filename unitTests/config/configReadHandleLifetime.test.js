@@ -3,6 +3,8 @@ const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = require('node:fs');
 const { once } = require('node:events');
+const { waitFor } = require('../waitFor');
+const { isPartialReadWarned, clearPartialReadWarning } = require('#src/utility/watcherFallback');
 const { stringify } = require('yaml');
 const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { OptionsWatcher } = require('#src/components/OptionsWatcher');
@@ -189,6 +191,31 @@ describe('root config read handle lifetime', () => {
 
 		assert.deepStrictEqual(removes, [], 'the env overlay must not stand in for the half-written file');
 		assert.strictEqual(watcher.get(['enabled']), true);
+	});
+
+	it('OptionsWatcher reports a file it gave up on once, not once per scope', async () => {
+		clearPartialReadWarning(configFilePath);
+		// Both scopes must be present in the file, or their `ready` never fires.
+		writeFileSync(
+			configFilePath,
+			stringify({ 'test-component': { enabled: true }, 'other-component': { enabled: true } })
+		);
+		const watchers = ['test-component', 'other-component'].map((name) => {
+			const watcher = new OptionsWatcher(name, configFilePath, undefined, true);
+			openWatchers.push(watcher);
+			return watcher;
+		});
+		await Promise.all(watchers.map((watcher) => watcher.ready));
+
+		writeFileSync(configFilePath, '');
+		for (const watcher of watchers) {
+			// Drive each watcher past its own retry budget, as a real unusable file would.
+			for (let attempt = 0; attempt <= 12; attempt++) await watcher._handleChangeForTests();
+			await waitFor(() => isPartialReadWarned(configFilePath), { message: 'the give-up was never reported' });
+		}
+
+		// One bad root config must not produce one warning per scope watching it.
+		assert.strictEqual(isPartialReadWarned(configFilePath), true);
 	});
 
 	it('OptionsWatcher still reads an application config without blocking', async () => {
