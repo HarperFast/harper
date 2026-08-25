@@ -87,8 +87,7 @@ describe('estimateCondition range estimates', () => {
 		assert.strictEqual(estimate(table, { attribute: 'attr', comparator: 'gt', value: 5 }), 40);
 		assert.deepStrictEqual(table.indices.attr.calls[0], { start: 5, exclusiveStart: true });
 
-		// `start: true` is not decoration: searchByIndex uses it to skip an indexNulls index's
-		// [null, primaryKey] entries, so an unbounded estimate would count rows execution never visits
+		// searchByIndex bounds lt/le at `start: true` to skip an indexNulls index's [null, id] entries
 		const table2 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
 		assert.strictEqual(estimate(table2, { attribute: 'attr', comparator: 'lt', value: 5 }), 40);
 		assert.deepStrictEqual(table2.indices.attr.calls[0], { start: true, end: 5 });
@@ -182,7 +181,7 @@ describe('RocksIndexStore.estimateCount composite bound translation', () => {
 	const { RocksDatabase } = require('@harperfast/rocksdb-js');
 
 	// Both methods must translate bounds identically or the planner estimates a range execution
-	// never iterates. Spying on the base captures what each actually forwards.
+	// never iterates.
 	function captureBounds(method, options) {
 		const original = RocksDatabase.prototype[method];
 		let captured;
@@ -295,6 +294,25 @@ describe('estimateCondition range estimates (real stores)', () => {
 		assert.ok(tail10 < tail50, `10% tail (${tail10}) should be < 50% tail (${tail50})`);
 		assert.ok(tail10 <= 0.3 * N + 1, `10% tail (${tail10}) should not exceed the flat heuristic`);
 	});
+
+	// The estimate is only worth anything if it tracks what the query returns; the assertions above
+	// compare estimates to each other, this one compares them to reality.
+	for (const [name, condition] of [
+		['secondary index between', { attribute: 'score', comparator: 'between', value: [1000, 3000] }],
+		['secondary index lt', { attribute: 'score', comparator: 'lt', value: 4000 }],
+		['primary key lt', { attribute: 'id', comparator: 'lt', value: 1000 }],
+	]) {
+		it(`estimates ${name} within an order of magnitude of the executed result count`, async () => {
+			const estimated = estimateCondition(T)(condition);
+			let actual = 0;
+			for await (const _ of T.search({ conditions: [condition], select: ['id'] })) actual++;
+			assert.ok(actual > 0, `precondition: ${name} must match rows, got ${actual}`);
+			assert.ok(
+				estimated > actual / 10 && estimated < actual * 10,
+				`${name}: estimated ${estimated} is not within 10x of the executed ${actual}`
+			);
+		});
+	}
 
 	it('excludes null index entries from lt/le, as execution does', () => {
 		// `sparse` is set on 200 of 20000 rows, so the index holds 19800 [null, id] entries that
