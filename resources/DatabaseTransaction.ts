@@ -145,6 +145,20 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 // about the caller's pattern, not the individual commit.
 let replayedWritesWarned = false;
 
+/**
+ * Abort a detached native handle. RocksTransaction.abort() throws on one that was already
+ * committed or aborted, and every caller is a cleanup path whose own callers have no handler — a
+ * throw there would abandon the rest of the cleanup.
+ */
+function abortNativeTransaction(transaction: RocksTransaction | null | undefined, context: string): void {
+	if (transaction == null) return;
+	try {
+		transaction.abort();
+	} catch (error) {
+		harperLogger.debug?.(context, error);
+	}
+}
+
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
 // modules. Unset until analytics loads, and when analytics is disabled the recorder call is cheap.
@@ -544,11 +558,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	releaseReadTxn(): void {
 		const transaction = this.detachOwnedTransaction();
-		try {
-			transaction?.abort();
-		} catch (error) {
-			harperLogger.debug?.('releasing timed-out read transaction', error);
-		}
+		abortNativeTransaction(transaction, 'releasing timed-out read transaction');
 		this.completeDeferredContextRelease();
 	}
 
@@ -1376,11 +1386,7 @@ export class DatabaseTransaction implements Transaction {
 			// throws. abort() rather than the native abort alone: it reclaims blobs a replayed write
 			// staged.
 			this.detachOwnedTransaction();
-			try {
-				transaction?.abort();
-			} catch (abortError) {
-				harperLogger.debug?.('aborting a transaction whose synchronous commit failed', abortError);
-			}
+			abortNativeTransaction(transaction, 'aborting a transaction whose synchronous commit failed');
 			try {
 				this.abort();
 			} catch (abortError) {
