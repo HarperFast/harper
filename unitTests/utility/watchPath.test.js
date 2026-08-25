@@ -67,13 +67,13 @@ describe('watchPath', () => {
 
 		// The symlink model cannot separate `.native` from plain `realpathSync` — both resolve a
 		// symlink — but only `.native` expands an 8.3 name, so assert the call target itself.
-		const recordingNativeCalls = (run) => {
+		const recordingNativeCalls = (run, resolve) => {
 			const fs = require('node:fs');
 			const original = fs.realpathSync.native;
 			const resolved = [];
 			fs.realpathSync.native = (candidate) => {
 				resolved.push(candidate);
-				return original(candidate);
+				return resolve ? resolve(candidate, original) : original(candidate);
 			};
 			try {
 				run();
@@ -96,6 +96,16 @@ describe('watchPath', () => {
 				assert.strictEqual(canonicalizeWatchPath(absentLeaf, 'win32'), join(longDirectory, 'not-written-yet.yaml'))
 			);
 			assert.deepStrictEqual(resolved, [absentLeaf, aliasLink]);
+		});
+
+		it('fails closed without resolving the parent after a non-ENOENT failure', () => {
+			const resolved = recordingNativeCalls(
+				() => assert.strictEqual(canonicalizeWatchPath(aliasLink, 'win32'), undefined),
+				() => {
+					throw Object.assign(new Error('access denied'), { code: 'EACCES' });
+				}
+			);
+			assert.deepStrictEqual(resolved, [aliasLink]);
 		});
 	});
 

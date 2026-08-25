@@ -27,7 +27,8 @@ export function canonicalizeWatchPath(watchPath: string, platform: string = proc
 	if (platform !== 'win32') return watchPath;
 	try {
 		return realpathSync.native(watchPath);
-	} catch {
+	} catch (error) {
+		if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') return undefined;
 		// libuv stores only the parent directory of a file target and compares only that prefix, so a
 		// leaf that does not exist yet — a config file whose watcher is armed during the install window
 		// — still yields a watch path that cannot trip the assertion.
