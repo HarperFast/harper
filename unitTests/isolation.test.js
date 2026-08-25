@@ -4,6 +4,7 @@
 // header comment for the contract.
 
 const assert = require('node:assert');
+const fs = require('fs-extra');
 const path = require('node:path');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
@@ -39,22 +40,24 @@ describe('unit-test per-PID root isolation', () => {
 			encoding: 'utf8',
 			timeout: 25000,
 		});
-		assert.strictEqual(result.status, 0, result.stderr);
-		const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit] =
-			JSON.parse(result.stdout.trim().split('\n').pop());
-		// the parent's root also lives under envDir and is inherited via ROOTPATH, so only
-		// the child's own pid dir distinguishes isolation from contamination
-		const childRoot = path.join(__dirname, 'envDir', String(childPid));
-		require('fs-extra').removeSync(childRoot);
-		assert.strictEqual(storageEnv, null);
-		assert.strictEqual(schemasEnv, null);
-		for (const resolved of [hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit]) {
-			assert.ok(
-				typeof resolved === 'string' && (resolved === childRoot || resolved.startsWith(childRoot + path.sep)),
-				String(resolved)
-			);
+		const childRoot = result.pid ? path.join(__dirname, 'envDir', String(result.pid)) : null;
+		try {
+			assert.strictEqual(result.status, 0, result.stderr);
+			const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit] =
+				JSON.parse(result.stdout.trim().split('\n').pop());
+			assert.strictEqual(childPid, result.pid);
+			assert.strictEqual(storageEnv, null);
+			assert.strictEqual(schemasEnv, null);
+			for (const resolved of [hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit]) {
+				assert.ok(
+					typeof resolved === 'string' && (resolved === childRoot || resolved.startsWith(childRoot + path.sep)),
+					String(resolved)
+				);
+			}
+			assert.strictEqual(storageAfterReinit, path.join(childRoot, 'database'), storageAfterReinit);
+		} finally {
+			if (childRoot) fs.removeSync(childRoot);
 		}
-		assert.strictEqual(storageAfterReinit, path.join(childRoot, 'database'), storageAfterReinit);
 	});
 
 	it('exports ROOTPATH inside the per-PID directory for worker threads and spawned processes', () => {

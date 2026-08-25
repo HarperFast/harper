@@ -457,7 +457,7 @@ async function ensureSystemTables() {
 	try {
 		await addRole({ role: 'super_user', permission: { super_user: true } });
 	} catch (error) {
-		if (!error.message?.includes('already exists')) throw error;
+		if (!error?.message?.includes('already exists')) throw error;
 		// addRole cannot touch an existing row: repair a super_user role whose permission
 		// no longer grants super_user, or the guard above would stay false forever
 		const existing = await getRoleByName('super_user');
@@ -468,7 +468,7 @@ async function ensureSystemTables() {
 	try {
 		await user.addUser({ username: 'admin', password: 'password', role: 'super_user', active: true });
 	} catch (error) {
-		if (!error.message?.includes('already exists')) throw error;
+		if (!error?.message?.includes('already exists')) throw error;
 		// addUser cannot touch an existing row: repair a deactivated admin, or one whose
 		// role id points at a role that no longer exists
 		await user.alterUser({ username: 'admin', password: 'password', role: 'super_user', active: true });
@@ -484,7 +484,11 @@ async function ensureSystemTables() {
 	if (fs.existsSync(path.join(keysDir, PRIVATEKEY_PEM_NAME))) {
 		fs.renameSync(path.join(keysDir, PRIVATEKEY_PEM_NAME), testKeyPath);
 	}
-	for await (const cert of getDatabases().system.hdb_certificate.search([])) {
+	const certificateTable = getDatabases().system?.hdb_certificate;
+	if (!certificateTable) {
+		throw new Error('ensureSystemTables(): generateCertsKeys() did not initialize system.hdb_certificate');
+	}
+	for await (const cert of certificateTable.search([])) {
 		if (cert.private_key_name === PRIVATEKEY_PEM_NAME) {
 			await keys.setCertTable({ ...cert, private_key_name: path.basename(testKeyPath) });
 		}
