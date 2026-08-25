@@ -86,7 +86,6 @@ export class CannotSetPropertyError extends Error {
 export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#filePath: string;
 	#watchPath: string;
-	#watchPathRequiresPolling: boolean;
 	#watcher!: FSWatcher;
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
@@ -105,13 +104,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#filePath = filePath;
 		const watchTarget = resolveWatchTarget(filePath);
 		this.#watchPath = watchTarget.path;
-		this.#watchPathRequiresPolling = watchTarget.mustPoll;
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
 		this.#isRootConfig = isRootConfig ?? isRootConfigFilename(filePath);
 		this.#logger = logger || loggerWithTag(name);
-		this.#usingPolling = false;
+		this.#usingPolling = watchTarget.mustPoll;
 		this.#closed = false;
 		this.ready = once(this, 'ready');
 		this.#openWatcher();
@@ -122,7 +120,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#watcher = chokidar
 			.watch(this.#watchPath, {
 				persistent: false,
-				...(this.#usingPolling || this.#watchPathRequiresPolling ? POLLING_FALLBACK_OPTIONS : {}),
+				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			})
 			.on('add', this.#handleChange.bind(this))
 			.on('change', this.#handleChange.bind(this))

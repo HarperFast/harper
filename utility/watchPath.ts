@@ -1,13 +1,9 @@
 import { realpathSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { loggerWithTag } from './logging/harper_logger.ts';
 
 const watchPathLogger = loggerWithTag('watcher');
 let canonicalizationWarned = false;
-
-// An 8.3 alias component (`RUNNER~1`) — the only form GetLongPathNameW rewrites, and so the only
-// one that can break the prefix comparison below. A long name that merely contains `~1` is a false
-// positive that costs one realpath.
-const SHORT_NAME_COMPONENT = /(?:^|[\\/])[^\\/]*~\d+[^\\/]*(?=[\\/]|$)/;
 
 /**
  * Canonicalize an absolute path before it is handed to a native file watch (`fs.watch`, directly or
@@ -19,24 +15,28 @@ const SHORT_NAME_COMPONENT = /(?:^|[\\/])[^\\/]*~\d+[^\\/]*(?=[\\/]|$)/;
  * comparison, and the assertion aborts the process rather than failing the watch, so a short path
  * reaching a native watch takes down the whole server (harper#2234).
  *
- * Only a path carrying an 8.3 component is touched at all: everything else is returned as given,
- * which keeps `realpathSync.native`'s symlink resolution — a behavior change of its own — off every
- * path that cannot abort. Plain `realpathSync` is not a substitute for it: that resolves symlinks
- * but leaves 8.3 names intact.
+ * Every Windows path is resolved rather than only the ones that look short: `GetLongPathNameW`'s
+ * documentation is explicit that a short name need not contain a tilde, and NTFS allows an
+ * explicitly assigned one, so any spelling test would leave the abort reachable. `realpathSync` is
+ * not a substitute for the `.native` variant — it resolves symlinks but leaves 8.3 names intact.
  *
- * Returns `undefined` when the long form cannot be established, including when the resolved path is
- * still short, because a path we cannot prove is expanded is exactly the one that must never reach a
- * native watch.
+ * Returns `undefined` when the long form cannot be established, because a path we cannot prove is
+ * expanded is exactly the one that must never reach a native watch.
  */
 export function canonicalizeWatchPath(watchPath: string, platform: string = process.platform): string | undefined {
-	if (platform !== 'win32' || !SHORT_NAME_COMPONENT.test(watchPath)) return watchPath;
-	let canonical: string;
+	if (platform !== 'win32') return watchPath;
 	try {
-		canonical = realpathSync.native(watchPath);
+		return realpathSync.native(watchPath);
 	} catch {
-		return undefined;
+		// libuv stores only the parent directory of a file target and compares only that prefix, so a
+		// leaf that does not exist yet — a config file whose watcher is armed during the install window
+		// — still yields a watch path that cannot trip the assertion.
+		try {
+			return join(realpathSync.native(dirname(watchPath)), basename(watchPath));
+		} catch {
+			return undefined;
+		}
 	}
-	return SHORT_NAME_COMPONENT.test(canonical) ? undefined : canonical;
 }
 
 /**

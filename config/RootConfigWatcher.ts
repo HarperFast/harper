@@ -9,7 +9,6 @@ import { resolveWatchTarget } from '../utility/watchPath.ts';
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
 	#watchPath: string;
-	#watchPathRequiresPolling: boolean;
 	#watcher!: FSWatcher;
 	#config: any;
 	#usingPolling: boolean;
@@ -22,8 +21,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#configFilePath = getConfigFilePath();
 		const watchTarget = resolveWatchTarget(this.#configFilePath);
 		this.#watchPath = watchTarget.path;
-		this.#watchPathRequiresPolling = watchTarget.mustPoll;
-		this.#usingPolling = false;
+		this.#usingPolling = watchTarget.mustPoll;
 		this.#closed = false;
 		this.ready = once(this, 'ready');
 		this.#openWatcher();
@@ -34,7 +32,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.#watcher = chokidar
 			.watch(this.#watchPath, {
 				persistent: false,
-				...(this.#usingPolling || this.#watchPathRequiresPolling ? POLLING_FALLBACK_OPTIONS : {}),
+				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			})
 			.on('add', this.handleChange.bind(this))
 			.on('change', this.handleChange.bind(this))

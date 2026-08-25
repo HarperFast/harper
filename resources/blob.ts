@@ -535,7 +535,6 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		let position = 0;
 		let totalContentRead = 0;
 		let watcher: FSWatcher;
-		// Resolved once per read: the stall path below re-arms the watcher on every retry.
 		let watchTarget: { path: string; mustPoll: boolean };
 		let timer: NodeJS.Timeout;
 		// The start() open-retry timer lives in a different scope/phase than pull()'s `timer`; track it

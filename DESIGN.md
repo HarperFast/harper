@@ -1227,12 +1227,15 @@ surface until you follow chokidar: v4 opens a per-file `fs.watch` for every file
 a watched tree, so one directory watch arms hundreds of file watches.
 
 So `canonicalizeWatchPath` runs on every path before it reaches `fs.watch` (directly or through
-chokidar). It only touches a path that actually carries an 8.3 component — everything else is
-returned as given, which keeps `realpathSync.native`'s symlink resolution off every path that cannot
-abort. It returns `undefined` when it cannot prove the long form, _including when the resolved path
-is still short_; `resolveWatchTarget` turns that into `mustPoll`, and polling stats the file instead
-of arming a native watch. Plain `realpathSync` is not a substitute: it resolves symlinks but leaves
-8.3 names intact.
+chokidar), and returns `undefined` when it cannot establish the long form; `resolveWatchTarget` turns
+that into `mustPoll`, and polling stats the file instead of arming a native watch. It resolves every
+Windows path rather than only the ones that look short: `GetLongPathNameW`'s documentation is
+explicit that a short name need not contain a tilde, so any spelling test leaves the abort reachable.
+Plain `realpathSync` is not a substitute for the `.native` variant: it resolves symlinks but leaves
+8.3 names intact — which also means Windows watch paths are symlink-resolved, matching what
+`fs.watch` already does elsewhere by following a symlinked file to its target inode. A leaf that does
+not exist yet resolves through its directory, because libuv stores and compares only the parent
+directory of a file target.
 
 New watch sites must go through it. As of this writing the sites are `components/EntryHandler.ts`,
 `components/OptionsWatcher.ts`, `config/RootConfigWatcher.ts`, `security/keys.ts`,
