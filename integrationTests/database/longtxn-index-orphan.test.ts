@@ -153,7 +153,10 @@ suite(
 						if (size > cursor.pos) {
 							const fd = openSync(p, 'r');
 							try {
-								const buf = Buffer.allocUnsafe(size - cursor.pos);
+								// Cap the per-call read: sizing the buffer off the file would let a
+								// suddenly-verbose log force one huge synchronous allocation. The cursor
+								// advances either way, so the remainder is picked up on the next poll.
+								const buf = Buffer.allocUnsafe(Math.min(size - cursor.pos, 1 << 20));
 								const read = readSync(fd, buf, 0, buf.length, cursor.pos);
 								cursor.pos += read;
 								const text = cursor.carry + buf.subarray(0, read).toString('utf8');

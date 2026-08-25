@@ -97,7 +97,12 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		let ready = false;
 		while (Date.now() < deadline) {
 			try {
-				const res = await fetch(`${httpURL}/Product/`, { headers: { Authorization: AUTH } });
+				// Node's fetch has no default timeout, and a before() hook has no runner timeout either:
+				// without this a wedged server would hang the whole suite instead of failing the poll.
+				const res = await fetch(`${httpURL}/Product/`, {
+					headers: { Authorization: AUTH },
+					signal: AbortSignal.timeout(3_000),
+				});
 				await res.body?.cancel();
 				if (res.status !== 404) {
 					ready = true;
@@ -126,7 +131,10 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		return res.json();
 	}
 	async function getJSON(path: string): Promise<any> {
-		const res = await fetch(`${httpURL}${path}`, { headers: { Authorization: AUTH } });
+		const res = await fetch(`${httpURL}${path}`, {
+			headers: { Authorization: AUTH },
+			signal: AbortSignal.timeout(30_000),
+		});
 		return assertOK(res, `GET ${path}`);
 	}
 	async function postJSON(path: string, body: unknown): Promise<any> {
@@ -134,6 +142,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', 'Authorization': AUTH },
 			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(30_000),
 		});
 		return assertOK(res, `POST ${path}`);
 	}

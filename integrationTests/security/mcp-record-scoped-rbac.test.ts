@@ -103,6 +103,10 @@ function resultText(r: ToolResult): string {
 async function readDoc(ctx: ContextWithHarper, id: string): Promise<Record<string, unknown> | null> {
 	const res = await fetch(new URL('', ctx.harper.operationsAPIURL), {
 		method: 'POST',
+		// Node's fetch has no default timeout: a wedged server that accepts the socket and never
+		// answers would hang this oracle (and, from the before() hook, the whole suite) forever
+		// instead of failing the trial.
+		signal: AbortSignal.timeout(10_000),
 		headers: {
 			'Content-Type': 'application/json',
 			'Authorization': basicAuth(ctx.harper.admin.username, ctx.harper.admin.password),
@@ -153,6 +157,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 
 		const roleRes = await fetch(new URL('', ctx.harper.operationsAPIURL), {
 			method: 'POST',
+			signal: AbortSignal.timeout(10_000),
 			headers: { 'Content-Type': 'application/json', 'Authorization': adminAuth },
 			body: JSON.stringify({
 				operation: 'add_role',
@@ -173,6 +178,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 
 		const userRes = await fetch(new URL('', ctx.harper.operationsAPIURL), {
 			method: 'POST',
+			signal: AbortSignal.timeout(10_000),
 			headers: { 'Content-Type': 'application/json', 'Authorization': adminAuth },
 			body: JSON.stringify({
 				operation: 'add_user',
@@ -189,6 +195,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 		// Seed rows.
 		const insertRes = await fetch(new URL('', ctx.harper.operationsAPIURL), {
 			method: 'POST',
+			signal: AbortSignal.timeout(10_000),
 			headers: { 'Content-Type': 'application/json', 'Authorization': adminAuth },
 			body: JSON.stringify({
 				operation: 'insert',
@@ -211,6 +218,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 			try {
 				const probe = await fetch(new URL('/Doc/', appURL), {
 					headers: { Authorization: adminAuth },
+					signal: AbortSignal.timeout(3_000),
 				});
 				if (probe.status !== 404) {
 					await probe.body?.cancel();
@@ -426,6 +434,20 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 		});
 		// Search may either filter denied rows or reject the call; it must not return the admin row.
 		ok(!leaked, `F-092 BYPASS: search_Doc returned admin row. isError=${result.isError} text=${text}`);
+		// ...but the accepted rejection has to be an AUTHZ rejection. Without this, a schema or
+		// parameter-validation failure would satisfy `!leaked` without the search ever running, and
+		// the whole case would pass vacuously.
+		if (result.isError) {
+			ok(
+				/unauthorized|not allowed|permission|forbidden|denied/i.test(text),
+				`search_Doc was rejected for a non-authorization reason, so this case proved nothing: ${text}`
+			);
+		} else {
+			ok(
+				text.includes(LOWUSER_ROW),
+				`search_Doc succeeded but returned no lowuser-owned row, so the filter was never exercised: ${text}`
+			);
+		}
 	});
 
 	// ── F-093 WRITE ENFORCEMENT ───────────────────────────────────────────────
