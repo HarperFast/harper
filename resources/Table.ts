@@ -485,7 +485,7 @@ export function makeTable(options) {
 	if (!properties) properties = projectAttributesToProperties(attributes);
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
-	let warnedFutureSourceVersion = false; // likewise, for a source clock ahead of ours (see getFromSource)
+	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;

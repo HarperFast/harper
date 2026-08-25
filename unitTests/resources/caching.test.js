@@ -25,7 +25,7 @@ describe('Caching', () => {
 	let sourceGate = null; // when set, SwrQueryTable's source defers responding until the test releases it
 	let ConflictSideEffectTable;
 	let conflictSourceRequest;
-	let conflictSourceWriteId = null; // when set, the conflict source writes this row inside its own transaction
+	let conflictSourceWriteId = null;
 	let conflictTimestamp = 0;
 	// Apply a record the way replication does, attributed to `nodeId`, so a version tie against a fill is
 	// resolved against a *peer's* identity rather than this node's own.
@@ -131,7 +131,6 @@ describe('Caching', () => {
 						id,
 						timestamp: context.timestamp,
 						respond(value, lastModified) {
-							// a source that writes while resolving does so in the source's own transaction
 							if (conflictSourceWriteId != null)
 								ConflictSideEffectTable.put(
 									conflictSourceWriteId,
@@ -704,7 +703,7 @@ describe('Caching', () => {
 		// no request timestamp: the ceiling is local time, which is what a skewed source clock outruns
 		const fill = ConflictCachingTable.get(id);
 		await waitFor(() => conflictSourceRequest?.id === id);
-		const futureVersion = Date.now() + 10_000_000; // ~2.8h ahead
+		const futureVersion = Date.now() + 10_000_000;
 		conflictSourceRequest.respond({ id, name: 'source-future' }, futureVersion);
 		assert.equal((await fill).name, 'source-future');
 		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
@@ -773,13 +772,11 @@ describe('Caching', () => {
 				const fill = ConflictCachingTable.get(key, { timestamp: base });
 				await waitFor(() => conflictSourceRequest?.id === key);
 				if (writeDuringFetch) {
-					// the write is already committed when the fill's commit transaction reloads the entry
 					await commitWrite(key, writeWith, writeVersion);
 					conflictSourceRequest.respond(fillWith, sourceVersion);
 					await fill;
 					await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(key));
 				} else {
-					// the fill commits first and the write is resequenced against it
 					conflictSourceRequest.respond(fillWith, sourceVersion);
 					await fill;
 					await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(key));
@@ -800,7 +797,7 @@ describe('Caching', () => {
 	it('does not backdate a write the source performs while resolving', async function () {
 		const id = 640;
 		const sideId = 641;
-		const requestTimestamp = Date.now() - 3_600_000; // an hour-old request/transaction timestamp
+		const requestTimestamp = Date.now() - 3_600_000;
 		const before = Date.now();
 		conflictSourceWriteId = sideId;
 		try {
