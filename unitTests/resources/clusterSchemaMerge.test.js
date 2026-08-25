@@ -173,7 +173,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 	it('recovers an abandoned index build even though the peer definition itself is not applied', async () => {
 		const attributes = [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
-			{ name: 'tag', type: 'String', indexed: true },
+			{ name: 'tag', type: 'String', indexed: true, nullable: false },
 		];
 		const Indexed = table({ table: 'ClusterMergeRecovery', database: 'test', schemaDefined: true, attributes });
 		let lastPut;
@@ -182,11 +182,12 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		if (Indexed.indexingOperation) await Indexed.indexingOperation;
 		const completedBuild = Indexed.indexingOperation;
 
-		// A build abandoned by a dead process, on a descriptor another worker re-declared (nullable: false)
-		// after this worker's live list was loaded: the index is parked with isIndexing pinned on, and the
-		// recovery must rebuild the durable declaration rather than this caller's stale snapshot of it.
+		// A build abandoned by a dead process, on a descriptor another worker re-declared after this
+		// worker's live list was loaded — adding `enumerable` and dropping `nullable`. The index is parked
+		// with isIndexing pinned on, and the recovery must rebuild that declaration, not the stale snapshot.
 		const key = 'ClusterMergeRecovery/tag';
-		const abandoned = { ...Indexed.dbisDB.getSync(key), nullable: false, indexingPID: 999999 };
+		const abandoned = { ...Indexed.dbisDB.getSync(key), enumerable: true, indexingPID: 999999 };
+		delete abandoned.nullable;
 		const written = Indexed.dbisDB.put(key, abandoned);
 		if (written?.then) await written;
 
@@ -204,10 +205,16 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 		await Recovered.indexingOperation;
 		await catalogFlushed(Recovered);
+		const recoveredDescriptor = Recovered.dbisDB.getSync(key);
 		assert.strictEqual(
-			Recovered.dbisDB.getSync(key).nullable,
-			false,
-			'recovery rewrote a newer durable declaration with the stale snapshot of the calling worker'
+			recoveredDescriptor.enumerable,
+			true,
+			'recovery dropped a field the newer durable declaration added'
+		);
+		assert.strictEqual(
+			recoveredDescriptor.nullable,
+			undefined,
+			'recovery restored a field the newer durable declaration removed, from the stale live snapshot'
 		);
 		assert.strictEqual(
 			Recovered.indices.tag.isIndexing,
@@ -218,6 +225,51 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		for await (const record of Recovered.search({ conditions: [{ attribute: 'tag', value: 'odd' }] }))
 			odds.push(record);
 		assert.strictEqual(odds.length, 5, 'the recovered backfill must index every record');
+	});
+
+	it('registers an index the durable descriptor declares and the incoming definition omits', async () => {
+		const Indexed = table({
+			table: 'ClusterMergeStaleIndex',
+			database: 'test',
+			schemaDefined: false,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'tag', type: 'String', indexed: true },
+			],
+		});
+		await catalogFlushed(Indexed);
+		// emulate a worker whose live list predates the locally declared index: only the descriptor has it
+		Indexed.attributes.splice(
+			Indexed.attributes.findIndex((attribute) => attribute.name === 'tag'),
+			1
+		);
+		delete Indexed.indices.tag;
+
+		const AfterPeer = table({
+			table: 'ClusterMergeStaleIndex',
+			database: 'test',
+			schemaDefined: false,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'tag', type: 'String' },
+			],
+			origin: 'cluster',
+		});
+		assert.strictEqual(
+			AfterPeer.attributes.find((attribute) => attribute.name === 'tag').indexed,
+			true,
+			'a definition omitting `indexed` overrode the durable declaration in the live attribute list'
+		);
+		assert.ok(
+			AfterPeer.indices.tag,
+			'the index the durable descriptor declares was not registered, so this worker stops indexing writes to it'
+		);
+		await catalogFlushed(AfterPeer);
+		assert.strictEqual(
+			AfterPeer.dbisDB.getSync('ClusterMergeStaleIndex/tag').indexed,
+			true,
+			'the durable index declaration was overwritten by the incoming definition'
+		);
 	});
 
 	it('local schema authoring still removes attributes it no longer declares', async () => {

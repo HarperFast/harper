@@ -367,6 +367,16 @@ const PEER_REDEFINABLE_FIELDS = [
 	'properties',
 	'embed',
 ];
+
+// Restate an attribute from its catalog descriptor, dropping fields the descriptor no longer carries.
+// A cluster-origin caller's list can predate a declaration another thread has already committed, so on
+// that path the descriptor — not the caller — decides what the attribute is.
+function applyDurableDeclaration(attribute: any, descriptor: any) {
+	for (const field of PEER_REDEFINABLE_FIELDS) {
+		if (field in descriptor) attribute[field] = descriptor[field];
+		else delete attribute[field];
+	}
+}
 // How many times the schema load will try to finish a tombstoned drop before
 // giving up for the rest of this process's lifetime. A drop that fails once
 // almost always fails identically forever - the usual cause is a RocksDB
@@ -1819,8 +1829,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			if (origin === 'cluster') {
-				// A peer-derived definition is only a snapshot of the peer's view, so it is additive-only:
-				// see the additive-only section of DESIGN.md for the invariant and its costs.
+				// Additive-only merge — see the cluster-origin section of DESIGN.md for the invariant and costs.
 				const merged = Table.attributes.slice();
 				for (const attribute of attributes) {
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
@@ -1828,9 +1837,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						merged.push(attribute);
 						continue;
 					}
-					// Nodes that apply the same peer definitions in a different order keep different index sets,
-					// and this warn is the only signal of it. An absent field and an explicit falsy one mean the
-					// same thing, so only a difference either side actually declares is reported.
+					// Nodes that apply the same peer definitions in a different order keep different index sets, and
+					// this warn is the only signal of it. An absent field and an explicit falsy one declare the same
+					// thing, so neither direction of that pair is a difference.
 					const discarded = PEER_REDEFINABLE_FIELDS.filter(
 						(field) =>
 							(attribute[field] || existing[field]) &&
@@ -2084,29 +2093,27 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 
 			if (origin === 'cluster' && attributeDescriptor) {
-				// Cluster-origin definitions may only create missing descriptors — this caller's snapshot can
-				// lag a newer durable declaration, and rewriting (or reindexing from) it would revert that
-				// declaration. The existing index still has to be registered for this Table instance.
+				// An existing descriptor is a local declaration this caller may not have seen yet, so it wins
+				// over the incoming definition and is never written back from it.
+				applyDurableDeclaration(attribute, attributeDescriptor);
 				const abandonedIndexBuild =
 					attribute.indexed &&
 					(attributeDescriptor.indexingFailed ||
 						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
 						attributeDescriptor.restartNumber < (workerData?.restartNumber ?? manageThreads.restartNumber));
 				if (abandonedIndexBuild) {
-					// Recovery is the exception, because skipping it leaves `isIndexing` pinned on with nothing
-					// left to clear it: every query on the attribute would fail with IndexRebuildingError for the
-					// life of the worker. Recovery re-persists the descriptor (here and again from runIndexing),
-					// so re-seed the live definition from disk first and rebuild the durable declaration rather
-					// than this caller's snapshot of it.
+					// Recovery is the exception to skipping the handling below, because without it `isIndexing`
+					// stays pinned on with nothing left to clear it and every query on the attribute fails with
+					// IndexRebuildingError for the life of the worker. It persists the attribute (here and again
+					// from runIndexing), so restate the declaration from a descriptor read under the lock.
 					exclusiveLock();
-					Object.assign(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
+					applyDurableDeclaration(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
 				} else {
 					if (attribute.indexed) {
 						const dbi = openIndex(dbiKey, rootStore, attribute);
-						// openIndex resolved indexFormat for a versioned-capable index. Persisting it here adds a
-						// field the descriptor lacks rather than rewriting one it has, and without it an empty
-						// index resolves 'versioned', writes versioned nodes, then re-derives 'legacy' on the next
-						// load — see indexFormatNeedsPersist below.
+						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
+						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
+						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
 						if (attribute.indexFormat != null && attributeDescriptor.indexFormat == null) {
 							exclusiveLock();
 							const durableDescriptor = attributesDbi.getSync(dbiKey);
