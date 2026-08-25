@@ -240,14 +240,12 @@ const BLOB_GONE_STATUS = 404;
 export const BLOB_UNAVAILABLE_STATUS = 503;
 const BLOB_CORRUPT_STATUS = 500;
 /**
- * Arm the one-shot watch that wakes an in-progress blob read, or report that the read must poll
- * instead. Exported (with an injectable `watchFile`) so the failure paths — a synchronous
- * registration throw, a post-registration `'error'`, and an `'error'` from a watcher the read has
- * already replaced — are directly testable; production never passes the last argument.
- *
- * `onFailure` runs only for a live watcher that fails after registration; a registration that
- * throws latches `mustPoll` and returns undefined, leaving the caller's own no-watcher branch to
- * schedule the poll.
+ * Arm the one-shot watch that wakes an in-progress blob read of `filePath`, or return `undefined`
+ * for a read that has to poll instead. `isLive` decides whether the read still owns a callback's
+ * watcher: a callback from one it has already replaced must not act, or it would close the live
+ * watcher and start a second read at the same position. `onFailure` runs only for a live watcher
+ * that fails after registration — a registration that throws latches `mustPoll` and leaves the
+ * caller in its own no-watcher branch. `watchFile` is injectable so those paths are testable.
  */
 export function watchInProgressFile(
 	filePath: string,
@@ -259,30 +257,27 @@ export function watchInProgressFile(
 	},
 	watchFile: typeof watch = watch
 ): FSWatcher | undefined {
+	if (watchTarget.mustPoll) return undefined;
 	let watcher: FSWatcher;
-	if (!watchTarget.mustPoll) {
-		try {
-			// fs.watch throws synchronously when the OS watcher pool is exhausted (EMFILE/ENOSPC); the
-			// caller's poll is the same recovery the unwatchable path already takes.
-			watcher = watchFile(watchTarget.path, { persistent: false }, () => handlers.onChange());
-		} catch (error) {
-			logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
-			// Latch on the stream-scoped target, or the caller's 20 ms re-poll re-enters here and
-			// re-attempts the same failing registration for the rest of the read.
-			watchTarget.mustPoll = true;
-			return undefined;
-		}
+	try {
+		watcher = watchFile(watchTarget.path, { persistent: false }, () => {
+			if (handlers.isLive(watcher)) handlers.onChange();
+		});
+	} catch (error) {
+		// fs.watch throws synchronously when the OS watcher pool is exhausted (EMFILE/ENOSPC). Latch
+		// on the stream-scoped target, or the caller's re-poll re-enters here and re-attempts the same
+		// failing registration for the rest of the read.
+		logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
+		watchTarget.mustPoll = true;
+		return undefined;
 	}
 	// An FSWatcher that fails after registration emits 'error'; with no listener Node rethrows it out
-	// of the watcher callback. Drop to the same poll instead — but only while this watcher is still
-	// the live one, or a queued error from a superseded watcher would close its replacement and start
-	// a second read at the same position.
-	const installedWatcher = watcher;
-	installedWatcher?.on('error', (error) => {
-		if (!handlers.isLive(installedWatcher)) return;
+	// of the watcher callback.
+	watcher.on('error', (error) => {
+		if (!handlers.isLive(watcher)) return;
 		logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
 		watchTarget.mustPoll = true;
-		installedWatcher.close();
+		watcher.close();
 		handlers.onFailure();
 	});
 	return watcher;
@@ -839,12 +834,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 										watcher = watchInProgressFile(filePath, watchTarget, {
 											isLive: (candidate) => watcher === candidate,
 											onChange: () => {
-												if (watcher) {
-													watcher.close();
-													watcher = null;
-													clearTimeout(timer); // clear it
-													readMore(resolve, reject);
-												}
+												watcher.close();
+												watcher = null;
+												clearTimeout(timer); // clear it
+												readMore(resolve, reject);
 											},
 											onFailure: () => {
 												watcher = undefined;

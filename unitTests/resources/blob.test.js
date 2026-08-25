@@ -2286,9 +2286,8 @@ describe('backup of a blob root during a live write (harper#2262)', () => {
 	});
 });
 
-// The three recovery paths a read takes when its wake-up watcher cannot be relied on. All are
-// unreachable from a normal read — they need an exhausted OS watcher pool — so they are driven
-// through the injectable `watchFile` seam instead.
+// A normal read cannot reach these paths — they need an exhausted OS watcher pool — so they are
+// driven through the injectable `watchFile` seam.
 describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 	const ORIGINAL_PATH = '/blobs/RUNNER~1/00/01';
 	const CANONICAL_PATH = '/blobs/runneradmin/00/01';
@@ -2302,6 +2301,19 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 
 	function exhaustion() {
 		return Object.assign(new Error('watcher pool exhausted'), { code: 'ENOSPC' });
+	}
+
+	// `opening` hands out the watchers a repeated registration returns, in order, and records the
+	// change listener each one was armed with so a test can deliver an event to a chosen watcher.
+	function opening(...watchers) {
+		const pending = [...watchers];
+		return (path, options, onChange) => {
+			const watcher = pending.shift();
+			watcher.path = path;
+			watcher.options = options;
+			watcher.change = onChange;
+			return watcher;
+		};
 	}
 
 	function recordingHandlers(isLive = () => true) {
@@ -2326,18 +2338,13 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 		const target = { path: CANONICAL_PATH, mustPoll: false };
 		const { calls, handlers } = recordingHandlers();
 		const opened = fakeWatcher();
-		const seen = [];
-		const watcher = watchInProgressFile(ORIGINAL_PATH, target, handlers, (path, options, listener) => {
-			seen.push([path, options]);
-			opened.listener = listener;
-			return opened;
-		});
-		assert.strictEqual(watcher, opened);
-		assert.deepStrictEqual(seen, [[CANONICAL_PATH, { persistent: false }]]);
-		// Without a listener Node rethrows an emitted watcher error out of the watcher callback.
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, opening(opened)), opened);
+		assert.strictEqual(opened.path, CANONICAL_PATH);
+		assert.deepStrictEqual(opened.options, { persistent: false });
+		// Without this listener Node rethrows an emitted watcher error out of the watcher callback.
 		assert.strictEqual(opened.listenerCount('error'), 1);
-		opened.listener();
-		assert.strictEqual(calls.change, 1);
+		opened.change();
+		assert.deepStrictEqual(calls, { change: 1, failure: 0 });
 	});
 
 	it('latches polling when registration throws, so the read stops re-attempting it', () => {
@@ -2350,9 +2357,8 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 		};
 		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, throwOnRegistration), undefined);
 		assert.strictEqual(target.mustPoll, true);
-		// The caller schedules the poll for this case; a synchronous throw must not also drive onFailure.
+		// The caller polls from its own no-watcher branch here, so a throw must not also drive onFailure.
 		assert.deepStrictEqual(calls, { change: 0, failure: 0 });
-		// Every 20 ms re-poll re-enters here for the rest of the read.
 		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, throwOnRegistration), undefined);
 		assert.strictEqual(attempts, 1);
 	});
@@ -2361,33 +2367,46 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 		const target = { path: CANONICAL_PATH, mustPoll: false };
 		const opened = fakeWatcher();
 		const { calls, handlers } = recordingHandlers((candidate) => candidate === opened);
-		assert.strictEqual(
-			watchInProgressFile(ORIGINAL_PATH, target, handlers, () => opened),
-			opened
-		);
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, opening(opened)), opened);
 		opened.emit('error', exhaustion());
 		assert.strictEqual(target.mustPoll, true);
 		assert.strictEqual(opened.closeCount, 1);
 		assert.deepStrictEqual(calls, { change: 0, failure: 1 });
 	});
 
-	it('ignores an error from a watcher the read has already replaced', () => {
-		const target = { path: CANONICAL_PATH, mustPoll: false };
-		const superseded = fakeWatcher();
-		const live = fakeWatcher();
-		const pending = [superseded, live];
-		let current;
-		const { calls, handlers } = recordingHandlers((candidate) => candidate === current);
-		current = watchInProgressFile(ORIGINAL_PATH, target, handlers, () => pending.shift());
-		current = watchInProgressFile(ORIGINAL_PATH, target, handlers, () => pending.shift());
-		assert.strictEqual(current, live);
+	// Acting on either callback from a superseded watcher would close the live watcher and start a
+	// second read sharing the first one's fd and position.
+	describe('a watcher the read has already replaced', () => {
+		let superseded;
+		let live;
+		let target;
+		let recorded;
 
-		superseded.emit('error', exhaustion());
+		beforeEach(() => {
+			superseded = fakeWatcher();
+			live = fakeWatcher();
+			target = { path: CANONICAL_PATH, mustPoll: false };
+			let current;
+			recorded = recordingHandlers((candidate) => candidate === current);
+			const open = opening(superseded, live);
+			current = watchInProgressFile(ORIGINAL_PATH, target, recorded.handlers, open);
+			current = watchInProgressFile(ORIGINAL_PATH, target, recorded.handlers, open);
+			assert.strictEqual(current, live);
+		});
 
-		// Acting on it would close the live watcher and start a second read at the same position.
-		assert.deepStrictEqual(calls, { change: 0, failure: 0 });
-		assert.strictEqual(live.closeCount, 0);
-		assert.strictEqual(superseded.closeCount, 0);
-		assert.strictEqual(target.mustPoll, false);
+		afterEach(() => {
+			assert.deepStrictEqual(recorded.calls, { change: 0, failure: 0 });
+			assert.strictEqual(live.closeCount, 0);
+			assert.strictEqual(superseded.closeCount, 0);
+			assert.strictEqual(target.mustPoll, false);
+		});
+
+		it('cannot resume the read with a late change event', () => {
+			superseded.change();
+		});
+
+		it('cannot drop the read to polling with a late error', () => {
+			superseded.emit('error', exhaustion());
+		});
 	});
 });
