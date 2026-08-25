@@ -81,10 +81,9 @@ export class RootConfigWatcher extends EventEmitter {
 		this.emit('error', error);
 	}
 
-	// Read synchronously, not with fsPromises.readFile. atomicWriteFile replaces this file by
-	// rename-over, which on Windows fails while any descriptor is open on the destination, and
-	// its retry loop blocks the calling thread - so a descriptor this watcher leaves open across
-	// an event-loop turn can never be closed while a write on this thread is waiting for it.
+	// Read synchronously so the descriptor cannot outlive this turn: atomicWriteFile replaces
+	// this file by rename-over, which on Windows fails while any descriptor is open on it, and
+	// its retry blocks the very thread that would close one.
 	handleChange() {
 		try {
 			const data = readFileSync(this.#configFilePath, 'utf-8');

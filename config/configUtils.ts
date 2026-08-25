@@ -91,14 +91,11 @@ export function getConfigPath(param: string) {
 // in the same millisecond can't collide on the temp name and then race the rename.
 //
 // Windows has no POSIX-style "replace an open file" semantics: rename() fails with
-// EPERM/EACCES while another descriptor is open on the destination. This retry can only ride
-// out a holder that releases on its own - another thread, another process, an AV scan. It can
-// never ride out a holder on the CALLING thread, because the sleep below blocks the event loop
-// that would have to run to close it, so the holder's lifetime becomes exactly the retry
-// budget. That is why config readers must not leave a descriptor on this file open across an
-// event-loop turn (RootConfigWatcher.handleChange, OptionsWatcher#handleChange), and why
-// widening this budget twice (#1714, #2036) never fixed the set_configuration 500s it was
-// aimed at.
+// EPERM/EACCES while another descriptor is open on the destination. The sleep below blocks the
+// calling thread, so this can only ride out a holder that releases without needing that
+// thread's event loop. A holder on the calling thread would live exactly as long as the budget,
+// which is why config readers must not keep a descriptor on this file open across an event-loop
+// turn (RootConfigWatcher.handleChange, OptionsWatcher#handleChange).
 const RENAME_RETRY_MAX_ATTEMPTS = 12;
 const RENAME_RETRY_INITIAL_DELAY_MS = 10;
 const RENAME_RETRY_MAX_DELAY_MS = 500;
@@ -121,8 +118,7 @@ export function atomicWriteFile(
 	const startedAt = Date.now();
 	let renamed = false;
 	try {
-		// Inside the cleanup boundary: a write that fails partway (ENOSPC, EIO) still leaves a
-		// partial temp file holding configuration values.
+		// Inside the cleanup boundary: a write that fails partway leaves a partial temp behind.
 		fs.writeFileSync(tempPath, content);
 		while (!renamed) {
 			try {
@@ -138,11 +134,11 @@ export function atomicWriteFile(
 					delayMs = Math.min(delayMs * 2, maxDelayMs);
 					continue;
 				}
-				// Attempts and elapsed time are what distinguish a holder that never released from
-				// one that simply lost a race; neither is recoverable from the rethrown error.
+				// Attempts and elapsed distinguish a holder that never released from one that lost
+				// a race, and neither survives on the rethrown error.
 				if (err.code === 'EPERM' || err.code === 'EACCES') {
 					logger.warn(
-						`Could not replace ${filePath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms. Another process or thread is holding the file open.`
+						`Could not replace ${filePath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms`
 					);
 				}
 				throw err;

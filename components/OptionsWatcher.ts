@@ -130,12 +130,10 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.on('ready', this.#handleChange.bind(this));
 	}
 
-	// The root config is replaced by rename-over (atomicWriteFile), which on Windows fails while
-	// any descriptor is open on the destination; the writer's retry loop blocks the calling
-	// thread, so a descriptor this watcher leaves open across an event-loop turn can never be
-	// closed while a write on that thread waits for it. Reading it synchronously bounds the
-	// descriptor to a single syscall. Application configs are written in place (`fs.outputFile`,
-	// components/operations.js), never by rename, so they keep the non-blocking read.
+	// Read the root config synchronously so the descriptor cannot outlive this turn: it is
+	// replaced by rename-over, which on Windows fails while any descriptor is open on it, and
+	// the writer's retry blocks the thread that would close one. Application configs are written
+	// in place, never by rename-over, so they keep the non-blocking read and its drain.
 	#handleChange() {
 		if (this.#isRootConfig) {
 			try {
