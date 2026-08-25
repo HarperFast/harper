@@ -246,9 +246,70 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
 
+## A deploy builds off to the side, is validated, and only then goes live
+
+`deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, runs the
+load validation against _that_ tree, and only then activates it. Activation is one compensating
+transaction over three effects, in this order: the live tree moves into `.deploy-aside`, the candidate
+is renamed into the live path, and the component's root-config entry is published.
+
+The ordering is the design. Each of the three used to be wrong in a way the others hid:
+
+- **The live tree was moved aside first**, so the component was broken for the whole extract +
+  `npm install`. Worse than unavailable — the live path held the _new_ code before its dependencies were
+  installed, so requests during a deploy hit an unrunnable tree. `stage-swap-availability.test.ts`
+  samples the live path through a deliberately blocked install and fails against the old ordering.
+- **Validation ran after the swap committed**, so a component that installed cleanly but threw at load
+  went live anyway while the operation returned an error. Validation is now a callback preparation
+  invokes between build and activation, so a rejected candidate is never published. Note this is a
+  load-error PROBE, not a safety guarantee: it executes the component's own top-level code with
+  incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
+  deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
+  is separate work; this only fixed the order.
+- **Config was published before the build and never rolled back**, so `installApplications()` reinstalled
+  a rejected release at the next restart. It is now the transaction's last effect, because an entry that
+  outlives the tree it names is precisely how a rejected release comes back. A payload deploy replacing a
+  package-installed component explicitly REMOVES the `package` key rather than expressing no opinion;
+  otherwise a cold install resolves the old package over the payload release.
+
+Config publication is serialized across components: `addConfig` is a read-modify-write of the whole
+document, so two components publishing at once can lose each other's entry.
+
+### Recovering an interrupted activation
+
+An `activation.json` journal is written and fsynced beside the candidate — with a `.complete` marker
+recording that build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()`
+can settle a crash at any boundary. It holds only this component's config entry, never a whole-file
+snapshot: two components activating concurrently would each restore a snapshot predating the other's
+write and delete its entry.
+
+The journal is consulted **first**. Its absence means no staged activation was in flight, so the legacy
+in-place extraction recovery applies unchanged — a crash in that path also leaves an in-progress aside
+with the live tree present, and retiring it there would keep a half-written tree instead of restoring
+the good one.
+
+Ambiguity exists only while the live path is absent, and there `.complete` is the roll-forward authority:
+without it the candidate was never validated, so the committed tree in the aside wins. Live-present with a
+candidate is pre-swap (or already rolled back) — discard the candidate and put the old entry back.
+Live-present without a candidate is a lost tail — finish forward; never revert a completed activation.
+Neither a live tree nor a rollback record is unrecoverable, so that component fails closed rather than
+guessing. Every branch is idempotent, so a crash _during_ recovery is settled by the next run, and
+failures are per component so one unsettleable component does not stop healthy siblings loading.
+
+Directory fsync is best-effort by necessity — Node cannot fsync a directory on Windows — so the protocol
+never depends on it. Roll-forward requires the journal, the candidate and `.complete` to all be
+observable, which means a lost directory update degrades to a roll back rather than to a wrong decision.
+
+Retiring the rollback record only marks the displaced tree disposable; both the activation path and
+recovery then sweep it, or the components root would grow by a whole component version per deploy.
+
+Two limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
+request can still see a gap), and validation does not run on the main-thread deploy path.
+
 ## Component preparation is serialized across worker threads
 
-`prepareApplication()` performs one destructive transaction against a component directory: extract the incoming payload, then run its dependency installer. Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
+`prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
