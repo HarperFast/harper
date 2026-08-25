@@ -237,7 +237,12 @@ describe('cluster-origin schema definitions are additive-only', () => {
 				{ name: 'tag', type: 'String', indexed: true },
 			],
 		});
+		if (Indexed.indexingOperation) await Indexed.indexingOperation;
 		await catalogFlushed(Indexed);
+		// the durable index was built without null entries
+		const staleKey = 'ClusterMergeStaleIndex/tag';
+		const written = Indexed.dbisDB.put(staleKey, { ...Indexed.dbisDB.getSync(staleKey), indexNulls: false });
+		if (written?.then) await written;
 		// emulate a worker whose live list predates the locally declared index: only the descriptor has it
 		Indexed.attributes.splice(
 			Indexed.attributes.findIndex((attribute) => attribute.name === 'tag'),
@@ -251,7 +256,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			schemaDefined: false,
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'tag', type: 'String' },
+				{ name: 'tag', type: 'String', indexNulls: true },
 			],
 			origin: 'cluster',
 		});
@@ -264,9 +269,14 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			AfterPeer.indices.tag,
 			'the index the durable descriptor declares was not registered, so this worker stops indexing writes to it'
 		);
+		assert.strictEqual(
+			AfterPeer.indices.tag.indexNulls,
+			false,
+			'an index the durable descriptor declares as holding no null entries was registered as null-capable, so null searches would trust it'
+		);
 		await catalogFlushed(AfterPeer);
 		assert.strictEqual(
-			AfterPeer.dbisDB.getSync('ClusterMergeStaleIndex/tag').indexed,
+			AfterPeer.dbisDB.getSync(staleKey).indexed,
 			true,
 			'the durable index declaration was overwritten by the incoming definition'
 		);

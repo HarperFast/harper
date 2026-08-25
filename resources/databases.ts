@@ -354,12 +354,13 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-// Kept in step with the `commonChanged` comparison below (plus `indexed`): the fields that decide
-// whether a definition is a redefinition. A cluster-origin merge discards these rather than applying
-// them, so a difference is reported instead.
+// What makes up a declaration: the `commonChanged` comparison below, plus the two index flags (an
+// index built without null entries must not be re-registered as null-capable). A cluster-origin merge
+// discards these rather than applying them, so a difference is reported instead.
 const PEER_REDEFINABLE_FIELDS = [
 	'type',
 	'indexed',
+	'indexNulls',
 	'nullable',
 	'enumerable',
 	'version',
@@ -1829,7 +1830,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			if (origin === 'cluster') {
-				// Additive-only merge — see the cluster-origin section of DESIGN.md for the invariant and costs.
 				const merged = Table.attributes.slice();
 				for (const attribute of attributes) {
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
@@ -2123,7 +2123,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							}
 						}
 						if (attributeDescriptor.indexingPID) dbi.isIndexing = true;
-						if (attributeDescriptor.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 						dbi.indexNulls = attribute.indexNulls;
 						indices[attribute.name] = dbi;
 					}
