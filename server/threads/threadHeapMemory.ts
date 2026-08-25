@@ -18,7 +18,7 @@ export function resolveThreadHeapMemoryMb(configured: unknown): number | undefin
 	if (isStartableThreadHeapMemory(configuredMb)) return configuredMb;
 	if (!recoveryWarned) {
 		recoveryWarned = true;
-		harperLogger.warn(
+		harperLogger.error(
 			`Ignoring threads.maxHeapMemory: ${JSON.stringify(configured)} is below the ${MIN_THREAD_HEAP_MEMORY_MB}MB a worker thread can start on. Using the default instead; replace the configured value before downgrading.`
 		);
 	}
