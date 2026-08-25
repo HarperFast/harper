@@ -475,7 +475,6 @@ async function packageComponent(req) {
  * any credential token into the secrets store (so it lives as a replicated reference, not embedded),
  * then stages the build and swaps it in.
  *
- * `two_phase: false` forces the one-shot path. See DESIGN.md for the stage/activate protocol.
  *
  * @param req
  * @returns {Promise<object>}
@@ -954,12 +953,8 @@ async function restartRevertedComponent(req, emit) {
 	return { restartMessage: '' };
 }
 
-// Shared deploy-family helpers (used by deploy_component and
-// revert_component).
-
-// Reject deploying over a protected core component name unless force is set. Lazy-loads
-// componentLoader to avoid a circular dependency.
 function assertNotProtectedCoreComponent(project, force) {
+	// Lazily required: componentLoader requires this module back.
 	const { TRUSTED_RESOURCE_PLUGINS } = require('./componentLoader.ts');
 	if (TRUSTED_RESOURCE_PLUGINS[project] && !force) {
 		throw handleHDBError(

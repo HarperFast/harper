@@ -624,112 +624,20 @@ export async function recordDeploymentPeers(deploymentId: string, results: unkno
 }
 
 /**
- * RESERVED FOR #2301 — no caller in this tree.
- *
- * Claim a staged deployment for activation while the component preparation lock is held. On the
- * ORIGIN this marks the row `activating`; `persist: false` runs the same validation without the
- * write, because the row is replicated and only the origin owns it.
- *
- * Kept here rather than deleted because the coordination protocol PR is stacked directly on this one
- * and is its only consumer; deleting it here would just mean re-adding it there. Do not assume a
- * resting `staged` row producer exists in-tree — there isn't one until #2301 lands.
- */
-/**
  * Whether deployment tracking is provisioned on this node.
  *
- * `DeploymentRecorder.put()` is deliberately tolerant — a one-shot deploy still works with no
- * `hdb_deployment` table, because tracking is observability there. It is NOT observability for the
- * separated phases: `activate: false` hands the caller a deployment_id that only the row can resolve,
- * so a stage that reported success would be unactivatable. Callers of the separated phases check this
- * up front instead of failing later with a missing row.
+ * `DeploymentRecorder.put()` is deliberately tolerant — a deploy still works with no `hdb_deployment`
+ * table, because tracking is observability. This reports whether a row will actually exist, which the
+ * deploy path needs to decide whether peers can read the payload from the row or must be sent it.
  */
 export function isDeploymentTrackingAvailable(): boolean {
 	return !!(databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
-}
-
-export async function claimStagedDeployment(
-	deploymentId: string,
-	project: string,
-	options: { allowActivating?: boolean; waitForStagedMs?: number; persist?: boolean } = {}
-): Promise<Record<string, any>> {
-	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
-	if (!table) throw new ClientError('Deployment tracking is unavailable; cannot activate a staged deployment');
-	const deadline = Date.now() + coerceTimeoutMs(options.waitForStagedMs, 0);
-	let row = await table.get(deploymentId);
-	if (!row) throw new ClientError(`No deployment found with id '${deploymentId}'`);
-	if (row.project !== project) {
-		throw new ClientError(`Deployment '${deploymentId}' belongs to component '${row.project}', not '${project}'`);
-	}
-	while (['pending', 'staging'].includes(row.status) && Date.now() < deadline) {
-		await new Promise<void>((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
-		row = await table.get(deploymentId);
-		if (!row) throw new ClientError(`No deployment found with id '${deploymentId}'`);
-		if (row.project !== project) {
-			throw new ClientError(`Deployment '${deploymentId}' belongs to component '${row.project}', not '${project}'`);
-		}
-	}
-	if (row.status === 'activating' && options.allowActivating) return row;
-	if (row.status !== 'staged') {
-		throw new ClientError(`Deployment '${deploymentId}' is '${row.status}', not staged and available for activation`);
-	}
-	if (options.persist !== false) {
-		await table.patch(deploymentId, { status: 'activating', phase: 'activate', completed_at: null, error: null });
-	}
-	return row;
 }
 
 // Deployment statuses that are settled — a non-terminal deployment's payload_blob may still be the
 // replication channel peers are installing from, so retention must never yank it mid-flight. Mirrors
 // deploymentOperations.ts's guard for the explicit delete_deployment_payload operation.
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
-
-// RESERVED FOR #2301, like claimStagedDeployment above: staged-ROW retention has no caller in this
-// tree, because nothing here leaves a deployment resting in `staged`. Staged DIRECTORY retention
-// (pruneStagedBuilds) is the live one.
-async function settleStagedRows(project: string, keepCount: number, keepDeploymentId?: string): Promise<string[]> {
-	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];
-	if (!table) return [];
-	const staged: Array<Record<string, any>> = [];
-	for await (const row of table.search([{ attribute: 'project', value: project }])) {
-		if (row?.status === 'staged') staged.push(row);
-	}
-	staged.sort(
-		(a, b) => (b.started_at ?? 0) - (a.started_at ?? 0) || String(a.deployment_id).localeCompare(b.deployment_id)
-	);
-	// Keep the request being returned, plus any row strictly NEWER than it, plus the newest of the rest
-	// up to the count. Excluding the current id from the ranking instead would privilege it
-	// unconditionally: a stage that waited on slow peers resumes with an older `started_at`, so with a
-	// retention of 1 it would expire the newer stage that had already completed and been reported to the
-	// operator, then discard its staging tree cluster-wide. `started_at` is stamped by whichever node
-	// originated the deploy, so cross-node clock skew produces the same inversion. Ties count as
-	// protected, not evictable: two concurrent stages of one component can both reach `staged` in the
-	// same millisecond, and evicting a tied row would fail a request that is about to return its
-	// deployment id to the caller. The budget subtracts the protected rows, so the retained total still
-	// lands on `keepCount` except when more rows tie-or-exceed the window than fit in it — a temporary
-	// overflow, which is the right way for a disk bound to fail.
-	const current = keepDeploymentId ? staged.find((row) => row.deployment_id === keepDeploymentId) : undefined;
-	const others = staged.filter((row) => row.deployment_id !== keepDeploymentId);
-	const protectedRows = current ? others.filter((row) => (row.started_at ?? 0) >= (current.started_at ?? 0)) : [];
-	const budget = Math.max(0, keepCount - (current ? 1 : 0) - protectedRows.length);
-	const expired = others.filter((row) => !protectedRows.includes(row)).slice(budget);
-	for (const row of expired) {
-		await table.patch(row.deployment_id, {
-			status: 'failed',
-			completed_at: Date.now(),
-			error: { message: 'Staged build expired by deployment_stagingRetention_maxCount', phase: 'staged' },
-		});
-	}
-	return expired.map((row) => row.deployment_id);
-}
-
-export async function expireOldStagedDeployments(
-	project: string,
-	maxCount: number,
-	keepDeploymentId?: string
-): Promise<string[]> {
-	const count = Number.isFinite(maxCount) ? Math.max(1, Math.floor(maxCount)) : 1;
-	return settleStagedRows(project, count, keepDeploymentId);
-}
 
 export async function invalidateProjectStagedDeployments(project: string): Promise<string[]> {
 	const table = (databases as any).system?.[terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME];

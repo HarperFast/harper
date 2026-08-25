@@ -37,9 +37,8 @@ const OP_VERB_PROPS: Record<string, Record<string, unknown>> = {
 	revert: { operation: 'revert_component', _cliVerb: 'revert' },
 };
 
-// Guard CLI-verb requirements that the operation itself can't enforce (the op has no notion of which
-// verb invoked it). Returns an error message, or null when the request is fine. Pure + exported so it
-// is unit-testable without the network/process-exit machinery in cliOperations.
+// The operation has no notion of which verb invoked it, so requirements that belong to the verb are
+// enforced here. Returns an error message, or null when the request is fine.
 function verbRequirementError(req: any): string | null {
 	// revert_component requires its target so a retry can't toggle the rejected release back in. Caught
 	// here too, so the CLI names the flag instead of surfacing a raw validation error.

@@ -196,7 +196,9 @@ Boot's `harper-application-lock.json` records an application configuration only 
 ## Component deploys build off to the side and swap atomically
 
 `deploy_component` prepares the candidate under `.deploy-staging/<deployment UUID>/<project>`, runs
-extract + `npm install` there, validates that it loads, and only then renames it into the live path —
+extract + `npm install` there, validates that it loads _where that check runs at all_ (it is a no-op on
+the main thread, which is where the operations API deploys — see "Staged deploy" below), and only then
+renames it into the live path —
 committing root config and `harper-application-lock.json` in the same compensating transaction. The
 live component keeps serving through the slow, failure-prone work (git clone, registry install), and
 go-live is one atomic rename. A fetch or install failure leaves the running component untouched
@@ -598,9 +600,14 @@ deployment moves to #2301 with the rest of the coordination protocol.
   successful deploy. Bounds how many payloads accumulate over time, which is what actually caps disk.
 
 Only rows that still hold a payload count toward `maxCount`, so the cap reads literally as "at most N
-stored payloads per project." Rows are never deleted — pruning nulls the blob and appends a
-`payload_dropped` event, so the audit trail and `get_deployment` stay intact; only
-`get_deployment_payload` stops working for pruned deployments (`payload_blob_present: false`). A
+stored payloads per project." Rows are never deleted — pruning nulls the blob and nothing else, so the audit
+trail and `get_deployment` stay intact; only `get_deployment_payload` stops working for pruned
+deployments (`payload_blob_present: false`). Automatic pruning does NOT append `payload_dropped` to the
+rows it prunes: `event_log` is append-only and adding to it is a read-copy-write, which would lose a
+concurrent writer's entry, so `payload_blob_present: false` is what records the drop there. The
+deploying operation still emits `payload_dropped` on its own progress stream (and so into its own
+row's `event_log`), and the explicit `delete_deployment_payload` does append it to the row it targets —
+that one is a single operator-driven write with no concurrent writer to lose. A
 non-terminal deployment is counted but never dropped: its blob may still be the replication channel
 peers are installing from (the same guard `delete_deployment_payload` uses). Pruning is best-effort and
 off the deploy's critical path — a prune failure is logged, never fatal — and is skipped entirely when a
