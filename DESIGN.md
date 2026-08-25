@@ -291,7 +291,12 @@ synchronous bounded wait (`acquireUpdateAttributesLock` in `Table.ts`: brief hot
 an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if the holder never
 released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
 `withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock (regression
-suite: `unitTests/resources/updateAttributesLock.test.js`). The locked
+suite: `unitTests/resources/updateAttributesLock.test.js`). Because the acquire can now throw,
+`table()` takes the lock _before_ it mutates the live `Table` (attributes, class metadata, index
+handles): losing the race then leaves this worker's in-memory schema exactly as it found it, and
+moving any mutation above that acquire reintroduces schema drift the catalog never saw. A
+successful acquire that waited past `UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT` (1s) warns once, since
+contention is otherwise invisible until it becomes a timeout. The locked
 sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside
 one would stall a concurrent acquirer to its deadline. And dropping then recreating a
 same-named table within one process requires @harperfast/rocksdb-js >= the column-family

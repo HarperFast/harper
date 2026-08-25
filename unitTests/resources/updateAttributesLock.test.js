@@ -7,7 +7,9 @@ const {
 	releaseUpdateAttributesLock,
 	withUpdateAttributesLock,
 	UPDATE_ATTRIBUTES_LOCK_TIMEOUT,
+	UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT,
 } = require('#src/resources/Table');
+const { logger } = require('#src/utility/logging/logger');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -154,13 +156,18 @@ describe('update-attributes exclusive lock', () => {
 		rootStore.unlock(LOCK_KEY);
 	});
 
-	it('a real table() operation fails with ServerError after the full deadline when the lock is wedged', async function () {
-		this.timeout(30000);
-		const [deadlineResult, createResult] = await runWorkerAction(
+	it('a real table() operation fails with ServerError after the full deadline, leaving the live schema untouched', async function () {
+		this.timeout(40000);
+		const messages = await runWorkerAction(
 			{ type: 'table-deadline' },
-			['deadline-result', 'table-created'],
-			20000
+			['deadline-result', 'live-schema', 'table-updated'],
+			30000
 		);
+		const {
+			'deadline-result': deadlineResult,
+			'live-schema': liveSchema,
+			'table-updated': updateResult,
+		} = Object.fromEntries(messages.map((message) => [message.type, message]));
 		assert.ok(deadlineResult.acquired, 'test worker should be able to wedge the lock');
 		assert.ok(deadlineResult.error.isServerError, 'production table() path should throw ServerError');
 		assert.strictEqual(deadlineResult.error.statusCode, 503);
@@ -179,7 +186,46 @@ describe('update-attributes exclusive lock', () => {
 			deadlineResult.elapsed < UPDATE_ATTRIBUTES_LOCK_TIMEOUT + 5000,
 			`should throw shortly after the deadline, took ${deadlineResult.elapsed}ms`
 		);
-		assert.ok(createResult.created, `create should succeed after the lock is released: ${createResult.error ?? ''}`);
+		// the acquire happens before any mutation of the live Table, so losing the race is a no-op
+		assert.deepStrictEqual(
+			liveSchema.after,
+			liveSchema.before,
+			'a lock-acquire timeout must not leave this worker describing attributes it never persisted'
+		);
+		assert.ok(!liveSchema.before.attributes.includes('added'), 'test should start from the pre-declaration schema');
+		assert.ok(updateResult.updated, `redeclaration should succeed once the lock is free: ${updateResult.error ?? ''}`);
+		assert.ok(updateResult.applied.attributes.includes('added'), 'the retried declaration should apply the attribute');
+		assert.ok(updateResult.applied.indices.includes('added'), 'the retried declaration should open the index');
+	});
+
+	it('warns exactly once when a successful acquisition waited past the slow-wait threshold', async function () {
+		this.timeout(30000);
+		const warnings = [];
+		const originalWarn = Object.getOwnPropertyDescriptor(logger, 'warn');
+		logger.warn = (message) => warnings.push(message);
+		const workerThread = new Worker(__dirname + '/updateAttributesLock-thread.js', {
+			workerData: { addPorts: [] },
+		});
+		try {
+			withUpdateAttributesLock(rootStore, `table '${TEST_DB}.FastWait'`, () => 0);
+			assert.strictEqual(warnings.length, 0, 'an uncontended acquisition must stay silent');
+			const held = await new Promise((resolve, reject) => {
+				workerThread.once('message', resolve);
+				workerThread.once('error', reject);
+				workerThread.postMessage({ type: 'hold-lock' });
+			});
+			assert.ok(held.acquired, 'worker thread should have taken the lock');
+			workerThread.postMessage({ type: 'release-lock', holdTime: UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT + 300 });
+			acquireUpdateAttributesLock(rootStore, `table '${TEST_DB}.SlowWait'`);
+			releaseUpdateAttributesLock(rootStore);
+		} finally {
+			if (originalWarn) Object.defineProperty(logger, 'warn', originalWarn);
+			else delete logger.warn;
+			await workerThread.terminate();
+		}
+		assert.strictEqual(warnings.length, 1, `expected one slow-wait warning, got ${warnings.length}`);
+		assert.ok(warnings[0].includes(`table '${TEST_DB}.SlowWait'`), 'the warning should name the table in scope');
+		assert.ok(/waiting \d+ms/.test(warnings[0]), 'the warning should report how long the acquisition waited');
 	});
 
 	it('waits for a briefly-held lock and acquires once the holding thread releases', async function () {

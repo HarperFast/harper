@@ -1587,6 +1587,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					);
 				}
 			}
+			// Acquire before the first mutation of the live Table, not lazily at the first catalog write:
+			// the acquire is bounded and throws, and everything below this line (attributes, class
+			// metadata, index handles) is in-memory state with no catalog row behind it yet. Taking the
+			// lock first makes a lost race a clean no-op instead of leaving this worker describing
+			// attributes it never persisted. Costs an uncontended tryLock on unchanged reloads.
+			exclusiveLock();
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);

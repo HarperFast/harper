@@ -30,6 +30,14 @@ function reportDeadline(action, callback) {
 	parentPort.postMessage({ type: 'deadline-result', action, acquired, elapsed: Date.now() - startTime, error });
 }
 
+function liveSchema(Table) {
+	return {
+		attributes: Table.attributes.map((attribute) => attribute.name),
+		indices: Object.keys(Table.indices),
+		schemaVersion: Table.schemaVersion,
+	};
+}
+
 parentPort
 	?.on('message', (message) => {
 		if (message.type === 'hold-lock') {
@@ -51,11 +59,22 @@ parentPort
 				database: 'test',
 				attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
 			};
-			reportDeadline(message.type, () => table(definition));
+			const Table = table(definition);
+			const redeclaration = {
+				...definition,
+				attributes: [...definition.attributes, { name: 'added', type: 'String', indexed: true }],
+			};
+			const before = liveSchema(Table);
+			reportDeadline(message.type, () => table(redeclaration));
+			parentPort.postMessage({ type: 'live-schema', before, after: liveSchema(Table) });
 			try {
-				parentPort.postMessage({ type: 'table-created', created: Boolean(table(definition)) });
+				parentPort.postMessage({
+					type: 'table-updated',
+					updated: Boolean(table(redeclaration)),
+					applied: liveSchema(Table),
+				});
 			} catch (error) {
-				parentPort.postMessage({ type: 'table-created', created: false, error: error.message });
+				parentPort.postMessage({ type: 'table-updated', updated: false, error: error.message });
 			}
 		}
 	})

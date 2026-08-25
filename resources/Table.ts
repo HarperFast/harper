@@ -138,6 +138,9 @@ const LOCK_TIMEOUT = 10000;
 // This bounds schema-lock acquisition; LOCK_TIMEOUT bounds in-flight record writes during a drop.
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
+// A successful acquire that blocked this long still starved this worker's event loop for that
+// whole span; without a trace, contention is only ever visible once it becomes a timeout (harper#2251).
+export const UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT = 1000;
 // raw ASCII bytes are ordered-binary's encoding of the string, so this addresses the same native
 // lock as string-keyed tryLock/unlock calls
 const updateAttributesLockKey = Buffer.from(UPDATE_ATTRIBUTES_LOCK);
@@ -164,6 +167,11 @@ export function acquireUpdateAttributesLock(
 			if (waitTime < 16) waitTime *= 2;
 		}
 	}
+	const waited = performance.now() - startTime;
+	if (waited >= UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT)
+		logger.warn?.(
+			`Acquired the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription} after waiting ${Math.round(waited)}ms; this worker's event loop was blocked for that wait, and a holder that runs past ${UPDATE_ATTRIBUTES_LOCK_TIMEOUT}ms fails the update outright`
+		);
 }
 
 export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
