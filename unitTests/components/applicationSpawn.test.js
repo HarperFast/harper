@@ -266,7 +266,7 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 				processGroupExists: () => true,
 				readDirectory: () => ['456'],
 				readStat: (path) => {
-					if (path === '/proc/123/stat') throw new Error('leader reaped');
+					if (path === '/proc/123/stat') throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
 					return '456 (unreaped child) Z 1 123 123';
 				},
 				now: nextScan,
@@ -279,13 +279,61 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 				processGroupExists: () => true,
 				readDirectory: () => ['456'],
 				readStat: (path) => {
-					if (path === '/proc/123/stat') throw new Error('leader reaped');
+					if (path === '/proc/123/stat') throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
 					return '456 (running child) S 1 123 123';
 				},
 				now: nextScan,
 			}),
 			true
 		);
+		unregisterProcessGroup(123);
+	});
+
+	it('keeps a Linux process group alive when a proc stat entry is unreadable', () => {
+		const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+		assert.strictEqual(
+			isProcessGroupAlive(678, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['678', '679'],
+				readStat: (path) => {
+					if (path === '/proc/678/stat') return '678 (installer) Z 1 678 678';
+					throw permissionError;
+				},
+			}),
+			true
+		);
+		unregisterProcessGroup(678);
+	});
+
+	it('warns once when process-group termination remains unconfirmed', () => {
+		let now = 0;
+		const warnings = [];
+		const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => ['789'],
+			readStat: () => {
+				throw permissionError;
+			},
+			now: () => now,
+			warn: (message) => warnings.push(message),
+		};
+
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		now = 29999;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.deepStrictEqual(warnings, []);
+		now = 30000;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.deepStrictEqual(warnings, [
+			'Process group 789 termination remains unconfirmed after 30000ms: reading /proc/789/stat failed (EACCES)',
+		]);
+		now = 60000;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.strictEqual(warnings.length, 1);
+		unregisterProcessGroup(789);
 	});
 
 	it('does not trust a recycled Linux process-group leader pid', () => {
@@ -319,6 +367,7 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 			true
 		);
 		assert.strictEqual(scanCount, 2);
+		unregisterProcessGroup(345);
 	});
 
 	it('throttles Linux process-group scans and clears the throttle when unregistered', () => {
@@ -334,7 +383,7 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 			},
 			readStat: (path) => {
 				if (path === '/proc/456/stat') return `456 (installer child) ${childState} 1 567 567`;
-				throw new Error('leader reaped');
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
 			},
 			now: () => now,
 		};

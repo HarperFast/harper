@@ -947,7 +947,9 @@ const processGroupsByThread = new Map();
 const pendingProcessGroupTerminations = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
 const ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS = 1000;
+const PROCESS_GROUP_LIVENESS_WARNING_MS = 30000;
 const zombieGroupScanTimes = new Map();
+const processGroupLivenessStates = new Map();
 
 function processGroupExists(processGroupId) {
 	try {
@@ -958,39 +960,78 @@ function processGroupExists(processGroupId) {
 	}
 }
 
+function processProbeError(error) {
+	return error?.code ?? error?.message ?? String(error ?? 'unknown error');
+}
+
 function processGroupLeaderState(processGroupId, platform, readStat) {
-	if (platform !== 'linux') return 'unknown';
+	if (platform !== 'linux') {
+		return { state: 'unknown', reason: `zombie-process detection is unavailable on ${platform}` };
+	}
 	let stat;
 	try {
 		stat = readStat(`/proc/${processGroupId}/stat`, 'utf8');
-	} catch {
-		return 'missing';
+	} catch (error) {
+		if (error.code === 'ENOENT' || error.code === 'ESRCH') return { state: 'missing' };
+		return {
+			state: 'unknown',
+			reason: `reading /proc/${processGroupId}/stat failed (${processProbeError(error)})`,
+		};
 	}
 	const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-	if (Number(fields[2]) !== processGroupId) return 'missing';
-	return fields[0] === 'Z' ? 'zombie' : 'alive';
+	if (Number(fields[2]) !== processGroupId) return { state: 'missing' };
+	return { state: fields[0] === 'Z' ? 'zombie' : 'alive' };
 }
 
 function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 	let processIds;
 	try {
 		processIds = readDirectory('/proc');
-	} catch {
-		return null;
+	} catch (error) {
+		return {
+			isAlive: null,
+			reason: `reading /proc failed (${processProbeError(error)})`,
+		};
 	}
 	for (const processId of processIds) {
 		if (!/^\d+$/.test(processId)) continue;
 		let stat;
 		try {
 			stat = readStat(`/proc/${processId}/stat`, 'utf8');
-		} catch {
-			continue;
+		} catch (error) {
+			if (error.code === 'ENOENT' || error.code === 'ESRCH') continue;
+			return {
+				isAlive: null,
+				reason: `reading /proc/${processId}/stat failed (${processProbeError(error)})`,
+			};
 		}
 		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
 		if (Number(fields[2]) !== processGroupId) continue;
-		if (fields[0] !== 'Z') return true;
+		if (fields[0] !== 'Z') return { isAlive: true, reason: `a live member was observed at pid ${processId}` };
 	}
-	return false;
+	return { isAlive: false };
+}
+
+function keepProcessGroupAlive(processGroupId, reason, observationTime, warn) {
+	let livenessState = processGroupLivenessStates.get(processGroupId);
+	if (!livenessState) {
+		livenessState = { observedAt: observationTime, reason, warned: false };
+		processGroupLivenessStates.set(processGroupId, livenessState);
+	} else {
+		livenessState.reason = reason;
+	}
+	if (!livenessState.warned && observationTime - livenessState.observedAt >= PROCESS_GROUP_LIVENESS_WARNING_MS) {
+		livenessState.warned = true;
+		warn(
+			`Process group ${processGroupId} termination remains unconfirmed after ${PROCESS_GROUP_LIVENESS_WARNING_MS}ms: ${livenessState.reason}`
+		);
+	}
+	return true;
+}
+
+function clearProcessGroupLivenessState(processGroupId) {
+	zombieGroupScanTimes.delete(processGroupId);
+	processGroupLivenessStates.delete(processGroupId);
 }
 
 function isProcessGroupAlive(processGroupId, options) {
@@ -998,20 +1039,33 @@ function isProcessGroupAlive(processGroupId, options) {
 	const groupExists = options?.processGroupExists ?? processGroupExists;
 	const readDirectory = options?.readDirectory ?? readdirSync;
 	const readStat = options?.readStat ?? readFileSync;
+	const observationTime = options?.now?.() ?? performance.now();
+	const warn = options?.warn ?? ((message) => harperLogger.warn(message));
 	if (!groupExists(processGroupId)) {
-		zombieGroupScanTimes.delete(processGroupId);
+		clearProcessGroupLivenessState(processGroupId);
 		return false;
 	}
 	const leaderState = processGroupLeaderState(processGroupId, platform, readStat);
-	if (leaderState === 'alive' || leaderState === 'unknown') return true;
-	const scanTime = options?.now?.() ?? performance.now();
+	if (leaderState.state === 'alive')
+		return keepProcessGroupAlive(processGroupId, 'the process-group leader is still alive', observationTime, warn);
+	if (leaderState.state === 'unknown')
+		return keepProcessGroupAlive(processGroupId, leaderState.reason, observationTime, warn);
+	const scanTime = observationTime;
 	const lastScan = zombieGroupScanTimes.get(processGroupId);
-	if (lastScan !== undefined && scanTime - lastScan < ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS) return true;
+	if (lastScan !== undefined && scanTime >= lastScan && scanTime - lastScan < ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS) {
+		const reason = processGroupLivenessStates.get(processGroupId)?.reason ?? 'the previous Linux scan is still current';
+		return keepProcessGroupAlive(processGroupId, reason, observationTime, warn);
+	}
 	zombieGroupScanTimes.set(processGroupId, scanTime);
-	const isAlive = scanLinuxProcessGroup(processGroupId, readDirectory, readStat);
-	if (isAlive !== false) return true;
-	if (scanLinuxProcessGroup(processGroupId, readDirectory, readStat) !== false) return true;
-	zombieGroupScanTimes.delete(processGroupId);
+	let scanResult = scanLinuxProcessGroup(processGroupId, readDirectory, readStat);
+	if (scanResult.isAlive !== false)
+		return keepProcessGroupAlive(processGroupId, scanResult.reason, observationTime, warn);
+	// A second snapshot catches a member omitted after forking inside the first readdir/stat window.
+	// It narrows rather than closes the race because the second synchronous pass has the same gap.
+	scanResult = scanLinuxProcessGroup(processGroupId, readDirectory, readStat);
+	if (scanResult.isAlive !== false)
+		return keepProcessGroupAlive(processGroupId, scanResult.reason, observationTime, warn);
+	clearProcessGroupLivenessState(processGroupId);
 	return false;
 }
 
@@ -1098,7 +1152,7 @@ function addProcessGroup(ownerThreadId, processGroupId) {
 }
 
 function removeProcessGroup(ownerThreadId, processGroupId) {
-	zombieGroupScanTimes.delete(processGroupId);
+	clearProcessGroupLivenessState(processGroupId);
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return;
 	processGroups.delete(processGroupId);
