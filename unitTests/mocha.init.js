@@ -101,10 +101,8 @@ if (isMainThread) {
 			}
 		}
 	}
-	// registered here rather than in setupTestDBPath() so a suite that never opens a
-	// database still cleans up the root this preload created. preTestPrep() prepends its
-	// own 'exit' listener that calls process.exit(), which skips the remaining listeners —
-	// it calls removePerPidRoot() itself for that reason.
+	// preTestPrep() prepends an 'exit' listener that calls process.exit(), which skips the
+	// listeners after it — it calls removePerPidRoot() itself for that reason
 	process.on('exit', removePerPidRoot);
 }
 materializePerPidRoot();

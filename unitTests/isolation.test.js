@@ -22,33 +22,39 @@ describe('unit-test per-PID root isolation', () => {
 		this.timeout(30000);
 		const { spawnSync } = require('node:child_process');
 		const probe =
-			'JSON.stringify([process.pid, process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH, ' +
-			"require('#src/utility/environment/environmentManager').getHdbBasePath(), " +
-			"require('#src/config/configUtils').getConfigPath(require('#src/utility/hdbTerms').CONFIG_PARAMS.STORAGE_PATH), " +
-			"require('#src/resources/databases').resolveDatabaseStorageRoot('system')])";
-		const result = spawnSync(process.execPath, ['--require', './unitTests/mocha.init.js', '-p', probe], {
+			"const env = require('#src/utility/environment/environmentManager');" +
+			"const terms = require('#src/utility/hdbTerms');" +
+			"const { getConfigPath } = require('#src/config/configUtils');" +
+			"const { resolveDatabaseStorageRoot } = require('#src/resources/databases');" +
+			'const before = [process.pid, process.env.STORAGE_PATH, process.env.SCHEMAS_DATA_PATH, ' +
+			'env.getHdbBasePath(), getConfigPath(terms.CONFIG_PARAMS.STORAGE_PATH), ' +
+			"resolveDatabaseStorageRoot('system'), getConfigPath(terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)];" +
+			// a re-init through the function preTestPrep() stubs initSync with must keep the
+			// same layout, or it detaches databases seeded under <root>/database
+			'env.initTestEnvironment({});' +
+			'console.log(JSON.stringify(before.concat([getConfigPath(terms.CONFIG_PARAMS.STORAGE_PATH)])));';
+		const result = spawnSync(process.execPath, ['--require', './unitTests/mocha.init.js', '-e', probe], {
 			cwd: path.join(__dirname, '..'),
 			env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
 			encoding: 'utf8',
 			timeout: 25000,
 		});
 		assert.strictEqual(result.status, 0, result.stderr);
-		const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot] = JSON.parse(
-			result.stdout.trim().split('\n').pop()
-		);
-		// assert against the child's own pid dir: the parent's root also lives under envDir
-		// and is inherited via ROOTPATH, so an envDir-wide check could not catch a child
-		// resolving into the parent's root
+		const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit] =
+			JSON.parse(result.stdout.trim().split('\n').pop());
+		// the parent's root also lives under envDir and is inherited via ROOTPATH, so only
+		// the child's own pid dir distinguishes isolation from contamination
 		const childRoot = path.join(__dirname, 'envDir', String(childPid));
 		require('fs-extra').removeSync(childRoot);
 		assert.strictEqual(storageEnv, null);
 		assert.strictEqual(schemasEnv, null);
-		for (const resolved of [hdbRoot, storagePath, systemRoot]) {
+		for (const resolved of [hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit]) {
 			assert.ok(
 				typeof resolved === 'string' && (resolved === childRoot || resolved.startsWith(childRoot + path.sep)),
 				String(resolved)
 			);
 		}
+		assert.strictEqual(storageAfterReinit, path.join(childRoot, 'database'), storageAfterReinit);
 	});
 
 	it('exports ROOTPATH inside the per-PID directory for worker threads and spawned processes', () => {

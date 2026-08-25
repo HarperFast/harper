@@ -388,15 +388,6 @@ function setupTestDBPath() {
 	return dbPath;
 }
 
-/**
- * Seeds the per-PID system database the way an install would: the standard system tables
- * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which
- * authorizeLocal/getSuperUser() need to authorize local requests), and self-signed
- * certificates (which the TLS servers, e.g. MQTT's secure port, need). Suites that
- * exercise code requiring the system tables (e.g. setUsersWithRolesCache) call this
- * after setupTestDBPath() instead of borrowing an installed Harper root's system
- * database.
- */
 function systemDatabaseOnDisk() {
 	const storageRoot = resolveDatabaseStorageRoot('system');
 	// 'system' is a RocksDB directory, 'system.mdb' the LMDB file
@@ -418,6 +409,15 @@ async function seededAdminIsUsable() {
 	return !!role?.permission?.super_user;
 }
 
+/**
+ * Seeds the per-PID system database the way an install would: the standard system tables
+ * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which
+ * authorizeLocal/getSuperUser() need to authorize local requests), and self-signed
+ * certificates (which the TLS servers, e.g. MQTT's secure port, need). Suites that
+ * exercise code requiring the system tables (e.g. setUsersWithRolesCache) call this
+ * after setupTestDBPath() instead of borrowing an installed Harper root's system
+ * database.
+ */
 async function ensureSystemTables() {
 	// the guard checks the seed's final artifacts — key file, tables, a usable admin, and
 	// the config repoint that is its last step — so a partial seed, or one a mid-run
