@@ -156,4 +156,21 @@ suite('Transaction context: closed txn in ALS still reads latest', { skip: skipS
 		const body = await dashCount('/DashWriteThenSearch/');
 		strictEqual(body.count, SNAP_IDS.length);
 	});
+
+	test('writes made after the context release completes mid-handler are durable', async () => {
+		const r = await fetch(`${httpURL}/DashReleasedSlotWrite/?company=released`, {
+			headers: { Authorization: auth },
+		});
+		ok(r.status < 300, `DashReleasedSlotWrite expected 2xx, got ${r.status}`);
+		const body = await r.json();
+		strictEqual(
+			body.txnAfterInstall,
+			'ImmediateTransaction',
+			'premise: the released slot must hold an ImmediateTransaction for the writes that follow'
+		);
+		for (const path of ['/Company/released-company-released', '/ScoreSnapshot/released-snap-released']) {
+			const probe = await fetch(`${httpURL}${path}`, { headers: { Authorization: auth } });
+			ok(probe.status < 300, `${path} must be durable, not silently discarded, got ${probe.status}`);
+		}
+	});
 });
