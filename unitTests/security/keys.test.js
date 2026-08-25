@@ -1077,7 +1077,6 @@ describe('Test keys module', () => {
 		const localSandbox = sinon.createSandbox();
 		let watchPath;
 
-		// A chokidar watcher is chainable and its `on` returns the watcher.
 		const fakeWatcher = (captureHandler) => {
 			const watcher = {
 				on: (event, handler) => {

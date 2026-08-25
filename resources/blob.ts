@@ -801,6 +801,9 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 													});
 										} catch (error) {
 											logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
+											// Latch on the stream-scoped target, or the 20 ms re-poll below re-enters here and
+											// re-attempts the same failing registration for the rest of the read.
+											watchTarget.mustPoll = true;
 											watcher = undefined;
 										}
 										// An FSWatcher that fails after registration emits 'error'; with no listener Node
@@ -811,6 +814,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 										installedWatcher?.once('error', (error) => {
 											if (watcher !== installedWatcher) return;
 											logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
+											watchTarget.mustPoll = true;
 											watcher = undefined;
 											installedWatcher.close();
 											clearTimeout(timer);

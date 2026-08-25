@@ -65,10 +65,9 @@ describe('watchPath', () => {
 			assert.strictEqual(canonicalizeWatchPath(join(root, 'absent', 'absent', 'config.yaml'), 'win32'), undefined);
 		});
 
-		it('expands through realpathSync.native, not the symlink-only realpathSync', () => {
-			// The symlink model above cannot separate the two — plain `realpathSync` resolves a symlink
-			// as well — but only `.native` expands an 8.3 name, so assert the call target itself. A
-			// regression to the plain form would otherwise ship green and silently restore the abort.
+		// The symlink model cannot separate `.native` from plain `realpathSync` — both resolve a
+		// symlink — but only `.native` expands an 8.3 name, so assert the call target itself.
+		const recordingNativeCalls = (run) => {
 			const fs = require('node:fs');
 			const original = fs.realpathSync.native;
 			const resolved = [];
@@ -77,11 +76,28 @@ describe('watchPath', () => {
 				return original(candidate);
 			};
 			try {
-				assert.strictEqual(canonicalizeWatchPath(aliasLink, 'win32'), longDirectory);
+				run();
 			} finally {
 				fs.realpathSync.native = original;
 			}
+			return resolved;
+		};
+
+		it('expands an existing path through realpathSync.native', () => {
+			const resolved = recordingNativeCalls(() =>
+				assert.strictEqual(canonicalizeWatchPath(aliasLink, 'win32'), longDirectory)
+			);
 			assert.deepStrictEqual(resolved, [aliasLink]);
+		});
+
+		it('expands a not-yet-written leaf’s directory through realpathSync.native', () => {
+			// The install-window case from harper#2234: a config watcher armed before the file exists
+			// takes the fallback branch, so it needs the same guard as the primary one.
+			const absentLeaf = join(aliasLink, 'not-written-yet.yaml');
+			const resolved = recordingNativeCalls(() =>
+				assert.strictEqual(canonicalizeWatchPath(absentLeaf, 'win32'), join(longDirectory, 'not-written-yet.yaml'))
+			);
+			assert.deepStrictEqual(resolved, [absentLeaf, aliasLink]);
 		});
 	});
 
@@ -131,12 +147,18 @@ describe('watchPath', () => {
 			'server/threads/manageThreads.js',
 		];
 
-		const IMPORTS_CHOKIDAR = /from\s*['"]chokidar['"]|require\(\s*['"]chokidar['"]\s*\)/;
-		// `watch`, not `watchFile`: the latter is stat polling with no fs-event handle, so it is
-		// outside the invariant (`utility/logging/readLog.ts`).
-		const IMPORTS_FS_WATCH =
-			/import\s*\{[^}]*\bwatch\b[^}]*\}\s*from\s*['"](?:node:)?fs['"]|\{[^}]*\bwatch\b[^}]*\}\s*=\s*require\(\s*['"](?:node:)?fs['"]\s*\)/;
-		const CALLS_FS_WATCH = /\bfs\.watch\s*\(/;
+		// `watch`, not `watchFile`: the latter is stat polling with no fs-event handle, so it is outside
+		// the invariant (`utility/logging/readLog.ts`). `node:fs/promises` counts — its async iterator
+		// is a real fs-event watch.
+		const FS_MODULE = /(?:node:)?fs(?:\/promises)?/.source;
+		const WATCH_SPELLINGS = [
+			/from\s*['"]chokidar['"]/,
+			/require\(\s*['"]chokidar['"]\s*\)/,
+			new RegExp(`import\\s*\\{[^}]*\\bwatch\\b[^}]*\\}\\s*from\\s*['"]${FS_MODULE}['"]`),
+			new RegExp(`\\{[^}]*\\bwatch\\b[^}]*\\}\\s*=\\s*require\\(\\s*['"]${FS_MODULE}['"]\\s*\\)`),
+			new RegExp(`require\\(\\s*['"]${FS_MODULE}['"]\\s*\\)\\s*\\.watch\\s*\\(`),
+			/\bfs(?:Promises|p)?\.watch\s*\(/,
+		];
 
 		const repoRoot = join(__dirname, '..', '..');
 		const skippedDirectories = new Set([
@@ -158,7 +180,7 @@ describe('watchPath', () => {
 				}
 				if (!/\.(?:ts|js|mjs|cjs)$/.test(entry.name)) continue;
 				const source = readFileSync(entryPath, 'utf8');
-				if (IMPORTS_CHOKIDAR.test(source) || IMPORTS_FS_WATCH.test(source) || CALLS_FS_WATCH.test(source))
+				if (WATCH_SPELLINGS.some((spelling) => spelling.test(source)))
 					found.push(relative(repoRoot, entryPath).replace(/\\/g, '/'));
 			}
 			return found;
@@ -173,6 +195,8 @@ describe('watchPath', () => {
 			);
 		});
 
+		// File-level, so it catches a site that never canonicalizes at all, not a second raw watch
+		// added beside an existing canonicalized one.
 		it('all route their path through the canonicalization helper', () => {
 			for (const site of NATIVE_WATCH_SITES) {
 				const source = readFileSync(join(repoRoot, site), 'utf8');
