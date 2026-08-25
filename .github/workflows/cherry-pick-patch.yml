@@ -307,13 +307,17 @@ jobs:
           else
             PICK_FLAGS=""
             PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
-            # Only merges that CONTRIBUTED something need a human. `diff-tree
-            # --cc` is empty exactly when a merge added nothing beyond its
-            # parents, so a routine "merge main in, no conflicts" PR still lands
-            # automatically; only a merge that actually resolved something holds.
+            # Only merges a human DECIDED something in need holding, so a
+            # routine "merge main in, no conflicts" PR still lands
+            # automatically. The test is whether the recorded merge matches what
+            # git would have produced on its own: `diff-tree --cc` is not enough
+            # because it is also empty when the author resolved by taking one
+            # side outright, and replaying their superseded commit would then
+            # reintroduce the very change they discarded.
             EXCLUDED_MERGES=""
             for M in $(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}"); do
-              if [ -n "$(git diff-tree --cc --no-commit-id "$M")" ]; then
+              AUTO_TREE=$(git merge-tree --write-tree "${M}^1" "${M}^2" 2>/dev/null | head -1 || true)
+              if [ -z "$AUTO_TREE" ] || [ "$AUTO_TREE" != "$(git rev-parse "${M}^{tree}")" ]; then
                 EXCLUDED_MERGES="${EXCLUDED_MERGES:+$EXCLUDED_MERGES }$M"
               fi
             done
@@ -459,6 +463,15 @@ jobs:
           # PR from. Trust what this run did rather than probing the remote — a
           # branch left by an earlier run would otherwise be mistaken for it.
           if [ "$PUSHED" != true ]; then
+            # Nothing was built this run, so anything left from an earlier one
+            # describes a revision that no longer exists. Close it out.
+            STALE_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+              --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+            if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
+              gh pr close "$STALE_PR" --repo "$GITHUB_REPOSITORY" \
+                --comment "Superseded: PR #${PR_NUMBER} no longer produces any commits to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
+            fi
+            git push origin --delete "$BRANCH" 2>/dev/null || true
             BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nNothing could be cherry-picked onto `%s`: %s.\n\n`%s` was **not** updated. Apply this change by hand if it belongs on that line.\n' \
               "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
@@ -626,10 +639,19 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_SHA_SEEN: ${{ steps.pick.outputs.pick_shas }}
         run: |
           set -euo pipefail
           [ -f "$RUNNER_TEMP/upsert-sticky-comment.js" ] || exit 0
+          MERGE_SHA_SEEN=$(echo "$MERGE_SHA_SEEN" | awk '{print $NF}')
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          BODY=$(printf '%s\n## Release cherry-pick `%s`: failed\n\nThe cherry-pick job for `%s` did not complete, so `%s` was **not** updated.\n\nRun: %s\n\nRe-run once the cause is addressed (`workflow_dispatch`, `pr_number=%s`).\n' \
-            "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$RUN_URL" "$PR_NUMBER")
+          # The push may or may not have happened before the failure, so say
+          # what is knowable rather than asserting the branch is untouched.
+          git fetch origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}" 2>/dev/null || true
+          STATE="It is unclear whether \`$RELEASE_BRANCH\` was updated — check before re-running."
+          if [ -n "${MERGE_SHA_SEEN:-}" ] && git merge-base --is-ancestor "$MERGE_SHA_SEEN" "origin/$RELEASE_BRANCH" 2>/dev/null; then
+            STATE="\`$RELEASE_BRANCH\` already contains this change; the failure is after the landing."
+          fi
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: failed\n\nThe cherry-pick job for `%s` did not complete. %s\n\nRun: %s\n\nRe-run once the cause is addressed (`workflow_dispatch`, `pr_number=%s`).\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$STATE" "$RUN_URL" "$PR_NUMBER")
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
