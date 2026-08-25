@@ -102,7 +102,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
 			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
-			const result = immediateTxn.commit({});
+			const result = immediateTxn.commit({}) as any;
 			// Nothing may be sent back to this throwaway: the write is already committed, and its
 			// durability is the promise below.
 			operation.stagedIn = undefined;
@@ -127,9 +127,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(options: CommitOptions = {}): any {
-		if (this.timedOut) throw transactionOpenTooLongError();
-		if (this.disconnected) throw requestAbortedError();
+	protected performCommit(options: CommitOptions = {}): any {
 		options = options || {};
 		let txnTime = this.timestamp;
 		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();
@@ -343,6 +341,15 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		return txnResolution;
 	}
+	/**
+	 * Force-release the retained read snapshot without touching staged writes. The base class's
+	 * version acts on `this.transaction`; LMDB's snapshot lives on `this.readTxn`, so the monitor
+	 * would otherwise have nothing that can reclaim a handle abort(true) retained.
+	 */
+	releaseReadTxn(): void {
+		while (this.readTxn && this.readTxnsUsed > 0) this.doneReadTxn();
+	}
+
 	abort(retainReadTransaction = false): void {
 		const hasOpenReadIterator =
 			retainReadTransaction &&
@@ -404,6 +411,25 @@ function startMonitoringTxns() {
 			const commitChainHead = txn.commitChainHead ?? txn;
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
+				if (txn.open === TRANSACTION_STATE.CLOSED) {
+					// Only reachable through abort(true), which retained the snapshot for read iterators
+					// that own it. Nothing else here can reclaim it: the branches below would re-enter
+					// commit() on a poisoned transaction every tick, throw on its own poison check, and
+					// re-arm the timer — pinning an LMDB read snapshot, which blocks free-page reuse and
+					// grows the data file, for the life of the process. Close the owning iterators first so
+					// the reference comes back through doneReadTxn(), and force the release if it does not.
+					txn.closeOwnedReadIterators();
+					if (txn.readTxn) {
+						harperLogger.warn?.(
+							`Read iterators held a closed transaction's snapshot past the open-transaction limit; releasing it, from table: ${
+								(txn.db as any)?.name + (url ? ' path: ' + url : '')
+							}`
+						);
+						txn.releaseReadTxn();
+					}
+					trackedTxns.delete(txn);
+					continue;
+				}
 				if (shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
 					// see DatabaseTransaction's monitor (issue #2062)
 					harperLogger.warn?.(
