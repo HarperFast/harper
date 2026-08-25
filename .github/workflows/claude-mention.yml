@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   mention:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-mention.yml@54d9e61c9c827d19e34229a5c460773a9fb080a0 # main 2026-07-24 (#79: deep path / :bug,:test escalation -> claude-opus-5)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-mention.yml@8401fe113e229d8842283c67e99457b862ab3b89 # main 2026-08-25 (#89 fleet turn/effort/model defaults: sonnet-5, xhigh, 96 turns)
     with:
       # Same SHA as the `uses:` ref above. The reusable uses this to
       # check out HarperFast/ai-review-prompts (parse + auth scripts)
@@ -34,7 +34,7 @@ jobs:
       # introspect their own ref (`github.workflow_ref` resolves to
       # the CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
       # is parsed literally so we can't interpolate a variable.
-      ai-review-prompts-ref: 54d9e61c9c827d19e34229a5c460773a9fb080a0
+      ai-review-prompts-ref: 8401fe113e229d8842283c67e99457b862ab3b89
       repo-specific-conventions: |
         ## Harper core notes
 
