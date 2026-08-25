@@ -17,6 +17,11 @@ on:
           - '22'
           - '24'
 
+# Dispatched by cherry-pick-patch.yml against a branch built from PR commits, so this
+# runs PR-authored build/test scripts. The repo default is a write-scoped token.
+permissions:
+  contents: read
+
 jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
