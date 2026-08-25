@@ -100,7 +100,7 @@ async function restart(req: any) {
 					process.exit(0);
 				}
 				// now launch the new process and exit this process
-				require('./run').launch(true);
+				await require('./run').launch(true);
 			} catch (error) {
 				hdbLogger.fatal('Restart teardown failed; exiting Harper', error);
 				process.exit(1);
