@@ -1833,8 +1833,11 @@ export function isSystemicIoError(error: unknown): boolean {
 
 /**
  * How a consumer that captures a blob root (backup snapshot, backup archive) should treat one file.
- * `skip` is not a blob to capture at all; `capture` is safe to take as-is — its bytes will not change,
- * because no path rewrites a published blob file in place; `pending` and `gone` require markers.
+ * `skip` is not a blob to capture at all; `pending` and `gone` require markers; `capture` is taken as-is.
+ * `capture` means settled as far as the path can show, which is short of a guarantee: a known-size write
+ * that has landed every byte is indistinguishable here from a finished one, and if it then aborts, the
+ * PENDING stamp rewrites that inode in place, truncating any same-filesystem hard link taken from it.
+ * Telling the two apart needs the blob write lock, which is keyed by file id and unreachable from a walk.
  */
 export async function classifyBlobFileForCapture(filePath: string): Promise<BlobCaptureDisposition> {
 	if (filePath.endsWith(BLOB_REPAIR_SUFFIX)) return 'skip';
