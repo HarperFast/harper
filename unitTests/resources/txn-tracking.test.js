@@ -1057,11 +1057,12 @@ describe('Disconnect abort', () => {
 	it('does not let a write join the abandoned scope while its commit is still in flight', async function () {
 		const context = {};
 		let releaseCommitGate;
+		let committing;
 		await assert.rejects(
 			transaction(context, async (txn) => {
 				await DisconnectResource.put(592, { name: 'fire and forget' }, context);
 				txn.stageCompletion(new Promise((resolve) => (releaseCommitGate = resolve)));
-				txn.commit().catch(() => {});
+				committing = txn.commit().catch(() => {});
 				throw new Error('handler threw mid-commit');
 			}),
 			/handler threw mid-commit/
@@ -1076,6 +1077,7 @@ describe('Disconnect abort', () => {
 			'a write made while the abandoned attempt is still in flight must get its own committing wrapper'
 		);
 		releaseCommitGate();
+		await committing; // don't leave a native commit running into the next test
 	});
 
 	// The abandoned links are captured when the scope ends, not walked from `next` when the attempt
@@ -1101,6 +1103,29 @@ describe('Disconnect abort', () => {
 		head.next = null; // what completeMidScopeCommit does before the outer commit() settles
 		head.endCommitAttempt();
 		assert.equal(closed, 1, "a detached link's iterator must still be closed when the attempt settles");
+	});
+
+	// The mirror case, which capturing the chain cannot cover: LMDB's commit clears `next` before it
+	// awaits the child, so a scope abandoned in that window never saw the link at all. The link closes
+	// its own iterators when its own attempt settles.
+	it("closes an abandoned link's iterator when a commit detached it before the scope ended", function () {
+		const head = new DatabaseTransaction({ scopeOwned: true });
+		const link = new DatabaseTransaction();
+		link.root = head; // already detached: head.next was cleared by the commit that started the child
+		link.transaction = {};
+		let closed = 0;
+		const iterator = {
+			onDone() {
+				iterator.onDone = null;
+				closed++;
+			},
+		};
+		link.registerReadIterator(iterator);
+		head.commitsInFlight = 1;
+		link.commitsInFlight = 1;
+		head.abandonScope();
+		link.endCommitAttempt();
+		assert.equal(closed, 1, 'a link detached before abandonment must close its own iterators on settle');
 	});
 
 	// The head marks itself CLOSED and detaches its handle as soon as its own commit starts, while a

@@ -415,8 +415,10 @@ function startMonitoringTxns() {
 				// write intents forever. The deadline lives on the chain root; the escalation is per link.
 				const root = txn.root ?? txn;
 				if (!txn.poisonEscalated && txn.isChainCommitting()) {
-					const deadline = (root.deferredPoisonDeadline ??= Date.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
-					if (Date.now() >= deadline) {
+					// Monotonic, as in the RocksDB monitor: a clock correction must not move this bound.
+					const deadline = (root.deferredPoisonDeadline ??=
+						performance.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
+					if (performance.now() >= deadline) {
 						harperLogger.error(
 							`Transaction exceeded the open-transaction limit with a commit that has not settled after a further ${
 								MAX_DEFERRED_POISON_TICKS * txnExpiration

@@ -992,9 +992,16 @@ export class DatabaseTransaction implements Transaction {
 	 * Whether any link of this multi-store chain has a commit attempt that has not reached a native
 	 * outcome. Asked of the whole chain, not just this link: the head commits its own writes and then
 	 * cascades into `next`, so that cascade is a continuation of one logical commit, not a fresh one.
+	 * Walked from the root AND from here, because a settling commit detaches `next` first.
 	 */
 	isChainCommitting(): boolean {
 		for (let txn: DatabaseTransaction = this.root ?? this; txn; txn = txn.next) {
+			if (txn.commitsInFlight) return true;
+		}
+		// And from here: a commit detaches `next` before it settles, so a link asked about itself is no
+		// longer reachable from the root while its own attempt is exactly the one that must not be torn
+		// out. Usually the same walk, since `this` is usually the root.
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			if (txn.commitsInFlight) return true;
 		}
 		return false;
@@ -1046,6 +1053,11 @@ export class DatabaseTransaction implements Transaction {
 
 	private endCommitAttempt(): void {
 		this.commitsInFlight--;
+		// A link closes its OWN iterators the moment its own attempt settles, without waiting for the
+		// chain: LMDBTransaction's commit detaches `next` before awaiting the child, so a scope abandoned
+		// in that window never captured this link and the chain-wide cleanup below cannot reach it. Safe
+		// here and not earlier because this link's attempt is the one that just reached its outcome.
+		if ((this.root ?? this).scopeAbandoned) this.closeOwnedReadIterators();
 		if (this.isChainCommitting()) return;
 		// The window has closed: a commit entered from here on is a fresh one, and the flags that landed
 		// during the finished attempt must reject it like any other poisoned commit.
@@ -1070,11 +1082,11 @@ export class DatabaseTransaction implements Transaction {
 
 	/**
 	 * The scope that owned this transaction ended while a commit attempt was still in flight, so the
-	 * wrapper could not abort it. Surrender scope ownership now: the attempt's own
-	 * rotateAfterMidScopeCommit would otherwise reopen an instance with no wrapper left to commit or
-	 * abort it, and the next transaction() on that context would join it and never commit. Iterator
-	 * cleanup is deferred to endCommitAttempt(), since closing them mid-attempt can pull the handle the
-	 * commit is still staging through.
+	 * wrapper could not abort it. Surrender scope ownership now, or the attempt's own
+	 * rotateAfterMidScopeCommit reopens an instance with no wrapper left to commit or abort it and the
+	 * next transaction() on that context joins it and never commits. Iterator cleanup is deferred to
+	 * endCommitAttempt(), since closing them mid-attempt can pull the handle the commit is still
+	 * staging through.
 	 */
 	abandonScope(): void {
 		const root = this.root ?? this;
@@ -1083,16 +1095,17 @@ export class DatabaseTransaction implements Transaction {
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			links.push(txn);
 			txn.endScopeOwnership();
-			// Also not joinable. Ending ownership alone only stops the attempt's own rotation; until it
-			// reaches its native outcome the instance is still OPEN, and both transaction() and
-			// Resource.ts's dispatcher join an OPEN context.transaction — so a write made on this context
-			// during that window (a hung `before` hook makes it arbitrarily long) would stage onto a
-			// transaction with no wrapper left to commit it and be reported as committed. The successful
-			// attempt reaches CLOSED here itself, and both monitors defer while a commit is in flight, so
-			// nothing else reads this as reapable early.
+			// Ending ownership alone only stops the attempt's own rotation; until it reaches its native
+			// outcome the instance is still OPEN, and a hung `before` hook makes that window arbitrarily
+			// long. The successful attempt reaches CLOSED here itself, and both monitors defer while a
+			// commit is in flight, so nothing reads this as reapable early. Not on its own sufficient:
+			// LMDBTransaction's own commit reassigns `open`, so the release below is what actually keeps
+			// the next write on this context off an instance with no wrapper behind it.
 			txn.open = TRANSACTION_STATE.CLOSED;
 		}
 		root.abandonedLinks = links;
+		// By abort()'s own rule, so a poisoned chain stays joined and throws while an ordinary one lets
+		// the next write start fresh.
 		this.releaseContext(!this.timedOut && !this.disconnected);
 	}
 
@@ -1875,8 +1888,10 @@ function deferForCommitInFlight(txn: DatabaseTransaction, url: string | undefine
 	// on it forever would re-force the same abort every tick and never reach the arm that reclaims the
 	// read snapshot the force-abort deliberately retained for its iterators.
 	if (txn.poisonEscalated || !txn.isChainCommitting()) return false;
-	const deadline = (root.deferredPoisonDeadline ??= Date.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
-	if (Date.now() >= deadline) {
+	// performance.now(), not Date.now(): a clock correction must not extend a stalled commit's hold on its
+	// write intents, nor force-abort a legitimately slow one early.
+	const deadline = (root.deferredPoisonDeadline ??= performance.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
+	if (performance.now() >= deadline) {
 		harperLogger.error(
 			`Transaction exceeded the open-transaction limit with a commit that has not settled after a further ${
 				MAX_DEFERRED_POISON_TICKS * txnExpiration
