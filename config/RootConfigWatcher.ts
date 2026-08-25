@@ -10,6 +10,7 @@ import {
 	isWatcherExhaustionError,
 	warnPartialReadGaveUp,
 	warnWatcherFallback,
+	warnWatcherListenerError,
 } from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 
@@ -96,26 +97,33 @@ export class RootConfigWatcher extends EventEmitter {
 		// Only the read and parse are guarded: a listener that throws must not be mistaken for a
 		// half-written file and replayed.
 		try {
-			const data = readFileSync(this.#configFilePath, 'utf-8');
-			if (!data) {
-				this.#scheduleReread();
-				return;
-			}
-			config = parse(data);
+			config = parse(readFileSync(this.#configFilePath, 'utf-8'));
 		} catch (error) {
 			// A missing file needs no re-read; anything else may be the file being replaced.
 			if (isPartialReadError(error)) this.#scheduleReread();
 			return;
 		}
-		this.#partialRead.settled();
-
-		if (!this.#config) {
-			this.#config = config;
-			this.emit('ready', this.#config);
+		// A snapshot that does not parse to an object is the other shape a half-written file
+		// takes: `''`, `'\n'` and a truncated document all yield null, and adopting that would
+		// drop the whole configuration.
+		if (!config || typeof config !== 'object') {
+			this.#scheduleReread();
 			return;
 		}
+		this.#partialRead.settled();
 
-		this.emit('change', (this.#config = config));
+		try {
+			if (!this.#config) {
+				this.#config = config;
+				this.emit('ready', this.#config);
+				return;
+			}
+			this.emit('change', (this.#config = config));
+		} catch (error) {
+			// The watcher's own state is already updated; a listener's bug must not be replayed
+			// as if the file were incomplete, nor escape into the chokidar callback.
+			warnWatcherListenerError(this.#configFilePath, error);
+		}
 	}
 
 	#scheduleReread() {

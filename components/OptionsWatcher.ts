@@ -142,39 +142,48 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	// invariant on atomicWriteFile. Application configs keep the non-blocking read and its drain.
 	#handleChange() {
 		if (this.#isRootConfig) {
-			let parsed;
-			try {
-				const contents = readFileSync(this.#filePath, 'utf-8');
-				if (!contents) return this.#rereadOr(undefined);
-				parsed = this.#parseContents(contents);
-			} catch (error) {
-				// A read or parse that fails on a file being replaced under us is the same event
-				// as an empty one, and the ENOENT arm of #handleReadError would answer it with a
-				// `remove` that restarts the scope. Re-read first; only a budget that runs out
-				// means the failure is real.
-				return this.#rereadOr(error);
-			}
-			this.#partialRead.settled();
-			this.#applyParsed(parsed);
+			this.#applyRead(() => readFileSync(this.#filePath, 'utf-8'));
 			return;
 		}
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
-			.then((contents) => {
-				// Application configs are rewritten in place, so a mid-write read is exactly the
-				// case above, and dropping it here would `remove` the scope's config.
-				if (!contents) return this.#rereadOr(undefined);
-				const parsed = this.#parseContents(contents);
-				this.#partialRead.settled();
-				this.#applyParsed(parsed);
-			})
-			.catch((error) => this.#rereadOr(error))
+			// Application configs are rewritten in place, so they see the half-written snapshots
+			// the retry exists for; only the read itself differs between the two paths.
+			.then((contents) => this.#applyRead(() => contents))
+			.catch((error) => this.#recoverOrReport(error))
 			.finally(() => {
 				this.#pendingReads.delete(read);
 			});
 		this.#pendingReads.add(read);
 	}
 
-	#rereadOr(error: unknown) {
+	#applyRead(read: () => string) {
+		let parsed;
+		try {
+			parsed = this.#parseContents(read());
+		} catch (error) {
+			// A read or parse that fails while the file is being replaced is the same event as an
+			// incomplete one, and #handleReadError's ENOENT arm would answer it with a `remove`
+			// that restarts the scope. Re-read first; only an exhausted budget means it is real.
+			this.#recoverOrReport(error);
+			return;
+		}
+		// `''`, `'\n'` and a truncated document all parse to null, and adopting that would drop
+		// the scope's config and emit `remove`.
+		if (!parsed || typeof parsed !== 'object') {
+			this.#recoverOrReport(undefined);
+			return;
+		}
+		this.#partialRead.settled();
+		try {
+			this.#applyParsed(parsed);
+		} catch (error) {
+			// Applying is past the point where an incomplete file is a possible explanation, so
+			// a listener's throw keeps the watcher's established error route rather than a retry.
+			this.emit('error', error);
+		}
+	}
+
+	#recoverOrReport(error: unknown) {
 		if (error !== undefined && !isPartialReadError(error)) return this.#handleReadError(error);
 		if (this.#partialRead.schedule(() => this.#handleChange())) return;
 		if (error === undefined) {

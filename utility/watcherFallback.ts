@@ -10,6 +10,7 @@ import { loggerWithTag } from './logging/harper_logger.ts';
 // One-time process-wide warning so a thundering herd of failing watchers doesn't
 // produce hundreds of identical log lines.
 let exhaustionWarned = false;
+const partialReadWarned = new Set<string>();
 
 const fallbackLogger = loggerWithTag('watcher');
 
@@ -115,9 +116,9 @@ export class PartialReadRetry {
 }
 
 /**
- * A missing file is not a half-written one: it has unambiguous, already-correct semantics in
- * both watchers (env-only fallback at boot, `remove` afterwards), and re-reading it would only
- * delay them.
+ * ENOENT is excluded not because it cannot be transient, but because both watchers already
+ * answer it deliberately (env-only fallback at boot, `remove` afterwards); re-reading would
+ * only delay a decision they have already made.
  */
 export function isPartialReadError(error: unknown): boolean {
 	return !(typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT');
@@ -126,7 +127,21 @@ export function isPartialReadError(error: unknown): boolean {
 /**
  * A watcher that exhausts its re-read budget serves stale config from then on, so the give-up
  * has to be visible — otherwise the only symptom is a config change that silently did nothing.
+ * Warned once per file: every root-config scope watches the same one and would otherwise report
+ * a single bad file once each, on every event.
  */
 export function warnPartialReadGaveUp(filePath: string) {
-	fallbackLogger.warn(`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} incomplete reads`);
+	if (partialReadWarned.has(filePath)) return;
+	partialReadWarned.add(filePath);
+	fallbackLogger.warn(
+		`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} reads that were empty or incomplete; continuing with the last usable configuration`
+	);
+}
+
+/**
+ * A listener that throws while applying new config is a bug in that listener, not evidence the
+ * file was half-written — the watcher's own state is already updated, so it keeps going.
+ */
+export function warnWatcherListenerError(filePath: string, error: unknown) {
+	fallbackLogger.warn(`Error applying a configuration change from ${filePath}`, error);
 }

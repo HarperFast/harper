@@ -84,9 +84,13 @@ describe('root config read handle lifetime', () => {
 		watcher.on('change', (config) => changes.push(config));
 		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
 		await once(watcher, 'change');
-		// The re-read armed for the empty snapshot must not replay once a usable read lands.
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.deepStrictEqual(changes, [{ 'test-component': { enabled: false } }]);
+		// The count is not pinned: the armed re-read and chokidar's own event for the same write
+		// race, and this watcher has never diffed. What must hold is that no emit carries the
+		// half-written snapshot.
+		assert.ok(changes.length > 0);
+		for (const config of changes) assert.deepStrictEqual(config, { 'test-component': { enabled: false } });
+		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: false } });
 	});
 
 	it('RootConfigWatcher stops re-reading a file that never becomes usable', async () => {
@@ -130,6 +134,37 @@ describe('root config read handle lifetime', () => {
 		watcher._handleChangeForTests();
 
 		assert.strictEqual(watcher.get(['enabled']), false);
+	});
+
+	it('OptionsWatcher recovers an application config observed mid-write instead of removing it', async () => {
+		const appConfigPath = join(fixture, 'config.yaml');
+		writeFileSync(appConfigPath, stringify({ 'test-component': { enabled: true } }));
+		const watcher = new OptionsWatcher('test-component', appConfigPath, undefined, false);
+		openWatchers.push(watcher);
+		await watcher.ready;
+
+		const removes = [];
+		watcher.on('remove', () => removes.push(true));
+		writeFileSync(appConfigPath, '');
+		watcher._handleChangeForTests();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(removes, [], 'a half-written read must not read as the scope being removed');
+		assert.strictEqual(watcher.get(['enabled']), true);
+
+		writeFileSync(appConfigPath, stringify({ 'test-component': { enabled: false } }));
+		await once(watcher, 'change');
+		assert.strictEqual(watcher.get(['enabled']), false);
+	});
+
+	it('RootConfigWatcher treats a document that parses to nothing as incomplete', async () => {
+		const watcher = new RootConfigWatcher();
+		openWatchers.push(watcher);
+		await watcher.ready;
+
+		// A truncated write can leave a document that reads fine and parses to null.
+		writeFileSync(configFilePath, '\n');
+		watcher.handleChange();
+		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: true } });
 	});
 
 	it('OptionsWatcher still reads an application config without blocking', async () => {
