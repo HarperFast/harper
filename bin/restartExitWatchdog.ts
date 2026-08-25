@@ -12,6 +12,7 @@ read -r _ _ _ current_parent _ < "/proc/$$/stat" || exit 0
 sleep "$delay_seconds" || exit 0
 read -r _ _ _ current_parent _ < "/proc/$$/stat" || exit 0
 [ "$current_parent" -eq "$parent_pid" ] || exit 0
+echo "harper: restart exit watchdog force-killing pid $parent_pid after $delay_seconds seconds" >&2
 kill -KILL "$parent_pid"
 `;
 
@@ -36,7 +37,7 @@ export function armRestartExitWatchdog(timeoutMs: number) {
 			['-c', WATCHDOG_SCRIPT, 'harper-restart-exit-watchdog', String(process.pid), String(timeoutSeconds)],
 			{
 				env: { PATH: '/usr/bin:/bin' },
-				stdio: 'ignore',
+				stdio: ['ignore', 'ignore', 'inherit'],
 				windowsHide: true,
 			}
 		);

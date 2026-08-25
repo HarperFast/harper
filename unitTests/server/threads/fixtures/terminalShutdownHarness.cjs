@@ -1,22 +1,25 @@
 'use strict';
 
 const { once } = require('node:events');
+const { waitFor } = require('../../../waitFor.js');
+process.env.HARPER_SAFE_MODE = 'true';
 require('#src/utility/environment/environmentManager').initTestEnvironment();
 const manageThreads = require('#js/server/threads/manageThreads');
-const { shutdownWorkersNow, startWorker, workers } = manageThreads;
+const { restartWorkers, shutdownWorkersNow, startWorker, workers } = manageThreads;
 
 async function terminalShutdown() {
 	let starts = 0;
 	const worker = startWorker(require.resolve('./terminalShutdownWorker.cjs'), {
-		name: 'terminal-shutdown-test',
+		name: 'http',
 		onStarted() {
 			starts++;
 		},
 	});
 	await once(worker, 'message');
-	worker.on('shutdown', () => (worker.wasShutdown = false));
+	const restart = restartWorkers('http');
+	await waitFor(() => workers.length === 2, { timeout: 5000, message: 'replacement worker was not created' });
 	await shutdownWorkersNow();
-	await new Promise(setImmediate);
+	await restart;
 
 	let errorCode;
 	try {

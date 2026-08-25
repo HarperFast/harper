@@ -18,12 +18,12 @@ describe('terminal worker shutdown', () => {
 		return JSON.parse(output.trim().split('\n').at(-1));
 	}
 
-	it('prevents full shutdown from respawning a worker whose shutdown flag is cleared', async function () {
+	it('prevents a concurrent rolling restart from respawning workers during full shutdown', async function () {
 		this.timeout(30000);
 		const result = await runHarness();
 		assert.deepEqual(result, {
 			errorCode: 'ERR_HARPER_PROCESS_SHUTTING_DOWN',
-			starts: 1,
+			starts: 2,
 			workersAfterShutdown: 0,
 		});
 	});

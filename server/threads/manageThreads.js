@@ -477,6 +477,7 @@ async function restartWorkers(
 	startReplacementThreads = true
 ) {
 	if (isMainThread) {
+		if (processShuttingDown && startReplacementThreads) return;
 		try {
 			// we do this because it is possible for a component to chdir to itself, get re-deployed and then the cwd
 			// inode link is invalid and it can cause a lot of problems. But process.cwd() still returns the path, for
