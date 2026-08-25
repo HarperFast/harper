@@ -1,5 +1,5 @@
 import chokidar, { FSWatcher } from 'chokidar';
-import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { getConfigFilePath } from './configUtils.ts';
 import { EventEmitter, once } from 'node:events';
 import { parse } from 'yaml';
@@ -81,24 +81,28 @@ export class RootConfigWatcher extends EventEmitter {
 		this.emit('error', error);
 	}
 
+	// Read synchronously, not with fsPromises.readFile. atomicWriteFile replaces this file by
+	// rename-over, which on Windows fails while any descriptor is open on the destination, and
+	// its retry loop blocks the calling thread - so a descriptor this watcher leaves open across
+	// an event-loop turn can never be closed while a write on this thread is waiting for it.
 	handleChange() {
-		readFile(this.#configFilePath, 'utf-8')
-			.then((data) => {
-				if (!data) return;
+		try {
+			const data = readFileSync(this.#configFilePath, 'utf-8');
+			if (!data) return;
 
-				const config = parse(data);
+			const config = parse(data);
 
-				if (!this.#config) {
-					this.#config = config;
-					this.emit('ready', this.#config);
-					return;
-				}
+			if (!this.#config) {
+				this.#config = config;
+				this.emit('ready', this.#config);
+				return;
+			}
 
-				this.emit('change', (this.#config = config));
-			})
-			.catch((_error) => {
-				// if yaml parse error ignore?
-			});
+			this.emit('change', (this.#config = config));
+		} catch {
+			// A read or parse failure here is transient (mid-write, or the install window);
+			// the next watcher event re-reads.
+		}
 	}
 
 	close() {

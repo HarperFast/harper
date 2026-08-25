@@ -91,14 +91,14 @@ export function getConfigPath(param: string) {
 // in the same millisecond can't collide on the temp name and then race the rename.
 //
 // Windows has no POSIX-style "replace an open file" semantics: rename() fails with
-// EPERM/EACCES if another thread/process has the destination momentarily open for read.
-// Every worker thread runs its own RootConfigWatcher (chokidar), so a write on one thread
-// routinely races a hot-reload read on another; Windows Defender / AV real-time scanning can
-// hold a similar transient handle. Retry with exponential backoff to ride out the race -
-// callers are synchronous, so the wait is a synchronous sleep rather than an async one.
-// The budget must outlast a single AV real-time scan pass (seconds, not hundreds of ms):
-// the previous ~910ms budget was exhausted twice in a row by the same test on a CI runner
-// (harper#2036), so the worst case is now ~3.6s.
+// EPERM/EACCES while another descriptor is open on the destination. This retry can only ride
+// out a holder that releases on its own - another thread, another process, an AV scan. It can
+// never ride out a holder on the CALLING thread, because the sleep below blocks the event loop
+// that would have to run to close it, so the holder's lifetime becomes exactly the retry
+// budget. That is why config readers must not leave a descriptor on this file open across an
+// event-loop turn (RootConfigWatcher.handleChange, OptionsWatcher#handleChange), and why
+// widening this budget twice (#1714, #2036) never fixed the set_configuration 500s it was
+// aimed at.
 const RENAME_RETRY_MAX_ATTEMPTS = 12;
 const RENAME_RETRY_INITIAL_DELAY_MS = 10;
 const RENAME_RETRY_MAX_DELAY_MS = 500;
@@ -115,30 +115,46 @@ export function atomicWriteFile(
 	} = {}
 ) {
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
-	fs.writeFileSync(tempPath, content);
 	let retries = maxRetries;
 	let delayMs = initialDelayMs;
-	while (true) {
-		try {
-			fs.renameSync(tempPath, filePath);
-			break;
-		} catch (err) {
-			if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
-				retries--;
-				// Sleep synchronously (all call sites are sync) to allow the holder to close the
-				// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
-				// which is what makes a multi-second worst-case budget affordable.
-				if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
-				delayMs = Math.min(delayMs * 2, maxDelayMs);
-				continue;
+	let attempts = 0;
+	const startedAt = Date.now();
+	let renamed = false;
+	try {
+		// Inside the cleanup boundary: a write that fails partway (ENOSPC, EIO) still leaves a
+		// partial temp file holding configuration values.
+		fs.writeFileSync(tempPath, content);
+		while (!renamed) {
+			try {
+				attempts++;
+				fs.renameSync(tempPath, filePath);
+				renamed = true;
+			} catch (err) {
+				if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
+					retries--;
+					// Sleep synchronously (all call sites are sync) to allow the holder to close the
+					// file. Atomics.wait yields the thread to the OS instead of spinning the CPU.
+					if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
+					delayMs = Math.min(delayMs * 2, maxDelayMs);
+					continue;
+				}
+				// Attempts and elapsed time are what distinguish a holder that never released from
+				// one that simply lost a race; neither is recoverable from the rethrown error.
+				if (err.code === 'EPERM' || err.code === 'EACCES') {
+					logger.warn(
+						`Could not replace ${filePath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms. Another process or thread is holding the file open.`
+					);
+				}
+				throw err;
 			}
-			// if it fails we should clean up the tmp file
+		}
+	} finally {
+		if (!renamed) {
 			try {
 				fs.unlinkSync(tempPath);
 			} catch {
-				// ignore cleanup errors
+				// A cleanup failure must not replace the error that got us here.
 			}
-			throw err;
 		}
 	}
 }

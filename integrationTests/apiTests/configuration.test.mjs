@@ -343,6 +343,24 @@ suite('Configuration', (ctx) => {
 			.expect(200);
 	});
 
+	test('back-to-back set_configuration calls all land', async () => {
+		// The root config is replaced by rename-over, which on Windows fails while any descriptor
+		// is open on the destination — and every config write fans out a re-read to each thread's
+		// root-config watcher. A second write arriving before those reads finish used to hit an
+		// EPERM the writer's blocking retry could never clear, returning 500 (harper#2313).
+		// Adding a component key first is what makes the fan-out largest: it creates a new scope.
+		await client.req().send({ 'operation': 'set_configuration', 'burst-probe_package': 'file:./nowhere' }).expect(200);
+		for (const maxSize of ['21M', '22M', '23M', '24M']) {
+			await client.req().send({ operation: 'set_configuration', logging_rotation_maxSize: maxSize }).expect(200);
+		}
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => assert.strictEqual(r?.body?.logging?.rotation?.maxSize, '24M', r?.text))
+			.expect(200);
+		await client.req().send({ 'operation': 'set_configuration', 'burst-probe_package': null }).expect(200);
+	});
+
 	// ── set_configuration + replicated (#660) ───────────────────────────────
 	// Real cluster fan-out lives in harper-pro; without it, the base server's
 	// replication stub rejects a truthy `replicated`. These tests pin the

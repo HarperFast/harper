@@ -4,6 +4,7 @@ import { EventEmitter, once } from 'events';
 import yaml from 'yaml';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
@@ -129,70 +130,88 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.on('ready', this.#handleChange.bind(this));
 	}
 
+	// The root config is replaced by rename-over (atomicWriteFile), which on Windows fails while
+	// any descriptor is open on the destination; the writer's retry loop blocks the calling
+	// thread, so a descriptor this watcher leaves open across an event-loop turn can never be
+	// closed while a write on that thread waits for it. Reading it synchronously bounds the
+	// descriptor to a single syscall. Application configs are written in place (`fs.outputFile`,
+	// components/operations.js), never by rename, so they keep the non-blocking read.
 	#handleChange() {
+		if (this.#isRootConfig) {
+			try {
+				this.#applyContents(readFileSync(this.#filePath, 'utf-8'));
+			} catch (error) {
+				this.#handleReadError(error);
+			}
+			return;
+		}
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
-			.then((contents) => {
-				let parsed = yaml.parse(contents);
-				// The on-disk root config is not guaranteed to include runtime env config at
-				// boot: the file flush races component loading, so a scope's boot-time reads
-				// (e.g. an `enabled` gate in handleApplication) could observe pre-env values
-				// the componentLoader itself never saw. Ask the config layer to overlay env
-				// config onto EVERY root-config read so scope.options matches the resolved
-				// view (#1618). Non-root scopes and the no-env-vars case are untouched
-				// (overlayRootEnvConfig is a no-op there).
-				if (this.#isRootConfig) parsed = overlayRootEnvConfig(parsed);
-				this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
-				// If the extension is in the config file
-				if (this.#rootConfig && this.#name in this.#rootConfig) {
-					// If a config object does not exist
-					if (!this.#scopedConfig) {
-						// set it
-						this.#scopedConfig = this.#rootConfig[this.#name];
-						// and emit a ready event
-						this.emit('ready', this.#scopedConfig);
-					} else {
-						// Otherwise, merge the new config with the old config
-						this.#merge(this.#rootConfig[this.#name], this.#scopedConfig);
-					}
-				} else {
-					// Otherwise, if the extension is not in the config file
-					// This means the plugin was removed from the config file
-					if (this.#scopedConfig) {
-						// and a config exists, remove it
-						this.#scopedConfig = undefined;
-						this.emit('remove');
-					}
-					// Otherwise do nothing - the user may add the config back in later
-				}
-			})
-			.catch((error) => {
-				// If the config file does not exist
-				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-					// A readFile ENOENT here is the install window (file not written yet) or a
-					// transient read race — NOT a real deletion, which chokidar routes to
-					// `#handleUnlink`. Env config is file-independent, so when it provides this
-					// scope the missing file must not discard it (#1618). When it does not, fall
-					// through to the original ENOENT handling with #rootConfig untouched, so a
-					// first boot still emits `ready` (not `remove`, which nothing consumes at
-					// boot → `ready` would hang forever).
-					if (this.#applyEnvOnlyConfig()) return;
-					// And a config already exists, reset it to the default
-					if (this.#rootConfig) {
-						this.#resetConfig();
-						this.emit('remove');
-					} else {
-						// Otherwise, if no config exists, then just set to default and emit ready
-						this.#resetConfig();
-						this.emit('ready');
-					}
-					return;
-				}
-				this.emit('error', error);
-			})
+			.then((contents) => this.#applyContents(contents))
+			.catch((error) => this.#handleReadError(error))
 			.finally(() => {
 				this.#pendingReads.delete(read);
 			});
 		this.#pendingReads.add(read);
+	}
+
+	#applyContents(contents: string) {
+		let parsed = yaml.parse(contents);
+		// The on-disk root config is not guaranteed to include runtime env config at
+		// boot: the file flush races component loading, so a scope's boot-time reads
+		// (e.g. an `enabled` gate in handleApplication) could observe pre-env values
+		// the componentLoader itself never saw. Ask the config layer to overlay env
+		// config onto EVERY root-config read so scope.options matches the resolved
+		// view (#1618). Non-root scopes and the no-env-vars case are untouched
+		// (overlayRootEnvConfig is a no-op there).
+		if (this.#isRootConfig) parsed = overlayRootEnvConfig(parsed);
+		this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
+		// If the extension is in the config file
+		if (this.#rootConfig && this.#name in this.#rootConfig) {
+			// If a config object does not exist
+			if (!this.#scopedConfig) {
+				// set it
+				this.#scopedConfig = this.#rootConfig[this.#name];
+				// and emit a ready event
+				this.emit('ready', this.#scopedConfig);
+			} else {
+				// Otherwise, merge the new config with the old config
+				this.#merge(this.#rootConfig[this.#name], this.#scopedConfig);
+			}
+		} else {
+			// Otherwise, if the extension is not in the config file
+			// This means the plugin was removed from the config file
+			if (this.#scopedConfig) {
+				// and a config exists, remove it
+				this.#scopedConfig = undefined;
+				this.emit('remove');
+			}
+			// Otherwise do nothing - the user may add the config back in later
+		}
+	}
+
+	#handleReadError(error: unknown) {
+		// If the config file does not exist
+		if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+			// A readFile ENOENT here is the install window (file not written yet) or a
+			// transient read race — NOT a real deletion, which chokidar routes to
+			// `#handleUnlink`. Env config is file-independent, so when it provides this
+			// scope the missing file must not discard it (#1618). When it does not, fall
+			// through to the original ENOENT handling with #rootConfig untouched, so a
+			// first boot still emits `ready` (not `remove`, which nothing consumes at
+			// boot → `ready` would hang forever).
+			if (this.#applyEnvOnlyConfig()) return;
+			// And a config already exists, reset it to the default
+			if (this.#rootConfig) {
+				this.#resetConfig();
+				this.emit('remove');
+			} else {
+				// Otherwise, if no config exists, then just set to default and emit ready
+				this.#resetConfig();
+				this.emit('ready');
+			}
+			return;
+		}
+		this.emit('error', error);
 	}
 
 	#handleError(error: unknown) {
@@ -386,6 +405,13 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		obj[keys[keys.length - 1]] = value;
 
 		this.emit('change', keys, value, this.#scopedConfig);
+	}
+
+	// Test-only: run the change handler directly. The read's timing relative to the caller is
+	// the behaviour under test (see the config-write deadlock note on #handleChange), and a
+	// chokidar event cannot be observed at that granularity from outside.
+	_handleChangeForTests(): void {
+		this.#handleChange();
 	}
 
 	// Test-only: simulate the underlying chokidar watcher emitting an error.
