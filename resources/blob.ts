@@ -804,11 +804,15 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											watcher = undefined;
 										}
 										// An FSWatcher that fails after registration emits 'error'; with no listener Node
-										// rethrows it out of the watcher callback. Drop to the same poll instead.
-										watcher?.on('error', (error) => {
+										// rethrows it out of the watcher callback. Drop to the same poll instead — but only
+										// while this watcher is still the live one, or a queued error from a superseded
+										// watcher would close its replacement and start a second read at the same position.
+										const installedWatcher = watcher;
+										installedWatcher?.once('error', (error) => {
+											if (watcher !== installedWatcher) return;
 											logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
-											watcher?.close();
 											watcher = undefined;
+											installedWatcher.close();
 											clearTimeout(timer);
 											timer = setTimeout(() => readMore(resolve, reject), 20).unref();
 										});
