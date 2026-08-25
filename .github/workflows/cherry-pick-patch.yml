@@ -214,6 +214,12 @@ jobs:
       matrix:
         release: ${{ fromJson(needs.plan.outputs.targets) }}
 
+    # Two PRs milestoned for the same line would otherwise both ff-push it and
+    # the loser's push is rejected. Serialize on the release branch, not the PR.
+    concurrency:
+      group: release-push-${{ matrix.release }}
+      cancel-in-progress: false
+
     env:
       RELEASE_BRANCH: ${{ matrix.release }}
       STICKY_MARKER: '<!-- release-cherry-pick:${{ matrix.release }} -->'
@@ -264,27 +270,51 @@ jobs:
           fi
 
           BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+          EXCLUDED_MERGES=""
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
           echo "is_merged=$IS_MERGED" >> "$GITHUB_OUTPUT"
 
-          git fetch origin main "$RELEASE_BRANCH" "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}"
+          git fetch origin "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}" \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}"
+
+          # Range the PR's own work against a LIVE merge base, not the PR's
+          # recorded base.sha. When base.sha predates a merge of main that the
+          # author pulled in, merge-base collapses onto it and the range spans
+          # main's own commits — which would then be replayed onto the release
+          # branch as if they were the author's.
+          MERGE_BASE=$(git merge-base origin/main "$HEAD_SHA")
 
           # ── Determine commits to pick ───────────────────────────────────
           if [ "$IS_MERGED" = "true" ]; then
             PARENT_COUNT=$(git cat-file -p "$MERGE_SHA" | grep -c "^parent ")
+            # Is MERGE_SHA a squash of the whole PR, or the tail of a rebase?
+            # Compare file sets, not patch ids: a patch id shifts whenever main
+            # moved under the PR, which is precisely when this matters. A squash
+            # touches exactly the files the PR touched; a rebase's last commit
+            # touches only its own subset. A single-commit PR is the same commit
+            # either way.
+            PR_FILES=$(git diff --name-only "$MERGE_BASE" "$HEAD_SHA" | sort | tr '\n' ' ')
+            MERGE_FILES=$(git diff --name-only "${MERGE_SHA}^" "$MERGE_SHA" | sort | tr '\n' ' ')
+            PR_COMMITS=$(git rev-list --count --no-merges "${MERGE_BASE}..${HEAD_SHA}")
             if [ "$PARENT_COUNT" -gt 1 ]; then
               # True merge commit: cherry-pick it directly with -m 1
               PICK_FLAGS="-m 1"
               PICK_SHAS="$MERGE_SHA"
+            elif [ "$PR_COMMITS" -le 1 ] || { [ -n "$PR_FILES" ] && [ "$PR_FILES" = "$MERGE_FILES" ]; }; then
+              # Squash merge: this one commit already reproduces the PR's whole
+              # net change, including any conflict resolution that existed only
+              # inside a merge commit on the branch. Replaying the branch's own
+              # commits instead would drop that resolution.
+              PICK_FLAGS=""
+              PICK_SHAS="$MERGE_SHA"
             else
-              # Squash or rebase merge: pick the original PR commits so we get
-              # the full set. For squash this is equivalent (same net diff). For
-              # rebase, MERGE_SHA is only the last rebased commit — the earlier
-              # ones would be silently skipped if we picked MERGE_SHA alone.
-              MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+              # Rebase merge: MERGE_SHA is only the last rebased commit, so the
+              # earlier ones would be silently skipped if we picked it alone.
               PICK_FLAGS=""
               PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+              EXCLUDED_MERGES=$(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
               if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
                 PICK_SHAS="$MERGE_SHA"
               fi
@@ -293,9 +323,9 @@ jobs:
             # Open PR: pick the commit range merge_base..HEAD. Merge commits
             # carry main's changes rather than the author's and cannot be picked
             # without -m, so they are excluded here.
-            MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
             PICK_FLAGS=""
             PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+            EXCLUDED_MERGES=$(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
             if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
               echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
               echo "no_op=true" >> "$GITHUB_OUTPUT"
@@ -304,6 +334,7 @@ jobs:
           fi
           echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
           echo "pick_shas=$PICK_SHAS" >> "$GITHUB_OUTPUT"
+          echo "excluded_merges=$EXCLUDED_MERGES" >> "$GITHUB_OUTPUT"
 
           # ── Create / reset cherry-pick branch off release branch ────────
           git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
@@ -320,15 +351,23 @@ jobs:
               # Stage conflict markers and commit so reviewer sees the state
               git add -A
               GIT_EDITOR=true git cherry-pick --continue || git cherry-pick --skip || true
+              if git rev-parse --verify --quiet CHERRY_PICK_HEAD >/dev/null; then
+                git cherry-pick --abort 2>/dev/null || true
+                echo "::error::cherry-pick sequencer left dirty after $SHA"
+                exit 1
+              fi
               continue
             fi
-            # No unmerged paths. Only an in-progress pick — CHERRY_PICK_HEAD
-            # exists — means git got as far as applying and found nothing left
-            # to do, i.e. already on this branch. Without it the pick failed
-            # before it started (unpickable commit, bad object, hook refusal);
-            # dropping that silently would fast-forward a partial change onto
-            # the release branch while the sticky comment reports success.
-            if git rev-parse --verify --quiet CHERRY_PICK_HEAD >/dev/null; then
+            # No unmerged paths. "Already applied" requires proof, not an
+            # absence: the sequencer must be stopped on THIS commit (a stale
+            # CHERRY_PICK_HEAD from an earlier iteration would otherwise vouch
+            # for it) and the index must be identical to HEAD. Anything else
+            # failed before it could apply — dropping that silently would
+            # fast-forward a partial change onto the release branch while the
+            # sticky comment reports success.
+            PICK_HEAD=$(git rev-parse --verify --quiet CHERRY_PICK_HEAD || true)
+            if [ -n "$PICK_HEAD" ] && [ "$PICK_HEAD" = "$(git rev-parse "$SHA")" ] \
+              && git diff --cached --quiet HEAD && git diff --quiet; then
               echo "Commit $SHA is already applied on $RELEASE_BRANCH; skipping"
               git cherry-pick --skip
               continue
@@ -339,7 +378,7 @@ jobs:
           done
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
+          if [ -z "$CONFLICTS" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
             echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
             echo "no_op=true" >> "$GITHUB_OUTPUT"
             # An earlier run may have pushed a branch that is now redundant.
@@ -369,12 +408,28 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
-          git checkout "$RELEASE_BRANCH"
-          git merge --ff-only "$BRANCH"
-          git push origin "$RELEASE_BRANCH"
-          git push origin --delete "$BRANCH" || true
-          BODY=$(printf '%s\n## Release cherry-pick `%s`: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
-          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+
+          # If the release branch moved between the pick and the push, the
+          # fast-forward no longer applies; re-fetch and rebuild rather than
+          # failing the step with no comment on the PR.
+          PUSHED=false
+          for _ in 1 2 3; do
+            git fetch origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}"
+            git checkout -B "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
+            if ! git merge --ff-only "$BRANCH"; then break; fi
+            if git push origin "$RELEASE_BRANCH"; then PUSHED=true; break; fi
+          done
+
+          if [ "$PUSHED" = true ]; then
+            git push origin --delete "$BRANCH" || true
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+          else
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: NOT landed\n\n`%s` moved while this pick was in flight and the branch [`%s`](../tree/%s) no longer fast-forwards onto it.\n\nRe-run the cherry-pick workflow for this PR (`workflow_dispatch`, `pr_number=%s`) to rebuild it against the current `%s`.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+            exit 1
+          fi
 
       # ── Conflict path: post sticky comment, @-mention Claude ────────────
       - name: Report conflict
@@ -419,16 +474,26 @@ jobs:
         if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
+
+          # Merge commits cannot be replayed without -m and carry main's
+          # changes rather than the author's, so they are excluded from the
+          # pick list. Say so: a merge that resolved a conflict holds content
+          # found nowhere else, and this branch will not have it.
+          MERGE_NOTE=""
+          if [ -n "$EXCLUDED_MERGES" ]; then
+            MERGE_NOTE=$(printf '\n\n> **Merge commits were excluded** from the pick: `%s`. If any of them resolved a conflict, that resolution is not on this branch — check before merging.' "$EXCLUDED_MERGES")
+          fi
 
           post_sticky() {
             local heading="$1"
             local run_line="$2"
             local body
-            body=$(printf '%s\n## Release cherry-pick `%s`: %s\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$heading" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$run_line" "$RELEASE_BRANCH")
+            body=$(printf '%s\n## Release cherry-pick `%s`: %s\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$heading" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$run_line" "$MERGE_NOTE" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$body"
           }
 
