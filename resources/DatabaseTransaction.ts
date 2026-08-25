@@ -451,29 +451,30 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
-	// Set by abortDueToDisconnect (client disconnected while this transaction was still open).
 	declare disconnected?: boolean;
-	// Iterators that took a read reference through useReadTxn() and have not returned it yet: the
-	// ownership record that bounds a retained read snapshot. See closeOwnedReadIterators().
+	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
+	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
 	// Depth of commit() attempts on this link that have not reached a native outcome.
 	declare commitsInFlight?: number;
-	// Set on every link when a poison landed while a commit was already in flight somewhere in the
-	// chain, and cleared once that attempt settles. It is what lets the head's cascade into `next`
-	// finish, without also excusing a link the monitor poisoned BEFORE any commit started.
+	// A poison landed while a commit was already in flight somewhere in the chain. Excuses the head's
+	// cascade into `next`, but not a link the monitor poisoned BEFORE any commit started.
 	declare poisonedMidCommit?: boolean;
-	// Root-only: consecutive monitor ticks that found this chain past its open-transaction limit with a
-	// commit still in flight. Bounded by MAX_DEFERRED_POISON_TICKS so a commit that never settles cannot
-	// make the point-of-no-return spare permanent — that would leave write intents held forever, which is
-	// the wedge harper#2001 is about. `poisonEscalated` records that the bound was reached, so the monitor
-	// stops deferring for good: the hung attempt never decrements commitsInFlight, so without it every
-	// later tick would re-force the same abort and never reach the arm that reclaims the read snapshot.
-	declare deferredPoisonTicks?: number;
+	// The bound exists because a commit that never settles would otherwise make the point-of-no-return
+	// spare permanent and hold its write intents forever — the harper#2001 wedge. A deadline rather than
+	// a tick count, and root-scoped: both engines' monitors visit every link of a chain, so a counter
+	// would be advanced once per link per tick and exhaust the spare early on a multi-store transaction.
+	declare deferredPoisonDeadline?: number;
+	// Per LINK, not per root: a commit detaches `next` before it settles, so an escalation recorded on
+	// the root would leave a detached link's own hung commit permanently unforced. It stops the monitor
+	// re-forcing the same abort every tick — a hung attempt never decrements commitsInFlight — while
+	// still letting the arm that reclaims the retained read snapshot run.
 	declare poisonEscalated?: boolean;
 	// Root-only: the owning scope ended while a commit was in flight, so the wrapper could neither abort
-	// it nor close the iterators it owns. Both are finished by endCommitAttempt() when the attempt settles.
+	// it nor close the iterators it owns. Both are finished by endCommitAttempt() when the attempt settles,
+	// against the links captured here rather than the `next` chain a settling commit detaches.
 	declare scopeAbandoned?: boolean;
-	// Root-only: a write-bearing commit attempt is in flight on this chain. See isCommittingWrites().
+	declare abandonedLinks?: DatabaseTransaction[];
 	declare committingWrites?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
@@ -1050,12 +1051,20 @@ export class DatabaseTransaction implements Transaction {
 		// during the finished attempt must reject it like any other poisoned commit.
 		const root = this.root ?? this;
 		root.committingWrites = false;
-		root.deferredPoisonTicks = 0;
-		root.poisonEscalated = false;
-		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) txn.poisonedMidCommit = false;
+		root.deferredPoisonDeadline = undefined;
+		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) {
+			txn.poisonedMidCommit = false;
+			txn.poisonEscalated = false;
+		}
 		if (root.scopeAbandoned) {
 			root.scopeAbandoned = false;
-			root.closeOwnedReadIterators();
+			// The links captured when the scope was abandoned, not the current `next` chain: a successful
+			// multi-store commit clears `next` before this runs, which would otherwise leave a former
+			// child's iterators owning a snapshot nothing can reach.
+			const abandoned = root.abandonedLinks;
+			root.abandonedLinks = undefined;
+			if (abandoned) for (const link of abandoned) link.closeOwnedReadIterators();
+			else root.closeOwnedReadIterators();
 		}
 	}
 
@@ -1068,8 +1077,23 @@ export class DatabaseTransaction implements Transaction {
 	 * commit is still staging through.
 	 */
 	abandonScope(): void {
-		(this.root ?? this).scopeAbandoned = true;
-		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) txn.endScopeOwnership();
+		const root = this.root ?? this;
+		root.scopeAbandoned = true;
+		const links: DatabaseTransaction[] = [];
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			links.push(txn);
+			txn.endScopeOwnership();
+			// Also not joinable. Ending ownership alone only stops the attempt's own rotation; until it
+			// reaches its native outcome the instance is still OPEN, and both transaction() and
+			// Resource.ts's dispatcher join an OPEN context.transaction — so a write made on this context
+			// during that window (a hung `before` hook makes it arbitrarily long) would stage onto a
+			// transaction with no wrapper left to commit it and be reported as committed. The successful
+			// attempt reaches CLOSED here itself, and both monitors defer while a commit is in flight, so
+			// nothing else reads this as reapable early.
+			txn.open = TRANSACTION_STATE.CLOSED;
+		}
+		root.abandonedLinks = links;
+		this.releaseContext(!this.timedOut && !this.disconnected);
 	}
 
 	/**
@@ -1649,6 +1673,36 @@ export class DatabaseTransaction implements Transaction {
 	abortDueToDisconnect(): void {
 		this.abortAndPoison('disconnected');
 	}
+
+	/**
+	 * Both monitors' escalation arm: a commit on this chain has not settled for long enough that its write
+	 * intents are worth more than its outcome. Aborts from the ROOT rather than the link the monitor
+	 * happened to reach first — abortAndPoison walks `this → next`, so escalating from a chained link
+	 * would leave the head un-poisoned, still holding pending writes, logging an error every tick for a
+	 * transaction nothing can reclaim. Every link is marked so the same abort is not re-forced next tick;
+	 * a link a settled commit already detached is marked and aborted on its own.
+	 */
+	forcePoisonAfterStalledCommit(): void {
+		const root = this.root ?? this;
+		let attached = false;
+		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) {
+			txn.poisonEscalated = true;
+			if (txn === this) attached = true;
+		}
+		this.poisonEscalated = true;
+		try {
+			root.abortDueToTimeout(true);
+		} catch (error) {
+			harperLogger.debug?.('Error aborting a transaction whose commit never settled', error);
+		}
+		if (!attached) {
+			try {
+				this.abortDueToTimeout(true);
+			} catch (error) {
+				harperLogger.debug?.('Error aborting a detached link whose commit never settled', error);
+			}
+		}
+	}
 	directCommitSync(): void {
 		const transaction = this.transaction;
 		try {
@@ -1820,20 +1874,17 @@ function deferForCommitInFlight(txn: DatabaseTransaction, url: string | undefine
 	// Once escalated, never defer again: the hung attempt never decrements commitsInFlight, so deferring
 	// on it forever would re-force the same abort every tick and never reach the arm that reclaims the
 	// read snapshot the force-abort deliberately retained for its iterators.
-	if (root.poisonEscalated || !txn.isChainCommitting()) return false;
-	root.deferredPoisonTicks = (root.deferredPoisonTicks ?? 0) + 1;
-	if (root.deferredPoisonTicks > MAX_DEFERRED_POISON_TICKS) {
-		root.poisonEscalated = true;
+	if (txn.poisonEscalated || !txn.isChainCommitting()) return false;
+	const deadline = (root.deferredPoisonDeadline ??= Date.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
+	if (Date.now() >= deadline) {
 		harperLogger.error(
-			`Transaction exceeded the open-transaction limit with a commit that has not settled after ${MAX_DEFERRED_POISON_TICKS} further checks; aborting it to release its write intents, from table: ${
+			`Transaction exceeded the open-transaction limit with a commit that has not settled after a further ${
+				MAX_DEFERRED_POISON_TICKS * txnExpiration
+			}ms; aborting it to release its write intents, from table: ${
 				(txn.db as any)?.name + (url ? ' path: ' + url : '')
 			}`
 		);
-		try {
-			txn.abortDueToTimeout(true);
-		} catch (error) {
-			harperLogger.debug?.('Error aborting a transaction whose commit never settled', error);
-		}
+		txn.forcePoisonAfterStalledCommit();
 		return false; // fall through this same tick so the CLOSED arm reclaims what the abort retained
 	}
 	harperLogger.warn?.(

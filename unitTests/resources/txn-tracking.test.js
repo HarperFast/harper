@@ -752,17 +752,10 @@ describe('Disconnect abort', () => {
 		assert.equal(iteratorTransaction.readTxn, null, 'closing the iterator must release its read transaction');
 	});
 
-	// Table.ts's txnForContext only chains a separate `next` link when the second store's `.path` differs
-	// from the head's. In this test harness setupTestDBPath() points every configured database name at the
-	// same directory (unitTests/testUtils.js), so two tables never actually get distinct store paths here
-	// to exercise that branch — the same pre-existing harness limitation noted in PR #2009's review of this
-	// file ("same-database tables share one transaction — I measured it"). So this only exercises the
-	// (still real, still necessary) case where a second table resolves to the SAME store as the head: the
-	// rejection comes from the head's own poison check, not from a genuinely new chain link. The Table.ts
-	// propagation fix itself (transaction.next.disconnected = ...) is exercised whenever a real deployment
-	// — with actual distinct database paths — touches a second database after a disconnect; verified by
-	// code inspection (txnForContext's `next` link creation is unconditional on database identity, and the
-	// two new poison-propagation lines run in that same branch) rather than a mechanistic test here.
+	// txnForContext only chains a `next` link when the second store's path differs from the head's, and
+	// setupTestDBPath points every database name at one directory, so this covers only the same-store
+	// case: the rejection comes from the head's own poison check. txnForContext's poison propagation onto
+	// a genuinely new link is untested here.
 	it('rejects a write to a database first touched after the disconnect', async function () {
 		const OtherDisconnectResource = table({
 			table: 'OtherDisconnectTxnTable2',
@@ -1056,6 +1049,58 @@ describe('Disconnect abort', () => {
 			'second scope',
 			'a later transaction on the same context must get a wrapper that commits'
 		);
+	});
+
+	// The same hole one window earlier: while the abandoned attempt is still inside its `before` hooks
+	// the instance has not reached CLOSED on its own, so an OPEN check would still let the next write on
+	// this context join it. A hung hook makes that window arbitrarily long.
+	it('does not let a write join the abandoned scope while its commit is still in flight', async function () {
+		const context = {};
+		let releaseCommitGate;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(592, { name: 'fire and forget' }, context);
+				txn.stageCompletion(new Promise((resolve) => (releaseCommitGate = resolve)));
+				txn.commit().catch(() => {});
+				throw new Error('handler threw mid-commit');
+			}),
+			/handler threw mid-commit/
+		);
+		// Gate still held: the attempt has not settled and has not closed itself.
+		await transaction(context, async () => {
+			await DisconnectResource.put(593, { name: 'joined too early' }, context);
+		});
+		assert.equal(
+			(await DisconnectResource.get(593))?.name,
+			'joined too early',
+			'a write made while the abandoned attempt is still in flight must get its own committing wrapper'
+		);
+		releaseCommitGate();
+	});
+
+	// The abandoned links are captured when the scope ends, not walked from `next` when the attempt
+	// settles: a successful multi-store commit clears `next` first, so a former child's iterator would
+	// own a snapshot nothing could reach. Built directly because setupTestDBPath gives every database
+	// name the same store path, so the resource API never forms a second link in this harness.
+	it("closes an abandoned chain link's iterator after the settling commit detaches it", function () {
+		const head = new DatabaseTransaction({ scopeOwned: true });
+		const link = new DatabaseTransaction();
+		link.root = head;
+		head.next = link;
+		link.transaction = {}; // a link with no handle of its own owns nothing to reclaim
+		let closed = 0;
+		const iterator = {
+			onDone() {
+				iterator.onDone = null;
+				closed++;
+			},
+		};
+		link.registerReadIterator(iterator);
+		head.commitsInFlight = 1;
+		head.abandonScope();
+		head.next = null; // what completeMidScopeCommit does before the outer commit() settles
+		head.endCommitAttempt();
+		assert.equal(closed, 1, "a detached link's iterator must still be closed when the attempt settles");
 	});
 
 	// The head marks itself CLOSED and detaches its handle as soon as its own commit starts, while a

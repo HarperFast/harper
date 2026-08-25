@@ -412,24 +412,22 @@ function startMonitoringTxns() {
 				// A commit that entered its attempt owns the outcome (DatabaseTransaction.abortAndPoison), so
 				// defer rather than re-entering commit() under it. Bounded: LMDB leaves `open` OPEN for the
 				// whole write commit, so without the escalation a commit that never settles would hold its
-				// write intents forever. The counter lives on the chain root and resets when a commit settles.
+				// write intents forever. The deadline lives on the chain root; the escalation is per link.
 				const root = txn.root ?? txn;
-				if (!root.poisonEscalated && txn.isChainCommitting()) {
-					root.deferredPoisonTicks = (root.deferredPoisonTicks ?? 0) + 1;
-					if (root.deferredPoisonTicks > MAX_DEFERRED_POISON_TICKS) {
-						// Escalate once and stop deferring: the hung attempt never decrements commitsInFlight,
-						// so deferring on it forever would never reach the CLOSED arm that reclaims the snapshot.
-						root.poisonEscalated = true;
+				if (!txn.poisonEscalated && txn.isChainCommitting()) {
+					const deadline = (root.deferredPoisonDeadline ??= Date.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
+					if (Date.now() >= deadline) {
 						harperLogger.error(
-							`Transaction exceeded the open-transaction limit with a commit that has not settled after ${MAX_DEFERRED_POISON_TICKS} further checks; aborting it to release its write intents, from table: ${
+							`Transaction exceeded the open-transaction limit with a commit that has not settled after a further ${
+								MAX_DEFERRED_POISON_TICKS * txnExpiration
+							}ms; aborting it to release its write intents, from table: ${
 								(txn.db as any)?.name + (url ? ' path: ' + url : '')
 							}`
 						);
-						try {
-							txn.abortDueToTimeout(true);
-						} catch (error) {
-							harperLogger.debug?.('Error aborting a transaction whose commit never settled', error);
-						}
+						// Escalation is recorded per LINK, and the abort runs from the chain root — see
+						// forcePoisonAfterStalledCommit. This file's commit detaches `next` before awaiting the
+						// child, so a root-scoped flag would leave that child's own hung commit unforced.
+						txn.forcePoisonAfterStalledCommit();
 					} else {
 						harperLogger.warn?.(
 							`Transaction exceeded the open-transaction limit while its commit is still in flight; deferring, from table: ${
