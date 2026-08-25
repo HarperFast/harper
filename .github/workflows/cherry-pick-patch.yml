@@ -97,6 +97,13 @@ jobs:
           MILESTONE=$(echo "$PR" | jq -r '.milestone')
           PR_STATE=$(echo "$PR" | jq -r '.state')
           PR_MERGED=$(echo "$PR" | jq -r '.merged')
+          # Releases are tagged at patch level (v5.2.5) and milestones are
+          # sometimes named that way. The release LINE is what has a branch, so
+          # read vX.Y.Z as vX.Y rather than silently matching nothing.
+          if printf '%s' "$MILESTONE" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            MILESTONE=$(printf '%s' "$MILESTONE" | cut -d. -f1,2)
+            echo "Milestone names a patch release; using the release line $MILESTONE"
+          fi
           echo "Milestone: ${MILESTONE:-<none>} (state=$PR_STATE merged=$PR_MERGED)"
           echo "milestone=$MILESTONE" >> "$GITHUB_OUTPUT"
 
@@ -377,6 +384,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Nothing to land now, so a branch and PR from an earlier revision
+          # describe commits this PR no longer produces — and that PR is still
+          # mergeable into the release branch. Retire both.
+          BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+          STALE_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
+            gh pr close "$STALE_PR" --repo "$GITHUB_REPOSITORY" \
+              --comment "Superseded: PR #${PR_NUMBER} no longer produces any commits to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
+          fi
+          git push origin --delete "$BRANCH" 2>/dev/null || true
           BODY=$(printf '%s\n## Release cherry-pick `%s`: already present\n\nEvery commit from this PR is already on `%s` — nothing to cherry-pick.\n' \
             "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
@@ -550,7 +568,7 @@ jobs:
       # fire for `workflow_dispatch`-triggered runs on non-default branches —
       # so a downstream reporter never sees the cherry-pick run finish.
       - name: Trigger tests and wait for completion
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
