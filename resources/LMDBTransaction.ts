@@ -182,7 +182,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						} catch (error) {
 							this.abortAfterCommitError(error);
 						}
-						return this.commit(options);
+						return this.commit({ ...options, continuation: true });
 					})();
 				}
 			} catch (error) {
@@ -276,7 +276,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			return resolution.then((resolution) => {
 				if (resolution) {
 					if (this.next) {
-						completions.push(this.next.commit(options));
+						completions.push(this.next.commit({ ...options, continuation: true }));
 					}
 					if (options?.flush) {
 						completions.push(this.writes[0].store.flushed);
@@ -326,7 +326,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		};
 		if (this.next) {
 			// now run any other transactions
-			const nextResolution = this.next?.commit(options);
+			const nextResolution = this.next?.commit({ ...options, continuation: true });
 			if ((nextResolution as any)?.then)
 				return (nextResolution as any)?.then((nextResolution) => ({
 					txnTime,

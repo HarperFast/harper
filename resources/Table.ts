@@ -3661,9 +3661,8 @@ export function makeTable(options) {
 				txn.unregisterReadIterator(results);
 				txn.doneReadTxn();
 			};
-			// The transaction owns this reference until onDone returns it. Registering makes that
-			// ownership recoverable: if the request dies before anything consumes the results, the
-			// transaction can close them itself instead of leaving its read snapshot pinned forever.
+			// Recorded ownership: if the request dies before anything consumes these results, the
+			// transaction closes them itself rather than leaving its read snapshot pinned.
 			txn.registerReadIterator(results);
 			results.selectApplied = true;
 			results.getColumns = getColumns;

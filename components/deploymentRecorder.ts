@@ -87,11 +87,9 @@ interface CreateOptions {
  */
 function withIsolatedTransaction<T>(write: () => Promise<T>, timeoutMs?: number): Promise<T> {
 	const ambient = contextStorage.getStore();
-	// Deliberately no `signal`: tracking is observability, and the deploy itself must still succeed
-	// (see transitionPhase below). Forwarding the caller's cancellation would let a CLI ^C or a proxy
-	// idle timeout poison these writes mid-deploy (resources/transaction.ts's disconnect abort) and
-	// strand hdb_deployment rows in a non-terminal phase, on exactly the writes that were given a long
-	// timeout budget because a client that stops waiting is normal here.
+	// No `signal`: tracking is observability and the deploy must still succeed, so a deploy client that
+	// stops waiting (CLI ^C, proxy idle timeout) must not poison these writes and strand the row in a
+	// non-terminal phase.
 	const context = {
 		user: ambient?.user,
 		originatingOperation: ambient?.originatingOperation,

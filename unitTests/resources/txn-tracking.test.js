@@ -886,6 +886,62 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(531)) == null, 'the post-commit write must not land');
 	});
 
+	// The same boundary from the other side of commit()'s CLOSED flip: once the native commit is in
+	// flight the transaction has already marked itself CLOSED, so the listener's OPEN + hasPendingWrites()
+	// test alone would see nothing to protect and let the scope rotate back open and commit later writes
+	// for a client that is already gone. RocksDB only: LMDB commits its writes through the store's batch
+	// rather than a native transaction handle this can gate on.
+	it('poisons a disconnect that lands after the commit marked itself closed', async function () {
+		if (isLMDB) return;
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let sawRotation;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(532, { name: 'commits despite the disconnect' }, context);
+				// Hold the native commit open so the disconnect lands strictly inside the CLOSED window.
+				const { nativeTransaction } = getReadTransaction(context.transaction);
+				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+				let releaseNativeCommit;
+				const nativeGate = new Promise((resolve) => (releaseNativeCommit = resolve));
+				nativeTransaction.commit = () => nativeGate.then(nativeCommit);
+				const committing = txn.commit();
+				await waitFor(() => Boolean(releaseNativeCommit) && txn.open === TRANSACTION_STATE.CLOSED, {
+					message: 'the commit should reach its closed window',
+				});
+				ac.abort();
+				assert.equal(txn.disconnected, true, 'a disconnect in the commit window must still poison');
+				releaseNativeCommit();
+				await committing;
+				sawRotation = txn.open === TRANSACTION_STATE.OPEN;
+				await assert.rejects(
+					DisconnectResource.put(533, { name: 'must reject' }, context),
+					/disconnected/,
+					'the scope must not resume for a client that is gone'
+				);
+			}),
+			/disconnected/
+		);
+		assert.equal(sawRotation, false, 'a poisoned scope must not rotate back open after its commit');
+		assert.equal((await DisconnectResource.get(532))?.name, 'commits despite the disconnect');
+		assert.ok((await DisconnectResource.get(533)) == null, 'the post-commit write must not land');
+	});
+
+	// The deliberate limit of the no-sticky-fast-path rule, pinned so it cannot change by accident: an
+	// AbortSignal stays aborted forever, so a transaction created after the disconnect never sees an
+	// 'abort' event and is NOT poisoned. That is what keeps post-disconnect compensation work runnable
+	// (there is no ignoreSignal opt-out yet); the cost is that such a transaction falls back to the
+	// long-transaction monitor, as it did before harper#2047.
+	it('does not poison a transaction created after the client already disconnected', async function () {
+		const ac = new AbortController();
+		ac.abort();
+		const context = { signal: ac.signal };
+		await transaction(context, async () => {
+			await DisconnectResource.put(534, { name: 'compensation write' }, context);
+		});
+		assert.equal((await DisconnectResource.get(534))?.name, 'compensation write');
+	});
+
 	it('keeps a returned iterator alive when the transaction commits normally', async function () {
 		await DisconnectResource.put(540, { name: 'returned iterator survives' }, {});
 		const context = {};
