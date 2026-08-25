@@ -743,7 +743,7 @@ Response:
 The operation token is valid for **one hour** — long enough to cover a slow deploy, short enough to bound the exposure if it leaks. That is a reduced window, not safety: within the hour it is a live credential carrying the policy's identity, so treat it like any other secret and keep it out of logs and step outputs. No refresh token is issued; a subsequent run performs a new exchange.
 
 :::note
-**Every rejection returns the same message.** The endpoint is unauthenticated, so a caller told which check failed could enumerate a policy one claim at a time. The specific reason is written to the `oidc-trust` logger, which is where to look when a workflow that should match does not.
+**Every rejection of a well-formed token returns the same message.** The endpoint is unauthenticated, so a caller told which check failed could enumerate a policy one claim at a time. A malformed request — a missing `token`, or one over 8192 characters — is rejected by schema validation before any of that, with its own message; that reveals nothing about a policy. The specific reason is written to the `oidc-trust` logger, which is where to look when a workflow that should match does not.
 :::
 
 **An identity token can be exchanged once.** Harper records a SHA-256 fingerprint of each spent token in `system.hdb_oidc_token_use`, expiring with the token itself, so the table stays proportional to in-flight tokens and never holds a credential. The record is written _before_ the operation token is minted: if minting then fails, the identity token is burned, costing a CI re-run, where the reverse order would leave a spendable token behind.
