@@ -85,26 +85,19 @@ function stopIfIdle(): void {
 /**
  * Register a live subscription for continuous re-authorization.
  *
- * If `revoke` is omitted, behavior matches #1414 exactly: terminate defaults to
- * end()/close()/emit('close') on `subscription`, and the subscription's own teardown (end()/close)
- * automatically unregisters it.
+ * Without `revoke`, teardown is end()/close()/emit('close') on `subscription`, and the
+ * subscription's own teardown unregisters the entry so callers need not.
  *
- * If `revoke` is supplied, it is used as the entry's terminate instead and the subscription object
- * is left untouched (no `end` wrapping, no 'close' listener) — the caller unregisters through the
- * returned handle. This is the seam a feed shared by many subscribers needs: revocation must stay
- * per subscriber even once feed delivery is shared, so the registry can't assume it owns the
- * subscription object or that only one registrant will ever mutate it.
- *
- * Three invariants a `revoke` caller must uphold, none enforced here: (1) it owns the entry's
- * lifetime end-to-end — nothing detects a leaked registration, so a caller that forgets
- * `unregister()` on some teardown path degrades sweep latency for every other tracked subscriber,
- * not just its own; (2) if it shares one feed (and one `recheck`) across subscribers, `recheck`
- * must not mutate state shared across them — `registerLiveSubscriptionForContext` in
- * resources/Resource.ts mutates `context.user` to the freshly-rechecked principal, which is safe
- * only because each context today belongs to exactly one subscriber; (3) `revoke` gets exactly one
- * best-effort invocation — the entry is untracked before it runs, so a `revoke` that throws, rejects
- * or never settles is logged and never retried, and a caller needing recovery from a failed teardown
- * must implement it inside `revoke`.
+ * With `revoke`, that becomes the teardown and `subscription` is never touched — no `end` wrapping,
+ * no 'close' listener — because a feed shared by many subscribers must stay revocable per subscriber,
+ * so the registry can neither own the shared object nor let every registrant mutate it. A `revoke`
+ * caller owns the entry's lifetime: nothing detects a leaked registration, and a forgotten
+ * `unregister()` degrades sweep latency for every other tracked subscriber. It also owns teardown
+ * recovery — the entry is untracked before `revoke` runs and `revoke` is invoked exactly once, so one
+ * that throws, rejects or never settles is logged and never retried. A `recheck` shared across
+ * subscribers must not mutate state shared across them: `registerLiveSubscriptionForContext` in
+ * resources/Resource.ts mutates `context.user`, which is safe only while each context has exactly
+ * one subscriber.
  */
 export function registerLiveSubscription(
 	opts: {
@@ -113,8 +106,8 @@ export function registerLiveSubscription(
 		recheck: () => Promise<boolean>;
 	} & (
 		| { subscription: any; revoke?: undefined }
-		// a revoke-only registrant may own no subscription object; requiring one of the two modes keeps
-		// a caller that supplies neither from type-checking into a silent no-op registration
+		// requiring one of the two modes stops a caller that supplies neither from type-checking
+		// into a silent no-op registration; a revoke-only registrant may own no subscription object
 		| { subscription?: any; revoke: () => void | Promise<void> }
 	)
 ): { unregister: () => void } {
@@ -161,14 +154,14 @@ export function registerLiveSubscription(
 	return { unregister };
 }
 
-/**
- * Untrack an entry and tear it down, best effort. Untracking first keeps a `revoke` that hangs or
- * fails from wedging the sweep or being re-entered by a later one; recovering from a failed teardown
- * is the caller's job, per registerLiveSubscription's third invariant.
- */
-function terminateEntry(entry: LiveSubscription, reason: string): void {
+/** Untrack first: a `terminate` that hangs or fails must not wedge the sweep or be re-entered by a later one. */
+function terminateEntry(
+	entry: LiveSubscription,
+	reason: string,
+	notice: ((message: string) => void) | undefined = hdbLogger.info
+): void {
 	registry.delete(entry);
-	safeLog(hdbLogger.warn, `liveSubscriptionAuth: revoking subscription for ${entry.username} (${reason})`);
+	safeLog(notice, `liveSubscriptionAuth: revoking subscription for ${entry.username} (${reason})`);
 	const failed = (error: unknown) =>
 		safeLog(
 			hdbLogger.error,
@@ -186,7 +179,7 @@ async function sweep(): Promise<void> {
 	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
 	sweeping = true;
 	try {
-		// snapshot: an entry the caller unregisters mid-sweep must not be rechecked or revoked
+		// snapshot bounds the pass to entries present at its start; the has() guards cover the rest
 		for (const entry of Array.from(registry)) {
 			if (!registry.has(entry)) continue;
 			try {
@@ -196,7 +189,7 @@ async function sweep(): Promise<void> {
 				if (expired || !stillAuthorized) terminateEntry(entry, expired ? 'token expired' : 'no longer authorized');
 			} catch (error) {
 				// fail closed: if authorization can't be confirmed, revoke
-				if (registry.has(entry)) terminateEntry(entry, `recheck error: ${errorMessage(error)}`);
+				if (registry.has(entry)) terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn);
 			}
 		}
 	} finally {

@@ -6,10 +6,14 @@ testUtils.preTestPrep();
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 
+// The module reads its interval once at import and the first register() starts a real timer; a
+// background tick landing mid-test would make _sweepNow() a no-op via the `sweeping` guard.
+process.env.HARPER_SUBSCRIPTION_REAUTH_INTERVAL_MS = String(24 * 60 * 60 * 1000);
+
 const { registerLiveSubscription, _liveSubscriptionCount, _sweepNow } = require('#src/server/liveSubscriptionAuth');
 const hdbLogger = require('#src/utility/logging/harper_logger');
 
-// A bare call-recording function: `.calls` is the arg list of each invocation, in order.
+// `.calls` is the arg list of each invocation, in order.
 function spyFn(impl) {
 	function spy(...args) {
 		spy.calls.push(args);
@@ -19,8 +23,7 @@ function spyFn(impl) {
 	return spy;
 }
 
-// A minimal stand-in for the SSE/WS/MQTT subscription object: an EventEmitter (for the 'close'
-// self-wiring path) with an end() the registry can wrap.
+// Stand-in for the SSE/WS/MQTT subscription object.
 function fakeSubscription() {
 	const subscription = new EventEmitter();
 	subscription.end = spyFn();
@@ -63,9 +66,12 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(_liveSubscriptionCount(), 0);
 		});
 
-		it('logs a warning when it revokes on the default path', async () => {
+		it('logs an expected revocation at info, not warn', async () => {
+			const originalInfo = hdbLogger.info;
 			const originalWarn = hdbLogger.warn;
+			const infoMessages = [];
 			const warnMessages = [];
+			hdbLogger.info = (message) => infoMessages.push(message);
 			hdbLogger.warn = (message) => warnMessages.push(message);
 			try {
 				const subscription = fakeSubscription();
@@ -80,11 +86,13 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 				await _sweepNow();
 
 				assert.ok(
-					warnMessages.some((message) => message.includes('logged-user')),
-					`expected a revocation log for the default terminate path, got: ${JSON.stringify(warnMessages)}`
+					infoMessages.some((message) => message.includes('logged-user')),
+					`expected a revocation log for the default terminate path, got: ${JSON.stringify(infoMessages)}`
 				);
+				assert.deepStrictEqual(warnMessages, [], 'routine expiry must not warn once per subscriber');
 				assert.strictEqual(_liveSubscriptionCount(), 0);
 			} finally {
+				hdbLogger.info = originalInfo;
 				hdbLogger.warn = originalWarn;
 			}
 		});
@@ -260,7 +268,10 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(emitCalls.length, 0, 'the shared subscription must not be closed');
 		});
 
-		it('a throwing recheck among several sharing one subscription revokes only that entry (fail-closed)', async () => {
+		it('a throwing recheck among several sharing one subscription revokes only that entry, at warn (fail-closed)', async () => {
+			const originalWarn = hdbLogger.warn;
+			const warnMessages = [];
+			hdbLogger.warn = (message) => warnMessages.push(message);
 			const subscription = fakeSubscription();
 			const revokeThrows = spyFn();
 			const revokeOkA = spyFn();
@@ -284,6 +295,11 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			assert.strictEqual(revokeOkB.calls.length, 0);
 			assert.strictEqual(_liveSubscriptionCount(), 2);
 			assert.strictEqual(subscription.end.calls.length, 0);
+			assert.ok(
+				warnMessages.some((message) => message.includes('throws') && message.includes('recheck backend unavailable')),
+				`a recheck failure must still warn, got: ${JSON.stringify(warnMessages)}`
+			);
+			hdbLogger.warn = originalWarn;
 		});
 
 		it('revokes on token expiry without consulting recheck', async () => {
