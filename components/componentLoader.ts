@@ -403,7 +403,12 @@ function symlinkHarperModule(componentDirectory: string) {
 			// so it cannot drain and cleanly exit (code 0) before the ready handshake. Timing out
 			// resolves rather than rejects: the fixup is idempotent maintenance another thread
 			// already ran or the next load re-runs, never worth failing the component load over.
-			timeout = setTimeout(resolve, 10_000);
+			timeout = setTimeout(() => {
+				harperLogger.warn(
+					`Timed out waiting for another thread to verify the harper module link in ${componentDirectory}; continuing with the link in its current state`
+				);
+				resolve();
+			}, 10_000);
 		} else {
 			try {
 				// validate node_modules directory exists
@@ -446,6 +451,9 @@ function symlinkHarperModule(componentDirectory: string) {
 		}
 	});
 }
+
+// Test-only: exercises the lock-wait branch directly (unitTests/components/symlinkHarperModuleLockWait.test.js).
+export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
 /**
  * This function handles the `handleApplication` call for a plugin in a sequential manner.

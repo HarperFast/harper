@@ -188,6 +188,15 @@ function startServers() {
 	}
 	let loaded = require('../loadRootComponents.js')
 		.loadRootComponents(true)
+		.catch((err) => {
+			// With the pre-ready ref above, a rejected load would otherwise leave this worker
+			// parked forever (and main awaiting workersReady) instead of failing startup fast.
+			// Main-as-worker (no parentPort) propagates to its caller's own exit path instead.
+			if (!parentPort) throw err;
+			console.error(`Failed to load components on worker ${threadId}`, err);
+			harperLogger.fatal('Failed to load root components during worker startup', err);
+			realExit(1);
+		})
 		.then(() => {
 			parentPort
 				?.on('message', (message) => {

@@ -1,21 +1,8 @@
 /**
- * Regression test for the pre-ready worker event-loop drain (the recurring CI failure
- * "Worker (index N) exited with code 0 before reporting ready" thrown from
- * socketRouter.ts's createWorkerReadyPromise).
- *
- * During loadRootComponents a worker's parentPort is unref'd (manageThreads.addPort) and is
- * only ref'd after component loading completes (threadServer.js). So if component load ever
- * awaits a completion that arrives via a non-ref'd source — an unref'd threadsafe function
- * (rocksdb-js parks an IsBusy commit on the conflicting worker's lock and wakes it through
- * one), a persistent:false watcher, an unref'd timer — the worker's ref'd-handle set can hit
- * zero, the event loop drains, and the worker cleanly exits before posting child_started.
- * Main then rejects startup and tears down stores while sibling workers are still loading
- * ("Database not open" cascade).
- *
- * The fixture component deterministically recreates that window: in workers its load awaits
- * a promise resolved only by an unref'd timer. Without the liveness guarantee the workers
- * exit 0 before ready and startup aborts; with it they stay alive, the timer fires, and the
- * instance becomes ready.
+ * Regression test for the pre-ready worker event-loop drain (harper#2312, "Worker (index N)
+ * exited with code 0 before reporting ready"): a worker whose component load awaits a
+ * completion delivered through a non-ref-holding source must stay alive until the ready
+ * handshake instead of clean-exiting when its ref'd-handle set drains.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
