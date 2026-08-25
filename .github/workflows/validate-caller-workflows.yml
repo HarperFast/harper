@@ -27,9 +27,9 @@ on:
 
 jobs:
   validate:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@8401fe113e229d8842283c67e99457b862ab3b89 # main 2026-08-25 (#89 fleet turn/effort/model defaults: sonnet-5, xhigh, 96 turns)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@4632c5d93dae1e6548e6c30c5ced8fb2df69f4e5 # main 2026-08-25 (#89 fleet turn/effort/model defaults; #88 sibling + cannot-fail-test lenses; #85/#87 calibration)
     with:
       # Same SHA as the `uses:` ref above — the reusable uses this
       # to check out the validator script at the matching version.
       # Same SHA-twice pattern as the other caller workflows.
-      ai-review-prompts-ref: 8401fe113e229d8842283c67e99457b862ab3b89
+      ai-review-prompts-ref: 4632c5d93dae1e6548e6c30c5ced8fb2df69f4e5
