@@ -130,20 +130,22 @@ describe('PrimaryRocksDatabase', function () {
 		assert(resequenced.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
 	});
 
-	(constants?.VERSION_NOT_UNIQUE_FLAG === VERSION_NOT_UNIQUE_FLAG ? it : it.skip)(
-		'does not vouch for stale cached data after a version-reusing write',
-		async function () {
-			const now = Date.now();
-			await TestTable.put(11, { name: 'base', count: 0 });
-			await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
-			await TestTable.get(11);
-			await TestTable.get(11);
-			const inOrder = TestTable.primaryStore.getEntry(11);
-			assert(TestTable.primaryStore.verifyVersion(11, inOrder.version));
+	it('does not vouch for stale cached data after a version-reusing write', async function () {
+		// Skip only while the installed rocksdb-js predates the export (HarperFast/rocksdb-js#766). Once it is
+		// present the two sides must agree on the bit, so a future value drift fails here instead of silently
+		// removing the only test that guards this behavior.
+		if (constants?.VERSION_NOT_UNIQUE_FLAG === undefined) return this.skip();
+		assert.equal(constants.VERSION_NOT_UNIQUE_FLAG, VERSION_NOT_UNIQUE_FLAG);
+		const now = Date.now();
+		await TestTable.put(11, { name: 'base', count: 0 });
+		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.get(11);
+		await TestTable.get(11);
+		const inOrder = TestTable.primaryStore.getEntry(11);
+		assert(TestTable.primaryStore.verifyVersion(11, inOrder.version));
 
-			await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
-			assert.equal((await TestTable.get(11)).count, 2);
-			assert(!TestTable.primaryStore.verifyVersion(11, inOrder.version));
-		}
-	);
+		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		assert.equal((await TestTable.get(11)).count, 2);
+		assert(!TestTable.primaryStore.verifyVersion(11, inOrder.version));
+	});
 });

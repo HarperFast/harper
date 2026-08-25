@@ -804,7 +804,7 @@ export function recordUpdater(store, tableId, auditStore) {
 					: TIMESTAMP_ASSIGN_NEW | 0x4000 // or just assign a new one
 				: NO_TIMESTAMP;
 		const expiresAt = options?.expiresAt;
-		if (expiresAt >= 0) assignMetadata = Math.max(assignMetadata, 0) | HAS_EXPIRATION;
+		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		if (isRocksDB && record !== undefined && existingEntry?.version != null && newVersion <= existingEntry.version) {
 			assignMetadata = Math.max(assignMetadata, 0) | VERSION_NOT_UNIQUE_FLAG;
 		}
