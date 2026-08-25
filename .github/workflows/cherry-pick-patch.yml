@@ -265,6 +265,7 @@ jobs:
 
           BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
           EXCLUDED_MERGES=""
+          HOLD=""
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
           echo "is_merged=$IS_MERGED" >> "$GITHUB_OUTPUT"
@@ -303,7 +304,11 @@ jobs:
             EXCLUDED_MERGES=$(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
             if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
               if [ "$IS_MERGED" = "true" ]; then
+                # Nothing replayable: the PR's own content exists only in
+                # commits that cannot be replayed. The merge SHA gives a human
+                # something to review, but it is not provably the whole change.
                 PICK_SHAS="$MERGE_SHA"
+                HOLD="the PR has no replayable non-merge commits, so this branch was built from the merge commit alone"
               else
                 echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
                 echo "no_op=true" >> "$GITHUB_OUTPUT"
@@ -313,7 +318,11 @@ jobs:
           fi
           echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
           echo "pick_shas=$PICK_SHAS" >> "$GITHUB_OUTPUT"
+          if [ -n "$EXCLUDED_MERGES" ]; then
+            HOLD=$(printf 'merge commit(s) `%s` could not be replayed' "$EXCLUDED_MERGES")
+          fi
           echo "excluded_merges=$EXCLUDED_MERGES" >> "$GITHUB_OUTPUT"
+          echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
 
           # ── Create / reset cherry-pick branch off release branch ────────
           git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
@@ -357,7 +366,7 @@ jobs:
           done
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$CONFLICTS" ] && [ -z "$EXCLUDED_MERGES" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
+          if [ -z "$CONFLICTS" ] && [ -z "$HOLD" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
             echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
             echo "no_op=true" >> "$GITHUB_OUTPUT"
             # An earlier run may have pushed a branch that is now redundant.
@@ -381,7 +390,7 @@ jobs:
 
       # ── Merged path: fast-forward release branch ────────────────────────
       - name: Merge into release branch
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.excluded_merges == ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -441,14 +450,16 @@ jobs:
       # a conflict, that resolution exists nowhere else and this branch does not
       # have it — which is not something to auto-land on a release branch.
       - name: Report held for review
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.excluded_merges != ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
-          EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
+          HOLD: ${{ steps.pick.outputs.hold }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
+          HELD_BODY=$(printf 'Cherry-pick of PR #%s onto `%s` applied cleanly, but it is **not** provably the whole change: %s.\n\nIf a merge commit resolved a conflict, that resolution is not on this branch. Confirm the change is complete, then merge this PR.\n' \
+            "$PR_NUMBER" "$RELEASE_BRANCH" "$HOLD")
           HELD_PR_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
             --base "$RELEASE_BRANCH" --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
           if [ -z "$HELD_PR_URL" ] || [ "$HELD_PR_URL" = "null" ]; then
@@ -456,11 +467,14 @@ jobs:
               --base "$RELEASE_BRANCH" \
               --head "$BRANCH" \
               --title "cherry-pick: ${PR_TITLE} (review → ${RELEASE_BRANCH})" \
-              --body "$(printf 'Cherry-pick of PR #%s onto `%s` applied cleanly, but the PR contained merge commit(s) that cannot be replayed: `%s`.\n\nIf any of them resolved a conflict, that resolution is not on this branch. Confirm the change is complete, then merge this PR.\n' \
-                "$PR_NUMBER" "$RELEASE_BRANCH" "$EXCLUDED_MERGES")")
+              --body "$HELD_BODY")
+          else
+            # The branch is rebuilt on every run, so a body written by an
+            # earlier run may describe a different set of commits.
+            gh pr edit "$HELD_PR_URL" --repo "$GITHUB_REPOSITORY" --body "$HELD_BODY" >/dev/null
           fi
-          BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nThe picks applied cleanly, but this PR contains merge commit(s) that cannot be replayed: `%s`\n\nA merge that resolved a conflict holds content found nowhere else, so `%s` was **not** updated automatically. Review and merge: %s\n' \
-            "$STICKY_MARKER" "$RELEASE_BRANCH" "$EXCLUDED_MERGES" "$RELEASE_BRANCH" "$HELD_PR_URL")
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nThe picks applied cleanly, but the result is not provably the whole change: %s.\n\nA merge that resolved a conflict holds content found nowhere else, so `%s` was **not** updated automatically. Review and merge: %s\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH" "$HELD_PR_URL")
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Conflict path: post sticky comment, @-mention Claude ────────────
@@ -489,6 +503,8 @@ jobs:
             # be resolved and merged without any future trigger from the original PR.
             PATCH_PR_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
               --base "$RELEASE_BRANCH" --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
+            CONFLICT_BODY=$(printf 'Cherry-pick of PR #%s onto `%s` produced conflicts on commit(s): `%s`.%s\n\nResolve the conflict markers on branch `%s` and merge this PR.\n' \
+              "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH")
             if [ -z "$PATCH_PR_URL" ] || [ "$PATCH_PR_URL" = "null" ]; then
               PATCH_PR_URL=$(gh pr create --repo "$GITHUB_REPOSITORY" \
                 --base "$RELEASE_BRANCH" \
@@ -496,6 +512,10 @@ jobs:
                 --title "cherry-pick: ${PR_TITLE} (conflicts → ${RELEASE_BRANCH})" \
                 --body "$(printf 'Cherry-pick of PR #%s onto \`%s\` produced conflicts on commit(s): \`%s\`.%s\n\nResolve the conflict markers on branch \`%s\` and merge this PR.\n\n@claude please review branch \`%s\` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto \`%s\`. Post the suggested patch as a comment here — do not push.\n' \
                   "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")")
+            else
+              # The branch is rebuilt on every run; an earlier body may describe
+              # a different set of conflicting commits.
+              gh pr edit "$PATCH_PR_URL" --repo "$GITHUB_REPOSITORY" --body "$CONFLICT_BODY" >/dev/null
             fi
             BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
               "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
