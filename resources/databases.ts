@@ -652,8 +652,7 @@ function readRocksMetaDb(
 	path: string,
 	defaultTable?: string,
 	databaseName: string = DEFAULT_DATABASE_NAME,
-	destination?: Tables,
-	storeName?: string
+	{ destination, storeName, openedStores }: Pick<InitStoresOptions, 'destination' | 'storeName' | 'openedStores'> = {}
 ) {
 	try {
 		logger.trace(`loading rocksdb database: ${path}`);
@@ -667,14 +666,13 @@ function readRocksMetaDb(
 
 		let rootStore: RocksRootDatabase | undefined = rocksdbDatabaseEnvs.get(path);
 		if (rootStore) {
-			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName });
+			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
 		} else {
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
-			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName });
-			// Replay into whichever graph this open owns. Skipping it for a caller-owned graph would
-			// leave any tail the checkpoint captured permanently invisible in that graph, since nothing
-			// else will ever replay this store.
+			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
+			// a caller-owned graph is replayed into as well: nothing else will ever replay this store,
+			// so skipping it would leave the tail the checkpoint captured permanently invisible there
 			if (!isReadOnlyMode()) {
 				replayLogs(rootStore, destination ?? databases[databaseName]);
 			}
@@ -694,19 +692,24 @@ interface InitStoresOptions {
 	destination?: Tables;
 	/**
 	 * Identity stamped on the root store, when it must differ from the logical `databaseName` the
-	 * Table classes carry. `getRootBlobPathsForDB` resolves a database's blob directories from it, so
-	 * a branch sets it to the branch's own name to get its own blob roots while its tables keep the
-	 * name the application's code and schema already use.
+	 * Table classes carry. `getRootBlobPathsForDB` resolves blob directories from it.
 	 */
 	storeName?: string;
+	/**
+	 * Every column family opened here is appended, so a caller can release the ones a failure left
+	 * unreachable — a table's stores are opened well before `setTable` publishes it into the graph.
+	 */
+	openedStores?: any[];
 }
 
 function initStores(
 	path: string,
 	rootStore: RootDatabaseKind,
 	databaseName: string,
-	{ defaultTable, auditPath, isLegacy, destination, storeName }: InitStoresOptions = {}
+	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
 ) {
+	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
+	rootStore.databaseName = storeName ?? databaseName;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
@@ -908,7 +911,7 @@ function initStores(
 					rootStore
 				);
 			}
-			rootStore.databaseName = storeName ?? databaseName;
+			openedStores?.push(primaryStore);
 			primaryStore.tableId = tableId;
 		}
 		let attributesUpdated: boolean;
@@ -919,6 +922,7 @@ function initStores(
 				if (!attribute.isPrimaryKey && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 					if (!indices[attribute.name]) {
 						const dbi = openIndex(attribute.key, rootStore, attribute);
+						openedStores?.push(dbi);
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
 					}
@@ -1032,15 +1036,15 @@ export interface BranchDatabase {
 	close(): void;
 }
 
-/** Open branches by directory, so teardown has something to walk and a repeat open is detectable. */
 const openBranches = new Map<string, BranchDatabase>();
+/** Store identities in use, so two branches cannot resolve one set of blob roots. */
+const openBranchIdentities = new Set<string>();
 
 /**
  * True when `dbPath` is a directory an open branch owns. The database scan opens any directory that
  * holds CURRENT + MANIFEST-*, and harper#643 places a branch inside the directory it walks, so
- * without this the first `resetDatabases()` after a branch is open would rebuild that branch's tables
- * into the global map, overwrite the store identity its blob roots resolve from, and hand its store
- * to `closeLoadedDatabases`.
+ * without this a rescan would rebuild the branch's tables into the global map, overwrite the store
+ * identity its blob roots resolve from, and hand its store to `closeLoadedDatabases`.
  */
 function isOpenBranchPath(dbPath: string): boolean {
 	if (openBranches.size === 0) return false;
@@ -1072,51 +1076,52 @@ function assertLegalBranchName(name: string, description: string): void {
  * blob directories from, which is how a branch gets its own blob roots rather than writing into the
  * base's.
  *
- * The caller owns the returned handle: no enumerator of `databases` can reach a branch, so nothing
- * closes it on the caller's behalf except `closeBranchDatabases`, which `closeLoadedDatabases` runs
- * at thread teardown so a branch left open on an exiting worker does not leak its process-global
- * RocksDB handles.
+ * The caller owns the returned handle; the only thing that closes it on the caller's behalf is
+ * `closeBranchDatabases`, which `closeLoadedDatabases` runs at thread teardown so a branch left open
+ * on an exiting worker does not leak its handles into the process-global RocksDB registry.
  *
  * NOT YET SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
  * `dropTable()` or equivalent through one resolves against the global schema and would delete the
- * live base Table class. Row reads and writes are fine. Nothing calls this yet; the scope wiring
- * that first exposes a branch to application code must gate schema operations before it does
- * (harper#643).
+ * live base Table class. Nothing calls this yet; the scope wiring that first exposes a branch to
+ * application code must gate schema operations before it does (harper#643).
+ *
+ * A branch's blob roots start empty, so a row whose blob was written before the checkpoint reads
+ * back as a missing file until harper#644 links the base's blob tree into them. Non-blob rows are
+ * unaffected, for reads and writes alike.
  */
 export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
 	assertLegalBranchName(databaseName, 'logical database name');
 	assertLegalBranchName(storeName, 'store identity');
 	if (!existsSync(path)) throw new Error(`Cannot open branch database: no directory at ${path}`);
-	// The guards below compare against keys in the env map, so two spellings of one directory must
-	// not read as two directories.
+	// the guards compare against env-map keys, so two spellings of one directory must not read as two
 	path = realpathSync(path);
-	// Load the registry FIRST: the guards below read it, and loading is itself what populates
-	// `rocksdbDatabaseEnvs` — running the path guard before the scan would let this branch adopt a
-	// database that the scan then opened at the same path.
+	// FIRST: loading is itself what populates `rocksdbDatabaseEnvs`, so a path guard ahead of the
+	// scan could adopt a database that the scan then opens at this path
 	getDatabases();
-	// A second open would hand back a rival table graph over one shared root store, and the two
-	// callers would disagree about who may close it.
+	// a rival graph over one shared root store; the two callers would disagree about who may close it
 	if (openBranches.has(path)) throw new Error(`Branch database at ${path} is already open`);
-	// A globally-loaded database's store is shared and closed by `closeLoadedDatabases`; adopting it
-	// here would mean this handle's `close()` tears down a live database.
+	// a loaded database's store is closed by `closeLoadedDatabases`, so adopting it would mean this
+	// handle's `close()` tears down a live database
 	if (rocksdbDatabaseEnvs.has(path)) throw new Error(`Cannot branch ${path}: it is already open as a database`);
-	// `storeName` picks the blob roots. Letting it name a real database would point the branch's blob
-	// writes at that database's directory, which is the collision the separate identity exists to stop.
-	if (databases[storeName] || definedDatabases?.has(storeName)) {
-		throw new Error(`Cannot use '${storeName}' as a branch store identity: a database of that name exists`);
+	// `storeName` picks the blob roots, and blob file ids restart from each store's own checkpointed
+	// counter, so two holders of one identity write the same file paths and truncate each other
+	if (databases[storeName] || definedDatabases?.has(storeName) || openBranchIdentities.has(storeName)) {
+		throw new Error(`Cannot use '${storeName}' as a branch store identity: it is already in use`);
 	}
 
 	const tables: Tables = Object.create(null);
+	// initStores opens a table's column families well before `setTable` publishes it into `tables`,
+	// so the graph is not a complete record of what a failed open must release
+	const openedStores: any[] = [];
 	let rootStore: RootDatabaseKind;
 	try {
-		rootStore = readRocksMetaDb(path, null, databaseName, tables, storeName);
+		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
 	} catch (error) {
 		// readRocksMetaDb registers the store before building tables, so a failure part-way leaves it
-		// in the env map with no handle able to close it.
+		// in the env map with no handle able to close it
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
-		// `tables` holds whatever initStores managed to build before it threw.
-		closeBranchHandles(path, stranded, tables);
+		closeBranchHandles(path, stranded, openedStores);
 		throw error;
 	}
 	let closed = false;
@@ -1124,32 +1129,31 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 		tables,
 		rootStore,
 		close() {
-			// Guard on this handle, not on the registrations: those are keyed by path, and once this
-			// branch has been closed the path is free to be opened again, so a stale handle closed a
-			// second time would deregister and half-tear-down whichever branch owns the path now.
-			if (closed) return; // closing a store twice is not safe
+			// guard on the handle, not on the registrations: those are keyed by path, and a closed
+			// branch frees its path, so a stale handle would otherwise tear down its successor
+			if (closed) return;
 			closed = true;
 			openBranches.delete(path);
+			openBranchIdentities.delete(storeName);
 			rocksdbDatabaseEnvs.delete(path);
-			closeBranchHandles(path, rootStore, tables);
+			closeBranchHandles(path, rootStore, openedStores);
 		},
 	};
 	openBranches.set(path, branch);
+	openBranchIdentities.add(storeName);
 	return branch;
 }
 
 /**
- * Release everything a branch open created. `initStores` opens a column family per table primary
- * store and per index, on top of the internal-dbis and audit families, so closing only the root
- * leaves all of them behind — which is why `closeDatabase` walks them individually for a real
- * database. It also leaves two process-global registrations behind the stores it closes, neither of
- * which has a lifetime of its own: a storage-reclamation handler per store path, whose closure pins
- * the now-closed store, and the memoized blob roots in `databasePaths`. A real database is opened
- * once per thread, but harper#643 makes branch open/close routine, so both would grow with branch
- * churn. Shared by `close()` and the partial-open cleanup, so a failure part-way through
- * `initStores` releases exactly what a success would.
+ * Release everything a branch open created. Each table's primary store and each index is its own
+ * column family, on top of the internal-dbis and audit families, so closing the root alone leaves
+ * all of them behind — which is why `closeDatabase` walks them individually for a real database.
+ * Two process-global registrations outlive the stores as well, neither with a lifetime of its own:
+ * a storage-reclamation handler per store path, whose closure pins the now-closed store, and the
+ * memoized blob roots in `databasePaths`. A real database is opened once per thread; harper#643
+ * makes branch open/close routine, so both would grow with branch churn.
  */
-function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, tables?: Tables): void {
+function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
 	const reclamationPaths = new Set<string>([path]);
 	const closeStore = (store: any, description: string) => {
 		if (store?.path) reclamationPaths.add(store.path);
@@ -1159,13 +1163,7 @@ function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, tables?:
 			logger.warn?.(`Error closing ${description} for branch database at ${path}`, error);
 		}
 	};
-	for (const tableName in tables ?? {}) {
-		const table: any = (tables as any)[tableName];
-		if (!table?.primaryStore) continue;
-		for (const indexName in table.indices || {})
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
-		closeStore(table.primaryStore, `table ${tableName}`);
-	}
+	for (const store of openedStores) closeStore(store, 'column family');
 	closeStore((rootStore as any)?.dbisDb, 'attributes store');
 	closeStore((rootStore as any)?.auditStore, 'audit store');
 	closeStore(rootStore, 'root store');
@@ -1320,6 +1318,14 @@ export function database({ database: databaseName, table: tableName }) {
 	const useRocksdb = (process.env.HARPER_STORAGE_ENGINE || envGet(CONFIG_PARAMS.STORAGE_ENGINE)) !== 'lmdb';
 	if (useRocksdb) {
 		const path = join(databasePath, tablePath ? tableName : databaseName);
+		// the scan is not the only way to reach a branch's directory: a branch leaves its store in
+		// `rocksdbDatabaseEnvs`, so without this an on-demand open would staple it onto
+		// `definedDatabases` and the next `closeDatabase` would close it under the live handle
+		if (isOpenBranchPath(path)) {
+			const error: any = new Error(`Database '${databaseName}' is open as a scope-private branch`);
+			error.statusCode = 409;
+			throw error;
+		}
 		rootStore = rocksdbDatabaseEnvs.get(path);
 		if (!rootStore || rootStore.status === 'closed') {
 			// this on-demand open (create_table/create_database and friends) must not resurrect a
@@ -1524,9 +1530,8 @@ export function closeDatabase(databaseName: string): boolean {
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
  * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
  *
- * Branches are not in `databases` and so are invisible to the loop below, but they hold handles from
- * the same process-global registry — this is the thread's one teardown entry point, so it closes
- * them too rather than leaving a rule for the next exit path to remember.
+ * Branches are invisible to the loop below but hold handles from the same registry, so this — the
+ * thread's one teardown entry point — closes them too.
  */
 export function closeLoadedDatabases(): void {
 	closeBranchDatabases();

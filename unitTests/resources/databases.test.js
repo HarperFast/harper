@@ -178,7 +178,7 @@ describe('dropDatabase restore serialization', () => {
 
 describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
-	const { mkdtempSync, rmSync } = require('node:fs');
+	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
 	const { registryStatus } = require('@harperfast/rocksdb-js');
 
@@ -268,10 +268,50 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	});
 
 	it('refuses a store identity that names a real database, which would steal its blob roots', function () {
-		assert.throws(
-			() => openBranchDatabase(checkpointDir, 'branchbase', 'branchbase'),
-			/a database of that name exists/
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'branchbase'), /already in use/);
+	});
+
+	it('refuses a store identity another open branch already holds', async function () {
+		this.timeout(30000);
+		const secondDir = join(scratchRoot, 'checkpoint2');
+		await databases.branchbase.BranchSource.primaryStore.rootStore.createCheckpoint(secondDir);
+		openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		// blob file ids restart from each store's own checkpointed counter, so a shared identity is
+		// not merely a shared directory: the two branches generate the same paths and truncate each other
+		assert.throws(() => openBranchDatabase(secondDir, 'branchbase', 'appA__branchbase'), /already in use/);
+	});
+
+	it('writes through the branch without touching the base table', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		await branch.tables.BranchSource.put({ id: 'branch-only', note: 'written through the branch' });
+
+		assert.strictEqual((await branch.tables.BranchSource.get('branch-only'))?.note, 'written through the branch');
+		assert.ok(
+			!(await databases.branchbase.BranchSource.get('branch-only')),
+			'a branch write must not reach the base table it shares a logical name with'
 		);
+	});
+
+	it('refuses an on-demand database() open of a directory a branch owns', function () {
+		const { database } = require('#src/resources/databases');
+		// database() resolves an unconfigured name against the same root the base database sits in
+		const probeDir = join(dirname(databases.branchbase.BranchSource.primaryStore.rootStore.path), 'branchdbprobe');
+		rmSync(probeDir, { recursive: true, force: true });
+		let branch;
+		try {
+			// the scan guards are not the only route to the directory: database() looks the resolved
+			// path up in the shared env map, where a branch leaves its store for its whole lifetime
+			cpSync(checkpointDir, probeDir, { recursive: true });
+			branch = openBranchDatabase(probeDir, 'branchbase', 'appA__dbprobe');
+
+			assert.throws(() => database({ database: 'branchdbprobe' }), /scope-private branch/);
+			assert.strictEqual(branch.rootStore.status, 'open', 'the branch store must survive the refused open');
+		} finally {
+			branch?.close();
+			rmSync(probeDir, { recursive: true, force: true });
+		}
 	});
 
 	it('releases every native handle it opened, not just the root', function () {
