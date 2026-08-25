@@ -540,7 +540,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		// `ignored` receives absolute paths built from `cwd`, so its bases must come from the same
 		// directory spelling. Event paths are relative to `cwd`, so reads below stay on `this.directory`.
 		const watchTarget = resolveWatchTarget(this.#component.directory);
-		// Latched, not assigned: a reinstall must not clear an exhaustion fallback.
+		// Latched: a reinstall must not clear an exhaustion fallback.
 		if (watchTarget.mustPoll) this.#usingPolling = true;
 		const watchDirectory = watchTarget.path;
 		const normalizedDirectory = watchDirectory.replace(/\\/g, '/');

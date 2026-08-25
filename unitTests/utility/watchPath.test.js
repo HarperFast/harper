@@ -91,8 +91,6 @@ describe('watchPath', () => {
 		});
 
 		it('expands a not-yet-written leaf’s directory through realpathSync.native', () => {
-			// The install-window case from harper#2234: a config watcher armed before the file exists
-			// takes the fallback branch, so it needs the same guard as the primary one.
 			const absentLeaf = join(aliasLink, 'not-written-yet.yaml');
 			const resolved = recordingNativeCalls(() =>
 				assert.strictEqual(canonicalizeWatchPath(absentLeaf, 'win32'), join(longDirectory, 'not-written-yet.yaml'))
@@ -164,10 +162,13 @@ describe('watchPath', () => {
 		const skippedDirectories = new Set([
 			'.claude',
 			'.git',
+			'.nyc_output',
+			'coverage',
 			'dist',
 			'docs',
 			'integrationTests',
 			'node_modules',
+			'tmp',
 			'unitTests',
 		]);
 
@@ -195,8 +196,8 @@ describe('watchPath', () => {
 			);
 		});
 
-		// File-level, so it catches a site that never canonicalizes at all, not a second raw watch
-		// added beside an existing canonicalized one.
+		// File-level: catches a site that never canonicalizes, not a second raw watch beside a
+		// canonicalized one.
 		it('all route their path through the canonicalization helper', () => {
 			for (const site of NATIVE_WATCH_SITES) {
 				const source = readFileSync(join(repoRoot, site), 'utf8');

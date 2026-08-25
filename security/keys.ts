@@ -369,8 +369,7 @@ function loadAndWatch(path, loadCert, type) {
 			// The event carries the watched spelling, which is not the configured one once canonicalized;
 			// reload through the configured path so a retargeted link is followed.
 			.on('change', () => loadFile(path))
-			// chokidar emits 'error' unguarded for anything but ENOENT/ENOTDIR, so with no listener an
-			// ENOSPC here is an uncaughtException that leaves the cert fast path silently dead.
+			// chokidar emits 'error' unguarded for anything but ENOENT/ENOTDIR.
 			.on('error', (error) => {
 				if (isWatcherExhaustionError(error)) {
 					if (usingPolling || liveWatcher !== opened) return;

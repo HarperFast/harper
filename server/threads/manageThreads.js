@@ -1260,20 +1260,21 @@ if (isMainThread) {
 		if (beforeRestartCallback) beforeRestart = beforeRestartCallback;
 		const watchTarget = resolveWatchTarget(dir);
 		let usingPolling = watchTarget.mustPoll;
+		let liveWatcher;
 		const openWatcher = () => {
-			const opened = chokidar
-				.watch(watchTarget.path, {
-					persistent: false,
-					...(usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
-					ignored: (path) => {
-						return ignoredPaths.some((ignoredPath) => path.includes(ignoredPath));
-					},
-				})
-				// chokidar emits 'error' unguarded for anything but ENOENT/ENOTDIR, and this runs on the
-				// thread that owns every worker, so without a listener an ENOSPC here is an
-				// uncaughtException on the main thread.
+			const opened = (liveWatcher = chokidar.watch(watchTarget.path, {
+				persistent: false,
+				...(usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
+				ignored: (path) => {
+					return ignoredPaths.some((ignoredPath) => path.includes(ignoredPath));
+				},
+			}));
+			opened
+				// This runs on the thread that owns every worker, and chokidar emits 'error' unguarded for
+				// anything but ENOENT/ENOTDIR.
 				.on('error', (error) => {
-					if (isWatcherExhaustionError(error) && !usingPolling) {
+					if (isWatcherExhaustionError(error)) {
+						if (usingPolling || liveWatcher !== opened) return;
 						warnWatcherFallback(dir);
 						usingPolling = true;
 						Promise.resolve(opened.close())

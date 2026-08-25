@@ -636,7 +636,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 						settled = true;
 						closeFd();
 						clearTimeout(timer);
-						if (watcher) watcher.close();
+						if (watcher) {
+							watcher.close();
+							watcher = null;
+						}
 						reject(error);
 						blob.#onError?.forEach((callback) => callback(error));
 					}
@@ -934,7 +937,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				closeFd(); // releases the hold, including when cancelled before any open succeeded
 				clearTimeout(timer);
 				clearTimeout(openTimer);
-				if (watcher) watcher.close();
+				if (watcher) {
+					watcher.close();
+					watcher = null;
+				}
 			},
 		});
 		function checkIfIsBeingWritten() {
