@@ -459,6 +459,18 @@ describe('createCorruptFrameReporter', () => {
 		assert.strictEqual(getCorruptFrameReports()[0].stoppedIteration, false);
 	});
 
+	it('logs when a repeated mid-log break escalates from resumed to stopped', () => {
+		const { logs, report } = setup();
+		report(midLogError(), false);
+		report(midLogError(), true);
+		report(midLogError(), true);
+
+		assert.strictEqual(logs.error.length, 2);
+		assert.match(logs.error[0].message, /Reading resumed/);
+		assert.match(logs.error[1].message, /remain unreachable/);
+		assert.strictEqual(getCorruptFrameReports()[0].stoppedIteration, true);
+	});
+
 	// Against a rocksdb-js with no logId/position, keying on those fields alone collapses every
 	// break on the stream onto one entry, so the second real corruption is never logged.
 	it('separates breaks by message when the error carries no logId/position', () => {

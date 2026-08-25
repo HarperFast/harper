@@ -280,14 +280,17 @@ export function createCorruptFrameReporter(logger: {
 		const key = corruptFrameKey(logName, error);
 		const existing = corruptFrameReports.get(key);
 		if (existing) {
+			const stoppedEscalated = stoppedIteration && !existing.stoppedIteration;
 			corruptFrameReports.delete(key);
 			corruptFrameReports.set(key, existing);
 			existing.occurrences++;
 			existing.lastSeen = now;
 			existing.stoppedIteration = stoppedIteration;
-			if (!midLog || existing.midLog) return;
-			existing.midLog = true;
-			existing.unreadableBytes = unreadableBytes;
+			if (!midLog || (existing.midLog && !stoppedEscalated)) return;
+			if (!existing.midLog) {
+				existing.midLog = true;
+				existing.unreadableBytes = unreadableBytes;
+			}
 		} else {
 			if (corruptFrameReports.size >= MAX_CORRUPT_FRAME_REPORTS) {
 				corruptFrameReports.delete(corruptFrameReports.keys().next().value);
