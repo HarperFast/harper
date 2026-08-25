@@ -45,6 +45,7 @@ async function stageState(root, component, id, state) {
 						v: 1,
 						component,
 						candidateId: id,
+						publishesConfig: state.publishesConfig !== false,
 						configBefore: state.configBefore ?? null,
 						configAfter: state.configAfter ?? null,
 					})
@@ -184,6 +185,42 @@ describe('interrupted activation recovery', () => {
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'a completed activation is not reverted');
 		assert.deepStrictEqual(config.calls, [{ component: 'web', entry: { package: 'web@2.0.0' } }]);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('leaves config alone when the interrupted activation never owned a config effect', async () => {
+		// Boot re-installs start FROM authoritative config, so they journal no config effect. Publishing the
+		// journaled `null` here would DELETE the entry that boot was installing from.
+		const root = await newRoot('noconfigeffect');
+		await stageState(root, 'web', 'd1', {
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: true,
+			publishesConfig: false,
+			aside: 'PREVIOUS\n',
+		});
+		const config = recorder();
+
+		const failures = await recoverInterruptedActivations(root, config.publish);
+
+		assert.strictEqual(failures.size, 0);
+		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the tree still rolls forward');
+		assert.deepStrictEqual(config.calls, [], 'but nothing is published or removed');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('rejects a journal that does not say whether it owns a config effect', async () => {
+		const root = await newRoot('noflag');
+		await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			journal: JSON.stringify({ v: 1, component: 'web', candidateId: 'd1', configBefore: null, configAfter: null }),
+		});
+
+		const failures = await recoverInterruptedActivations(root, recorder().publish);
+
+		assert.strictEqual(failures.size, 1);
+		assert.match(failures.get('web').message, /does not say whether it owns a config effect/);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 

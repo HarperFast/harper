@@ -447,7 +447,26 @@ async function packageComponent(req) {
  * so operator deploys remain unvalidated. Making validation reachable there is #2315 step 2; this commit
  * only fixes the ORDER, so that where validation does run, a rejected candidate never goes live.
  */
+// `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
+// concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
+// loading, A's load error lands in B, and A then activates broken code while B rejects a good candidate.
+// Validation is serialized (it is already the slow path) and the previous reporter is restored, so the
+// global is only ever owned by one in-flight validation.
+let validationChain = Promise.resolve();
+
 async function validateComponentLoads(candidateDirPath, emit) {
+	const run = validationChain.then(
+		() => validateComponentLoadsExclusive(candidateDirPath, emit),
+		() => validateComponentLoadsExclusive(candidateDirPath, emit)
+	);
+	validationChain = run.then(
+		() => {},
+		() => {}
+	);
+	return run;
+}
+
+async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 	// now we attempt to actually load the component in case there is
 	// an error we can immediately detect and report, but app code should not run on the main thread
 	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
@@ -457,6 +476,7 @@ async function validateComponentLoads(candidateDirPath, emit) {
 		const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
 		const { trackScopeClose } = require('./scopeShutdown.ts');
 		let lastError;
+		const priorErrorReporter = componentLoader.getErrorReporter?.();
 		componentLoader.setErrorReporter((error) => (lastError = error));
 		emit('phase', { phase: 'load', status: 'start' });
 		// This load exists only to surface load-time errors early; the Scopes it creates are
@@ -485,7 +505,11 @@ async function validateComponentLoads(candidateDirPath, emit) {
 		// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
 		// disposing — a plugin may start a native runtime in handleApplication — before realExit.
 		trackScopeClose(validation);
-		await validation;
+		try {
+			await validation;
+		} finally {
+			componentLoader.setErrorReporter(priorErrorReporter);
+		}
 		emit('phase', { phase: 'load', status: 'done' });
 
 		if (lastError) throw lastError;
@@ -708,8 +732,10 @@ async function deployComponent(req) {
 		// that installs cleanly but throws at load never becomes live. Previously the swap committed
 		// first and this failure was reported over an already-serving broken release.
 		//
-		// The phase events keep their existing order for clients — prepare start/done, then load
-		// start/done — even though the load now happens within the preparation window.
+		// The phase events keep their existing ORDER for clients — prepare start/done, then load start/done —
+		// but `prepare:done` no longer means the swap has committed; it now means the candidate is built.
+		// A rename or config failure therefore arrives AFTER a client has seen both phases succeed, so the
+		// operation's error is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
 		await prepareApplication(application, {
 			validateCandidate: async (candidateDirPath) => {

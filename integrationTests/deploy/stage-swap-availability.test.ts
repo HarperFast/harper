@@ -12,8 +12,11 @@
  * require every sample to be the *previous* release, byte for byte. Against the pre-fix code the very
  * first sample fails, because the directory has already been moved into `.deploy-aside`.
  *
- * The on-disk sampling is the deterministic assertion. It goes through the real operations API, so it also
- * covers the config ordering: a component is only named in the root config once its tree is actually live.
+ * Scope, stated precisely because it is easy to overclaim: this samples the component directory ON DISK
+ * through the real operations API. It does NOT prove request-level availability — no route is exercised —
+ * and it does not prove the config ordering for a rejected deploy, since both deploys here succeed. What it
+ * does additionally cover is that a payload deploy strips a stale `package` entry, which is the cold-install
+ * hazard. Request-path and rejected-deploy config coverage live in the unit suites.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -114,6 +117,9 @@ suite('deploy_component keeps the previous version in place while the replacemen
 			await redeploy;
 
 			strictEqual(await readFile(versionFile, 'utf8'), '2', 'the replacement is live once it is complete');
+			// A payload deploy must not leave a `package` entry a cold install would resolve instead.
+			const config = await readFile(join(ctx.harper.dataRootDir, 'harperdb-config.yaml'), 'utf8').catch(() => '');
+			ok(!/^\s*package:/m.test(config.split(PROJECT)[1] ?? ''), 'no stale package entry survives a payload deploy');
 			// Nothing left behind: no candidate, and no displaced tree accumulating per deploy.
 			const staged = await readdir(join(componentsRoot, '.deploy-staging')).catch(() => []);
 			strictEqual(staged.length, 0, `staging should be empty, found ${JSON.stringify(staged)}`);

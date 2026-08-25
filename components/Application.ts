@@ -609,7 +609,15 @@ function canonicalizeJSON(value: any): any {
  * This method may be called from any Harper thread. Same-component calls are serialized across
  * threads by the preparation lock below.
  */
-type ResolvedTarball = { tarball: Readable; tarballPath?: string; shouldDeleteTarball: boolean };
+/**
+ * Either a tarball to extract, or — for `file:<directory>` — an instruction to link that directory. The
+ * link case must be a RESULT rather than an action: the resolver used to symlink straight onto the live
+ * path and return nothing, which both bypassed the candidate (so a `file:` deploy was published without
+ * validation) and left `buildCandidateApplication` destructuring `undefined`.
+ */
+type ResolvedTarball =
+	| { kind: 'tarball'; tarball: Readable; tarballPath?: string; shouldDeleteTarball: boolean }
+	| { kind: 'link'; sourceDirPath: string };
 
 /**
  * Turn a component's `payload` or `package` into a readable tarball stream. Pure input resolution: it
@@ -645,10 +653,8 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 				const stats = await stat(packagePath);
 
 				if (stats.isDirectory()) {
-					// If its a directory, symlink
-					await symlink(packagePath, application.dirPath, 'dir');
-					// And return early since we're done; no extraction needed
-					return;
+					// Reported, not performed — the caller decides where the link goes.
+					return { kind: 'link', sourceDirPath: packagePath };
 				}
 
 				if (!stats.isFile()) {
@@ -722,7 +728,7 @@ async function resolveApplicationTarball(application: Application): Promise<Reso
 		}
 	}
 
-	return { tarball, tarballPath, shouldDeleteTarball };
+	return { kind: 'tarball', tarball, tarballPath, shouldDeleteTarball };
 }
 
 /**
@@ -772,7 +778,13 @@ export async function extractApplication(
 		throw new Error('Both payload and package cannot be provided');
 	}
 	// Resolve the tarball from the input
-	const { tarball, tarballPath, shouldDeleteTarball } = await resolveApplicationTarball(application);
+	const resolved = await resolveApplicationTarball(application);
+	if (resolved.kind === 'link') {
+		// Unchanged behavior for this path: a `file:` directory is linked in place, no extraction.
+		await symlink(resolved.sourceDirPath, application.dirPath, 'dir');
+		return;
+	}
+	const { tarball, tarballPath, shouldDeleteTarball } = resolved;
 	// Replace any existing component directory atomically instead of clearing it in
 	// place. A previous version's worker can still be running and actively writing
 	// into this directory — e.g. a live Next.js app writing into `.next/cache` — and
@@ -914,9 +926,17 @@ type ActivationJournal = {
 	v: number;
 	component: string;
 	candidateId: string;
+	/**
+	 * Whether this activation owns a config effect at all. Boot re-installs deliberately have none: they
+	 * start FROM authoritative config, so they must neither republish nor compensate it. Without this flag
+	 * their absent entries journal identically to an explicit "remove this component's entry", and recovery
+	 * of a crashed boot reinstall would DELETE the config it was installing from.
+	 */
+	publishesConfig: boolean;
 	// This component's root-config entry ONLY, never a whole-file snapshot: two components activating at
 	// once would each restore a snapshot predating the other's write and delete its entry. `null` means
-	// the component had (or should have) no entry. Credential REFERENCES only, never resolved tokens.
+	// the component had (or should have) no entry — meaningful only when `publishesConfig` is true.
+	// Credential REFERENCES only, never resolved tokens.
 	configBefore: Record<string, any> | null;
 	configAfter: Record<string, any> | null;
 };
@@ -956,6 +976,9 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 	}
 	if (typeof parsed.component !== 'string' || !parsed.component || typeof parsed.candidateId !== 'string') {
 		throw new Error(`Activation journal ${journalPath} does not identify its component and candidate`);
+	}
+	if (typeof parsed.publishesConfig !== 'boolean') {
+		throw new Error(`Activation journal ${journalPath} does not say whether it owns a config effect`);
 	}
 	if (parsed.configBefore !== null && typeof parsed.configBefore !== 'object') {
 		throw new Error(`Activation journal ${journalPath} has a malformed configBefore`);
@@ -1183,7 +1206,7 @@ async function settleInterruptedActivation(
 	const rollForward = async () => {
 		if (!liveExists) await rename(candidateDirPath, liveDirPath);
 		await syncDirectory(componentsRootDirPath);
-		await publishConfig(journal.component, journal.configAfter ?? null);
+		if (journal.publishesConfig) await publishConfig(journal.component, journal.configAfter ?? null);
 		for (const record of asideRecords) {
 			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components
 			// root from growing by a component version for every activation a crash interrupted.
@@ -1200,7 +1223,7 @@ async function settleInterruptedActivation(
 			await rename(restoreFrom, liveDirPath);
 			await syncDirectory(componentsRootDirPath);
 		}
-		await publishConfig(journal.component, journal.configBefore ?? null);
+		if (journal.publishesConfig) await publishConfig(journal.component, journal.configBefore ?? null);
 		for (const record of asideRecords) await rm(record, { recursive: true, force: true });
 	};
 
@@ -1268,11 +1291,13 @@ export async function activateCandidateApplication(
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
 	const asideStagingDir = extractionStagingDirectory(liveDirPath);
 
+	// A symlink counts: a `file:<directory>` deploy links the source rather than extracting it, and that
+	// link is what gets swapped into the live path.
 	const candidateStat = await lstat(candidateDirPath).catch((error) => {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
 		throw error;
 	});
-	if (!candidateStat?.isDirectory()) {
+	if (!candidateStat || !(candidateStat.isDirectory() || candidateStat.isSymbolicLink())) {
 		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
 	}
 
@@ -1285,6 +1310,7 @@ export async function activateCandidateApplication(
 				v: ACTIVATION_JOURNAL_VERSION,
 				component: application.name,
 				candidateId: deploymentId,
+				publishesConfig: Boolean(activation.publishConfig),
 				configBefore: activation.configBefore ?? null,
 				configAfter: activation.configAfter ?? null,
 			})
@@ -1355,21 +1381,28 @@ export async function activateCandidateApplication(
 	// B4/B5/B6 — past the point of no return. Each of these failing leaves a state recovery settles
 	// forward on the next start, so they are logged rather than thrown: the deploy has succeeded.
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
+	let retired = false;
 	try {
 		const retiredMarkerPath = await retireExtractionAside(settledRecord);
 		// Retiring only MARKS the displaced tree disposable. Without this sweep the tree every deploy
 		// displaces stays under `.deploy-aside/<component>` forever, so the components root grows by a
 		// whole component version per deploy.
 		await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
+		retired = true;
 	} catch (error) {
 		application.logger.warn(`Deployed ${application.name} but could not retire its rollback record:`, error);
 	}
-	await rm(journalPath, { force: true }).catch((error) =>
-		application.logger.warn(`Deployed ${application.name} but could not remove its activation journal:`, error)
-	);
-	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
-		application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
-	);
+	// The journal goes LAST, and only once the rollback record is settled. Removing it while an
+	// `.in-progress-*` record still names the displaced tree would strip the evidence that this activation
+	// completed, and the legacy aside recovery would then restore the OLD tree over the new one at startup.
+	if (retired) {
+		await rm(journalPath, { force: true }).catch((error) =>
+			application.logger.warn(`Deployed ${application.name} but could not remove its activation journal:`, error)
+		);
+		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+			application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
+		);
+	}
 }
 
 /**
@@ -1393,6 +1426,14 @@ async function compensate(
 	}
 }
 
+/** Remove a candidate's whole deployment directory, best-effort — it is never the last good copy. */
+async function discardCandidate(application: Application, deploymentId: string): Promise<void> {
+	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
+	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+		application.logger.warn(`Failed to remove the abandoned deploy candidate at ${deploymentDirPath}:`, error)
+	);
+}
+
 export async function buildCandidateApplication(application: Application, deploymentId: string): Promise<string> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
@@ -1402,27 +1443,28 @@ export async function buildCandidateApplication(application: Application, deploy
 		// A candidate directory left by an earlier attempt on this same id would otherwise be extracted
 		// into rather than replaced.
 		await rm(candidateDirPath, { recursive: true, force: true });
-		const { tarball, tarballPath, shouldDeleteTarball } = await resolveApplicationTarball(application);
-		try {
-			await extractTarballInto(tarball, candidateDirPath, deploymentDirPath);
-		} finally {
-			if (!tarball.destroyed) tarball.destroy();
-			if (shouldDeleteTarball && tarballPath) {
-				await rm(tarballPath, { force: true }).catch((error) =>
-					application.logger.warn(`Failed to remove temporary package ${tarballPath}:`, error)
-				);
+		const resolved = await resolveApplicationTarball(application);
+		if (resolved.kind === 'link') {
+			// A `file:` directory becomes a symlink AT THE CANDIDATE PATH, so it is validated and swapped in
+			// like any other candidate instead of appearing at the live path unvalidated.
+			await symlink(resolved.sourceDirPath, candidateDirPath, 'dir');
+		} else {
+			const { tarball, tarballPath, shouldDeleteTarball } = resolved;
+			try {
+				await extractTarballInto(tarball, candidateDirPath, deploymentDirPath);
+			} finally {
+				if (!tarball.destroyed) tarball.destroy();
+				if (shouldDeleteTarball && tarballPath) {
+					await rm(tarballPath, { force: true }).catch((error) =>
+						application.logger.warn(`Failed to remove temporary package ${tarballPath}:`, error)
+					);
+				}
 			}
 		}
 		await installApplication(application, candidateDirPath);
 		return candidateDirPath;
 	} catch (error) {
-		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(
-			(cleanupError) =>
-				application.logger.warn(
-					`Failed to remove the abandoned deploy candidate at ${deploymentDirPath}:`,
-					cleanupError
-				)
-		);
+		await discardCandidate(application, deploymentId);
 		throw error;
 	}
 }
@@ -2411,21 +2453,29 @@ export async function prepareApplication(application: Application, options: Prep
 					} finally {
 						await application.cleanupGitCredentialSession();
 					}
-					// Validated while the previous version is still the one serving, so a candidate that
-					// installs cleanly but throws at load is rejected without ever having been live.
-					await options.validateCandidate?.(candidateDirPath);
-					if (!application.isNewComponent) {
-						application.packageMetadataChanged = installedRuntimeChanged(
-							previousPackageMetadata,
-							await readInstalledPackageMetadata(candidateDirPath),
-							application.installationIsOpaque
-						);
+					try {
+						// Validated while the previous version is still the one serving, so a candidate that
+						// installs cleanly but throws at load is rejected without ever having been live.
+						await options.validateCandidate?.(candidateDirPath);
+						if (!application.isNewComponent) {
+							application.packageMetadataChanged = installedRuntimeChanged(
+								previousPackageMetadata,
+								await readInstalledPackageMetadata(candidateDirPath),
+								application.installationIsOpaque
+							);
+						}
+						await activateCandidateApplication(application, deploymentId, {
+							configBefore: options.configBefore,
+							configAfter: options.configAfter,
+							publishConfig: options.publishConfig,
+						});
+					} catch (error) {
+						// The builder's own cleanup only covers a failed BUILD. A rejected validation (or a
+						// compensated activation) would otherwise leave a whole installed dependency tree under
+						// this deployment id, so repeated rejections fill the component volume.
+						await discardCandidate(application, deploymentId);
+						throw error;
 					}
-					await activateCandidateApplication(application, deploymentId, {
-						configBefore: options.configBefore,
-						configAfter: options.configAfter,
-						publishConfig: options.publishConfig,
-					});
 				} finally {
 					await application.cleanupTransientNpmrc();
 				}

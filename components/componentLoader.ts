@@ -174,24 +174,20 @@ export async function loadComponentDirectories(
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
-	let failedRecoveries = new Map<string, Error>();
-	try {
-		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
-	} catch (error) {
-		const recoveryError = error instanceof Error ? error : new Error(String(error));
-		harperLogger.warn(
-			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
-			errorForLog(recoveryError)
-		);
-	}
+	const failedRecoveries = new Map<string, Error>();
 	if (isMainThread) {
-		// Settle activations a crash interrupted, BEFORE anything loads: an activation whose config write
-		// was lost would otherwise load swapped-in code under the previous release's routing. Only the main
-		// thread does this — workers would race each other over the same trees.
+		// FIRST, before the legacy aside recovery below, and before anything loads.
 		//
-		// Failures are per component, so one unsettleable component is failed closed and every healthy
-		// sibling still loads. A failure to inspect staging at all is logged and loading continues, matching
-		// how the extraction recovery above degrades rather than taking the node down.
+		// The order is load-bearing. A crash between candidate→live and the config write leaves live=new, an
+		// in-progress aside holding the old tree, and a journal. The legacy pass keys only on that aside, so
+		// running it first restores the OLD tree over the new one; this pass then sees live-present-with-no-
+		// candidate, finishes forward, and publishes the NEW config — leaving the old tree running under the
+		// new release's configuration, deterministically. Settling journaled activations first means the
+		// legacy pass only ever sees asides that no activation owns.
+		//
+		// Main thread only: workers would race each other over the same trees. Failures are per component, so
+		// one unsettleable component is failed closed and healthy siblings still load; a failure to inspect
+		// staging at all is logged and loading continues, as the legacy pass also does.
 		try {
 			for (const [component, error] of await recoverInterruptedActivations(
 				CF_ROUTES_DIR,
@@ -206,6 +202,17 @@ export async function loadComponentDirectories(
 				errorForLog(recoveryError)
 			);
 		}
+	}
+	try {
+		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
+			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+		}
+	} catch (error) {
+		const recoveryError = error instanceof Error ? error : new Error(String(error));
+		harperLogger.warn(
+			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
+			errorForLog(recoveryError)
+		);
 	}
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
 	// any application loads (root components — including the Pro custody registration — have
@@ -402,6 +409,10 @@ export const loadedPaths = new Map();
 export const mainThreadInitialized = new Map<string, any>();
 
 let errorReporter;
+/** So a caller that installs a reporter can put the previous one back when it is done with it. */
+export function getErrorReporter() {
+	return errorReporter;
+}
 export function setErrorReporter(reporter) {
 	errorReporter = reporter;
 }
