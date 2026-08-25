@@ -64,12 +64,11 @@ async function restart(req: any) {
 
 		setTimeout(async () => {
 			try {
-				// Platform check last so the watchdog is still attempted (and still warns) everywhere. Off
-				// Linux it can never arm, so escalating that permanent condition to error would only feed
-				// alerting with something no operator can act on.
+				// Off Linux the watchdog can never arm, and armRestartExitWatchdog() has already warned so;
+				// an error-level line would alert on a permanent condition no operator can act on.
 				if (
 					process.env.HARPER_EXIT_ON_RESTART &&
-					!armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS) &&
+					!(await armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS)) &&
 					process.platform === 'linux'
 				)
 					hdbLogger.error('Restart exit watchdog is unavailable; restart teardown is unbounded');

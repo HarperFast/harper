@@ -22,8 +22,26 @@ describe('restart exit watchdog', () => {
 		assert.ok(Date.now() - startedAt < 5000, 'watchdog exceeded the test bound');
 	});
 
-	it('rejects a non-finite timeout without terminating the caller', () => {
+	it('rejects a non-finite timeout without terminating the caller', async () => {
 		const { armRestartExitWatchdog } = require('#src/bin/restartExitWatchdog');
-		assert.equal(armRestartExitWatchdog(Number.NaN), false);
+		assert.equal(await armRestartExitWatchdog(Number.NaN), false);
+	});
+
+	// The readiness token is what stops arming from reporting success in an environment where the
+	// script gives up: every one of its give-up paths is a silent `exit 0`, so a watchdog that never
+	// emits the token must never be reported armed.
+	it('withholds its readiness token when the shell cannot find sleep', async function () {
+		if (process.platform !== 'linux') this.skip();
+		this.timeout(30000);
+		const { WATCHDOG_SCRIPT, WATCHDOG_READY_TOKEN } = require('#src/bin/restartExitWatchdog');
+		const script = spawn('/bin/sh', ['-c', WATCHDOG_SCRIPT, 'watchdog-test', String(process.pid), '1'], {
+			env: { PATH: '/nonexistent-harper-watchdog-path' },
+			stdio: ['ignore', 'pipe', 'inherit'],
+		});
+		let output = '';
+		script.stdout.on('data', (chunk) => (output += chunk));
+		const [code] = await once(script, 'close');
+		assert.equal(code, 0);
+		assert.ok(!output.includes(WATCHDOG_READY_TOKEN), `watchdog reported ready without sleep: ${output}`);
 	});
 });

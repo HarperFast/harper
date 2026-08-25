@@ -58,9 +58,8 @@ function addExitListeners() {
 				hdbLogger.error('Unable to remove the Harper pid file during shutdown', error);
 			}
 		};
-		// beginProcessShutdown() in both handlers is forward defence. Today every path below reaches
-		// process.exit() synchronously (and an 'exit' listener runs past the point of no return), so no
-		// worker start can interleave; it keeps the terminal latch correct if shutdown grows an await.
+		// Latch terminal shutdown on the externally-signalled paths too, so a shutdown that ever grows an
+		// await cannot race a worker start.
 		process.on('exit', () => {
 			beginProcessShutdown();
 			removeHdbPid();
