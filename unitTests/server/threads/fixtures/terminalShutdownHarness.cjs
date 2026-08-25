@@ -54,6 +54,22 @@ async function unexpectedExit() {
 	process.stdout.write(`${JSON.stringify({ starts, workersAfterExit: workers.length })}\n`);
 }
 
+async function nonOverlappingRestart() {
+	let starts = 0;
+	const worker = startWorker(require.resolve('./terminalShutdownWorker.cjs'), {
+		name: 'non-overlapping-test',
+		onStarted() {
+			starts++;
+		},
+	});
+	await once(worker, 'message');
+	const restart = restartWorkers('non-overlapping-test');
+	await waitFor(() => worker.wasShutdown, { timeout: 5000, message: 'worker restart did not begin' });
+	await shutdownWorkersNow();
+	await restart;
+	process.stdout.write(`${JSON.stringify({ starts, workersAfterShutdown: workers.length })}\n`);
+}
+
 async function scopedShutdown() {
 	const worker = startWorker(require.resolve('./terminalShutdownWorker.cjs'), {
 		autoRestart: false,
@@ -72,9 +88,15 @@ async function scopedShutdown() {
 }
 
 const mode = process.argv[2];
-(mode === 'scoped' ? scopedShutdown() : mode === 'unexpected' ? unexpectedExit() : terminalShutdown()).catch(
-	(error) => {
-		console.error(error);
-		process.exitCode = 1;
-	}
-);
+const run =
+	mode === 'scoped'
+		? scopedShutdown
+		: mode === 'unexpected'
+			? unexpectedExit
+			: mode === 'non-overlapping'
+				? nonOverlappingRestart
+				: terminalShutdown;
+run().catch((error) => {
+	console.error(error);
+	process.exitCode = 1;
+});
