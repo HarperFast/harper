@@ -362,7 +362,7 @@ jobs:
 
       # ── Already-present path: nothing to land, say so and stop ──────────
       - name: Report no-op
-        if: steps.pick.outputs.no_op == 'true'
+        if: steps.pick.outputs.no_op == 'true' && steps.pick.outputs.hold == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -396,8 +396,13 @@ jobs:
               git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
               # Same classifier as the first pass: a commit the concurrent
               # landing already brought in is skipped, not called a conflict.
-              REBUILD_CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS" || echo FAILED)
-              if [ "$REBUILD_CONFLICTS" = FAILED ] || [ -n "$REBUILD_CONFLICTS" ]; then
+              if ! REBUILD_CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS"); then
+                # Unclassifiable, exactly as in the first pass: not a conflict,
+                # and not something to paper over with a retry message.
+                echo "::error::rebuilding $BRANCH onto the current $RELEASE_BRANCH failed"
+                exit 1
+              fi
+              if [ -n "$REBUILD_CONFLICTS" ]; then
                 REBUILD_CONFLICT=true
                 break
               fi
@@ -430,8 +435,10 @@ jobs:
       # rather than the author's, so it is not in the pick list. If it resolved
       # a conflict, that resolution exists nowhere else and this branch does not
       # have it — which is not something to auto-land on a release branch.
+      # A hold outranks every other outcome: it means the branch is not
+      # provably the whole change, which no clean pick or empty range disproves.
       - name: Report held for review
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold != ''
+        if: steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
@@ -441,6 +448,15 @@ jobs:
           BRANCH="${{ steps.pick.outputs.branch }}"
           HELD_BODY=$(printf 'Cherry-pick of PR #%s onto `%s` applied cleanly, but it is **not** provably the whole change: %s.\n\nIf a merge commit resolved a conflict, that resolution is not on this branch. Confirm the change is complete, then merge this PR.\n' \
             "$PR_NUMBER" "$RELEASE_BRANCH" "$HOLD")
+          # An empty range never pushed a branch, so there is nothing to open
+          # a PR from — report the hold on the original PR and stop.
+          if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nNothing could be cherry-picked onto `%s`: %s.\n\n`%s` was **not** updated. Apply this change by hand if it belongs on that line.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+            exit 0
+          fi
+
           HELD_PR_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
             --base "$RELEASE_BRANCH" --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
           if [ -z "$HELD_PR_URL" ] || [ "$HELD_PR_URL" = "null" ]; then
