@@ -285,10 +285,8 @@ export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Pro
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
 		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
-			// a failed tombstone removal (sync throw or rejection) doesn't mean the audit entry removal
-			// failed — only auditStore.remove() below decides this function's outcome. The executor here
-			// catches a synchronous throw from the callback the same way `.catch` catches a rejection, in
-			// one handler, so this promise is never left without one attached
+			// a failed tombstone removal doesn't mean the audit entry removal failed — only
+			// auditStore.remove() below decides this function's outcome
 			tombstoneRemoval = new Promise<void>((resolve) => {
 				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version));
 			}).catch((error) => {
