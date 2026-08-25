@@ -50,6 +50,10 @@ describe('restart exit watchdog', () => {
 		const { WATCHDOG_READY_TOKEN, waitForWatchdogReady } = require('#src/bin/restartExitWatchdog');
 		const shell = (script) => spawn('/bin/sh', ['-c', script], { stdio: ['ignore', 'pipe', 'ignore'] });
 
+		beforeEach(function () {
+			if (process.platform !== 'linux') this.skip();
+		});
+
 		it('reports ready once the token arrives', async () => {
 			const child = shell(`echo ${WATCHDOG_READY_TOKEN}; sleep 30`);
 			assert.equal(await waitForWatchdogReady(child, 10000), true);
