@@ -13,7 +13,6 @@ import {
 	PartialReadRetry,
 	isPartialReadError,
 	isWatcherExhaustionError,
-	warnPartialReadGaveUp,
 	warnWatcherFallback,
 } from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
@@ -170,15 +169,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// document all parse to null, and an env-configured deployment would otherwise overlay
 		// one into a valid-looking object and adopt it. A file that is still unusable once the
 		// budget is spent is taken at face value, so emptying one still reaches `remove`.
-		let gaveUp = false;
 		if (!parsed || typeof parsed !== 'object') {
 			if (this.#partialRead.schedule(() => this.#handleChange())) return;
-			gaveUp = true;
+			this.#partialRead.gaveUp();
+		} else {
+			this.#partialRead.settled();
 		}
-		// settled() clears this file's warning gate, so the give-up has to be recorded after it or
-		// every other root scope would report the same file again.
-		this.#partialRead.settled();
-		if (gaveUp) warnPartialReadGaveUp(this.#filePath);
 		try {
 			this.#applyParsed(this.#overlayEnvConfig(parsed));
 		} catch (error) {
@@ -192,7 +188,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		if (error !== undefined && !isPartialReadError(error)) return this.#handleReadError(error);
 		if (this.#partialRead.schedule(() => this.#handleChange())) return;
 		if (error === undefined) {
-			warnPartialReadGaveUp(this.#filePath);
+			this.#partialRead.gaveUp();
 			return;
 		}
 		this.#handleReadError(error);

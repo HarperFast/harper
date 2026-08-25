@@ -33,9 +33,6 @@ export function isWatcherExhaustionError(error: unknown): boolean {
  * host is already under resource pressure. A second-scale interval keeps CPU
  * cost bounded; the alternative is to lose change events entirely.
  */
-const PARTIAL_READ_REREAD_DELAY_MS = 20;
-const PARTIAL_READ_MAX_REREADS = 10;
-
 export const POLLING_FALLBACK_OPTIONS = {
 	usePolling: true,
 	interval: 1000,
@@ -84,6 +81,9 @@ export function _resetForTests(): void {
  * file. Re-read on a later turn instead, bounded so a genuinely empty or corrupt file cannot
  * spin. Callers read synchronously, so the descriptor still never outlives a single turn.
  */
+const PARTIAL_READ_REREAD_DELAY_MS = 20;
+const PARTIAL_READ_MAX_REREADS = 10;
+
 export class PartialReadRetry {
 	#filePath: string;
 	#timer?: ReturnType<typeof setTimeout>;
@@ -116,6 +116,14 @@ export class PartialReadRetry {
 		partialReadWarned.delete(this.#filePath);
 	}
 
+	/**
+	 * The budget is spent. Distinct from `settled()`: the file has not recovered, so the report
+	 * stands for every other watcher of it. Returns whether this give-up was the one reported.
+	 */
+	gaveUp(error?: unknown): boolean {
+		return warnPartialReadGaveUp(this.#filePath, error);
+	}
+
 	cancel() {
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = undefined;
@@ -138,13 +146,14 @@ export function isPartialReadError(error: unknown): boolean {
  * Warned once per file: every root-config scope watches the same one and would otherwise report
  * a single bad file once each, on every event.
  */
-export function warnPartialReadGaveUp(filePath: string, error?: unknown) {
-	if (partialReadWarned.has(filePath)) return;
+export function warnPartialReadGaveUp(filePath: string, error?: unknown): boolean {
+	if (partialReadWarned.has(filePath)) return false;
 	partialReadWarned.add(filePath);
 	// The cause matters to whoever has to fix it: a file that never parses is a typo to correct,
 	// while one that reads empty is a writer that never finished.
 	const cause = error ? `: ${(error as Error).message ?? error}` : ' that were empty or incomplete';
 	fallbackLogger.warn(`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} unusable reads${cause}`);
+	return true;
 }
 
 /** Test-only: whether a give-up warning for this file is currently suppressed as a duplicate. */

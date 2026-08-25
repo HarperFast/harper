@@ -1,5 +1,10 @@
 const assert = require('node:assert');
-const { PartialReadRetry, warnPartialReadGaveUp, isPartialReadWarned } = require('#src/utility/watcherFallback');
+const {
+	PartialReadRetry,
+	warnPartialReadGaveUp,
+	isPartialReadWarned,
+	clearPartialReadWarning,
+} = require('#src/utility/watcherFallback');
 const { waitFor } = require('../waitFor');
 
 // The retry is a timer, so "it fired" is a condition to wait for; "it fired only once" is a
@@ -70,6 +75,25 @@ describe('PartialReadRetry', () => {
 
 		retry.settled();
 		assert.strictEqual(isPartialReadWarned('/nonexistent/recovering.yaml'), false);
+	});
+
+	it('keeps the report standing when it gives up, and withdraws it only on recovery', async () => {
+		// The gate is shared per file, so treating a give-up like a recovery would let each of the
+		// N scopes watching one root config report the same file in turn.
+		const path = '/nonexistent/shared.yaml';
+		clearPartialReadWarning(path);
+		const retry = new PartialReadRetry(path);
+
+		assert.strictEqual(retry.gaveUp(), true, 'the first give-up is the one that reports');
+		assert.strictEqual(
+			new PartialReadRetry(path).gaveUp(),
+			false,
+			'another scope giving up on the same file must be suppressed, not reported again'
+		);
+
+		retry.settled();
+		assert.strictEqual(isPartialReadWarned(path), false, 'a usable read is what withdraws the report');
+		assert.strictEqual(new PartialReadRetry(path).gaveUp(), true, 'so the next incident reports again');
 	});
 
 	it('stops re-reading after close', async () => {

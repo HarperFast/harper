@@ -213,8 +213,8 @@ describe('root config read handle lifetime', () => {
 			for (let attempt = 0; attempt <= 12; attempt++) await watcher._handleChangeForTests();
 			await waitFor(() => isPartialReadWarned(configFilePath), { message: 'the give-up was never reported' });
 		}
-
-		// One bad root config must not produce one warning per scope watching it.
+		// The per-file gate that suppresses the duplicate report is pinned directly in
+		// unitTests/utility/partialReadRetry.test.js; this covers both scopes reaching it at all.
 		assert.strictEqual(isPartialReadWarned(configFilePath), true);
 	});
 

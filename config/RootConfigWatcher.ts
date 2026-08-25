@@ -8,7 +8,6 @@ import {
 	PartialReadRetry,
 	isPartialReadError,
 	isWatcherExhaustionError,
-	warnPartialReadGaveUp,
 	warnWatcherFallback,
 	warnWatcherListenerError,
 } from '../utility/watcherFallback.ts';
@@ -127,7 +126,7 @@ export class RootConfigWatcher extends EventEmitter {
 
 	#scheduleReread(error?: unknown) {
 		if (this.#partialRead.schedule(() => this.handleChange())) return;
-		warnPartialReadGaveUp(this.#configFilePath, error);
+		this.#partialRead.gaveUp(error);
 	}
 
 	close() {
