@@ -159,24 +159,27 @@ describe('watchPath', () => {
 		];
 
 		const repoRoot = join(__dirname, '..', '..');
-		const skippedDirectories = new Set([
+		// Anchored to repo-root children, so skipping generated output cannot also blind the scan to a
+		// nested `tmp/`, `docs/` or `coverage/` holding a real watch site.
+		const skippedRootEntries = new Set([
 			'.claude',
-			'.git',
 			'.nyc_output',
 			'coverage',
 			'dist',
 			'docs',
 			'integrationTests',
-			'node_modules',
 			'tmp',
 			'unitTests',
 		]);
+		const skippedAtAnyDepth = new Set(['.git', 'node_modules']);
 
-		const collectWatchSites = (directory, found = []) => {
+		const collectWatchSites = (directory, found = [], depth = 0) => {
 			for (const entry of readdirSync(directory, { withFileTypes: true })) {
 				const entryPath = join(directory, entry.name);
 				if (entry.isDirectory()) {
-					if (!skippedDirectories.has(entry.name)) collectWatchSites(entryPath, found);
+					if (skippedAtAnyDepth.has(entry.name)) continue;
+					if (depth === 0 && skippedRootEntries.has(entry.name)) continue;
+					collectWatchSites(entryPath, found, depth + 1);
 					continue;
 				}
 				if (!/\.(?:ts|js|mjs|cjs)$/.test(entry.name)) continue;

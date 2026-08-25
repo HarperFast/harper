@@ -814,7 +814,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 										// while this watcher is still the live one, or a queued error from a superseded
 										// watcher would close its replacement and start a second read at the same position.
 										const installedWatcher = watcher;
-										installedWatcher?.once('error', (error) => {
+										installedWatcher?.on('error', (error) => {
 											if (watcher !== installedWatcher) return;
 											logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
 											watchTarget.mustPoll = true;
