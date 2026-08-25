@@ -239,6 +239,54 @@ const BLOB_GONE_STATUS = 404;
 // retryable class from the permanent ones without duplicating the status code.
 export const BLOB_UNAVAILABLE_STATUS = 503;
 const BLOB_CORRUPT_STATUS = 500;
+/**
+ * Arm the one-shot watch that wakes an in-progress blob read, or report that the read must poll
+ * instead. Exported (with an injectable `watchFile`) so the failure paths — a synchronous
+ * registration throw, a post-registration `'error'`, and an `'error'` from a watcher the read has
+ * already replaced — are directly testable; production never passes the last argument.
+ *
+ * `onFailure` runs only for a live watcher that fails after registration; a registration that
+ * throws latches `mustPoll` and returns undefined, leaving the caller's own no-watcher branch to
+ * schedule the poll.
+ */
+export function watchInProgressFile(
+	filePath: string,
+	watchTarget: { path: string; mustPoll: boolean },
+	handlers: {
+		isLive: (watcher: FSWatcher) => boolean;
+		onChange: () => void;
+		onFailure: () => void;
+	},
+	watchFile: typeof watch = watch
+): FSWatcher | undefined {
+	let watcher: FSWatcher;
+	if (!watchTarget.mustPoll) {
+		try {
+			// fs.watch throws synchronously when the OS watcher pool is exhausted (EMFILE/ENOSPC); the
+			// caller's poll is the same recovery the unwatchable path already takes.
+			watcher = watchFile(watchTarget.path, { persistent: false }, () => handlers.onChange());
+		} catch (error) {
+			logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
+			// Latch on the stream-scoped target, or the caller's 20 ms re-poll re-enters here and
+			// re-attempts the same failing registration for the rest of the read.
+			watchTarget.mustPoll = true;
+			return undefined;
+		}
+	}
+	// An FSWatcher that fails after registration emits 'error'; with no listener Node rethrows it out
+	// of the watcher callback. Drop to the same poll instead — but only while this watcher is still
+	// the live one, or a queued error from a superseded watcher would close its replacement and start
+	// a second read at the same position.
+	const installedWatcher = watcher;
+	installedWatcher?.on('error', (error) => {
+		if (!handlers.isLive(installedWatcher)) return;
+		logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
+		watchTarget.mustPoll = true;
+		installedWatcher.close();
+		handlers.onFailure();
+	});
+	return watcher;
+}
 class BlobReadError extends Error {
 	statusCode: number;
 	code?: string;
@@ -787,41 +835,22 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											return true;
 										};
 										// the file is not finished being written, watch the file for changes to resume reading
-										// set up a watcher to be notified of file changes
 										watchTarget ??= resolveWatchTarget(filePath);
-										try {
-											// fs.watch throws synchronously when the OS watcher pool is exhausted (EMFILE/
-											// ENOSPC); the poll below is the same recovery the unwatchable path already takes.
-											watcher = watchTarget.mustPoll
-												? undefined
-												: watch(watchTarget.path, { persistent: false }, () => {
-														if (watcher) {
-															watcher.close();
-															watcher = null;
-															clearTimeout(timer); // clear it
-															readMore(resolve, reject);
-														}
-													});
-										} catch (error) {
-											logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
-											// Latch on the stream-scoped target, or the 20 ms re-poll below re-enters here and
-											// re-attempts the same failing registration for the rest of the read.
-											watchTarget.mustPoll = true;
-											watcher = undefined;
-										}
-										// An FSWatcher that fails after registration emits 'error'; with no listener Node
-										// rethrows it out of the watcher callback. Drop to the same poll instead — but only
-										// while this watcher is still the live one, or a queued error from a superseded
-										// watcher would close its replacement and start a second read at the same position.
-										const installedWatcher = watcher;
-										installedWatcher?.on('error', (error) => {
-											if (watcher !== installedWatcher) return;
-											logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
-											watchTarget.mustPoll = true;
-											watcher = undefined;
-											installedWatcher.close();
-											clearTimeout(timer);
-											timer = setTimeout(() => readMore(resolve, reject), 20).unref();
+										watcher = watchInProgressFile(filePath, watchTarget, {
+											isLive: (candidate) => watcher === candidate,
+											onChange: () => {
+												if (watcher) {
+													watcher.close();
+													watcher = null;
+													clearTimeout(timer); // clear it
+													readMore(resolve, reject);
+												}
+											},
+											onFailure: () => {
+												watcher = undefined;
+												clearTimeout(timer);
+												timer = setTimeout(() => readMore(resolve, reject), 20).unref();
+											},
 										});
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory

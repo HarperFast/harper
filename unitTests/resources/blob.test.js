@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
 const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
@@ -33,6 +34,7 @@ const {
 	unregisterBlobReceiveInFlight,
 	isBlobReceiveInFlight,
 	createPendingMarkerBarrier,
+	watchInProgressFile,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -2281,5 +2283,111 @@ describe('backup of a blob root during a live write (harper#2262)', () => {
 
 		assert.strictEqual(readFileNow(livePath).length, 60000 + 8);
 		assert.deepStrictEqual(readFileNow(captured), capturedBytes, 'snapshot bytes changed after the write finished');
+	});
+});
+
+// The three recovery paths a read takes when its wake-up watcher cannot be relied on. All are
+// unreachable from a normal read — they need an exhausted OS watcher pool — so they are driven
+// through the injectable `watchFile` seam instead.
+describe('watchInProgressFile (in-progress read watcher fallback)', () => {
+	const ORIGINAL_PATH = '/blobs/RUNNER~1/00/01';
+	const CANONICAL_PATH = '/blobs/runneradmin/00/01';
+
+	function fakeWatcher() {
+		const watcher = new EventEmitter();
+		watcher.closeCount = 0;
+		watcher.close = () => watcher.closeCount++;
+		return watcher;
+	}
+
+	function exhaustion() {
+		return Object.assign(new Error('watcher pool exhausted'), { code: 'ENOSPC' });
+	}
+
+	function recordingHandlers(isLive = () => true) {
+		const calls = { change: 0, failure: 0 };
+		return { calls, handlers: { isLive, onChange: () => calls.change++, onFailure: () => calls.failure++ } };
+	}
+
+	it('arms nothing, and attempts no registration, for a target that must poll', () => {
+		const target = { path: ORIGINAL_PATH, mustPoll: true };
+		const { calls, handlers } = recordingHandlers();
+		let attempts = 0;
+		const watcher = watchInProgressFile(ORIGINAL_PATH, target, handlers, () => {
+			attempts++;
+			return fakeWatcher();
+		});
+		assert.strictEqual(watcher, undefined);
+		assert.strictEqual(attempts, 0);
+		assert.deepStrictEqual(calls, { change: 0, failure: 0 });
+	});
+
+	it('watches the canonical path, not the path the read reports', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const { calls, handlers } = recordingHandlers();
+		const opened = fakeWatcher();
+		const seen = [];
+		const watcher = watchInProgressFile(ORIGINAL_PATH, target, handlers, (path, options, listener) => {
+			seen.push([path, options]);
+			opened.listener = listener;
+			return opened;
+		});
+		assert.strictEqual(watcher, opened);
+		assert.deepStrictEqual(seen, [[CANONICAL_PATH, { persistent: false }]]);
+		// Without a listener Node rethrows an emitted watcher error out of the watcher callback.
+		assert.strictEqual(opened.listenerCount('error'), 1);
+		opened.listener();
+		assert.strictEqual(calls.change, 1);
+	});
+
+	it('latches polling when registration throws, so the read stops re-attempting it', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const { calls, handlers } = recordingHandlers();
+		let attempts = 0;
+		const throwOnRegistration = () => {
+			attempts++;
+			throw exhaustion();
+		};
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, throwOnRegistration), undefined);
+		assert.strictEqual(target.mustPoll, true);
+		// The caller schedules the poll for this case; a synchronous throw must not also drive onFailure.
+		assert.deepStrictEqual(calls, { change: 0, failure: 0 });
+		// Every 20 ms re-poll re-enters here for the rest of the read.
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, throwOnRegistration), undefined);
+		assert.strictEqual(attempts, 1);
+	});
+
+	it('drops a live watcher to polling when it fails after registration', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const opened = fakeWatcher();
+		const { calls, handlers } = recordingHandlers((candidate) => candidate === opened);
+		assert.strictEqual(
+			watchInProgressFile(ORIGINAL_PATH, target, handlers, () => opened),
+			opened
+		);
+		opened.emit('error', exhaustion());
+		assert.strictEqual(target.mustPoll, true);
+		assert.strictEqual(opened.closeCount, 1);
+		assert.deepStrictEqual(calls, { change: 0, failure: 1 });
+	});
+
+	it('ignores an error from a watcher the read has already replaced', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const superseded = fakeWatcher();
+		const live = fakeWatcher();
+		const pending = [superseded, live];
+		let current;
+		const { calls, handlers } = recordingHandlers((candidate) => candidate === current);
+		current = watchInProgressFile(ORIGINAL_PATH, target, handlers, () => pending.shift());
+		current = watchInProgressFile(ORIGINAL_PATH, target, handlers, () => pending.shift());
+		assert.strictEqual(current, live);
+
+		superseded.emit('error', exhaustion());
+
+		// Acting on it would close the live watcher and start a second read at the same position.
+		assert.deepStrictEqual(calls, { change: 0, failure: 0 });
+		assert.strictEqual(live.closeCount, 0);
+		assert.strictEqual(superseded.closeCount, 0);
+		assert.strictEqual(target.mustPoll, false);
 	});
 });
