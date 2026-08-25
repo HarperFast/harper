@@ -101,6 +101,15 @@ if (isMainThread) {
 			}
 		}
 	}
+	// synchronous on purpose: an exit handler cannot await, so an async removal would be
+	// scheduled and then dropped by process.exit() (.mocharc.json sets `exit: true`).
+	// Registered here rather than in setupTestDBPath() so a suite that never opens a
+	// database still cleans up the root this preload just created.
+	process.on('exit', () => {
+		try {
+			fs.removeSync(PID_DIR_PATH);
+		} catch {}
+	});
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;

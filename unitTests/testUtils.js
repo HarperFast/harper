@@ -9,14 +9,12 @@ const systemSchema = require('../json/systemSchema.json');
 const { table: ensure_table, resetDatabases } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
-const { isMainThread } = require('node:worker_threads');
 const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
 const { materializePerPidRoot } = require('./perPidRoot.js');
 
 let envMgrInitSyncStub;
-let exitCleanupRegistered;
 
 const MOCK_ARGS_ERROR_MSG =
 	'Null, undefined, and/or empty string argument values not allowed when building mock HDB for testing';
@@ -381,16 +379,6 @@ function setupTestDBPath() {
 	};
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
 	resetDatabases();
-	if (isMainThread && !exitCleanupRegistered) {
-		exitCleanupRegistered = true;
-		// synchronous on purpose: an exit handler cannot await, so the async removal in
-		// tearDownMockDB() would be scheduled and then dropped by process.exit()
-		process.on('exit', function () {
-			try {
-				fs.removeSync(PID_DIR_PATH);
-			} catch {}
-		});
-	}
 	return dbPath;
 }
 
