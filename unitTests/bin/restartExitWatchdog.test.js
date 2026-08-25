@@ -6,10 +6,10 @@ const { once } = require('node:events');
 
 describe('restart exit watchdog', () => {
 	it('force-terminates a process that remains alive past its restart bound', async function () {
-		if (process.platform === 'win32') this.skip();
+		if (process.platform !== 'linux') this.skip();
 		this.timeout(10000);
 		const startedAt = Date.now();
-		const harness = spawn(process.execPath, [require.resolve('./fixtures/restartExitWatchdogHarness.js'), '100'], {
+		const harness = spawn(process.execPath, [require.resolve('./fixtures/restartExitWatchdogHarness.cjs'), '100'], {
 			stdio: ['ignore', 'pipe', 'inherit'],
 		});
 		await once(harness.stdout, 'data');
@@ -17,5 +17,10 @@ describe('restart exit watchdog', () => {
 		assert.equal(code, null);
 		assert.equal(signal, 'SIGKILL');
 		assert.ok(Date.now() - startedAt < 5000, 'watchdog exceeded the test bound');
+	});
+
+	it('rejects a non-finite timeout without terminating the caller', () => {
+		const { armRestartExitWatchdog } = require('#src/bin/restartExitWatchdog');
+		assert.equal(armRestartExitWatchdog(Number.NaN), false);
 	});
 });

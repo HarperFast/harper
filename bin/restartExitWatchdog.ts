@@ -6,19 +6,26 @@ const WATCHDOG_SCRIPT = `
 parent_pid=$1
 delay_seconds=$2
 [ "$parent_pid" -gt 1 ] || exit 0
-[ "$PPID" -eq "$parent_pid" ] || exit 0
-sleep "$delay_seconds"
-[ "$PPID" -eq "$parent_pid" ] || exit 0
+# Shell PPID variables are snapshots; procfs reflects reparenting after Harper exits.
+read -r _ _ _ current_parent _ < "/proc/$$/stat" || exit 0
+[ "$current_parent" -eq "$parent_pid" ] || exit 0
+sleep "$delay_seconds" || exit 0
+read -r _ _ _ current_parent _ < "/proc/$$/stat" || exit 0
+[ "$current_parent" -eq "$parent_pid" ] || exit 0
 kill -KILL "$parent_pid"
 `;
 
 export function armRestartExitWatchdog(timeoutMs: number) {
-	if (process.platform === 'win32') {
-		hdbLogger.warn('Restart exit watchdog is unavailable on Windows');
+	if (process.platform !== 'linux') {
+		hdbLogger.warn('Restart exit watchdog is only available on Linux');
 		return false;
 	}
 	if (process.pid <= 1) {
 		hdbLogger.warn('Restart exit watchdog requires Harper to run below a container init process');
+		return false;
+	}
+	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+		hdbLogger.warn('Restart exit watchdog requires a positive finite timeout');
 		return false;
 	}
 
@@ -28,7 +35,6 @@ export function armRestartExitWatchdog(timeoutMs: number) {
 			'/bin/sh',
 			['-c', WATCHDOG_SCRIPT, 'harper-restart-exit-watchdog', String(process.pid), String(timeoutSeconds)],
 			{
-				detached: true,
 				env: { PATH: '/usr/bin:/bin' },
 				stdio: 'ignore',
 				windowsHide: true,
