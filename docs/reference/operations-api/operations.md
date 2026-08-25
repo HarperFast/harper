@@ -617,6 +617,36 @@ Creates or replaces a trust policy. **super_user only** — a policy lets an ext
 | `enabled`     | Defaults to `true`. A disabled policy is kept but never matched.                                                           |
 | `description` | Optional free text, up to 1024 characters.                                                                                 |
 
+##### Setting a policy up from the CLI
+
+Every Operations API operation is available as a CLI command of the same name, which is usually the easiest way to configure a policy: log in once from your machine, then run the operation against the cluster.
+
+```sh
+# 1. Authenticate to the cluster you are configuring (once, interactively)
+harper login https://my-instance.harperdb.io:9925
+
+# 2. Create the trust policy
+harper add_oidc_trust \
+  id=my-app-prod \
+  issuer=https://token.actions.githubusercontent.com \
+  audience=https://my-instance.harperdb.io:9925/ \
+  user=ci-deploy \
+  claims='{"repository_id":"67890","workflow_ref":"HarperFast/my-app/.github/workflows/deploy.yml@refs/heads/main","environment":"production"}'
+
+# 3. Confirm what the cluster now trusts
+harper list_oidc_trust
+```
+
+`claims` is a JSON object, so quote it as a single shell argument — the CLI parses each value as JSON, which is what turns that string into the nested object the operation expects. `operations` works the same way if you scope the policy: `operations='["deploy_component","get_deployment"]'`.
+
+`harper login` stores a token for that target, so step 2 needs no credentials of its own. If you would rather not store one, pass the target and credentials explicitly instead:
+
+```sh
+harper add_oidc_trust target=https://my-instance.harperdb.io:9925 auth_username=HDB_ADMIN auth_password="$ADMIN_PASSWORD" id=my-app-prod ...
+```
+
+Both routes need **super_user**, since that is what the trust-policy operations require.
+
 This **replaces** the policy rather than merging into it. A partial update is how an over-broad policy gets created by accident, and the point of `claims` is that every constraint in it was written deliberately.
 
 ##### Narrowing what the token may do (`operations`)

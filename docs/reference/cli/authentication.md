@@ -262,9 +262,12 @@ There is no operation that revokes a refresh token directly. To invalidate one, 
 
 On a runner that can prove its own identity, the CLI needs **no stored credential at all**. It asks the runtime for an identity token addressed to your instance and trades it for a one-hour operation token. Nothing durable is stored in your CI provider, and there is no 30-day token to rotate.
 
-Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust), then grant the token permission in the workflow:
+Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust), then grant the token permission in the workflow.
+
+The block below is **GitHub Actions** syntax — `permissions: id-token: write` is how Actions specifically opts a job into requesting an identity token. Other CI systems expose the same idea differently, and Harper currently detects GitHub Actions only; an unrecognized runtime is not an error, the CLI simply falls through to its other credential sources.
 
 ```yaml
+# .github/workflows/deploy.yml
 permissions:
   id-token: write
   contents: read
@@ -277,9 +280,9 @@ steps:
 
 `HARPER_CLI_TARGET` is the only variable the step needs, and it is not sensitive — hence `vars` rather than `secrets`.
 
-**This ranks below every configured credential**, and above only the legacy `username=`/`password=` payload fallback. Adding `id-token: write` to a workflow that still sets `HARPER_CLI_REFRESH_TOKEN` does not change which identity deploys; the stored token keeps winning. That is deliberate — enabling a new capability should not silently re-point an existing pipeline at a different user. Remove the secret when you want the exchange to take over.
+**With a trust policy in place you need nothing else** — no `HARPER_CLI_REFRESH_TOKEN`, no password, no credentials on the command. That is the point of it: the workflow holds no Harper secret at all.
 
-Note the one case where the exchange _does_ take over: because it outranks the legacy fallback, a command that passes `username=` and `password=` as operation parameters on a runner with no configured credential authenticates as the trust policy's user, not as the pair in the payload. That is the intended reading of those fields — for `add_user` they describe the user being created — but it means a script relying on them as credentials changes identity the moment a policy matches.
+If your pipeline already sets a token or password, remove it. Leaving it in place is not harmful but it does keep winning — a configured credential outranks the exchange, deliberately, so that enabling this does not silently re-point an existing pipeline at a different user. See [Authentication Precedence](#authentication-precedence) if you need the full order for a mixed setup.
 
 The exchange is attempted only when the runtime actually offers an identity. GitHub Actions sets `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` together on a job that declares `id-token: write`; without both, the CLI falls through to its other credential sources rather than reporting a failure. An unrecognized runtime falls through the same way.
 
@@ -290,7 +293,7 @@ Requesting a GitHub Actions identity token for https://my-instance.harperdb.io:9
 Authenticated as 'ci-deploy' via OIDC trust policy 'my-app-prod'.
 ```
 
-If Harper rejects the token, the CLI reports that and carries on down the precedence list rather than aborting — the same shape as a failed token refresh, with the same consequences. Usually nothing is left to send, so the operation returns 401. But if the command also passes `username=` and `password=`, the legacy fallback applies them and the operation **succeeds as that user instead**. And against a loopback target, a credential-less request is authorized as superuser, so it succeeds with no identity check at all. A policy mismatch can therefore look like a working deploy. Keep payload credentials off a command you expect the exchange to authenticate, and see the [refresh-behavior note](#token-credentials-for-cicd) for the loopback case.
+If Harper rejects the token, the CLI reports it and carries on rather than aborting. On a workflow configured as above there is nothing left to try, so the operation itself fails with a 401 — but do not treat a rejected exchange as a guaranteed hard stop: if anything else on the runner can authenticate, the command proceeds under that identity instead. [Authentication Precedence](#authentication-precedence) covers those cases.
 
 The server deliberately does not report which check failed — see [`exchange_oidc_token`](../operations-api/operations.md#exchange_oidc_token) — so diagnose with `list_oidc_trust` and the instance's `oidc-trust` log.
 
