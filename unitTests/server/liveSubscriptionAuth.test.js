@@ -272,34 +272,37 @@ describe('liveSubscriptionAuth.ts registerLiveSubscription', () => {
 			const originalWarn = hdbLogger.warn;
 			const warnMessages = [];
 			hdbLogger.warn = (message) => warnMessages.push(message);
-			const subscription = fakeSubscription();
-			const revokeThrows = spyFn();
-			const revokeOkA = spyFn();
-			const revokeOkB = spyFn();
-			register({
-				subscription,
-				username: 'throws',
-				recheck: async () => {
-					throw new Error('recheck backend unavailable');
-				},
-				revoke: revokeThrows,
-			});
-			register({ subscription, username: 'ok-a', recheck: async () => true, revoke: revokeOkA });
-			register({ subscription, username: 'ok-b', recheck: async () => true, revoke: revokeOkB });
-			assert.strictEqual(_liveSubscriptionCount(), 3);
+			try {
+				const subscription = fakeSubscription();
+				const revokeThrows = spyFn();
+				const revokeOkA = spyFn();
+				const revokeOkB = spyFn();
+				register({
+					subscription,
+					username: 'throws',
+					recheck: async () => {
+						throw new Error('recheck backend unavailable');
+					},
+					revoke: revokeThrows,
+				});
+				register({ subscription, username: 'ok-a', recheck: async () => true, revoke: revokeOkA });
+				register({ subscription, username: 'ok-b', recheck: async () => true, revoke: revokeOkB });
+				assert.strictEqual(_liveSubscriptionCount(), 3);
 
-			await _sweepNow();
+				await _sweepNow();
 
-			assert.strictEqual(revokeThrows.calls.length, 1);
-			assert.strictEqual(revokeOkA.calls.length, 0);
-			assert.strictEqual(revokeOkB.calls.length, 0);
-			assert.strictEqual(_liveSubscriptionCount(), 2);
-			assert.strictEqual(subscription.end.calls.length, 0);
-			assert.ok(
-				warnMessages.some((message) => message.includes('throws') && message.includes('recheck backend unavailable')),
-				`a recheck failure must still warn, got: ${JSON.stringify(warnMessages)}`
-			);
-			hdbLogger.warn = originalWarn;
+				assert.strictEqual(revokeThrows.calls.length, 1);
+				assert.strictEqual(revokeOkA.calls.length, 0);
+				assert.strictEqual(revokeOkB.calls.length, 0);
+				assert.strictEqual(_liveSubscriptionCount(), 2);
+				assert.strictEqual(subscription.end.calls.length, 0);
+				assert.ok(
+					warnMessages.some((message) => message.includes('throws') && message.includes('recheck backend unavailable')),
+					`a recheck failure must still warn, got: ${JSON.stringify(warnMessages)}`
+				);
+			} finally {
+				hdbLogger.warn = originalWarn;
+			}
 		});
 
 		it('revokes on token expiry without consulting recheck', async () => {
