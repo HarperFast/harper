@@ -23,6 +23,7 @@ export interface ComponentPreparationLockOwner {
 	processInstanceId: string;
 	token: string;
 	ticket?: number;
+	purpose?: string;
 }
 
 export interface ComponentPreparationLockOptions {
@@ -30,7 +31,11 @@ export interface ComponentPreparationLockOptions {
 	onWait?: (owner: ComponentPreparationLockOwner | null) => void;
 	onReleaseError?: (error: unknown) => void;
 	isOwnerAlive?: (owner: ComponentPreparationLockOwner) => boolean | Promise<boolean>;
+	purpose?: string;
+	renewTimeoutWhileOwnerAlive?: boolean | ((owner: ComponentPreparationLockOwner) => boolean | Promise<boolean>);
 }
+
+export class ComponentPreparationLockTimeoutError extends Error {}
 
 export function componentPreparationLockIdentity(
 	componentDirPath: string,
@@ -244,10 +249,12 @@ async function acquireComponentPreparationLock(
 		threadId,
 		processInstanceId: COMPONENT_PREPARATION_PROCESS_INSTANCE_ID,
 		token: randomUUID(),
+		purpose: options.purpose,
 	};
 	const choosingPath = join(lockRoot, `${lockName}.choosing.${owner.token}.json`);
 	let ticketPath: string | undefined;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_WAIT_TIMEOUT_MS;
+	const renewTimeoutWhileOwnerAlive = options.renewTimeoutWhileOwnerAlive ?? timeoutMs > 0;
 	let deadline = performance.now() + timeoutMs;
 
 	await mkdir(lockRoot, { recursive: true, mode: 0o700 });
@@ -264,7 +271,7 @@ async function acquireComponentPreparationLock(
 		await rm(choosingPath, { force: true }).catch(() => {});
 	}
 
-	let waitingReported = false;
+	let waitingReportedForToken: string | undefined;
 	try {
 		for (;;) {
 			const claims = await scanLiveClaims(lockRoot, lockName, options, owner.token);
@@ -276,17 +283,21 @@ async function acquireComponentPreparationLock(
 				})[0];
 			const blocker = claims.choosing[0] ?? precedingTicket;
 			if (!blocker) break;
-			if (!waitingReported) {
-				waitingReported = true;
+			if (waitingReportedForToken !== blocker.token) {
+				waitingReportedForToken = blocker.token;
 				options.onWait?.(blocker);
 			}
 			if (performance.now() >= deadline) {
-				if (await ownerLivenessConfirmed(blocker, options)) {
+				const renewForOwner =
+					typeof renewTimeoutWhileOwnerAlive === 'function'
+						? await renewTimeoutWhileOwnerAlive(blocker)
+						: renewTimeoutWhileOwnerAlive;
+				if (renewForOwner && (await ownerLivenessConfirmed(blocker, options))) {
 					// A confirmed-live holder is allowed to finish; the deadline only bounds owners whose
 					// liveness cannot be positively established.
 					deadline = performance.now() + timeoutMs;
 				} else {
-					throw new Error(
+					throw new ComponentPreparationLockTimeoutError(
 						`Timed out waiting for component preparation lock for ${canonicalPath}` +
 							` held by process ${blocker.pid}, thread ${blocker.threadId}`
 					);

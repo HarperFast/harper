@@ -81,6 +81,12 @@ So the writes carry the state forward themselves: `addWrite` chains each write t
 
 Before this (harper#1968), every write diffed against the pre-transaction record: the secondary index kept the intermediate value permanently (nothing reconciles an index against the records, so only a rebuild repairs it), and on LMDB the earlier write's changes were dropped outright.
 
+The chain only describes reality if **staging order is also execution order**, and on RocksDB two things used to break that. `addWrite` runs a write's commit handler immediately unless the write sets `deferSave`; `_writeUpdate` does set it and depends on `resource.save()` to run the write, and the source/replication apply path calls `_writeUpdate` directly and never calls `save()` (`replayLogs` does, explicitly). So an apply-path put executes in the commit loop while a delete executes at staging time, whichever was staged first. And the apply loop itself dispatches each record's `writeUpdate()` without awaiting; that function suspends on an async record load (RocksDB `get` is synchronous only on a block-cache hit), so within one transaction a warm key can reach `addWrite` before a cold key that arrived earlier. A leader's `delete K; put K` then staged as `put K; delete K` and executed as `delete K; put K` with neither write chained to the other — both diffed against the pre-transaction record, the delete removed **every** index entry for the record and the put, whose indexed values matched that same record, did no index work at all and re-stored the record. Live record, no index entries, permanent (harper#2211).
+
+Both orders are now pinned. `addWrite` defers a write whose earlier same-key write has not run yet, but **only for writes that both consume `priorStagedWrite()` and publish `stagedEntry`** — marked `chainsStagedState`, today just the delete write. `_writeInvalidate`/`_writeRelocate`/`_writePublish` do neither, so reordering them past a staged put would hand them a pre-transaction basis they have no way to correct; they keep their eager save. And the apply loop's `stageWrite` chains the writes to any one key through a per-transaction map so staging order is arrival order, dropping settled entries (a bulk transaction retains one entry per in-flight write, not per record) and short-circuiting successors when a predecessor rejects. LMDB was never exposed: `LMDBTransaction.addWrite` defers every write and has always executed them in `this.writes` order.
+
+Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
+
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
 When `migrateOnStart` opens a source LMDB primary store to read records out for the RocksDB copy, it constructs an `OpenDBIObject` and calls `sourceRootStore.openDB(key, dbiInit)`. Critically, the per-attribute `compression` setting from the corresponding `__dbis__` entry must be assigned onto `dbiInit` before that call — `dbiInit.compression = attribute.compression`. Without it, lmdb-js doesn't install its decompression layer; every read on the DBI returns raw compressed bytes. msgpackr then misreads bytes in the `0x40–0x7F` range as shared-structure refs, calls `loadStructures` → decodes the (also compressed) structures buffer → finds more bytes in that range → recurses → stack overflow.
@@ -153,7 +159,7 @@ Future agents touching `components/deploymentRecorder.ts` for Slice B's streamin
 
 `prepareApplication()` performs one destructive transaction against a component directory: extract the incoming payload, then run its dependency installer. Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
-The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A lock is never stolen from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The bounded wait remains a backstop when owner liveness cannot be established.
+The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
 A plugin load that begins while its component is being deployed waits for that lifecycle to end before
 starting `handleApplication`; if a deploy begins during the load, the plugin timeout counts only active,
@@ -164,6 +170,24 @@ Extraction renames an existing component aside before writing the replacement an
 dependency installation and metadata verification complete. Any preparation failure atomically
 renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
 wedge rollback with `ENOTEMPTY`; cleanup completes while the same-component lock is still held.
+On non-root POSIX systems, rollback uses a mode-`000` placeholder to keep that writer out between
+retries. Before moving or removing it, rollback verifies the placeholder's device/inode identity and
+restores owner permissions because a cross-parent directory move updates `..` and requires write
+permission on the moved directory.
+The aside name is itself the recovery record: an `.in-progress-*` directory or symlink preserves a
+previous tree, while an `.in-progress-*-prior-absent` file records that a first deploy must remove a
+partial live tree after a crash. A sibling `.retired-*` marker records that the replacement committed.
+Cleanup removes the recovery record before its marker, so an interrupted cleanup cannot make obsolete
+state recoverable.
+Component loading recovers unretired interrupted deploys before scanning the component root, and
+preparation repeats recovery under the same-component lock before reading runtime metadata. A full
+`drop_component` writes retirement markers before deleting the live tree and keeps its filesystem,
+and configuration mutations under that lock, so cleanup residue cannot resurrect a dropped
+component and a concurrent deploy cannot interleave with the drop. Peer replication begins after
+the local lock is released, and each peer serializes its own drop independently. Full-component drops
+rename the live tree into staging before best-effort cleanup, avoiding an in-place recursive-delete
+race with the running worker. Recovery is durable across a process crash. It relies on rename/create
+ordering rather than `fsync`, so a host power loss can lose the marker.
 
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
@@ -189,6 +213,33 @@ Adding a new system table (e.g. `hdb_deployment` in #641 Slice A) requires three
 System tables replicate by default. To opt out, add the name to `NON_REPLICATING_SYSTEM_TABLES` in `resources/databases.ts`. The check happens after table init and sets `table.replicate = false` per-node.
 
 If the table needs `audit: true`, set it both in the schema (for fresh installs) **and** on the `CreateTableObject` instance in the directive (for upgrades) — otherwise the two paths diverge.
+
+## OIDC trusted publishing (`security/authn/oidc/`)
+
+`exchange_oidc_token` lets a workload authenticate with no stored Harper credential (#2171): it presents an identity token minted by its runtime, and gets back a one-hour operation token for the user a stored trust policy names. It is in `NO_AUTH_OPERATIONS` because it _is_ the authentication, the same way `create_authentication_tokens` is against a password — the same three wiring points apply (`serverHandlers.js` `NO_AUTH_OPERATIONS`, the `verifyPerms` bypass in `serverUtilities.ts`, and a `permission(false, [])` registration).
+
+**The core is issuer-agnostic; everything issuer-specific lives in `providers/`.** That split is the point of the layout, not an accident of it — a new workload-identity issuer should be a profile, not a change to verification, matching, or storage.
+
+- `claims.ts` — matching and constraint _shape_ validation. Knows nothing about any issuer.
+- `jwks.ts` — issuer keys. The rate-limit clock for unknown-`kid` refetches lives _outside_ the cache entry: a successful fetch replaces the entry, and a rate limit that resets whenever it fires is not a rate limit. Keeping it separate also means a genuine key rotation is picked up on first use rather than after the window.
+- `identityToken.ts` — signature, issuer, audience, `exp`, and a bounded lifetime. Owns `rejectToken`, shared with the exchange so both halves refuse identically.
+- `tokenExchange.ts` — policy selection, replay, minting, audit. Verification is memoized per audience, so N policies sharing one cost one signature check.
+- `providers/` — `assertPolicyIsSpecific` / `assertAudienceIsSpecific` / `normalizeClaims` / `describePrincipal` / optional `vetoClaims`, resolved by normalized issuer.
+
+**An unregistered issuer gets `providers/generic.ts`, which is strict rather than permissive:** the policy must pin `sub`. That is what makes Kubernetes service accounts, GCP service accounts, and SPIFFE SVIDs work with zero provider code — each has a stable canonical subject. GitHub needs its own profile precisely because its `sub` is the one claim you should _not_ pin: it varies by trigger, and its format changed for repositories created after 2026-07-15.
+
+Four constraints that look like choices but are not:
+
+1. **Every rejection returns the same message.** The endpoint is unauthenticated; a caller told which check failed can enumerate a policy one claim at a time. Reasons go to the `oidc-trust` logger.
+2. **A GitHub policy must gate the ref.** `githubActionsProfile.assertPolicyIsSpecific` rejects a policy pinning only repository + workflow, because anyone who can push a branch could then add that workflow to it and mint a token. Stricter than npm's trusted-publishing model, which mitigates the same hole with environment protection instead — and profile-scoped, so it never constrains another issuer.
+3. **`createOperationToken`, not `createTokens`.** `createTokens` overwrites `hdb_user.refresh_token` as a side effect, so minting for CI would silently revoke whatever credential that user already held (#2018) — the exact problem this feature removes.
+4. **The role is the boundary; the per-policy `operations` allowlist only narrows it.** Least privilege is primarily the role of the user the policy names. A policy may _optionally_ carry an `operations` scope, which can only subtract from that role — never add to it. It is deliberately not merged into `permission.operations`: gate 2 in `operation_authorization.ts` treats an explicit listing of an SU-only operation as a deliberate grant, so reusing that field would _widen_ where this must only narrow. The scope is carried as a separate `tokenOperations` claim and intersected ahead of every early return, including the super_user bypass.
+
+   Its enforcement surface is the operations API and SQL (`verifyPerms` / `verifyPermsAST`) — **not** the application REST/GraphQL resource path, which authorizes through table-level `checkPermission` and does not consult the scope. A scoped token therefore still carries its role's full CRUD there, which is why the role has to be least-privilege on its own; the scope is defense in depth, not a substitute. Closing that gap is a follow-up on the same surface as CORE-3061. Because a second authorization mechanism beside roles is one more place for the two to disagree, whether to keep this at all is an open design question on #2173 rather than a settled constraint.
+
+   Naming `sql` in a scope grants the SQL interface, not unrestricted DML through it: a write statement additionally requires its matching data operation (`insert`/`update`/`delete`) in scope. That is what keeps `read_only` — which expands to include `sql` — from admitting a DELETE, given that `verifyPermsAST` returns early for a super_user before any table check runs.
+
+`hdb_oidc_token_use` (created lazily via `table()`, not the system schema) records spent tokens keyed on a SHA-256 of the token itself, with `expiresAt` past the token's own expiry. Hashed rather than stored, so the table never holds a credential; keyed on the token's **signed input** (`header.payload`) rather than `jti` because not every issuer emits one (Azure uses `uti`). Not on the whole token string: the signature segment is covered by nothing, and base64url decoding ignores the surplus low bits of its final character, so 16 distinct spellings of an RS256 signature decode to the same bytes, all verify, and all hash differently — one leaked token would buy 16 exchanges. ES\* malleability (`s → n−s`) is a second such vector. The signed input is exactly what the issuer asserted, so every variant collapses to one fingerprint. The get-then-put is not atomic and does not claim to be: a concurrent replay is not a privilege escalation, since whoever holds the token could obtain one operation token anyway.
 
 ## Table drops, the `dropping` tombstone, and ghost tables
 
@@ -289,6 +340,56 @@ silently reuses a dangling handle and every write fails with "Invalid column fam
 in write batch", poisoning the whole database env until restart. The regression suite for all
 of this is `unitTests/resources/dropTableGhost.test.js` (it fails by design on pre-fix
 bindings).
+
+## Scoped tokens and synthetic-role identity (`security/tokenAuthentication.ts`, `security/impersonation.ts`)
+
+`create_authentication_tokens` with an inline `role` **object** mints a `sub: 'scoped-operation'`
+JWT that embeds its whole (downgraded, deep-validated) permission set; the bearer needs no
+`hdb_user`/`hdb_role` row and the `username` is attribution only. Minting is super_user-gated
+(or trusted internal dispatch via `isOperationAuthorizationBypassed()`); a string `role` keeps its
+legacy meaning (component-defined token, rejected by `validateOperationToken`). Scoped tokens get
+no refresh token, touch no user record, and are therefore **irrevocable until expiry** — expiry is
+the only control, which is why `auth.ts` evicts cached Bearer identities at exact `authExpiresAt`
+rather than waiting for the auth-cache TTL.
+
+The attribution `username` must NOT name an existing `hdb_user` (rejected at mint; the default is
+`scoped:<minter>`): code paths that rehydrate a user by name would otherwise substitute the real
+principal's permissions for the token's — or fail-closed on the non-existent name. The three known
+by-name sites are handled, all by the same `_scopedToken` short-circuit: the MQTT last-will replay
+(`DurableSubscriptionsSession.ts` persists the scoped role/marker/expiry on the will and skips
+rehydration — and both the restart-replay and the live abnormal-disconnect paths refuse to publish
+a scoped will past `authExpiresAt`), the live-subscription stale-auth recheck (`Resource.ts`
+`registerLiveSubscriptionForContext` keeps the embedded role as the identity), and the MCP
+`list_changed` session refresh (`components/mcp/listChanged.ts` `refreshSessionUser`). The scoped
+principal also cannot self-mint standing tokens: the passwordless path of `createTokens` rejects an
+`hdb_user._scopedToken` requester. **Any future by-name rehydration must check `_scopedToken`.** A
+user _created after minting_ with a colliding name is therefore inert at every current site; the
+residual is only some _new_ unguarded by-name site — another reason to prefer short expiries.
+
+Scope of the `operations` allowlist: it gates the **operations API** (including the `sql` path,
+which never reaches `verifyPerms` and calls `verifyOperationsAllowlist` directly from
+`chooseOperation`) — it does NOT gate the application/REST/GraphQL/MQTT surfaces, which authorize
+on translated table CRUD permissions only. A scoped token intended to be read-only on app
+endpoints must carry restrictive table permissions; `operations: ['read_only']` alone does not
+constrain REST writes if table perms allow them.
+
+The invariant to preserve when touching any synthetic (inline/impersonated/scoped) role:
+`permissionsTranslator.getRolePermissions` memoizes translated permissions **by role name** (keyed
+further by `__updatedtime__` + schema). A synthetic role must therefore never carry a constant
+name or a per-request timestamp — two different permission sets would alias one cache slot (a
+same-millisecond `Date.now()` was enough), leaking one principal's translated permissions to
+another. `syntheticRoleName()` derives the name from a hash of the post-downgrade permission
+content with `__updatedtime__: 0`, so identical sets share a slot and distinct sets can't collide;
+`applyImpersonation` re-keys all three impersonation modes the same way (Mode B/C previously wrote
+downgraded copies under the _persisted_ role's name). Synthetic translations live in a separate
+256-entry LRU (`syntheticRolePermsMap`), not the permanent `rolePermsMap` — so >256 concurrently
+live distinct permission sets degrade to per-request translation (a deliberate cliff; raise the
+constant if a legitimate workload hits it). The `_` name prefix is the discriminator; a persisted
+role named with a leading underscore lands in the LRU too (correct, just evictable). Relatedly,
+the role `operations` allowlist gate in `verifyPerms` must stay **ahead of** the ambient privilege
+early-returns (super_user, structure_user, system-table allowances): persisted roles can't combine
+`super_user` with other permission keys, but inline roles can combine `structure_user` with an
+allowlist, and the gate ordering is what keeps unlisted schema ops unreachable.
 
 ## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
 
@@ -791,6 +892,75 @@ graphs being identical, though equal metrics do not prove it. It is the expected
 the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
 standard HNSW descends this way.
 
+## `efConstruction` and the search-`ef` ceiling both auto-scale with the graph
+
+The connection-building pass selects each node's stored edges from a candidate list of
+`efConstruction` entries. Held at a constant (100) while the corpus grows, edge quality erodes in a
+way no search-side setting can compensate: at 1M nodes (768-dim, int8, calibrated hard corpus)
+recall@10 fell to 0.935 and sweeping the search `ef` from 512 to 1536 only reached 0.957 raw / 0.967
+set at 4.7x the latency — the missing neighbours were not deep in the candidate list, they were
+unreachable. Rebuilding the identical corpus (same seed, same level assignments) with
+`efConstruction` 200 restored 0.985/0.997 and made queries _faster_ at the same `ef` (3,110 nodes
+visited vs 3,948 — better-selected edges route more directly). Quantization contributed ~1.5 points
+(float32 rebuild: 0.952); construction quality was the dominant term. Full sweep in #2180.
+
+So when the schema does not configure `efConstruction`, it scales as `AUTO_EF_BASE * sqrt(nodes /
+AUTO_EFC_REF)`, capped at `AUTO_EFC_MAX`. The healthy write path reads the count directly from the
+shared id counter: one atomic load with no memo lag during bulk ingest. If an update-only worker
+cannot attach that counter, it warns once, falls back to the memoized reverse seek, and retries the
+attach after the memo TTL; a new insert still requires the shared counter rather than risking ids
+from a private counter. Scaling starts at 250K nodes: efC 100 held recall through 500K (0.978), so
+smaller graphs — the common case — build exactly as before. The sqrt shape mirrors the search-side
+scale; the cost is build time (1.77x at 1M for efC 200), paid only by tables that actually grow
+large, and partly returned as cheaper queries.
+
+An explicit `efConstruction` stays authoritative and is structural, so changing it triggers a full
+index rebuild. It also seeds the search `ef`: setting `efConstruction: 100` alone cuts query effort
+to 100. Retaining the former large-graph search default while opting out of build scaling requires
+an explicit `efConstructionSearch` as well (512 after the former auto-scale reached its plateau).
+There is currently no "pinned build, auto search" combination.
+
+The search side scales past its old plateau for the same reason. `AUTO_EF_MAX` (512, pinned from
+~13K nodes) was calibrated when layers above 0 were searched at the full `ef`, which made large efs
+cost seconds; after the greedy-descent fix the same headroom costs tens of milliseconds (ef 1024 at
+5M nodes: ~45ms p50), and holding the pin leaves measured recall on the table — set-recall at a
+pinned 512 on well-built graphs decays 0.997 → 0.955 → 0.935 across 1M/2M/5M. So past
+`AUTO_EF_LARGE_REF` (1M nodes, where 512 was last measured sufficient) the scale resumes from the
+plateau — `512 * sqrt(nodes / 1M)` — up to `AUTO_EF_CEILING` (2048, binding at ~16M). The 5M point
+resolves 1,145, bracketed by the measured ef-1024 sweep there (0.985 set). The default's query
+latency therefore grows as sqrt(N) on large tables; that is the recall-first trade chosen here, and
+apps preferring latency pin `efConstructionSearch` or a per-query `ef`. The filtered-traversal
+budget (`maxVisits`, #1241) deliberately does not follow the second regime: each budgeted visit is
+a synchronous record load plus predicate evaluation, so an auto-scaled ef's budget contribution
+stays capped at `AUTO_EF_MAX` — the recall decision and the filtered-scan bound are separate
+decisions, and an explicit ef (per-query or schema) still raises the budget for callers who own
+the cost. Both ceilings are finite on
+purpose: total build work grows as N^1.5 under sqrt scaling, and past roughly tens of millions of
+nodes per graph, sharded medium graphs beat one huge graph on build and query cost alike — scaling
+the constants further is the wrong tool there.
+
+Two caveats are accepted deliberately, both inherited from the count being a lifetime high-water
+mark of allocated node ids rather than a live count. First, churn: a table that deletes heavily
+(TTL eviction, delete-and-reinsert ingest) reads high forever, so its build-side efC can sit at the
+cap while the live graph is small. The 6–7x build-time extrapolation applies to a comparably large
+graph; it is not a bound for a small rolling window. When efC exceeds the live graph size, the
+candidate list cannot fill and an insert can traverse a large fraction of the graph before storing
+only `M << 1` edges. This wastes throughput without improving recall. The search side accepted the
+same over-count as "slightly generous ef" on an opt-in read path; the write path inherits it as a
+known cost until a live count exists (tracked follow-up). Second, ramp history: nodes indexed before
+the graph crossed a scale threshold keep their original edges — the scale applies to inserts from
+that point on. A reindex in a live process rebuilds roughly uniformly (the id counter keeps its
+high-water mark), but a reindex after a restart re-seeds the counter from the largest id in the
+rebuilding store and therefore repeats the ramp — its first 250K nodes rebuild at the base efC.
+Later inserts add reverse edges to older nodes, but a default-ramp 1M build has not been compared
+directly with the uniform-200 A/B. The larger default-ramp runs reached 0.988 set-recall at 2M and
+0.985 at 5M when searched at ef 1024, which shows that the measured neighbours remained reachable
+at those sizes without proving uniform convergence.
+
+Deletes have a separate tail-latency cost: connectivity repair can synchronously reinsert an orphan
+and up to 256 nodes from a severed island. Those reinserts use the current auto-scaled efC, so the
+per-insert build multiplier can land hundreds of times within one delete.
+
 ## An approximate index returns at most `ef` rows, so `limit` has to reach it
 
 Layer 0 keeps at most `ef` candidates, and ef resolves from the auto-scale, not from the query. A
@@ -803,10 +973,10 @@ request. Any future approximate index needs the same plumbing.
 Two bounds keep that from becoming a new problem. `ef` drives a synchronous traversal that holds
 every admitted candidate in a sorted array with an O(len) insert, so a limit-derived `ef` is capped
 at `LIMIT_EF_MAX`; without it, ordinary deep pagination (`offset` in the millions) would walk the
-whole graph on the event loop, which is worse than the truncation being fixed. And a per-query `ef`
-stays authoritative: it is an explicit cost ceiling, so it bounds the result set rather than being
-raised by the limit. A schema-level `efConstructionSearch` is a default rather than a per-request
-decision, so it does not block the floor.
+whole graph on the event loop, which is worse than the truncation being fixed. And schema-level or
+per-query `ef` values stay authoritative: each is an explicit cost ceiling, so it bounds the result
+set rather than being raised by the limit. Only automatically scaled indexes widen toward
+`LIMIT_EF_MAX` to satisfy a larger bounded request.
 
 `LIMIT_EF_MAX` is the _only_ bound on the widening — deliberately not also the graph size. Clamping
 there is tempting and costs more than it saves: the memoized size reads low while a table grows, so
@@ -815,10 +985,11 @@ puts a store lookup back on every query whose `limit` exceeds the table — the 
 whole change removed, reintroduced in miniature. An `ef` above the node count is free anyway: the
 traversal is bounded by the nodes it can reach, so it ends at the graph, not at `ef`.
 
-The filter budget deliberately does not follow a limit-derived `ef`. `maxVisits = ef * filterExpansion`
-(#1241) is what stops a selective filter crawling the graph and loading a record per visit, so it is
-computed from the `ef` the index resolved for itself. Multiplying it by a caller's `limit` would turn
-a filtered vector query into a record-loading scan wearing an index's clothes.
+The filter budget deliberately does not follow a limit-derived `ef`. It is computed from the `ef`
+the index resolved for itself, with an automatically scaled `ef` capped at `AUTO_EF_MAX` before it is
+multiplied by `filterExpansion`; explicit schema or per-query `ef` values remain authoritative.
+Multiplying the budget by a caller's `limit` would turn a filtered vector query into a record-loading
+scan wearing an index's clothes.
 
 Paging a vector search is best-effort, not a stable partition. Each page re-runs the approximate
 search at a different `ef` (`offset 0, limit 250` resolves 250; `offset 250, limit 200` resolves 450),
@@ -828,8 +999,10 @@ empty" defect; it does not make offsets a cursor. Callers who need stability sho
 large enough for the whole result set, or pin an explicit `ef`.
 
 One consumer is still calibrated in index-store keys rather than nodes: `estimateCountAsSort`, the
-planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the unit switch
-does not silently shift which condition the planner chooses to lead with.
+planner's cost estimate for a vector sort. It is scaled by `INDEX_KEYS_PER_NODE` so the count-source
+unit switch does not shift the estimate on its own. The ef term remains the configured search value,
+not the runtime auto-scaled value, so the planner increasingly underestimates vector traversal cost
+as an automatically scaled graph grows.
 
 ## Env-config empty objects mean three different things (`config/harperConfigEnvVars.ts`)
 

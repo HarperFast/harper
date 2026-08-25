@@ -472,5 +472,57 @@
 				"attribute": "__updatedtime__"
 			}
 		]
+	},
+	"hdb_oidc_trust": {
+		"hash_attribute": "id",
+		"name": "hdb_oidc_trust",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"attribute": "issuer"
+			},
+			{
+				"attribute": "audience"
+			},
+			{
+				"attribute": "claims"
+			},
+			{
+				"attribute": "user"
+			},
+			{
+				"attribute": "operations"
+			},
+			{
+				"attribute": "enabled"
+			},
+			{
+				"attribute": "description"
+			},
+			{
+				"attribute": "updated_by"
+			},
+			{
+				"attribute": "__createdtime__"
+			},
+			{
+				"attribute": "__updatedtime__"
+			}
+		]
+	},
+	"hdb_oidc_token_use": {
+		"hash_attribute": "id",
+		"name": "hdb_oidc_token_use",
+		"schema": "system",
+		"audit": true,
+		"attributes": [
+			{
+				"attribute": "id"
+			}
+		]
 	}
 }

@@ -144,6 +144,7 @@ module.exports = {
 	broadcastWithAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
+	getEligibleBroadcastRecipientThreadIds,
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
@@ -192,6 +193,18 @@ function getWorkerIndex() {
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
+function isEligibleBroadcastRecipient(port) {
+	return !port.isJobWorker;
+}
+function getEligibleBroadcastRecipientThreadIds() {
+	const recipientThreadIds = new Set();
+	for (const port of connectedPorts) {
+		if (isEligibleBroadcastRecipient(port) && port.threadId !== undefined) {
+			recipientThreadIds.add(port.threadId);
+		}
+	}
+	return recipientThreadIds;
+}
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 	module.exports.threadsHaveStarted();
@@ -205,6 +218,7 @@ let workerCount = 1; // should be assigned when workers are created
 const RESERVED_WORKER_DATA_KEYS = [
 	'addPorts',
 	'addThreadIds',
+	'addPortIsJobWorkers',
 	'workerIndex',
 	'workerCount',
 	'name',
@@ -383,6 +397,7 @@ function startWorker(path, options = {}) {
 			...collectProvidedWorkerData(options),
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
+			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
@@ -714,7 +729,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
 			// the job worker's ACK while the job worker's event loop is busy waiting for the
 			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (port.isJobWorker) continue;
+			if (!isEligibleBroadcastRecipient(port)) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
@@ -842,7 +857,7 @@ if (parentPort && workerData?.addPorts) {
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
-		addPort(port);
+		addPort(port, false, workerData.addPortIsJobWorkers?.[i]);
 	}
 	setInterval(() => {
 		// post our memory usage as a resource report, reporting our memory usage

@@ -20,13 +20,16 @@
  *     necessarily served by the one and only worker) rather than relying on HTTP keep-alive
  *     connection-affinity tricks (that per-worker-routing question is QA-787's separate
  *     concern; this suite isolates "which surface", not "which worker").
- *   - Seed contiguous DEL + KEEP ranges and a byte-exact ARMED POSITIVE CONTROL. The RocksDB
- *     subject retains the >16MiB `.txnlog` rotation precondition; the LMDB control does not
- *     need that engine-specific stress volume.
+ *   - Seed a large contiguous key range (bucket=DEL, 6000 rows) + a non-deleted range
+ *     (bucket=KEEP, 6000 rows) + a byte-exact ARMED POSITIVE CONTROL (bucket=CTRL, 5 rows,
+ *     inserted after a recorded cutoff) -- large enough, with padded payloads, to force real
+ *     on-disk data (forced via explicit `primaryStore.flush()` calls between seeding waves,
+ *     matching QA-779/QA-787's proven >16MiB-crossing magnitude so the LATER audit-purge arm
+ *     is non-vacuous too).
  *   - WARM every read surface pre-delete (also proves the oracle: a "clean" post-delete
  *     result must follow a "present" pre-delete result on the exact same surface).
- *   - Bulk-delete the entire DEL bucket (one contiguous key range) via the ops `delete`
- *     operation.
+ *   - Bulk-delete the entire DEL bucket (6000 ids, one contiguous key range) via the ops
+ *     `delete` operation.
  *   - Same-process, post-delete, read back DEL samples (must be GONE), CTRL (must survive
  *     byte-correct -- proves the reader actually reads), and KEEP samples (must survive --
  *     proves the delete was scoped) across FIVE ordinary surfaces: REST record GET, REST
@@ -39,8 +42,7 @@
  *   - RESTART DISCRIMINATOR: `killHarper` + `startHarper` on the identical `dataRootDir`,
  *     then re-measure. If pre-restart reads were already clean, post-restart must also be
  *     clean -- that agreement is the confirmation the bound holds.
- *   - Runs on BOTH `rocksdb` (the subject) and `lmdb` (control), with the same fixture,
- *     operation sequence, samples across each key range, and read surfaces.
+ *   - Runs on BOTH `rocksdb` (the subject) and `lmdb` (control), same fixture, same workload.
  *
  * MQTT/SSE snapshot arm: NOT included. An SSE/MQTT subscribe on a collection is a live
  * event stream, not a point-in-time snapshot read (no guaranteed initial backlog dump), so it
@@ -71,13 +73,24 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'txnlog-purge-stale-read-blast
 const SCHEMA = 'data';
 const TABLE = 'Widget';
 const skipSuite = process.env.HARPER_RUNTIME === 'bun';
+// The lmdb arm is the CONTROL (the phantom under test is RocksDB-specific), and on Windows its
+// seed is not viable at this magnitude: LMDB insert cost there grows superlinearly with database
+// size -- measured 2.7s per 500-record batch at the start and 37.7s by the fifth wave, ~311s for
+// the seed against the rocksdb arm's 28.3s on the same runner, while Linux does both in ~2s
+// (harper#2243). That crosses the seed's per-request budget on a slow runner and reds
+// `Integration Tests 1/6 (Windows)` intermittently on `main`.
+//
+// Skipped rather than shrunk: the control's value is running the SAME workload as the subject, and
+// per-engine record counts would weaken exactly that. The control still runs on every other
+// platform, and LMDB is deprecated, so Windows-specific LMDB coverage buys little. Do NOT "fix"
+// this by raising the timeout -- that keeps ~5 minutes of Windows CI time and adds no signal.
+const skipLmdbArm = process.platform === 'win32';
 
 // DEL range gets bulk-deleted (the subject of this whole suite). KEEP range stays untouched
 // (scoping sanity: proves the delete/read paths aren't just globally broken). Padded payload
 // matches QA-779/QA-787's proven >16MiB-crossing magnitude so delete_transaction_logs_before
 // in the contrast arm actually rotates/removes whole .txnlog files instead of a no-op.
-const ROCKSDB_RANGE_COUNT = 6000;
-const LMDB_RANGE_COUNT = 600;
+const RANGE_COUNT = 6000;
 const BATCH_SIZE = 500;
 const PAYLOAD_PAD = 'y'.repeat(1780);
 function payloadFor(i: number): string {
@@ -187,12 +200,10 @@ function fmtMiB(bytes: number): string {
 	return `${(bytes / 1024 / 1024).toFixed(3)}MiB`;
 }
 
-function isPreCutoffInsert(entry: any, id: string, cutoffTimestamp: number): boolean {
+function isPreCutoffInsert(entry: any, cutoffTimestamp: number): boolean {
 	const entryTimestamp = Number(entry?.timestamp);
 	return (
 		entry?.operation === 'insert' &&
-		Array.isArray(entry.ids) &&
-		entry.ids.includes(id) &&
 		Number.isFinite(entryTimestamp) &&
 		Number.isFinite(cutoffTimestamp) &&
 		entryTimestamp < cutoffTimestamp
@@ -418,10 +429,10 @@ async function assertAbsentEverywhere(
 function defineSuite(engine: 'rocksdb' | 'lmdb') {
 	suite(
 		`QA-782 stale-read blast radius: ordinary table reads after bulk delete [${engine}]`,
-		{ skip: skipSuite },
+		{ skip: skipSuite || (engine === 'lmdb' && skipLmdbArm) },
 		(ctx: ContextWithHarper) => {
-			const rangeCount = engine === 'rocksdb' ? ROCKSDB_RANGE_COUNT : LMDB_RANGE_COUNT;
-			const seedWaveSize = rangeCount / 3;
+			const rangeCount = RANGE_COUNT;
+			const seedWaveSize = Math.ceil(rangeCount / 3);
 			const delSampleIndexes = [
 				0,
 				1,
@@ -430,7 +441,12 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				Math.floor(rangeCount / 2),
 				rangeCount - 1,
 			];
-			const keepSampleIndexes = [rangeCount, rangeCount + 1, rangeCount * 1.5, rangeCount * 2 - 1];
+			const keepSampleIndexes = [
+				rangeCount,
+				rangeCount + 1,
+				rangeCount + Math.floor(rangeCount / 2),
+				rangeCount * 2 - 1,
+			];
 			const findings: string[] = [];
 			const armConfig = {
 				threads: { count: 1 },
@@ -480,7 +496,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						{ bucket: 'KEEP', start: rangeCount },
 					]) {
 						for (let offset = 0; offset < rangeCount; offset += seedWaveSize) {
-							await seedRange(ctx, start + offset, seedWaveSize, bucket);
+							await seedRange(ctx, start + offset, Math.min(seedWaveSize, rangeCount - offset), bucket);
 							await flush(ctx, engine);
 						}
 					}
@@ -563,7 +579,6 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						findings
 					);
 
-					// Bucket-wide counts keep the warm-up non-vacuous.
 					const restHits = await restQueryBucket(ctx, 'DEL');
 					const sbvHits = await searchByBucket(ctx, 'DEL');
 					const sqlHits = await sqlByBucket(ctx, 'DEL');
@@ -635,25 +650,8 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						findings
 					);
 
-					const detectorControl = await assertAbsentEverywhere(
-						ctx,
-						'4. DETECTOR POSITIVE CONTROL (known-present CTRL)',
-						[CTRL_IDS[0]],
-						'CTRL',
-						findings
-					);
-					strictEqual(
-						detectorControl.detail.length,
-						5,
-						`NON-VACUOUS POSITIVE CONTROL: expected one result from each of 5 absence probes, got ${detectorControl.detail.join(', ')}`
-					);
-					ok(
-						detectorControl.anyPhantom && detectorControl.detail.every((result) => result.includes('PHANTOM')),
-						`NON-VACUOUS POSITIVE CONTROL: every absence probe must flag known-present ${CTRL_IDS[0]}, got ${detectorControl.detail.join(', ')}`
-					);
-
 					// Armed control: must survive byte-correct on every surface, or a "clean" phantom
-					// result above would be meaningless (broken oracle, not a real absence).
+					// result would be meaningless (broken oracle, not a real absence).
 					await assertPresentEverywhere(
 						ctx,
 						'4. POST-DELETE CTRL (armed control)',
@@ -663,6 +661,27 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						(id) => 900_000 + CTRL_IDS.indexOf(id),
 						findings
 					);
+
+					const detectorIds = [CTRL_IDS[0]];
+					const detectorDiagnostics: string[] = [];
+					const detectorControl = await assertAbsentEverywhere(
+						ctx,
+						'4. DETECTOR POSITIVE CONTROL (known-present CTRL)',
+						detectorIds,
+						'CTRL',
+						detectorDiagnostics
+					);
+					strictEqual(
+						detectorControl.detail.length,
+						detectorIds.length * 2 + 3,
+						`NON-VACUOUS POSITIVE CONTROL: expected one result from every absence probe, got ${detectorControl.detail.join(', ')}`
+					);
+					ok(
+						detectorControl.anyPhantom && detectorControl.detail.every((result) => result.includes('PHANTOM')),
+						`NON-VACUOUS POSITIVE CONTROL: every absence probe must flag known-present ${CTRL_IDS[0]}, got ${detectorControl.detail.join(', ')}`
+					);
+					findings.push(`4. DETECTOR-ARMED: all ordinary-read probes flagged known-present ${CTRL_IDS[0]} as expected`);
+
 					// Scoping sanity: the non-deleted range must be untouched.
 					await assertPresentEverywhere(
 						ctx,
@@ -720,7 +739,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					);
 					const preWarmEntries = Array.isArray(preWarm.body?.[sampleId]) ? preWarm.body[sampleId] : [];
 					const preCutoffInsertEntries = preWarmEntries.filter((entry: any) =>
-						isPreCutoffInsert(entry, sampleId, cutoffTimestamp)
+						isPreCutoffInsert(entry, cutoffTimestamp)
 					);
 					ok(
 						preCutoffInsertEntries.length > 0,
@@ -804,9 +823,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					// NOT purge-eligible and legitimately survives -- only a still-present pre-cutoff
 					// entry is evidence of F-225 staleness. Counting any entry as "phantom" would flag
 					// this arm as reproducing F-225 on every run, purge bug or not.
-					const stalePreCutoffEntries = entries.filter((entry: any) =>
-						isPreCutoffInsert(entry, sampleId, cutoffTimestamp)
-					);
+					const stalePreCutoffEntries = entries.filter((entry: any) => isPreCutoffInsert(entry, cutoffTimestamp));
 					const phantomAudit = stalePreCutoffEntries.length > 0;
 
 					findings.push(

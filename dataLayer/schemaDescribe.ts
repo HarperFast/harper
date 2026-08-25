@@ -215,7 +215,7 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		// `getRecordCount` scans the table's primary store, which dominates describe latency on large
 		// tables -- and `describe_all` pays it serially for every table. Callers that only need schema
 		// /metadata can pass `skip_record_count: true` to omit the scan and fetch the count separately
-		// (e.g. asynchronously). The remaining stats below are O(1), so they are always included.
+		// (e.g. asynchronously). The remaining stats below are all small per-table storage reads.
 		if (!describeTableObject.skip_record_count) {
 			const recordCount = await tableObj.getRecordCount({ exactCount: !!describeTableObject.exact_count });
 			tableResult.record_count = recordCount.recordCount;
@@ -223,6 +223,13 @@ async function descTable(describeTableObject: any, attrPerms?: any) {
 		}
 		tableResult.table_size = tableObj.getSize();
 		tableResult.db_audit_size = tableObj.getAuditSize();
+		const structureCounts = tableObj.getStructureCounts?.();
+		if (structureCounts) {
+			tableResult.typed_structures_enabled = structureCounts.typedEnabled;
+			tableResult.typed_structure_count = structureCounts.typed;
+			tableResult.typed_structure_limit = structureCounts.typedLimit;
+			tableResult.classic_structure_count = structureCounts.classic;
+		}
 		let auditStore = tableObj.auditStore;
 		if (auditStore) {
 			for (let key of auditStore.getKeys({ reverse: true, limit: 1 })) {

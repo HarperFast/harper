@@ -73,13 +73,29 @@ export function evaluateSQL(jsonMessage: any, callback: any) {
  * @param parsedSqlObject - The Parsed SQL statement specified in the inbound json message, of type ParsedSQLObject.
  * @returns {Array} - False if permissions check denys the statement.
  */
-export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any) {
+export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any, apiOperation?: string) {
 	let verifyResult = undefined;
 	try {
 		verifyResult = opAuth.verifyPermsAST(
 			parsedSqlObject.ast.statements[0],
 			jsonMessage.hdb_user,
-			parsedSqlObject.variant
+			parsedSqlObject.variant,
+			// The top-level API operation for the token-scope check: `sql` for a direct SQL call, but
+			// `export_local`/`export_to_s3` when the SQL rides inside a job's search_operation.
+			//
+			// From the explicit argument or the dispatched operation — deliberately NEVER a field read
+			// off `jsonMessage`. On the direct-SQL path that object IS the client's request body, and
+			// this check is the ONLY gate there, since the `sql` branch of chooseOperation is mutually
+			// exclusive with its verifyPerms call. Any body field consulted here is therefore a way for
+			// a caller to name whichever operation their token scope happens to allow and run arbitrary
+			// SQL under it.
+			//
+			// That rules out carrying the job's real operation on the request too. A job re-parses from
+			// its nested search_operation, so this sees `sql` rather than `export_local` there — which
+			// today changes nothing, because the branch in processAST that would act on the denial is
+			// dead (see #2202). When #2202 makes it live, the job's operation needs a carrier that a
+			// client cannot forge; a request property is not one, however carefully it is stripped.
+			apiOperation ?? jsonMessage.operation
 		);
 		parsedSqlObject.permissions_checked = true;
 	} catch (e) {
@@ -136,6 +152,11 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 		// server/serverHelpers/serverHandlers.js and components/mcp/tools/operations.ts).
 		if (!isOperationAuthorizationBypassed() && !parsedSqlObject.permissions_checked) {
 			let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject);
+			// NOTE: this guard is dead — PermissionResponseObject has no `length`, so `undefined > 0`
+			// discards a denial that was computed correctly. Pre-existing and not specific to this
+			// feature, so it is fixed separately in #2202 rather than bundled here. This PR does not
+			// depend on it: the outer gate in serverUtilities refuses an out-of-scope job operation,
+			// and sqlWriteScopeDenial refuses write SQL, both through correct truthiness tests.
 			if (permissionsCheck && permissionsCheck.length > 0) {
 				return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);
 			}

@@ -962,15 +962,23 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
 		recheck: async () => {
-			// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
-			// role-stripped user no longer authorizes.
-			const { findAndValidateUser } = require('../security/user');
-			const fresh: any = await findAndValidateUser(username, undefined, false);
-			if (!fresh?.role) return false;
-			// Advance the subscription's context to the fresh user so downstream checks — context.user
-			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
-			// not the stale user captured at subscribe time.
-			if (context) (context as any).user = fresh;
+			let fresh: any;
+			if (user._scopedToken) {
+				// A scoped token's identity IS its embedded role — never re-resolve its attribution
+				// username against hdb_user (it may not exist, or may name an unrelated principal
+				// created later). Expiry (authExpiresAt above) is its only revocation.
+				fresh = user;
+			} else {
+				// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
+				// role-stripped user no longer authorizes.
+				const { findAndValidateUser } = require('../security/user');
+				fresh = await findAndValidateUser(username, undefined, false);
+				if (!fresh?.role) return false;
+				// Advance the subscription's context to the fresh user so downstream checks — context.user
+				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
+				// not the stale user captured at subscribe time.
+				if (context) (context as any).user = fresh;
+			}
 			// Re-run the same operation-level allowRead that granted the subscription.
 			const reTarget: any = cloneRequestTarget(admittedTarget);
 			reTarget.checkPermission = fresh.role?.permission;

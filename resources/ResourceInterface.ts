@@ -75,6 +75,21 @@ export interface Context {
 	 * so code that commits mid-handler can keep using its context. LMDBTransaction does not release,
 	 * so there the completed transaction itself stays in the slot — also safe to call, but retained.
 	 * `null` was the previous released marker and is still accepted defensively.
+	 *
+	 * A transaction its own handler commits mid-scope is rotated to a fresh open generation, so the rest
+	 * of that scope's writes are committed — or rolled back — with the scope's final commit rather than
+	 * each committing itself immediately. Two cases keep the older per-write behavior: a commit made
+	 * while a read iterator still holds the transaction's handle (that handle is the iterator's until it
+	 * drains), and a commit that failed. LMDB has always behaved this way; the RocksDB path now matches.
+	 *
+	 * The engines still differ on reads. A rotated RocksDB generation is snapshot-free, so the rest of
+	 * the scope keeps seeing other writers' committed data — which is what committing mid-scope asks for.
+	 * LMDB cannot open a snapshot-free read transaction, so there the scope keeps its snapshot.
+	 *
+	 * Because the writes after a mid-scope commit stage rather than commit one at a time, a single
+	 * mid-scope commit does not bound how much a long handler holds in memory. A handler streaming a
+	 * large volume should keep committing (a checkpoint every N records), which commits each batch and
+	 * rotates again.
 	 */
 	transaction?: DatabaseTransaction | null;
 	/**	 If the operation that will be performed with this context should check user authorization	 */

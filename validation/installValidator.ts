@@ -5,6 +5,7 @@ const { string, number } = Joi.types();
 import * as fs from 'fs-extra';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as path from 'path';
+import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import * as validator from './validationWrapper.ts';
 
 export default installValidator;
@@ -22,9 +23,23 @@ function installValidator(param) {
 			null
 		),
 		[(hdbTerms.INSTALL_PROMPTS as any).TC_AGREEMENT]: string.valid('yes', 'YES', 'Yes'),
+		// Catch a bad node identity here rather than at first boot. This runs after the v5 migration
+		// copies REPLICATION_HOSTNAME into NODE_HOSTNAME, so an upgrade carrying a URL-ish value is
+		// reported during install with the same reason the config boundary would give (harper#2218).
+		[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME]: Joi.custom(validateNodeHostname).allow('null', null),
 	});
 
 	return validator.validateBySchema(param, installSchema);
+}
+
+function validateNodeHostname(value, helpers) {
+	const violation = bareHostViolation(value);
+	if (violation) {
+		return helpers.message(
+			`{{#label}} ${violation}; it must be a bare hostname or IP literal (no scheme, port, or path) because it is this node's identity`
+		);
+	}
+	return value;
 }
 
 function validateRootAvailable(value, helpers) {

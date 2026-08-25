@@ -144,6 +144,11 @@ export const DEFAULT_ALLOW: readonly string[] = [
  * `mcp.operations.allow` (an explicit allow list replaces the default and is
  * not filtered by this set), where the audit-log redaction of
  * `value`/`values`/`envelope` applies.
+ *
+ * OIDC trust policies (#2171) are excluded on the same grounds and then some: a
+ * policy grants an external CI workflow the right to authenticate as a Harper
+ * user, so reading the set tells an attacker exactly which repository and
+ * workflow to compromise, and writing one is a way to grant itself access.
  */
 export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'set_secret',
@@ -152,6 +157,10 @@ export const DEFAULT_EXCLUDED: ReadonlySet<string> = new Set([
 	'list_secrets',
 	'delete_secret',
 	'get_secrets_public_key',
+	'add_oidc_trust',
+	'list_oidc_trust',
+	'drop_oidc_trust',
+	'exchange_oidc_token',
 ]);
 
 /**

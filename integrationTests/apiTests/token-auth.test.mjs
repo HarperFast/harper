@@ -39,6 +39,7 @@ suite('Token authentication', (ctx) => {
 	let admin;
 	let operationToken;
 	let refreshToken;
+	let scopedToken;
 	let authorizeLocal;
 
 	before(async () => {
@@ -192,5 +193,188 @@ suite('Token authentication', (ctx) => {
 		const response = await client.req().send({ operation: 'create_authentication_tokens' }).expect(200);
 		assert.notStrictEqual(response.body.operation_token, undefined, response.text);
 		assert.notStrictEqual(response.body.refresh_token, undefined, response.text);
+	});
+
+	test('scoped token: super_user mints an inline-role token for a non-existent username', async () => {
+		const response = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'reporting-service',
+				role: {
+					permission: {
+						operations: ['read_only'],
+						[SCHEMA]: {
+							tables: {
+								// insert deliberately granted: the operations allowlist must still deny the insert op
+								[TABLE]: { read: true, insert: true, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			})
+			.expect(200);
+		assert.notStrictEqual(response.body.operation_token, undefined, response.text);
+		assert.strictEqual(response.body.refresh_token, undefined, response.text);
+		scopedToken = response.body.operation_token;
+	});
+
+	test('scoped token bearer can run a listed read operation', async () => {
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({
+				operation: 'search_by_hash',
+				schema: SCHEMA,
+				table: TABLE,
+				primary_key: PRIMARY_KEY,
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
+			.expect(200);
+	});
+
+	test('scoped token bearer reports its attribution username via user_info', async () => {
+		const response = await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({ operation: 'user_info' })
+			.expect(200);
+		assert.equal(response.body.username, 'reporting-service', response.text);
+	});
+
+	test('scoped token bearer is denied an unlisted operation despite table-level permission', async () => {
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({
+				operation: 'insert',
+				schema: SCHEMA,
+				table: TABLE,
+				records: [{ employeeid: 99, firstname: 'Denied' }],
+			})
+			.expect((r) => assert.ok(r.text.includes('not permitted'), r.text))
+			.expect(403);
+	});
+
+	test('scoped token bearer is denied super_user-only operations', async () => {
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({ operation: 'get_configuration' })
+			.expect(403);
+	});
+
+	test('scoped token can invoke an explicitly-listed super_user-only operation (gate-2 delegation)', async () => {
+		// get_configuration is SU-only; listing it in operations is a deliberate admin grant, so the
+		// gate-2 bypass must allow it for this non-super_user scoped token.
+		const mint = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'config-reader',
+				role: { permission: { operations: ['get_configuration'] } },
+			})
+			.expect(200);
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${mint.body.operation_token}`)
+			.send({ operation: 'get_configuration' })
+			.expect(200);
+	});
+
+	test('scoped token mint with an unknown operation name is rejected', async () => {
+		await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				role: { permission: { operations: ['totally_fake_op'] } },
+			})
+			.expect((r) => assert.ok(r.text.includes('totally_fake_op'), r.text))
+			.expect(400);
+	});
+
+	test('scoped token allowlist is enforced on the SQL path', async () => {
+		// operations includes sql (via read_only) → SELECT allowed
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${scopedToken}`)
+			.send({ operation: 'sql', sql: `SELECT * FROM ${SCHEMA}.${TABLE} WHERE ${PRIMARY_KEY} = 1` })
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
+			.expect(200);
+
+		// operations without sql → SQL denied even though table CRUD perms would allow the read
+		const noSqlMint = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'no-sql-service',
+				role: {
+					permission: {
+						operations: ['search_by_hash'],
+						[SCHEMA]: {
+							tables: {
+								[TABLE]: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+			})
+			.expect(200);
+		await request(client.operationsURL)
+			.post('')
+			.set('Content-Type', 'application/json')
+			.set('Authorization', `Bearer ${noSqlMint.body.operation_token}`)
+			.send({ operation: 'sql', sql: `SELECT * FROM ${SCHEMA}.${TABLE} WHERE ${PRIMARY_KEY} = 1` })
+			.expect((r) => assert.ok(r.text.includes('not permitted'), r.text))
+			.expect(403);
+	});
+
+	test('an expired scoped token stops working through the authorization cache', async () => {
+		const mintResponse = await client
+			.req()
+			.send({
+				operation: 'create_authentication_tokens',
+				username: 'short-lived',
+				role: {
+					permission: {
+						operations: ['read_only'],
+						[SCHEMA]: {
+							tables: {
+								[TABLE]: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+							},
+						},
+					},
+				},
+				expires_in: '2s',
+			})
+			.expect(200);
+		const shortToken = mintResponse.body.operation_token;
+		const search = () =>
+			request(client.operationsURL)
+				.post('')
+				.set('Content-Type', 'application/json')
+				.set('Authorization', `Bearer ${shortToken}`)
+				.send({
+					operation: 'search_by_hash',
+					schema: SCHEMA,
+					table: TABLE,
+					primary_key: PRIMARY_KEY,
+					hash_values: [1],
+					get_attributes: ['*'],
+				});
+		// first use validates and populates the authorization cache; second proves the cached path
+		await search().expect(200);
+		await search().expect(200);
+		await new Promise((resolve) => setTimeout(resolve, 2500));
+		// expiry must be exact even for a cached identity, and must reject — not act as anonymous
+		await search().expect(401);
 	});
 });

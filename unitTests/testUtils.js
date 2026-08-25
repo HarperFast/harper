@@ -506,11 +506,45 @@ function orderedArray(iterator) {
 	return array;
 }
 
+/**
+ * Writes a throwaway RSA keypair where getJWTRSAKeys() looks for it, and returns a cleanup function
+ * that removes exactly the files it created.
+ *
+ * The keys directory is shared with unitTests/utility/install/checkJWTTokensExist.test.js, whose
+ * happy path asserts those files are ABSENT (it expects accessSync to throw ENOENT). Mocha runs
+ * every file in one process against one base path, so a test that writes keys and does not clean up
+ * silently breaks that suite depending on file order — which is exactly how it broke, and why this
+ * lives here instead of being copy-pasted into each caller.
+ */
+function installTestJwtKeys() {
+	const { generateKeyPairSync } = require('node:crypto');
+	const passphrase = 'test-passphrase';
+	const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+		modulusLength: 2048,
+		publicKeyEncoding: { type: 'spki', format: 'pem' },
+		privateKeyEncoding: { type: 'pkcs8', format: 'pem', cipher: 'aes-256-cbc', passphrase },
+	});
+	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
+	fs.mkdirpSync(keysDir);
+
+	const written = [
+		[path.join(keysDir, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), privateKey],
+		[path.join(keysDir, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), publicKey],
+		[path.join(keysDir, terms.JWT_ENUM.JWT_PASSPHRASE_NAME), passphrase],
+	];
+	for (const [file, contents] of written) fs.writeFileSync(file, contents);
+
+	return function removeTestJwtKeys() {
+		for (const [file] of written) fs.removeSync(file);
+	};
+}
+
 module.exports = {
 	changeProcessToBinDir,
 	deepClone,
 	mochaAsyncWrapper,
 	preTestPrep,
+	installTestJwtKeys,
 	cleanUpDirectories,
 	createMockDB,
 	tearDownMockDB,

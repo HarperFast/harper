@@ -16,6 +16,20 @@ import type { AgentMessage, AgentRunStatus, AgentSessionRow, ApprovalRequest } f
 
 let cachedTable: any;
 
+/** `listSessions` sorts on `updatedAt`, which Table.search serves only from an index. */
+export const AGENT_SESSION_ATTRIBUTES = [
+	{ name: 'session_id', isPrimaryKey: true },
+	{ name: 'user', type: 'string', indexed: true },
+	{ name: 'status', type: 'string', indexed: true },
+	{ name: 'messages' },
+	{ name: 'pendingApprovals' },
+	{ name: 'model', type: 'string' },
+	{ name: 'provider', type: 'string' },
+	{ name: 'createdAt', type: 'number', indexed: true },
+	{ name: 'updatedAt', type: 'number', indexed: true },
+	{ name: 'lastError', type: 'string' },
+];
+
 export function getAgentSessionTable(): any {
 	if (cachedTable) return cachedTable;
 	cachedTable = table({
@@ -23,18 +37,7 @@ export function getAgentSessionTable(): any {
 		database: SYSTEM_SCHEMA_NAME,
 		audit: true,
 		trackDeletes: false,
-		attributes: [
-			{ name: 'session_id', isPrimaryKey: true },
-			{ name: 'user', type: 'string', indexed: true },
-			{ name: 'status', type: 'string', indexed: true },
-			{ name: 'messages' },
-			{ name: 'pendingApprovals' },
-			{ name: 'model', type: 'string' },
-			{ name: 'provider', type: 'string' },
-			{ name: 'createdAt', type: 'number', indexed: true },
-			{ name: 'updatedAt', type: 'number', indexed: true },
-			{ name: 'lastError', type: 'string' },
-		],
+		attributes: AGENT_SESSION_ATTRIBUTES,
 	});
 	return cachedTable;
 }
@@ -77,8 +80,16 @@ export async function getSession(sessionId: string): Promise<AgentSessionRow | u
 export async function listSessions(opts: { limit?: number } = {}): Promise<AgentSessionRow[]> {
 	const limit = opts.limit ?? 100;
 	const out: AgentSessionRow[] = [];
-	for (const entry of getAgentSessionTable().primaryStore.getRange({ reverse: true, limit })) {
-		if (entry.value) out.push(entry.value as AgentSessionRow);
+	// Sort with no conditions on purpose: Table.search pushes an order-aligned pseudo-condition when
+	// the sort attribute is indexed, and throws 404 when it is not. Adding a `updatedAt > 0` sentinel
+	// to force the index would make conditions non-empty, so losing `indexed` on the attribute would
+	// silently degrade to decoding every session (full transcripts) and sorting in memory instead of
+	// failing. The sentinel would also drop rows whose updatedAt is absent or 0.
+	for await (const row of getAgentSessionTable().search({
+		sort: { attribute: 'updatedAt', descending: true },
+		limit,
+	})) {
+		if (row != null) out.push(row as AgentSessionRow);
 	}
 	return out;
 }

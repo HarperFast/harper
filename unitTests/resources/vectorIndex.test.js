@@ -596,6 +596,342 @@ describe('HNSW graph-size resolution (drives the ef auto-scale)', () => {
 	});
 });
 
+describe('HNSW construction ef auto-scale (#2180)', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	let Pinned;
+	let SearchPinned;
+
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWEfcAutoScaleTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+		Pinned = table({
+			table: 'HNSWEfcPinnedTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine', efConstruction: 64 }, type: 'Array' },
+			],
+		});
+		SearchPinned = table({
+			table: 'HNSWSearchEfPinnedTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{
+					name: 'vector',
+					indexed: { type: 'HNSW', distance: 'cosine', efConstructionSearch: 1500 },
+					type: 'Array',
+				},
+			],
+		});
+	});
+
+	after(() => {
+		T.dropTable();
+		Pinned.dropTable();
+		SearchPinned.dropTable();
+	});
+
+	// The efs the connection pass actually searched with during one put. The routing descent runs at
+	// ROUTING_EF (1), so every ef > 1 seen during index() is the resolved efConstruction.
+	async function connectionEfsDuringPut(Table, id) {
+		const customIndex = Table.indices.vector.customIndex;
+		const original = Object.getPrototypeOf(customIndex).searchLayer;
+		const efs = new Set();
+		customIndex.searchLayer = function (queryVector, entryPointId, entryPoint, ef, level, ...rest) {
+			if (ef > 1) efs.add(ef);
+			return original.call(this, queryVector, entryPointId, entryPoint, ef, level, ...rest);
+		};
+		try {
+			const a = (id / 100) * Math.PI * 2;
+			await Table.put(id, { vector: [Math.cos(a), Math.sin(a), (id % 5) / 5] });
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		return efs;
+	}
+
+	// Force the resolved node count (the write path reads it directly, not through the memo) so the
+	// scale point is exercised without building a 1M-node graph. Instance-level shadow; the count
+	// source itself is covered by the graph-size describe above.
+	async function withNodeCount(Table, count, run) {
+		const customIndex = Table.indices.vector.customIndex;
+		customIndex.resolveNodeCount = () => count;
+		try {
+			return await run();
+		} finally {
+			delete customIndex.resolveNodeCount;
+		}
+	}
+
+	async function captureFilteredSearch(Table, count, searchCondition = {}) {
+		const customIndex = Table.indices.vector.customIndex;
+		const originalSearchLayer = Object.getPrototypeOf(customIndex).searchLayer;
+		let layer0Ef = 0;
+		const budgets = [];
+		customIndex.searchLayer = function (v, epId, ep, ef, level, options, distanceFn, filter, filterState) {
+			if (level === 0) layer0Ef = ef;
+			if (filterState) budgets.push(filterState.maxVisits);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, options, distanceFn, filter, filterState);
+		};
+		try {
+			await withNodeCount(Table, count, () => {
+				customIndex.nodeCountAt = 0;
+				customIndex.search(
+					{ target: [1, 0, 0], comparator: 'sort', ...searchCondition },
+					{ transaction: undefined },
+					() => true
+				);
+			});
+		} finally {
+			delete customIndex.searchLayer;
+		}
+		return { layer0Ef, budgets: [...new Set(budgets)] };
+	}
+
+	function captureLimitDerivedLayer0Ef(Table, minResults) {
+		const customIndex = Table.indices.vector.customIndex;
+		const originalSearchLayer = customIndex.searchLayer;
+		let layer0Ef = 0;
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			if (level === 0) layer0Ef = ef;
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		};
+		try {
+			customIndex.search({ target: [1, 0, 0], comparator: 'sort' }, { transaction: undefined }, undefined, minResults);
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+		return layer0Ef;
+	}
+
+	it('builds small graphs at the base efConstruction, unchanged', async () => {
+		for (let i = 0; i < 20; i++) {
+			const a = (i / 20) * Math.PI * 2;
+			await T.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const efs = await connectionEfsDuringPut(T, 20);
+		assert.deepStrictEqual([...efs], [100], `expected the base efConstruction below the scale point, got ${[...efs]}`);
+	});
+
+	it('scales the connection candidate list once the graph passes the reference size', async () => {
+		// base 100 * sqrt(1M / 250K) = 200 — the point measured in #2180 (recall 0.935 -> 0.985)
+		const efs = await withNodeCount(T, 1_000_000, () => connectionEfsDuringPut(T, 21));
+		assert.deepStrictEqual([...efs], [200], `expected the auto-scaled efConstruction at 1M nodes, got ${[...efs]}`);
+	});
+
+	it('caps the auto-scale at AUTO_EFC_MAX', async () => {
+		// 100 * sqrt(100M / 250K) = 2000, capped at 1024
+		const efs = await withNodeCount(T, 100_000_000, () => connectionEfsDuringPut(T, 22));
+		assert.deepStrictEqual([...efs], [1024], `expected the capped efConstruction, got ${[...efs]}`);
+	});
+
+	// The search-side scale resumes past AUTO_EF_LARGE_REF (the 512 plateau was measured sufficient
+	// through 1M nodes and short from 2M up — set-recall 0.997 -> 0.955 -> 0.935 across 1M/2M/5M).
+	// The second regime is anchored to pass through (1M, 512); the 5M point resolves 1,145, bracketed
+	// by the measured ef-1024 sweep there (0.985 set-recall).
+	for (const [nodes, expected] of [
+		[1_000_000, 512],
+		[2_000_000, 724],
+		[5_000_000, 1145],
+		[100_000_000, 2048],
+	]) {
+		it(`resolves search ef ${expected} at ${nodes.toLocaleString('en-US')} nodes`, async () => {
+			const efs = await withNodeCount(T, nodes, async () => {
+				const customIndex = T.indices.vector.customIndex;
+				customIndex.nodeCountAt = 0; // expire the memo so the search re-resolves through the shadow
+				const layer0Ef = await captureLayer0Ef(T, { limit: 10 });
+				return layer0Ef;
+			});
+			assert.strictEqual(efs, expected, `expected the auto-scaled search ef at ${nodes} nodes, got ${efs}`);
+		});
+	}
+
+	it('caps the filtered visit budget when the auto-scaled search ef exceeds AUTO_EF_MAX', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(T, 5_000_000);
+		assert.strictEqual(layer0Ef, 1145, 'the test must reach the second search-ef regime');
+		assert.deepStrictEqual(
+			budgets,
+			[512 * customIndex.filterExpansion],
+			'the automatic filtered budget must stay capped at AUTO_EF_MAX'
+		);
+	});
+
+	it('lets an explicit query ef raise the filtered visit budget', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(T, 5_000_000, { ef: 3000 });
+		assert.strictEqual(layer0Ef, 3000);
+		assert.deepStrictEqual(budgets, [3000 * customIndex.filterExpansion]);
+	});
+
+	it('lets an explicit schema ef raise the filtered visit budget', async () => {
+		for (let i = 0; i < 3; i++) await SearchPinned.put(i, { vector: [1, i / 10, 0] });
+		const customIndex = SearchPinned.indices.vector.customIndex;
+		const { layer0Ef, budgets } = await captureFilteredSearch(SearchPinned, 5_000_000);
+		assert.strictEqual(layer0Ef, 1500);
+		assert.deepStrictEqual(budgets, [1500 * customIndex.filterExpansion]);
+	});
+
+	it('leaves an explicit schema ef authoritative over the limit-derived floor', async () => {
+		for (const [Table, expectedEf] of [
+			[Pinned, 64],
+			[SearchPinned, 1500],
+		]) {
+			for (let i = 0; i < 3; i++) await Table.put(i, { vector: [1, i / 10, 0] });
+			const layer0Ef = captureLimitDerivedLayer0Ef(Table, 3000);
+			assert.strictEqual(layer0Ef, expectedEf, 'a schema search-ef pin must cap limit-derived widening');
+		}
+	});
+
+	// The refactor's stated mechanism, not just the formula: an update-only worker (counter absent,
+	// as after a restart with no new inserts) must ensure the shared counter with ONE seek, then read
+	// it atomically — never a reverse seek per write, and never a failed write if the seek throws.
+	it('an update-only path ensures the shared counter once instead of seeking per write', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		customIndex.idIncrementer = undefined;
+		const store = customIndex.indexStore;
+		const originalGetKeys = store.getKeys;
+		let seeks = 0;
+		store.getKeys = function (opts, ...rest) {
+			if (opts?.reverse) seeks++;
+			return originalGetKeys.call(this, opts, ...rest);
+		};
+		try {
+			// ids 0 and 1 already exist in T, so both puts take the update path and never allocate an id
+			await T.put(0, { vector: [1, 0, 0.2] });
+			await T.put(1, { vector: [0.9, 0.1, 0.2] });
+			assert(customIndex.idIncrementer, 'the update path must ensure the shared counter');
+			assert.strictEqual(seeks, 1, `the counter seed should be the only reverse seek, got ${seeks}`);
+		} finally {
+			store.getKeys = originalGetKeys;
+			if (!customIndex.idIncrementer) customIndex.idIncrementer = saved;
+		}
+	});
+
+	it('falls back to a memoized count and backs off after a shared-counter attach failure', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		const savedNodeCount = customIndex.nodeCount;
+		const savedNodeCountAt = customIndex.nodeCountAt;
+		const savedRetryAt = customIndex.idIncrementerRetryAt;
+		const savedFailureLogged = customIndex.idIncrementerFailureLogged;
+		customIndex.idIncrementer = undefined;
+		customIndex.nodeCountAt = 0;
+		const store = customIndex.indexStore;
+		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		const originalGetKeys = store.getKeys;
+		let attachAttempts = 0;
+		const seekTransactions = [];
+		store.getKeys = function* (options) {
+			if (options?.reverse) {
+				seekTransactions.push(options.transaction);
+				yield 999_999;
+				return;
+			}
+			yield* originalGetKeys.call(this, options);
+		};
+		store.getUserSharedBuffer = () => {
+			attachAttempts++;
+			throw new Error('simulated shared-buffer attach failure');
+		};
+		try {
+			const firstEfs = await connectionEfsDuringPut(T, 0);
+			const secondEfs = await connectionEfsDuringPut(T, 1);
+			assert.strictEqual(customIndex.idIncrementer, undefined, 'a failed attach must not install a counter');
+			assert.deepStrictEqual([...firstEfs], [200], 'the fallback count must preserve the construction scale');
+			assert.deepStrictEqual([...secondEfs], [200], 'the memoized fallback must preserve the scale');
+			assert.strictEqual(attachAttempts, 1, 'the attach must not be retried on every update');
+			assert.strictEqual(seekTransactions.length, 1, 'the attach seed seek must also supply the fallback count');
+			assert(seekTransactions[0], 'the counter seed seek must use the write transaction');
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementerRetryAt = 0;
+			await T.put(1, { vector: [0.7, 0.3, 0.1] });
+			assert(customIndex.idIncrementer, 'the attach must be retryable once the backoff expires');
+			assert.strictEqual(customIndex.idIncrementerFailureLogged, false, 'recovery must re-arm the warning');
+		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementer = saved;
+			customIndex.nodeCount = savedNodeCount;
+			customIndex.nodeCountAt = savedNodeCountAt;
+			customIndex.idIncrementerRetryAt = savedRetryAt;
+			customIndex.idIncrementerFailureLogged = savedFailureLogged;
+		}
+	});
+
+	it('keeps construction count resolution best-effort on the write path', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		customIndex.resolveConstructionNodeCount = () => {
+			throw new RangeError('simulated unusable counter');
+		};
+		try {
+			const efs = await connectionEfsDuringPut(T, 2);
+			assert.deepStrictEqual([...efs], [100], 'count resolution failure must retain the base efConstruction');
+		} finally {
+			delete customIndex.resolveConstructionNodeCount;
+		}
+	});
+
+	it('does not cache an unusable shared-counter buffer', async () => {
+		const customIndex = T.indices.vector.customIndex;
+		const saved = customIndex.idIncrementer;
+		const savedNodeCount = customIndex.nodeCount;
+		const savedNodeCountAt = customIndex.nodeCountAt;
+		const savedRetryAt = customIndex.idIncrementerRetryAt;
+		const savedFailureLogged = customIndex.idIncrementerFailureLogged;
+		customIndex.idIncrementer = undefined;
+		customIndex.nodeCountAt = 0;
+		const store = customIndex.indexStore;
+		const originalGetUserSharedBuffer = store.getUserSharedBuffer;
+		const originalGetKeys = store.getKeys;
+		let seekCount = 0;
+		store.getKeys = function* (options) {
+			if (options?.reverse) {
+				seekCount++;
+				yield 999_999;
+				return;
+			}
+			yield* originalGetKeys.call(this, options);
+		};
+		store.getUserSharedBuffer = () => new ArrayBuffer(0);
+		try {
+			const efs = await connectionEfsDuringPut(T, 0);
+			assert.strictEqual(customIndex.idIncrementer, undefined);
+			assert.deepStrictEqual([...efs], [200]);
+			assert.strictEqual(seekCount, 1, 'the unusable buffer fallback must reuse the attach seed seek');
+		} finally {
+			store.getUserSharedBuffer = originalGetUserSharedBuffer;
+			store.getKeys = originalGetKeys;
+			customIndex.idIncrementer = saved;
+			customIndex.nodeCount = savedNodeCount;
+			customIndex.nodeCountAt = savedNodeCountAt;
+			customIndex.idIncrementerRetryAt = savedRetryAt;
+			customIndex.idIncrementerFailureLogged = savedFailureLogged;
+		}
+	});
+
+	it('leaves an explicitly configured efConstruction authoritative at any graph size', async () => {
+		for (let i = 0; i < 5; i++) {
+			const a = (i / 5) * Math.PI * 2;
+			await Pinned.put(i, { vector: [Math.cos(a), Math.sin(a), (i % 5) / 5] });
+		}
+		const efs = await withNodeCount(Pinned, 1_000_000, () => connectionEfsDuringPut(Pinned, 5));
+		assert.deepStrictEqual([...efs], [64], `expected the schema-configured efConstruction, got ${[...efs]}`);
+	});
+});
+
 describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;
@@ -757,7 +1093,7 @@ describe('HNSW limit above the resolved search ef', () => {
 	]) {
 		it(`bounds the limit-derived ef at LIMIT_EF_MAX under ${label}`, async () => {
 			const layer0Ef = await captureLayer0Ef(T, query);
-			assert.strictEqual(layer0Ef, 4 * 512, `layer-0 ef should be LIMIT_EF_MAX (${4 * 512}), got ${layer0Ef}`);
+			assert.strictEqual(layer0Ef, 2 * 2048, `layer-0 ef should be LIMIT_EF_MAX (${2 * 2048}), got ${layer0Ef}`);
 		});
 	}
 
