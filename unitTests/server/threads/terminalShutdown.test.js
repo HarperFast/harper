@@ -33,6 +33,11 @@ describe('terminal worker shutdown', () => {
 		assert.deepEqual(await runHarness('unexpected'), { starts: 1, workersAfterExit: 0 });
 	});
 
+	it('does not start a non-overlapping replacement after terminal shutdown begins', async function () {
+		this.timeout(30000);
+		assert.deepEqual(await runHarness('non-overlapping'), { starts: 1, workersAfterShutdown: 0 });
+	});
+
 	it('allows worker creation after a scoped shutdown', async function () {
 		this.timeout(30000);
 		assert.deepEqual(await runHarness('scoped'), { workerCreationAllowed: true });

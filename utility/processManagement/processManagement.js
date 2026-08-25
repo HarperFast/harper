@@ -10,6 +10,8 @@ const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { execFile, fork } = require('node:child_process');
 
+const INIT_PROCESS_NAMES = new Set(['docker-init', 'dumb-init', 'init', 's6-svscan', 'systemd', 'tini']);
+
 module.exports = {
 	start,
 	restart,
@@ -120,28 +122,23 @@ function getHdbPid() {
 	const pidFile = path.join(harperPath, hdbTerms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
 	if (!hdbPid || hdbPid === process.pid) return;
-	// The current image runs Harper below an init process, but a persistent volume may still contain PID 1 from
-	// an older image. Only ignore that PID when procfs confirms PID 1 is not another Harper runtime.
-	if (hdbPid === 1 && !isHarperRuntimeProcess(hdbPid)) return;
+	// A persistent volume from an older image may contain PID 1 after the current image puts an init at that PID.
+	if (hdbPid === 1 && isInitProcess(hdbPid)) return;
 	if (isProcessRunning(hdbPid)) return hdbPid;
 	// return undefined
 }
 
-function isHarperRuntimeProcess(pid) {
-	let executable;
+function isInitProcess(pid) {
 	try {
-		executable = path.basename(fs.readlinkSync(`/proc/${pid}/exe`));
+		return INIT_PROCESS_NAMES.has(path.basename(fs.readlinkSync(`/proc/${pid}/exe`)));
 	} catch {
-		// Some procfs configurations expose cmdline but restrict the executable symlink.
+		// Some procfs configurations expose the process name but restrict the executable symlink.
 	}
 	try {
-		const commandLine = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
-		return commandLine.some((argument) => /(?:^|[/\\])harper(?:\.js)?$/i.test(argument));
+		return INIT_PROCESS_NAMES.has(fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim());
 	} catch {
-		// A known init executable is enough to identify a stale PID file even when cmdline is restricted. Otherwise
-		// fail closed and preserve the existing running-process guard.
-		if (executable && !['node', 'bun'].includes(executable) && !/^harper(?:\.exe)?$/i.test(executable)) return false;
-		return true;
+		// Fail closed: an unidentified live PID still blocks a second Harper process.
+		return false;
 	}
 }
 function kill() {

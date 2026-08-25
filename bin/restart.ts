@@ -57,31 +57,39 @@ async function restart(req: any) {
 	if (isMainThread) {
 		hdbLogger.notify(RESTART_RESPONSE);
 
-		if (envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
+		if (envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) {
+			hdbLogger.info('Compacting storage before restart; the restart timeout begins after compaction completes');
+			await compactOnStart();
+		}
 
 		setTimeout(async () => {
-			if (process.env.HARPER_EXIT_ON_RESTART) armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS);
-			// It seems like you should just be able to start the other process and kill this process and everything should
-			// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
-			// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
-			// connections and hanging. So we need to explicitly close down all the workers and then start the new process
-			// and shut down.
-			hdbLogger.debug('Shutdown workers');
-			await shutdownWorkersNow();
-			const { closeServers } = require('../server/threads/threadServer.js');
-			await closeServers();
-			await processMan.cleanupChildrenProcesses(false);
-			// remove pid file so it doesn't trip up the launch
-			unlinkSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE));
-			hdbLogger.debug('Starting new process...');
-			if (process.env.HARPER_EXIT_ON_RESTART) {
-				// use this to exit the process so that it will be restarted by the
-				// PM/container/orchestrator.
-				hdbLogger.warn('Exiting Harper process to trigger a container restart');
-				process.exit(0);
+			try {
+				if (process.env.HARPER_EXIT_ON_RESTART) armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS);
+				// It seems like you should just be able to start the other process and kill this process and everything should
+				// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
+				// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
+				// connections and hanging. So we need to explicitly close down all the workers and then start the new process
+				// and shut down.
+				hdbLogger.debug('Shutdown workers');
+				await shutdownWorkersNow();
+				const { closeServers } = require('../server/threads/threadServer.js');
+				await closeServers();
+				await processMan.cleanupChildrenProcesses(false);
+				// remove pid file so it doesn't trip up the launch
+				unlinkSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE));
+				hdbLogger.debug('Starting new process...');
+				if (process.env.HARPER_EXIT_ON_RESTART) {
+					// use this to exit the process so that it will be restarted by the
+					// PM/container/orchestrator.
+					hdbLogger.warn('Exiting Harper process to trigger a container restart');
+					process.exit(0);
+				}
+				// now launch the new process and exit this process
+				require('./run').launch(true);
+			} catch (error) {
+				hdbLogger.fatal('Restart teardown failed; exiting Harper', error);
+				process.exit(1);
 			}
-			// now launch the new process and exit this process
-			require('./run').launch(true);
 		}, 50); // can't await this because it is going to do an exit(), but wait for 50ms so we give the HTTP thread a
 		// chance to return a response
 	} else {

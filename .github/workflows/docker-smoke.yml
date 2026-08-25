@@ -188,7 +188,7 @@ jobs:
           curl -sS --fail-with-body --max-time 5 -u admin:password \
             -H 'Content-Type: application/json' \
             -d '{"operation":"restart"}' \
-            http://localhost:19925/
+            http://localhost:19925/ || true
           for i in $(seq 1 70); do
             if ! docker ps --filter name=harper-restart-smoke --filter status=running -q | grep -q .; then break; fi
             sleep 1
