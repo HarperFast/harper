@@ -488,10 +488,14 @@ async function ensureSystemTables() {
 	if (!certificateTable) {
 		throw new Error('ensureSystemTables(): generateCertsKeys() did not initialize system.hdb_certificate');
 	}
+	const certificatesToRename = [];
 	for await (const cert of certificateTable.search([])) {
 		if (cert.private_key_name === PRIVATEKEY_PEM_NAME) {
-			await keys.setCertTable({ ...cert, private_key_name: path.basename(testKeyPath) });
+			certificatesToRename.push(cert);
 		}
+	}
+	for (const cert of certificatesToRename) {
+		await keys.setCertTable({ ...cert, private_key_name: path.basename(testKeyPath) });
 	}
 	require('#src/config/configUtils').updateConfigValue(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);

@@ -12,6 +12,7 @@ const { getConfigPath } = require('#src/config/configUtils');
 const { resolveDatabaseStorageRoot } = require('#src/resources/databases');
 
 const ENV_DIR_PATH = path.join(__dirname, 'envDir') + path.sep;
+const PROBE_OUTPUT_PREFIX = 'PER_PID_ROOT_PROBE:';
 
 describe('unit-test per-PID root isolation', () => {
 	it('neutralizes ambient storage-path env vars', () => {
@@ -33,7 +34,7 @@ describe('unit-test per-PID root isolation', () => {
 			// a re-init through the function preTestPrep() stubs initSync with must keep the
 			// same layout, or it detaches databases seeded under <root>/database
 			'env.initTestEnvironment({});' +
-			'console.log(JSON.stringify(before.concat([getConfigPath(terms.CONFIG_PARAMS.STORAGE_PATH)])));';
+			`console.log('${PROBE_OUTPUT_PREFIX}' + JSON.stringify(before.concat([getConfigPath(terms.CONFIG_PARAMS.STORAGE_PATH)])));`;
 		const result = spawnSync(process.execPath, ['--require', './unitTests/mocha.init.js', '-e', probe], {
 			cwd: path.join(__dirname, '..'),
 			env: { ...process.env, STORAGE_PATH: '/tmp/ambient-storage', SCHEMAS_DATA_PATH: '/tmp/ambient-schemas' },
@@ -43,8 +44,10 @@ describe('unit-test per-PID root isolation', () => {
 		const childRoot = result.pid ? path.join(__dirname, 'envDir', String(result.pid)) : null;
 		try {
 			assert.strictEqual(result.status, 0, result.stderr);
+			const probeOutput = result.stdout.split('\n').find((line) => line.startsWith(PROBE_OUTPUT_PREFIX));
+			assert.ok(probeOutput, result.stdout);
 			const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot, logPath, storageAfterReinit] =
-				JSON.parse(result.stdout.trim().split('\n').pop());
+				JSON.parse(probeOutput.slice(PROBE_OUTPUT_PREFIX.length));
 			assert.strictEqual(childPid, result.pid);
 			assert.strictEqual(storageEnv, null);
 			assert.strictEqual(schemasEnv, null);
