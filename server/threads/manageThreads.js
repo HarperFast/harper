@@ -21,6 +21,7 @@ const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
+const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
 let importModules;
 function getImportModules() {
@@ -338,7 +339,7 @@ function startWorker(path, options = {}) {
 	// and lower than total memory
 	availableMemory = Math.min(availableMemory, totalmem(), 20000 * MB);
 	const maxOldMemory =
-		envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) ??
+		resolveThreadHeapMemoryMb(envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY)) ??
 		Math.max(Math.floor(availableMemory / MB / (10 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
