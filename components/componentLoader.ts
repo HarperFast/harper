@@ -387,22 +387,23 @@ export const getComponentName = () => compName;
  * every non-root component load and repaired if missing or pointing elsewhere.
  */
 function symlinkHarperModule(componentDirectory: string) {
-	return new Promise<void>((resolve, reject) => {
+	return new Promise<void>((resolve) => {
 		const store = Status.primaryStore;
-		// Create timeout to avoid deadlocks
-		const timeout = setTimeout(() => {
-			store.unlock(componentDirectory);
-			reject(new Error('symlinking harperdb module timed out'));
-		}, 10_000);
-
-		const callback = () => {
+		let timeout: NodeJS.Timeout;
+		const onUnlocked = () => {
 			clearTimeout(timeout);
 			resolve();
 		};
-		const lockAcquired = store.tryLock(componentDirectory, callback);
+		const lockAcquired = store.tryLock(componentDirectory, onUnlocked);
 
 		if (!lockAcquired) {
-			clearTimeout(timeout);
+			// The lock holder performs the fixup; just wait for its unlock. The timer both bounds
+			// the wait if the holder dies without unlocking and — because the unlock wake arrives
+			// via an unref'd threadsafe function — keeps this pre-ready worker's event loop alive
+			// so it cannot drain and cleanly exit (code 0) before the ready handshake. Timing out
+			// resolves rather than rejects: the fixup is idempotent maintenance another thread
+			// already ran or the next load re-runs, never worth failing the component load over.
+			timeout = setTimeout(resolve, 10_000);
 		} else {
 			try {
 				// validate node_modules directory exists
