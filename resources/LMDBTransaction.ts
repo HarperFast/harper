@@ -187,7 +187,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						if (this.timedOut) throw transactionOpenTooLongError();
 						if (stagedWrites > 0 && this.writes.length === 0 && this.open === TRANSACTION_STATE.CLOSED)
 							throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
-						return this.commit(options);
+						return this.commit({ ...options, continuation: true });
 					})();
 				}
 			} catch (error) {
@@ -281,7 +281,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			return resolution.then((resolution) => {
 				if (resolution) {
 					if (this.next) {
-						completions.push(this.next.commit(options));
+						completions.push(this.next.commit({ ...options, continuation: true }));
 					}
 					if (options?.flush) {
 						completions.push(this.writes[0].store.flushed);
@@ -331,7 +331,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		};
 		if (this.next) {
 			// now run any other transactions
-			const nextResolution = this.next?.commit(options);
+			const nextResolution = this.next?.commit({ ...options, continuation: true });
 			if ((nextResolution as any)?.then)
 				return (nextResolution as any)?.then((nextResolution) => ({
 					txnTime,

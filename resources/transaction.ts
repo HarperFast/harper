@@ -72,13 +72,10 @@ export function transaction<T>(
 	// context (ALS inheritance, a spread-copied context). Only a disconnect that happens WHILE this
 	// specific transaction is open poisons it; one that already happened before it was created does not.
 	//
-	// That is NOT an escape hatch for post-disconnect compensation work, and the two call styles differ:
-	// abort() keeps the poisoned instance on the context (DatabaseTransaction.abort's releaseContext
-	// call), and Resource.ts's `transactional` joins a `disconnected` transaction deliberately, so
-	// `tables.Claims.delete(id)` in a `finally` throws requestAbortedError, while an explicit
-	// `transaction(context, () => tables.Claims.delete(id))` — which joins only an OPEN transaction —
-	// starts a fresh one and commits. Compensation work that must survive a disconnect has to run on a
-	// context of its own until there is an explicit opt-out (see DESIGN.md).
+	// That is not an escape hatch for compensation work: abort() leaves the poisoned instance on the
+	// context and Resource.ts joins it, so a `finally` write through the static API throws while the
+	// same write wrapped in transaction() (which joins only an OPEN transaction) starts a fresh one and
+	// commits. Compensation that must survive a disconnect needs its own context — DESIGN.md.
 	const signal = context.signal;
 	let onDisconnect: (() => void) | undefined;
 
@@ -95,11 +92,16 @@ export function transaction<T>(
 			if (signal) {
 				onDisconnect = () => {
 					try {
+						// isCommittingWrites() is the second half of the write-bearing test, not a redundancy:
+						// an explicit in-handler commit() marks itself CLOSED and clears its staged writes
+						// before the native commit settles, so in that window the checks above see an idle
+						// read-only transaction and would let the scope rotate open again and commit later
+						// writes for a client that is already gone.
 						if (
-							transaction.open === TRANSACTION_STATE.OPEN &&
-							transaction.hasPendingWrites() &&
 							!transaction.sourceApply &&
-							!transaction.isReplay
+							!transaction.isReplay &&
+							((transaction.open === TRANSACTION_STATE.OPEN && transaction.hasPendingWrites()) ||
+								transaction.isCommittingWrites())
 						) {
 							transaction.abortDueToDisconnect();
 						}
@@ -148,17 +150,14 @@ export function transaction<T>(
 	}
 	function abortAndThrow(error): never {
 		try {
-			// `true` is "retain only while read iterators still own the native handle", not "always
-			// retain" — the same rule DatabaseTransaction.abortAfterCommitError applies, so the two layers
-			// can no longer undo each other's retention one frame apart.
+			// "retain only while read iterators still own the handle", the same rule
+			// abortAfterCommitError uses — so the two layers cannot undo each other one frame apart.
 			transaction.abort(true);
 		} catch (abortError) {
 			harperLogger.debug?.('aborting transaction after an error', abortError);
 		}
-		// This call returned nothing to anyone, so no live response can still own an iterator opened
-		// inside it: hand back their read references now. Without this the retained handle has no
-		// reclamation path at all — the only thing that returns a reference is an onDone() nobody is
-		// left to call — and the read snapshot stays pinned until the monitor's backstop notices.
+		// Nothing was returned, so no live response can own an iterator opened inside this call: hand
+		// their read references back now, or the retained handle waits on an onDone() nobody will call.
 		transaction.closeOwnedReadIterators();
 		throw error;
 	}
