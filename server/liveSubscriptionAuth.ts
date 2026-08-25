@@ -129,9 +129,10 @@ function stopIfIdle(): void {
  * mutate state shared across them — `registerLiveSubscriptionForContext` in resources/Resource.ts
  * mutates `context.user` to the freshly-rechecked principal, which is safe only because each context
  * today belongs to exactly one subscriber; (3) `revoke` must be idempotent and safe to run concurrently
- * with the caller's own teardown — a failed attempt is retried on the next sweep (see
- * `claimAndTerminate`), and `unregister()` racing an in-flight `revoke` is only closed up to the point
- * the await begins, not for the remainder of it.
+ * with the caller's own teardown — a *rejected* attempt is retried on the next sweep (see
+ * `claimAndTerminate`), an attempt that never settles is not retried and the entry is not rechecked
+ * again, and `unregister()` racing an in-flight `revoke` is only closed up to the point the await
+ * begins, not for the remainder of it.
  */
 export function registerLiveSubscription(opts: {
 	subscription: any;
@@ -202,6 +203,7 @@ function invokeTerminate(entry: LiveSubscription): Promise<void> {
  */
 async function claimAndTerminate(entry: LiveSubscription, reason: string): Promise<boolean> {
 	if (!registry.has(entry)) return false; // the caller already unregistered this entry itself
+	if (entry.pendingTerminate) return false; // at-most-once, enforced here so any caller gets it, not just sweep()
 
 	const attempt = invokeTerminate(entry);
 	entry.pendingTerminate = attempt;
