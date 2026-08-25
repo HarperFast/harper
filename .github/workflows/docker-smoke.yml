@@ -203,11 +203,16 @@ jobs:
             -p 19925:9925 \
             harperfast/harper:smoke-test
 
-          for i in $(seq 1 60); do
-            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:19925/ || true)
-            if [ -n "$code" ] && [ "$code" != "000" ]; then break; fi
+          for i in $(seq 1 180); do
+            if docker logs harper-restart-smoke 2>&1 | grep -qF '[notify]: Harper successfully started.'; then break; fi
+            if ! docker ps --filter name=harper-restart-smoke --filter status=running -q | grep -q .; then
+              echo "::error::Container exited before Harper completed startup"
+              docker logs harper-restart-smoke
+              exit 1
+            fi
             sleep 1
           done
+          docker logs harper-restart-smoke 2>&1 | grep -F '[notify]: Harper successfully started.'
           curl -sS --fail-with-body --max-time 5 -u admin:password \
             -H 'Content-Type: application/json' \
             -d '{"operation":"restart"}' \
