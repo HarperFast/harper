@@ -19,6 +19,12 @@ on:
           - '24'
           - '26'
 
+# These workflows are dispatched by cherry-pick-patch.yml against a branch built
+# from PR commits, so they run PR-authored build/test scripts. The repo default is
+# a write-scoped token; pin it to read here.
+permissions:
+  contents: read
+
 jobs:
   generate-node-version-matrix:
     name: Generate Node Version Matrix

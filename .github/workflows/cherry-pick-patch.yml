@@ -75,7 +75,7 @@ jobs:
         github.event.action == 'milestoned' ||
         github.event.action == 'demilestoned' ||
         (github.event.action == 'synchronize' && github.event.pull_request.milestone.title != '') ||
-        (github.event.action == 'closed' && github.event.pull_request.milestone.title != '')
+        github.event.action == 'closed'
       ))
     outputs:
       milestone: ${{ steps.resolve.outputs.milestone }}
@@ -113,11 +113,16 @@ jobs:
 
           ALL_BRANCHES=$(gh api "repos/$GITHUB_REPOSITORY/branches" --paginate --jq '.[].name')
 
-          # Release branches this milestone targets: `vX.Y` and everything newer.
+          # Release branches this milestone targets: `vX.Y` and every newer
+          # branch of the SAME major. A next-major branch is not a later release
+          # of this line — a textually clean pick there is exactly where it is
+          # most likely to be semantically wrong — so it is a human's call.
           TARGETS=()
           if printf '%s' "$MILESTONE" | grep -qE '^v[0-9]+\.[0-9]+$'; then
+            MAJOR=${MILESTONE%%.*}
             while read -r BRANCH; do
               [ -n "$BRANCH" ] || continue
+              [ "${BRANCH%%.*}" = "$MAJOR" ] || continue
               # BRANCH >= MILESTONE when a version sort puts MILESTONE first.
               if [ "$(printf '%s\n%s\n' "$BRANCH" "$MILESTONE" | sort -V | head -1)" = "$MILESTONE" ]; then
                 TARGETS+=("$BRANCH")
@@ -183,14 +188,18 @@ jobs:
           set -euo pipefail
           BRANCH="cherry-pick/${RELEASE}/pr-${PR_NUMBER}"
           MARKER="<!-- release-cherry-pick:${RELEASE} -->"
-          git push origin --delete "$BRANCH" 2>/dev/null || true
+          if git push origin --delete "$BRANCH" 2>/dev/null; then
+            OUTCOME=$(printf 'Cherry-pick branch `%s` was deleted' "$BRANCH")
+          else
+            OUTCOME=$(printf 'Cherry-pick branch `%s` is no longer targeted (nothing to delete)' "$BRANCH")
+          fi
           if [ "$ABANDONED" = "true" ]; then
             REASON="this PR was closed without merging"
           else
             REASON=$(printf 'this PR no longer targets `%s` (milestone is now `%s`)' "$RELEASE" "${MILESTONE:-<none>}")
           fi
-          BODY=$(printf '%s\n## Release cherry-pick `%s`: cancelled\n\nCherry-pick branch `%s` was deleted — %s.\n' \
-            "$MARKER" "$RELEASE" "$BRANCH" "$REASON")
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: cancelled\n\n%s — %s.\n' \
+            "$MARKER" "$RELEASE" "$OUTCOME" "$REASON")
           node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$MARKER" "$BODY"
 
   # ── Cherry-pick onto each targeted release branch ───────────────────────
@@ -275,18 +284,21 @@ jobs:
               # ones would be silently skipped if we picked MERGE_SHA alone.
               MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
               PICK_FLAGS=""
-              PICK_SHAS=$(git rev-list --reverse "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+              PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
               if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
                 PICK_SHAS="$MERGE_SHA"
               fi
             fi
           else
-            # Open PR: pick the commit range merge_base..HEAD
+            # Open PR: pick the commit range merge_base..HEAD. Merge commits
+            # carry main's changes rather than the author's and cannot be picked
+            # without -m, so they are excluded here.
             MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
             PICK_FLAGS=""
-            PICK_SHAS=$(git rev-list --reverse "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+            PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
             if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
               echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
+              echo "no_op=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
@@ -303,24 +315,35 @@ jobs:
             if git cherry-pick $PICK_FLAGS "$SHA"; then
               continue
             fi
-            if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
-              # Failed with no unmerged paths: the change is already present on
-              # this release branch (picked earlier, or the branch was cut after
-              # the merge). Skip it — this is success, not a conflict.
-              echo "Commit $SHA is already applied on $RELEASE_BRANCH; skipping"
-              git cherry-pick --skip || git cherry-pick --abort || true
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              CONFLICTS="${CONFLICTS:+$CONFLICTS }$SHA"
+              # Stage conflict markers and commit so reviewer sees the state
+              git add -A
+              GIT_EDITOR=true git cherry-pick --continue || git cherry-pick --skip || true
               continue
             fi
-            CONFLICTS="${CONFLICTS:+$CONFLICTS }$SHA"
-            # Stage conflict markers and commit so reviewer sees the state
-            git add -A
-            GIT_EDITOR=true git cherry-pick --continue || git cherry-pick --skip || true
+            # No unmerged paths. Only an in-progress pick — CHERRY_PICK_HEAD
+            # exists — means git got as far as applying and found nothing left
+            # to do, i.e. already on this branch. Without it the pick failed
+            # before it started (unpickable commit, bad object, hook refusal);
+            # dropping that silently would fast-forward a partial change onto
+            # the release branch while the sticky comment reports success.
+            if git rev-parse --verify --quiet CHERRY_PICK_HEAD >/dev/null; then
+              echo "Commit $SHA is already applied on $RELEASE_BRANCH; skipping"
+              git cherry-pick --skip
+              continue
+            fi
+            git cherry-pick --abort 2>/dev/null || true
+            echo "::error::cherry-pick of $SHA onto $RELEASE_BRANCH failed before it could apply"
+            exit 1
           done
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
 
           if [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
             echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
             echo "no_op=true" >> "$GITHUB_OUTPUT"
+            # An earlier run may have pushed a branch that is now redundant.
+            git push origin --delete "$BRANCH" 2>/dev/null || true
             exit 0
           fi
 
@@ -409,9 +432,13 @@ jobs:
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$body"
           }
 
-          WORKFLOW_CHANGES=$(git diff "origin/${RELEASE_BRANCH}".."${BRANCH}" --name-only | grep '^\.github/workflows/' || true)
+          # Dispatching runs the branch's own workflows and npm lifecycle
+          # scripts in base-repo context. Anything that decides what those
+          # scripts are is as privileged as the workflow files themselves.
+          WORKFLOW_CHANGES=$(git diff "origin/${RELEASE_BRANCH}".."${BRANCH}" --name-only \
+            | grep -E '^\.github/workflows/|^package(-lock)?\.json$' || true)
           if [ -n "$WORKFLOW_CHANGES" ]; then
-            BODY=$(printf '%s\n## Release cherry-pick `%s`: workflow files modified\n\nThe cherry-pick branch modifies CI workflow files — automated tests were **not** dispatched to prevent running PR-controlled workflows with write permissions.\n\nModified files:\n```\n%s\n```\nPlease review and trigger tests manually if safe.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$WORKFLOW_CHANGES")
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: build files modified\n\nThe cherry-pick branch modifies CI workflow or package files — automated tests were **not** dispatched to prevent running PR-controlled scripts with base-repo credentials.\n\nModified files:\n```\n%s\n```\nPlease review and trigger tests manually if safe.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$WORKFLOW_CHANGES")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 0
           fi
