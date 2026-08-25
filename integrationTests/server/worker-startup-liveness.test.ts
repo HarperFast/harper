@@ -34,8 +34,11 @@ suite('worker startup liveness (pre-ready event-loop drain)', (ctx: ContextWithH
 	});
 
 	after(async () => {
-		await teardownHarper(ctx);
-		if (rootFixtureCopy) await rm(rootFixtureCopy, { recursive: true, force: true });
+		try {
+			await teardownHarper(ctx);
+		} finally {
+			if (rootFixtureCopy) await rm(rootFixtureCopy, { recursive: true, force: true });
+		}
 	});
 
 	test('workers survive a load-time await with no ref-holding completion source', async () => {
