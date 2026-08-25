@@ -6,13 +6,13 @@ const env = require('#src/utility/environment/environmentManager');
 const assert = require('node:assert');
 const COMMON_TEST_TERMS = require('./commonTestTerms.js');
 const systemSchema = require('../json/systemSchema.json');
-const { table: ensure_table, resetDatabases } = require('#src/resources/databases');
+const { table: ensure_table, resetDatabases, resolveDatabaseStorageRoot } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
 const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
 const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
-const { materializePerPidRoot } = require('./perPidRoot.js');
+const { materializePerPidRoot, removePerPidRoot } = require('./perPidRoot.js');
 
 let envMgrInitSyncStub;
 
@@ -83,6 +83,12 @@ function preTestPrep(testConfigObj) {
 	// effect on the process's exit status.
 	process.prependListener('exit', (code) => {
 		if (code === 0) {
+			// Clean up explicitly rather than relying solely on the preload's own 'exit'
+			// listener: this one is prepended, so it runs first, and assigning exitCode
+			// (instead of calling process.exit(), per the comment above) lets the preload's
+			// listener still run too — this just guarantees the ~98 suites that call
+			// preTestPrep don't depend on load order for it.
+			removePerPidRoot();
 			process.exitCode = unhandledRejectionExitCode;
 		}
 	});
@@ -391,6 +397,18 @@ function setupTestDBPath() {
  * after setupTestDBPath() instead of borrowing an installed Harper root's system
  * database.
  */
+function systemDatabaseOnDisk() {
+	const storageRoot = resolveDatabaseStorageRoot('system');
+	// 'system' is a RocksDB directory, 'system.mdb' the LMDB file
+	for (const name of ['system', 'system.mdb']) {
+		const candidate = path.join(storageRoot, name);
+		if (!fs.existsSync(candidate)) continue;
+		const stats = fs.statSync(candidate);
+		if (stats.isFile() ? stats.size > 0 : fs.readdirSync(candidate).length > 0) return true;
+	}
+	return false;
+}
+
 async function seededAdminIsUsable() {
 	const admin = await getDatabases().system.hdb_user?.get('admin');
 	if (!admin?.active) return false;
@@ -415,7 +433,22 @@ async function ensureSystemTables() {
 		return;
 	}
 	materializePerPidRoot();
-	if (!getDatabases().system?.hdb_role) {
+	// decide on the ON-DISK database, not the cached handle: after a tearDownMockDB() the
+	// module-level cache still answers, and seeding through handles whose files were
+	// unlinked writes nothing to disk. Close them first so the reopen recreates the files.
+	const tablesInCache = !!getDatabases().system?.hdb_role;
+	if (tablesInCache && !systemDatabaseOnDisk()) {
+		// The cache answers for a database whose files are gone — a tearDownMockDB() removed
+		// the root while its handles were open. Seeding through those handles writes to
+		// unlinked files and reports success, and reopening them from here recurses inside
+		// databases.table(). Fail loudly: the fix belongs at the call site, which must seed
+		// before tearing down, or run in its own process.
+		throw new Error(
+			'ensureSystemTables(): the system database is open but its files are gone — ' +
+				'a tearDownMockDB() removed the per-PID root mid-process. Seed before tearing down.'
+		);
+	}
+	if (!tablesInCache) {
 		const mountHdb = require('#src/utility/mount_hdb').default;
 		await mountHdb(env.getHdbBasePath());
 	}

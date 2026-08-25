@@ -35,7 +35,7 @@
 const path = require('path');
 const fs = require('fs-extra');
 const { isMainThread } = require('worker_threads');
-const { materializePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
+const { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH } = require('./perPidRoot.js');
 
 /**
  * Fail a mocha run that dies mid-flight instead of letting it look like a pass.
@@ -101,15 +101,11 @@ if (isMainThread) {
 			}
 		}
 	}
-	// synchronous on purpose: an exit handler cannot await, so an async removal would be
-	// scheduled and then dropped by process.exit() (.mocharc.json sets `exit: true`).
-	// Registered here rather than in setupTestDBPath() so a suite that never opens a
-	// database still cleans up the root this preload just created.
-	process.on('exit', () => {
-		try {
-			fs.removeSync(PID_DIR_PATH);
-		} catch {}
-	});
+	// registered here rather than in setupTestDBPath() so a suite that never opens a
+	// database still cleans up the root this preload created. preTestPrep() prepends its
+	// own 'exit' listener that calls process.exit(), which skips the remaining listeners —
+	// it calls removePerPidRoot() itself for that reason.
+	process.on('exit', removePerPidRoot);
 }
 materializePerPidRoot();
 process.env.ROOTPATH = PID_DIR_PATH;

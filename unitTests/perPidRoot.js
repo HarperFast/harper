@@ -9,8 +9,9 @@ const PID_DIR_PATH = path.join(ENV_DIR_PATH, process.pid.toString());
 
 /**
  * Materializes the per-PID test root — the directory layout config validation expects and
- * harper-config.yaml — idempotently and with no Harper module loaded. A mid-run
- * tearDownMockDB() removes the whole root, so seeding re-runs this before touching config.
+ * harper-config.yaml — idempotently and with no Harper module loaded. Restores the files a
+ * mid-run tearDownMockDB() removed; open database handles are NOT restored by this (see
+ * ensureSystemTables, which refuses to seed through handles whose files are gone).
  */
 function materializePerPidRoot() {
 	for (const dir of ['database', 'log', 'components', 'keys']) {
@@ -40,4 +41,14 @@ function materializePerPidRoot() {
 	return PID_DIR_PATH;
 }
 
-module.exports = { materializePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH };
+/**
+ * Removes this process's per-PID root. Synchronous because it runs from exit handlers,
+ * which cannot await — an async removal is scheduled and then dropped by process.exit().
+ */
+function removePerPidRoot() {
+	try {
+		fs.removeSync(PID_DIR_PATH);
+	} catch {}
+}
+
+module.exports = { materializePerPidRoot, removePerPidRoot, ENV_DIR_PATH, PID_DIR_PATH };
