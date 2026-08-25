@@ -2,9 +2,9 @@ import type { Context } from './ResourceInterface.ts';
 import { _assignPackageExport } from '../globals.js';
 import {
 	DatabaseTransaction,
+	isJoinableScope,
 	isReleasedTransaction,
 	type Transaction,
-	TRANSACTION_STATE,
 } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
 
@@ -41,7 +41,7 @@ export function transaction<T>(
 	if (typeof callback !== 'function') {
 		throw new TypeError('Callback function must be provided to transaction');
 	}
-	if (context?.transaction?.open === TRANSACTION_STATE.OPEN && typeof callback === 'function') {
+	if (isJoinableScope(context?.transaction) && typeof callback === 'function') {
 		return callback(context.transaction); // nothing to be done, already in open transaction
 	}
 

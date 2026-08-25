@@ -12,3 +12,8 @@ type ScoreSnapshot @table @export {
 	companyId: String @indexed
 	score: Int
 }
+
+type AuditNote @table(database: "second_db") @export {
+	id: ID @primaryKey
+	note: String
+}

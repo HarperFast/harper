@@ -12,8 +12,8 @@ import {
 import { randomUUID } from 'crypto';
 import {
 	DatabaseTransaction,
+	isJoinableScope,
 	isReleasedTransaction,
-	TRANSACTION_STATE,
 	type Transaction,
 } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
@@ -769,9 +769,10 @@ function transactional(
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
 		const loadAsInstance = this.loadAsInstance;
-		// Only join an existing transaction if it is still genuinely OPEN (mirrors the reuse check
-		// resources/transaction.ts's transaction() helper already applies to itself). A `context`
-		// object can carry a *stale* `.transaction` left over from an earlier, unrelated call that
+		// Only join an existing transaction that can actually be a scope (isJoinableScope: OPEN, and it
+		// stages its writes rather than committing each one — the same gate resources/transaction.ts's
+		// transaction() helper applies to itself). Beyond that, a `context` object can carry a *stale*
+		// `.transaction` left over from an earlier, unrelated call that
 		// already ran to completion: ambient contexts obtained via contextStorage.getStore() are
 		// no longer guaranteed to be fresh, one-shot objects now that processLocalTransaction (#1591/
 		// #1592) installs one shared, long-lived context for the lifetime of an entire operation
@@ -795,7 +796,7 @@ function transactional(
 		//    starting fresh) makes the write throw transactionOpenTooLongError via addWrite()/commit()'s
 		//    poison check, correctly propagating the abort to the caller. See
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
-		if (context?.transaction?.open === TRANSACTION_STATE.OPEN || context?.transaction?.timedOut) {
+		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut) {
 			// we are already in a transaction (or it was poisoned by a timeout abort and must fail), proceed
 			const resource = this.getResource(query, context, resourceOptions);
 			return resource.then

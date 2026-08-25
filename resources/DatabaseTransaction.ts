@@ -261,7 +261,9 @@ export type TransactionWrite = {
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
 	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
-	validate?: (txnTime: number) => void;
+	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
+	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
+	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
@@ -278,6 +280,10 @@ export type TransactionWrite = {
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
+	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
+	// only its trigger, so it can be triggered after the context has moved on to another transaction;
+	// this is who commits it when the transaction current at that point is not a scope (#2292).
+	stagedIn?: DatabaseTransaction;
 	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
 	priorWrite?: TransactionWrite;
 	// set only by a write that BOTH reads priorStagedWrite() and publishes stagedEntry; addWrite orders
@@ -361,6 +367,11 @@ export class DatabaseTransaction implements Transaction {
 	timeoutBudget = 0;
 	// save() only stages here; ImmediateTransaction overrides it to commit, which addWrite must not defer
 	saveCommits = false;
+	// True where save() puts the write into this transaction's native handle, which is what lets a scope
+	// take over a write staged in another transaction's `writes` (Table.ts's #saveOperation).
+	// LMDBTransaction's save() is a no-op — its commit applies `writes` — so there a write can only be
+	// committed by the transaction that holds it.
+	stagesWriteOnSave = true;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -591,10 +602,46 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
+	 * Drop a staged write from this transaction, and from its per-key chain, so the transaction taking it
+	 * over becomes its only owner (Table.ts's #saveOperation).
+	 */
+	detachWrite(operation: TransactionWrite): void {
+		const index = this.writes.indexOf(operation);
+		if (index > -1) this.writes[index] = null;
+		if (operation.key === undefined) return;
+		const writesForStore = this.writesByKey?.get(operation.store);
+		if (!writesForStore) return;
+		const keyId = writeKeyId(operation.key);
+		// Membership, not `stagedIn`, which every commit handler clears and so cannot tell a takeover from a
+		// write done in place; a prior already taken over must not become this transaction's basis again.
+		let prior = operation.priorWrite;
+		while (prior && !this.writes.includes(prior)) prior = prior.priorWrite;
+		const tail = writesForStore.get(keyId);
+		if (tail === operation) {
+			if (prior) writesForStore.set(keyId, prior);
+			else writesForStore.delete(keyId);
+			return;
+		}
+		// A successor left chained to it would take its merge basis and index diff from a record another
+		// transaction owns and may roll back (harper#1968's failure class).
+		for (let successor = tail; successor; successor = successor.priorWrite) {
+			if (successor.priorWrite === operation) {
+				successor.priorWrite = prior;
+				return;
+			}
+		}
+	}
+
+	/**
 	 * Discard the staged write set (committed or aborted); the per-key chain must go with it so a
 	 * reused transaction never bases a write on a previous batch's staged state.
 	 */
 	clearWrites(): void {
+		// A deferred write's `stagedIn` must not outlive this transaction's ability to commit it: save() can
+		// fire after a commit or abort, and routing it back here would revive a write this transaction
+		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
+		// context's current transaction as it did before `stagedIn` existed.
+		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
 		this.writesByKey = undefined;
 	}
@@ -729,6 +776,7 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTimeout = this.timeout;
 		this.linkWrite(operation);
 		this.writes.push(operation);
+		operation.stagedIn = this;
 		// Hold this write back while any earlier same-key write has not run — out of staging order both
 		// diff against the pre-transaction record (harper#2211, DESIGN.md). The whole chain, not just the
 		// immediate link: an eager non-chaining write in between would otherwise launder the deferral.
@@ -807,7 +855,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
-			if ((operation.validate?.(txnTime) as any) === false) {
+			if ((operation.validate?.(txnTime, this) as any) === false) {
 				operation.commit = () => {}; // noop if we try again
 				return;
 			}
@@ -1489,6 +1537,19 @@ export const RELEASED_TRANSACTION = RELEASED_TRANSACTION_SURFACE as unknown as D
  */
 export function isReleasedTransaction(value: unknown): boolean {
 	return value === RELEASED_TRANSACTION;
+}
+
+/**
+ * Whether this transaction can be joined as the atomic scope resources/transaction.ts promises. OPEN is
+ * not sufficient: an ImmediateTransaction commits every write as it is made, so a caller that joined one
+ * would get per-write autocommit with no final commit or abort to roll back to. txnForContext installs
+ * one in a context slot that is empty or holds the released placeholder, where it reports OPEN with
+ * nothing owning a commit for it (#2292). Ownership itself is deliberately not the test — a context
+ * pre-seeded with an externally driven DatabaseTransaction (replayLogs.ts) still owns the writes it is
+ * given, and its own commit/abort still governs them.
+ */
+export function isJoinableScope(transaction: DatabaseTransaction | null | undefined): boolean {
+	return transaction?.open === TRANSACTION_STATE.OPEN && !transaction.saveCommits;
 }
 
 let timer;
