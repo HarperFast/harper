@@ -51,9 +51,11 @@ describe('Caching', () => {
 			get() {
 				let expiresAt = sourceExpiresAt ?? Date.now() + 2;
 				this.getContext().expiresAt = expiresAt;
+				// counted when the request starts, like the other sources here, so a concurrent
+				// duplicate is observable before the first response lands
+				sourceRequests++;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
-						sourceRequests++;
 						if (return_error) {
 							let error = new Error('test source error');
 							error.statusCode = return_error;
@@ -512,9 +514,13 @@ describe('Caching', () => {
 		}
 	});
 	it('Can load cached indexed data', async function () {
+		const indexedEvents = [];
+		const indexedSubscription = await IndexedCachingTable.subscribe({});
+		indexedSubscription.on('data', (event) => {
+			indexedEvents.push(event);
+		});
 		try {
 			sourceRequests = 0;
-			events = [];
 			IndexedCachingTable.setTTLExpiration({ expiration: 50, eviction: 100 });
 			const firstExpiresAt = (sourceExpiresAt = Date.now() + 1);
 			let result = await IndexedCachingTable.get(23);
@@ -522,7 +528,6 @@ describe('Caching', () => {
 			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
 				message: 'initial source fill should finish committing',
 			});
-			events = [];
 			assert.equal(result.name, 'name ' + 23);
 			assert.equal(sourceRequests, 1);
 			await waitFor(
@@ -532,13 +537,20 @@ describe('Caching', () => {
 					message: 'initial source fill should expire',
 				}
 			);
-			sourceExpiresAt = Date.now() + 1000;
+			const revalidatedExpiresAt = (sourceExpiresAt = Date.now() + 1000);
 			let results = [];
 			for await (let record of IndexedCachingTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
 				results.push(record);
 			}
 			assert.equal(results.length, 1);
-			await waitFor(() => sourceRequests >= 2, { message: 'indexed query should revalidate the expired entry' });
+			// every revalidation this query could trigger is started before the refreshed entry is
+			// committed, so waiting on the commit makes the request count exact rather than a floor
+			await waitFor(
+				() =>
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === revalidatedExpiresAt &&
+					!IndexedCachingTable.primaryStore.hasLock(23),
+				{ message: 'indexed query should revalidate the expired entry and commit the refreshed cache write' }
+			);
 			assert.equal(sourceRequests, 2);
 			result = await IndexedCachingTable.get(23);
 			assert.equal(result.id, 23);
@@ -557,15 +569,22 @@ describe('Caching', () => {
 				}
 			);
 			sourceExpiresAt = Date.now() + 1000;
+			// the preceding barriers have already let this table's earlier publishes land, so anything
+			// arriving from here on belongs to the revalidation below
+			indexedEvents.length = 0;
 			result = await IndexedCachingTable.get(23);
 			assert.equal(result.id, 23);
 			assert.equal(result.name, 'name ' + 23);
 			assert.equal(sourceRequests, 1);
-			assert.equal(events.length, 0);
 			assert(result.getExpiresAt());
 			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
 				message: 'source revalidation lock should be released',
 			});
+			assert.deepEqual(
+				indexedEvents.map((event) => event.type),
+				[],
+				'source revalidation should not publish an update event'
+			);
 			const entry = IndexedCachingTable.primaryStore.getEntry(23);
 			assert(entry, 'source revalidation should leave a cache entry to evict');
 			await IndexedCachingTable.evict(23, entry.value, entry.version);
@@ -576,6 +595,7 @@ describe('Caching', () => {
 			assert.equal(IndexedCachingTable.indices.name.getValuesCount('name 23'), 0);
 		} finally {
 			sourceExpiresAt = undefined;
+			indexedSubscription.return?.();
 		}
 	});
 
