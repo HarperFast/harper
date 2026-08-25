@@ -51,8 +51,7 @@ describe('Caching', () => {
 			get() {
 				let expiresAt = sourceExpiresAt ?? Date.now() + 2;
 				this.getContext().expiresAt = expiresAt;
-				// counted when the request starts, like the other sources here, so a concurrent
-				// duplicate is observable before the first response lands
+				// counted at request start so a concurrent duplicate is observable before the first response
 				sourceRequests++;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
@@ -519,6 +518,16 @@ describe('Caching', () => {
 		indexedSubscription.on('data', (event) => {
 			indexedEvents.push(event);
 		});
+		let fenceId = 24;
+		// publications are delivered in commit order, so a delivered fill of a scratch id proves
+		// everything committed before it has been delivered too
+		const fenceEvents = async () => {
+			const id = fenceId++;
+			await IndexedCachingTable.get(id);
+			await waitFor(() => indexedEvents.some((event) => event.id === id), {
+				message: 'the fencing source fill should reach the indexed subscription',
+			});
+		};
 		try {
 			sourceRequests = 0;
 			IndexedCachingTable.setTTLExpiration({ expiration: 50, eviction: 100 });
@@ -543,8 +552,8 @@ describe('Caching', () => {
 				results.push(record);
 			}
 			assert.equal(results.length, 1);
-			// every revalidation this query could trigger is started before the refreshed entry is
-			// committed, so waiting on the commit makes the request count exact rather than a floor
+			// every revalidation this query can trigger starts before the refreshed entry commits, so
+			// waiting on the commit makes the count below exact rather than a floor
 			await waitFor(
 				() =>
 					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === revalidatedExpiresAt &&
@@ -560,7 +569,6 @@ describe('Caching', () => {
 			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
 				message: 'second source fill should finish committing',
 			});
-			sourceRequests = 0;
 			await waitFor(
 				() =>
 					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === secondExpiresAt && secondExpiresAt < Date.now(),
@@ -568,10 +576,10 @@ describe('Caching', () => {
 					message: 'second source fill should expire',
 				}
 			);
-			sourceExpiresAt = Date.now() + 1000;
-			// the preceding barriers have already let this table's earlier publishes land, so anything
-			// arriving from here on belongs to the revalidation below
+			await fenceEvents();
 			indexedEvents.length = 0;
+			sourceExpiresAt = Date.now() + 1000;
+			sourceRequests = 0;
 			result = await IndexedCachingTable.get(23);
 			assert.equal(result.id, 23);
 			assert.equal(result.name, 'name ' + 23);
@@ -580,8 +588,9 @@ describe('Caching', () => {
 			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
 				message: 'source revalidation lock should be released',
 			});
+			await fenceEvents();
 			assert.deepEqual(
-				indexedEvents.map((event) => event.type),
+				indexedEvents.filter((event) => event.id === 23),
 				[],
 				'source revalidation should not publish an update event'
 			);
@@ -592,10 +601,12 @@ describe('Caching', () => {
 			await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined, {
 				message: 'eviction should remove the primary record',
 			});
-			assert.equal(IndexedCachingTable.indices.name.getValuesCount('name 23'), 0);
+			await waitFor(() => IndexedCachingTable.indices.name.getValuesCount('name 23') === 0, {
+				message: 'eviction should remove the secondary index entry',
+			});
 		} finally {
 			sourceExpiresAt = undefined;
-			indexedSubscription.return?.();
+			indexedSubscription.close();
 		}
 	});
 
