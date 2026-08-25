@@ -237,8 +237,12 @@ jobs:
             harperfast/harper:smoke-test \
             -g -- node -e '
               const { armRestartExitWatchdog } = require("/home/harperdb/.npm-global/lib/node_modules/harper/dist/bin/restartExitWatchdog.js");
-              if (!armRestartExitWatchdog(1000)) process.exit(2);
-              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+              armRestartExitWatchdog(1000).then((armed) => {
+                if (!armed) process.exit(2);
+                // Wedge the event loop only after arming has confirmed its readiness handshake --
+                // this is the fault the watchdog exists to bound.
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+              });
             '
           for i in $(seq 1 10); do
             if ! docker ps --filter name=harper-watchdog-smoke --filter status=running -q | grep -q .; then break; fi

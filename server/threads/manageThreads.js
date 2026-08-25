@@ -514,8 +514,8 @@ async function restartWorkers(
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		for (let worker of workers.slice(0)) {
-			// Terminal shutdown: stop replacing workers mid-loop. Nothing between here and the
-			// pre-start branch below can set the latch, so this is that branch's guard too.
+			// Terminal shutdown: stop replacing workers mid-loop. This is the guard for every replacement
+			// start reached from here on, including the overlapping pre-start below.
 			if (processShuttingDown && startReplacementThreads) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
