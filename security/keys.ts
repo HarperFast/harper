@@ -33,7 +33,7 @@ export const getPrivateKeys = () => privateKeys;
 import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
 import { isMainThread } from 'worker_threads';
-import { POLLING_FALLBACK_OPTIONS } from '../utility/watcherFallback.ts';
+import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { TLSSocket } from 'node:tls';
 
@@ -358,12 +358,34 @@ function loadAndWatch(path, loadCert, type) {
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
 	const watchTarget = resolveWatchTarget(path);
-	watch(watchTarget.path, { persistent: false, ...(watchTarget.mustPoll ? POLLING_FALLBACK_OPTIONS : {}) }).on(
-		'change',
-		// The event carries the watched spelling, which is not the configured one once canonicalized;
-		// reload through the configured path so a retargeted link is followed.
-		() => loadFile(path)
-	);
+	let usingPolling = watchTarget.mustPoll;
+	let liveWatcher;
+	const openWatcher = () => {
+		const opened = (liveWatcher = watch(watchTarget.path, {
+			persistent: false,
+			...(usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
+		}));
+		opened
+			// The event carries the watched spelling, which is not the configured one once canonicalized;
+			// reload through the configured path so a retargeted link is followed.
+			.on('change', () => loadFile(path))
+			.on('error', (error) => {
+				// chokidar rethrows an 'error' with no listener out of its own callback, which lands as
+				// an uncaughtException and leaves the fast path silently dead. Reopen on polling the way
+				// the other watch sites do; the periodic re-read below stays the backstop either way.
+				if (isWatcherExhaustionError(error)) {
+					if (usingPolling || liveWatcher !== opened) return;
+					warnWatcherFallback(path);
+					usingPolling = true;
+					Promise.resolve(opened.close())
+						.catch(() => {})
+						.then(openWatcher);
+					return;
+				}
+				logger.error?.(`Error watching ${type}:`, path, error);
+			});
+	};
+	openWatcher();
 
 	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers
 	// receive cert updates via the hdb_certificate table subscription, so polling the cert file on

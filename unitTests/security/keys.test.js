@@ -1077,11 +1077,23 @@ describe('Test keys module', () => {
 		const localSandbox = sinon.createSandbox();
 		let watchPath;
 
+		// A chokidar watcher is chainable and its `on` returns the watcher.
+		const fakeWatcher = (captureHandler) => {
+			const watcher = {
+				on: (event, handler) => {
+					captureHandler?.(event, handler);
+					return watcher;
+				},
+				close: () => Promise.resolve(),
+			};
+			return watcher;
+		};
+
 		beforeEach(() => {
 			// Stub chokidar's watch so these tests exercise only the poll path and never open a real
 			// FSWatcher (real watchers would leak fds and risk EMFILE across repeated runs).
 			const chokidar = require('chokidar');
-			localSandbox.stub(chokidar, 'watch').returns({ on: () => {} });
+			localSandbox.stub(chokidar, 'watch').returns(fakeWatcher());
 			watchPath = path.join(test_dir, `watch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
 			fs.writeFileSync(watchPath, 'PEM-V1');
 		});
@@ -1119,11 +1131,11 @@ describe('Test keys module', () => {
 			let changeHandler;
 			localSandbox.restore();
 			const chokidar = require('chokidar');
-			localSandbox.stub(chokidar, 'watch').returns({
-				on: (event, handler) => {
+			localSandbox.stub(chokidar, 'watch').returns(
+				fakeWatcher((event, handler) => {
 					if (event === 'change') changeHandler = handler;
-				},
-			});
+				})
+			);
 
 			const loaded = [];
 			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
@@ -1137,6 +1149,39 @@ describe('Test keys module', () => {
 			changeHandler(watchPath, undefined);
 
 			expect(loaded).to.eql(['PEM-V1', 'PEM-V2']);
+		});
+
+		it('reopens on polling when the watcher reports exhaustion', async () => {
+			// chokidar emits 'error' unguarded for any code other than ENOENT/ENOTDIR, so without a
+			// listener an ENOSPC here becomes an uncaughtException and the cert fast path dies silently.
+			localSandbox.restore();
+			const chokidar = require('chokidar');
+			const openedOptions = [];
+			const errorHandlers = [];
+			const exhausted = () => Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' });
+			localSandbox.stub(chokidar, 'watch').callsFake((_watchedPath, options) => {
+				openedOptions.push(options);
+				return fakeWatcher((event, handler) => {
+					if (event === 'error') errorHandlers.push(handler);
+				});
+			});
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+			expect(openedOptions).to.have.lengthOf(1);
+			expect(openedOptions[0].usePolling).to.equal(undefined);
+
+			errorHandlers[0](exhausted());
+			await new Promise((resolve) => setImmediate(resolve));
+
+			expect(openedOptions).to.have.lengthOf(2);
+			expect(openedOptions[1].usePolling).to.equal(true);
+
+			// chokidar can emit several exhaustion errors before the failed watcher closes; none of them
+			// may open a third.
+			errorHandlers[0](exhausted());
+			errorHandlers[1](exhausted());
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(openedOptions).to.have.lengthOf(2);
 		});
 
 		it('does not reload when the file is unchanged (mtime fingerprint dedup)', () => {
