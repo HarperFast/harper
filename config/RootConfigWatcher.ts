@@ -100,12 +100,12 @@ export class RootConfigWatcher extends EventEmitter {
 			config = parse(readFileSync(this.#configFilePath, 'utf-8'));
 		} catch (error) {
 			// A missing file needs no re-read; anything else may be the file being replaced.
-			if (isPartialReadError(error)) this.#scheduleReread();
+			if (isPartialReadError(error)) this.#scheduleReread(error);
 			return;
 		}
 		// A snapshot that does not parse to an object is the other shape a half-written file
 		// takes: `''`, `'\n'` and a truncated document all yield null, and adopting that would
-		// drop the whole configuration.
+		// hand every consumer a config with nothing in it.
 		if (!config || typeof config !== 'object') {
 			this.#scheduleReread();
 			return;
@@ -126,9 +126,9 @@ export class RootConfigWatcher extends EventEmitter {
 		}
 	}
 
-	#scheduleReread() {
+	#scheduleReread(error?: unknown) {
 		if (this.#partialRead.schedule(() => this.handleChange())) return;
-		warnPartialReadGaveUp(this.#configFilePath);
+		warnPartialReadGaveUp(this.#configFilePath, error);
 	}
 
 	close() {

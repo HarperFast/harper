@@ -130,12 +130,13 @@ export function isPartialReadError(error: unknown): boolean {
  * Warned once per file: every root-config scope watches the same one and would otherwise report
  * a single bad file once each, on every event.
  */
-export function warnPartialReadGaveUp(filePath: string) {
+export function warnPartialReadGaveUp(filePath: string, error?: unknown) {
 	if (partialReadWarned.has(filePath)) return;
 	partialReadWarned.add(filePath);
-	fallbackLogger.warn(
-		`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} reads that were empty or incomplete; continuing with the last usable configuration`
-	);
+	// The cause matters to whoever has to fix it: a file that never parses is a typo to correct,
+	// while one that reads empty is a writer that never finished.
+	const cause = error ? `: ${(error as Error).message ?? error}` : ' that were empty or incomplete';
+	fallbackLogger.warn(`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} unusable reads${cause}`);
 }
 
 /**

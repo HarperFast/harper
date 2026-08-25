@@ -159,7 +159,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#applyRead(read: () => string) {
 		let parsed;
 		try {
-			parsed = this.#parseContents(read());
+			parsed = yaml.parse(read());
 		} catch (error) {
 			// A read or parse that fails while the file is being replaced is the same event as an
 			// incomplete one, and #handleReadError's ENOENT arm would answer it with a `remove`
@@ -167,15 +167,17 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			this.#recoverOrReport(error);
 			return;
 		}
-		// `''`, `'\n'` and a truncated document all parse to null, and adopting that would drop
-		// the scope's config and emit `remove`.
+		// Tested on the file's own parse, before any env overlay: `''`, `'\n'` and a truncated
+		// document all parse to null, and an env-configured deployment would otherwise overlay
+		// one into a valid-looking object and adopt it. A file that is still unusable once the
+		// budget is spent is taken at face value, so emptying one still reaches `remove`.
 		if (!parsed || typeof parsed !== 'object') {
-			this.#recoverOrReport(undefined);
-			return;
+			if (this.#partialRead.schedule(() => this.#handleChange())) return;
+			warnPartialReadGaveUp(this.#filePath);
 		}
 		this.#partialRead.settled();
 		try {
-			this.#applyParsed(parsed);
+			this.#applyParsed(this.#overlayEnvConfig(parsed));
 		} catch (error) {
 			// Applying is past the point where an incomplete file is a possible explanation, so
 			// a listener's throw keeps the watcher's established error route rather than a retry.
@@ -193,8 +195,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#handleReadError(error);
 	}
 
-	#parseContents(contents: string) {
-		let parsed = yaml.parse(contents);
+	#overlayEnvConfig(parsed: unknown) {
 		// The on-disk root config is not guaranteed to include runtime env config at
 		// boot: the file flush races component loading, so a scope's boot-time reads
 		// (e.g. an `enabled` gate in handleApplication) could observe pre-env values
@@ -202,8 +203,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// config onto EVERY root-config read so scope.options matches the resolved
 		// view (#1618). Non-root scopes and the no-env-vars case are untouched
 		// (overlayRootEnvConfig is a no-op there).
-		if (this.#isRootConfig) parsed = overlayRootEnvConfig(parsed);
-		return parsed;
+		return this.#isRootConfig ? overlayRootEnvConfig(parsed) : parsed;
 	}
 
 	#applyParsed(parsed: unknown) {
@@ -452,8 +452,10 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 
 	// Test-only: run the change handler directly, since the read's timing relative to its caller
 	// is the behaviour under test and a chokidar event cannot be observed at that granularity.
-	_handleChangeForTests(): void {
+	// Resolves once the read has landed, which for the root config has already happened.
+	_handleChangeForTests(): Promise<unknown> {
 		this.#handleChange();
+		return Promise.allSettled([...this.#pendingReads]);
 	}
 
 	// Test-only: simulate the underlying chokidar watcher emitting an error.

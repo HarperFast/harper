@@ -22,6 +22,7 @@ describe('root config read handle lifetime', () => {
 	let fixture;
 	let configFilePath;
 	let previousRootPath;
+	let previousSetConfig;
 	const openWatchers = [];
 
 	beforeEach(() => {
@@ -29,6 +30,7 @@ describe('root config read handle lifetime', () => {
 		configFilePath = join(fixture, HARPER_CONFIG_FILE);
 		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: true } }));
 		previousRootPath = process.env.ROOTPATH;
+		previousSetConfig = process.env.HARPER_SET_CONFIG;
 		process.env.ROOTPATH = fixture;
 	});
 
@@ -36,6 +38,8 @@ describe('root config read handle lifetime', () => {
 		await Promise.all(openWatchers.splice(0).map((watcher) => watcher.close()));
 		if (previousRootPath === undefined) delete process.env.ROOTPATH;
 		else process.env.ROOTPATH = previousRootPath;
+		if (previousSetConfig === undefined) delete process.env.HARPER_SET_CONFIG;
+		else process.env.HARPER_SET_CONFIG = previousSetConfig;
 		rmSync(fixture, { recursive: true, force: true });
 	});
 
@@ -146,8 +150,9 @@ describe('root config read handle lifetime', () => {
 		const removes = [];
 		watcher.on('remove', () => removes.push(true));
 		writeFileSync(appConfigPath, '');
-		watcher._handleChangeForTests();
-		await new Promise((resolve) => setImmediate(resolve));
+		// Awaited, or the assertions below would also pass against a build with no partial-read
+		// handling at all on this path, having asserted on a read that had not happened.
+		await watcher._handleChangeForTests();
 		assert.deepStrictEqual(removes, [], 'a half-written read must not read as the scope being removed');
 		assert.strictEqual(watcher.get(['enabled']), true);
 
@@ -165,6 +170,25 @@ describe('root config read handle lifetime', () => {
 		writeFileSync(configFilePath, '\n');
 		watcher.handleChange();
 		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: true } });
+	});
+
+	it('OptionsWatcher does not let an env overlay launder a half-written root config', async () => {
+		// overlayRootEnvConfig turns any parse into a non-null object whenever a config env var is
+		// set — the norm in containers — so completeness has to be judged on the file's own parse
+		// or an empty read is adopted as an env-only config and the file's options are wiped.
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ 'other-component': { enabled: true } });
+		const watcher = new OptionsWatcher('test-component', configFilePath, undefined, true);
+		openWatchers.push(watcher);
+		await watcher.ready;
+		assert.strictEqual(watcher.get(['enabled']), true);
+
+		const removes = [];
+		watcher.on('remove', () => removes.push(true));
+		writeFileSync(configFilePath, '');
+		await watcher._handleChangeForTests();
+
+		assert.deepStrictEqual(removes, [], 'the env overlay must not stand in for the half-written file');
+		assert.strictEqual(watcher.get(['enabled']), true);
 	});
 
 	it('OptionsWatcher still reads an application config without blocking', async () => {
