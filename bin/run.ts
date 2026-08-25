@@ -23,6 +23,7 @@ import { compactOnStart, migrateOnStart } from './copyDb.ts';
 import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
+import { beginProcessShutdown } from '../server/threads/manageThreads.js';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { getThisNodeName } from '../server/nodeName.ts';
@@ -51,6 +52,7 @@ function addUnhandleRejectionListener() {
 function addExitListeners() {
 	if (!skipExitListeners) {
 		const removeHdbPid = () => {
+			beginProcessShutdown();
 			fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
 			process.exit(0);
 		};
