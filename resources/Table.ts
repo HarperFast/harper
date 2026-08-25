@@ -5055,9 +5055,24 @@ export function makeTable(options) {
 			const maxConcurrentRemovals = isRocksDB ? MAX_CONCURRENT_HISTORY_REMOVALS : MAX_CONCURRENT_LMDB_HISTORY_REMOVALS;
 			const inFlightRemovals = new Set<Promise<void>>();
 			const removalSlotWaiters: Array<() => void> = [];
+			let removalsAttempted = 0;
+			let removalsSucceeded = 0;
+			let firstRemovalError: unknown;
 			function startRemoval(remove: () => MaybePromise<void>, errorMessage: string, onSuccess?: () => void): void {
+				removalsAttempted++;
 				const removal = new Promise<void>((resolve) => resolve(remove()))
-					.then(onSuccess, (error) => harperLogger.warn(errorMessage, error))
+					.then(
+						() => {
+							removalsSucceeded++;
+							onSuccess?.();
+						},
+						(error) => {
+							// record before logging: a logger that throws must not cost us the only
+							// reference to why every removal failed
+							if (firstRemovalError === undefined) firstRemovalError = error;
+							harperLogger.warn(errorMessage, error);
+						}
+					)
 					.catch(() => undefined)
 					.finally(() => {
 						inFlightRemovals.delete(removal);
@@ -5116,6 +5131,13 @@ export function makeTable(options) {
 				} finally {
 					await drainRemovals();
 				}
+			}
+			if (removalsAttempted > 0 && removalsSucceeded === 0) {
+				// every removal we attempted failed, so this purge made no progress at all. Reporting
+				// success here would be indistinguishable from "nothing was eligible for removal", and an
+				// operator pruning to bound disk growth would never learn the store rejected every write.
+				// Partial failures stay best-effort (logged, and excluded from the returned count).
+				throw firstRemovalError ?? new Error('Every removal attempted during deleteHistory failed');
 			}
 			return entriesDeleted;
 		}

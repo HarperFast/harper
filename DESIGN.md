@@ -131,6 +131,13 @@ race the live set: each race attaches another reaction to every long-pending rem
 their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
 sequential because it is an automatic background loop.
 
+Individual removal failures are logged and excluded from the returned count, but a purge that attempted
+at least one removal and completed none rejects with the first error after both phases have drained.
+Without that, `delete_transaction_logs_before` reports a successful `entries_deleted: 0` whether nothing
+was eligible or the store rejected every write, and an operator pruning to bound disk growth has no signal
+that pruning did nothing. Drain first, then decide: a failing store should still get every removal it can
+accept, and a single success means the purge made progress and reports normally.
+
 The optional primary-store cleanup snapshots each tombstone's key and version before yielding and passes
 that version to `remove()`. LMDB enforces the condition natively. Harper's RocksDB adapter re-reads and
 removes inside one native transaction, retrying a conflict once, because rocksdb-js's `remove()` accepts

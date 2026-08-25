@@ -105,71 +105,104 @@ describe('Audit log', () => {
 		assert.equal(AuditedTable.primaryStore.getEntry(2)?.value?.name, 'two-changed');
 	});
 	// Regression test for harper#F-264 (see DESIGN.md's audit-entry-removal-loop invariant).
-	it('deleteHistory contains a mid-loop rejection even when failure logging throws', async function () {
-		// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
-		// (rather than a bare return, as the file's other reusableIterable guards use) so the report
-		// distinguishes "skipped on this engine" from "passed"
+	// Run with both a throwing and a non-throwing failure logger: with a throwing one, an
+	// implementation that counted the removal *before* logging its failure would still pass
+	// (the injected throw preempts the count), so only the non-throwing pass pins the count.
+	for (const loggingThrows of [true, false]) {
+		const failedId = loggingThrows ? 30 : 32;
+		const succeededId = failedId + 1;
+		it(`deleteHistory contains a mid-loop rejection (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async function () {
+			// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
+			// (rather than a bare return, as the file's other reusableIterable guards use) so the report
+			// distinguishes "skipped on this engine" from "passed"
+			if (AuditedTable.auditStore.reusableIterable) return this.skip();
+			await AuditedTable.deleteHistory(Date.now() + 60_000); // start from a clean backlog
+
+			await AuditedTable.put(failedId, { name: 'race-a' });
+			await AuditedTable.put(succeededId, { name: 'race-b' });
+
+			// find the failing record's raw audit-store key so the injected failure targets that one entry
+			// specifically, the same way deleteHistory itself finds it (getHistory()'s yielded entries don't
+			// carry this key — its `localTime` field is the record's version, not the key)
+			let targetKey;
+			for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+				if (record.tableId === AuditedTable.tableId && record.recordId === failedId) targetKey = record.key;
+			}
+			assert.notEqual(targetKey, undefined, `test setup: could not find record ${failedId} in the audit log`);
+
+			const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
+			const originalWarn = harperLogger.warn;
+			AuditedTable.auditStore.remove = (key) => {
+				if (key === targetKey) return Promise.reject(new Error('simulated audit entry removal failure'));
+				return originalRemove(key);
+			};
+			const warnings = [];
+
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => {
+				unhandledRejection = reason;
+			};
+			process.on('unhandledRejection', onUnhandledRejection);
+			try {
+				let entriesDeleted;
+				harperLogger.warn = (...args) => {
+					warnings.push(args);
+					if (loggingThrows) throw new Error('simulated logging failure');
+				};
+				try {
+					entriesDeleted = await AuditedTable.deleteHistory(Date.now() + 60_000);
+				} finally {
+					harperLogger.warn = originalWarn;
+				}
+				assert.equal(entriesDeleted, 1, 'only the successful removal should be counted, not the rejected one');
+				assert.equal(warnings.length, 1);
+				assert.equal(warnings[0][0], 'Error removing audit entry during deleteHistory');
+				assert.equal(warnings[0][1].message, 'simulated audit entry removal failure');
+				await delay(50);
+				assert.equal(
+					unhandledRejection,
+					undefined,
+					'a rejected removeAuditEntry() call must not escape as an unhandled rejection'
+				);
+				const remaining = [];
+				for await (const entry of AuditedTable.getHistory()) remaining.push(entry.id);
+				assert.deepEqual(
+					remaining,
+					[failedId],
+					'the failed removal must be left in place, but later entries must still be pruned'
+				);
+			} finally {
+				process.off('unhandledRejection', onUnhandledRejection);
+				harperLogger.warn = originalWarn;
+				AuditedTable.auditStore.remove = originalRemove;
+				await AuditedTable.deleteHistory(Date.now() + 60_000); // clear the now-orphaned entry
+			}
+		});
+	}
+	it('deleteHistory reports a purge that attempted removals and completed none', async function () {
 		if (AuditedTable.auditStore.reusableIterable) return this.skip();
-		await AuditedTable.deleteHistory(Date.now() + 60_000); // start from a clean backlog
+		const cutoff = () => Date.now() + 60_000;
+		await AuditedTable.deleteHistory(cutoff()); // start from a clean backlog
+		assert.equal(await AuditedTable.deleteHistory(cutoff()), 0, 'an empty backlog is not a failure');
 
-		await AuditedTable.put(30, { name: 'race-a' });
-		await AuditedTable.put(31, { name: 'race-b' });
-
-		// find record 30's raw audit-store key so the injected failure targets that one entry specifically,
-		// the same way deleteHistory itself finds it (getHistory()'s yielded entries don't carry this key —
-		// its `localTime` field is the record's version, not the key)
-		let targetKey;
-		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
-			if (record.tableId === AuditedTable.tableId && record.recordId === 30) targetKey = record.key;
-		}
-		assert.notEqual(targetKey, undefined, 'test setup: could not find record 30 in the audit log');
+		await AuditedTable.put(34, { name: 'doomed-a' });
+		await AuditedTable.put(35, { name: 'doomed-b' });
 
 		const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
 		const originalWarn = harperLogger.warn;
-		AuditedTable.auditStore.remove = (key) => {
-			if (key === targetKey) return Promise.reject(new Error('simulated audit entry removal failure'));
-			return originalRemove(key);
-		};
 		const warnings = [];
-
-		let unhandledRejection;
-		const onUnhandledRejection = (reason) => {
-			unhandledRejection = reason;
-		};
-		process.on('unhandledRejection', onUnhandledRejection);
+		AuditedTable.auditStore.remove = () => Promise.reject(new Error('simulated store failure'));
+		harperLogger.warn = (...args) => warnings.push(args);
 		try {
-			let entriesDeleted;
-			harperLogger.warn = (...args) => {
-				warnings.push(args);
-				throw new Error('simulated logging failure');
-			};
-			try {
-				entriesDeleted = await AuditedTable.deleteHistory(Date.now() + 60_000);
-			} finally {
-				harperLogger.warn = originalWarn;
-			}
-			assert.equal(entriesDeleted, 1, 'only the successful removal should be counted, not the rejected one');
-			assert.equal(warnings.length, 1);
-			assert.equal(warnings[0][0], 'Error removing audit entry during deleteHistory');
-			assert.equal(warnings[0][1].message, 'simulated audit entry removal failure');
-			await delay(50);
-			assert.equal(
-				unhandledRejection,
-				undefined,
-				'a rejected removeAuditEntry() call must not escape as an unhandled rejection'
-			);
-			const remaining = [];
-			for await (const entry of AuditedTable.getHistory()) remaining.push(entry.id);
-			assert.deepEqual(
-				remaining,
-				[30],
-				'the failed removal must be left in place, but later entries must still be pruned'
-			);
+			// a purge that made zero progress must not be indistinguishable from one that had nothing to do
+			await assert.rejects(AuditedTable.deleteHistory(cutoff()), /simulated store failure/);
+			assert.equal(warnings.length, 2, 'each failure is still logged individually');
 		} finally {
-			process.off('unhandledRejection', onUnhandledRejection);
 			harperLogger.warn = originalWarn;
 			AuditedTable.auditStore.remove = originalRemove;
-			await AuditedTable.deleteHistory(Date.now() + 60_000); // clear record 30's now-orphaned entry
+			await AuditedTable.deleteHistory(cutoff());
 		}
 	});
 	it('deleteHistory limits concurrent removals without serializing them', async function () {
@@ -284,13 +317,25 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
 		}
 	});
+	// Runs on both engines: it is the only test that carries a scan-captured version through
+	// deleteHistory's cleanup phase into remove(), and RocksDB is the default engine. Rather than
+	// createOrphanedTombstone (which can't orphan an entry in a RocksDB transaction log), it
+	// suppresses the audit-driven delete callback — the "the audit log isn't cleaning these up"
+	// state the cleanup phase exists for — so the tombstone survives to the cleanup scan.
 	it('deleteHistory cleanup preserves a record recreated while its stale tombstone waits for a slot', async function () {
-		if (AuditedTable.auditStore.reusableIterable) return this.skip();
 		const cutoff = Date.now() + 60_000;
 		await AuditedTable.deleteHistory(cutoff, true);
 
 		const recordId = 'cleanup-race';
-		const tombstone = await createOrphanedTombstone(recordId);
+		const deleteCallbacks = AuditedTable.auditStore.deleteCallbacks;
+		const tableId = AuditedTable.tableId;
+		const originalDeleteCallback = deleteCallbacks[tableId];
+		await AuditedTable.put(recordId, { name: 'to-delete' });
+		await AuditedTable.delete(recordId);
+		deleteCallbacks[tableId] = () => {};
+		const tombstone = AuditedTable.primaryStore.getEntry(recordId);
+		assert.equal(tombstone?.value, null, 'test setup: expected a tombstone');
+		assert.notEqual(tombstone?.version, undefined, 'test setup: expected a versioned tombstone');
 
 		const primaryStore = AuditedTable.primaryStore;
 		const originalRemove = primaryStore.remove;
@@ -340,7 +385,7 @@ describe('Audit log', () => {
 			await AuditedTable.put(recordId, { name: 'recreated' });
 			releaseRemoval();
 			await deletion;
-			assert.equal(removalVersion, tombstone.version);
+			assert.equal(removalVersion, tombstone.version, 'the cleanup scan must hand the version it captured to remove()');
 			assert.equal(removalResult, false, 'the stale conditional removal must not commit');
 			assert.equal(AuditedTable.primaryStore.getEntry(recordId)?.value?.name, 'recreated');
 		} finally {
@@ -349,6 +394,8 @@ describe('Audit log', () => {
 			await deletion?.catch(() => {});
 			if (removeWasOwnProperty) primaryStore.remove = originalRemove;
 			else delete primaryStore.remove;
+			if (originalDeleteCallback) deleteCallbacks[tableId] = originalDeleteCallback;
+			else delete deleteCallbacks[tableId];
 			await AuditedTable.delete(recordId).catch(() => {});
 			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
 		}
