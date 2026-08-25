@@ -293,6 +293,36 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.strictEqual(refCountFor(branch.rootStore.path), 0, 'a second close must not double-release');
 	});
 
+	it('a stale handle closed twice does not tear down a later open of the same directory', function () {
+		// the point of the re-close guard is not that closing twice throws — it is that the second
+		// call is keyed by path, so without it a discarded handle deregisters whoever holds the path now
+		const stale = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		stale.close();
+		const live = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		stale.close();
+
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'the live branch must still own the directory'
+		);
+		assert.ok(refCountFor(live.rootStore.path) > 0, 'the live branch must still hold its handles');
+	});
+
+	it('drops the memoized blob roots pinning the store', function () {
+		const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		getRootBlobPathsForDB(branch.rootStore);
+		assert.ok(databasePaths.has(branch.rootStore), 'resolving blob roots memoizes them against the store');
+
+		branch.close();
+
+		// databasePaths is a strong Map keyed by the store, so an entry left behind pins the closed
+		// store for the life of the process and grows with branch churn
+		assert.ok(!databasePaths.has(branch.rootStore), 'close() must drop the memoized blob roots');
+	});
+
 	it('is not adopted back into the global map when the database scan reruns', async function () {
 		this.timeout(30000);
 		// harper#643 puts a branch directory inside the directory getDatabases() walks, so the first

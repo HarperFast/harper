@@ -1119,11 +1119,17 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 		closeBranchHandles(path, stranded, tables);
 		throw error;
 	}
+	let closed = false;
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
 		close() {
-			if (!openBranches.delete(path)) return; // already closed; closing a store twice is not safe
+			// Guard on this handle, not on the registrations: those are keyed by path, and once this
+			// branch has been closed the path is free to be opened again, so a stale handle closed a
+			// second time would deregister and half-tear-down whichever branch owns the path now.
+			if (closed) return; // closing a store twice is not safe
+			closed = true;
+			openBranches.delete(path);
 			rocksdbDatabaseEnvs.delete(path);
 			closeBranchHandles(path, rootStore, tables);
 		},
