@@ -64,7 +64,8 @@ async function restart(req: any) {
 
 		setTimeout(async () => {
 			try {
-				if (process.env.HARPER_EXIT_ON_RESTART) armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS);
+				if (process.env.HARPER_EXIT_ON_RESTART && !armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS))
+					hdbLogger.error('Restart exit watchdog is unavailable; restart teardown is unbounded');
 				// It seems like you should just be able to start the other process and kill this process and everything should
 				// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
 				// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
