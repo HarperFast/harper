@@ -1,5 +1,0 @@
-# QA-686 — log rotation maxSize probe (gh#1877).
-type Ping @table @export {
-	id: ID @primaryKey
-	n: Int
-}
