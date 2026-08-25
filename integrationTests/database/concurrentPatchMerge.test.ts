@@ -31,6 +31,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
+// @ts-expect-error no type declarations
+import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'concurrent-patch-merge');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
@@ -62,32 +64,9 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		httpURL = ctx.harper.httpURL;
 		auth = client.headers.Authorization;
 
-		const readinessURL = `${httpURL}/CollabDoc/`;
-		const readinessDeadlineMs = 30_000;
-		const deadline = Date.now() + readinessDeadlineMs;
-		let ready = false;
-		let lastObserved = 'no response';
-		while (Date.now() < deadline) {
-			try {
-				const probe = await fetch(readinessURL, {
-					headers: { Authorization: auth },
-					signal: AbortSignal.timeout(3_000),
-				});
-				lastObserved = `HTTP ${probe.status}`;
-				await probe.body?.cancel();
-				if (probe.ok) {
-					ready = true;
-					break;
-				}
-			} catch (error) {
-				lastObserved = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-			}
-			await sleep(250);
-		}
-		if (!ready)
-			throw new Error(
-				`Harper did not become ready at ${readinessURL} within ${readinessDeadlineMs}ms; last observed ${lastObserved}`
-			);
+		await waitForRouteReady(client, '/CollabDoc/', 30_000, {
+			isReady: (response: { status: number }) => response.status >= 200 && response.status < 300,
+		});
 	});
 
 	after(async () => {
