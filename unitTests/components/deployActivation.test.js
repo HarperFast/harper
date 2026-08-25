@@ -19,7 +19,6 @@ const {
 } = require('#src/components/Application');
 
 const IN_PROGRESS = '.in-progress-';
-const RETIRED = '.retired-';
 
 async function newRoot(label) {
 	return fs.mkdtemp(path.join(os.tmpdir(), `activation-${label}-`));
@@ -89,10 +88,10 @@ describe('interrupted activation recovery', () => {
 		assert.strictEqual(failures.size, 0);
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the validated candidate becomes live');
 		assert.deepStrictEqual(config.calls, [{ component: 'web', entry: { package: 'web@2.0.0' } }]);
-		const asideDir = path.join(root, ASIDE_STAGING_DIR, 'web');
-		assert.ok(
-			(await fs.readdir(asideDir)).some((name) => name.startsWith(RETIRED)),
-			'the rollback record is retired, not left in progress'
+		assert.strictEqual(
+			existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
+			false,
+			'the displaced tree is swept, not just marked disposable'
 		);
 		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false, 'staging is cleaned up');
 		await fs.rm(root, { recursive: true, force: true });
@@ -273,8 +272,11 @@ describe('activation transaction', () => {
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.deepStrictEqual(config.calls, [{ component: 'web', entry: { package: 'web@2.0.0' } }]);
 		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false, 'staging is cleaned up');
-		const asideDir = path.join(root, ASIDE_STAGING_DIR, 'web');
-		assert.ok((await fs.readdir(asideDir)).some((name) => name.startsWith(RETIRED)));
+		assert.strictEqual(
+			existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
+			false,
+			'and the version it displaced is swept rather than accumulating per deploy'
+		);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 

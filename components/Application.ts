@@ -1184,7 +1184,16 @@ async function settleInterruptedActivation(
 		if (!liveExists) await rename(candidateDirPath, liveDirPath);
 		await syncDirectory(componentsRootDirPath);
 		await publishConfig(journal.component, journal.configAfter ?? null);
-		for (const record of asideRecords) await retireExtractionAside(record);
+		for (const record of asideRecords) {
+			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components
+			// root from growing by a component version for every activation a crash interrupted.
+			const retiredMarkerPath = await retireExtractionAside(record);
+			await cleanupExtractionPaths(
+				{ name: journal.component, dirPath: liveDirPath, logger },
+				asideStagingDir,
+				new Set([record, retiredMarkerPath])
+			);
+		}
 	};
 	const rollBack = async (restoreFrom?: string) => {
 		if (restoreFrom) {
@@ -1345,8 +1354,13 @@ export async function activateCandidateApplication(
 
 	// B4/B5/B6 — past the point of no return. Each of these failing leaves a state recovery settles
 	// forward on the next start, so they are logged rather than thrown: the deploy has succeeded.
+	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	try {
-		await retireExtractionAside(asidePath ?? priorAbsentRecordPath!);
+		const retiredMarkerPath = await retireExtractionAside(settledRecord);
+		// Retiring only MARKS the displaced tree disposable. Without this sweep the tree every deploy
+		// displaces stays under `.deploy-aside/<component>` forever, so the components root grows by a
+		// whole component version per deploy.
+		await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
 	} catch (error) {
 		application.logger.warn(`Deployed ${application.name} but could not retire its rollback record:`, error);
 	}
@@ -2334,7 +2348,26 @@ export function derivePackageIdentifier(packageIdentifier: string) {
  * @param application The application to prepare.
  * @returns A promise that resolves when all preparation steps complete.
  */
-export async function prepareApplication(application: Application) {
+export type PrepareApplicationOptions = {
+	/**
+	 * Runs against the built candidate while the live version is still serving, and BEFORE the swap. A
+	 * throw here means the candidate never goes live — which is the whole difference from the previous
+	 * behavior, where the swap committed first and a load failure was reported over an already-live
+	 * broken release.
+	 */
+	validateCandidate?: (candidateDirPath: string) => Promise<void>;
+	/** This component's root-config entry as it stands, so a failed activation can put it back. */
+	configBefore?: Record<string, any> | null;
+	/** What the entry must say once the candidate is live; `null` removes it. */
+	configAfter?: Record<string, any> | null;
+	/**
+	 * Publishes an entry. Omitted by boot, which already starts FROM authoritative config and so must
+	 * neither republish nor compensate it.
+	 */
+	publishConfig?: (entry: Record<string, any> | null) => Promise<void>;
+};
+
+export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
 	const deploymentId = await broadcastDeployStart(application.name);
 	try {
 		const commandTimeoutMs = application.install?.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
@@ -2354,42 +2387,45 @@ export async function prepareApplication(application: Application) {
 					await recoverOrCleanupStaleExtractionPaths(application, asideStagingDir);
 				}
 				const previousPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
-				let extraction: ExtractionTransaction | undefined;
+				// Determined before the swap, because both trees exist then: the runtime comparison below
+				// wants the live version and the candidate side by side.
+				application.isNewComponent = !(await lstat(application.dirPath).then(
+					() => true,
+					(error) => {
+						if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+						throw error;
+					}
+				));
 				try {
-					// Materialize the per-deploy `.npmrc` before extraction so both `npm pack` (extract) and
-					// `npm install` authenticate against the private registry; always remove it afterward.
+					// Materialize the per-deploy `.npmrc` before the build so both `npm pack` and `npm install`
+					// authenticate against the private registry; always remove it afterward.
 					await application.writeTransientNpmrc();
+					let candidateDirPath: string;
 					try {
 						// The git credential socket only has to be up for extraction — that is where npm resolves and
-						// clones a git-reference package. Closing it before installApplication means the credential is
+						// clones a git-reference package. Closing it before the install means the credential is
 						// already gone by the time the component's dependency tree (and any install script it is
 						// allowed to run) executes.
 						await application.startGitCredentialSession();
-						extraction = await extractApplication(application, true);
+						candidateDirPath = await buildCandidateApplication(application, deploymentId);
 					} finally {
 						await application.cleanupGitCredentialSession();
 					}
-					await installApplication(application);
+					// Validated while the previous version is still the one serving, so a candidate that
+					// installs cleanly but throws at load is rejected without ever having been live.
+					await options.validateCandidate?.(candidateDirPath);
 					if (!application.isNewComponent) {
-						const currentPackageMetadata = await readInstalledPackageMetadata(application.dirPath);
 						application.packageMetadataChanged = installedRuntimeChanged(
 							previousPackageMetadata,
-							currentPackageMetadata,
+							await readInstalledPackageMetadata(candidateDirPath),
 							application.installationIsOpaque
 						);
 					}
-					await extraction?.commit();
-				} catch (error) {
-					try {
-						await extraction?.rollback();
-					} catch (rollbackError) {
-						throw new AggregateError(
-							[error, rollbackError],
-							`Failed to prepare ${application.name}: ${errorMessage(error)}; ` +
-								`also failed to restore its previous component directory: ${errorMessage(rollbackError)}`
-						);
-					}
-					throw error;
+					await activateCandidateApplication(application, deploymentId, {
+						configBefore: options.configBefore,
+						configAfter: options.configAfter,
+						publishConfig: options.publishConfig,
+					});
 				} finally {
 					await application.cleanupTransientNpmrc();
 				}

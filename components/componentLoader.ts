@@ -38,7 +38,7 @@ import { table } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
+import { addConfig, deleteConfigFromFile, getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
@@ -53,6 +53,7 @@ import { materializeGlobalSecrets, processComponentEnv } from './componentSecret
 import { PluginModule } from './PluginModule.ts';
 import {
 	getEnvBuiltInComponents,
+	recoverInterruptedActivations,
 	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
 } from './Application.ts';
@@ -60,6 +61,16 @@ import { ComponentPreparationLockTimeoutError } from './componentPreparationLock
 import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+
+/**
+ * Apply one component's root-config entry while settling an interrupted activation; `null` removes it.
+ * Startup is single-threaded here, so no cross-component lock is needed — unlike the deploy path, where
+ * two components can publish at once.
+ */
+async function publishComponentConfigEntry(component: string, entry: Record<string, any> | null): Promise<void> {
+	if (entry === null) deleteConfigFromFile([component]);
+	else await addConfig(component, entry);
+}
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
@@ -172,6 +183,29 @@ export async function loadComponentDirectories(
 			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
 			errorForLog(recoveryError)
 		);
+	}
+	if (isMainThread) {
+		// Settle activations a crash interrupted, BEFORE anything loads: an activation whose config write
+		// was lost would otherwise load swapped-in code under the previous release's routing. Only the main
+		// thread does this — workers would race each other over the same trees.
+		//
+		// Failures are per component, so one unsettleable component is failed closed and every healthy
+		// sibling still loads. A failure to inspect staging at all is logged and loading continues, matching
+		// how the extraction recovery above degrades rather than taking the node down.
+		try {
+			for (const [component, error] of await recoverInterruptedActivations(
+				CF_ROUTES_DIR,
+				publishComponentConfigEntry
+			)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			const recoveryError = error instanceof Error ? error : new Error(String(error));
+			harperLogger.warn(
+				'Loading existing filesystem components without activation recovery because staging could not be inspected:',
+				errorForLog(recoveryError)
+			);
+		}
 	}
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
 	// any application loads (root components — including the Pro custody registration — have

@@ -438,6 +438,82 @@ async function packageComponent(req) {
  * @param req
  * @returns {Promise<string>}
  */
+/**
+ * Load the built candidate once to surface load-time errors, then throw the first one. A load-ERROR PROBE,
+ * not a safety guarantee: this executes the component's own top-level code with incomplete side-effect
+ * isolation. Runs against the candidate directory while the previous version is still serving.
+ *
+ * Still a no-op on the main thread, exactly as before — and the operations API deploys on the main thread,
+ * so operator deploys remain unvalidated. Making validation reachable there is #2315 step 2; this commit
+ * only fixes the ORDER, so that where validation does run, a rejected candidate never goes live.
+ */
+async function validateComponentLoads(candidateDirPath, emit) {
+	// now we attempt to actually load the component in case there is
+	// an error we can immediately detect and report, but app code should not run on the main thread
+	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
+		const pseudoResources = new Resources();
+		pseudoResources.isWorker = true;
+
+		const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
+		const { trackScopeClose } = require('./scopeShutdown.ts');
+		let lastError;
+		componentLoader.setErrorReporter((error) => (lastError = error));
+		emit('phase', { phase: 'load', status: 'start' });
+		// This load exists only to surface load-time errors early; the Scopes it creates are
+		// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
+		// can close them here once validation completes — otherwise each deploy leaks the Scope's
+		// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
+		// (#1462).
+		const validationScopes = new Set();
+		// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
+		// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
+		// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
+		// registration methods no-op for the duration of the load.
+		const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
+		const validation = runWithDeployValidationGuard(async () => {
+			try {
+				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
+					collectScopes: validationScopes,
+				});
+			} finally {
+				const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
+				for (const result of closeResults) {
+					if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
+				}
+			}
+		});
+		// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
+		// disposing — a plugin may start a native runtime in handleApplication — before realExit.
+		trackScopeClose(validation);
+		await validation;
+		emit('phase', { phase: 'load', status: 'done' });
+
+		if (lastError) throw lastError;
+	}
+}
+
+/**
+ * Publish one component's root-config entry; `null` removes it.
+ *
+ * Serialized across components: `addConfig` is a read-modify-write of the whole config document, so two
+ * components publishing at once can lose each other's entry. Keyed on a pseudo-path no real component can
+ * collide with, since component names are never dot-prefixed.
+ */
+async function publishComponentConfig(project, entry) {
+	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	await withComponentPreparationLock(
+		path.join(componentsRoot, '.root-config'),
+		async () => {
+			if (entry === null) {
+				configUtils.deleteConfigFromFile([project]);
+			} else {
+				await configUtils.addConfig(project, entry);
+			}
+		},
+		{ purpose: 'root-config-publish' }
+	);
+}
+
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -461,6 +537,7 @@ async function deployComponent(req) {
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
 
 	// Write to root config if the request contains a package identifier
+	let pendingConfigEntry;
 	if (req.package) {
 		// Check if trying to overwrite a core component (requires force)
 		// Lazy-load to avoid circular dependency with componentLoader
@@ -487,7 +564,26 @@ async function deployComponent(req) {
 		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
 		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
-		await configUtils.addConfig(req.project, applicationConfig);
+		pendingConfigEntry = applicationConfig;
+	}
+
+	// Published by the activation transaction, NOT here. An entry written before the build survives a
+	// failed or rejected deploy, and installApplications() reinstalls whatever it names — so the rejected
+	// release would come back at the next restart, with the tree correctly rolled back and the config
+	// still pointing at it.
+	const existingConfigEntry = configUtils.getConfigObj()?.[req.project];
+	const configBefore = existingConfigEntry ? structuredClone(existingConfigEntry) : null;
+	let configAfter;
+	if (pendingConfigEntry) {
+		configAfter = pendingConfigEntry;
+	} else {
+		// A payload deploy REPLACES whatever was installed, so it has to remove any `package:` the entry
+		// still names: "no package" is not "no config opinion". Leaving it behind means a cold install —
+		// a fresh peer, a wiped components directory — resolves the old package over the payload release.
+		const { package: removedPackage, credentials: removedCredentials, ...remainder } = configBefore ?? {};
+		void removedPackage;
+		void removedCredentials;
+		configAfter = Object.keys(remainder).length ? remainder : null;
 	}
 
 	// Create a hdb_deployment row up front so the deploy is observable and auditable
@@ -608,52 +704,22 @@ async function deployComponent(req) {
 		if (credentialReferences.length) req.credentials = credentialReferences;
 		else delete req.credentials;
 
+		// The candidate is validated INSIDE preparation, between the build and the swap, so a component
+		// that installs cleanly but throws at load never becomes live. Previously the swap committed
+		// first and this failure was reported over an already-serving broken release.
+		//
+		// The phase events keep their existing order for clients — prepare start/done, then load
+		// start/done — even though the load now happens within the preparation window.
 		emit('phase', { phase: 'prepare', status: 'start' });
-		await prepareApplication(application);
-		emit('phase', { phase: 'prepare', status: 'done' });
-
-		// now we attempt to actually load the component in case there is
-		// an error we can immediately detect and report, but app code should not run on the main thread
-		if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
-			const pseudoResources = new Resources();
-			pseudoResources.isWorker = true;
-
-			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
-			const { trackScopeClose } = require('./scopeShutdown.ts');
-			let lastError;
-			componentLoader.setErrorReporter((error) => (lastError = error));
-			emit('phase', { phase: 'load', status: 'start' });
-			// This load exists only to surface load-time errors early; the Scopes it creates are
-			// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
-			// can close them here once validation completes — otherwise each deploy leaks the Scope's
-			// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
-			// (#1462).
-			const validationScopes = new Set();
-			// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
-			// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
-			// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
-			// registration methods no-op for the duration of the load.
-			const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
-			const validation = runWithDeployValidationGuard(async () => {
-				try {
-					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
-						collectScopes: validationScopes,
-					});
-				} finally {
-					const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
-					for (const result of closeResults) {
-						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
-					}
-				}
-			});
-			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
-			// disposing — a plugin may start a native runtime in handleApplication — before realExit.
-			trackScopeClose(validation);
-			await validation;
-			emit('phase', { phase: 'load', status: 'done' });
-
-			if (lastError) throw lastError;
-		}
+		await prepareApplication(application, {
+			validateCandidate: async (candidateDirPath) => {
+				emit('phase', { phase: 'prepare', status: 'done' });
+				await validateComponentLoads(candidateDirPath, emit);
+			},
+			configBefore,
+			configAfter,
+			publishConfig: (entry) => publishComponentConfig(req.project, entry),
+		});
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;

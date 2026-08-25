@@ -1362,7 +1362,9 @@ export async function addConfig(topLevelElement, values) {
 	atomicWriteFile(getConfigFilePath(), String(configDoc));
 }
 
-export function deleteConfigFromFile(param: string) {
+// The parameter is a YAML document PATH, forwarded to `deleteIn` — every caller passes a single-element
+// array. It was annotated `string`, which happened to compile only because no TypeScript caller existed.
+export function deleteConfigFromFile(param: string[]) {
 	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
 	const configDoc = parseYamlDoc(configFilePath);
 	configDoc.deleteIn(param);
