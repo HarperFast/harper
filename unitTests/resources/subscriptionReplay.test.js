@@ -370,10 +370,11 @@ describe('Subscription replay', () => {
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
-			// Wait for every in-flight write to be delivered rather than guessing a fixed
-			// duration — the fixed wait raced loaded runners and was the source of the
-			// intermittent "missing id" failures. The timeout falls through so the per-id
-			// asserts below name whichever write was lost instead of reporting a bare timeout.
+			// Wait on the deliveries themselves rather than a fixed duration, and let the timeout
+			// fall through so the per-id asserts below name whichever write was lost. A
+			// `missing in-flight id N` failure here is not a test-timing problem: it is the lost
+			// delivery in https://github.com/HarperFast/harper/issues/2311 — the startTime replay
+			// branch drops live events committed after its audit cursor has terminated.
 			await waitFor(
 				() => {
 					const seen = new Set(events.map((e) => e.id));
