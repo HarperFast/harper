@@ -64,7 +64,11 @@ export async function createSchema(schemaCreateObject: any) {
 	// Await cross-worker propagation so the new schema is visible on every worker before
 	// returning success — otherwise describe_all on a lagging worker reports it missing (#1497).
 	await signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, schemaCreateObject.operation, schemaCreateObject.schema)
+		new SchemaEventMsg(
+			process.pid,
+			schemaCreateObject.operation ?? hdbTerms.OPERATIONS_ENUM.CREATE_SCHEMA,
+			schemaCreateObject.schema
+		)
 	);
 
 	return schemaStructure;
@@ -189,7 +193,11 @@ export async function dropSchema(dropSchemaObject: any) {
 	// Await cross-worker propagation before returning success so no worker keeps serving the
 	// dropped schema (#1497).
 	await signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema)
+		new SchemaEventMsg(
+			process.pid,
+			dropSchemaObject.operation ?? hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA,
+			dropSchemaObject.schema
+		)
 	);
 
 	let response = await server.replication.replicateOperation(dropSchemaObject);

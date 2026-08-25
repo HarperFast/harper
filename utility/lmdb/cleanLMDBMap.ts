@@ -17,6 +17,7 @@ async function cleanLMDBMap(msg: any) {
 			let cachedEnvironment = undefined;
 
 			switch (msg.operation) {
+				case 'drop_database':
 				case 'drop_schema':
 					for (let x = 0; x < keys.length; x++) {
 						let key = keys[x];
