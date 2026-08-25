@@ -441,7 +441,11 @@ describe('two-phase component directory transaction', function () {
 		assert.strictEqual(await getRevertTarget(application.dirPath), undefined);
 		await assert.rejects(
 			() => revertApplication(application, randomUUID()),
-			/no previous version is retained/,
+			(error) => {
+				assert.match(error.message, /no previous version is retained/);
+				assert.strictEqual(error.statusCode, 409, "an unsatisfiable revert is the caller's problem, not a 500");
+				return true;
+			},
 			'a component deployed once cannot be reverted'
 		);
 		await cleanup(name);
@@ -510,7 +514,11 @@ describe('two-phase component directory transaction', function () {
 
 		await assert.rejects(
 			() => revertApplication(application, randomUUID()),
-			/neither the live version .* nor the retained previous version/s,
+			(error) => {
+				assert.match(error.message, /neither the live version .* nor the retained previous version/s);
+				assert.strictEqual(error.statusCode, 409, "asking for a version nobody kept is the caller's problem");
+				return true;
+			},
 			'only one previous version is retained, so anything else is a redeploy'
 		);
 		assert.match(await readMarker(application.dirPath), /v2/, 'a refused revert changes nothing');

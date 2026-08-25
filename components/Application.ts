@@ -8,6 +8,8 @@ import {
 	readConfigFile,
 } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
+import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
@@ -615,7 +617,13 @@ async function pruneStagedBuilds(componentName: string, keepStagingId: string, m
 			// keep all four. The residual: two stages tying to the millisecond can have the second evict
 			// the first's tree while its row stays `staged`, so activating that id later fails with "no
 			// valid component tree" rather than serving nothing. A clear failure, and the reconcile pass
-			// settles such a row. Sorting breaks ties by stagingId so concurrent prunes choose the same
+			// settles such a row. The same applies above `maxCount` genuinely-concurrent deploys of ONE
+			// component: builds serialize on the component lock but validation runs after it is released,
+			// so the oldest queued candidate can be evicted before it activates. Ownership is deliberately
+			// not tracked to close that: a registry entry leaked by a deploy that dies between stage and
+			// activate would pin a tree forever, defeating the disk bound this exists to enforce, which is
+			// worse than a loud failure on the 6th simultaneous deploy of the same component.
+			// Sorting breaks ties by stagingId so concurrent prunes choose the same
 			// victims instead of each deleting the other's.
 			const current = builds.find((build) => build.stagingId === keepStagingId);
 			const others = builds
@@ -1127,9 +1135,12 @@ export async function revertApplication(
 	return withComponentPreparationLock(liveDirPath, async () => {
 		const target = await getRevertTarget(liveDirPath);
 		if (!target) {
-			throw new Error(
+			// A caller asking for something the node cannot supply, not a node failure: 409, so the operations
+			// API does not report an unsatisfiable revert as a 500 the client is invited to retry.
+			throw new ClientError(
 				`Cannot revert ${application.name}: no previous version is retained. A component must have been ` +
-					`deployed over a prior version (which activation retains as .deploy-previous) to be reverted.`
+					`deployed over a prior version (which activation retains as .deploy-previous) to be reverted.`,
+				HTTP_STATUS_CODES.CONFLICT
 			);
 		}
 		if (target.live.deployment_id === toDeploymentId) {
@@ -1137,11 +1148,12 @@ export async function revertApplication(
 			return { swapped: false, activatedConfig: target.live.application_config, fromDeploymentId: null };
 		}
 		if (target.previous.deployment_id !== toDeploymentId) {
-			throw new Error(
+			throw new ClientError(
 				`Cannot revert ${application.name} to deployment '${toDeploymentId}': it is neither the live version ` +
 					`('${target.live.deployment_id ?? 'unknown'}') nor the retained previous version ` +
 					`('${target.previous.deployment_id ?? 'unknown'}'). Only the immediately-previous version is retained ` +
-					`on disk; redeploy the version you want with deploy_component instead.`
+					`on disk; redeploy the version you want with deploy_component instead.`,
+				HTTP_STATUS_CODES.CONFLICT
 			);
 		}
 

@@ -60,6 +60,7 @@ import {
 	recoverInterruptedReverts,
 } from './Application.ts';
 import { getDeploymentRow, markDeploymentTerminal } from './deploymentRecorder.ts';
+import { hostname } from 'node:os';
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
@@ -234,9 +235,29 @@ export async function loadComponentDirectories(
 				settleDiscardedDeployment
 			);
 			for (const deploymentId of reconciliation.recovered) {
+				// The row is created by the ORIGIN only, so this node may be settling a deployment it did
+				// not originate. Settling one it did own is the whole story — the activation it started is
+				// now complete — while a peer stamping the origin's row would report on nodes it cannot see.
+				// A row left `activating` is not stranded forever either way: the next deploy of the project
+				// settles it.
+				let settled = false;
+				try {
+					const row = await getDeploymentRow(deploymentId);
+					if (row?.origin_node === hostname()) {
+						await markDeploymentTerminal(deploymentId, 'success');
+						settled = true;
+					}
+				} catch (error) {
+					// Observability only; a component that is live and reconciled must not fail to load
+					// because its row could not be updated.
+					harperLogger.warn(
+						`Could not settle the deployment row for recovered activation '${deploymentId}':`,
+						errorForLog(error as Error)
+					);
+				}
 				harperLogger.warn(
-					`Rolled forward interrupted component activation '${deploymentId}' on this node; ` +
-						`the deployment remains activating until cluster state is reconciled`
+					`Rolled forward interrupted component activation '${deploymentId}' on this node` +
+						(settled ? '' : `; its deployment row still reads activating`)
 				);
 			}
 			for (const [deploymentId, error] of reconciliation.errors) {
