@@ -289,6 +289,8 @@ function encryptSecret(plaintext, publicKeyPem, kid) {
 
 `deploy_component` accepts a `credentials` array so a component installed from a private **npm registry** or private **git repository** can authenticate. A provided token is ingested into the secrets store (as a reference, encrypted) rather than travelling in the operation body, persisting as a plaintext `.npmrc`, or being written to disk for git — so package-reference deploys survive rollback, reboot, and new peers joining. Ingested tokens are stored under a derived name (`deploy.<component>.<registry>` or `deploy.<component>.git.<host>`) granted to the component. See [`deploy_component`](../operations-api/operations.md#deploy_component).
 
+To provision one of these without handing the cluster a plaintext token at all, `harper deploy setup=true` (v5.2.3+) runs the [client-side encryption](#client-side-encryption-encrypt-before-it-leaves-the-client) flow above for you: it fetches the public key, seals the token locally into an `enc:v1:` envelope, stores only the ciphertext under that same derived name, and prints the `credentials` reference for the deploy to use. See [Provisioning a Deploy Credential](../components/applications.md#provisioning-a-deploy-credential).
+
 ## Threat model
 
 **Protects against:** theft of on-disk config/`.env` files, the editor/operations read surface, secrets appearing in operations logs and replication payloads, and an operator observing traffic at the TLS-terminating layer. Client-side encryption additionally keeps plaintext off the operations API entirely.

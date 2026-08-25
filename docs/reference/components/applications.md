@@ -136,6 +136,96 @@ Harper generates a `package.json` from component configurations and uses a form 
 
 For SSH-based private repos, use the [Add SSH Key](#add_ssh_key) operation to register keys first.
 
+### Deploying by Reference
+
+<VersionBadge version="v5.2.3" />
+
+Omitting `package` uploads a snapshot of your working directory. The result is an anonymous artifact: nothing records _which_ commit it came from, so reproducing it later — or stepping back to a previous release — means finding those exact files again.
+
+Deploying by **reference** sends a pinned git reference instead, and the cluster fetches that exact commit. Redeploying the same reference deploys the same source revision, and rolling back is deploying an older one.
+
+A pinned SHA fixes the _source_, not the built artifact. The cluster installs and builds from that source on each node, so unpinned dependency ranges, a mutable registry artifact, install scripts, or a different toolchain can still produce different bytes — or a failure — from the same commit. Commit your lockfile if you need the build itself to be reproducible.
+
+`harper deploy by_ref=true` builds that reference from the local git repository, so you don't assemble the URL yourself:
+
+```sh
+harper deploy by_ref=true restart=true replicated=true
+```
+
+This resolves the repository's `origin` remote and the current commit, then deploys `package=git+https://github.com/<owner>/<repo>.git#<full commit SHA>`.
+
+**Parameters**:
+
+- `by_ref` - Build the package reference from the local repository.
+- `ref` _(optional)_ - Deploy a specific commit, tag, or branch instead of `HEAD`. Resolved to a commit SHA before it ships. Implies `by_ref`.
+- `credential` _(optional)_ - Set to `true` to authenticate the clone with the stored credential for the repository's host. Omit for public repositories.
+
+```sh
+# Deploy a specific tag
+harper deploy ref=v1.2.0 restart=true replicated=true
+
+# Roll back by deploying an older commit
+harper deploy ref=9f8c2a1 restart=true replicated=true
+```
+
+**A reference is pinned to a SHA, not to the name you typed.** Tags and branches are resolved to a full commit SHA before the deploy is sent — from your local checkout when it has the ref, and from the remote when it doesn't (a shallow CI clone usually doesn't). Annotated tags resolve to the commit they point at. This matters on a cluster: peers resolve the package independently, so a tag that moves mid-deploy — or a branch that advances — could otherwise leave nodes running different code.
+
+If a `ref` can't be resolved either way, the deploy stops rather than sending the name for the cluster to resolve. Run `git fetch` and retry, or pass a full commit SHA — that needs no resolution and is always accepted.
+
+A `ref` must also name something a clone can fetch: `refs/heads/*` and `refs/tags/*`, or a bare branch or tag name. Anything else — `refs/pull/123/head`, say — is rejected up front, even if your own checkout can resolve it, because the cluster could resolve that commit and still never check it out.
+
+**Commit and push first.** The cluster clones from the remote, so it only sees commits that have been pushed. `by_ref` warns in both directions: when the working tree is dirty (those changes won't be part of the deploy) and when the commit being deployed isn't on any remote branch (the cluster won't be able to clone it). The second check reads your local remote-tracking refs, so run `git fetch` if you get it for a commit you know you pushed.
+
+The unpushed-commit check is **skipped under GitHub Actions**, where the runner's checkout is not a branch a `git branch -r --contains` can see; the dirty-tree warning still applies. On a `pull_request` run the commit is resolved from the event payload instead, as described below.
+
+**In GitHub Actions**, `by_ref` deploys the commit the workflow is running on. On a `pull_request` run that is the pull request's **head** commit rather than the merge commit the runner checks out: the merge commit lives under `refs/pull/<n>/merge`, which a plain clone can't fetch, so the cluster would have no way to resolve it. For a pull request from a fork, the head repository is the fork, and the CLI names it before deploying. If the event payload isn't readable, the deploy stops and asks for the commit explicitly:
+
+```sh
+harper deploy ref=${{ github.event.pull_request.head.sha }} restart=true replicated=true
+```
+
+#### Private repositories
+
+Pass `credential=true` for a private repository. The CLI attaches a `credentials` reference naming a secret that the cluster resolves in memory at clone time, so no token travels in the operation body or lands on disk:
+
+```sh
+harper deploy by_ref=true credential=true restart=true replicated=true
+```
+
+The host comes from the package being deployed, so the credential always matches the clone it authenticates. Naming the host explicitly (`credential=github.com`) still works, but one that doesn't match the package's host is rejected instead of deployed — the clone would never ask for it, and the deploy would fail as though no credential were configured.
+
+Provision that credential once with [`harper deploy setup=true`](#provisioning-a-deploy-credential). See [Private-source deploy credentials](../security/secrets.md#private-source-deploy-credentials) for how the secret is named and resolved, and [`add_ssh_key`](#add_ssh_key) for the SSH-key alternative.
+
+:::note
+Deploying by reference means the **cluster** installs and builds the component from source. If your application needs a build step that can't run on the node, keep shipping the built output as a payload deploy instead.
+:::
+
+### Provisioning a Deploy Credential
+
+<VersionBadge version="v5.2.3" />
+
+`harper deploy setup=true` provisions the credential a private deploy needs. It's interactive, and runs once per component and source. It calls `get_secrets_public_key` and `set_secret`, both of which require **super_user**, so run it with an administrative credential rather than the CI identity it provisions for:
+
+```sh
+harper deploy setup=true
+```
+
+It asks which private source needs a credential (a GitHub repository or an npm registry), sources a token, and then:
+
+1. Fetches the cluster's public key with `get_secrets_public_key`.
+2. **Encrypts the token locally** into an `enc:v1:` envelope.
+3. Stores only the ciphertext with `set_secret`, in the component-scoped tier.
+4. Grants this component permission to resolve it with `grant_secret`.
+5. Prints the `credentials` reference for the deploy to use.
+
+The plaintext never leaves your machine: the operations API, its logs, and replication only ever carry the envelope, and the cluster decrypts it in memory at deploy time. This requires a cluster with secrets custody (Harper Pro / Fabric) — see [Client-side encryption](../security/secrets.md#client-side-encryption-encrypt-before-it-leaves-the-client).
+
+**Prefer a fine-grained PAT.** For a GitHub repository the prompt offers, and defaults to, pasting a fine-grained personal access token with **Contents: Read-only on that one repository**. If you have the `gh` CLI authenticated it also offers its session token, which is one keypress cheaper but typically carries `repo`, `read:org`, `gist`, and `workflow` scopes across your whole account; choosing it prints a warning. What this flow seals is durable and replayed on every cold deploy and rollback, so it is worth being the narrowest credential that does the job.
+
+The secret is stored **scoped to the component**, never in the global `processEnv` tier that every component and child process can read. If a global secret already exists at the derived name, it is converted to the scoped tier — the name is derived from the component, so a global secret there was never serving anything the scoped one doesn't. Existing grants on the row are preserved.
+
+Because the stored token is durable, later deploys — including re-fetching an older reference — reuse it without re-entering anything.
+
 ## Dependency Management
 
 Harper uses `npm` and `package.json` for dependency management.
