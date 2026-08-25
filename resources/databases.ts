@@ -367,6 +367,9 @@ const PEER_REDEFINABLE_FIELDS = [
 	'properties',
 	'embed',
 ];
+// `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
+// discard warn would blame the peer for a field it did not write.
+const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
 
 // A cluster-origin caller's list can predate a declaration another thread has already committed, so on
 // that path the descriptor — not the caller — decides what the attribute is, in both directions.
@@ -1838,7 +1841,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					// Nodes that apply the same peer definitions in a different order keep different index sets, and
 					// this warn is the only signal of it. An absent field and an explicit falsy one declare the same
 					// thing, so neither direction of that pair is a difference.
-					const discarded = PEER_REDEFINABLE_FIELDS.filter(
+					const discarded = PEER_DECLARABLE_FIELDS.filter(
 						(field) =>
 							(attribute[field] || existing[field]) &&
 							JSON.stringify(attribute[field]) !== JSON.stringify(existing[field])

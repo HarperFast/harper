@@ -316,6 +316,8 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			AfterPeer.indices.tag,
 			'a legacy descriptor, which implies the index rather than declaring it, lost its index registration'
 		);
+		const live = AfterPeer.attributes.find((attribute) => attribute.name === 'tag');
+		assert.strictEqual(live.indexed, true, 'restating from a legacy descriptor stripped `indexed` off the attribute');
 	});
 
 	it('local schema authoring still removes attributes it no longer declares', async () => {
@@ -342,5 +344,52 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert(!names.includes('tag'), `local redeclaration did not remove 'tag': ${names}`);
 		await catalogFlushed(Redeclared);
 		assert(!Redeclared.dbisDB.getSync('ClusterMergeLocal/tag'), `catalog descriptor for 'tag' survived removal`);
+	});
+
+	it('does not name a locally derived field the peer never sent in the discard warn', async () => {
+		const storageLogger = forComponent('storage');
+		const originalWarn = storageLogger.warn;
+		const warnings = [];
+		const Local = table({
+			table: 'ClusterMergeDerived',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'tag', type: 'String', indexed: true },
+			],
+		});
+		await catalogFlushed(Local);
+		const local = Local.attributes.find((attribute) => attribute.name === 'tag');
+		assert.strictEqual(local.indexNulls, true, 'the local index registration must derive indexNulls');
+		storageLogger.warn = (...args) => warnings.push(args);
+		try {
+			// distinct objects, as harper-pro's peer definitions are — a peer declares `type`, never `indexNulls`
+			table({
+				table: 'ClusterMergeDerived',
+				database: 'test',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'tag', type: 'Int', indexed: true },
+				],
+				origin: 'cluster',
+			});
+		} finally {
+			storageLogger.warn = originalWarn;
+		}
+		const discardWarnings = warnings
+			.map(([message]) => message)
+			.filter((message) => typeof message === 'string' && message.includes('ClusterMergeDerived.tag'));
+		assert.strictEqual(
+			discardWarnings.length,
+			1,
+			`the discarded type redefinition must be logged: ${JSON.stringify(warnings)}`
+		);
+		assert.match(discardWarnings[0], /type/, 'the warning must name the discarded `type` difference');
+		assert(
+			!discardWarnings[0].includes('indexNulls'),
+			`the warning must not blame the peer for a locally derived field: ${discardWarnings[0]}`
+		);
 	});
 });
