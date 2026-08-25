@@ -135,14 +135,18 @@ function stopIfIdle(): void {
  * the entry is never rechecked again; and `unregister()` racing an in-flight `revoke` is only closed
  * up to the point the await begins, not for the remainder of it.
  */
-export function registerLiveSubscription(opts: {
-	/** Optional when `revoke` is supplied: a revoke-only registrant may own no subscription object. */
-	subscription?: any;
-	username: string;
-	authExpiresAt?: number;
-	recheck: () => Promise<boolean>;
-	revoke?: () => void | Promise<void>;
-}): { unregister: () => void } {
+export function registerLiveSubscription(
+	opts: {
+		username: string;
+		authExpiresAt?: number;
+		recheck: () => Promise<boolean>;
+	} & (
+		| { subscription: any; revoke?: undefined }
+		// a revoke-only registrant may own no subscription object; requiring one of the two modes keeps
+		// a caller that supplies neither from type-checking into a silent no-op registration
+		| { subscription?: any; revoke: () => void | Promise<void> }
+	)
+): { unregister: () => void } {
 	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
 	if (!revoke && (!subscription || typeof subscription !== 'object' || subscription.closed)) return NOOP_HANDLE;
 
@@ -220,7 +224,7 @@ async function claimAndTerminate(entry: LiveSubscription, reason: string): Promi
 			if (entry.pendingTerminate === attempt) entry.pendingTerminate = undefined;
 			safeLog(
 				hdbLogger.error,
-				`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry next sweep: ${errorMessage(error)}`
+				`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}), will retry on the next sweep that still denies: ${errorMessage(error)}`
 			);
 		}
 	);
