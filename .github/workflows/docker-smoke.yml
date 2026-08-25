@@ -15,6 +15,7 @@ on:
       - build-tools/**
       - bin/restart.ts
       - bin/restartExitWatchdog.ts
+      - bin/run.ts
       - server/threads/manageThreads.js
       - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
@@ -28,6 +29,7 @@ on:
       - build-tools/**
       - bin/restart.ts
       - bin/restartExitWatchdog.ts
+      - bin/run.ts
       - server/threads/manageThreads.js
       - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
@@ -142,6 +144,24 @@ jobs:
 
       - name: Container uses tini and stops gracefully
         run: |
+          wait_for_start_count() {
+            expected=$1
+            for i in $(seq 1 180); do
+              count=$(docker logs harper-smoke 2>&1 | grep -cF '[notify]: Harper successfully started.' || true)
+              if [ "$count" -ge "$expected" ]; then return 0; fi
+              if ! docker ps --filter name=harper-smoke --filter status=running -q | grep -q .; then
+                echo "::error::Container exited before Harper completed startup"
+                docker logs harper-smoke
+                return 1
+              fi
+              sleep 1
+            done
+            echo "::error::Harper did not complete startup within ${SECONDS}s"
+            docker logs harper-smoke
+            return 1
+          }
+
+          wait_for_start_count 1
           test "$(docker exec harper-smoke cat /proc/1/comm)" = "tini"
           docker exec harper-smoke sh -c '
             found=
@@ -150,7 +170,7 @@ jobs:
             done
             test "$found" = 1
           '
-          docker stop --time 15 harper-smoke
+          docker stop --timeout 15 harper-smoke
           test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
 
           docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
@@ -162,7 +182,8 @@ jobs:
             sleep 1
           done
           test -n "$(docker ps --filter name=harper-smoke --filter status=running -q)"
-          docker stop --time 15 harper-smoke
+          wait_for_start_count 2
+          docker stop --timeout 15 harper-smoke
           test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
 
       - name: Teardown (default runtime)
