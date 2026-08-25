@@ -68,7 +68,7 @@ a version tie with the _executing_ node's name, and a fill from a shared source 
 identity of its own, so two replicas resolving the same tie could keep different values at the same
 version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A
 RocksDB replacement whose candidate cannot advance the current version stores at the current version
-and carries `VERSION_NOT_UNIQUE_FLAG`; [rocksdb-js#766](https://github.com/HarperFast/rocksdb-js/pull/766)
+and carries `VERSION_NOT_UNIQUE_FLAG`; rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
 then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
 an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
 vouched as fresh.

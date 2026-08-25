@@ -131,10 +131,7 @@ describe('PrimaryRocksDatabase', function () {
 	});
 
 	it('does not vouch for stale cached data after a version-reusing write', async function () {
-		// Skip only while the installed rocksdb-js predates the export (HarperFast/rocksdb-js#766). Once it is
-		// present the two sides must agree on the bit, so a future value drift fails here instead of silently
-		// removing the only test that guards this behavior.
-		if (constants?.VERSION_NOT_UNIQUE_FLAG === undefined) return this.skip();
+		// A drift between Harper's flag and the native constant would silently disarm the assertions below.
 		assert.equal(constants.VERSION_NOT_UNIQUE_FLAG, VERSION_NOT_UNIQUE_FLAG);
 		const now = Date.now();
 		await TestTable.put(11, { name: 'base', count: 0 });
