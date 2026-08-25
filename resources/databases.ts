@@ -32,7 +32,7 @@ import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } fr
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
-import { schemaRegex } from '../validation/common_validators.ts';
+import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
@@ -671,8 +671,9 @@ function readRocksMetaDb(
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
 			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
-			// a caller-owned graph is replayed into as well: nothing else will ever replay this store,
-			// so skipping it would leave the tail the checkpoint captured permanently invisible there
+			// a caller-owned graph is replayed into as well: nothing else will ever replay this store.
+			// `replayLogs` is a no-op off the main thread, so a branch opened on a worker sees only
+			// what the checkpoint's SSTs hold — see the note on `openBranchDatabase`
 			if (!isReadOnlyMode()) {
 				replayLogs(rootStore, destination ?? databases[databaseName]);
 			}
@@ -1029,14 +1030,14 @@ function initStores(
 	return rootStore;
 }
 
-/** A branch's private table graph plus the handle needed to tear it down. */
 export interface BranchDatabase {
 	tables: Tables;
 	rootStore: RootDatabaseKind;
 	close(): void;
 }
 
-const openBranches = new Map<string, BranchDatabase>();
+/** `undefined` marks a path reserved by an open still in flight, which owns it just as firmly. */
+const openBranches = new Map<string, BranchDatabase | undefined>();
 /** Store identities in use, so two branches cannot resolve one set of blob roots. */
 const openBranchIdentities = new Set<string>();
 
@@ -1048,6 +1049,9 @@ const openBranchIdentities = new Set<string>();
  */
 function isOpenBranchPath(dbPath: string): boolean {
 	if (openBranches.size === 0) return false;
+	// the literal path first: `rocksdbDatabaseEnvs` is keyed by it too, so a directory unlinked under
+	// a live branch handle (realpathSync then throws) must not read as unowned
+	if (openBranches.has(dbPath)) return true;
 	try {
 		return openBranches.has(realpathSync(dbPath));
 	} catch {
@@ -1061,7 +1065,14 @@ function isOpenBranchPath(dbPath: string): boolean {
  * dot segments and backslash that regex permits but a path component must not be.
  */
 function assertLegalBranchName(name: string, description: string): void {
-	if (!name || !schemaRegex.test(name) || name.includes('\\') || name === '.' || name === '..') {
+	if (
+		!name ||
+		name.length > commonValidators.schema_length.maximum ||
+		!schemaRegex.test(name) ||
+		name.includes('\\') ||
+		name === '.' ||
+		name === '..'
+	) {
 		throw new Error(`Cannot use '${name}' as a branch ${description}: it is not a legal database name`);
 	}
 }
@@ -1088,6 +1099,11 @@ function assertLegalBranchName(name: string, description: string): void {
  * A branch's blob roots start empty, so a row whose blob was written before the checkpoint reads
  * back as a missing file until harper#644 links the base's blob tree into them. Non-blob rows are
  * unaffected, for reads and writes alike.
+ *
+ * A branch is the checkpoint's SST content plus, on the main thread only, its transaction-log tail:
+ * `replayLogs` is a no-op off the main thread and nothing else will ever replay a private store. It
+ * is also not awaited, so `close()` can race a replay still writing — neither is a problem while
+ * nothing calls this, and both are decisions the scope wiring has to settle (harper#643).
  */
 export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
 	assertLegalBranchName(databaseName, 'logical database name');
@@ -1114,11 +1130,16 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// so the graph is not a complete record of what a failed open must release
 	const openedStores: any[] = [];
 	let rootStore: RootDatabaseKind;
+	// claim the path before the open, not after: readRocksMetaDb registers the store in
+	// `rocksdbDatabaseEnvs` partway through, so anything re-entering `database()` during initStores
+	// would otherwise find the branch's store on an unowned path
+	openBranches.set(path, undefined);
+	openBranchIdentities.add(storeName);
 	try {
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
 	} catch (error) {
-		// readRocksMetaDb registers the store before building tables, so a failure part-way leaves it
-		// in the env map with no handle able to close it
+		openBranches.delete(path);
+		openBranchIdentities.delete(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
 		closeBranchHandles(path, stranded, openedStores);
@@ -1140,7 +1161,6 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 		},
 	};
 	openBranches.set(path, branch);
-	openBranchIdentities.add(storeName);
 	return branch;
 }
 
@@ -1160,7 +1180,7 @@ function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedSt
 		try {
 			store?.close?.();
 		} catch (error) {
-			logger.warn?.(`Error closing ${description} for branch database at ${path}`, error);
+			logger.warn(`Error closing ${description} for branch database at ${path}`, error);
 		}
 	};
 	for (const store of openedStores) closeStore(store, 'column family');
@@ -1171,9 +1191,9 @@ function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedSt
 	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
 }
 
-/** Close every open branch. Branches are process-local, so this is shutdown, not a data operation. */
+/** Branches are process-local, so this is shutdown, not a data operation. */
 export function closeBranchDatabases(): void {
-	for (const branch of [...openBranches.values()]) branch.close();
+	for (const branch of [...openBranches.values()]) branch?.close();
 }
 
 export function resetDatabases() {

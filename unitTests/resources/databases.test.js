@@ -262,8 +262,6 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 
 	it('refuses to adopt a directory that is already open as a real database', function () {
 		const basePath = databases.branchbase.BranchSource.primaryStore.rootStore.path;
-		// Its store is shared and closed by closeLoadedDatabases; adopting it would make this handle's
-		// close() tear down a live database.
 		assert.throws(() => openBranchDatabase(basePath, 'branchbase', 'appB__branchbase'), /already open as a database/);
 	});
 
@@ -277,8 +275,6 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		await databases.branchbase.BranchSource.primaryStore.rootStore.createCheckpoint(secondDir);
 		openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 
-		// blob file ids restart from each store's own checkpointed counter, so a shared identity is
-		// not merely a shared directory: the two branches generate the same paths and truncate each other
 		assert.throws(() => openBranchDatabase(secondDir, 'branchbase', 'appA__branchbase'), /already in use/);
 	});
 
@@ -321,8 +317,6 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 
 		branch.close();
 
-		// a per-table column family left open keeps the process-global refCount above zero, which is
-		// what distinguishes a released handle from a leaked one
 		assert.strictEqual(refCountFor(branchPath), 0, 'close() must release every column family it opened');
 	});
 
@@ -334,8 +328,6 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	});
 
 	it('a stale handle closed twice does not tear down a later open of the same directory', function () {
-		// the point of the re-close guard is not that closing twice throws — it is that the second
-		// call is keyed by path, so without it a discarded handle deregisters whoever holds the path now
 		const stale = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		stale.close();
 		const live = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
@@ -358,8 +350,6 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 
 		branch.close();
 
-		// databasePaths is a strong Map keyed by the store, so an entry left behind pins the closed
-		// store for the life of the process and grows with branch churn
 		assert.ok(!databasePaths.has(branch.rootStore), 'close() must drop the memoized blob roots');
 	});
 
@@ -413,8 +403,6 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			queried.length = 0;
 			await runReclamationHandlers();
 
-			// registration is process-global and keyed by path, and its closure pins the closed store,
-			// so an open/close cycle that leaves it behind grows unboundedly with branch churn
 			assert.ok(!queried.includes(branchPath), 'close() must drop the handler pinning the closed store');
 		} finally {
 			setAvailableSpaceRatioGetter();
@@ -425,6 +413,8 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', '..'), /not a legal database name/);
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'a/b'), /not a legal database name/);
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', ''), /not a legal database name/);
+		// otherwise this surfaces as ENAMETOOLONG from a blob write, far from the call that caused it
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'x'.repeat(251)), /not a legal database name/);
 	});
 
 	it('rejects a path that is not there rather than registering an empty database', function () {
