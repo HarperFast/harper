@@ -217,6 +217,7 @@ jobs:
             sleep 1
           done
           test -z "$(docker ps --filter name=harper-watchdog-smoke --filter status=running -q)"
+          docker logs harper-watchdog-smoke 2>&1 | grep -E 'restart exit watchdog force-killing pid [0-9]+ after 1 seconds'
           test "$(docker inspect --format '{{.State.ExitCode}}' harper-watchdog-smoke)" = "137"
 
       - name: Teardown (watchdog fault injection)

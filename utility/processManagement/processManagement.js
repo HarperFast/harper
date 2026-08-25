@@ -119,11 +119,32 @@ function getHdbPid() {
 	if (!harperPath) return;
 	const pidFile = path.join(harperPath, hdbTerms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
-	// PID 1 is either this process in an older container image or the init process in the current image; neither
-	// represents another live Harper process when this check runs.
-	if (!hdbPid || hdbPid === process.pid || hdbPid === 1) return;
+	if (!hdbPid || hdbPid === process.pid) return;
+	// The current image runs Harper below an init process, but a persistent volume may still contain PID 1 from
+	// an older image. Only ignore that PID when procfs confirms PID 1 is not another Harper runtime.
+	if (hdbPid === 1 && !isHarperRuntimeProcess(hdbPid)) return;
 	if (isProcessRunning(hdbPid)) return hdbPid;
 	// return undefined
+}
+
+function isHarperRuntimeProcess(pid) {
+	let executable;
+	try {
+		executable = path.basename(fs.readlinkSync(`/proc/${pid}/exe`));
+	} catch {
+		// Some procfs configurations expose cmdline but restrict the executable symlink.
+	}
+	try {
+		const commandLine = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+		return (
+			executable === 'node' ||
+			executable === 'bun' ||
+			commandLine.some((argument) => /harper(?:\.js)?$/i.test(argument))
+		);
+	} catch {
+		// Fail closed: if the process cannot be identified, preserve the existing running-process guard.
+		return true;
+	}
 }
 function kill() {
 	for (let process of childProcesses) {

@@ -10,12 +10,15 @@ describe('restart exit watchdog', () => {
 		this.timeout(10000);
 		const startedAt = Date.now();
 		const harness = spawn(process.execPath, [require.resolve('./fixtures/restartExitWatchdogHarness.cjs'), '100'], {
-			stdio: ['ignore', 'pipe', 'inherit'],
+			stdio: ['ignore', 'pipe', 'pipe'],
 		});
+		let diagnostics = '';
+		harness.stderr.on('data', (chunk) => (diagnostics += chunk));
 		await once(harness.stdout, 'data');
 		const [code, signal] = await once(harness, 'close');
 		assert.equal(code, null);
 		assert.equal(signal, 'SIGKILL');
+		assert.match(diagnostics, /restart exit watchdog force-killing pid \d+ after 1 seconds/);
 		assert.ok(Date.now() - startedAt < 5000, 'watchdog exceeded the test bound');
 	});
 
