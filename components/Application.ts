@@ -1499,10 +1499,17 @@ async function rollbackExtractedDirectory(
  *
  * This method may be called from any Harper thread as part of a serialized preparation.
  */
-export async function installApplication(application: Application) {
+/**
+ * Install a component's dependencies. `buildDirPath` is where the tree being installed lives — the live
+ * path today, or a candidate under `.deploy-staging` when the deploy builds off to the side. Passed
+ * explicitly rather than by temporarily repointing `application.dirPath`, because that property is read
+ * after preparation too and any path that skipped the restore would leave it naming a directory that no
+ * longer exists.
+ */
+export async function installApplication(application: Application, buildDirPath = application.dirPath) {
 	let packageJSON: any;
 	try {
-		packageJSON = JSON.parse(await readFile(join(application.dirPath, 'package.json'), 'utf8'));
+		packageJSON = JSON.parse(await readFile(join(buildDirPath, 'package.json'), 'utf8'));
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
 		// If no package.json, nothing to install
@@ -1511,7 +1518,7 @@ export async function installApplication(application: Application) {
 	}
 	try {
 		// Does node_modules exist?
-		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
+		await access(join(buildDirPath, 'node_modules'), constants.F_OK);
 		application.logger.info(
 			`Application ${application.name} already has node_modules; skipping install and treating the runtime as opaque for redeploy comparison`
 		);
@@ -1532,7 +1539,7 @@ export async function installApplication(application: Application) {
 			application.name,
 			command,
 			args,
-			application.dirPath,
+			buildDirPath,
 			application.install?.timeout,
 			customOnLine,
 			application.npmUserconfigPath
@@ -1594,7 +1601,7 @@ export async function installApplication(application: Application) {
 			application.name,
 			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
 			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
-			application.dirPath,
+			buildDirPath,
 			application.install?.timeout,
 			pmOnLine,
 			application.npmUserconfigPath
@@ -1652,7 +1659,7 @@ export async function installApplication(application: Application) {
 		application.name,
 		(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + 'npm',
 		npmInstallArgs,
-		application.dirPath,
+		buildDirPath,
 		application.install?.timeout,
 		npmOnLine,
 		application.npmUserconfigPath
