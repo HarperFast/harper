@@ -25,6 +25,7 @@ export function replicationConfirmation(callback) {
 }
 
 export class LMDBTransaction extends DatabaseTransaction {
+	stagesWriteOnSave = false;
 	#context: Context;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	validated = 0;
@@ -97,6 +98,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
 			const result = immediateTxn.commit({});
+			// Nothing may be sent back to this throwaway: the write is already committed, and its
+			// durability is the promise below.
+			operation.stagedIn = undefined;
 			if (result?.then) {
 				operation.promise = result;
 			} else {
@@ -107,6 +111,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
+		operation.stagedIn = this;
 	}
 
 	removeWrite(operation: TransactionWrite) {
@@ -133,7 +138,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.validated = this.writes.length;
 				for (let i = start; i < this.validated; i++) {
 					const write = this.writes[i];
-					write?.validate?.(this.timestamp);
+					write?.validate?.(this.timestamp, this);
 				}
 				let hasBefore;
 				for (let i = start; i < this.validated; i++) {
@@ -342,6 +347,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 }
 
 export class ImmediateTransaction extends LMDBTransaction {
+	saveCommits = true;
 	constructor(db: RootDatabaseKind) {
 		super();
 		this.db = db;
