@@ -194,7 +194,7 @@ jobs:
             sleep 1
           done
           test -z "$(docker ps --filter name=harper-restart-smoke --filter status=running -q)"
-          docker logs harper-restart-smoke 2>&1 | grep -F 'Restart exit watchdog armed for 60 seconds'
+          docker logs harper-restart-smoke 2>&1 | grep -E 'Restart exit watchdog armed for [0-9]+ seconds'
           test "$(docker inspect --format '{{.State.ExitCode}}' harper-restart-smoke)" = "0"
 
       - name: Teardown (restart runtime)

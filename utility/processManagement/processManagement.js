@@ -136,13 +136,11 @@ function isHarperRuntimeProcess(pid) {
 	}
 	try {
 		const commandLine = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
-		return (
-			executable === 'node' ||
-			executable === 'bun' ||
-			commandLine.some((argument) => /harper(?:\.js)?$/i.test(argument))
-		);
+		return commandLine.some((argument) => /(?:^|[/\\])harper(?:\.js)?$/i.test(argument));
 	} catch {
-		// Fail closed: if the process cannot be identified, preserve the existing running-process guard.
+		// A known init executable is enough to identify a stale PID file even when cmdline is restricted. Otherwise
+		// fail closed and preserve the existing running-process guard.
+		if (executable && !['node', 'bun'].includes(executable) && !/^harper(?:\.exe)?$/i.test(executable)) return false;
 		return true;
 	}
 }

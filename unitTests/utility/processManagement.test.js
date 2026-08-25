@@ -24,7 +24,8 @@ describe('process management PID file', () => {
 		fs.rmSync(testHdbPath, { force: true, recursive: true });
 	});
 
-	it('treats PID 1 as stale when an init process owns it', () => {
+	it('treats PID 1 as stale when an init process owns it', function () {
+		if (process.platform !== 'linux') this.skip();
 		assert.equal(isProcessRunning(1), true);
 		fs.writeFileSync(path.join(testHdbPath, hdbTerms.HDB_PID_FILE), '1\n');
 		assert.equal(getHdbPid(), undefined);
