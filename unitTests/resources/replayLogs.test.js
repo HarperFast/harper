@@ -433,7 +433,7 @@ describe('createCorruptFrameReporter', () => {
 		report(midLogError(), true);
 
 		assert.strictEqual(logs.warn.length, 0);
-		assert.match(logs.error[0].message, /unreachable until it is repaired/);
+		assert.match(logs.error[0].message, /remain unreachable.*until the worker\/store reader is reconstructed/);
 	});
 
 	it('counts repeats of the same break without re-logging it', () => {

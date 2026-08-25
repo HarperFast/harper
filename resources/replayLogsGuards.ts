@@ -309,7 +309,7 @@ export function createCorruptFrameReporter(logger: {
 			logger.error(
 				`Corrupt entry in transaction log "${logName}"; ${unreadableBytes} byte(s) are unreadable and the entries within them are lost to replay and replication. ` +
 					(stoppedIteration
-						? 'This log has too many corrupt frames to read past; entries after this point are unreachable until it is repaired or ages out.'
+						? 'This log has too many corrupt frames to read past; entries after this point remain unreachable after repair or aging until the worker/store reader is reconstructed, normally by restarting the worker.'
 						: 'Reading resumed after it.'),
 				error
 			);
