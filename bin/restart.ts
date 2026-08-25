@@ -6,7 +6,12 @@ import * as hdbTerms from '../utility/hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import * as processMan from '../utility/processManagement/processManagement.js';
 import { compactOnStart } from './copyDb.ts';
-import { restartWorkers, onMessageByType, shutdownWorkersNow } from '../server/threads/manageThreads.js';
+import {
+	beginProcessShutdown,
+	restartWorkers,
+	onMessageByType,
+	shutdownWorkersNow,
+} from '../server/threads/manageThreads.js';
 import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
@@ -64,8 +69,11 @@ async function restart(req: any) {
 
 		setTimeout(async () => {
 			try {
-				// Off Linux the watchdog can never arm, and armRestartExitWatchdog() has already warned so;
-				// an error-level line would alert on a permanent condition no operator can act on.
+				// Latch before the watchdog handshake, not at shutdownWorkersNow() below: a component's
+				// debounced requestRestart() landing in between would otherwise reload root components and
+				// pre-start an HTTP replacement into a process that is already exiting.
+				beginProcessShutdown();
+				// Off Linux the watchdog can never arm, and armRestartExitWatchdog() has already warned.
 				if (
 					process.env.HARPER_EXIT_ON_RESTART &&
 					!(await armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS)) &&

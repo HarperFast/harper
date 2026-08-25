@@ -6,9 +6,7 @@ const { once } = require('node:events');
 
 // The pid-file cleanup used to call process.exit(0) from inside the 'exit' listener, which rewrote
 // the code for every exit, so a process asking to fail reported success to its orchestrator. These
-// guard the container-visible exit contract that replaced it. (An uncaught exception is a separate
-// path: socketRouter.ts installs a main-thread 'uncaughtException' handler that logs and continues,
-// so it never reached the 'exit' listener's exit code either way.)
+// guard the container-visible exit contract that replaced it.
 describe('run exit listeners', () => {
 	function spawnHarness(mode) {
 		return spawn(process.execPath, [require.resolve('./fixtures/exitListenerHarness.cjs'), mode], {

@@ -58,8 +58,7 @@ function addExitListeners() {
 				hdbLogger.error('Unable to remove the Harper pid file during shutdown', error);
 			}
 		};
-		// Latch terminal shutdown on the externally-signalled paths too, so a shutdown that ever grows an
-		// await cannot race a worker start.
+		// Forward defence, not load-bearing today: nothing below can reach a worker start.
 		process.on('exit', () => {
 			beginProcessShutdown();
 			removeHdbPid();

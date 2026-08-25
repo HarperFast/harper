@@ -239,8 +239,6 @@ jobs:
               const { armRestartExitWatchdog } = require("/home/harperdb/.npm-global/lib/node_modules/harper/dist/bin/restartExitWatchdog.js");
               armRestartExitWatchdog(1000).then((armed) => {
                 if (!armed) process.exit(2);
-                // Wedge the event loop only after arming has confirmed its readiness handshake --
-                // this is the fault the watchdog exists to bound.
                 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
               });
             '
