@@ -348,41 +348,31 @@ suite('Configuration', (ctx) => {
 		// Every config write fans out a re-read to each thread's root-config watcher, and the root
 		// config is replaced by rename-over, which on Windows fails while any descriptor is open
 		// on it (harper#2313).
-		let rootPath;
-		try {
-			await client
-				.req()
-				.send({ 'operation': 'set_configuration', 'burst-probe_package': 'file:./nowhere' })
-				.expect(200);
-			for (const maxSize of ['21M', '22M', '23M', '24M']) {
-				await client.req().send({ operation: 'set_configuration', logging_rotation_maxSize: maxSize }).expect(200);
-			}
-			await client
-				.req()
-				.send({ operation: 'get_configuration' })
-				.expect((r) => {
-					assert.strictEqual(r?.body?.logging?.rotation?.maxSize, '24M', r?.text);
-					rootPath = r?.body?.rootPath;
-				})
-				.expect(200);
-			// Concurrent writes maximise the chance that a watcher read is still in flight when the
-			// next rename starts, which is the precondition the sequential burst cannot guarantee.
-			// Only the status is asserted: interleaved read-modify-writes make the last value racy.
-			const concurrent = await Promise.all(
-				['31M', '32M', '33M', '34M'].map((maxSize) =>
-					client.req().send({ operation: 'set_configuration', logging_rotation_maxSize: maxSize })
-				)
-			);
-			for (const response of concurrent) assert.strictEqual(response.status, 200, response.text);
-			// A write that gave up would leave its temp behind, so this covers the cleanup path.
-			assert.deepStrictEqual(
-				readdirSync(rootPath).filter((entry) => entry.startsWith('harper-config.yaml.') && entry.endsWith('.tmp')),
-				[]
-			);
-		} finally {
-			// Leaving the probe entry behind would change the config every later test observes.
-			await client.req().send({ 'operation': 'set_configuration', 'burst-probe_package': null });
+		for (const maxSize of ['21M', '22M', '23M', '24M']) {
+			await client.req().send({ operation: 'set_configuration', logging_rotation_maxSize: maxSize }).expect(200);
 		}
+		let rootPath;
+		await client
+			.req()
+			.send({ operation: 'get_configuration' })
+			.expect((r) => {
+				assert.strictEqual(r?.body?.logging?.rotation?.maxSize, '24M', r?.text);
+				rootPath = r?.body?.rootPath;
+			})
+			.expect(200);
+		// Concurrent writes maximise the chance that a watcher read is still in flight when the
+		// next rename starts, which the sequential burst cannot guarantee. Only the status is
+		// asserted: interleaved read-modify-writes make the surviving value racy.
+		const concurrent = await Promise.all(
+			['31M', '32M', '33M', '34M'].map((maxSize) =>
+				client.req().send({ operation: 'set_configuration', logging_rotation_maxSize: maxSize })
+			)
+		);
+		for (const response of concurrent) assert.strictEqual(response.status, 200, response.text);
+		assert.deepStrictEqual(
+			readdirSync(rootPath).filter((entry) => entry.startsWith('harper-config.yaml.') && entry.endsWith('.tmp')),
+			[]
+		);
 	});
 
 	// ── set_configuration + replicated (#660) ───────────────────────────────

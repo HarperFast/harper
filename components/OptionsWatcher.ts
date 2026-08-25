@@ -11,7 +11,9 @@ import { cloneDeep } from 'lodash';
 import {
 	POLLING_FALLBACK_OPTIONS,
 	PartialReadRetry,
+	isPartialReadError,
 	isWatcherExhaustionError,
+	warnPartialReadGaveUp,
 	warnWatcherFallback,
 } from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
@@ -136,43 +138,53 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.on('ready', this.#handleChange.bind(this));
 	}
 
-	// Read the root config synchronously so the descriptor cannot outlive this turn: it is
-	// replaced by rename-over, which on Windows fails while any descriptor is open on it, and
-	// the writer's retry blocks the thread that would close one. Application configs are written
-	// in place, never by rename-over, so they keep the non-blocking read and its drain.
+	// The root config reads synchronously so its descriptor cannot outlive this turn - see the
+	// invariant on atomicWriteFile. Application configs keep the non-blocking read and its drain.
 	#handleChange() {
 		if (this.#isRootConfig) {
-			let contents: string;
+			let parsed;
 			try {
-				contents = readFileSync(this.#filePath, 'utf-8');
+				const contents = readFileSync(this.#filePath, 'utf-8');
+				if (!contents) return this.#rereadOr(undefined);
+				parsed = this.#parseContents(contents);
 			} catch (error) {
-				this.#handleReadError(error);
-				return;
-			}
-			// An in-place writer can be observed mid-write, and treating that as the file's real
-			// content would drop the scope's config; chokidar may emit nothing further for it.
-			if (!contents) {
-				this.#partialRead.schedule(() => this.#handleChange());
-				return;
+				// A read or parse that fails on a file being replaced under us is the same event
+				// as an empty one, and the ENOENT arm of #handleReadError would answer it with a
+				// `remove` that restarts the scope. Re-read first; only a budget that runs out
+				// means the failure is real.
+				return this.#rereadOr(error);
 			}
 			this.#partialRead.settled();
-			try {
-				this.#applyContents(contents);
-			} catch (error) {
-				this.#handleReadError(error);
-			}
+			this.#applyParsed(parsed);
 			return;
 		}
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
-			.then((contents) => this.#applyContents(contents))
-			.catch((error) => this.#handleReadError(error))
+			.then((contents) => {
+				// Application configs are rewritten in place, so a mid-write read is exactly the
+				// case above, and dropping it here would `remove` the scope's config.
+				if (!contents) return this.#rereadOr(undefined);
+				const parsed = this.#parseContents(contents);
+				this.#partialRead.settled();
+				this.#applyParsed(parsed);
+			})
+			.catch((error) => this.#rereadOr(error))
 			.finally(() => {
 				this.#pendingReads.delete(read);
 			});
 		this.#pendingReads.add(read);
 	}
 
-	#applyContents(contents: string) {
+	#rereadOr(error: unknown) {
+		if (error !== undefined && !isPartialReadError(error)) return this.#handleReadError(error);
+		if (this.#partialRead.schedule(() => this.#handleChange())) return;
+		if (error === undefined) {
+			warnPartialReadGaveUp(this.#filePath);
+			return;
+		}
+		this.#handleReadError(error);
+	}
+
+	#parseContents(contents: string) {
 		let parsed = yaml.parse(contents);
 		// The on-disk root config is not guaranteed to include runtime env config at
 		// boot: the file flush races component loading, so a scope's boot-time reads
@@ -182,7 +194,11 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// view (#1618). Non-root scopes and the no-env-vars case are untouched
 		// (overlayRootEnvConfig is a no-op there).
 		if (this.#isRootConfig) parsed = overlayRootEnvConfig(parsed);
-		this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
+		return parsed;
+	}
+
+	#applyParsed(parsed: unknown) {
+		this.#rootConfig = parsed && typeof parsed === 'object' ? (parsed as Config) : undefined;
 		// If the extension is in the config file
 		if (this.#rootConfig && this.#name in this.#rootConfig) {
 			// If a config object does not exist
@@ -425,9 +441,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.emit('change', keys, value, this.#scopedConfig);
 	}
 
-	// Test-only: run the change handler directly. The read's timing relative to the caller is
-	// the behaviour under test (see the config-write deadlock note on #handleChange), and a
-	// chokidar event cannot be observed at that granularity from outside.
+	// Test-only: run the change handler directly, since the read's timing relative to its caller
+	// is the behaviour under test and a chokidar event cannot be observed at that granularity.
 	_handleChangeForTests(): void {
 		this.#handleChange();
 	}

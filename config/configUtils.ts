@@ -128,8 +128,6 @@ export function atomicWriteFile(
 			} catch (err) {
 				if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
 					retries--;
-					// Sleep synchronously (all call sites are sync) to allow the holder to close the
-					// file. Atomics.wait yields the thread to the OS instead of spinning the CPU.
 					if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
 					delayMs = Math.min(delayMs * 2, maxDelayMs);
 					continue;

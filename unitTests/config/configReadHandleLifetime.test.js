@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = require('node:fs');
 const { once } = require('node:events');
 const { stringify } = require('yaml');
 const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
@@ -80,10 +80,45 @@ describe('root config read handle lifetime', () => {
 		watcher.handleChange();
 		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: true } }, 'must not adopt an empty read');
 
-		const changed = once(watcher, 'change');
+		const changes = [];
+		watcher.on('change', (config) => changes.push(config));
 		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
-		const [updated] = await changed;
-		assert.deepStrictEqual(updated, { 'test-component': { enabled: false } });
+		await once(watcher, 'change');
+		// The re-read armed for the empty snapshot must not replay once a usable read lands.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.deepStrictEqual(changes, [{ 'test-component': { enabled: false } }]);
+	});
+
+	it('RootConfigWatcher stops re-reading a file that never becomes usable', async () => {
+		const watcher = new RootConfigWatcher();
+		openWatchers.push(watcher);
+		await watcher.ready;
+
+		writeFileSync(configFilePath, '');
+		for (let attempt = 0; attempt < 20; attempt++) watcher.handleChange();
+		await new Promise((resolve) => setTimeout(resolve, 400));
+
+		assert.deepStrictEqual(watcher.config, { 'test-component': { enabled: true } });
+	});
+
+	it('OptionsWatcher recovers a root-config read that failed for a reason other than absence', async () => {
+		const watcher = new OptionsWatcher('test-component', configFilePath, undefined, true);
+		openWatchers.push(watcher);
+		await watcher.ready;
+
+		const errors = [];
+		watcher.on('error', (error) => errors.push(error));
+		// A directory in the file's place fails the read with EISDIR, standing in for the
+		// transient replace-under-us failures Windows produces; the change must not be dropped.
+		rmSync(configFilePath);
+		mkdirSync(configFilePath);
+		watcher._handleChangeForTests();
+		assert.deepStrictEqual(errors, [], 'a recoverable read failure must not surface as an error');
+
+		rmSync(configFilePath, { recursive: true });
+		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
+		await once(watcher, 'change');
+		assert.strictEqual(watcher.get(['enabled']), false);
 	});
 
 	it('OptionsWatcher applies a root-config change before the change handler returns', async () => {

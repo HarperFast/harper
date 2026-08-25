@@ -6,7 +6,9 @@ import { parse } from 'yaml';
 import {
 	POLLING_FALLBACK_OPTIONS,
 	PartialReadRetry,
+	isPartialReadError,
 	isWatcherExhaustionError,
+	warnPartialReadGaveUp,
 	warnWatcherFallback,
 } from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
@@ -87,27 +89,38 @@ export class RootConfigWatcher extends EventEmitter {
 		this.emit('error', error);
 	}
 
-	// Read synchronously so the descriptor cannot outlive this turn: atomicWriteFile replaces
-	// this file by rename-over, which on Windows fails while any descriptor is open on it, and
-	// its retry blocks the very thread that would close one.
+	// Reads synchronously so its descriptor cannot outlive this turn - see the invariant on
+	// atomicWriteFile.
 	handleChange() {
+		let config;
+		// Only the read and parse are guarded: a listener that throws must not be mistaken for a
+		// half-written file and replayed.
 		try {
 			const data = readFileSync(this.#configFilePath, 'utf-8');
-			if (!data) return this.#partialRead.schedule(() => this.handleChange());
-
-			const config = parse(data);
-			this.#partialRead.settled();
-
-			if (!this.#config) {
-				this.#config = config;
-				this.emit('ready', this.#config);
+			if (!data) {
+				this.#scheduleReread();
 				return;
 			}
-
-			this.emit('change', (this.#config = config));
-		} catch {
-			this.#partialRead.schedule(() => this.handleChange());
+			config = parse(data);
+		} catch (error) {
+			// A missing file needs no re-read; anything else may be the file being replaced.
+			if (isPartialReadError(error)) this.#scheduleReread();
+			return;
 		}
+		this.#partialRead.settled();
+
+		if (!this.#config) {
+			this.#config = config;
+			this.emit('ready', this.#config);
+			return;
+		}
+
+		this.emit('change', (this.#config = config));
+	}
+
+	#scheduleReread() {
+		if (this.#partialRead.schedule(() => this.handleChange())) return;
+		warnPartialReadGaveUp(this.#configFilePath);
 	}
 
 	close() {

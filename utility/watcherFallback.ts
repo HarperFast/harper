@@ -87,17 +87,23 @@ export class PartialReadRetry {
 	#timer?: ReturnType<typeof setTimeout>;
 	#remaining: number = PARTIAL_READ_MAX_REREADS;
 
-	schedule(reread: () => void) {
-		if (this.#timer || this.#remaining <= 0) return;
+	/** False once the budget is spent, so the caller can fall back to its own error handling. */
+	schedule(reread: () => void): boolean {
+		if (this.#timer) return true;
+		if (this.#remaining <= 0) return false;
 		this.#remaining--;
 		this.#timer = setTimeout(() => {
 			this.#timer = undefined;
 			reread();
 		}, PARTIAL_READ_REREAD_DELAY_MS);
 		this.#timer.unref?.();
+		return true;
 	}
 
+	/** A usable read arrived, so any re-read still armed for the previous one would duplicate it. */
 	settled() {
+		if (this.#timer) clearTimeout(this.#timer);
+		this.#timer = undefined;
 		this.#remaining = PARTIAL_READ_MAX_REREADS;
 	}
 
@@ -106,4 +112,21 @@ export class PartialReadRetry {
 		this.#timer = undefined;
 		this.#remaining = 0;
 	}
+}
+
+/**
+ * A missing file is not a half-written one: it has unambiguous, already-correct semantics in
+ * both watchers (env-only fallback at boot, `remove` afterwards), and re-reading it would only
+ * delay them.
+ */
+export function isPartialReadError(error: unknown): boolean {
+	return !(typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT');
+}
+
+/**
+ * A watcher that exhausts its re-read budget serves stale config from then on, so the give-up
+ * has to be visible — otherwise the only symptom is a config change that silently did nothing.
+ */
+export function warnPartialReadGaveUp(filePath: string) {
+	fallbackLogger.warn(`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} incomplete reads`);
 }
