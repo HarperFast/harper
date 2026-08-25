@@ -54,24 +54,24 @@ This is just a brief overview of all operations available as CLI commands. Revie
 | `sql`                            | Execute SQL queries                   | [Data](../operations-api/operations.md#nosql-operations)               | v4.3.0          |
 | `csv_file_load`                  | Load data from CSV file               | [Data](../operations-api/operations.md#nosql-operations)               | v4.3.0          |
 | `csv_url_load`                   | Load data from CSV URL                | [Data](../operations-api/operations.md#nosql-operations)               | v4.3.0          |
-| `list_users`                     | List all users                        | [Security](../operations-api/operations.md#certificate-management)     | v4.3.0          |
-| `add_user`                       | Create a new user                     | [Security](../operations-api/operations.md#certificate-management)     | v4.3.0          |
-| `alter_user`                     | Modify user properties                | [Security](../operations-api/operations.md#certificate-management)     | v4.3.0          |
-| `drop_user`                      | Delete a user                         | [Security](../operations-api/operations.md#certificate-management)     | v4.3.0          |
-| `list_roles`                     | List all roles                        | [Security](../operations-api/operations.md#certificate-management)     | v4.3.0          |
-| `drop_role`                      | Delete a role                         | [Security](../operations-api/operations.md#certificate-management)     | v4.3.0          |
+| `list_users`                     | List all users                        | [Users & Roles](../operations-api/operations.md#users--roles)          | v4.3.0          |
+| `add_user`                       | Create a new user                     | [Users & Roles](../operations-api/operations.md#users--roles)          | v4.3.0          |
+| `alter_user`                     | Modify user properties                | [Users & Roles](../operations-api/operations.md#users--roles)          | v4.3.0          |
+| `drop_user`                      | Delete a user                         | [Users & Roles](../operations-api/operations.md#users--roles)          | v4.3.0          |
+| `list_roles`                     | List all roles                        | [Users & Roles](../operations-api/operations.md#users--roles)          | v4.3.0          |
+| `drop_role`                      | Delete a role                         | [Users & Roles](../operations-api/operations.md#users--roles)          | v4.3.0          |
 | `create_csr`                     | Create certificate signing request    | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
 | `sign_certificate`               | Sign a certificate                    | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
 | `list_certificates`              | List SSL/TLS certificates             | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
 | `add_certificate`                | Add SSL/TLS certificate               | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
 | `remove_certificate`             | Remove SSL/TLS certificate            | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
-| `add_ssh_key`                    | Add SSH key                           | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
-| `get_ssh_key`                    | Get SSH key                           | [Security](../operations-api/operations.md#certificate-management)     | v4.7.2          |
-| `update_ssh_key`                 | Update SSH key                        | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
-| `delete_ssh_key`                 | Delete SSH key                        | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
-| `list_ssh_keys`                  | List all SSH keys                     | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
-| `set_ssh_known_hosts`            | Set SSH known hosts                   | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
-| `get_ssh_known_hosts`            | Get SSH known hosts                   | [Security](../operations-api/operations.md#certificate-management)     | v4.4.0          |
+| `add_ssh_key`                    | Add SSH key                           | [Components](../operations-api/operations.md#components)               | v4.4.0          |
+| `get_ssh_key`                    | Get SSH key                           | [Components](../operations-api/operations.md#components)               | v4.7.2          |
+| `update_ssh_key`                 | Update SSH key                        | [Components](../operations-api/operations.md#components)               | v4.4.0          |
+| `delete_ssh_key`                 | Delete SSH key                        | [Components](../operations-api/operations.md#components)               | v4.4.0          |
+| `list_ssh_keys`                  | List all SSH keys                     | [Components](../operations-api/operations.md#components)               | v4.4.0          |
+| `set_ssh_known_hosts`            | Set SSH known hosts                   | [Components](../operations-api/operations.md#components)               | v4.4.0          |
+| `get_ssh_known_hosts`            | Get SSH known hosts                   | [Components](../operations-api/operations.md#components)               | v4.4.0          |
 | `cluster_get_routes`             | Get cluster routing information       | [Clustering](../operations-api/operations.md#replication--clustering)  | v4.3.0          |
 | `cluster_network`                | Get cluster network status            | [Clustering](../operations-api/operations.md#replication--clustering)  | v4.3.0          |
 | `cluster_status`                 | Get cluster status                    | [Clustering](../operations-api/operations.md#replication--clustering)  | v4.3.0          |

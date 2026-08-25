@@ -44,7 +44,8 @@ For remote Operations API commands, the CLI uses the first complete authenticati
 4. Legacy `CLI_TARGET_USERNAME` and `CLI_TARGET_PASSWORD` environment variables
 5. `HARPER_CLI_OPERATION_TOKEN` and `HARPER_CLI_REFRESH_TOKEN` environment variables, or their legacy `CLI_TARGET_` equivalents — see [Token credentials for CI/CD](#token-credentials-for-cicd)
 6. A token saved by `harper login`
-7. `username=` and `password=` operation parameters (legacy fallback)
+7. A [workload identity token](#workload-identity-oidc) exchanged with the runtime's OIDC provider (v5.3.0)
+8. `username=` and `password=` operation parameters (legacy fallback)
 
 :::tip
 **Configure one credential style per context, not two.** Precedence exists to resolve a conflict, but it resolves it silently, and the ways this page describes for authentication to go wrong all need two styles live at once: a payload `username=`/`password=` pair takes over when a token stops resolving, a blank token variable hands the run to whatever saved login the machine has. Pick one and leave the others unset:
@@ -62,7 +63,7 @@ Credentials are resolved as a pair and are never combined across sources. An inc
 
 Entry 5 is not a two-step fallback the way 3 and 4 are: whichever token namespace is merely **set** claims the choice, so a blank `HARPER_CLI_REFRESH_TOKEN` shadows a complete `CLI_TARGET_REFRESH_TOKEN` instead of deferring to it — see below.
 
-Entries 5 and 6 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts — as, by default, it trusts any loopback address, since `authentication.authorizeLocal` defaults to `true`. Token environment variables are deliberately ignored on the socket path — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected. Note what that trust means on a self-hosted runner: an unset or blank `target` does not fail. The CLI falls back to the target saved by a previous `harper login` on that machine, and only if there is none does it go local — where it runs as superuser on the socket's ambient trust, with no credential checked at all. So a job that loses its `HARPER_CLI_TARGET` either deploys to whatever remote that runner last logged into, or to the runner's own node. Neither is an error, and the first is the wider blast radius.
+Entries 5 through 7 authenticate with a bearer token and apply to **remote targets only**. A local operation goes over the domain socket, which the server already trusts — as, by default, it trusts any loopback address, since `authentication.authorizeLocal` defaults to `true`. Token environment variables are deliberately ignored on the socket path — a token minted for one instance would otherwise be attached to every local `harper` command in that shell and rejected. Note what that trust means on a self-hosted runner: an unset or blank `target` does not fail. The CLI falls back to the target saved by a previous `harper login` on that machine, and only if there is none does it go local — where it runs as superuser on the socket's ambient trust, with no credential checked at all. So a job that loses its `HARPER_CLI_TARGET` either deploys to whatever remote that runner last logged into, or to the runner's own node. Neither is an error, and the first is the wider blast radius.
 
 Before v5.2.0, `username=` and `password=` operation parameters took precedence over environment variables and saved login tokens. This could authenticate an operation as the wrong user when those fields were part of the operation payload, such as the user being created by `add_user`.
 
@@ -254,6 +255,44 @@ Create a **dedicated CI user** and run `harper login --for-ci` as that user. Tha
 
 There is no operation that revokes a refresh token directly. To invalidate one, either run `harper login --for-ci` again as that user — minting overwrites the stored hash, so the previous token stops working — or deactivate the user with `alter_user`. `harper logout` is not a revocation: it deletes your local copy and leaves the server-side hash valid.
 :::
+
+##### Workload identity (OIDC)
+
+<VersionBadge version="v5.3.0" />
+
+On a runner that can prove its own identity, the CLI needs **no stored credential at all**. It asks the runtime for an identity token addressed to your instance and trades it for a one-hour operation token. Nothing durable is stored in your CI provider, and there is no 30-day token to rotate.
+
+Configure the instance to trust the workflow once with [`add_oidc_trust`](../operations-api/operations.md#add_oidc_trust), then grant the token permission in the workflow:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+environment: production
+steps:
+  - run: harper deploy by_ref=true restart=true replicated=true
+    env:
+      HARPER_CLI_TARGET: ${{ vars.HARPER_CLI_TARGET }} # a var, not a secret
+```
+
+`HARPER_CLI_TARGET` is the only variable the step needs, and it is not sensitive — hence `vars` rather than `secrets`.
+
+**This ranks below every configured credential**, and above only the legacy `username=`/`password=` payload fallback. Adding `id-token: write` to a workflow that still sets `HARPER_CLI_REFRESH_TOKEN` does not change which identity deploys; the stored token keeps winning. That is deliberate — enabling a new capability should not silently re-point an existing pipeline at a different user. Remove the secret when you want the exchange to take over.
+
+Note the one case where the exchange _does_ take over: because it outranks the legacy fallback, a command that passes `username=` and `password=` as operation parameters on a runner with no configured credential authenticates as the trust policy's user, not as the pair in the payload. That is the intended reading of those fields — for `add_user` they describe the user being created — but it means a script relying on them as credentials changes identity the moment a policy matches.
+
+The exchange is attempted only when the runtime actually offers an identity. GitHub Actions sets `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` together on a job that declares `id-token: write`; without both, the CLI falls through to its other credential sources rather than reporting a failure. An unrecognized runtime falls through the same way.
+
+On success the CLI prints, to stderr, which policy authenticated it and as whom:
+
+```
+Requesting a GitHub Actions identity token for https://my-instance.harperdb.io:9925/...
+Authenticated as 'ci-deploy' via OIDC trust policy 'my-app-prod'.
+```
+
+If Harper rejects the token, the CLI reports that and carries on down the precedence list rather than aborting — the same shape as a failed token refresh, with the same consequences. Usually nothing is left to send, so the operation returns 401. But if the command also passes `username=` and `password=`, the legacy fallback applies them and the operation **succeeds as that user instead**; and against a loopback target a credential-less request is authorized as superuser, so it succeeds with no identity check at all. A policy mismatch can therefore look like a working deploy. Keep payload credentials off a command you expect the exchange to authenticate, and see the [refresh-behavior note](#token-credentials-for-cicd) for the loopback case.
+
+The server deliberately does not report which check failed — see [`exchange_oidc_token`](../operations-api/operations.md#exchange_oidc_token) — so diagnose with `list_oidc_trust` and the instance's `oidc-trust` log.
 
 #### Method 3: Dedicated Authentication Parameters
 
