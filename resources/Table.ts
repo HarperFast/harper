@@ -130,6 +130,8 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
+const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
@@ -5207,29 +5209,90 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			let completion: Promise<void>;
+			const maxConcurrentRemovals = isRocksDB ? MAX_CONCURRENT_HISTORY_REMOVALS : MAX_CONCURRENT_LMDB_HISTORY_REMOVALS;
+			const inFlightRemovals = new Set<Promise<void>>();
+			const removalSlotWaiters: Array<() => void> = [];
+			let removalsAttempted = 0;
+			let removalsSucceeded = 0;
+			let firstRemovalError: unknown;
+			function startRemoval(remove: () => MaybePromise<void>, errorMessage: string, onSuccess?: () => void): void {
+				removalsAttempted++;
+				const removal = new Promise<void>((resolve) => resolve(remove()))
+					.then(
+						() => {
+							removalsSucceeded++;
+							onSuccess?.();
+						},
+						(error) => {
+							// capture before logging: a throwing logger must not cost us the error we may rethrow
+							if (firstRemovalError === undefined) firstRemovalError = error;
+							harperLogger.warn(errorMessage, error);
+						}
+					)
+					.catch(() => undefined)
+					.finally(() => {
+						inFlightRemovals.delete(removal);
+						removalSlotWaiters.shift()?.();
+					});
+				inFlightRemovals.add(removal);
+			}
+			function queueRemoval(
+				remove: () => MaybePromise<void>,
+				errorMessage: string,
+				onSuccess?: () => void
+			): Promise<void> | undefined {
+				if (inFlightRemovals.size >= maxConcurrentRemovals) {
+					return new Promise<void>((resolve) => {
+						removalSlotWaiters.push(resolve);
+					}).then(() => startRemoval(remove, errorMessage, onSuccess));
+				}
+				startRemoval(remove, errorMessage, onSuccess);
+			}
+			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
-			for (const auditRecord of auditStore.getRange({
-				start: 0,
-				end: endTime,
-			})) {
-				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
-				completion = removeAuditEntry(auditStore, auditRecord);
-				entriesDeleted++;
+			try {
+				for (const auditRecord of auditStore.getRange({
+					start: 0,
+					end: endTime,
+				})) {
+					await rest(); // yield to other async operations
+					if (auditRecord.tableId !== tableId) continue;
+					const backpressure = queueRemoval(
+						() => removeAuditEntry(auditStore, auditRecord),
+						'Error removing audit entry during deleteHistory',
+						() => {
+							entriesDeleted++;
+						}
+					);
+					if (backpressure) await backpressure;
+				}
+			} finally {
+				await drainRemovals();
 			}
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
 				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
-				for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
-					const { value, localTime } = entry;
-					await rest(); // yield to other async operations
-					if (value === null && localTime < endTime) {
-						completion = removeEntry(primaryStore, entry);
+				try {
+					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
+						const { key, value, localTime, version } = entry;
+						await rest(); // yield to other async operations
+						if (value === null && version != null && localTime < endTime) {
+							const backpressure = queueRemoval(
+								() => primaryStore.remove(key, version),
+								'Error removing deleted record during deleteHistory'
+							);
+							if (backpressure) await backpressure;
+						}
 					}
+				} finally {
+					await drainRemovals();
 				}
 			}
-			await completion;
+			if (removalsAttempted > 0 && removalsSucceeded === 0) {
+				// zero progress must not report the same success as "nothing was eligible" (see DESIGN.md);
+				// partial failures stay best-effort, logged and excluded from the returned count
+				throw firstRemovalError ?? new Error('Every removal attempted during deleteHistory failed');
+			}
 			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
@@ -6417,7 +6480,7 @@ export function makeTable(options) {
 	}
 	function addDeleteRemoval() {
 		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(tableId, primaryStore, (id: Id, version: number) => {
-			primaryStore.remove(id, version);
+			return primaryStore.remove(id, version);
 		});
 	}
 	function runRecordExpirationEviction() {

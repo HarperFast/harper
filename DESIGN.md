@@ -143,6 +143,47 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 - **`notifyScheduled` + `setImmediate`** in the `'committed'` listener defers the iteration off the commit microtask. Multiple `'committed'` events that land in the same event-loop turn collapse into one notify pass. `notifyScheduled` stays set for the entire drain — including across yield-and-resume turns — so a re-entry from a new `'committed'` event cannot spawn a second concurrent notify on the same iterator.
 - **Batched yielding** in `notifyFromTransactionData` (`NOTIFY_BATCH_SIZE`) is gated by `allowYield`. The `'committed'` path passes `allowYield = true`; the `listenToCommits` (same-thread `aftercommit`) path does not, because that path holds an inter-thread `'thread-local-writes'` lock that must not span event-loop turns. `subscribersWithTxns` is carried across yields via `subscriptions.pendingTxnSubscribers` so the `end_txn` signal fires exactly once when the iterator truly drains. When `activeCount` drops to zero mid-yield, the next continuation drops the carry-over to avoid invoking ended subscribers' listeners.
 
+## Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise
+
+`scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
+`delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Both were
+originally written as `completion = removeAuditEntry(auditStore, auditRecord)` inside the loop, awaiting
+only the final iteration's promise afterward. Any rejection from a non-last iteration was silently
+discarded — the promise reference was overwritten before it could be awaited or caught — and surfaced
+later as an unhandled rejection instead, with no logging to explain it. Any loop that removes
+audit/primary-store entries in a batch must attach a rejection handler to every removal immediately
+and drain all tracked promises before returning — never stash a per-iteration promise in an outer
+variable to await only the last one. `Table.deleteHistory` allows up to 1,000 LMDB removals in flight
+(ten for RocksDB) so storage writes batch without growing an unbounded pending
+set. Live removals are tracked in a `Set`, and each one removes itself and wakes at most one parked
+producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
+race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
+their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
+sequential because it is an automatic background loop.
+
+Individual removal failures are logged and excluded from the returned count, but a purge that attempted
+at least one removal and completed none rejects with the first error after both phases have drained.
+Without that, `delete_transaction_logs_before` reports a successful `entries_deleted: 0` whether nothing
+was eligible or the store rejected every write, and an operator pruning to bound disk growth has no signal
+that pruning did nothing. Drain first, then decide: a failing store should still get every removal it can
+accept, and a single success means the purge made progress and reports normally.
+
+The optional primary-store cleanup snapshots each tombstone's key and version before yielding and passes
+that version to `remove()`. LMDB enforces the condition natively. Harper's RocksDB adapter re-reads and
+removes inside one native transaction, retrying a conflict once, because rocksdb-js's `remove()` accepts
+an options object rather than an LMDB-style version argument. Never replace this with a separate live read
+followed by an unconditional remove: a record recreated between those operations would be deleted.
+
+`removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
+also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding
+primary-store tombstone. That callback's promise must be returned and joined with the audit-store
+removal (currently via `Promise.all`, with the callback's own rejection caught and logged separately so
+a failed tombstone cleanup doesn't get misreported as a failed audit-entry removal) — otherwise the
+tombstone removal is fire-and-forget and the same detached-rejection hazard reappears one level down.
+A tombstone whose cleanup fails this way is not swept automatically — `scheduleAuditCleanup`'s automatic
+pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
+in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.
