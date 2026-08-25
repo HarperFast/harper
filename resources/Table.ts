@@ -5067,8 +5067,7 @@ export function makeTable(options) {
 							onSuccess?.();
 						},
 						(error) => {
-							// record before logging: a logger that throws must not cost us the only
-							// reference to why every removal failed
+							// capture before logging: a throwing logger must not cost us the error we may rethrow
 							if (firstRemovalError === undefined) firstRemovalError = error;
 							harperLogger.warn(errorMessage, error);
 						}
@@ -5133,10 +5132,8 @@ export function makeTable(options) {
 				}
 			}
 			if (removalsAttempted > 0 && removalsSucceeded === 0) {
-				// every removal we attempted failed, so this purge made no progress at all. Reporting
-				// success here would be indistinguishable from "nothing was eligible for removal", and an
-				// operator pruning to bound disk growth would never learn the store rejected every write.
-				// Partial failures stay best-effort (logged, and excluded from the returned count).
+				// zero progress must not report the same success as "nothing was eligible" (see DESIGN.md);
+				// partial failures stay best-effort, logged and excluded from the returned count
 				throw firstRemovalError ?? new Error('Every removal attempted during deleteHistory failed');
 			}
 			return entriesDeleted;
