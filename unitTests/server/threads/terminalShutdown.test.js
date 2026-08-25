@@ -38,6 +38,17 @@ describe('terminal worker shutdown', () => {
 		assert.deepEqual(await runHarness('non-overlapping'), { starts: 1, workersAfterShutdown: 0 });
 	});
 
+	it('ignores a rolling restart requested after terminal shutdown begins', async function () {
+		this.timeout(30000);
+		assert.deepEqual(await runHarness('late-restart'), {
+			restartNumberChanged: false,
+			starts: 1,
+			startsAfterLateRestart: 1,
+			workersAfterLateRestart: 1,
+			workersAfterShutdown: 0,
+		});
+	});
+
 	it('allows worker creation after a scoped shutdown', async function () {
 		this.timeout(30000);
 		assert.deepEqual(await runHarness('scoped'), { workerCreationAllowed: true });

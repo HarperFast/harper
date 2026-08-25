@@ -824,6 +824,25 @@ install` (unlike a registry install of harper as _someone else's_ dependency) re
   react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
   bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
 
+## The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)
+
+Harper used to be PID 1 in the published image. It is now started under `tini -g`, and that is
+user-visible in four ways worth knowing before changing the entrypoint:
+
+- **The restart watchdog depends on it.** `bin/restartExitWatchdog.ts` refuses to arm when
+  `process.pid <= 1`, and the SIGKILL it delivers would be ignored by PID 1 anyway (the kernel
+  drops unhandled signals to the init process). Harper being a _child_ is what makes a wedged
+  restart teardown forcibly exit rather than hang until the orchestrator's own timeout.
+- **`-g` forwards `docker stop`'s SIGTERM to the whole process group**, not just Harper. Component
+  subprocesses that previously only saw their parent go away now receive SIGTERM directly. This is
+  the boundary most likely to change behaviour for a component that forks children.
+- **`docker exec … ps` and anything keying off PID 1** now sees `tini`, not `node`.
+- **`docker run --init` nests a second init** above `tini`. Harmless, but redundant.
+
+Volumes written by older PID-1 images stay compatible: `utility/processManagement` treats a pid
+file naming PID 1 as stale when PID 1 is an init process, so a container restarted onto such a
+volume does not refuse to start on a "still running" pid that is now `tini`.
+
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 
 With `tls.unixDomainSockets: true`, every secure port gets a per-worker cleartext mirror
