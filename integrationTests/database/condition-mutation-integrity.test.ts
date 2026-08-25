@@ -32,7 +32,7 @@
  * Harper SHA: b8c843a24 (main, includes PR #1911)
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, deepStrictEqual, throws } from 'node:assert';
+import { AssertionError, ok, strictEqual, deepStrictEqual, throws } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -193,7 +193,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		leakedPseudoCondition.conditions.push({ attribute: 'category', comparator: 'sort', descending: true });
 		throws(
 			() => deepStrictEqual(leakedPseudoCondition, pristineLive),
-			/Expected values to be strictly deep-equal/,
+			AssertionError,
 			'oracle failed to detect a leaked top-level sort pseudo-condition'
 		);
 
@@ -201,7 +201,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		mutatedNested.conditions[1].conditions[0].estimated_count = 42; // simulates a leaked cache annotation
 		throws(
 			() => deepStrictEqual(mutatedNested, pristineLive),
-			/Expected values to be strictly deep-equal/,
+			AssertionError,
 			'oracle failed to detect a mutation inside the NESTED or-group'
 		);
 
@@ -209,7 +209,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		mutatedNestedValue.conditions[1].conditions[1].value = '1999-01-01T00:00:00.000Z'; // simulates in-place coercion
 		throws(
 			() => deepStrictEqual(mutatedNestedValue, pristineLive),
-			/Expected values to be strictly deep-equal/,
+			AssertionError,
 			'oracle failed to detect a coerced value inside the NESTED or-group'
 		);
 
@@ -217,7 +217,7 @@ suite('QA-714 conditions array mutation regression anchor (harper#1572 / PR #191
 		mutatedNestedType.types[1].conditions[1].value = 'Date';
 		throws(
 			() => deepStrictEqual(mutatedNestedType, pristineLive),
-			/Expected values to be strictly deep-equal/,
+			AssertionError,
 			'oracle failed to detect a server-side string-to-Date coercion'
 		);
 

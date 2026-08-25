@@ -123,7 +123,20 @@ suite(
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Authorization': client.headers.Authorization },
 				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(30_000),
 			});
+		}
+
+		/**
+		 * Assert a 200 without abandoning the body. An unread body holds its socket in undici's
+		 * keep-alive pool, and these helpers run inside a suite that then waits on the over-time
+		 * monitor — a leaked connection here shows up as a teardown hang, not as this failure.
+		 */
+		async function assertOK(res: Response, what: string): Promise<void> {
+			if (res.status !== 200) {
+				const text = await res.text().catch(() => '<unreadable body>');
+				strictEqual(res.status, 200, `${what} should return 200, got ${res.status}: ${text}`);
+			}
 		}
 
 		/**
@@ -186,13 +199,19 @@ suite(
 		}
 
 		async function dumpA(): Promise<Array<{ id: string; tag: string }>> {
-			const r = await fetch(`${httpURL}/DumpA/`, { headers: { Authorization: client.headers.Authorization } });
-			strictEqual(r.status, 200, 'DumpA should return 200');
+			const r = await fetch(`${httpURL}/DumpA/`, {
+				headers: { Authorization: client.headers.Authorization },
+				signal: AbortSignal.timeout(30_000),
+			});
+			await assertOK(r, 'DumpA');
 			return (await r.json()) as Array<{ id: string; tag: string }>;
 		}
 		async function dumpB(): Promise<Array<{ id: string; tag: string }>> {
-			const r = await fetch(`${httpURL}/DumpB/`, { headers: { Authorization: client.headers.Authorization } });
-			strictEqual(r.status, 200, 'DumpB should return 200');
+			const r = await fetch(`${httpURL}/DumpB/`, {
+				headers: { Authorization: client.headers.Authorization },
+				signal: AbortSignal.timeout(30_000),
+			});
+			await assertOK(r, 'DumpB');
 			return (await r.json()) as Array<{ id: string; tag: string }>;
 		}
 		async function searchByTag(table: string, tag: string): Promise<Set<string>> {
@@ -225,7 +244,8 @@ suite(
 		test('CONTROL: under-threshold cross-table write commits both A and B, index-consistent', async () => {
 			const tag = 'ctrl';
 			const res = await postJSON('/CrossBaseline/', { tag });
-			strictEqual(res.status, 200, `Baseline should return 200 (got ${res.status})`);
+			await assertOK(res, 'Baseline');
+			await res.body?.cancel();
 
 			const [a, b] = await Promise.all([dumpA(), dumpB()]);
 			const rA = await checkConsistency('TableA', tag, a);
