@@ -371,9 +371,22 @@ A handful of design points are non-obvious and easy to break:
   _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
   record / N4 collection), not in unit tests.
 
-Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
-lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
-subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a
+Two related traps: the create/schema-update path's exclusive `update-attributes` lock is a
+synchronous bounded wait (`acquireUpdateAttributesLock` in `Table.ts`: brief hot spin, then
+`Atomics.wait` backoff, retryable `ServerError` after the 10s `UPDATE_ATTRIBUTES_LOCK_TIMEOUT` — harper#2251; it used to be
+an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if the holder never
+released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
+`withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock (regression
+suite: `unitTests/resources/updateAttributesLock.test.js`). Because the acquire can now throw,
+`table()` takes the RocksDB lock _before_ it mutates the live `Table` (attributes, class metadata,
+index handles): losing the race then leaves this worker's in-memory schema exactly as it found it,
+and moving any mutation above that acquire reintroduces schema drift the catalog never saw. LMDB
+keeps the lazy acquire — its `exclusiveLock()` is an environment-wide write transaction that cannot
+time out, so taking it eagerly would stall every write to the database on an unchanged reload. A
+successful acquire that waited past `UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT` (1s) warns once, since
+contention is otherwise invisible until it becomes a timeout. The locked
+sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside
+one would stall a concurrent acquirer to its deadline. And dropping then recreating a
 same-named table within one process requires @harperfast/rocksdb-js >= the column-family
 eviction fix (1.4.3 / rocksdb-js#<main PR>): older bindings keep the dropped column family's
 by-name registry entry alive whenever other worker threads hold handles, so the recreate

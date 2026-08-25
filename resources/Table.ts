@@ -14,6 +14,7 @@ import {
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
@@ -48,6 +49,7 @@ import {
 	ServerError,
 	AccessViolation,
 	ValidationError,
+	UpdateAttributesLockTimeoutError,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -143,6 +145,76 @@ const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+// This bounds schema-lock acquisition; LOCK_TIMEOUT bounds in-flight record writes during a drop.
+export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
+const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
+// Contention is otherwise only visible once it becomes a timeout (harper#2251).
+export const UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT = 1000;
+// raw ASCII bytes are ordered-binary's encoding of the string, so this addresses the same native
+// lock as string-keyed tryLock/unlock calls
+const updateAttributesLockKey = Buffer.from(UPDATE_ATTRIBUTES_LOCK);
+const lockWait = new Int32Array(new SharedArrayBuffer(4));
+
+/** The wait blocks the event loop, so the locked section must stay synchronous. */
+export function acquireUpdateAttributesLock(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	timeout = UPDATE_ATTRIBUTES_LOCK_TIMEOUT
+) {
+	if (rootStore.tryLock(updateAttributesLockKey)) return;
+	const startTime = performance.now();
+	let waitTime = 1;
+	while (!rootStore.tryLock(updateAttributesLockKey)) {
+		const elapsed = performance.now() - startTime;
+		if (elapsed >= timeout) {
+			throw new UpdateAttributesLockTimeoutError(
+				`Timed out after ${Math.round(elapsed)}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder did not release it before the deadline, so this schema/attribute update cannot proceed`
+			);
+		}
+		if (elapsed >= 2) {
+			Atomics.wait(lockWait, 0, 0, Math.min(waitTime, timeout - elapsed));
+			if (waitTime < 16) waitTime *= 2;
+		}
+	}
+	const waited = performance.now() - startTime;
+	// The caller cannot register its release until we return, so a throw here would leak the lock
+	// with no `finally` able to reach it.
+	if (waited >= UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT)
+		try {
+			logger.warn?.(
+				`Acquired the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription} after waiting ${Math.round(waited)}ms; this worker's event loop was blocked for that wait, and a holder that runs past ${UPDATE_ATTRIBUTES_LOCK_TIMEOUT}ms fails the update outright`
+			);
+		} catch {}
+}
+
+export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
+	rootStore.unlock(updateAttributesLockKey);
+}
+
+export function withUpdateAttributesLock<Callback extends () => unknown>(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	callback: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
+): ReturnType<Callback> {
+	acquireUpdateAttributesLock(rootStore, scopeDescription);
+	try {
+		const result = callback();
+		if (typeof (result as any)?.then === 'function') {
+			Promise.resolve(result).catch((error) =>
+				logger.error?.(
+					`Async update-attributes callback rejected after its lock was released (${scopeDescription})`,
+					error
+				)
+			);
+			throw new TypeError(
+				`withUpdateAttributesLock callback must be synchronous (${scopeDescription}); asynchronous work may continue after the lock is released`
+			);
+		}
+		return result as ReturnType<Callback>;
+	} finally {
+		releaseUpdateAttributesLock(rootStore);
+	}
+}
 // Tolerate a redundant column family drop. Drops are broadcast to every worker
 // thread and each holds its own handle to the same underlying family, so a
 // concurrent worker may already have dropped it; the storage engine reports
@@ -1512,14 +1584,12 @@ export function makeTable(options) {
 					// Serialize the drops + catalog removal against a concurrent
 					// same-name create (and completeInterruptedDrop) under the database's
 					// 'update-attributes' exclusive lock - the same lock the create path
-					// holds. It is a synchronous spin lock that blocks the event loop, so
+					// holds. It is a synchronous lock wait that blocks the event loop, so
 					// the locked section MUST stay synchronous: drop with dropSync (as
 					// completeInterruptedDrop does), never an awaited drop(), or a
-					// concurrent create's spin would deadlock waiting on a drop that the
-					// blocked event loop can never resolve.
-					while (!rootStore.tryLock('update-attributes')) {}
-					let removed = false;
-					try {
+					// concurrent create's wait would be stuck on a drop that the blocked
+					// event loop can never resolve, burning its full deadline before failing.
+					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						for (const attribute of attributes) {
 							const index = indices[attribute.name];
 							if (index)
@@ -1534,10 +1604,8 @@ export function makeTable(options) {
 						} catch (error) {
 							ignoreAlreadyDropped(error);
 						}
-						removed = removeTombstonedCatalog();
-					} finally {
-						rootStore.unlock('update-attributes');
-					}
+						return removeTombstonedCatalog();
+					});
 					if (removed) await dbisDb.committed;
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
