@@ -856,7 +856,7 @@ async function appendBlobEntry(pack: Pack, filePath: string, name: string): Prom
 	try {
 		disposition = await classifyBlobFileForCapture(filePath);
 	} catch (error) {
-		if (isSystemicIoError(error)) throw error;
+		if (isSystemicIoError(error)) throw error; // unverified, as on the snapshot path
 		// As on the snapshot path: a read failure is not evidence the bytes are bad, so fall back to the
 		// pre-classification behavior rather than downgrading a valid blob to a stub.
 		logger.warn(`Could not verify blob ${filePath} for the backup archive; packing it unverified`, error);

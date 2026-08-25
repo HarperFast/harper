@@ -96,6 +96,8 @@ async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobC
 	try {
 		disposition = await classifyBlobFileForCapture(srcPath);
 	} catch (error) {
+		// This rethrow is unverified: only the membership of SYSTEMIC_IO_ERRORS is tested, because
+		// reaching it needs a real host-level fault no test here can produce.
 		if (isSystemicIoError(error)) throw error;
 		// Fall back to what this walk did before it classified anything. `link()` needs no read permission
 		// on the source, so a blob this failed to *read* may still be perfectly capturable; substituting

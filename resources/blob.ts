@@ -1860,10 +1860,12 @@ export async function classifyBlobFileForCapture(filePath: string): Promise<Blob
 	}
 	if (blobHeaderIsAbortMarker(header)) return 'capture';
 	if (blobHeaderIndicatesIncomplete(header, fileSize)) return 'pending';
-	// Once stamped, a deflate header records the *uncompressed* length, so a torn compressed body left
-	// by an unclean shutdown can pass the size check above. Verify the stream rather than assuming the
-	// repair sweep has already run. Compression is opt-in per createBlob and unused inside Harper, so
-	// this reads nothing on an ordinary corpus.
+	// A deflate header records the *uncompressed* length, so the check above compares lengths only for
+	// UNCOMPRESSED_TYPE and a short compressed body reaches here looking whole. Both producers of one
+	// need this: saveBlob stamps a known size before the first compressed byte, so a live write is
+	// invisible above and caught only here, and an unclean shutdown can leave a torn body the
+	// asynchronous repair sweep has not reached yet. Compression is opt-in per createBlob and unused
+	// inside Harper, so this reads nothing on an ordinary corpus.
 	if (header[1] !== DEFLATE_TYPE) return 'capture';
 	const uncompressedSize = Number(
 		new DataView(header.buffer, header.byteOffset, HEADER_SIZE).getBigUint64(0) & 0xffffffffffffn
@@ -2849,6 +2851,8 @@ function inflatesToExactly(filePath: string, size: number): Promise<boolean> {
 		const inflate = createInflate();
 		// A zlib error is the answer (body truncated or corrupt); an I/O error is a failure to answer and
 		// must propagate, or a systemic fault would classify a corpus of complete blobs as incomplete.
+		// The reject arm is unverified: it needs a read fault raised mid-inflate on a file that opened
+		// cleanly, which no test here can produce.
 		const fail = (error: NodeJS.ErrnoException) => {
 			// Both: pipe() does not tear down the destination when the source errors, so the inflate's
 			// native zlib handle would sit allocated until GC — once per blob, on every backup walk.
