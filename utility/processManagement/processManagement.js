@@ -10,7 +10,7 @@ const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { execFile, fork } = require('node:child_process');
 
-const INIT_PROCESS_NAMES = new Set(['docker-init', 'dumb-init', 'init', 's6-svscan', 'systemd', 'tini']);
+const INIT_PROCESS_NAMES = new Set(['catatonit', 'docker-init', 'dumb-init', 'init', 's6-svscan', 'systemd', 'tini']);
 
 module.exports = {
 	start,
@@ -130,7 +130,8 @@ function getHdbPid() {
 
 function isInitProcess(pid) {
 	try {
-		return INIT_PROCESS_NAMES.has(path.basename(fs.readlinkSync(`/proc/${pid}/exe`)));
+		const executable = path.basename(fs.readlinkSync(`/proc/${pid}/exe`)).replace(/ \(deleted\)$/, '');
+		if (INIT_PROCESS_NAMES.has(executable)) return true;
 	} catch {
 		// Some procfs configurations expose the process name but restrict the executable symlink.
 	}

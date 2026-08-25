@@ -27,7 +27,8 @@ describe('process management PID file', () => {
 	it('treats PID 1 as stale when an init process owns it', function () {
 		if (process.platform !== 'linux') this.skip();
 		const pidOneName = fs.readFileSync('/proc/1/comm', 'utf8').trim();
-		if (!['docker-init', 'dumb-init', 'init', 's6-svscan', 'systemd', 'tini'].includes(pidOneName)) this.skip();
+		if (!['catatonit', 'docker-init', 'dumb-init', 'init', 's6-svscan', 'systemd', 'tini'].includes(pidOneName))
+			this.skip();
 		assert.equal(isProcessRunning(1), true);
 		fs.writeFileSync(path.join(testHdbPath, hdbTerms.HDB_PID_FILE), '1\n');
 		assert.equal(getHdbPid(), undefined);
