@@ -233,7 +233,9 @@ jobs:
       # branch (which may not contain this helper), so stash it under
       # $RUNNER_TEMP and invoke it from there in all subsequent steps.
       - name: Stash sticky-comment helper
-        run: cp .github/scripts/upsert-sticky-comment.js "$RUNNER_TEMP/upsert-sticky-comment.js"
+        run: |
+          cp .github/scripts/upsert-sticky-comment.js "$RUNNER_TEMP/upsert-sticky-comment.js"
+          cp .github/scripts/apply-picks.sh "$RUNNER_TEMP/apply-picks.sh"
 
       - name: Configure git
         run: |
@@ -301,7 +303,16 @@ jobs:
           else
             PICK_FLAGS=""
             PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
-            EXCLUDED_MERGES=$(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+            # Only merges that CONTRIBUTED something need a human. `diff-tree
+            # --cc` is empty exactly when a merge added nothing beyond its
+            # parents, so a routine "merge main in, no conflicts" PR still lands
+            # automatically; only a merge that actually resolved something holds.
+            EXCLUDED_MERGES=""
+            for M in $(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}"); do
+              if [ -n "$(git diff-tree --cc --no-commit-id "$M")" ]; then
+                EXCLUDED_MERGES="${EXCLUDED_MERGES:+$EXCLUDED_MERGES }$M"
+              fi
+            done
             if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
               if [ "$IS_MERGED" = "true" ]; then
                 # Nothing replayable: the PR's own content exists only in
@@ -309,6 +320,13 @@ jobs:
                 # something to review, but it is not provably the whole change.
                 PICK_SHAS="$MERGE_SHA"
                 HOLD="the PR has no replayable non-merge commits, so this branch was built from the merge commit alone"
+              elif [ -n "$EXCLUDED_MERGES" ]; then
+                # Nothing replayable and a merge that resolved something: the
+                # change exists only where it cannot be picked from.
+                HOLD=$(printf 'the only commits in range are merge commit(s) `%s`, which resolved content of their own' "$EXCLUDED_MERGES")
+                echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
+                echo "no_op=true" >> "$GITHUB_OUTPUT"
+                exit 0
               else
                 echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
                 echo "no_op=true" >> "$GITHUB_OUTPUT"
@@ -319,7 +337,7 @@ jobs:
           echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
           echo "pick_shas=$PICK_SHAS" >> "$GITHUB_OUTPUT"
           if [ -n "$EXCLUDED_MERGES" ]; then
-            HOLD=$(printf 'merge commit(s) `%s` could not be replayed' "$EXCLUDED_MERGES")
+            HOLD=$(printf 'merge commit(s) `%s` resolved content of their own and cannot be replayed' "$EXCLUDED_MERGES")
           fi
           echo "excluded_merges=$EXCLUDED_MERGES" >> "$GITHUB_OUTPUT"
           echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
@@ -328,42 +346,7 @@ jobs:
           git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
 
           # ── Apply commits, tracking which conflicted ────────────────────
-          CONFLICTS=""
-          for SHA in $PICK_SHAS; do
-            # shellcheck disable=SC2086
-            if git cherry-pick $PICK_FLAGS "$SHA"; then
-              continue
-            fi
-            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-              CONFLICTS="${CONFLICTS:+$CONFLICTS }$SHA"
-              # Stage conflict markers and commit so reviewer sees the state
-              git add -A
-              GIT_EDITOR=true git cherry-pick --continue || git cherry-pick --skip || true
-              if git rev-parse --verify --quiet CHERRY_PICK_HEAD >/dev/null; then
-                git cherry-pick --abort 2>/dev/null || true
-                echo "::error::cherry-pick sequencer left dirty after $SHA"
-                exit 1
-              fi
-              continue
-            fi
-            # No unmerged paths. "Already applied" requires proof, not an
-            # absence: the sequencer must be stopped on THIS commit (a stale
-            # CHERRY_PICK_HEAD from an earlier iteration would otherwise vouch
-            # for it) and the index must be identical to HEAD. Anything else
-            # failed before it could apply — dropping that silently would
-            # fast-forward a partial change onto the release branch while the
-            # sticky comment reports success.
-            PICK_HEAD=$(git rev-parse --verify --quiet CHERRY_PICK_HEAD || true)
-            if [ -n "$PICK_HEAD" ] && [ "$PICK_HEAD" = "$(git rev-parse "$SHA")" ] \
-              && git diff --cached --quiet HEAD && git diff --quiet; then
-              echo "Commit $SHA is already applied on $RELEASE_BRANCH; skipping"
-              git cherry-pick --skip
-              continue
-            fi
-            git cherry-pick --abort 2>/dev/null || true
-            echo "::error::cherry-pick of $SHA onto $RELEASE_BRANCH failed before it could apply"
-            exit 1
-          done
+          CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS")
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
 
           if [ -z "$CONFLICTS" ] && [ -z "$HOLD" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
@@ -411,15 +394,13 @@ jobs:
             git fetch origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}"
             if [ "$ATTEMPT" -gt 1 ]; then
               git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
-              for SHA in $PICK_SHAS; do
-                # shellcheck disable=SC2086
-                if ! git cherry-pick $PICK_FLAGS "$SHA"; then
-                  git cherry-pick --abort 2>/dev/null || true
-                  REBUILD_CONFLICT=true
-                  break
-                fi
-              done
-              [ "$REBUILD_CONFLICT" = true ] && break
+              # Same classifier as the first pass: a commit the concurrent
+              # landing already brought in is skipped, not called a conflict.
+              REBUILD_CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS" || echo FAILED)
+              if [ "$REBUILD_CONFLICTS" = FAILED ] || [ -n "$REBUILD_CONFLICTS" ]; then
+                REBUILD_CONFLICT=true
+                break
+              fi
               git push --force origin "$BRANCH"
             fi
             git checkout -B "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
@@ -484,7 +465,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IS_MERGED: ${{ steps.pick.outputs.is_merged }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
-          EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
+          HOLD: ${{ steps.pick.outputs.hold }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
@@ -494,8 +475,8 @@ jobs:
           # markers does not restore a resolution that lived only in a merge
           # commit, so say so wherever this branch is described.
           MERGE_WARN=""
-          if [ -n "$EXCLUDED_MERGES" ]; then
-            MERGE_WARN=$(printf '\n\n> Additionally, merge commit(s) `%s` could not be replayed. If any of them resolved a conflict, that resolution is **not** on this branch — resolving the markers below will not restore it.' "$EXCLUDED_MERGES")
+          if [ -n "$HOLD" ]; then
+            MERGE_WARN=$(printf '\n\n> **This branch is also incomplete**, separately from the conflicts: %s. Resolving the markers below will **not** restore that content, so do not merge on the strength of a clean resolution alone.' "$HOLD")
           fi
 
           if [ "$IS_MERGED" = "true" ]; then
@@ -569,8 +550,12 @@ jobs:
             exit 0
           fi
 
-          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
-          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
+          # Pin the Node matrix. These inputs default to `all`, which is the
+          # nightly-scale matrix (~43 jobs); a PR push runs a single version.
+          # Unpinned, one push to a PR milestoned onto three release branches
+          # dispatches that matrix three times.
+          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
+          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
 
           # Locate the dispatched integration-tests run id (creation is async)
           RUN_ID=""
