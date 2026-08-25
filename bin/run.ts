@@ -281,6 +281,8 @@ function startupLog(portResolutions: any) {
 		logMsg += `${pad('Mode:')}${chalk.yellow('READ-ONLY')}\n`;
 	}
 
+	logMsg += `${pad('Version:')}${packageJson.version}\n`;
+
 	logMsg += `${pad('Hostname:')}${getThisNodeName()}\n`;
 
 	logMsg += `${pad('Worker Threads:')}${env.get(CONFIG_PARAMS.THREADS_COUNT)}\n`;

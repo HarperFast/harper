@@ -90,7 +90,7 @@ This is how CI captures logs for failed jobs — the log directory is uploaded a
 
 ### Requirements
 
-- Files must use the Node.js `node:test` API (`suite`, `test`, `before`, `after`, etc.) with assertions from `node:assert/strict`
+- Files must use the Node.js `node:test` API (`suite`, `test`, `before`, `after`, etc.) with assertions from `node:assert` (plain, not `/strict` — `no-restricted-imports` rejects it; call `assert.strictEqual`/`deepStrictEqual` for strict checks, see AGENTS.md)
 - Files must end in `.test.ts` or `.test.mjs` (both extensions are picked up by `test:integration:all`)
 - Files must be implemented as ESM (TypeScript or JavaScript)
 - Each file must begin with a JSDoc comment describing exactly what it tests — include relevant GitHub issue or PR links if they exist
@@ -109,7 +109,7 @@ The runner executes each file in its own process. For concurrent execution to be
  * Link to relevant GitHub issues or PRs if applicable.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual } from 'node:assert/strict';
+import { strictEqual } from 'node:assert';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 suite('short description', (ctx: ContextWithHarper) => {
