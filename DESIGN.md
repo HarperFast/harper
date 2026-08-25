@@ -292,9 +292,11 @@ an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if t
 released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
 `withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock (regression
 suite: `unitTests/resources/updateAttributesLock.test.js`). Because the acquire can now throw,
-`table()` takes the lock _before_ it mutates the live `Table` (attributes, class metadata, index
-handles): losing the race then leaves this worker's in-memory schema exactly as it found it, and
-moving any mutation above that acquire reintroduces schema drift the catalog never saw. A
+`table()` takes the RocksDB lock _before_ it mutates the live `Table` (attributes, class metadata,
+index handles): losing the race then leaves this worker's in-memory schema exactly as it found it,
+and moving any mutation above that acquire reintroduces schema drift the catalog never saw. LMDB
+keeps the lazy acquire — its `exclusiveLock()` is an environment-wide write transaction that cannot
+time out, so taking it eagerly would stall every write to the database on an unchanged reload. A
 successful acquire that waited past `UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT` (1s) warns once, since
 contention is otherwise invisible until it becomes a timeout. The locked
 sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside

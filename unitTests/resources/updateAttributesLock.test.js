@@ -17,11 +17,36 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const TEST_DB = 'test';
 const LOCK_KEY = 'update-attributes';
 
+function openWorker() {
+	return new Worker(__dirname + '/updateAttributesLock-thread.js', { workerData: { addPorts: [] } });
+}
+
+function request(workerThread, message, expectedType, hardTimeout) {
+	return new Promise((resolve, reject) => {
+		let timer;
+		const settle = (finish) => {
+			clearTimeout(timer);
+			workerThread.off('message', onMessage);
+			workerThread.off('error', onError);
+			finish();
+		};
+		const onMessage = (result) => {
+			if (result.type === expectedType) settle(() => resolve(result));
+		};
+		const onError = (error) => settle(() => reject(error));
+		timer = setTimeout(
+			() => settle(() => reject(new Error(`worker never answered '${message.type}' within ${hardTimeout}ms`))),
+			hardTimeout
+		);
+		workerThread.on('message', onMessage);
+		workerThread.on('error', onError);
+		workerThread.postMessage(message);
+	});
+}
+
 function runWorkerAction(message, expectedMessageTypes, hardTimeout) {
 	return new Promise((resolve, reject) => {
-		const workerThread = new Worker(__dirname + '/updateAttributesLock-thread.js', {
-			workerData: { addPorts: [] },
-		});
+		const workerThread = openWorker();
 		const received = [];
 		let finished = false;
 		let timer;
@@ -156,19 +181,33 @@ describe('update-attributes exclusive lock', () => {
 		rootStore.unlock(LOCK_KEY);
 	});
 
-	it('a real table() operation fails with ServerError after the full deadline, leaving the live schema untouched', async function () {
+	it('a real table() operation fails with ServerError after another thread wedges the lock for the full deadline', async function () {
 		this.timeout(40000);
-		const messages = await runWorkerAction(
-			{ type: 'table-deadline' },
-			['deadline-result', 'live-schema', 'table-updated'],
-			30000
-		);
-		const {
-			'deadline-result': deadlineResult,
-			'live-schema': liveSchema,
-			'table-updated': updateResult,
-		} = Object.fromEntries(messages.map((message) => [message.type, message]));
-		assert.ok(deadlineResult.acquired, 'test worker should be able to wedge the lock');
+		const workerThread = openWorker();
+		let wedged = false;
+		let deadlineResult, updateResult;
+		try {
+			await request(workerThread, { type: 'prepare-deadline-table' }, 'deadline-table-prepared', 20000);
+			wedged = rootStore.tryLock(LOCK_KEY);
+			assert.ok(wedged, 'this thread should be able to wedge the lock the worker will wait on');
+			deadlineResult = await request(workerThread, { type: 'declare-under-wedge' }, 'deadline-result', 30000);
+			rootStore.unlock(LOCK_KEY);
+			wedged = false;
+			updateResult = await request(workerThread, { type: 'redeclare' }, 'table-updated', 20000);
+			assert.ok(
+				!deadlineResult.before.attributes.includes('added'),
+				'test should start from the pre-declaration schema'
+			);
+			assert.deepStrictEqual(
+				deadlineResult.after,
+				deadlineResult.before,
+				'a lock-acquire timeout must not leave that worker describing attributes it never persisted'
+			);
+		} finally {
+			if (wedged) rootStore.unlock(LOCK_KEY);
+			await workerThread.terminate();
+		}
+		assert.ok(deadlineResult.error, 'the wedged declaration should have thrown');
 		assert.ok(deadlineResult.error.isServerError, 'production table() path should throw ServerError');
 		assert.strictEqual(deadlineResult.error.statusCode, 503);
 		assert.strictEqual(deadlineResult.error.code, 'UPDATE_ATTRIBUTES_LOCK_TIMEOUT');
@@ -186,13 +225,6 @@ describe('update-attributes exclusive lock', () => {
 			deadlineResult.elapsed < UPDATE_ATTRIBUTES_LOCK_TIMEOUT + 5000,
 			`should throw shortly after the deadline, took ${deadlineResult.elapsed}ms`
 		);
-		// the acquire happens before any mutation of the live Table, so losing the race is a no-op
-		assert.deepStrictEqual(
-			liveSchema.after,
-			liveSchema.before,
-			'a lock-acquire timeout must not leave this worker describing attributes it never persisted'
-		);
-		assert.ok(!liveSchema.before.attributes.includes('added'), 'test should start from the pre-declaration schema');
 		assert.ok(updateResult.updated, `redeclaration should succeed once the lock is free: ${updateResult.error ?? ''}`);
 		assert.ok(updateResult.applied.attributes.includes('added'), 'the retried declaration should apply the attribute');
 		assert.ok(updateResult.applied.indices.includes('added'), 'the retried declaration should open the index');

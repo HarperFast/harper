@@ -10,8 +10,19 @@ setMainIsWorker(true);
 const rootStore = database({ database: 'test', table: null });
 let heldLock = false;
 
-function reportDeadline(action, callback) {
-	const acquired = rootStore.tryLock('update-attributes');
+const DEADLINE_DEFINITION = {
+	table: 'DeadlineWedged',
+	database: 'test',
+	attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
+};
+const DEADLINE_REDECLARATION = {
+	...DEADLINE_DEFINITION,
+	attributes: [...DEADLINE_DEFINITION.attributes, { name: 'added', type: 'String', indexed: true }],
+};
+let deadlineTable;
+
+function reportDeadline(action, callback, { selfLock = true, extra } = {}) {
+	const acquired = selfLock ? rootStore.tryLock('update-attributes') : false;
 	const startTime = Date.now();
 	let error;
 	try {
@@ -27,7 +38,14 @@ function reportDeadline(action, callback) {
 	} finally {
 		if (acquired) rootStore.unlock('update-attributes');
 	}
-	parentPort.postMessage({ type: 'deadline-result', action, acquired, elapsed: Date.now() - startTime, error });
+	parentPort.postMessage({
+		type: 'deadline-result',
+		action,
+		acquired,
+		elapsed: Date.now() - startTime,
+		error,
+		...extra?.(),
+	});
 }
 
 function liveSchema(Table) {
@@ -35,6 +53,10 @@ function liveSchema(Table) {
 		attributes: Table.attributes.map((attribute) => attribute.name),
 		indices: Object.keys(Table.indices),
 		schemaVersion: Table.schemaVersion,
+		description: Table.description ?? null,
+		hidden: Table.hidden ?? null,
+		cacheControl: Table.cacheControl ?? null,
+		schemaDefined: Table.schemaDefined ?? null,
 	};
 }
 
@@ -53,25 +75,23 @@ parentPort
 			reportDeadline(message.type, () =>
 				acquireUpdateAttributesLock(rootStore, "table 'test.Wedged'", message.timeout)
 			);
-		} else if (message.type === 'table-deadline') {
-			const definition = {
-				table: 'DeadlineWedged',
-				database: 'test',
-				attributes: [{ name: 'id', type: 'Int', isPrimaryKey: true }],
-			};
-			const Table = table(definition);
-			const redeclaration = {
-				...definition,
-				attributes: [...definition.attributes, { name: 'added', type: 'String', indexed: true }],
-			};
-			const before = liveSchema(Table);
-			reportDeadline(message.type, () => table(redeclaration));
-			parentPort.postMessage({ type: 'live-schema', before, after: liveSchema(Table) });
+		} else if (message.type === 'prepare-deadline-table') {
+			deadlineTable = table(DEADLINE_DEFINITION);
+			parentPort.postMessage({ type: 'deadline-table-prepared', before: liveSchema(deadlineTable) });
+		} else if (message.type === 'declare-under-wedge') {
+			// snapshot around this call alone: unrelated schema activity between messages would
+			// otherwise show up as drift
+			const before = liveSchema(deadlineTable);
+			reportDeadline(message.type, () => table(DEADLINE_REDECLARATION), {
+				selfLock: false,
+				extra: () => ({ before, after: liveSchema(deadlineTable) }),
+			});
+		} else if (message.type === 'redeclare') {
 			try {
 				parentPort.postMessage({
 					type: 'table-updated',
-					updated: Boolean(table(redeclaration)),
-					applied: liveSchema(Table),
+					updated: Boolean(table(DEADLINE_REDECLARATION)),
+					applied: liveSchema(deadlineTable),
 				});
 			} catch (error) {
 				parentPort.postMessage({ type: 'table-updated', updated: false, error: error.message });
