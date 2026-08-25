@@ -803,6 +803,15 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
 											watcher = undefined;
 										}
+										// An FSWatcher that fails after registration emits 'error'; with no listener Node
+										// rethrows it out of the watcher callback. Drop to the same poll instead.
+										watcher?.on('error', (error) => {
+											logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
+											watcher?.close();
+											watcher = undefined;
+											clearTimeout(timer);
+											timer = setTimeout(() => readMore(resolve, reject), 20).unref();
+										});
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
