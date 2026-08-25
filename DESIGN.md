@@ -1286,10 +1286,14 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
   heuristic instead of NaN-poisoning condition ordering.
 - **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
   comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
-  execution truncates + filters (wider range than the estimable one). `RocksIndexStore.estimateCount`
-  widens value-space bounds to `[value, MAXIMUM_KEY]` composite bounds, mirroring its `getRange`
-  translation (reverse flip included) — the base implementation's byte-successor semantics would
-  exclude the wrong entries on composite `[value, primaryKey]` keys.
+  execution truncates + filters (wider range than the estimable one). Two ways this has already
+  been got wrong: `lt`/`le` need `searchByIndex`'s `start: true` lower bound, or the estimate
+  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips (`true`
+  sorts above `null`) — measured at 21× inflation on an index that is 99% nulls, which is worse
+  than the flat heuristic it replaces; and `RocksIndexStore` must widen value-space bounds to
+  `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
+  semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
+  `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
 - **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
   the filter-only convention (`contains`/`ends_with`): the negated flag always forces
   `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —

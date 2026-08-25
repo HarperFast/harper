@@ -87,9 +87,15 @@ describe('estimateCondition range estimates', () => {
 		assert.strictEqual(estimate(table, { attribute: 'attr', comparator: 'gt', value: 5 }), 40);
 		assert.deepStrictEqual(table.indices.attr.calls[0], { start: 5, exclusiveStart: true });
 
+		// `start: true` is not decoration: searchByIndex uses it to skip an indexNulls index's
+		// [null, primaryKey] entries, so an unbounded estimate would count rows execution never visits
 		const table2 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
 		assert.strictEqual(estimate(table2, { attribute: 'attr', comparator: 'lt', value: 5 }), 40);
-		assert.deepStrictEqual(table2.indices.attr.calls[0], { end: 5 });
+		assert.deepStrictEqual(table2.indices.attr.calls[0], { start: true, end: 5 });
+
+		const table3 = makeTable({ indexEstimate: { count: 40, confidence: 1 } });
+		assert.strictEqual(estimate(table3, { attribute: 'attr', comparator: 'le', value: 5 }), 40);
+		assert.deepStrictEqual(table3.indices.attr.calls[0], { start: true, end: 5, inclusiveEnd: true });
 	});
 
 	it('estimates primary-key ranges against the primary store', () => {
@@ -171,11 +177,64 @@ describe('estimateCondition range estimates', () => {
 	});
 });
 
+describe('RocksIndexStore.estimateCount composite bound translation', () => {
+	const { RocksIndexStore } = require('#src/resources/RocksIndexStore');
+	const { RocksDatabase } = require('@harperfast/rocksdb-js');
+
+	// Both methods must translate bounds identically or the planner estimates a range execution
+	// never iterates. Spying on the base captures what each actually forwards.
+	function captureBounds(method, options) {
+		const original = RocksDatabase.prototype[method];
+		let captured;
+		RocksDatabase.prototype[method] = function (received) {
+			captured = received;
+			return method === 'estimateCount' ? { count: 0, confidence: 1 } : [];
+		};
+		try {
+			RocksIndexStore.prototype[method].call(Object.create(RocksIndexStore.prototype), options);
+		} finally {
+			RocksDatabase.prototype[method] = original;
+		}
+		return captured;
+	}
+
+	const cases = [
+		['bare bounds pass through', { start: 5, end: 10 }],
+		['exclusiveStart widens the lower bound', { start: 5, end: 10, exclusiveStart: true }],
+		['inclusiveEnd widens the upper bound', { start: 5, end: 10, inclusiveEnd: true }],
+		['reverse flips which bound widens', { start: 10, end: 5, reverse: true }],
+		['reverse with explicit flags', { start: 10, end: 5, reverse: true, exclusiveStart: true, inclusiveEnd: true }],
+	];
+
+	for (const [name, options] of cases) {
+		it(`${name} the same way getRange does`, () => {
+			const estimated = captureBounds('estimateCount', options);
+			const iterated = captureBounds('getRange', options);
+			assert.deepStrictEqual(
+				{ start: estimated.start, end: estimated.end },
+				{ start: iterated.start, end: iterated.end }
+			);
+		});
+	}
+
+	it('widens to [value, MAXIMUM_KEY] rather than the bare indexed value', () => {
+		const { start, end } = captureBounds('estimateCount', {
+			start: 5,
+			end: 10,
+			exclusiveStart: true,
+			inclusiveEnd: true,
+		});
+		assert.deepStrictEqual(start, [5, MAXIMUM_KEY]);
+		assert.deepStrictEqual(end, [10, MAXIMUM_KEY]);
+	});
+});
+
 describe('estimateCondition range estimates (real stores)', () => {
 	const { setupTestDBPath } = require('../testUtils');
 	const { table } = require('#src/resources/databases');
 	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 	const N = 20000;
+	const SPARSE_COUNT = 200;
 	let T;
 
 	before(async function () {
@@ -189,6 +248,7 @@ describe('estimateCondition range estimates (real stores)', () => {
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'score', type: 'Int', indexed: true },
 				{ name: 'name', indexed: true },
+				{ name: 'sparse', type: 'Int', indexed: true },
 			],
 		});
 		// HARPER_STORAGE_ENGINE=lmdb runs this same suite against index stores with no
@@ -196,12 +256,19 @@ describe('estimateCondition range estimates (real stores)', () => {
 		if (typeof T.indices.score.estimateCount !== 'function') return this.skip();
 		let last;
 		for (let i = 0; i < N; i++) {
-			last = T.put({ id: i, score: i, name: `name-${String(i).padStart(6, '0')}` });
+			last = T.put({
+				id: i,
+				score: i,
+				name: `name-${String(i).padStart(6, '0')}`,
+				// explicit nulls are indexed as [null, primaryKey]; a missing attribute is not
+				sparse: i < SPARSE_COUNT ? i : null,
+			});
 		}
 		await last;
 		await T.primaryStore.flush();
 		await T.indices.score.flush();
 		await T.indices.name.flush();
+		await T.indices.sparse.flush();
 	});
 
 	it('scales between estimates with the real range width', () => {
@@ -227,5 +294,17 @@ describe('estimateCondition range estimates (real stores)', () => {
 		const tail50 = est({ attribute: 'score', comparator: 'gt', value: N / 2 });
 		assert.ok(tail10 < tail50, `10% tail (${tail10}) should be < 50% tail (${tail50})`);
 		assert.ok(tail10 <= 0.3 * N + 1, `10% tail (${tail10}) should not exceed the flat heuristic`);
+	});
+
+	it('excludes null index entries from lt/le, as execution does', () => {
+		// `sparse` is set on 200 of 20000 rows, so the index holds 19800 [null, id] entries that
+		// searchByIndex's `start: true` skips. An unbounded lower bound counts them all and makes
+		// a 200-row condition look like a 20000-row one — worse than the heuristic it replaces.
+		const est = estimateCondition(T);
+		const belowAll = est({ attribute: 'sparse', comparator: 'lt', value: SPARSE_COUNT });
+		assert.ok(
+			belowAll < N / 2,
+			`lt over all ${SPARSE_COUNT} non-null values (${belowAll}) must not count the ${N - SPARSE_COUNT} null entries`
+		);
 	});
 });

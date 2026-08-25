@@ -1122,18 +1122,19 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	const attributeName = condition[0] ?? condition.attribute;
 	const isPrimaryKey = attributeName === table.primaryKey;
 	const store = isPrimaryKey ? table.primaryStore : table.indices[attributeName];
-	// LMDB-backed and custom index stores may not implement estimateCount, or may answer with a
-	// different shape, so both the probe and the validation below are load-bearing
+	// LMDB-backed and custom index stores do not implement estimateCount
 	if (typeof store?.estimateCount !== 'function') return undefined;
 	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
 	let range;
 	switch (searchType) {
 		case 'lt':
-			range = { end: value };
+			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
+			// index's `[null, primaryKey]` entries are outside the executed range
+			range = { start: true, end: value };
 			break;
 		case 'le':
-			range = { end: value, inclusiveEnd: true };
+			range = { start: true, end: value, inclusiveEnd: true };
 			break;
 		case 'gt':
 			range = { start: value, exclusiveStart: true };
