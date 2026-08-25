@@ -1,19 +1,28 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const {
-	setAuditRetention,
-	readAuditEntry,
-	createAuditEntry,
-	transactionKeyEncoder,
-	removeAuditEntry,
-} = require('#src/resources/auditStore');
+const auditStoreModule = require('#src/resources/auditStore');
+const { setAuditRetention, readAuditEntry, createAuditEntry, transactionKeyEncoder, removeAuditEntry } =
+	auditStoreModule;
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor');
 const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
+
+function withUserSharedBuffer(fakeRoot) {
+	fakeRoot.getUserSharedBuffer = (_key, buffer, options = {}) => {
+		buffer.notify = () => {
+			options.callback?.();
+			return true;
+		};
+		buffer.cancel = () => {};
+		return buffer;
+	};
+	return fakeRoot;
+}
+
 describe('Audit log', () => {
 	let AuditedTable;
 	let events = [];
@@ -41,7 +50,86 @@ describe('Audit log', () => {
 		};
 	});
 	afterEach(function () {
-		setAuditRetention(60000);
+		setAuditRetention(60000, 10000);
+	});
+	it('re-arms RocksDB transaction-log cleanup without storage pressure', async function () {
+		if (!(AuditedTable.auditStore instanceof RocksTransactionLogStore)) return this.skip();
+		this.timeout(5_000);
+		const auditStore = AuditedTable.auditStore;
+		const rootStore = auditStore.rootStore;
+		const originalPurgeLogs = rootStore.purgeLogs;
+		const originalLogBuffers = auditStore.log._logBuffers;
+		const originalCurrentLogBuffer = auditStore.log._currentLogBuffer;
+		const originalRetention = auditStoreModule.auditRetention;
+		const purgeCalls = [];
+		rootStore.purgeLogs = (options) => {
+			purgeCalls.push(options);
+			return purgeCalls.length === 1 ? ['purged.txnlog'] : [];
+		};
+		try {
+			auditStore.log.query({ start: 0 }).next();
+			assert.ok(auditStore.log._logBuffers instanceof Map, 'rocksdb-js should expose its mmap cache');
+			const retainedBuffer = {};
+			auditStore.log._logBuffers = new Map([[1, new WeakRef(retainedBuffer)]]);
+			auditStore.log._currentLogBuffer = retainedBuffer;
+			setAuditRetention(100, 25);
+			const before = Date.now();
+			await auditStore.scheduleAuditCleanup(1);
+			const after = Date.now();
+			assert.equal(purgeCalls.length, 1, 'the requested cleanup pass should purge once');
+			assert.ok(
+				purgeCalls[0].before >= before - 100 && purgeCalls[0].before <= after - 100,
+				'the purge should honor the configured retention cutoff'
+			);
+			await waitFor(() => auditStore.log._logBuffers.size === 0 && auditStore.log._currentLogBuffer === undefined, {
+				timeout: 2_000,
+				message: 'purged mmap buffers should be invalidated',
+			});
+			await waitFor(() => purgeCalls.length >= 2, {
+				timeout: 2_000,
+				message: 'RocksDB cleanup did not re-arm after the requested pass',
+			});
+		} finally {
+			rootStore.purgeLogs = originalPurgeLogs;
+			auditStore.log._logBuffers = originalLogBuffers;
+			auditStore.log._currentLogBuffer = originalCurrentLogBuffer;
+			setAuditRetention(originalRetention, 10000);
+			auditStore.scheduleAuditCleanup(60_000);
+		}
+	});
+	it('broadcasts purge cache invalidation to every transaction-log store', () => {
+		const callbacks = new Set();
+		function createRoot(log) {
+			return {
+				useLog: () => log,
+				on: () => null,
+				listLogs: () => ['local'],
+				purgeLogs: () => ['purged.txnlog'],
+				getUserSharedBuffer(_key, buffer, options) {
+					callbacks.add(options.callback);
+					buffer.notify = () => {
+						for (const callback of callbacks) callback();
+						return true;
+					};
+					buffer.cancel = () => callbacks.delete(options.callback);
+					return buffer;
+				},
+			};
+		}
+		const firstLog = { name: 'local', query: () => null, addEntry: () => null, on: () => null };
+		const secondLog = { name: 'local', query: () => null, addEntry: () => null, on: () => null };
+		const firstStore = new RocksTransactionLogStore(createRoot(firstLog));
+		const secondStore = new RocksTransactionLogStore(createRoot(secondLog));
+		const retainedBuffer = {};
+		secondLog._logBuffers = new Map([[1, new WeakRef(retainedBuffer)]]);
+		secondLog._currentLogBuffer = retainedBuffer;
+
+		firstStore.purgeLogs({ before: Date.now() });
+
+		assert.equal(secondLog._logBuffers.size, 0, 'another worker should clear its mmap cache');
+		assert.equal(secondLog._currentLogBuffer, undefined, 'another worker should clear its current mmap buffer');
+		firstStore.stopPurgeNotifications();
+		secondStore.stopPurgeNotifications();
 	});
 	it('check log after writes and prune', async () => {
 		events = [];
@@ -99,7 +187,7 @@ describe('Audit log', () => {
 			'two-changed',
 			"id 2's final delivered event should be its latest put"
 		);
-		if (AuditedTable.auditStore.reusableIterable) return; // rocksdb doesn't have any audit log cleanup from JS
+		if (AuditedTable.auditStore.reusableIterable) return; // RocksDB purges whole files; the per-entry assertions below are LMDB-only
 		setAuditRetention(0.001, 1);
 		// scheduleAuditCleanup() resolves once the pass serving the call has committed its deletions.
 		// This first one races the put below, so it may or may not see record 3's audit entry.
@@ -998,11 +1086,11 @@ describe('Audit log', () => {
 				addEntry: () => null,
 				on: () => null,
 			};
-			const fakeRoot = {
+			const fakeRoot = withUserSharedBuffer({
 				useLog: () => fakeLog,
 				on: () => null,
 				listLogs: () => [],
-			};
+			});
 			const store = new RocksTransactionLogStore(fakeRoot);
 
 			// Bypass loadLogs(): inject a one-element nodeLogs whose query() yields a
@@ -1052,7 +1140,7 @@ describe('Audit log', () => {
 		// that crashed the worker on every commit after a SIGKILL-induced torn write.
 		it('terminates the failing log iterator instead of propagating a corrupt-entry throw out of the aggregate', () => {
 			const fakeLog = { query: () => null, addEntry: () => null, on: () => null };
-			const fakeRoot = { useLog: () => fakeLog, on: () => null, listLogs: () => [] };
+			const fakeRoot = withUserSharedBuffer({ useLog: () => fakeLog, on: () => null, listLogs: () => [] });
 			const store = new RocksTransactionLogStore(fakeRoot);
 
 			// First log: yields one good entry, then throws (mirrors a torn entry past
@@ -1137,7 +1225,7 @@ describe('Audit log', () => {
 
 	it('addLogToMaps assigns nodeId 0 to the local log and populates nodeLogs[0]', () => {
 		const fakeLog = { query: () => null, addEntry: () => null, on: () => null };
-		const fakeRoot = { useLog: () => fakeLog, on: () => null, listLogs: () => [] };
+		const fakeRoot = withUserSharedBuffer({ useLog: () => fakeLog, on: () => null, listLogs: () => [] });
 		const store = new RocksTransactionLogStore(fakeRoot);
 		store.nodeLogs = [];
 		const nodeId = store.addLogToMaps('local', fakeLog);

@@ -23,6 +23,11 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	removeLog(logName: string);
 };
 
+type NotifyingArrayBuffer = ArrayBuffer & {
+	notify(): boolean;
+	cancel(): void;
+};
+
 // Logs (once per log) when a corrupt frame ends a query iterator early; see
 // endIteratorOnCorruptFrame in replayLogsGuards.ts for why this is end-of-log, not a crash.
 function warnCorruptFrame(logName: string) {
@@ -42,6 +47,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	logByName: Map<string, TransactionLog> = new Map();
 	updates = 0; // the number of updates to the list of logs that have occurred
 	rootStore: RocksDatabase;
+	purgeNotification?: NotifyingArrayBuffer;
 	reusableIterable = true; // flag indicating that iterable can be reused to resume iterating through audit log
 	// Highest structureVersion appended to each per-node TransactionLog, tracked per tableId. Drives the
 	// per-log HAS_STRUCTURE_UPDATE flag in put(). Keyed by (log, tableId): a per-node log interleaves entries
@@ -54,6 +60,13 @@ export class RocksTransactionLogStore extends EventEmitter {
 		super();
 		this.log = rootDatabase.useLog('local');
 		this.rootStore = rootDatabase;
+		try {
+			this.purgeNotification = rootDatabase.getUserSharedBuffer('audit-log-purged', new ArrayBuffer(1), {
+				callback: () => this.invalidateLogBuffers(),
+			}) as NotifyingArrayBuffer;
+		} catch (error) {
+			harperLogger.warn('Failed to register transaction-log purge notifications', error);
+		}
 	}
 
 	/**
@@ -245,6 +258,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				}
 				if (!log) {
 					log = this.rootStore.useLog(options.log);
+					this.addLogToMaps(log.name, log);
 				}
 			}
 			const queryIterator = endIteratorOnCorruptFrame(log.query(options), warnCorruptFrame(log.name));
@@ -462,6 +476,46 @@ export class RocksTransactionLogStore extends EventEmitter {
 			logs,
 			totalSize,
 		};
+	}
+
+	invalidateLogBuffers() {
+		try {
+			const logs = new Set<TransactionLog | undefined>([
+				this.log,
+				...this.logByName.values(),
+				...(this.nodeLogs ?? []),
+			]);
+			for (const log of logs) {
+				if (!log) continue;
+				log._logBuffers?.clear();
+				(log as any)._currentLogBuffer = undefined;
+			}
+		} catch (error) {
+			harperLogger.warn('Failed to invalidate transaction-log buffers after purge', error);
+		}
+	}
+
+	purgeLogs(options?: any): any[] {
+		const purged = this.rootStore.purgeLogs(options);
+		if (purged.length > 0) {
+			this.invalidateLogBuffers();
+			try {
+				// Every worker has its own TransactionLog objects, so notify all workers to drop stale mmaps.
+				// Iterators already in progress retain their own buffer references and can finish safely.
+				this.purgeNotification?.notify();
+			} catch (error) {
+				harperLogger.warn('Failed to invalidate transaction-log buffers after purge', error);
+			}
+		}
+		return purged;
+	}
+
+	stopPurgeNotifications() {
+		try {
+			this.purgeNotification?.cancel();
+		} catch (error) {
+			harperLogger.warn('Failed to cancel transaction-log purge notifications', error);
+		}
 	}
 
 	getUserSharedBuffer(key: string | symbol, defaultBuffer: ArrayBuffer, options?: { callback?: () => void }) {

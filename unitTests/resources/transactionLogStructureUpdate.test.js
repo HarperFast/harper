@@ -17,7 +17,17 @@ function makeLog() {
 // nodeLogs is indexed by nodeId; logById() reads it directly, so we can drive put() against
 // distinct per-node logs without a real RocksDB.
 function makeStore(logs) {
-	const store = new RocksTransactionLogStore({ useLog: () => makeLog() });
+	const store = new RocksTransactionLogStore({
+		useLog: () => makeLog(),
+		getUserSharedBuffer(_key, buffer, options) {
+			buffer.notify = () => {
+				options.callback();
+				return true;
+			};
+			buffer.cancel = () => {};
+			return buffer;
+		},
+	});
 	store.nodeLogs = logs;
 	return store;
 }

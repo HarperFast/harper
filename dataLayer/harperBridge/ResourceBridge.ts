@@ -514,7 +514,7 @@ export class ResourceBridge extends BridgeMethods {
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
-						const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
+						const deleted = table.auditStore.purgeLogs({ before, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
 						break;

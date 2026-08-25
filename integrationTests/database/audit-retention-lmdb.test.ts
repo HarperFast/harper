@@ -8,16 +8,15 @@
  * and its concurrency seam, never the automatic retention driver.
  *
  * Why this matters (source read at Harper `b8c843a24`, re-verified rather than assumed):
- *   - `resources/auditStore.ts:224-226` — `scheduleAuditCleanup()` runs once at store-open, on
- *     the last worker only, for BOTH engines.
- *   - `resources/auditStore.ts:174-222` — the LMDB branch arms a `setTimeout`, walks
+ *   - `resources/auditStore.ts` — `scheduleAuditCleanup()` starts at store-open on the last
+ *     worker for both engines.
+ *   - The LMDB branch arms a `setTimeout`, walks
  *     `auditStore.getRange({start: 1, end: <cutoff>})` deleting aged entries, and re-schedules
- *     ITSELF from its own `finally` (line 216), backing off when idle. That self-re-arm is the
+ *     itself from `finally`, backing off when idle. That self-re-arm is the
  *     whole mechanism under test: if it ever stops re-arming, audit entries grow without bound
  *     and the only recovery is an explicit operator prune.
- *   - `resources/auditStore.ts:164-172` — the RocksDB branch calls `purgeLogs()` once and
- *     returns with no re-arm (F-218). That asymmetry is deliberately NOT asserted here; this
- *     file pins only the behavior that is correct today, so it stays green.
+ *   - The RocksDB branch has separate passive-rearm coverage in `audit-retention-rocks.test.ts`;
+ *     this file pins LMDB's per-entry cleanup behavior.
  *   - `resources/databases.ts:862` — `HARPER_STORAGE_ENGINE` wins over config, which is how the
  *     LMDB arm is selected (same mechanism as `eviction-secondary-index.test.ts`).
  *

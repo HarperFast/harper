@@ -117,7 +117,9 @@ const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
-let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
+// Also the RocksDB cadence floor: file eligibility changes only on rotation/flush, so RocksDB must
+// not inherit LMDB's millisecond-scale productive-pass retries.
+let DEFAULT_AUDIT_CLEANUP_DELAY = 10000;
 let timestampErrored = false;
 export function openAuditStore(rootStore) {
 	let auditStore;
@@ -146,6 +148,7 @@ export function openAuditStore(rootStore) {
 	rootStore.auditStore = auditStore;
 	auditStore.rootStore = rootStore;
 	auditStore.tableStores = [];
+	const isRocksTransactionLogStore = auditStore instanceof RocksTransactionLogStore;
 	const deleteCallbacks = [];
 	auditStore.addDeleteRemovalCallback = function (tableId, table, callback) {
 		deleteCallbacks[tableId] = callback;
@@ -164,6 +167,7 @@ export function openAuditStore(rootStore) {
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
 	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	let cleanupStopped = false;
 	onStorageReclamation(rootStore.path, (priority) => {
 		cleanupPriority = priority; // update the priority
 		if (priority) {
@@ -181,13 +185,7 @@ export function openAuditStore(rootStore) {
 	 */
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
 		// Skip audit cleanup/purge in read-only mode
-		if (isReadOnlyMode()) return Promise.resolve();
-		if (auditStore instanceof RocksTransactionLogStore) {
-			auditStore.rootStore.purgeLogs({
-				before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
-			});
-			return Promise.resolve();
-		}
+		if (cleanupStopped || isReadOnlyMode()) return Promise.resolve();
 
 		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
 		// the pass we are about to cancel has not started, so its callers are handed over to this one
@@ -196,6 +194,7 @@ export function openAuditStore(rootStore) {
 		const resolution = new Promise<void>((resolve) => {
 			pendingCleanupResolve = resolve;
 			pendingCleanup = setTimeout(async () => {
+				pendingCleanup = null;
 				pendingCleanupResolve = null; // started, so a later schedule can no longer cancel this pass
 				// claim the serialization slot before yielding: assigning it after the await lets every
 				// pass released by the same resolution run concurrently over the same range
@@ -203,7 +202,7 @@ export function openAuditStore(rootStore) {
 				lastCleanupResolution = resolution;
 				await previousCleanup;
 				// query for audit entries that are old
-				if (auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
+				if (cleanupStopped || auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
 					// nothing to clean up and nothing to reschedule, but leaving `resolution` pending would
 					// wedge the loop permanently: it is now the resolution every later pass awaits
 					resolve();
@@ -212,24 +211,30 @@ export function openAuditStore(rootStore) {
 				let deleted = 0;
 				let lastKey: any;
 				try {
-					for (const auditRecord of auditStore.getRange({
-						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
-						snapshot: false,
-						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
-					})) {
-						try {
-							// awaited so a rejection (not just a synchronous throw) is caught here instead of
-							// escaping as an unhandled rejection once a later iteration's promise replaces this one
-							await removeAuditEntry(auditStore, auditRecord);
-						} catch (error) {
-							harperLogger.warn('Error removing audit entry', error);
-						}
-						lastKey = auditRecord.key;
-						await new Promise(setImmediate);
-						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
-							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-							auditCleanupDelay = 10; // and keep trying very soon
-							break;
+					if (isRocksTransactionLogStore) {
+						auditStore.purgeLogs({
+							before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
+						});
+					} else {
+						for (const auditRecord of auditStore.getRange({
+							start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
+							snapshot: false,
+							end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+						})) {
+							try {
+								// awaited so a rejection (not just a synchronous throw) is caught here instead of
+								// escaping as an unhandled rejection once a later iteration's promise replaces this one
+								await removeAuditEntry(auditStore, auditRecord);
+							} catch (error) {
+								harperLogger.warn('Error removing audit entry', error);
+							}
+							lastKey = auditRecord.key;
+							await new Promise(setImmediate);
+							if (++deleted >= MAX_DELETES_PER_CLEANUP) {
+								// limit the amount we cleanup per event turn so we don't use too much memory/CPU
+								auditCleanupDelay = 10; // and keep trying very soon
+								break;
+							}
 						}
 					}
 				} catch (error) {
@@ -243,7 +248,12 @@ export function openAuditStore(rootStore) {
 					// serialization barrier every later pass awaits, and never settling it wedges the
 					// cleanup loop for the life of the store.
 					resolve();
-					if (deleted === 0) {
+					if (isRocksTransactionLogStore) {
+						auditCleanupDelay = Math.max(
+							DEFAULT_AUDIT_CLEANUP_DELAY,
+							Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
+						);
+					} else if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
 						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
 						// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
@@ -255,7 +265,13 @@ export function openAuditStore(rootStore) {
 						// and do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
-					scheduleAuditCleanup();
+					if (
+						!cleanupStopped &&
+						(!isRocksTransactionLogStore || getWorkerIndex() === getWorkerCount() - 1) &&
+						(!isRocksTransactionLogStore || !pendingCleanupResolve)
+					) {
+						scheduleAuditCleanup();
+					}
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
 			}, auditCleanupDelay).unref();
@@ -264,6 +280,14 @@ export function openAuditStore(rootStore) {
 		return resolution;
 	}
 	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
+	auditStore.stopAuditCleanup = function () {
+		cleanupStopped = true;
+		clearTimeout(pendingCleanup);
+		pendingCleanup = null;
+		pendingCleanupResolve?.();
+		pendingCleanupResolve = null;
+		auditStore.stopPurgeNotifications?.();
+	};
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup();
 	}
@@ -330,7 +354,10 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
 export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
 	if (isReadOnlyMode()) return [];
-	return rootStore.purgeLogs({ before: Date.now() - auditRetention });
+	const auditStore = (rootStore as any).auditStore;
+	return auditStore instanceof RocksTransactionLogStore
+		? auditStore.purgeLogs({ before: Date.now() - auditRetention })
+		: rootStore.purgeLogs({ before: Date.now() - auditRetention });
 }
 
 const HAS_RECORD = 16;

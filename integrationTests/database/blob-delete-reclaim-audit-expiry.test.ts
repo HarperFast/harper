@@ -3,7 +3,7 @@
  * audit-log expiry when using RocksDB audit store").
  *
  * #708's claim: `scheduleAuditCleanup()` (resources/auditStore.ts) branches on the audit
- * store type; for RocksDB it calls `rootStore.purgeLogs()` and returns WITHOUT ever calling
+ * store type; for RocksDB it calls `rootStore.purgeLogs()` WITHOUT ever calling
  * `removeAuditEntry()` — the function that invokes the blob-file delete callbacks — so blob
  * files supposedly accumulate forever once a blob-bearing record is deleted.
  *
