@@ -285,51 +285,36 @@ jobs:
           # main's own commits — which would then be replayed onto the release
           # branch as if they were the author's.
           MERGE_BASE=$(git merge-base origin/main "$HEAD_SHA")
-
-          # ── Determine commits to pick ───────────────────────────────────
+          PARENT_COUNT=0
           if [ "$IS_MERGED" = "true" ]; then
             PARENT_COUNT=$(git cat-file -p "$MERGE_SHA" | grep -c "^parent ")
-            # Is MERGE_SHA a squash of the whole PR, or the tail of a rebase?
-            # Compare file sets, not patch ids: a patch id shifts whenever main
-            # moved under the PR, which is precisely when this matters. A squash
-            # touches exactly the files the PR touched; a rebase's last commit
-            # touches only its own subset. A single-commit PR is the same commit
-            # either way.
-            PR_FILES=$(git diff --name-only "$MERGE_BASE" "$HEAD_SHA" | sort | tr '\n' ' ')
-            MERGE_FILES=$(git diff --name-only "${MERGE_SHA}^" "$MERGE_SHA" | sort | tr '\n' ' ')
-            PR_COMMITS=$(git rev-list --count --no-merges "${MERGE_BASE}..${HEAD_SHA}")
-            if [ "$PARENT_COUNT" -gt 1 ]; then
-              # True merge commit: cherry-pick it directly with -m 1
-              PICK_FLAGS="-m 1"
-              PICK_SHAS="$MERGE_SHA"
-            elif [ "$PR_COMMITS" -le 1 ] || { [ -n "$PR_FILES" ] && [ "$PR_FILES" = "$MERGE_FILES" ]; }; then
-              # Squash merge: this one commit already reproduces the PR's whole
-              # net change, including any conflict resolution that existed only
-              # inside a merge commit on the branch. Replaying the branch's own
-              # commits instead would drop that resolution.
-              PICK_FLAGS=""
-              PICK_SHAS="$MERGE_SHA"
-            else
-              # Rebase merge: MERGE_SHA is only the last rebased commit, so the
-              # earlier ones would be silently skipped if we picked it alone.
-              PICK_FLAGS=""
-              PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
-              EXCLUDED_MERGES=$(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
-              if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
-                PICK_SHAS="$MERGE_SHA"
-              fi
-            fi
+          fi
+
+          # ── Determine commits to pick ───────────────────────────────────
+          #
+          # No merge-method inference. Whether GitHub squashed or rebased this
+          # PR is not recoverable from the commit graph — a squash and a rebase
+          # whose commits touch one file set are indistinguishable by file set,
+          # and patch ids shift whenever main moved under the PR. Guessing wrong
+          # either drops commits or replays main's. So always replay the PR's
+          # own non-merge commits, and treat an excluded merge as a case for a
+          # human rather than something to infer around.
+          if [ "$IS_MERGED" = "true" ] && [ "$PARENT_COUNT" -gt 1 ]; then
+            # The PR was merged with a merge commit: it IS the change.
+            PICK_FLAGS="-m 1"
+            PICK_SHAS="$MERGE_SHA"
           else
-            # Open PR: pick the commit range merge_base..HEAD. Merge commits
-            # carry main's changes rather than the author's and cannot be picked
-            # without -m, so they are excluded here.
             PICK_FLAGS=""
             PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
             EXCLUDED_MERGES=$(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
             if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
-              echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
-              echo "no_op=true" >> "$GITHUB_OUTPUT"
-              exit 0
+              if [ "$IS_MERGED" = "true" ]; then
+                PICK_SHAS="$MERGE_SHA"
+              else
+                echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
+                echo "no_op=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
             fi
           fi
           echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
@@ -402,7 +387,7 @@ jobs:
 
       # ── Merged path: fast-forward release branch ────────────────────────
       - name: Merge into release branch
-        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.excluded_merges == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -430,6 +415,35 @@ jobs:
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 1
           fi
+
+      # ── Held: commits were excluded, so a human decides whether to land ─
+      #
+      # A merge commit cannot be replayed without -m and carries main's changes
+      # rather than the author's, so it is not in the pick list. If it resolved
+      # a conflict, that resolution exists nowhere else and this branch does not
+      # have it — which is not something to auto-land on a release branch.
+      - name: Report held for review
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.excluded_merges != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ steps.pick.outputs.pr_title }}
+          EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
+        run: |
+          set -euo pipefail
+          BRANCH="${{ steps.pick.outputs.branch }}"
+          HELD_PR_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --base "$RELEASE_BRANCH" --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
+          if [ -z "$HELD_PR_URL" ] || [ "$HELD_PR_URL" = "null" ]; then
+            HELD_PR_URL=$(gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base "$RELEASE_BRANCH" \
+              --head "$BRANCH" \
+              --title "cherry-pick: ${PR_TITLE} (review → ${RELEASE_BRANCH})" \
+              --body "$(printf 'Cherry-pick of PR #%s onto `%s` applied cleanly, but the PR contained merge commit(s) that cannot be replayed: `%s`.\n\nIf any of them resolved a conflict, that resolution is not on this branch. Confirm the change is complete, then merge this PR.\n' \
+                "$PR_NUMBER" "$RELEASE_BRANCH" "$EXCLUDED_MERGES")")
+          fi
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nThe picks applied cleanly, but this PR contains merge commit(s) that cannot be replayed: `%s`\n\nA merge that resolved a conflict holds content found nowhere else, so `%s` was **not** updated automatically. Review and merge: %s\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$EXCLUDED_MERGES" "$RELEASE_BRANCH" "$HELD_PR_URL")
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Conflict path: post sticky comment, @-mention Claude ────────────
       - name: Report conflict
