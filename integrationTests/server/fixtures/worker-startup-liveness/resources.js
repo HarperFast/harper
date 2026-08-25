@@ -3,12 +3,14 @@
 // harper#2312.
 import { isMainThread } from 'node:worker_threads';
 
-if (!isMainThread) {
-	await new Promise((resolve) => setTimeout(resolve, 2500).unref());
-}
-
+// Declared before the await: Bun's loader reads the module namespace while evaluation is
+// suspended at the top-level await, and a class declared after it would still be in its TDZ.
 export class LivenessProbe extends Resource {
 	async get() {
 		return { alive: true };
 	}
+}
+
+if (!isMainThread) {
+	await new Promise((resolve) => setTimeout(resolve, 2500).unref());
 }
