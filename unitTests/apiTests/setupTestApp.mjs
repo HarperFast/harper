@@ -75,7 +75,6 @@ export async function setupTestApp() {
 	// exit if it is already setup or we are running in the browser
 	if (typeof process === 'undefined') return createdRecords;
 	let path = setupTestDBPath();
-	// seed the isolated system database (tables, admin user, certs) the server boot expects
 	await ensureSystemTables();
 
 	if (!serverStarted) {

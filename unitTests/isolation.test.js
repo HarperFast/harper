@@ -1,8 +1,7 @@
 'use strict';
 
-// Regression coverage for the per-PID root contract mocha.init.js establishes (see its
-// header). The spawned-child test is the load-bearing one: a fresh process with hostile
-// env vars, where no earlier suite can have repaired state before the assertions.
+// Regression coverage for the per-PID root contract mocha.init.js establishes — see its
+// header comment for the contract.
 
 const assert = require('node:assert');
 const path = require('node:path');
@@ -37,11 +36,18 @@ describe('unit-test per-PID root isolation', () => {
 		const [childPid, storageEnv, schemasEnv, hdbRoot, storagePath, systemRoot] = JSON.parse(
 			result.stdout.trim().split('\n').pop()
 		);
-		require('fs-extra').removeSync(path.join(__dirname, 'envDir', String(childPid)));
+		// assert against the child's own pid dir: the parent's root also lives under envDir
+		// and is inherited via ROOTPATH, so an envDir-wide check could not catch a child
+		// resolving into the parent's root
+		const childRoot = path.join(__dirname, 'envDir', String(childPid));
+		require('fs-extra').removeSync(childRoot);
 		assert.strictEqual(storageEnv, null);
 		assert.strictEqual(schemasEnv, null);
 		for (const resolved of [hdbRoot, storagePath, systemRoot]) {
-			assert.ok(typeof resolved === 'string' && resolved.startsWith(ENV_DIR_PATH), String(resolved));
+			assert.ok(
+				typeof resolved === 'string' && (resolved === childRoot || resolved.startsWith(childRoot + path.sep)),
+				String(resolved)
+			);
 		}
 	});
 

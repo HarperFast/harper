@@ -307,7 +307,9 @@ export function initTestEnvironment(testConfigObj: any = {}) {
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, path.join(TEST_HDB_PATH, 'log'));
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, TEST_HDB_PATH);
-		setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, TEST_HDB_PATH);
+		// same storage layout the unit-test preload pins (see unitTests/mocha.init.js): a
+		// re-init through this function must not detach databases seeded under <root>/database
+		setProperty(hdbTerms.CONFIG_PARAMS.STORAGE_PATH, path.join(TEST_HDB_PATH, 'database'));
 
 		if (https_enabled) {
 			setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, get(hdbTerms.CONFIG_PARAMS.HTTP_PORT));
