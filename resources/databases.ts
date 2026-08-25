@@ -2090,6 +2090,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				continue;
 			}
 
+			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
+
 			if (origin === 'cluster' && attributeDescriptor) {
 				// An existing descriptor is a local declaration this caller may not have seen yet, so it wins
 				// over the incoming definition and is never written back from it.
@@ -2129,7 +2131,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 
 			// note that non-indexed attributes do not need a dbi
-			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
 			// Some index options affect only search, not the stored structure (e.g. HNSW's
 			// efConstructionSearch). Changing those should persist the new metadata but NOT trigger a
 			// reindex. A custom index declares such keys via a static `searchOnlyOptions`.

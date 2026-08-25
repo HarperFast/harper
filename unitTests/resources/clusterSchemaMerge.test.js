@@ -282,6 +282,42 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
+	it('keeps a legacy (v4-era) index descriptor registered', async () => {
+		const Legacy = table({
+			table: 'ClusterMergeLegacy',
+			database: 'test',
+			schemaDefined: false,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'tag', type: 'String', indexed: true },
+			],
+		});
+		await catalogFlushed(Legacy);
+		// a descriptor written by harperdb 4.x: the index is implied by `attribute`, with no `indexed`
+		const key = 'ClusterMergeLegacy/tag';
+		const legacyDescriptor = { ...Legacy.dbisDB.getSync(key), attribute: 'tag' };
+		delete legacyDescriptor.name;
+		delete legacyDescriptor.indexed;
+		const written = Legacy.dbisDB.put(key, legacyDescriptor);
+		if (written?.then) await written;
+		delete Legacy.indices.tag; // a worker that has not opened this index yet
+
+		const AfterPeer = table({
+			table: 'ClusterMergeLegacy',
+			database: 'test',
+			schemaDefined: false,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'tag', type: 'String', indexed: true },
+			],
+			origin: 'cluster',
+		});
+		assert.ok(
+			AfterPeer.indices.tag,
+			'a legacy descriptor, which implies the index rather than declaring it, lost its index registration'
+		);
+	});
+
 	it('local schema authoring still removes attributes it no longer declares', async () => {
 		table({
 			table: 'ClusterMergeLocal',
