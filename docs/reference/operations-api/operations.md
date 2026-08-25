@@ -679,7 +679,7 @@ Consequences worth planning around:
 - **A tag-triggered release cannot pin `workflow_ref`**, since the tag is unknown when the policy is written. Pin `workflow_path` instead — Harper derives it from `workflow_ref` by removing the ref — and gate on `environment`.
 - **`ref_type: tag` is deliberately not accepted as a ref gate.** Anyone with push access can create a tag.
 - **`sub` is not accepted as a pin.** It varies by trigger, and its format changed for repositories created after 2026-07-15 (immutable subjects embed owner and repository ids), so a policy pinning it would have to handle two shapes indefinitely.
-- **`job_workflow_ref` pins the workflow but does not gate the ref.** In a reusable workflow it names the reusable workflow that ran, not the caller that invoked it, and its `@ref` suffix is that workflow's own branch — constant however it is called. Accepting it as a ref gate would admit any branch of any repository that references the reusable workflow. Pin the workflow with it if you like, then gate the ref with `workflow_ref`, `ref`, or `environment`.
+- **`job_workflow_ref` pins the workflow but does not gate the ref.** In a reusable workflow, it names the reusable workflow that ran, not the caller that invoked it, and its `@ref` suffix is that workflow's own branch — constant however it is called. Accepting it as a ref gate would admit any branch of any repository that references the reusable workflow. Pin the workflow with it if you like, then gate the ref with `workflow_ref`, `ref`, or `environment`.
 - **`pull_request_target` runs are denied** unless the policy explicitly constrains `event_name`. Such a run executes the base repository's workflow, with its secrets, while a fork controls the checked-out code. A plain `pull_request` run from a fork cannot mint at all, since it gets no `id-token: write`.
 
 ##### Other issuers
@@ -716,7 +716,7 @@ The operation token is valid for **one hour** — long enough to cover a slow de
 **Every rejection returns the same message.** The endpoint is unauthenticated, so a caller told which check failed could enumerate a policy one claim at a time. The specific reason is written to the `oidc-trust` logger, which is where to look when a workflow that should match does not.
 :::
 
-**An identity token can be exchanged once.** Harper records a SHA-256 fingerprint of each spent token in `system.hdb_oidc_token_use`, expiring with the token itself, so the table stays proportional to in-flight tokens and never holds a credential. The record is written _before_ the operation token is minted: if minting then fails the identity token is burned, costing a CI re-run, where the reverse order would leave a spendable token behind.
+**An identity token can be exchanged once.** Harper records a SHA-256 fingerprint of each spent token in `system.hdb_oidc_token_use`, expiring with the token itself, so the table stays proportional to in-flight tokens and never holds a credential. The record is written _before_ the operation token is minted: if minting then fails, the identity token is burned, costing a CI re-run, where the reverse order would leave a spendable token behind.
 
 That replay check is replicated, but replication is asynchronous, so two simultaneous replays against **different nodes** can both succeed. This is not a privilege escalation — whoever holds the token could obtain one operation token regardless — and what it does stop is the realistic case: a token that leaks after a legitimate run and is reused inside its window.
 
