@@ -70,6 +70,36 @@ async function nonOverlappingRestart() {
 	process.stdout.write(`${JSON.stringify({ starts, workersAfterShutdown: workers.length })}\n`);
 }
 
+// The production ordering from #1585: bin/restart.ts latches first, then tears down across
+// closeServers()/cleanupChildrenProcesses(). A component-watcher reload or queued requestRestart
+// landing in that window must not reload root components, bump the restart number, or respawn.
+async function lateRestart() {
+	let starts = 0;
+	const worker = startWorker(require.resolve('./terminalShutdownWorker.cjs'), {
+		name: 'http',
+		onStarted() {
+			starts++;
+		},
+	});
+	await once(worker, 'message');
+	beginProcessShutdown();
+	const restartNumberBefore = manageThreads.restartNumber;
+	await restartWorkers('http');
+	const restartNumberChanged = manageThreads.restartNumber !== restartNumberBefore;
+	const startsAfterLateRestart = starts;
+	const workersAfterLateRestart = workers.length;
+	await shutdownWorkersNow();
+	process.stdout.write(
+		`${JSON.stringify({
+			restartNumberChanged,
+			starts,
+			startsAfterLateRestart,
+			workersAfterLateRestart,
+			workersAfterShutdown: workers.length,
+		})}\n`
+	);
+}
+
 async function scopedShutdown() {
 	const worker = startWorker(require.resolve('./terminalShutdownWorker.cjs'), {
 		autoRestart: false,
@@ -88,14 +118,13 @@ async function scopedShutdown() {
 }
 
 const mode = process.argv[2];
-const run =
-	mode === 'scoped'
-		? scopedShutdown
-		: mode === 'unexpected'
-			? unexpectedExit
-			: mode === 'non-overlapping'
-				? nonOverlappingRestart
-				: terminalShutdown;
+const modes = {
+	'scoped': scopedShutdown,
+	'unexpected': unexpectedExit,
+	'non-overlapping': nonOverlappingRestart,
+	'late-restart': lateRestart,
+};
+const run = modes[mode] ?? terminalShutdown;
 run().catch((error) => {
 	console.error(error);
 	process.exitCode = 1;

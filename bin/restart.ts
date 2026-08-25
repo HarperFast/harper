@@ -64,7 +64,14 @@ async function restart(req: any) {
 
 		setTimeout(async () => {
 			try {
-				if (process.env.HARPER_EXIT_ON_RESTART && !armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS))
+				// Platform check last so the watchdog is still attempted (and still warns) everywhere. Off
+				// Linux it can never arm, so escalating that permanent condition to error would only feed
+				// alerting with something no operator can act on.
+				if (
+					process.env.HARPER_EXIT_ON_RESTART &&
+					!armRestartExitWatchdog(hdbTerms.RESTART_TIMEOUT_MS) &&
+					process.platform === 'linux'
+				)
 					hdbLogger.error('Restart exit watchdog is unavailable; restart teardown is unbounded');
 				// It seems like you should just be able to start the other process and kill this process and everything should
 				// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
