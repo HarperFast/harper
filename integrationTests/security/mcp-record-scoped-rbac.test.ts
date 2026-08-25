@@ -439,7 +439,10 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 		log(`F-093 update_Doc admin row: isError=${result.isError} text=${resultText(result).slice(0, 120)}`);
 		const afterUpdate = await readDoc(ctx, ADMIN_ROW);
 		const payloadChanged = afterUpdate?.payload === 'LOWUSER-OVERWRITE';
-		const bypassed = !result.isError && payloadChanged;
+		// A bypass is unauthorized PERSISTENCE, whatever the tool reported: a handler that writes the
+		// row and then fails while formatting its reply (isError=true) is still a bypass, and gating the
+		// verdict on !isError would print ENFORCED one line before the assertion below fails.
+		const bypassed = payloadChanged;
 		recordFinding({
 			op: 'MCP update_Doc (admin row)',
 			principal: 'lowuser',
@@ -459,7 +462,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 		log(`F-093 delete_Doc admin row: isError=${result.isError} text=${resultText(result).slice(0, 120)}`);
 		const afterDelete = await readDoc(ctx, ADMIN_ROW);
 		const rowGone = afterDelete == null;
-		const bypassed = !result.isError && rowGone;
+		const bypassed = rowGone; // see update_Doc: persistence alone decides the verdict
 		recordFinding({
 			op: 'MCP delete_Doc (admin row)',
 			principal: 'lowuser',
@@ -483,7 +486,7 @@ suite('QA-408: verify harper#1522 closes F-092/F-093 MCP RBAC bypasses', (ctx: C
 		log(`F-093 create_Doc (owned by admin): isError=${result.isError} text=${resultText(result).slice(0, 120)}`);
 		const afterCreate = await readDoc(ctx, LOWUSER_CREATE_ID);
 		const rowCreated = afterCreate != null;
-		const bypassed = !result.isError && rowCreated;
+		const bypassed = rowCreated; // see update_Doc: persistence alone decides the verdict
 		recordFinding({
 			op: 'MCP create_Doc (owned by admin)',
 			principal: 'lowuser',

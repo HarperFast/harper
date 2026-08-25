@@ -46,6 +46,7 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as sleep } from 'node:timers/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -174,10 +175,16 @@ function consumeSse(urlStr: string, authHeaders: Record<string, string>, timeout
 			} as any,
 			(res) => {
 				result.status = res.statusCode ?? 0;
+				// Decode incrementally: a bare d.toString('utf8') per chunk corrupts any multi-byte
+				// character that straddles a TCP chunk boundary into U+FFFD.
+				const decoder = new StringDecoder('utf8');
 				res.on('data', (d: Buffer) => {
-					result.raw += d.toString('utf8');
+					result.raw += decoder.write(d);
 				});
-				res.on('end', () => finish('end'));
+				res.on('end', () => {
+					result.raw += decoder.end();
+					finish('end');
+				});
 				res.on('error', (e: Error) => finish('error', e));
 				res.on('close', () => finish('close'));
 			}
@@ -212,6 +219,16 @@ function readLogSafe(logPath: string): string {
 
 function countUncaught(log: string): number {
 	return log.split('\n').filter((l) => l.includes('uncaughtException')).length;
+}
+
+/**
+ * Asserting a NON-event: the worker logs an uncaughtException asynchronously, so reading hdb.log
+ * the instant the response closes can pass vacuously by simply outrunning the flush. Give the
+ * writer a bounded settle first — one of the cases AGENTS.md reserves a fixed sleep for.
+ */
+async function uncaughtAfterSettle(logPath: string): Promise<number> {
+	await sleep(1_000);
+	return countUncaught(readLogSafe(logPath));
 }
 
 // ── Suite ──────────────────────────────────────────────────────────────────────────────────
@@ -286,7 +303,7 @@ suite(
 
 				const probe = await waitForProbe(restBase, authHeaders, (snapshot) => snapshot.throwFirst.closed >= 1);
 				ok(probe && probe.throwFirst.closed >= 1, 'ThrowFirst generator should have completed cleanup');
-				const uncaughtAfter = countUncaught(readLogSafe(logPath));
+				const uncaughtAfter = await uncaughtAfterSettle(logPath);
 				strictEqual(
 					uncaughtAfter - uncaughtBefore,
 					0,
@@ -324,7 +341,7 @@ suite(
 
 				const probe = await waitForProbe(restBase, authHeaders, (snapshot) => snapshot.throwMid.closed >= 1);
 				ok(probe && probe.throwMid.closed >= 1, 'ThrowMid generator should have completed cleanup');
-				const uncaughtAfter = countUncaught(readLogSafe(logPath));
+				const uncaughtAfter = await uncaughtAfterSettle(logPath);
 				strictEqual(
 					uncaughtAfter - uncaughtBefore,
 					0,
@@ -381,6 +398,7 @@ suite(
 				);
 				ok(p!.clean.opened >= 1 && p!.clean.closed >= 1, 'CleanGen should show a matched open/close pair');
 
+				await sleep(1_000); // same non-event settle as the per-case sweeps above
 				const logAfter = readLogSafe(logPath);
 				const newLines = logAfter.slice(logBefore.length);
 				const newUncaught = newLines.split('\n').filter((l) => l.includes('uncaughtException')).length;

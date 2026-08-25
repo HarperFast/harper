@@ -53,7 +53,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
-import { readFileSync, existsSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -126,26 +126,60 @@ suite(
 			});
 		}
 
-		/** Count monitor firings so each trial must produce a new over-time event. */
+		/**
+		 * Count monitor firings so each trial must produce a new over-time event.
+		 *
+		 * Read only what was APPENDED since the last call: this runs in a 100ms poll loop for up to
+		 * 5s per trial, and re-reading (and re-scanning) every log file from byte 0 each time is
+		 * quadratic in the log Harper is actively writing. Per file we keep a byte offset plus the
+		 * trailing partial line, so a match split across two reads is still counted exactly once; a
+		 * file that shrank was rotated, so its cursor resets.
+		 */
+		const logCursors = new Map<string, { pos: number; carry: string }>();
+		let logMatches = 0;
 		function countOverTimeOccurrences(): number {
-			let logText = '';
 			const logDir = (ctx.harper as any).logDir as string | undefined;
 			if (logDir) {
 				for (const name of ['hdb.log', 'stdout.log', 'stderr.log']) {
 					const p = join(logDir, name);
-					if (existsSync(p)) {
-						try {
-							logText += readFileSync(p, 'utf8');
-						} catch {
-							/* ignore */
+					if (!existsSync(p)) continue;
+					const cursor = logCursors.get(p) ?? { pos: 0, carry: '' };
+					try {
+						const size = statSync(p).size;
+						if (size < cursor.pos) {
+							cursor.pos = 0;
+							cursor.carry = '';
 						}
+						if (size > cursor.pos) {
+							const fd = openSync(p, 'r');
+							try {
+								const buf = Buffer.allocUnsafe(size - cursor.pos);
+								const read = readSync(fd, buf, 0, buf.length, cursor.pos);
+								cursor.pos += read;
+								const text = cursor.carry + buf.subarray(0, read).toString('utf8');
+								const lastBreak = text.lastIndexOf('\n');
+								const complete = lastBreak === -1 ? '' : text.slice(0, lastBreak + 1);
+								cursor.carry = lastBreak === -1 ? text : text.slice(lastBreak + 1);
+								logMatches += complete.match(/Transaction was open too long/gi)?.length ?? 0;
+							} finally {
+								closeSync(fd);
+							}
+						}
+					} catch {
+						/* ignore */
 					}
+					logCursors.set(p, cursor);
 				}
 			}
-			return (
-				(logText.match(/Transaction was open too long/gi)?.length ?? 0) +
-				(procOutput.match(/Transaction was open too long/gi)?.length ?? 0)
-			);
+			// Also scan each file's un-terminated trailing line: the monitor's message is written to
+			// hdb.log before its newline is necessarily flushed, and a match parked in `carry` would
+			// otherwise stay invisible until the next line arrived. It moves into logMatches once the
+			// line completes, so this cannot double-count.
+			let carryMatches = 0;
+			for (const cursor of logCursors.values()) {
+				carryMatches += cursor.carry.match(/Transaction was open too long/gi)?.length ?? 0;
+			}
+			return logMatches + carryMatches + (procOutput.match(/Transaction was open too long/gi)?.length ?? 0);
 		}
 
 		async function dumpA(): Promise<Array<{ id: string; tag: string }>> {
