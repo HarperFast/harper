@@ -543,8 +543,32 @@ export function pipeBodyToResponse(
 		} else {
 			recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
 			recordAction(bytesSent, 'bytes-sent', handlerPath, method);
+			endConnectionIfClientRequestedClose(nodeResponse);
 		}
 	});
+}
+
+/**
+ * Close the connection of a client that sent `Connection: close`, once a streamed response has
+ * flushed. Bun's node:http never derives keep-alive from the request — `shouldKeepAlive` stays true
+ * for a `Connection: close` request, and neither a `Connection: close` response header nor
+ * `response.socket.end()` closes the connection — so a stream-ended response delivers its full body
+ * and terminal chunk and then leaves the client hanging until its own timeout (#2210). Ending the
+ * request's socket is the one thing that works on both runtimes; it flushes what's queued before the
+ * FIN, unlike a destroy. Node closes such a connection itself, so this only ever fires under Bun.
+ * The error path needs nothing: pipeline() destroys the response, which closes the connection on
+ * both runtimes.
+ */
+function endConnectionIfClientRequestedClose(nodeResponse: any) {
+	if (!isBun) return;
+	const nodeRequest = nodeResponse.req;
+	// HTTP/2 multiplexes streams over one connection, so there is no per-request socket to end
+	if (nodeRequest?.httpVersionMajor !== 1) return;
+	const connection = nodeRequest.headers?.connection;
+	if (!connection) return;
+	for (const token of connection.split(',')) {
+		if (token.trim().toLowerCase() === 'close') return nodeRequest.socket?.end();
+	}
 }
 
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {

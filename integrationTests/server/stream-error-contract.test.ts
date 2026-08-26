@@ -23,6 +23,7 @@
  * Reproduction:
  *   Node: npm run test:integration -- "integrationTests/server/stream-error-contract.test.ts"
  *   uWS:  HARPER_UWS_HTTP=1 npm run test:integration -- "integrationTests/server/stream-error-contract.test.ts"
+ *   Bun:  HARPER_RUNTIME=bun npm run test:integration -- "integrationTests/server/stream-error-contract.test.ts"
  *
  * Each run prints a per-case capture table to stdout.
  */
@@ -39,10 +40,6 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'stream-error-contract');
 const skipSuite = process.platform === 'win32';
-const skipBunIterableRest =
-	process.env.HARPER_RUNTIME === 'bun'
-		? '#2210: Bun leaves finite iterable REST connections open after Connection: close'
-		: false;
 const VARIANT = process.env.HARPER_UWS_HTTP === '1' ? 'uws' : 'node';
 
 type Client = ReturnType<typeof createApiClient>;
@@ -365,17 +362,13 @@ suite(
 			assertCleanCompletion(cap);
 		});
 
-		test(
-			'control: IterHealth iterable-rest (default json) clean completion',
-			{ timeout: 20_000, skip: skipBunIterableRest },
-			async () => {
-				const cap = await captureWithLifecycle('iterHealth', () =>
-					rawCapture(restBase, '/IterHealth/', 'application/json', authHeader, 'iterable-rest', 'control')
-				);
-				captures.push(cap);
-				assertCleanCompletion(cap);
-			}
-		);
+		test('control: IterHealth iterable-rest (default json) clean completion', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterHealth', () =>
+				rawCapture(restBase, '/IterHealth/', 'application/json', authHeader, 'iterable-rest', 'control')
+			);
+			captures.push(cap);
+			assertCleanCompletion(cap);
+		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
 
@@ -437,20 +430,16 @@ suite(
 			assertMidStreamTermination(cap);
 		});
 
-		test(
-			'iterable-rest: mid-stream throw (2 of 5) -- raw byte capture',
-			{ timeout: 20_000, skip: skipBunIterableRest },
-			async () => {
-				const cap = await captureWithLifecycle('iterMidStream', () =>
-					rawCapture(restBase, '/IterMidStream/', 'application/json', authHeader, 'iterable-rest', 'mid-stream')
-				);
-				captures.push(cap);
-				console.log(
-					`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
-				);
-				assertMidStreamTermination(cap);
-			}
-		);
+		test('iterable-rest: mid-stream throw (2 of 5) -- raw byte capture', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterMidStream', () =>
+				rawCapture(restBase, '/IterMidStream/', 'application/json', authHeader, 'iterable-rest', 'mid-stream')
+			);
+			captures.push(cap);
+			console.log(
+				`[QA-890][iterable-rest/mid] status=${cap.status} totalBytes=${cap.totalBytes} decodedBody=${cap.decodedBody}`
+			);
+			assertMidStreamTermination(cap);
+		});
 
 		test('Z: liveness canary -- worker survived every throw shape above', { timeout: 30_000 }, async () => {
 			const health = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'canary');

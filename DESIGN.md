@@ -887,6 +887,29 @@ extensionModule.handleApplication` gate (`components/componentLoader.ts`) means 
 Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
 so ops responses **will** carry the headers there (benign).
 
+## Under Bun, the main HTTP port is served by `node:http`, not `Bun.serve`
+
+Worth knowing before debugging anything Bun-specific on the HTTP path: `getBunHTTPServer()` builds
+the `Bun.serve()` fetch config, but `onWebSocket()` calls `getHTTPServer()` unconditionally — it has
+a uWS branch and no Bun branch, because Bun native WebSockets are unimplemented (nothing ever sets
+`config.websocket`, so WS relies on the Node `ws` server attached to an `http.Server`). MQTT's
+`handleApplication` registers WS on the default port before REST's `httpServer()` call for that same
+port, so `httpServers[port]` is already a Node server by then and `getBunHTTPServer` early-returns
+without registering a serve config. The port is bound by `registerServer()`'s Node server via
+`listenOnPortsBun`'s trailing "non-HTTP servers" loop, and the fetch handler is never invoked for it
+(only the exclusive operations port reaches `Bun.serve`). Consequence: on Bun the `Request`/`Response`
+fetch path is dead code for the main port, and its divergences show up as `node:http`-emulation
+divergences instead.
+
+One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from the request. For a
+`Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
+header nor `response.socket.end()` closes the connection — a **stream-ended** response (an async
+source ended through `pipeline()`; a direct `response.end()` is fine) delivers its full body and
+terminal chunk, then hangs the client until its own timeout. `pipeBodyToResponse()` therefore ends
+`request.socket` itself when the client asked to close (`endConnectionIfClientRequestedClose`,
+`isBun`-gated, HTTP/1 only, clean path only — the error path already closes because `pipeline()`
+destroys the response). Ending the _request's_ socket is the only remedy that works on Bun.
+
 ## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
 
 npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
