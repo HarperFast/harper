@@ -47,7 +47,8 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `serverHelpers/Request.ts`                 | Wraps `IncomingMessage` with Harper-specific fields (user, response, headers).                                                                                                                                                                                                                                                                                                                                                                         |
 | `serverHelpers/Headers.ts`                 | Header mutation/merge utilities.                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `serverHelpers/contentTypes.ts`            | (de)serialization registry; `serialize`, `serializeMessage`, `getDeserializer`.                                                                                                                                                                                                                                                                                                                                                                        |
+| `serverHelpers/contentTypes.ts`            | (de)serialization registry; `serialize`, `serializeMessage`, `getMessageSerializer`, `getDeserializer`.                                                                                                                                                                                                                                                                                                                                                |
+| `serverHelpers/sharedMessageEncoding.ts`   | Per-message encoding shared across the subscribers of a topic — one serialization per (message, content type) and, for MQTT QoS 0, one PUBLISH packet per (payload, topic, protocol version). Keyed on the message object, which `transactionBroadcast` dispatches by identity to every subscription of a key. **Identity contract:** see below.                                                                                                       |
 | `serverHelpers/serverUtilities.ts`         | `OperationDefinition` and shared helpers.                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `serverHelpers/OperationFunctionObject.ts` | Wraps an operation handler with metadata.                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `serverHelpers/JSONStream.ts`              | Streaming JSON output for large responses.                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -58,6 +59,20 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `serverRegistry.ts`                        | Trivial registry export.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `status/`                                  | Server status reporting (cluster status, per-port info).                                                                                                                                                                                                                                                                                                                                                                                               |
 
+> **Subscription message identity contract.** `sharedMessageEncoding.ts` encodes a message once and
+> reuses the bytes for every subscriber of the topic, keyed on the message object's identity. That is
+> sound for every internal producer because each yields a fresh object per version — `transactionBroadcast`
+> hands one `auditRecord` to every subscription, `auditStore`'s `getValue` memoizes the decode in its
+> closure, and `primaryStore.getEntry` is version-guarded — so identity implies equal content. Pinned by
+> `unitTests/resources/subscriptionValueIdentity.test.js`.
+>
+> Rather than leave that as a rule custom Resources have to know, the event's record `version` is part
+> of the cache key: `DurableSubscriptionsSession` forwards it to the delivery listener, and an entry
+> whose version does not match is re-encoded. A Resource that reuses one envelope but advances the
+> version is therefore correct, not merely disallowed; one that supplies no version is not shared at
+> all. Only mutating an object _without_ changing its version can serve stale bytes, and that is
+> indistinguishable from re-sending the same message.
+
 ### Threads
 
 | File                       | Purpose                                                  |
@@ -67,6 +82,12 @@ A request entering `http.ts` does **not** go through Fastify. The two `handleApp
 | `threads/threadServer.js`  | Worker entry point — receives sockets via IPC.           |
 | `threads/itc.js`           | Inter-thread comms primitives.                           |
 | `transactionLogCooling.ts` | Main-thread timer that cools transaction-log mmaps.      |
+
+Process-wide shutdown begins by calling `beginProcessShutdown()` in `threads/manageThreads.js`.
+Once set, this terminal state prevents every worker replacement path and makes new `startWorker()`
+calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it.
+`shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
+and it force-terminates the remaining worker set rather than waiting for application drain hooks.
 
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
 >
@@ -148,6 +169,16 @@ must run on a worker, `registeredOperations.ts` carries that state in the same-p
 separately from the structured-cloned body. Never attach trusted dispatch state to an operation
 payload.
 
+`server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
+registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
+during registration exists only in the worker that registered. The bridge carries two such facts
+today: name→thread routing (for execution forwarding) and `grantable` (so `validateOperations` on
+main will accept the name in a role's `operations` allowlist, for add_role/alter_role, impersonation,
+and OIDC trust policies). Adding a third main-thread consumer of a worker-registered fact means
+extending that message, not reading a registry that main never populated. Grantability is safe to
+mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
+`chooseOperation`.
+
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
@@ -176,6 +207,7 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 | Where is the REST request → Resource dispatch?                            | `REST.ts → http()`                                                                                                                                                        |
 | Where is the operations API request handled?                              | `operationsServer.ts → handler`                                                                                                                                           |
 | How are content types (de)serialized?                                     | `serverHelpers/contentTypes.ts`                                                                                                                                           |
+| Why doesn't every MQTT subscriber re-serialize the message it receives?   | `serverHelpers/sharedMessageEncoding.ts` (memoized on the message object the fan-out shares); consumed by the outbound listener in `mqtt.ts`                              |
 | Where do durable subscriptions live?                                      | `DurableSubscriptionsSession.ts`                                                                                                                                          |
 | How are sockets dispatched to worker threads?                             | `threads/socketRouter.ts`                                                                                                                                                 |
 | Where is the Operations API wired into Fastify?                           | `operationsServer.ts → buildServer`                                                                                                                                       |

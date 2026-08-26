@@ -85,6 +85,17 @@ export class IndexRebuildingError extends ServerError {
 	}
 }
 
+export class UpdateAttributesLockTimeoutError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string) {
+		super(message, 503);
+		this.name = 'UpdateAttributesLockTimeoutError';
+		this.code = 'UPDATE_ATTRIBUTES_LOCK_TIMEOUT';
+		this.retryable = true;
+	}
+}
+
 /** One structured validation failure. `path` is dot-scoped (`body.price`, `query.sort`, `params.id`). */
 export interface ValidationIssue {
 	/** Where the failure occurred, e.g. `body.price`, `query.expand`, `params.id`. */

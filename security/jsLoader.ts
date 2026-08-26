@@ -19,6 +19,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type {} from 'ses';
 import {
+	existsSync,
 	mkdirSync,
 	readFileSync,
 	writeFileSync,
@@ -174,13 +175,13 @@ function walkExportsConditions(entry: unknown, conditions: readonly string[]): s
 
 /**
  * Resolve a bare package specifier to a file:// URL using the package's exports map
- * with ESM import conditions. Used as a fallback when createRequire().resolve() throws
- * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
- * conditions and no "require").
+ * with ESM import conditions. Used as a fallback when the runtime's CommonJS resolver
+ * cannot match a pure-ESM package (exports map with only "import" conditions).
  */
 function resolveESMPackageExports(
 	specifier: string,
-	fromDir: string
+	fromDir: string,
+	preferRequireConditions = false
 ): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
@@ -223,11 +224,23 @@ function resolveESMPackageExports(
 
 		if (!entry) return null;
 
-		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
+		const relative = preferRequireConditions
+			? (walkExportsConditions(entry, ['bun', 'require', 'node', 'default']) ??
+				walkExportsConditions(entry, ['bun', 'import', 'node', 'default']))
+			: walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
 
+		let resolvedPath = join(pkgRoot, relative);
+		if (preferRequireConditions && !existsSync(resolvedPath)) {
+			// The runtime's preferred condition (Bun's `require`) named a target that isn't
+			// actually on disk -- fall back to the plain ESM `import` condition instead of
+			// failing resolution outright.
+			const importRelative = walkExportsConditions(entry, ['import', 'node', 'default']);
+			if (importRelative) resolvedPath = join(pkgRoot, importRelative);
+		}
+
 		return {
-			resolvedUrl: pathToFileURL(realpathSync(join(pkgRoot, relative))).toString(),
+			resolvedUrl: pathToFileURL(realpathSync(resolvedPath)).toString(),
 			packageJsonUrl: pathToFileURL(realpathSync(packageJsonPath)).toString(),
 			packageJsonSource,
 		};
@@ -325,9 +338,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				const referrerDir = resolveReferrer.startsWith('file:')
 					? dirname(fileURLToPath(resolveReferrer))
 					: dirname(resolveReferrer);
-				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
+				const esmResolved = resolveESMPackageExports(specifier, referrerDir, (err as any)?.code === 'MODULE_NOT_FOUND');
 				if (esmResolved) {
 					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
+					scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
 					return esmResolved.resolvedUrl;
 				}
 			}

@@ -9,6 +9,7 @@ const sandbox = sinon.createSandbox();
 const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const registeredOperations = require('#src/server/serverHelpers/registeredOperations');
+const manageThreads = require('#src/server/threads/manageThreads');
 const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
 const { runWithDeployValidationGuard } = require('#src/server/serverHelpers/deployValidationState');
 const quota = require('#src/components/mcp/quota');
@@ -76,10 +77,8 @@ describe('Test serverUtilities.js module ', () => {
 
 		// The token scope's "can only ever subtract" invariant, asserted where it is ENFORCED rather
 		// than where it is computed (#2171/#2174). This is the front door for an export job carrying
-		// nested SQL: the job is gated here, before it is ever queued, and the check inside the job's
-		// own SQL execution is a dead branch (#2202). So this gate is the whole safety argument, and
-		// the rest of the scope suite only asserts that a denial object comes back — not that anyone
-		// throws on it.
+		// nested SQL: the job is gated here, before it is ever queued, and again inside the worker
+		// when it re-parses (#2202).
 		function exportJobRequest(tokenOperations, sql) {
 			const request = testUtils.deepClone(TEST_JSON_SUPER_USER);
 			request.operation = 'export_local';
@@ -110,6 +109,27 @@ describe('Test serverUtilities.js module ', () => {
 			assert.doesNotThrow(() =>
 				serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'SELECT * FROM data.dog'))
 			);
+		});
+
+		// evaluateSQL trusts a supplied parsed_sql_object verbatim, and export.ts hands the nested
+		// search_operation straight to it — so a body-supplied one carrying permissions_checked would
+		// execute an AST the worker never checked. The authorized `sql` string is what must survive.
+		it('discards a body-supplied parsed_sql_object on the nested search_operation', function () {
+			const request = exportJobRequest(['export_local'], 'SELECT * FROM data.dog');
+			request.search_operation.parsed_sql_object = {
+				variant: 'select',
+				permissions_checked: true,
+				ast: { statements: [{ forged: true }] },
+			};
+
+			serverUtilities.chooseOperation(request);
+
+			assert.strictEqual(
+				request.search_operation.parsed_sql_object,
+				undefined,
+				'a forged nested parsed_sql_object must not reach the job worker'
+			);
+			assert.strictEqual(request.search_operation.sql, 'SELECT * FROM data.dog');
 		});
 	});
 
@@ -221,6 +241,143 @@ describe('Test serverUtilities.js module ', () => {
 		});
 	});
 
+	// Only the receiving half is reachable here — announceRegisteredOperation returns early on the
+	// main thread, so integrationTests/components/registered-operation.test.ts owns the real hop.
+	describe('cross-thread grantable operation mirroring', function () {
+		const {
+			validateOperations,
+			registerGrantableOperation,
+			unregisterGrantableOperation,
+			unregisterWorkerGrantableOperation,
+		} = require('#src/utility/operationPermissions');
+		const GRANTABLE = 'test_cross_thread_grantable_op';
+		const PLAIN = 'test_cross_thread_plain_op';
+		const SHARED = 'test_cross_thread_shared_op';
+		const ROLLED = 'test_cross_thread_rolled_op';
+		const RETRACTED = 'test_cross_thread_retracted_op';
+		const ZOMBIE = 'test_cross_thread_zombie_op';
+		const FAILED_SEND = 'test_cross_thread_failed_send_op';
+		// Thread-exit tombstones are permanent and process-global, so synthetic ids must be ones the
+		// runtime will never assign to a real worker.
+		const DECLARING_THREAD = 9_000_061;
+		const ROUTING_THREAD = 9_000_062;
+		const DEAD_THREAD = 9_000_071;
+		const SENDER_THREAD = 9_000_081;
+
+		after(function () {
+			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND]) {
+				unregisterWorkerGrantableOperation(op);
+				unregisterGrantableOperation(op);
+			}
+		});
+
+		it('makes a worker-announced declared op grantable on the main thread', function () {
+			assert.notEqual(validateOperations([GRANTABLE]), null);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: GRANTABLE, grantable: true, originator: 31 },
+			});
+
+			assert.equal(validateOperations([GRANTABLE]), null, 'name should be grantable after the announcement');
+		});
+
+		it('leaves an op that declared no permission ungrantable', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: PLAIN, grantable: false, originator: 31 },
+			});
+
+			assert.notEqual(validateOperations([PLAIN]), null);
+			assert.equal(typeof registeredOperations.getRemoteOperationFunction(PLAIN), 'function');
+		});
+
+		it('keeps a main-thread registration of the same name independent of the worker mirror', function () {
+			// restartWorkers loads root components before draining old workers, so a startOnMainThread
+			// component can claim a name a retiring worker still offers.
+			registeredOperations.operationRegisteredHandler({
+				message: { name: SHARED, grantable: true, originator: 41 },
+			});
+			registerGrantableOperation(SHARED);
+
+			unregisterWorkerGrantableOperation(SHARED);
+			assert.equal(validateOperations([SHARED]), null, 'main-thread registration should survive worker revocation');
+
+			unregisterGrantableOperation(SHARED);
+			assert.notEqual(validateOperations([SHARED]), null, 'both marks gone should make it ungrantable again');
+		});
+
+		it('retracts grantability when a re-announcement drops the declared permission', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: RETRACTED, grantable: true, originator: 51 },
+			});
+			assert.equal(validateOperations([RETRACTED]), null);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: RETRACTED, grantable: false, originator: 51 },
+			});
+			assert.notEqual(validateOperations([RETRACTED]), null, 'the same thread withdrawing must retract its claim');
+		});
+
+		it('stops being grantable once the last declaring worker is gone, even while another still routes it', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ROLLED, grantable: true, originator: DECLARING_THREAD },
+			});
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ROLLED, grantable: false, originator: ROUTING_THREAD },
+			});
+			assert.equal(validateOperations([ROLLED]), null, 'still declared by the first thread');
+
+			manageThreads.notifyThreadExit(DECLARING_THREAD);
+
+			assert.notEqual(validateOperations([ROLLED]), null, 'no live worker declares it grantable any more');
+			assert.equal(
+				typeof registeredOperations.getRemoteOperationFunction(ROLLED),
+				'function',
+				'the surviving worker still routes it'
+			);
+		});
+
+		it('retracts grantability when a failed send prunes the declaring worker', async function () {
+			const originalThreads = global.threads;
+			global.threads = {
+				sendToThread() {
+					return false;
+				},
+			};
+			try {
+				registeredOperations.operationRegisteredHandler({
+					message: { name: FAILED_SEND, grantable: true, originator: SENDER_THREAD },
+				});
+				assert.equal(validateOperations([FAILED_SEND]), null);
+
+				const forward = registeredOperations.getRemoteOperationFunction(FAILED_SEND, true);
+				await assert.rejects(forward({ operation: FAILED_SEND }), /no worker thread is available/);
+
+				assert.notEqual(
+					validateOperations([FAILED_SEND]),
+					null,
+					'a dead port must retract the claim, not just the route'
+				);
+			} finally {
+				global.threads = originalThreads;
+			}
+		});
+
+		it('ignores an announcement that lost a race with its own thread exit', function () {
+			manageThreads.notifyThreadExit(DEAD_THREAD);
+
+			registeredOperations.operationRegisteredHandler({
+				message: { name: ZOMBIE, grantable: true, originator: DEAD_THREAD },
+			});
+
+			assert.notEqual(validateOperations([ZOMBIE]), null, 'a dead thread must not install a grant');
+			assert.equal(
+				registeredOperations.getRemoteOperationFunction(ZOMBIE),
+				undefined,
+				'nor a route nothing will ever clean up'
+			);
+		});
+	});
+
 	describe('operation authorization state', function () {
 		it('is scoped across awaits and restores nested authorization', async function () {
 			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
@@ -234,6 +391,40 @@ describe('Test serverUtilities.js module ', () => {
 				assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), true);
 			});
 			assert.strictEqual(operationAuthorizationState.isOperationAuthorizationBypassed(), false);
+		});
+
+		it('scopes the dispatched operation across awaits and concurrent runs', async function () {
+			const { runWithDispatchedOperation, getOperationAuthorizationState } = operationAuthorizationState;
+			const operationDuring = async (apiOperation) =>
+				runWithDispatchedOperation(apiOperation, async () => {
+					await Promise.resolve();
+					return getOperationAuthorizationState()?.apiOperation;
+				});
+
+			assert.deepStrictEqual(await Promise.all([operationDuring('export_local'), operationDuring('export_to_s3')]), [
+				'export_local',
+				'export_to_s3',
+			]);
+			assert.strictEqual(getOperationAuthorizationState()?.apiOperation, undefined);
+		});
+
+		it('keeps the dispatched operation across a nested enforced dispatch', async function () {
+			const { runWithDispatchedOperation, runWithOperationAuthorizationBypass, getOperationAuthorizationState } =
+				operationAuthorizationState;
+
+			// The enforced branch is not a bypass: a job handler dispatching a nested authorized
+			// operation must not lose the carrier, or its re-parsed SQL is judged as the inner `sql`.
+			const enforced = await runWithDispatchedOperation('export_local', () =>
+				runWithOperationAuthorizationBypass(false, () => getOperationAuthorizationState())
+			);
+			assert.strictEqual(enforced.bypassAuth, false);
+			assert.strictEqual(enforced.apiOperation, 'export_local');
+
+			const bypassed = await runWithDispatchedOperation('export_local', () =>
+				runWithOperationAuthorizationBypass(true, () => getOperationAuthorizationState())
+			);
+			assert.strictEqual(bypassed.bypassAuth, true);
+			assert.strictEqual(bypassed.apiOperation, 'export_local');
 		});
 	});
 
@@ -800,7 +991,15 @@ describe('Test serverUtilities.js module ', () => {
 			// Keep the process-global registries clean — these test-only ops shouldn't leak into other
 			// suites. registerOperation touches three globals (the op-function map plus verifyPerms'
 			// requiredPermissions and the grantable-ops set), so undo all three, not just the map.
-			for (const op of [SU_OP, OPEN_OP, 'test_name_pinning_op', 'shared_op_a', 'shared_op_b', 'dyn_grantable_op']) {
+			for (const op of [
+				SU_OP,
+				OPEN_OP,
+				'test_name_pinning_op',
+				'shared_op_a',
+				'shared_op_b',
+				'dyn_grantable_op',
+				'test_redeclared_op',
+			]) {
 				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
 				op_auth.unregisterOperationPermission(op);
 			}
@@ -833,6 +1032,50 @@ describe('Test serverUtilities.js module ', () => {
 			assert.notEqual(validateOperations(['dyn_grantable_op']), null); // unknown name before registration
 			server.registerOperation({ name: 'dyn_grantable_op', execute: async () => ({}), requiresSuperUser: true });
 			assert.equal(validateOperations(['dyn_grantable_op']), null); // grantable after registration
+		});
+
+		it('retracts the permission entry when a re-registration drops requiresSuperUser', function () {
+			// Declaration and enforcement must not disagree: main retracts the grantable mark on the
+			// re-announcement, so a role grant persisted while the op was declared must stop being
+			// honoured here too. Named after the op so verifyPerms resolves the stale entry if it
+			// survives — an anonymous handler would mask the bug rather than test it.
+			const op = 'test_redeclared_op';
+			// eslint-disable-next-line func-names
+			const named = {
+				[op]: async function () {
+					return {};
+				},
+			}[op];
+			server.registerOperation({ name: op, execute: named, requiresSuperUser: true });
+			assert.equal(validateOperations([op]), null, 'grantable while declared');
+			assert.equal(op_auth.verifyPerms(nonSuRequest(op, [op]), op), null, 'granted role may call it');
+
+			server.registerOperation({ name: op, execute: named });
+
+			assert.notEqual(validateOperations([op]), null, 'no longer grantable once undeclared');
+			let threw;
+			try {
+				op_auth.verifyPerms(nonSuRequest(op, [op]), op);
+			} catch (err) {
+				threw = err;
+			}
+			assert.ok(threw, 'a persisted grant must not survive the declaration being dropped');
+			assert.equal(threw.statusCode, 400);
+		});
+
+		it('does not strip a permission entry this API never registered', function () {
+			// Ownership protection, exercised against an independent registrant rather than a real
+			// built-in so the assertion does not depend on mutating shared dispatch state.
+			const op = 'test_independent_registrant_op';
+			op_auth.registerOperationPermission(op, { requiresSu: true });
+			try {
+				server.registerOperation({ name: op, execute: async () => ({}) });
+				assert.equal(validateOperations([op]), null, 'an entry this API did not create must survive');
+				assert.ok(op_auth.verifyPerms(nonSuRequest(op), op), 'and must still gate a non-super_user');
+			} finally {
+				op_auth.unregisterOperationPermission(op);
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(op);
+			}
 		});
 
 		it('does not touch handler name or register perms when requiresSuperUser is omitted (opt-in)', function () {

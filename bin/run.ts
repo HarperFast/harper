@@ -23,6 +23,7 @@ import { compactOnStart, migrateOnStart } from './copyDb.ts';
 import minimist from 'minimist';
 import * as keys from '../security/keys.ts';
 import { startHTTPThreads } from '../server/threads/socketRouter.ts';
+import { beginProcessShutdown } from '../server/threads/manageThreads.js';
 import * as hdbInfoController from '../dataLayer/hdbInfoController.ts';
 import { isReadOnlyMode } from '../resources/databases.ts';
 import { getThisNodeName, getThisNodeHostname } from '../server/nodeName.ts';
@@ -51,21 +52,25 @@ function addUnhandleRejectionListener() {
 function addExitListeners() {
 	if (!skipExitListeners) {
 		const removeHdbPid = () => {
-			fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
+			try {
+				fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
+			} catch (error) {
+				hdbLogger.error('Unable to remove the Harper pid file during shutdown', error);
+			}
+		};
+		// Forward defence, not load-bearing today: nothing below can reach a worker start.
+		process.on('exit', () => {
+			beginProcessShutdown();
+			removeHdbPid();
+		});
+		const exit = () => {
+			beginProcessShutdown();
+			removeHdbPid();
 			process.exit(0);
 		};
-		process.on('exit', () => {
-			removeHdbPid();
-		});
-		process.on('SIGINT', () => {
-			removeHdbPid();
-		});
-		process.on('SIGQUIT', () => {
-			removeHdbPid();
-		});
-		process.on('SIGTERM', () => {
-			removeHdbPid();
-		});
+		process.on('SIGINT', exit);
+		process.on('SIGQUIT', exit);
+		process.on('SIGTERM', exit);
 	}
 }
 
@@ -262,6 +267,7 @@ async function launch(exit = true) {
 	}
 }
 
+export { addExitListeners };
 export { launch };
 export { main };
 export { startupLog };
@@ -280,6 +286,8 @@ function startupLog(portResolutions: any) {
 	if (isReadOnlyMode()) {
 		logMsg += `${pad('Mode:')}${chalk.yellow('READ-ONLY')}\n`;
 	}
+
+	logMsg += `${pad('Version:')}${packageJson.version}\n`;
 
 	logMsg += `${pad('Hostname:')}${getThisNodeName()}\n`;
 

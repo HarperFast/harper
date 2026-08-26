@@ -517,6 +517,7 @@ const rocksDBDatabaseLevelStats = new Set<string>([
 	'numberKeysWritten',
 	'numberReseeksIteration',
 	'numRunningFlushes',
+	'numSnapshots',
 	'oldestSnapshotTime',
 	'stallMicros',
 	'txnOverheadMutexOldCommitMap',
@@ -547,6 +548,12 @@ type RocksDBStats = {
 	numberKeysWritten: number;
 	numberReseeksIteration: number;
 	numRunningFlushes: number;
+	// Live RocksDB snapshots for this database. In-flight reads legitimately hold one, so what
+	// matters is a count that stays nonzero while nothing is reading: obsolete versions behind the
+	// oldest snapshot cannot be discarded for as long as it is held (#2107). oldestSnapshotTime
+	// alone can't show accrual — it stops moving once the oldest snapshot is pinned.
+	// Optional: rocksdb-js 2.7.1 does not yet report rocksdb.num-snapshots.
+	numSnapshots?: number;
 	oldestSnapshotTime: number;
 	stallMicros: number;
 	txnOverheadMutexOldCommitMap: number;

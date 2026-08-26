@@ -282,15 +282,23 @@ export function openAuditStore(rootStore) {
 }
 
 export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
+	let tombstoneRemoval: Promise<void> | undefined;
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
 		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
 		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
-			auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
+			// a failed tombstone removal doesn't mean the audit entry removal failed — only
+			// auditStore.remove() below decides this function's outcome
+			tombstoneRemoval = new Promise<void>((resolve) => {
+				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version));
+			}).catch((error) => {
+				harperLogger.warn('Error removing deleted record while removing its audit entry', error);
+			});
 	}
-	return auditStore.remove(auditRecord.key);
+	const auditRemoval = auditStore.remove(auditRecord.key);
+	return tombstoneRemoval ? Promise.all([tombstoneRemoval, auditRemoval]).then(() => undefined) : auditRemoval;
 }
 
 function updateLastRemoved(auditStore, lastKey) {

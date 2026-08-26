@@ -6,11 +6,13 @@ const {
 	readAuditEntry,
 	createAuditEntry,
 	transactionKeyEncoder,
+	removeAuditEntry,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor');
+const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
 	let AuditedTable;
@@ -125,6 +127,473 @@ describe('Audit log', () => {
 		// verify that the twice-written entry was not removed
 		assert.equal(AuditedTable.primaryStore.getEntry(2)?.value?.name, 'two-changed');
 	});
+	// Regression test for harper#F-264 (see DESIGN.md's audit-entry-removal-loop invariant).
+	// Run with both a throwing and a non-throwing failure logger: with a throwing one, an
+	// implementation that counted the removal *before* logging its failure would still pass
+	// (the injected throw preempts the count), so only the non-throwing pass pins the count.
+	for (const loggingThrows of [true, false]) {
+		const failedId = loggingThrows ? 30 : 32;
+		const succeededId = failedId + 1;
+		it(`deleteHistory contains a mid-loop rejection (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async function () {
+			// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
+			// (rather than a bare return, as the file's other reusableIterable guards use) so the report
+			// distinguishes "skipped on this engine" from "passed"
+			if (AuditedTable.auditStore.reusableIterable) return this.skip();
+			await AuditedTable.deleteHistory(Date.now() + 60_000); // start from a clean backlog
+
+			await AuditedTable.put(failedId, { name: 'race-a' });
+			await AuditedTable.put(succeededId, { name: 'race-b' });
+
+			// find the failing record's raw audit-store key so the injected failure targets that one entry
+			// specifically, the same way deleteHistory itself finds it (getHistory()'s yielded entries don't
+			// carry this key — its `localTime` field is the record's version, not the key)
+			let targetKey;
+			for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+				if (record.tableId === AuditedTable.tableId && record.recordId === failedId) targetKey = record.key;
+			}
+			assert.notEqual(targetKey, undefined, `test setup: could not find record ${failedId} in the audit log`);
+
+			const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
+			const originalWarn = harperLogger.warn;
+			AuditedTable.auditStore.remove = (key) => {
+				if (key === targetKey) return Promise.reject(new Error('simulated audit entry removal failure'));
+				return originalRemove(key);
+			};
+			const warnings = [];
+
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => {
+				unhandledRejection = reason;
+			};
+			process.on('unhandledRejection', onUnhandledRejection);
+			try {
+				let entriesDeleted;
+				harperLogger.warn = (...args) => {
+					warnings.push(args);
+					if (loggingThrows) throw new Error('simulated logging failure');
+				};
+				try {
+					entriesDeleted = await AuditedTable.deleteHistory(Date.now() + 60_000);
+				} finally {
+					harperLogger.warn = originalWarn;
+				}
+				assert.equal(entriesDeleted, 1, 'only the successful removal should be counted, not the rejected one');
+				assert.equal(warnings.length, 1);
+				assert.equal(warnings[0][0], 'Error removing audit entry during deleteHistory');
+				assert.equal(warnings[0][1].message, 'simulated audit entry removal failure');
+				await delay(50);
+				assert.equal(
+					unhandledRejection,
+					undefined,
+					'a rejected removeAuditEntry() call must not escape as an unhandled rejection'
+				);
+				const remaining = [];
+				for await (const entry of AuditedTable.getHistory()) remaining.push(entry.id);
+				assert.deepEqual(
+					remaining,
+					[failedId],
+					'the failed removal must be left in place, but later entries must still be pruned'
+				);
+			} finally {
+				process.off('unhandledRejection', onUnhandledRejection);
+				harperLogger.warn = originalWarn;
+				AuditedTable.auditStore.remove = originalRemove;
+				await AuditedTable.deleteHistory(Date.now() + 60_000); // clear the now-orphaned entry
+			}
+		});
+	}
+	it('deleteHistory reports a purge that attempted removals and completed none', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		const cutoff = () => Date.now() + 60_000;
+		await AuditedTable.deleteHistory(cutoff()); // start from a clean backlog
+		assert.equal(await AuditedTable.deleteHistory(cutoff()), 0, 'an empty backlog is not a failure');
+
+		await AuditedTable.put(34, { name: 'doomed-a' });
+		await AuditedTable.put(35, { name: 'doomed-b' });
+
+		const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
+		const originalWarn = harperLogger.warn;
+		const warnings = [];
+		AuditedTable.auditStore.remove = () => Promise.reject(new Error('simulated store failure'));
+		harperLogger.warn = (...args) => warnings.push(args);
+		try {
+			// a purge that made zero progress must not be indistinguishable from one that had nothing to do
+			await assert.rejects(AuditedTable.deleteHistory(cutoff()), /simulated store failure/);
+			assert.equal(warnings.length, 2, 'each failure is still logged individually');
+		} finally {
+			harperLogger.warn = originalWarn;
+			AuditedTable.auditStore.remove = originalRemove;
+			await AuditedTable.deleteHistory(cutoff());
+		}
+	});
+	it('deleteHistory limits concurrent removals without serializing them', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		await AuditedTable.deleteHistory(Date.now() + 60_000);
+
+		const firstId = 40;
+		const concurrentRemovalLimit = 1000;
+		const recordCount = concurrentRemovalLimit + 1;
+		for (let id = firstId; id < firstId + recordCount; id++) {
+			await AuditedTable.put(id, { name: `concurrent-${id}` });
+		}
+		const targetKeys = new Set();
+		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+			if (
+				record.tableId === AuditedTable.tableId &&
+				record.recordId >= firstId &&
+				record.recordId < firstId + recordCount
+			) {
+				targetKeys.add(record.key);
+			}
+		}
+		assert.equal(targetKeys.size, recordCount, 'test setup: expected one audit entry per inserted record');
+
+		const originalRemove = AuditedTable.auditStore.remove.bind(AuditedTable.auditStore);
+		const releaseRemovals = [];
+		let activeRemovals = 0;
+		let maximumActiveRemovals = 0;
+		let removalCalls = 0;
+		let releaseImmediately = false;
+		AuditedTable.auditStore.remove = (key) => {
+			if (!targetKeys.has(key)) return originalRemove(key);
+			removalCalls++;
+			activeRemovals++;
+			maximumActiveRemovals = Math.max(maximumActiveRemovals, activeRemovals);
+			if (releaseImmediately) {
+				activeRemovals--;
+				return Promise.resolve();
+			}
+			return new Promise((resolve) => {
+				releaseRemovals.push(() => {
+					activeRemovals--;
+					resolve();
+				});
+			});
+		};
+
+		let deletion;
+		try {
+			deletion = AuditedTable.deleteHistory(Date.now() + 60_000);
+			await waitFor(() => removalCalls >= concurrentRemovalLimit, {
+				timeout: 5000,
+				message: `expected ${concurrentRemovalLimit} removals to start`,
+			});
+			assert.equal(
+				removalCalls,
+				concurrentRemovalLimit,
+				'the next removal must wait while the concurrency limit is occupied'
+			);
+
+			releaseRemovals.splice(Math.floor(concurrentRemovalLimit / 2), 1)[0]();
+			await waitFor(() => removalCalls === recordCount, {
+				timeout: 5000,
+				message: 'expected the final removal to start after any active removal completed',
+			});
+			while (releaseRemovals.length > 0) releaseRemovals.shift()();
+
+			assert.equal(await deletion, recordCount);
+			assert.equal(maximumActiveRemovals, concurrentRemovalLimit);
+		} finally {
+			releaseImmediately = true;
+			while (releaseRemovals.length > 0) releaseRemovals.shift()();
+			await deletion?.catch(() => {});
+			AuditedTable.auditStore.remove = originalRemove;
+			await AuditedTable.deleteHistory(Date.now() + 60_000);
+			await AuditedTable.primaryStore.batch(() => {
+				for (let id = firstId; id < firstId + recordCount; id++) AuditedTable.primaryStore.remove(id);
+			});
+		}
+	});
+	async function createOrphanedTombstone(recordId) {
+		await AuditedTable.put(recordId, { name: 'deleted' });
+		await AuditedTable.delete(recordId);
+		const auditKeys = [];
+		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+			if (record.tableId === AuditedTable.tableId && record.recordId === recordId) auditKeys.push(record.key);
+		}
+		assert.equal(auditKeys.length, 2, 'test setup: expected put and delete audit entries');
+		for (const key of auditKeys) await AuditedTable.auditStore.remove(key);
+		assert.equal(
+			Array.from(AuditedTable.auditStore.getRange({ start: 0, end: Infinity })).some(
+				(record) => record.tableId === AuditedTable.tableId && record.recordId === recordId
+			),
+			false,
+			'test setup: expected the audit entries to be removed'
+		);
+		const tombstone = AuditedTable.primaryStore.getEntry(recordId);
+		assert.equal(tombstone?.value, null, 'test setup: expected an orphaned tombstone');
+		return tombstone;
+	}
+	it('deleteHistory cleanup removes an unchanged orphaned tombstone', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		const cutoff = Date.now() + 60_000;
+		await AuditedTable.deleteHistory(cutoff, true);
+		const recordId = 'cleanup-unraced';
+		try {
+			await createOrphanedTombstone(recordId);
+			await AuditedTable.deleteHistory(cutoff, true);
+			assert.equal(AuditedTable.primaryStore.getEntry(recordId), undefined);
+		} finally {
+			await AuditedTable.delete(recordId).catch(() => {});
+			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
+		}
+	});
+	// Runs on both engines: it is the only test that carries a scan-captured version through
+	// deleteHistory's cleanup phase into remove(), and RocksDB is the default engine. Rather than
+	// createOrphanedTombstone (which can't orphan an entry in a RocksDB transaction log), it
+	// suppresses the audit-driven delete callback — the "the audit log isn't cleaning these up"
+	// state the cleanup phase exists for — so the tombstone survives to the cleanup scan.
+	it('deleteHistory cleanup preserves a record recreated while its stale tombstone waits for a slot', async function () {
+		const cutoff = Date.now() + 60_000;
+		await AuditedTable.deleteHistory(cutoff, true);
+
+		const recordId = 'cleanup-race';
+		const deleteCallbacks = AuditedTable.auditStore.deleteCallbacks;
+		const tableId = AuditedTable.tableId;
+		const originalDeleteCallback = deleteCallbacks[tableId];
+		await AuditedTable.put(recordId, { name: 'to-delete' });
+		await AuditedTable.delete(recordId);
+		deleteCallbacks[tableId] = () => {};
+		const tombstone = AuditedTable.primaryStore.getEntry(recordId);
+		assert.equal(tombstone?.value, null, 'test setup: expected a tombstone');
+		assert.notEqual(tombstone?.version, undefined, 'test setup: expected a versioned tombstone');
+
+		const primaryStore = AuditedTable.primaryStore;
+		const originalRemove = primaryStore.remove;
+		const removeWasOwnProperty = Object.hasOwn(primaryStore, 'remove');
+		let markRemovalStarted;
+		const removalStarted = new Promise((resolve) => {
+			markRemovalStarted = resolve;
+		});
+		let releaseImmediately = false;
+		let releaseRemoval;
+		let removalVersion;
+		let removalResult;
+		primaryStore.remove = function (id, version) {
+			if (id !== recordId || releaseImmediately) return originalRemove.call(this, id, version);
+			removalVersion = version;
+			return new Promise((resolve, reject) => {
+				let released = false;
+				releaseRemoval = () => {
+					if (released) return;
+					released = true;
+					return Promise.resolve(originalRemove.call(this, id, version)).then((result) => {
+						removalResult = result;
+						resolve(result);
+					}, reject);
+				};
+				markRemovalStarted();
+			});
+		};
+
+		let deletion;
+		try {
+			deletion = AuditedTable.deleteHistory(cutoff, true);
+			let removalTimeout;
+			try {
+				await Promise.race([
+					removalStarted,
+					deletion.then((entriesDeleted) => {
+						throw new Error(`deleteHistory resolved before cleanup removal started: ${entriesDeleted} entries`);
+					}),
+					new Promise((resolve, reject) => {
+						removalTimeout = setTimeout(() => reject(new Error('cleanup removal did not start')), 5000);
+					}),
+				]);
+			} finally {
+				clearTimeout(removalTimeout);
+			}
+			await AuditedTable.put(recordId, { name: 'recreated' });
+			releaseRemoval();
+			await deletion;
+			assert.equal(removalVersion, tombstone.version, 'the cleanup scan must hand the version it captured to remove()');
+			assert.equal(removalResult, false, 'the stale conditional removal must not commit');
+			assert.equal(AuditedTable.primaryStore.getEntry(recordId)?.value?.name, 'recreated');
+		} finally {
+			releaseImmediately = true;
+			releaseRemoval?.();
+			await deletion?.catch(() => {});
+			if (removeWasOwnProperty) primaryStore.remove = originalRemove;
+			else delete primaryStore.remove;
+			if (originalDeleteCallback) deleteCallbacks[tableId] = originalDeleteCallback;
+			else delete deleteCallbacks[tableId];
+			await AuditedTable.delete(recordId).catch(() => {});
+			await AuditedTable.deleteHistory(Date.now() + 60_000, true);
+		}
+	});
+	it('RocksDB versioned removal preserves records recreated before or during removal', async function () {
+		if (!AuditedTable.primaryStore.isPrimaryRocksDatabase) return this.skip();
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const recordId = 'rocks-cleanup-race';
+		try {
+			await AuditedTable.put(recordId, { name: 'deleted' });
+			await AuditedTable.delete(recordId);
+			const tombstone = AuditedTable.primaryStore.getEntry(recordId);
+			assert.equal(tombstone?.value, null, 'test setup: expected a tombstone');
+
+			await AuditedTable.put(recordId, { name: 'recreated' });
+			assert.equal(
+				await AuditedTable.primaryStore.remove(recordId, tombstone.version),
+				false,
+				'a stale conditional removal must not commit'
+			);
+			const recreated = AuditedTable.primaryStore.getEntry(recordId);
+			assert.equal(recreated?.value?.name, 'recreated');
+
+			await AuditedTable.delete(recordId);
+			const secondTombstone = AuditedTable.primaryStore.getEntry(recordId);
+			const originalCommit = Transaction.prototype.commit;
+			let interleaved = false;
+			Transaction.prototype.commit = async function (...args) {
+				if (!interleaved) {
+					interleaved = true;
+					await AuditedTable.put(recordId, { name: 'concurrent' });
+				}
+				return originalCommit.apply(this, args);
+			};
+			try {
+				assert.equal(await AuditedTable.primaryStore.remove(recordId, secondTombstone.version), false);
+			} finally {
+				Transaction.prototype.commit = originalCommit;
+			}
+			assert(interleaved, 'a recreate should commit between the conditional read and delete commit');
+			const concurrent = AuditedTable.primaryStore.getEntry(recordId);
+			assert.equal(concurrent?.value?.name, 'concurrent');
+			assert.equal(await AuditedTable.primaryStore.remove(recordId, concurrent.version), true);
+			assert.equal(AuditedTable.primaryStore.getEntry(recordId), undefined);
+		} finally {
+			await AuditedTable.primaryStore.remove(recordId);
+		}
+	});
+	it('deleteHistory waits for the table-registered tombstone removal callback', async function () {
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		await AuditedTable.deleteHistory(Date.now() + 60_000);
+
+		const recordId = 60;
+		await AuditedTable.put(recordId, { name: 'joined-tombstone-removal' });
+		await AuditedTable.delete(recordId);
+		const registeredPrimaryStore = AuditedTable.auditStore.tableStores[AuditedTable.tableId];
+		const tombstone = registeredPrimaryStore.getEntry(recordId);
+		assert.equal(tombstone?.value, null);
+		const deleteAuditRecords = [];
+		for (const record of AuditedTable.auditStore.getRange({ start: 0, end: Infinity })) {
+			if (record.tableId === AuditedTable.tableId && record.recordId === recordId && record.type === 'delete') {
+				deleteAuditRecords.push(record);
+			}
+		}
+		assert.equal(deleteAuditRecords.length, 1);
+		assert.equal(tombstone.version, deleteAuditRecords[0].version);
+		assert.equal(typeof AuditedTable.auditStore.deleteCallbacks?.[AuditedTable.tableId], 'function');
+
+		const originalRemove = registeredPrimaryStore.remove;
+		const removeWasOwnProperty = Object.hasOwn(registeredPrimaryStore, 'remove');
+		let releaseTombstoneRemoval;
+		let markTombstoneRemovalStarted;
+		const tombstoneRemovalStarted = new Promise((resolve) => {
+			markTombstoneRemovalStarted = resolve;
+		});
+		const tombstoneRemovalGate = new Promise((resolve) => {
+			releaseTombstoneRemoval = resolve;
+		});
+		const heldRemove = async function (id, version) {
+			markTombstoneRemovalStarted({ id, version });
+			if (id !== recordId) return originalRemove.call(this, id, version);
+			await tombstoneRemovalGate;
+			return originalRemove.call(this, id, version);
+		};
+		registeredPrimaryStore.remove = heldRemove;
+		assert.equal(registeredPrimaryStore.remove, heldRemove);
+
+		let deletion;
+		try {
+			deletion = AuditedTable.deleteHistory(Date.now() + 60_000);
+			let callbackTimeout;
+			let callback;
+			try {
+				callback = await Promise.race([
+					tombstoneRemovalStarted,
+					deletion.then((entriesDeleted) => {
+						throw new Error(
+							`deleteHistory resolved before invoking the registered callback: ${entriesDeleted} entries, tombstone=${String(
+								AuditedTable.primaryStore.getEntry(recordId)?.value
+							)}`
+						);
+					}),
+					new Promise((resolve, reject) => {
+						callbackTimeout = setTimeout(
+							() => reject(new Error('table-registered tombstone removal callback did not start')),
+							2000
+						);
+					}),
+				]);
+			} finally {
+				clearTimeout(callbackTimeout);
+			}
+			assert.equal(callback.id, recordId);
+			const state = await Promise.race([deletion.then(() => 'resolved'), delay(50, 'pending')]);
+			assert.equal(state, 'pending', 'deleteHistory must join the registered tombstone removal callback');
+
+			releaseTombstoneRemoval();
+			assert.equal(await deletion, 2);
+			assert.equal(
+				AuditedTable.primaryStore.getEntry(recordId),
+				undefined,
+				'the tombstone must be gone when deleteHistory resolves'
+			);
+		} finally {
+			releaseTombstoneRemoval();
+			await deletion?.catch(() => {});
+			if (removeWasOwnProperty) registeredPrimaryStore.remove = originalRemove;
+			else delete registeredPrimaryStore.remove;
+			await AuditedTable.deleteHistory(Date.now() + 60_000);
+		}
+	});
+	for (const [label, failingCallback] of [
+		['rejects', () => Promise.reject(new Error('simulated primary-store tombstone removal failure'))],
+		[
+			'throws synchronously',
+			() => {
+				throw new Error('simulated primary-store tombstone removal failure');
+			},
+		],
+	]) {
+		it(`removeAuditEntry does not let a delete-callback that ${label} block or escape the audit-store removal`, async () => {
+			const auditRemoveCalls = [];
+			const fakeAuditStore = {
+				tableStores: { 7: { getEntry: () => ({ version: 42 }) } },
+				deleteCallbacks: { 7: failingCallback },
+				remove(key) {
+					auditRemoveCalls.push(key);
+					return Promise.resolve();
+				},
+			};
+			const deleteAuditRecord = { type: 'delete', tableId: 7, recordId: 'orphan', version: 42, key: 'audit-key' };
+
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => {
+				unhandledRejection = reason;
+			};
+			process.on('unhandledRejection', onUnhandledRejection);
+			try {
+				await removeAuditEntry(fakeAuditStore, deleteAuditRecord); // must not reject
+				await delay(50);
+				assert.equal(
+					unhandledRejection,
+					undefined,
+					`a delete-callback that ${label} must not escape as an unhandled rejection`
+				);
+			} finally {
+				process.off('unhandledRejection', onUnhandledRejection);
+			}
+			assert.deepEqual(
+				auditRemoveCalls,
+				['audit-key'],
+				'the audit-store removal must still proceed even though the tombstone cleanup failed'
+			);
+		});
+	}
 	it('check log after operations and prune', async () => {
 		await AuditedTable.operation({
 			operation: 'upsert',

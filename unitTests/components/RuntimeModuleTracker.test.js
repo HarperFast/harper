@@ -44,6 +44,20 @@ describe('RuntimeModuleTracker', () => {
 		assert.equal(await this.tracker.finishDeploy(), false);
 	});
 
+	it('compares package metadata semantically', async () => {
+		const packagePath = join(this.directory, 'package.json');
+		writeFileSync(packagePath, '{"name":"example","version":"1.0.0"}');
+		this.tracker.recordModule(pathToFileURL(packagePath).href, '{"name":"example","version":"1.0.0"}');
+
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, '{\n  "version": "1.0.0",\n  "name": "example"\n}\n');
+		assert.equal(await this.tracker.finishDeploy(), false);
+
+		this.tracker.beginDeploy();
+		writeFileSync(packagePath, '{"name":"example","version":"2.0.0"}');
+		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
 	it('detects a new higher-priority extensionless resolution candidate', async () => {
 		const referrerPath = join(this.directory, 'resources.js');
 		const jsonPath = join(this.directory, 'helper.json');
@@ -71,6 +85,39 @@ describe('RuntimeModuleTracker', () => {
 		this.tracker.beginDeploy();
 		mkdirSync(join(this.directory, 'helper.js'));
 		assert.equal(require.resolve('./helper'), jsonPath);
+		assert.equal(await this.tracker.finishDeploy(), true);
+	});
+
+	it('ignores new lower-priority extensionless resolution candidates', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const javascriptPath = join(this.directory, 'helper.js');
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(javascriptPath, 'export default {};');
+		const initiallyResolved = createRequire(pathToFileURL(referrerPath)).resolve('./helper');
+		assert.equal(initiallyResolved, javascriptPath);
+		this.tracker.recordModule(pathToFileURL(javascriptPath).href, 'export default {};');
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(initiallyResolved).href);
+
+		this.tracker.beginDeploy();
+		writeFileSync(join(this.directory, 'helper.json'), '{}');
+		assert.equal(await this.tracker.finishDeploy(), false);
+	});
+
+	it('detects a new file candidate ahead of a directory package entry', async () => {
+		const referrerPath = join(this.directory, 'resources.js');
+		const helperDirectory = join(this.directory, 'helper');
+		const packageEntryPath = join(this.directory, 'package-entry.js');
+		mkdirSync(helperDirectory);
+		writeFileSync(referrerPath, 'import helper from "./helper";');
+		writeFileSync(join(helperDirectory, 'package.json'), '{"main":"../package-entry.js"}');
+		writeFileSync(packageEntryPath, 'export default {};');
+		const initiallyResolved = createRequire(pathToFileURL(referrerPath)).resolve('./helper');
+		assert.equal(initiallyResolved, packageEntryPath);
+		this.tracker.recordModule(pathToFileURL(packageEntryPath).href, 'export default {};');
+		this.tracker.recordResolution('./helper', pathToFileURL(referrerPath).href, pathToFileURL(initiallyResolved).href);
+
+		this.tracker.beginDeploy();
+		writeFileSync(join(this.directory, 'helper.js'), 'export default {};');
 		assert.equal(await this.tracker.finishDeploy(), true);
 	});
 

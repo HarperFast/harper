@@ -10,6 +10,8 @@ const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { execFile, fork } = require('node:child_process');
 
+const INIT_PROCESS_NAMES = new Set(['catatonit', 'docker-init', 'dumb-init', 'init', 's6-svscan', 'systemd', 'tini']);
+
 module.exports = {
 	start,
 	restart,
@@ -119,12 +121,26 @@ function getHdbPid() {
 	if (!harperPath) return;
 	const pidFile = path.join(harperPath, hdbTerms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
-	// If the pid file doesn't exist or the pid is the same as the current process, return.
-	// In a Docker container, the pid is usually 1, and so if a previous process crashed, there will still
-	// be a pid file with 1, even though this process is also 1 (and is running, but is not another harper process).
 	if (!hdbPid || hdbPid === process.pid) return;
+	// A persistent volume from an older image may contain PID 1 after the current image puts an init at that PID.
+	if (hdbPid === 1 && isInitProcess(hdbPid)) return;
 	if (isProcessRunning(hdbPid)) return hdbPid;
 	// return undefined
+}
+
+function isInitProcess(pid) {
+	try {
+		const executable = path.basename(fs.readlinkSync(`/proc/${pid}/exe`)).replace(/ \(deleted\)$/, '');
+		if (INIT_PROCESS_NAMES.has(executable)) return true;
+	} catch {
+		// Some procfs configurations expose the process name but restrict the executable symlink.
+	}
+	try {
+		return INIT_PROCESS_NAMES.has(fs.readFileSync(`/proc/${pid}/comm`, 'utf8').trim());
+	} catch {
+		// Fail closed: an unidentified live PID still blocks a second Harper process.
+		return false;
+	}
 }
 function kill() {
 	for (let process of childProcesses) {

@@ -35,6 +35,12 @@ export const TRANSACTION_STATE = {
 	LINGERING: 2,
 };
 const MAX_RETRIES = 40;
+// Over-limit monitor ticks a transaction parked in its commit phase is spared before it is aborted
+// like any other over-time transaction. Sparing re-arms `timeout`, so each of these costs two
+// monitor intervals — roughly 10 minutes at the 30s default. Generous, so a legitimately large blob
+// write finishes, but bounded, so a pre-commit source that stalls instead of finishing can't pin its
+// read snapshot forever (issue #2062).
+export const COMMIT_PHASE_GRACE = 10;
 // Cap the per-retry backoff so replication-applied transactions, which retry conflicts without a
 // cap (see the commit rejection handler), don't grow the delay unbounded.
 const MAX_RETRY_DELAY_MS = 1000;
@@ -144,6 +150,20 @@ export function getOutstandingCommits(): { count: number; oldestAgeMs: number | 
 // Once per process: committing under open read iterators forces a write replay, so the warning is
 // about the caller's pattern, not the individual commit.
 let replayedWritesWarned = false;
+
+/**
+ * Abort a detached native handle. RocksTransaction.abort() throws on one that was already
+ * committed or aborted, and every caller is a cleanup path whose own callers have no handler — a
+ * throw there would abandon the rest of the cleanup.
+ */
+function abortNativeTransaction(transaction: RocksTransaction | null | undefined, context: string): void {
+	if (transaction == null) return;
+	try {
+		transaction.abort();
+	} catch (error) {
+		harperLogger.debug?.(context, error);
+	}
+}
 
 // The analytics module registers a recorder here at load (dependency inversion, mirroring
 // `replicationConfirmation` below) so the storage layer doesn't statically import the analytics/server
@@ -261,7 +281,9 @@ export type TransactionWrite = {
 	before?: () => void | Promise<void>;
 	beforeIntermediate?: () => void | Promise<void>;
 	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
-	validate?: (txnTime: number) => void;
+	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
+	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
+	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
@@ -278,6 +300,10 @@ export type TransactionWrite = {
 	// sticky: a non-isRetry staging of this write appended its audit entry (set in save(); the retry
 	// dedup guards in the commit handler read it to ignore the write's own orphaned entry)
 	appendedAuditEntry?: boolean;
+	// the transaction holding this write in its `writes` (set in addWrite). A deferred write's save() is
+	// only its trigger, so it can be triggered after the context has moved on to another transaction;
+	// this is who commits it when the transaction current at that point is not a scope (#2292).
+	stagedIn?: DatabaseTransaction;
 	// the preceding write to the same store and key in this transaction, if any (linked in addWrite)
 	priorWrite?: TransactionWrite;
 	// set only by a write that BOTH reads priorStagedWrite() and publishes stagedEntry; addWrite orders
@@ -361,6 +387,11 @@ export class DatabaseTransaction implements Transaction {
 	timeoutBudget = 0;
 	// save() only stages here; ImmediateTransaction overrides it to commit, which addWrite must not defer
 	saveCommits = false;
+	// True where save() puts the write into this transaction's native handle, which is what lets a scope
+	// take over a write staged in another transaction's `writes` (Table.ts's #saveOperation).
+	// LMDBTransaction's save() is a no-op — its commit applies `writes` — so there a write can only be
+	// committed by the transaction that holds it.
+	stagesWriteOnSave = true;
 	validated = 0;
 	timestamp = 0;
 	retries = 0;
@@ -407,6 +438,23 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
+	// Set while commit() is parked in its pre-commit await (`before`/`beforeIntermediate` completions —
+	// in practice a blob's durable file write). The write set is sealed and the caller is awaiting the
+	// commit, so this is core's own I/O rather than an application holding a transaction open, which is
+	// what the open-transaction limit polices: the monitor spares it for COMMIT_PHASE_GRACE ticks
+	// instead of poisoning it (issue #2062).
+	committing = false;
+	commitPhaseTicks = 0;
+	declare commitChainHead?: DatabaseTransaction;
+
+	setCommitPhase(committing: boolean): void {
+		// A commit phase covers the sealed write set across the whole multi-store chain.
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.committing = committing;
+			txn.commitChainHead = committing ? this : undefined;
+			if (committing) txn.commitPhaseTicks = 0;
+		}
+	}
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -544,11 +592,7 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	releaseReadTxn(): void {
 		const transaction = this.detachOwnedTransaction();
-		try {
-			transaction?.abort();
-		} catch (error) {
-			harperLogger.debug?.('releasing timed-out read transaction', error);
-		}
+		abortNativeTransaction(transaction, 'releasing timed-out read transaction');
 		this.completeDeferredContextRelease();
 	}
 
@@ -591,10 +635,46 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
+	 * Drop a staged write from this transaction, and from its per-key chain, so the transaction taking it
+	 * over becomes its only owner (Table.ts's #saveOperation).
+	 */
+	detachWrite(operation: TransactionWrite): void {
+		const index = this.writes.indexOf(operation);
+		if (index > -1) this.writes[index] = null;
+		if (operation.key === undefined) return;
+		const writesForStore = this.writesByKey?.get(operation.store);
+		if (!writesForStore) return;
+		const keyId = writeKeyId(operation.key);
+		// Membership, not `stagedIn`, which every commit handler clears and so cannot tell a takeover from a
+		// write done in place; a prior already taken over must not become this transaction's basis again.
+		let prior = operation.priorWrite;
+		while (prior && !this.writes.includes(prior)) prior = prior.priorWrite;
+		const tail = writesForStore.get(keyId);
+		if (tail === operation) {
+			if (prior) writesForStore.set(keyId, prior);
+			else writesForStore.delete(keyId);
+			return;
+		}
+		// A successor left chained to it would take its merge basis and index diff from a record another
+		// transaction owns and may roll back (harper#1968's failure class).
+		for (let successor = tail; successor; successor = successor.priorWrite) {
+			if (successor.priorWrite === operation) {
+				successor.priorWrite = prior;
+				return;
+			}
+		}
+	}
+
+	/**
 	 * Discard the staged write set (committed or aborted); the per-key chain must go with it so a
 	 * reused transaction never bases a write on a previous batch's staged state.
 	 */
 	clearWrites(): void {
+		// A deferred write's `stagedIn` must not outlive this transaction's ability to commit it: save() can
+		// fire after a commit or abort, and routing it back here would revive a write this transaction
+		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
+		// context's current transaction as it did before `stagedIn` existed.
+		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
 		this.writesByKey = undefined;
 	}
@@ -729,6 +809,7 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTimeout = this.timeout;
 		this.linkWrite(operation);
 		this.writes.push(operation);
+		operation.stagedIn = this;
 		// Hold this write back while any earlier same-key write has not run — out of staging order both
 		// diff against the pre-transaction record (harper#2211, DESIGN.md). The whole chain, not just the
 		// immediate link: an eager non-chaining write in between would otherwise launder the deferral.
@@ -807,7 +888,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
-			if ((operation.validate?.(txnTime) as any) === false) {
+			if ((operation.validate?.(txnTime, this) as any) === false) {
 				operation.commit = () => {}; // noop if we try again
 				return;
 			}
@@ -848,13 +929,33 @@ export class DatabaseTransaction implements Transaction {
 		this.validated = this.writes.length;
 		const completions = this.completions;
 		if (completions.length > 0) this.completions = []; // reset
+		const stagedWrites = this.writes.length;
+		if (completions.length > 0) {
+			this.setCommitPhase(true);
+		}
 		return when(
 			completions.length > 0 ? Promise.all(completions) : null,
 			() => {
+				if (completions.length > 0) this.setCommitPhase(false);
+				// The transaction can be aborted underneath us while we are parked in the await above — by the
+				// monitor once the commit phase outlives its grace, or through the multi-store poison chain.
+				// abort() cleared the write set and released the handle, so resuming would commit nothing and
+				// resolve as SUCCESS: the caller is told its write landed when it was dropped, and a write
+				// carrying a blob is left holding an instance whose file was unlinked (issue #2062).
+				if (this.timedOut) throw transactionOpenTooLongError();
+				if (stagedWrites > 0 && this.writes.length === 0 && this.open === TRANSACTION_STATE.CLOSED)
+					throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
 				if (this.writes.length > this.validated) {
 					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
 					return this.commit(options);
 				}
+				// The save loop above can be what opened this transaction's native handle — save() attaches
+				// one when it had none, which is every ImmediateTransaction commit since its getReadTxn
+				// opens none — leaving the local captured before the loop empty while that handle holds
+				// every staged write, for the detach below to drop uncommitted (issue #2288). Only when
+				// the local is empty: a truthy one is what the loop staged into, and the retained-handle
+				// and replay branches below deliberately commit a handle other than this.transaction.
+				if (!transaction) transaction = this.transaction;
 				this.open = TRANSACTION_STATE.CLOSED;
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.
@@ -1205,6 +1306,7 @@ export class DatabaseTransaction implements Transaction {
 				return txnResolution;
 			},
 			(error) => {
+				this.setCommitPhase(false);
 				this.abort();
 				throw error;
 			}
@@ -1369,11 +1471,7 @@ export class DatabaseTransaction implements Transaction {
 			// throws. abort() rather than the native abort alone: it reclaims blobs a replayed write
 			// staged.
 			this.detachOwnedTransaction();
-			try {
-				transaction?.abort();
-			} catch (abortError) {
-				harperLogger.debug?.('aborting a transaction whose synchronous commit failed', abortError);
-			}
+			abortNativeTransaction(transaction, 'aborting a transaction whose synchronous commit failed');
 			try {
 				this.abort();
 			} catch (abortError) {
@@ -1398,6 +1496,20 @@ export interface Transaction {
 	timeoutBudget?: number;
 	commit(options): MaybePromise<CommitResolution>;
 	abort?(): any;
+}
+
+export function shouldSpareCommitPhase(
+	txn: DatabaseTransaction,
+	checkedCommitPhaseChains: Set<DatabaseTransaction>
+): boolean {
+	if (!txn.committing) return false;
+	if (txn.sourceApply || txn.isReplay) return true;
+	const commitChainHead = txn.commitChainHead ?? txn;
+	if (!checkedCommitPhaseChains.has(commitChainHead)) {
+		checkedCommitPhaseChains.add(commitChainHead);
+		commitChainHead.commitPhaseTicks++;
+	}
+	return commitChainHead.commitPhaseTicks <= COMMIT_PHASE_GRACE;
 }
 
 export class ImmediateTransaction extends DatabaseTransaction {
@@ -1484,6 +1596,19 @@ export function isReleasedTransaction(value: unknown): boolean {
 	return value === RELEASED_TRANSACTION;
 }
 
+/**
+ * Whether this transaction can be joined as the atomic scope resources/transaction.ts promises. OPEN is
+ * not sufficient: an ImmediateTransaction commits every write as it is made, so a caller that joined one
+ * would get per-write autocommit with no final commit or abort to roll back to. txnForContext installs
+ * one in a context slot that is empty or holds the released placeholder, where it reports OPEN with
+ * nothing owning a commit for it (#2292). Ownership itself is deliberately not the test — a context
+ * pre-seeded with an externally driven DatabaseTransaction (replayLogs.ts) still owns the writes it is
+ * given, and its own commit/abort still governs them.
+ */
+export function isJoinableScope(transaction: DatabaseTransaction | null | undefined): boolean {
+	return transaction?.open === TRANSACTION_STATE.OPEN && !transaction.saveCommits;
+}
+
 let timer;
 
 /**
@@ -1506,14 +1631,17 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
+		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
-		for (const txn of trackedTxns) monitorTransaction(txn);
-		for (const txn of supervisedWriteRoots) if (!trackedTxns.has(txn)) monitorTransaction(txn);
+		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains);
+		for (const txn of supervisedWriteRoots)
+			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains);
 	}, txnExpiration).unref();
 
-	function monitorTransaction(txn: DatabaseTransaction) {
+	function monitorTransaction(txn: DatabaseTransaction, checkedCommitPhaseChains: Set<DatabaseTransaction>) {
 		{
+			const commitChainHead = txn.commitChainHead ?? txn;
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
 			// thereby keep chainStillActive believing it was written recently too.
@@ -1541,6 +1669,25 @@ function startMonitoringTxns() {
 						}`
 					);
 					txn.releaseReadTxn();
+				} else if (shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
+					// Parked in commit()'s pre-commit await — a `before`/`beforeIntermediate` hook, in practice a
+					// blob's durable file write, which for a multi-tens-of-MB payload legitimately outruns the
+					// limit. The write set is sealed and the caller is awaiting this commit, so the limit's
+					// premise (the application is holding a transaction open) does not hold, and poisoning here
+					// would unlink the blobs the write still references (issue #2062). The grace is bounded
+					// because the transaction still pins a read snapshot: a source that stalls rather than
+					// finishing falls through to the abort below once it runs out. A canonical-source apply or
+					// replay is spared for as long as it takes: neither aborting it (harper-pro#348) nor the
+					// force-commit below — which would durably commit a record whose blob file is still being
+					// written — is acceptable, and their blob sources are bounded by the receive-side idle
+					// watchdog instead.
+					harperLogger.warn?.(
+						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : [])
+					);
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				} else if (txn.hasPendingWrites() && chainStillActive(txn)) {
 					// A later link in the chain was written recently (writes re-arm only the link that
 					// receives them, and a multi-store transaction can be writing database B while this
@@ -1564,7 +1711,7 @@ function startMonitoringTxns() {
 						...(DEBUG_LONG_TXNS ? ['starting stack trace', txn.stackTraces] : [])
 					);
 					try {
-						txn.abortDueToTimeout();
+						commitChainHead.abortDueToTimeout();
 					} catch (error) {
 						harperLogger.debug?.(`Error aborting timed out transaction: ${error.message}`);
 					}

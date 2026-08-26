@@ -11,6 +11,8 @@ RUN env NO_USE_GIT=true npm run package
 
 FROM docker.io/node:${NODE_VERSION} AS run
 
+RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
+
 # Change node user to harper
 RUN <<-EOF
   mkdir -p /home/harperdb
@@ -105,6 +107,7 @@ EXPOSE 9926
 EXPOSE 9932
 EXPOSE 9933
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# Harper must not be PID 1 so its restart watchdog can force a wedged teardown to exit.
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/docker-entrypoint.sh"]
 
 CMD ["run"]

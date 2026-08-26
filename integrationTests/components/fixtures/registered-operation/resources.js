@@ -37,3 +37,16 @@ server.registerOperation({
 		throw error;
 	},
 });
+
+server.registerOperation({
+	name: 'component_registered_grantable',
+	requiresSuperUser: true,
+	execute: async function componentRegisteredGrantable(op) {
+		return {
+			granted: true,
+			executedOnMainThread: isMainThread,
+			executedOnThreadId: threadId,
+			username: op.hdb_user?.username ?? null,
+		};
+	},
+});

@@ -51,6 +51,8 @@ The mitigations live in three places:
 - `Table.ts` commit handlers set `write.skipped = true` (and reset to `false` at the top of each invocation) on early-return paths that don't write the record/audit: duplicate-tie, superseded-by-put, no-audit-fullUpdate-loses, and cache-resolve version-changed. The transaction commit success paths (`DatabaseTransaction.commit` and `LMDBTransaction.commit`) walk writes and call `cleanupUnusedBlobs(write.savedBlobs)` for every still-skipped write. Cleanup is deferred (rather than run inline in the commit handler) because the commit handler runs again on optimistic-lock retries, and a retry can flip a previously-skipped write into a successful one (e.g. the existing record gets deleted between attempts so the older replicated update suddenly wins). Inline cleanup would race the deletion's `setTimeout` against the retry that referenced the blob.
 - `LMDBTransaction.abort` and `DatabaseTransaction.abort` walk all writes and run the same cleanup unconditionally (regardless of `skipped`), since nothing was committed. `DatabaseTransaction.commit` adds an explicit reject handler so a `Promise.all` failure on `completions` (e.g. a blob save errored) aborts the underlying transaction instead of leaking it _and_ the blob files.
 
+**A blob instance outlives its file, so deletion tombstones it.** The `fileId` stays set on a `Blob` whose file has been unlinked, and `saveBlob` short-circuits on a set `fileId` — so a caller still holding the instance (the deploy recorder re-puts the same record object across a deploy) would re-encode a reference to a file that is gone. `cleanupUnusedBlobs` marks the blob's shared file state when transaction cleanup decides the file is no longer usable, before an in-flight save settles; slices share that state with their source. Ordinary supersession keeps its retention and re-reference window; reclamation marks every queued instance only after it claims the unlink. `saveBlob` throws on a discarded instance rather than minting a second reference (issue #2062).
+
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
 
 **Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
@@ -63,7 +65,8 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 - **`hasPendingWrites()` walks the `next` chain.** Writes to a second database live on `transaction.next` (see `txnForContext`), so a transaction that reads database A (head, tracked via its read snapshot, empty `writes`) and writes database B (`next`) is still write-bearing. Without the walk the head looks read-only and the monitor's force-commit path would cascade-commit B. `abortDueToTimeout()` poisons + aborts the whole chain.
 - **Read-only, `sourceApply`, and `isReplay` transactions keep the prior force-commit behavior.** Read-only long transactions (large scans/exports) have no atomicity/index risk and must not have their ongoing reads poisoned. Canonical-source applies (replication peer / external caching source) and crash-recovery replay have no resubscribe/resume path: aborting a write would drop it while the resume cursor advances past it — a permanent divergence (harper-pro#348). `sourceApply` is propagated down the `next` chain in `txnForContext`, so gating on the head suffices. (Replay is additionally synchronous, so the async monitor can't fire mid-replay anyway.)
 
-Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
+- **A transaction parked in its commit phase is spared, not poisoned** (issue #2062). `commit()` sets `committing` around its pre-commit await (the `before`/`beforeIntermediate` completions — in practice a blob's durable file write) and the monitor logs instead of aborting while it is set. The limit polices an _application_ holding a transaction open with an unfinished write set; once `commit()` is entered the write set is sealed and the caller is awaiting the commit, so the time is core's own I/O, and a multi-tens-of-MB deploy payload legitimately outruns the limit. Poisoning there was actively destructive: `abort()` cleared the write set and unlinked the write's pre-saved blobs, and the resumed commit then found nothing to write and resolved as **success** — the caller was told its write landed, and was left holding a blob whose file was gone but whose `fileId` was still set, so its next `put` silently minted a reference to a destroyed file (the deploy-payload case: `Blob file not found` on the peer, unrecoverably). The grace is bounded — `COMMIT_PHASE_GRACE` over-limit ticks, ~10 min at the 30s default, since sparing re-arms `timeout` — because the transaction still pins a read snapshot; a source that stalls rather than finishing falls through to the normal abort. `sourceApply`/`isReplay` are spared without a bound: they may be neither aborted (harper-pro#348) nor force-committed mid-write (that would durably commit a replica record whose blob file is still being written), and their blob sources are bounded by the receive-side idle watchdog instead.
+- **Resuming from that await re-checks that the transaction is still alive.** `timedOut` (monitor poison, including via the `next` chain) throws `transactionOpenTooLongError`; a write set cleared with the handle released — a plain `abort()` in the same window — throws `Transaction was aborted while its commit was waiting on pre-commit work`. Without both, either path resolves as a phantom commit. `LMDBTransaction.commit` carries the same pair around its own `before` phase.
 
 **Extending the budget for one known-long write:** `DatabaseTransaction.timeoutBudget` is a per-transaction RocksDB floor applied whenever the transaction is re-armed (initial reads, writes, and active multi-store-chain propagation); the effective timeout is `Math.max(txnExpiration, timeoutBudget)`. This makes the budget sticky across a write's pre-commit existing-entry read and later writes, while never shortening a larger global `STORAGE_MAXTRANSACTIONOPENTIME`; RocksDB links added for another store inherit the same floor. Reads after a pending write do not re-arm the transaction: that preserves the idle-limit invariant for orphaned write-holding requests. Also, `resources/transaction.ts`'s `transaction(callback)` (no explicit context) joins whatever transaction is already open on the ambient AsyncLocalStorage context rather than guaranteeing a fresh one. `components/deploymentRecorder.ts`'s `withIsolatedTransaction` builds a new context from only the ambient audit/session/cancellation fields, so every recorder write commits independently without inheriting transaction controls. It uses the sticky budget to give `ingestPayload`'s blob-gated writes a size-appropriate limit instead of the generic default, while coalesced progress flushes are drained and suppressed until ingest settles to avoid same-row transaction conflicts. The ingest helper deliberately floors the shared `deployment_timeout` at ten minutes because `0` means “poll once” for peer waits; consequently an ingest can pin its system-database snapshot for that minimum. Known gap (harper#2057): the extension only reaches RocksDB transactions — on `HARPER_STORAGE_ENGINE=lmdb`, `Table.txnForContext()` chains a separate `LMDBTransaction` (`txn.next`) with its own independently-reset timeout that the LMDB engine's monitor tracks instead.
 
@@ -86,6 +89,56 @@ The chain only describes reality if **staging order is also execution order**, a
 Both orders are now pinned. `addWrite` defers a write whose earlier same-key write has not run yet, but **only for writes that both consume `priorStagedWrite()` and publish `stagedEntry`** — marked `chainsStagedState`, today just the delete write. `_writeInvalidate`/`_writeRelocate`/`_writePublish` do neither, so reordering them past a staged put would hand them a pre-transaction basis they have no way to correct; they keep their eager save. And the apply loop's `stageWrite` chains the writes to any one key through a per-transaction map so staging order is arrival order, dropping settled entries (a bulk transaction retains one entry per in-flight write, not per record) and short-circuiting successors when a predecessor rejects. LMDB was never exposed: `LMDBTransaction.addWrite` defers every write and has always executed them in `this.writes` order.
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
+
+## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
+
+`txnForContext` builds an `ImmediateTransaction` for a context slot that is empty or holds
+`RELEASED_TRANSACTION`, and installs it there — reached by anything that resolves a transaction without
+going through the static-API wrappers, an instance load (`getResource`) being the common one. That
+instance reports `open === OPEN`, but its `save()` **is** the commit (`saveCommits`), and nothing owns a
+final commit or abort for it.
+
+`TRANSACTION_STATE.OPEN` therefore carries two meanings that are not interchangeable: "will accept a
+write" and "stages writes for an owner that will commit or abort them as a unit". Both join sites —
+`transaction()` and the `transactional` dispatcher — ask `isJoinableScope()` for the second, not the
+first. Joining on OPEN alone meant `transaction(ctx, …)` ran its callback and returned without ever
+reaching its own `commit({ doneWriting: true })`: every write self-committed, a throw partway left the
+earlier ones durable, and `onError`'s abort never ran — silently, with the handler returning success
+(harper#2292, seen live on 5.2.5).
+
+Two things follow from the same invariant:
+
+- A chained link (`transaction.next`, a second database) inherits the head's commit discipline: under a
+  self-committing head it is another `ImmediateTransaction`, transitively down the chain. Such a link is
+  CLOSED once it has committed, and a further write through it would commit on a native handle nothing
+  awaits (harper#2323), so a spent one — closed, no handle, no pending writes — is dropped from the chain
+  and rebuilt rather than handed back. A staging link
+  there is only swept up if the head's own database is written again (its commit cascades the chain), so
+  a handler that writes the second database last silently loses that write.
+- A deferred write (`deferSave`, which is every `_writeUpdate`) is only _triggered_ by
+  `resource.save()`; it lives in the `writes` of whichever transaction `addWrite` put it in
+  (`operation.stagedIn`). So `save()` can run after the context has moved on to a different
+  transaction, which a scope opening in between now makes routine. A joinable scope **takes the write
+  over**: `detachWrite` from the holder, `addWrite` onto the scope, and `priorWrite` cleared. Every
+  commit path decides what to stage, what to replay onto a fresh handle for outstanding iterators, what
+  to roll back and whose blobs to reclaim from `writes` alone, so a write in two lists is either
+  committed twice or dropped by whichever list is consulted first; and the per-key basis chain belongs
+  to the holder, so keeping it would diff the merge and the secondary index against a record that may
+  never land. Otherwise the write stays with its holder, the transaction whose commit will see it. Never
+  taken over from a `sourceApply` or `isReplay` holder: that never-drop-on-conflict policy lives on the
+  transaction and would not travel with the write (harper-pro#348). And only where `addWrite` runs the
+  write — `LMDBTransaction`'s never does (its commit applies `writes`), so on LMDB the holder always keeps
+  it (`stagesWriteOnSave`). A write whose holder has already **finished** is not revived — it is dropped,
+  as it was before any of this — because an aborted holder has already reclaimed that write's blobs, so
+  committing it now would store a record pointing at deleted files. `validate` receives the transaction that is
+  committing the write (`committedBy`) rather than closing over the one that staged it, so overload
+  accounting, the replay marker and a no-op write's removal all follow the takeover.
+
+Ownership is deliberately **not** the test. A context pre-seeded with an externally driven
+`DatabaseTransaction` (`replayLogs.ts`, `Table.ts`) is not `scopeOwned`, yet it still owns the writes the
+static API gives it and its own `commit()`/`abort()` still governs them; gating on `scopeOwned` would
+move those writes onto a transaction the caller does not hold. Writes made with no scope at all keep
+committing per write.
 
 ## Opening a source LMDB DBI for migration must thread through `compression`
 
@@ -142,6 +195,47 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 - **`databaseSubscriptions.activeCount`** is the count of live `Subscription` instances on a database. It is incremented at the end of `addSubscription` (after the Subscription is created, so the `scope: 'full-database'` early-return path correctly skips counting) and decremented in `Subscription.end()`. `notifyFromTransactionData` short-circuits when this is zero — the reusable rocksdb iterator stays put and resumes from its position the next time a subscriber arrives. Without this short-circuit, an idle database with no subscribers still pays the audit-log iteration cost on every commit during replication backlog catch-up.
 - **`notifyScheduled` + `setImmediate`** in the `'committed'` listener defers the iteration off the commit microtask. Multiple `'committed'` events that land in the same event-loop turn collapse into one notify pass. `notifyScheduled` stays set for the entire drain — including across yield-and-resume turns — so a re-entry from a new `'committed'` event cannot spawn a second concurrent notify on the same iterator.
 - **Batched yielding** in `notifyFromTransactionData` (`NOTIFY_BATCH_SIZE`) is gated by `allowYield`. The `'committed'` path passes `allowYield = true`; the `listenToCommits` (same-thread `aftercommit`) path does not, because that path holds an inter-thread `'thread-local-writes'` lock that must not span event-loop turns. `subscribersWithTxns` is carried across yields via `subscriptions.pendingTxnSubscribers` so the `end_txn` signal fires exactly once when the iterator truly drains. When `activeCount` drops to zero mid-yield, the next continuation drops the carry-over to avoid invoking ended subscribers' listeners.
+
+## Audit-entry removal loops must track every `removeAuditEntry()`/`removeEntry()` promise
+
+`scheduleAuditCleanup` (`auditStore.ts`) and `Table.deleteHistory` (`Table.ts`, the LMDB path behind
+`delete_transaction_logs_before`) both iterate a range of audit records and remove each one. Both were
+originally written as `completion = removeAuditEntry(auditStore, auditRecord)` inside the loop, awaiting
+only the final iteration's promise afterward. Any rejection from a non-last iteration was silently
+discarded — the promise reference was overwritten before it could be awaited or caught — and surfaced
+later as an unhandled rejection instead, with no logging to explain it. Any loop that removes
+audit/primary-store entries in a batch must attach a rejection handler to every removal immediately
+and drain all tracked promises before returning — never stash a per-iteration promise in an outer
+variable to await only the last one. `Table.deleteHistory` allows up to 1,000 LMDB removals in flight
+(ten for RocksDB) so storage writes batch without growing an unbounded pending
+set. Live removals are tracked in a `Set`, and each one removes itself and wakes at most one parked
+producer when it settles, so any completion releases the loop. In these removal loops, do not repeatedly
+race the live set: each race attaches another reaction to every long-pending removal. Both phases drain
+their tracked removals before settling, including when iteration throws. `scheduleAuditCleanup` remains
+sequential because it is an automatic background loop.
+
+Individual removal failures are logged and excluded from the returned count, but a purge that attempted
+at least one removal and completed none rejects with the first error after both phases have drained.
+Without that, `delete_transaction_logs_before` reports a successful `entries_deleted: 0` whether nothing
+was eligible or the store rejected every write, and an operator pruning to bound disk growth has no signal
+that pruning did nothing. Drain first, then decide: a failing store should still get every removal it can
+accept, and a single success means the purge made progress and reports normally.
+
+The optional primary-store cleanup snapshots each tombstone's key and version before yielding and passes
+that version to `remove()`. LMDB enforces the condition natively. Harper's RocksDB adapter re-reads and
+removes inside one native transaction, retrying a conflict once, because rocksdb-js's `remove()` accepts
+an options object rather than an LMDB-style version argument. Never replace this with a separate live read
+followed by an unconditional remove: a record recreated between those operations would be deleted.
+
+`removeAuditEntry` has a second, nested version of the same hazard: for a `'delete'`-type audit record it
+also invokes a per-table delete callback (`addDeleteRemovalCallback`) that removes the corresponding
+primary-store tombstone. That callback's promise must be returned and joined with the audit-store
+removal (currently via `Promise.all`, with the callback's own rejection caught and logged separately so
+a failed tombstone cleanup doesn't get misreported as a failed audit-entry removal) — otherwise the
+tombstone removal is fire-and-forget and the same detached-rejection hazard reappears one level down.
+A tombstone whose cleanup fails this way is not swept automatically — `scheduleAuditCleanup`'s automatic
+pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
+in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
@@ -330,9 +424,22 @@ A handful of design points are non-obvious and easy to break:
   _bypassed_ by the seam and is therefore covered at the **integration** level (`sse-listchanged.test.ts` N3
   record / N4 collection), not in unit tests.
 
-Two related traps: the create path's exclusive `update-attributes` lock is a synchronous spin
-lock (`while (!tryLock()) {}`), so any throw inside the create window must release it or every
-subsequent create on that database pins a worker at 100% CPU. And dropping then recreating a
+Two related traps: the create/schema-update path's exclusive `update-attributes` lock is a
+synchronous bounded wait (`acquireUpdateAttributesLock` in `Table.ts`: brief hot spin, then
+`Atomics.wait` backoff, retryable `ServerError` after the 10s `UPDATE_ATTRIBUTES_LOCK_TIMEOUT` — harper#2251; it used to be
+an unbounded `while (!tryLock()) {}` spin that pinned a worker core forever if the holder never
+released). Release is structural — `table()` releases in a single `finally` and `dropTable` uses
+`withUpdateAttributesLock` — so a throw inside the locked window cannot leak the lock (regression
+suite: `unitTests/resources/updateAttributesLock.test.js`). Because the acquire can now throw,
+`table()` takes the RocksDB lock _before_ it mutates the live `Table` (attributes, class metadata,
+index handles): losing the race then leaves this worker's in-memory schema exactly as it found it,
+and moving any mutation above that acquire reintroduces schema drift the catalog never saw. LMDB
+keeps the lazy acquire — its `exclusiveLock()` is an environment-wide write transaction that cannot
+time out, so taking it eagerly would stall every write to the database on an unchanged reload. A
+successful acquire that waited past `UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT` (1s) warns once, since
+contention is otherwise invisible until it becomes a timeout. The locked
+sections MUST stay synchronous: the wait blocks the event loop, so an awaited operation inside
+one would stall a concurrent acquirer to its deadline. And dropping then recreating a
 same-named table within one process requires @harperfast/rocksdb-js >= the column-family
 eviction fix (1.4.3 / rocksdb-js#<main PR>): older bindings keep the dropped column family's
 by-name registry entry alive whenever other worker threads hold handles, so the recreate
@@ -390,6 +497,80 @@ the role `operations` allowlist gate in `verifyPerms` must stay **ahead of** the
 early-returns (super_user, structure_user, system-table allowances): persisted roles can't combine
 `super_user` with other permission keys, but inline roles can combine `structure_user` with an
 allowlist, and the gate ordering is what keeps unlisted schema ops unreachable.
+
+## The dispatched API operation is carried on async context, never on the request (`server/serverHelpers/operationAuthorizationState.ts`)
+
+`verifyPermsAST`'s token-scope check has to be told which top-level API operation the caller
+invoked, because the scope is written in that namespace (`sql`, `export_local`, ...). Two things
+make that awkward:
+
+1. On the **direct-SQL** path, the object handed to `checkASTPermissions` _is_ the client's request
+   body, and this check is the only gate there (`chooseOperation`'s `sql` branch is mutually
+   exclusive with its `verifyPerms` call). Any field read off that object is therefore a way to
+   name whichever operation the caller's scope happens to allow and run arbitrary SQL under it.
+   `jsonMessage.operation` is safe only because dispatch already routed on that same field, so it
+   cannot disagree with the operation running. Never add another.
+2. A **job** re-parses its SQL from the nested `search_operation` in a _different_ async context —
+   `executeJob` persists the request and hands off to the job runner, and `jobProcess.ts` re-enters
+   from the `hdb_job` record. So a store established around the originating request cannot reach
+   it, and the re-parse would be judged as `sql` rather than as the job's own operation.
+
+The carrier is therefore established **in the job worker**, by `runWithDispatchedOperation`, from
+the same `request.operation` that `getOperationFunction` just resolved the handler from. That
+identity is the whole basis for trusting it: the value naming the operation and the value selecting
+the code cannot diverge. A new carrier must preserve that property — an added request property, a
+`search_operation` field, or a persisted `parsed_sql_object` would not.
+
+This lives in the same `AsyncLocalStorage` as the auth bypass rather than a second store, so
+`processAST` reads the state once. `runWithOperationAuthorizationBypass` **preserves** an existing
+carrier on both branches. That is deliberate and was initially got wrong: its enforced branch is not
+a bypass, so a job handler dispatching a nested _authorized_ operation lands there, and dropping the
+carrier would judge that job's re-parsed SQL as the inner `sql` and refuse it partway through its own
+work. The consequence to know is the other direction — a nested dispatch inside a job is judged
+against the **outer** job's operation for any `evaluateSQL` that does not pass through
+`chooseOperation`. It allocates only when a carrier is present; with none, two shared frozen objects
+serve the common path. All four stores are frozen, so `getOperationAuthorizationState()` cannot hand
+a mutable one to a caller.
+
+It has four call sites, and they are not all dispatch wrappers: `server.operation()`
+(`serverUtilities.ts`), the ITC path (`registeredOperations.ts`), the legacy SQL engine
+(`sqlEngine/diff/differential.ts`), and Harper's own `hdb_job` query (`server/jobs/jobs.ts`) — that
+last one **is** reached from the ops-API dispatch, via `search_jobs_by_start_date` →
+`handleGetJobsByStartDate` → `getJobsInDateRange`.
+
+Harper's own internal SQL takes the bypass, not the carrier. `getJobsInDateRange` runs a fixed
+`system.hdb_job` query through `evaluateSQL` beneath a handler the caller was already authorized for,
+and `SqlSearchObject` hardcodes `operation: 'sql'` — so the same mismatch applies, but the answer
+differs, and the reason is easy to get backwards. `verifyPermsAST`'s super_user early return is
+`isSuperUser && !isSuSystemOperation`, so a `system` schema is **exempt** from it and the table check
+genuinely runs. A carrier would therefore put Harper's own query through `hasPermissions` on
+`system.hdb_job`, which passes only because `appendSystemTablesToRole` grants `system.*.read` to a
+hydrated super_user — a super_user principal without an appended `permission.system` (an
+impersonation payload, or any path that skips user-cache hydration) would start getting 403s on an
+operation it is entitled to. The bypass also states the actual intent: the statement is Harper's, not
+the caller's. Wrap the individual statement, not the function — a later caller-dependent statement
+must not inherit it.
+
+A second body field has to be neutralized for any of this to hold: `evaluateSQL` trusts a supplied
+`parsed_sql_object` verbatim and skips parsing, `chooseOperation` overwrites only the **top-level**
+one, and `dataLayer/export.ts` hands the nested `search_operation` straight to `evaluateSQL`. So a
+body-supplied `search_operation.parsed_sql_object` carrying `permissions_checked: true` would run an
+arbitrary AST with the check skipped. `chooseOperation` deletes it, forcing the worker to re-parse
+from the `sql` string that dispatch authorized — the nested object is never overwritten the way the
+top-level one is, because nothing downstream should read one at all.
+
+What is untestable is not the carrier's contract — unit tests cover that by calling
+`runWithDispatchedOperation` directly — but that `jobProcess` is what establishes it. Delete that call
+and those tests stay green. The carrier only changes an outcome through `tokenScopeDenial`, which is
+inert unless the principal carries `tokenOperations`, and that property has exactly one origin: an
+OIDC trust-policy exchange, for which there is no integration harness.
+
+Three different mechanisms are easy to conflate here. `tokenOperations` above is the **OIDC token
+operation scope** (#2174). An **inline-role scoped token** (`create_authentication_tokens` with a
+`role` object) is not the same thing and cannot substitute, because `createScopedToken` mints it
+`super_user: false`, so it cannot invoke a `requires_su` operation such as `export_local` at all.
+**Table permissions** are a third, and also cannot substitute — see the system-schema exemption
+above. See #2298.
 
 ## TLS hot-reload: cert vs. private key follow two different propagation paths (`security/keys.ts`)
 
@@ -578,24 +759,23 @@ engine-only backup):
 
 - **Managed backups** snapshot the blob roots to `<backupDir>/blobs/<backupId>/<rootIndex>/<relpath>`
   — a full, non-incremental copy per backup, mirroring the binding's `transaction_logs/<id>/` layout.
-  Files are hard-linked when possible (cheap, no extra space on the same filesystem) and copied when
-  the backup root is on a different filesystem; never symlinked. Hard-linking is safe against later
-  mutation because Harper blobs are content-addressed and write-once (each write allocates a new
-  monotonic file id → a new path; updates/deletes unlink the old path), so a snapshot's hard link
-  keeps the exact bytes even after the live blob is deleted, and no in-place overwrite can alter it.
-  The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create leaves no
-  partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot (so a
-  blob added after the backup is dropped and one deleted after it returns); `delete_backup` /
-  `purge_backups` remove the corresponding snapshot directories.
+  Each enumerated entry is classified before capture: complete blobs and existing abort markers are
+  hard-linked when possible (copied across filesystems), `.repair` temporaries are omitted, and an
+  incomplete blob is replaced by a retryable PENDING (`0xfe`) marker. If a classified blob vanishes
+  before capture, a terminal ERROR (`0xff`) marker preserves its file id. A file reclaimed before its
+  parent directory is read is outside the snapshot. This keeps a snapshot inode from changing as a
+  live write finishes, while complete blobs remain safe to hard-link because published blob paths are
+  write-once. The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create
+  leaves no partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot;
+  `delete_backup` / `purge_backups` remove the corresponding snapshot directories.
 - **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. The
   binding's streaming backup finalizes its tar with exactly a 1024-byte (two-block) end-of-archive
   marker; `createBackupStream` streams the native _plain_ tar while withholding that trailer
   (verifying it is all-zero), appends the blob entries via `tar-stream` (whose `finalize` writes the
   one real trailer), and gzips the combined stream itself when requested — so the binding is always
-  asked for a plain tar and compression happens after the append. No scratch disk. Blob capture is
-  best-effort point-in-time (whatever files exist while it streams; a blob deleted mid-stream is
-  skipped) — Harper does not freeze blob writes for a backup, the same tradeoff the engine makes for
-  the transaction log.
+  asked for a plain tar and compression happens after the append. No scratch disk. The same blob
+  classification rule applies: complete blobs are streamed, incomplete or post-enumeration missing
+  blobs become PENDING/ERROR marker entries, and repair temporaries are omitted.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
 backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
@@ -749,6 +929,28 @@ install` (unlike a registry install of harper as _someone else's_ dependency) re
   re-release — a rebuild alone reproduces the same tree, bug included. This does **not** apply to the
   react-native residual two bullets up: that subtree is still re-resolved fresh on every build, so a
   bug specific to it (not that anyone should want one there) actually would clear on a rebuild.
+
+## The published image runs `tini -g` as PID 1, not Harper (`Dockerfile`)
+
+Harper used to be PID 1 in the published image. It is now started under `tini -g`, and that is
+user-visible in four ways worth knowing before changing the entrypoint:
+
+- **The restart watchdog depends on it.** `bin/restartExitWatchdog.ts` refuses to arm when
+  `process.pid <= 1`, and the SIGKILL it delivers would be ignored by PID 1 anyway (the kernel
+  drops unhandled signals to the init process). Harper being a _child_ is what makes a wedged
+  restart teardown forcibly exit rather than hang until the orchestrator's own timeout.
+- **`-g` forwards `docker stop`'s SIGTERM to Harper's process group**, not just Harper. This reaches
+  descendants a component spawns in-group — they now receive SIGTERM directly instead of only seeing
+  their parent go away — and is the boundary most likely to change behaviour for such a component. It
+  does **not** reach Harper-managed subprocesses: `utility/processManagement/processManagement.js`
+  forks them `detached: true`, which `setsid()`s them into their own group and session, so tini's
+  group signal never arrives.
+- **`docker exec … ps` and anything keying off PID 1** now sees `tini`, not `node`.
+- **`docker run --init` nests a second init** above `tini`. Harmless, but redundant.
+
+Volumes written by older PID-1 images stay compatible: `utility/processManagement` treats a pid
+file naming PID 1 as stale when PID 1 is an init process, so a container restarted onto such a
+volume does not refuse to start on a "still running" pid that is now `tini`.
 
 ## Per-worker UDS mirrors are separate server instances — port-keyed wiring does not reach them (`server/http.ts`)
 

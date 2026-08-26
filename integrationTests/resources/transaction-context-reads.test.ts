@@ -156,4 +156,86 @@ suite('Transaction context: closed txn in ALS still reads latest', { skip: skipS
 		const body = await dashCount('/DashWriteThenSearch/');
 		strictEqual(body.count, SNAP_IDS.length);
 	});
+
+	test('writes made after the context release completes mid-handler are durable', async () => {
+		const r = await fetch(`${httpURL}/DashReleasedSlotWrite/?company=released`, {
+			headers: { Authorization: auth },
+		});
+		ok(r.status < 300, `DashReleasedSlotWrite expected 2xx, got ${r.status}`);
+		const body = await r.json();
+		strictEqual(
+			body.txnAfterInstall,
+			'ImmediateTransaction',
+			'premise: the released slot must hold an ImmediateTransaction for the writes that follow'
+		);
+		for (const path of ['/Company/released-company-released', '/ScoreSnapshot/released-snap-released']) {
+			const probe = await fetch(`${httpURL}${path}`, { headers: { Authorization: auth } });
+			ok(probe.status < 300, `${path} must be durable, not silently discarded, got ${probe.status}`);
+		}
+	});
+
+	// Both join sites, over a slot holding the installed ImmediateTransaction.
+	for (const [name, variant, ids] of [
+		[
+			'an explicit transaction() scope',
+			'DashReleasedSlotScopeThrow',
+			['/Company/scope-company-atomic', '/ScoreSnapshot/scope-snap-atomic'],
+		],
+		[
+			'a dispatched multi-write action',
+			'DashReleasedSlotDispatch',
+			['/Company/dispatched-company', '/ScoreSnapshot/dispatched-snap'],
+		],
+	] as const) {
+		test(`${name} entered on a released slot rolls all of its writes back`, async () => {
+			const r = await fetch(`${httpURL}/${variant}/?company=atomic`, { headers: { Authorization: auth } });
+			ok(r.status < 300, `${variant} expected 2xx, got ${r.status}`);
+			const body = await r.json();
+			strictEqual(
+				body.txnAfterInstall,
+				'ImmediateTransaction',
+				'premise: the released slot must hold an ImmediateTransaction'
+			);
+			strictEqual(body.failed, true, 'premise: the deliberate failure must have surfaced to the caller');
+			for (const path of ids) {
+				const probe = await fetch(`${httpURL}${path}`, { headers: { Authorization: auth } });
+				strictEqual(probe.status, 404, `${path} must not survive a failed scope entered on a released slot`);
+			}
+		});
+	}
+
+	test('a second database written through the installed instance is committed, not stranded', async () => {
+		const seed = await fetch(`${httpURL}/AuditNote/`, {
+			method: 'POST',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ id: 'chained-note', note: 'seed' }),
+		});
+		ok(seed.status < 300, `seeding AuditNote failed with ${seed.status}`);
+		const r = await fetch(`${httpURL}/DashReleasedSlotChainedDatabase/`, { headers: { Authorization: auth } });
+		ok(r.status < 300, `DashReleasedSlotChainedDatabase expected 2xx, got ${r.status}`);
+		const body = await r.json();
+		strictEqual(
+			body.txnAfterInstall,
+			'ImmediateTransaction',
+			'premise: the released slot must hold an ImmediateTransaction'
+		);
+		const probe = await fetch(`${httpURL}/AuditNote/chained-note`, { headers: { Authorization: auth } });
+		ok(probe.status < 300, `the chained database's record must exist, got ${probe.status}`);
+		strictEqual((await probe.json()).note, 'kept', 'the write to the chained database must not be stranded');
+	});
+
+	test('an explicit transaction() scope entered on a released slot commits all of its writes', async () => {
+		const r = await fetch(`${httpURL}/DashReleasedSlotScopeOk/?company=keep`, { headers: { Authorization: auth } });
+		ok(r.status < 300, `DashReleasedSlotScopeOk expected 2xx, got ${r.status}`);
+		const body = await r.json();
+		strictEqual(
+			body.txnAfterInstall,
+			'ImmediateTransaction',
+			'premise: the released slot must hold an ImmediateTransaction'
+		);
+		for (const path of ['/Company/scope-ok-company-keep', '/ScoreSnapshot/scope-ok-snap-keep']) {
+			const probe = await fetch(`${httpURL}${path}`, { headers: { Authorization: auth } });
+			ok(probe.status < 300, `${path} must be durable once the scope completes, got ${probe.status}`);
+		}
+	});
 });

@@ -17,7 +17,7 @@ import * as terms from '../utility/hdbTerms.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import * as sqlEngineRouter from '../sqlEngine/router.ts';
-import { isOperationAuthorizationBypassed } from '../server/serverHelpers/operationAuthorizationState.ts';
+import { getOperationAuthorizationState } from '../server/serverHelpers/operationAuthorizationState.ts';
 
 //here we call to define and import custom functions to alasql
 alasqlFunctionImporter(alasql);
@@ -90,20 +90,20 @@ export function checkASTPermissions(jsonMessage: any, parsedSqlObject: any, apiO
 			// a caller to name whichever operation their token scope happens to allow and run arbitrary
 			// SQL under it.
 			//
-			// That rules out carrying the job's real operation on the request too. A job re-parses from
-			// its nested search_operation, so this sees `sql` rather than `export_local` there — which
-			// today changes nothing, because the branch in processAST that would act on the denial is
-			// dead (see #2202). When #2202 makes it live, the job's operation needs a carrier that a
-			// client cannot forge; a request property is not one, however carefully it is stripped.
+			// A job's re-parse would otherwise land here with the nested search_operation, whose
+			// `operation` is the inner `sql`; the job worker supplies the real one out of async context
+			// instead (operationAuthorizationState), which a request cannot set.
 			apiOperation ?? jsonMessage.operation
 		);
-		parsedSqlObject.permissions_checked = true;
 	} catch (e) {
 		throw e;
 	}
 	if (verifyResult) {
 		return verifyResult;
 	}
+	// Only after a pass: this flag is what processAST trusts to skip the gate, so a denied AST
+	// carrying it would read as already authorized.
+	parsedSqlObject.permissions_checked = true;
 	return null;
 }
 
@@ -150,15 +150,17 @@ export function processAST(jsonMessage: any, parsedSqlObject: any, callback: any
 		// runWithOperationAuthorizationBypass), never body state — jsonMessage.bypass_auth is
 		// caller-controlled and is stripped before operation code sees it (see
 		// server/serverHelpers/serverHandlers.js and components/mcp/tools/operations.ts).
-		if (!isOperationAuthorizationBypassed() && !parsedSqlObject.permissions_checked) {
-			let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject);
-			// NOTE: this guard is dead — PermissionResponseObject has no `length`, so `undefined > 0`
-			// discards a denial that was computed correctly. Pre-existing and not specific to this
-			// feature, so it is fixed separately in #2202 rather than bundled here. This PR does not
-			// depend on it: the outer gate in serverUtilities refuses an out-of-scope job operation,
-			// and sqlWriteScopeDenial refuses write SQL, both through correct truthiness tests.
-			if (permissionsCheck && permissionsCheck.length > 0) {
-				return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);
+		if (!parsedSqlObject.permissions_checked) {
+			const authorizationState = getOperationAuthorizationState();
+			if (authorizationState?.bypassAuth !== true) {
+				let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject, authorizationState?.apiOperation);
+				// A denial is a PermissionResponseObject, which has no `length`.
+				if (permissionsCheck) {
+					// Logged here because this is the last place the reason exists: evaluateSQL drops the
+					// second callback argument, so a job worker records only the bare status.
+					logger.warn('SQL statement refused by AST permission check:', permissionsCheck);
+					return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);
+				}
 			}
 		}
 

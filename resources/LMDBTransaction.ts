@@ -1,11 +1,13 @@
 import {
 	DatabaseTransaction,
+	shouldSpareCommitPhase,
 	transactionOpenTooLongError,
 	type CommitOptions,
 	type TransactionWrite,
 	type CommitResolution,
 } from './DatabaseTransaction';
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
@@ -25,6 +27,7 @@ export function replicationConfirmation(callback) {
 }
 
 export class LMDBTransaction extends DatabaseTransaction {
+	stagesWriteOnSave = false;
 	#context: Context;
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
 	validated = 0;
@@ -37,7 +40,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	getReadTxn(): any {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
-		this.timeout = txnExpiration; // reset the timeout
+		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0); // reset the timeout
 		if (this.stale) this.stale = false;
 		if (this.readTxn) {
 			if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
@@ -97,6 +100,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
 			const result = immediateTxn.commit({});
+			// Nothing may be sent back to this throwaway: the write is already committed, and its
+			// durability is the promise below.
+			operation.stagedIn = undefined;
 			if (result?.then) {
 				operation.promise = result;
 			} else {
@@ -107,6 +113,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
+		operation.stagedIn = this;
 	}
 
 	removeWrite(operation: TransactionWrite) {
@@ -133,7 +140,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.validated = this.writes.length;
 				for (let i = start; i < this.validated; i++) {
 					const write = this.writes[i];
-					write?.validate?.(this.timestamp);
+					write?.validate?.(this.timestamp, this);
 				}
 				let hasBefore;
 				for (let i = start; i < this.validated; i++) {
@@ -148,6 +155,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 				// source writes will finish (with right to refuse/abort) before proceeeding to less
 				// canonical sources.
 				if (hasBefore) {
+					// see `committing` in DatabaseTransaction (issue #2062)
+					this.setCommitPhase(true);
+					const stagedWrites = this.writes.length;
 					return (async () => {
 						try {
 							for (let phase = 0; phase < 2; phase++) {
@@ -167,9 +177,15 @@ export class LMDBTransaction extends DatabaseTransaction {
 								if (completion) await (completion.push ? Promise.all(completion) : completion);
 							}
 						} catch (error) {
+							this.setCommitPhase(false);
 							this.abort();
 							throw error;
 						}
+						this.setCommitPhase(false);
+						// aborted underneath us while parked above — see DatabaseTransaction's twin guard
+						if (this.timedOut) throw transactionOpenTooLongError();
+						if (stagedWrites > 0 && this.writes.length === 0 && this.open === TRANSACTION_STATE.CLOSED)
+							throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
 						return this.commit(options);
 					})();
 				}
@@ -342,6 +358,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 }
 
 export class ImmediateTransaction extends LMDBTransaction {
+	saveCommits = true;
 	constructor(db: RootDatabaseKind) {
 		super();
 		this.db = db;
@@ -366,10 +383,21 @@ let timer;
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
+		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
 		for (const txn of trackedTxns) {
+			const commitChainHead = txn.commitChainHead ?? txn;
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
-				if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
+				if (shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
+					// see DatabaseTransaction's monitor (issue #2062)
+					harperLogger.warn?.(
+						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work (e.g. a large blob write); letting it complete, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`,
+						...(txn.startedFrom ? [`was started from ${txn.startedFrom.resourceName}.${txn.startedFrom.method}`] : [])
+					);
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
+				} else if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
 					// Abort and surface an error rather than force-committing a partial write set: silently
 					// committing on the application's behalf breaks atomicity and can leave orphaned
 					// secondary-index entries that only a full index rebuild repairs (issue #1407). The app
@@ -384,7 +412,7 @@ function startMonitoringTxns() {
 						}`
 					);
 					try {
-						txn.abortDueToTimeout();
+						commitChainHead.abortDueToTimeout();
 					} catch (error) {
 						harperLogger.debug?.(`Error aborting timed out transaction: ${error.message}`);
 					}
@@ -402,7 +430,7 @@ function startMonitoringTxns() {
 					} catch (error) {
 						harperLogger.debug?.(`Error committing timed out transaction: ${error.message}`);
 					}
-					txn.timeout = txnExpiration;
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
 				}
 			} else {
 				txn.timeout -= txnExpiration;

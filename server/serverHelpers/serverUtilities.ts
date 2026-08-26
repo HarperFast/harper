@@ -51,6 +51,7 @@ import {
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
+import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -186,6 +187,10 @@ export type OperationDefinition = {
 	requiresSuperUser?: boolean;
 };
 
+// Operation names this API installed a permission entry for, so a later registration that drops
+// `requiresSuperUser` can retract exactly that entry and nothing else.
+const declaredPermissionNames = new Set<string>();
+
 /**
  * Register an operation function with the server.
  * @param operationDefinition
@@ -195,7 +200,14 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	if (isDeployValidating()) return;
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
-	if (requiresSuperUser !== undefined) {
+	if (requiresSuperUser === undefined) {
+		// A re-registration that drops the flag must also drop the entry the earlier one installed, or
+		// declaration and enforcement disagree: main retracts the grantable mark while this worker keeps
+		// honouring an already-persisted role grant. Scoped to names declared through this API, so one it
+		// never declared is untouched — a component that declared a built-in's name already overwrote
+		// that entry by declaring it, and this only follows.
+		if (declaredPermissionNames.delete(name)) opAuth.unregisterOperationPermission(name);
+	} else {
 		// verifyPerms keys requiredPermissions by the handler's function `.name`, but registered ops
 		// are typically anonymous arrows (all named "execute") which collide and can't be keyed. Wrap
 		// in a FRESH function named after the op so the lookup resolves the right entry. Wrap rather
@@ -205,12 +217,14 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		handler = (...args: any[]) => (execute as any)(...args);
 		Object.defineProperty(handler, 'name', { value: name, configurable: true });
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
+		declaredPermissionNames.add(name);
 	}
 	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
 	// Components load per-worker, so a registration made there is invisible to the main-thread
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
-	// so the main thread can forward calls to this worker (#1736).
-	if (!isMainThread) announceRegisteredOperation(name);
+	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
+	// registerOperationPermission above made only in this thread's scope.
+	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
 };
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
@@ -247,14 +261,10 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
 			const sql = require('../../sqlTranslator/index');
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
+			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
+			stripSuppliedParsedSqlObject(json);
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
-			// NOTE: a job's SQL is re-parsed from its nested search_operation when the job runs, so the
-			// check there sees `sql` rather than the job's own operation. Carrying the real one on the
-			// request was tried and reverted: on the direct-SQL path the request is the client's body,
-			// so any property consulted by that check is forgeable, and it is the only gate on that
-			// path. This changes no outcome today — the branch that would act on the denial is dead
-			// (#2202) — but #2202 needs an unforgeable carrier before making it live.
 			if (!bypassAuth) {
 				// The SQL path never reaches verifyPerms, so the role `operations` allowlist must be
 				// enforced here — otherwise an allowlisted role reaches unlisted operations via `sql`.
