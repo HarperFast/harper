@@ -26,6 +26,11 @@ name: Node 26 Canary (harper#2025)
 on:
   schedule:
     - cron: '0 7 * * *'
+  pull_request:
+    paths:
+      - '.github/canaries/static-cache-headers-fetch.test.ts'
+      - '.github/workflows/node26-canary.yml'
+      - 'integrationTests/fixtures/static-cache-headers/**'
   workflow_dispatch:
     inputs:
       node-version:
@@ -48,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ${{ github.event_name == 'schedule' && fromJSON('["26", "26.5.0"]') || fromJSON(format('["{0}"]', inputs.node-version)) }}
+        node-version: ${{ github.event_name != 'workflow_dispatch' && fromJSON('["26", "26.5.0"]') || fromJSON(format('["{0}"]', inputs.node-version)) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -136,26 +141,28 @@ jobs:
             echo "::error::the canary suite did not execute — refusing to interpret exit $test_exit as evidence about harper#2025."
             exit 1
           fi
-          if [ "$test_exit" -eq 0 ]; then
-            if [ "$REQUESTED_NODE_VERSION" = "26.5.0" ]; then
+          reproduced=false
+          if grep -Fq "harper#2025 fetch discriminator:" "$test_output_file"; then
+            reproduced=true
+          fi
+          if [ "$test_exit" -ne 0 ]; then
+            echo "::error::the Node $(node --version) canary failed outside harper#2025's handled discriminator path (exit $test_exit)."
+            exit 1
+          elif [ "$REQUESTED_NODE_VERSION" = "26.5.0" ]; then
+            if [ "$reproduced" = true ]; then
+              echo "::error::harper#2025 reproduced on the pinned Node $(node --version) control — the discriminator is invalid."
+              exit 1
+            else
               echo "harper#2025 fetch canary control passed as expected on pinned Node $(node --version)." | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
-            else
-              echo "::error::harper#2025 no longer reproduces on Node $(node --version) — the fetch canary PASSED, which is unexpected while the issue is open. Corroborate in harper-pro before removing the temporary pin in integration-tests.yml or proposing closure of harper#2025."
-              echo "**harper#2025 fetch canary: UNEXPECTED PASS on Node $(node --version)** — corroboration required. See harper#2025." | tee -a "$GITHUB_STEP_SUMMARY"
-              exit 1
             fi
+          elif [ "$reproduced" = false ]; then
+            echo "::error::harper#2025 no longer reproduces on Node $(node --version) — the fetch canary PASSED, which is unexpected while the issue is open. Corroborate in harper-pro before removing the temporary pin in integration-tests.yml or proposing closure of harper#2025."
+            echo "**harper#2025 fetch canary: UNEXPECTED PASS on Node $(node --version)** — corroboration required. See harper#2025." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
           else
-            if [ "$REQUESTED_NODE_VERSION" = "26.5.0" ]; then
-              echo "::error::harper#2025 fetch canary failed on the pinned Node $(node --version) control (exit $test_exit) — the discriminator is invalid."
-              exit 1
-            elif ! grep -Fq "harper#2025 fetch discriminator:" "$test_output_file"; then
-              echo "::error::the Node $(node --version) canary failed without harper#2025's discriminator signature (exit $test_exit) — this is not evidence that the known defect reproduced."
-              exit 1
-            else
-              echo "harper#2025 fetch canary: reproduced as expected on Node $(node --version) (exit $test_exit) — issue is still open, no action needed." | tee -a "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
+            echo "harper#2025 fetch canary: reproduced as expected on Node $(node --version) — issue is still open, no action needed." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
       # Always, not `if: failure()`: the canary-tests step exits 0 on its expected-reproduction

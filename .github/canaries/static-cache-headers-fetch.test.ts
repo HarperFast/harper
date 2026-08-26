@@ -5,7 +5,7 @@
  * node:http client. The Node 26 canary invokes it explicitly because global fetch is the
  * bundled-undici path whose regression keeps the default Node 26 matrix pinned at 26.5.0.
  */
-import { after, before, suite, test } from 'node:test';
+import { after, before, suite, test, type TestContext } from 'node:test';
 import assert from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -15,10 +15,15 @@ import { createApiClient } from '../../integrationTests/apiTests/utils/client.mj
 const FIXTURE_PATH = resolve(import.meta.dirname, '../../integrationTests/fixtures/static-cache-headers');
 const PROJECT = 'static-cache-headers';
 const FETCH_STALL_THRESHOLD_MS = 2_000;
+const FETCH_HARD_TIMEOUT_MS = 20_000;
+const FETCH_DISCRIMINATOR = 'harper#2025 fetch discriminator:';
+
+class FetchStallError extends Error {}
 
 suite('Node 26 fetch canary: static plugin cache-header options', (context: ContextWithHarper) => {
 	let client: any;
 	let maxFetchDurationMs = 0;
+	let defectReproduced = false;
 
 	before(async () => {
 		await setupHarperWithFixture(context, FIXTURE_PATH);
@@ -31,18 +36,54 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 
 	async function getPath(path: string): Promise<Response> {
 		const startedAt = performance.now();
-		const response = await fetch(new URL(path, context.harper.httpURL));
+		let timeout: NodeJS.Timeout | undefined;
+		const request = fetch(new URL(path, context.harper.httpURL)).then(async (response) => {
+			if (response.status !== 200) {
+				await response.body?.cancel();
+				assert.strictEqual(response.status, 200);
+			}
+			await response.text();
+			return response;
+		});
+		let response: Response;
+		try {
+			response = await Promise.race([
+				request,
+				new Promise<never>((_resolve, reject) => {
+					timeout = setTimeout(
+						() => reject(new FetchStallError(`${FETCH_DISCRIMINATOR} GET ${path} exceeded ${FETCH_HARD_TIMEOUT_MS}ms`)),
+						FETCH_HARD_TIMEOUT_MS
+					);
+				}),
+			]);
+		} finally {
+			clearTimeout(timeout);
+		}
 		const durationMs = performance.now() - startedAt;
 		maxFetchDurationMs = Math.max(maxFetchDurationMs, durationMs);
 		if (durationMs >= FETCH_STALL_THRESHOLD_MS) {
-			throw new Error(
-				`harper#2025 fetch discriminator: GET ${path} took ${Math.round(durationMs)}ms ` +
+			throw new FetchStallError(
+				`${FETCH_DISCRIMINATOR} GET ${path} took ${Math.round(durationMs)}ms ` +
 					`(threshold ${FETCH_STALL_THRESHOLD_MS}ms)`
 			);
 		}
-		assert.strictEqual(response.status, 200);
-		await response.text();
 		return response;
+	}
+
+	function canaryTest(name: string, body: () => Promise<void>): void {
+		test(name, async (testContext: TestContext) => {
+			if (defectReproduced) {
+				testContext.skip('harper#2025 already reproduced');
+				return;
+			}
+			try {
+				await body();
+			} catch (error) {
+				if (!(error instanceof FetchStallError)) throw error;
+				defectReproduced = true;
+				console.error(error.message);
+			}
+		});
 	}
 
 	async function getCss(): Promise<Response> {
@@ -78,36 +119,36 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 		);
 	}
 
-	test('default: public, max-age=0 with ETag/Last-Modified', async () => {
+	canaryTest('default: public, max-age=0 with ETag/Last-Modified', async () => {
 		const response = await getCss();
 		assert.strictEqual(response.headers.get('cache-control'), 'public, max-age=0');
 		assert.ok(response.headers.get('etag'), 'should emit an ETag');
 		assert.ok(response.headers.get('last-modified'), 'should emit Last-Modified');
 	});
 
-	test('maxAge in seconds', async () => {
+	canaryTest('maxAge in seconds', async () => {
 		await applyAndWaitForCacheControl("static:\n  files: 'web/**'\n  maxAge: 300\n", 'public, max-age=300');
 	});
 
-	test('maxAge as duration string + immutable', async () => {
+	canaryTest('maxAge as duration string + immutable', async () => {
 		await applyAndWaitForCacheControl(
 			"static:\n  files: 'web/**'\n  maxAge: 1d\n  immutable: true\n",
 			'public, max-age=86400, immutable'
 		);
 	});
 
-	test('cacheControl string overrides maxAge/immutable', async () => {
+	canaryTest('cacheControl string overrides maxAge/immutable', async () => {
 		await applyAndWaitForCacheControl(
 			"static:\n  files: 'web/**'\n  maxAge: 300\n  cacheControl: 'public, max-age=60, s-maxage=3600'\n",
 			'public, max-age=60, s-maxage=3600'
 		);
 	});
 
-	test('cacheControl: false suppresses the header', async () => {
+	canaryTest('cacheControl: false suppresses the header', async () => {
 		await applyAndWaitForCacheControl("static:\n  files: 'web/**'\n  cacheControl: false\n", null);
 	});
 
-	test('cacheOverrides: per-file policy layered over the top-level defaults', async () => {
+	canaryTest('cacheOverrides: per-file policy layered over the top-level defaults', async () => {
 		const yaml =
 			'static:\n' +
 			"  files: 'web/**'\n" +
