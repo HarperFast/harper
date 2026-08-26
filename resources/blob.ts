@@ -583,6 +583,18 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		let position = 0;
 		let totalContentRead = 0;
 		let watcher: FSWatcher;
+		// Drop the live watcher before closing it, so a callback racing the close cannot pass its
+		// `isLive` check — and so a close() on an already-failed handle cannot abandon the teardown
+		// it was part of. Every site that retires this watcher goes through here.
+		const closeWatcher = () => {
+			const opened = watcher;
+			watcher = null;
+			try {
+				opened?.close();
+			} catch (error) {
+				logger.debug?.(`Could not close the in-progress watch of ${filePath}:`, error);
+			}
+		};
 		let watchTarget: { path: string; mustPoll: boolean };
 		let timer: NodeJS.Timeout;
 		// The start() open-retry timer lives in a different scope/phase than pull()'s `timer`; track it
@@ -684,10 +696,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 						settled = true;
 						closeFd();
 						clearTimeout(timer);
-						if (watcher) {
-							watcher.close();
-							watcher = null;
-						}
+						closeWatcher();
 						reject(error);
 						blob.#onError?.forEach((callback) => callback(error));
 					}
@@ -810,10 +819,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											);
 											if (updatedSize === UNKNOWN_SIZE) return false;
 											size = updatedSize;
-											if (watcher) {
-												watcher.close();
-												watcher = null;
-											}
+											closeWatcher();
 											// The header reports a known final size but the bytes at `position` have not arrived.
 											// Re-entering readMore() synchronously here busy-spins the worker at ~100% CPU on a
 											// present-but-truncated blob (header rewritten to a self-consistent smaller size, lock
@@ -839,13 +845,12 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 										watcher = watchInProgressFile(filePath, watchTarget, {
 											isLive: (candidate) => watcher === candidate,
 											onChange: () => {
-												watcher.close();
-												watcher = null;
+												closeWatcher();
 												clearTimeout(timer); // clear it
 												readMore(resolve, reject);
 											},
 											onFailure: () => {
-												watcher = undefined;
+												watcher = null;
 												clearTimeout(timer);
 												timer = setTimeout(() => readMore(resolve, reject), 20).unref();
 											},
@@ -854,10 +859,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
 											// never mind with the watcher, let's read more data
-											if (watcher) {
-												watcher.close();
-												watcher = null;
-											}
+											closeWatcher();
 											readMore(resolve, reject);
 										} else if (!resumeIfWriterFinished()) {
 											if (!watcher) {
@@ -964,10 +966,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				closeFd(); // releases the hold, including when cancelled before any open succeeded
 				clearTimeout(timer);
 				clearTimeout(openTimer);
-				if (watcher) {
-					watcher.close();
-					watcher = null;
-				}
+				closeWatcher();
 			},
 		});
 		function checkIfIsBeingWritten() {

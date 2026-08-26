@@ -1281,7 +1281,9 @@ if (isMainThread) {
 							.then(() => opened.close())
 							.catch(() => {})
 							.then(openWatcher)
-							.catch(() => {});
+							.catch((reopenError) =>
+								console.error(`Could not reopen the ${dir} component-reload watch on polling:`, reopenError)
+							);
 						return;
 					}
 					console.error(`Error watching ${dir} for component reloads:`, error);

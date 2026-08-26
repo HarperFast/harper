@@ -379,7 +379,7 @@ function loadAndWatch(path, loadCert, type) {
 						.then(() => opened.close())
 						.catch(() => {})
 						.then(openWatcher)
-						.catch(() => {});
+						.catch((error) => logger.error?.(`Could not reopen the ${type} watch on polling:`, path, error));
 					return;
 				}
 				logger.error?.(`Error watching ${type}:`, path, error);
