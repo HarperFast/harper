@@ -50,11 +50,9 @@ A typical record:
 			"metric": "bytes-sent",
 			"path": "search_by_conditions",
 			"type": "operation",
-			"median": 202,
-			"mean": 202,
-			"p95": 202,
-			"p90": 202,
-			"count": 1
+			"mean": 201,
+			"distribution": [198, { "value": 202, "count": 3 }],
+			"count": 4
 		},
 		{
 			"metric": "memory",
@@ -105,10 +103,16 @@ A typical aggregate record:
 	"metric": "bytes-sent",
 	"method": "connack",
 	"type": "mqtt",
-	"median": 4,
 	"mean": 4,
-	"p95": 4,
+	"p1": 4,
+	"p10": 4,
+	"p25": 4,
+	"median": 4,
+	"p75": 4,
 	"p90": 4,
+	"p95": 4,
+	"p99": 4,
+	"p999": 4,
 	"count": 1,
 	"id": 1688589569646,
 	"time": 1688589569646

@@ -33,11 +33,17 @@ storage:
 
 ### `storage.maxTransactionQueueTime`
 
+<VersionBadge type="changed" version="v5.2.1" />
+
 Type: `string` (duration)
 
 Default: `45s`
 
-The maximum time a single write commit may remain unsettled before Harper starts rejecting new application-originated writes on that thread with HTTP 503. This is a per-commit duration check, not a queue-length threshold — it acts as backpressure when downstream disk I/O cannot keep up with incoming writes. Deletes and writes applied from a canonical source (e.g. replication or a caching source) bypass this check.
+The maximum time a tracked write commit may remain unsettled before Harper rejects new application-originated record updates and publishes on that thread with HTTP 503. This is a per-commit duration check, not a queue-length threshold — it acts as backpressure when downstream disk I/O cannot keep up with incoming writes. Deletes and writes applied from a canonical source (e.g. replication or a caching source) bypass this check.
+
+Beginning with v5.2.1, Harper tracks every outstanding commit attempt for this check. In v5.2.0, only one commit per thread was tracked at a time, so any commit — including a conflict retry or a chained commit — submitted while another was already outstanding could be omitted from overload detection.
+
+The [`transaction-commit-time` metric](../analytics/overview.md#storage-metrics) provides the corresponding commit-latency distribution, but only records each attempt after it settles.
 
 Lower this in latency-sensitive systems where it is better to shed load early than to let request queues grow. Raise it when occasional disk-write bursts are expected and the application can tolerate longer commit latency.
 
