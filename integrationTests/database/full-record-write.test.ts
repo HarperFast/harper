@@ -678,6 +678,65 @@ suite('full_record: full replace over the operations API', { skip: skipSuite }, 
 		ok(stored == null, `nothing should have been written; got ${JSON.stringify(stored)}`);
 	});
 
+	// `getRecordAttributes` used to return an empty set for any request carrying `action`, on the
+	// grounds that bulk loads check attribute permissions per chunk instead. But `action` is an
+	// unknown-but-accepted key on the insert/update/upsert validator, so adding `action: "update"` to a
+	// direct request skipped EVERY attribute check — including the one that authorizes `__unset__`
+	// removals. The opt-out is now keyed on the operation being a known bulk load.
+	test('a caller-supplied action does not skip the attribute-permission check', async () => {
+		await insert('Dog', [{ id: 'act-1', name: 'Penny', breed: 'Mutt', color: 'black' }]);
+		const headers = await addScopedRole(
+			'action_scoped',
+			{
+				data: {
+					tables: {
+						Dog: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: false,
+							attribute_permissions: [
+								{ attribute_name: 'id', read: true, insert: true, update: true },
+								{ attribute_name: 'color', read: true, insert: true, update: false },
+							],
+						},
+					},
+				},
+			},
+			'action_scoped_user'
+		);
+
+		for (const body of [
+			// The removal, which needs `update` on `color`.
+			{ operation: 'update', database: 'data', table: 'Dog', records: [{ id: 'act-1', __unset__: ['color'] }] },
+			// ...and the same request with the escape hatch attached.
+			{
+				operation: 'update',
+				database: 'data',
+				table: 'Dog',
+				action: 'update',
+				records: [{ id: 'act-1', __unset__: ['color'] }],
+			},
+			// A plain write of the same attribute, for the pre-existing half of the hole.
+			{
+				operation: 'update',
+				database: 'data',
+				table: 'Dog',
+				action: 'update',
+				records: [{ id: 'act-1', color: 'brown' }],
+			},
+		]) {
+			const r = await asUser(headers, body);
+			strictEqual(
+				r.status,
+				403,
+				`expected a denial for ${JSON.stringify(body.records)}${body.action ? ' with action' : ''}; got ${r.status} ${JSON.stringify(r.body)}`
+			);
+		}
+
+		strictEqual((await read('Dog', 'act-1')).color, 'black', 'no denied request may have altered the attribute');
+	});
+
 	// The refusal keys on whether there is a record to remove from, not on which operation asked.
 	// Guarding the insert flag alone left this case reaching the same silent partial write one branch
 	// over: `insertUpdateValidate` requires a primary key only for `update`, so an `upsert` without one

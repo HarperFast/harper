@@ -853,7 +853,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		}
 	}
 
-	const recordAttrs = getRecordAttributes(requestJson);
+	const recordAttrs = getRecordAttributes(requestJson, op);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
 	// `full_record: true` makes a write a full replace, which REMOVES every attribute the request
 	// omits. `checkAttributePerms` below only sees the attributes the request SUPPLIES, so it cannot
@@ -1082,12 +1082,20 @@ export function checkAttributePerms(
  * @param json - json containing the request
  * @returns {Set} - all attributes affected by the request statement.
  */
-function getRecordAttributes(json) {
+/** Whether the operation checks attribute permissions per chunk rather than from this request. */
+function isBulkLoadOperation(operationName): boolean {
+	return Object.values(BULK_OPS).includes(operationName);
+}
+
+function getRecordAttributes(json, operationName?) {
 	let affectedAttributes = new Set();
 	try {
-		//Bulk load operations need to have attr-level permissions checked during the validateChunk step of the operation
-		// in the bulkLoad.js methods
-		if (json.action) {
+		// Bulk load operations have their attribute permissions checked per chunk instead, in
+		// `bulkLoad.validateChunk` — the records aren't in this request. That opt-out is keyed on the
+		// OPERATION, never on the caller-supplied `action` field: `action` is an unknown-but-accepted
+		// key on the insert/update/upsert validator, so inferring the opt-out from its presence let any
+		// direct request skip every attribute check by adding `action: "update"` to the body.
+		if (isBulkLoadOperation(operationName)) {
 			return affectedAttributes;
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {

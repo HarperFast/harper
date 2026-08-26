@@ -834,10 +834,13 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
  * accepting them would return 200 and change nothing.
  */
 function takeUnsetAttributes(record: Record<string, unknown>, Table: any, hasNoExistingRecord: boolean): string[] {
-	if (!(OPERATIONS_UNSET_KEY in record)) return NO_UNSET_ATTRIBUTES;
+	// Own property, not `in`: an inherited `__unset__` (a record built on a prototype carrying one, or
+	// after prototype pollution) would enter this path with no directive of its own, and `delete`
+	// cannot remove an inherited value — so the caller would go on to delete the attributes it names.
+	// Still a presence check rather than a value check, so an explicitly-undefined own key comes off.
+	if (!Object.prototype.hasOwnProperty.call(record, OPERATIONS_UNSET_KEY)) return NO_UNSET_ATTRIBUTES;
 	const unset = record[OPERATIONS_UNSET_KEY];
-	// Before the shape is judged, and on every exit: `in` rather than a value check, so an
-	// explicitly-undefined key still comes off the record.
+	// Removed before the shape is judged, and on every exit below.
 	delete record[OPERATIONS_UNSET_KEY];
 	if (hasNoExistingRecord) {
 		throw new ClientError(
