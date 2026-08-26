@@ -73,14 +73,15 @@ type MyTable @table {
 
 Optional arguments:
 
-| Argument       | Type      | Default                       | Description                                                                 |
-| -------------- | --------- | ----------------------------- | --------------------------------------------------------------------------- |
-| `table`        | `String`  | type name                     | Override the table name                                                     |
-| `database`     | `String`  | `"data"`                      | Database to place the table in                                              |
-| `expiration`   | `Int`     | —                             | Seconds until a record goes stale (useful for caching tables)               |
-| `eviction`     | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed |
-| `scanInterval` | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                              |
-| `replicate`    | `Boolean` | true                          | Enable replication of this table                                            |
+| Argument       | Type      | Default                       | Description                                                                                 |
+| -------------- | --------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `table`        | `String`  | type name                     | Override the table name                                                                     |
+| `database`     | `String`  | `"data"`                      | Database to place the table in                                                              |
+| `expiration`   | `Int`     | —                             | Seconds until a record goes stale (useful for caching tables)                               |
+| `eviction`     | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed                 |
+| `scanInterval` | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                                              |
+| `replicate`    | `Boolean` | true                          | Enable replication of this table                                                            |
+| `cacheControl` | `String`  | —                             | `Cache-Control` header value emitted on anonymous GET/HEAD 200/304 responses for this table |
 
 **`expiration`, `eviction`, and `scanInterval`**
 
@@ -161,6 +162,37 @@ type Event @table(database: "analytics", expiration: 86400) {
 **Database naming:** Since all tables default to the `data` database, when designing plugins or applications, consider using unique database names to avoid table naming collisions.
 
 **Replication:** Replication is enabled by default for all tables. Note that if you disable replication on a table and re-enable it later, it will not catch-up on previous writes during when the replication was disabled.
+
+#### `cacheControl`
+
+<VersionBadge version="v5.2.0" />
+
+The `cacheControl` argument sets a `Cache-Control` header value emitted on anonymous (unauthenticated) GET/HEAD `200`/`304` responses for this table. It is designed for tables whose content is public and safe for shared caches (CDNs, reverse proxies) to store.
+
+```graphql
+type Product @table(cacheControl: "public, max-age=60") @export {
+	id: Long @primaryKey
+	name: String
+	price: Float
+}
+```
+
+Key semantics:
+
+- **Anonymous reads only.** The header is emitted only when the request carries no authenticated principal. Authenticated responses instead receive an identity floor of `Cache-Control: private, no-cache` (plus `Vary: Authorization`/`Cookie`) — the table declaration is not inherited by authenticated reads.
+- **Explicit opt-in required.** Anonymous readability alone does not cause Harper to emit shared-cache headers, because a table gated on request attributes (IP, headers, etc.) could leak across a URL-keyed cache. The `cacheControl` declaration is the explicit statement that the content is safe to cache publicly.
+- **Never on 401 responses.** A rejected request always gets `Cache-Control: private, no-cache` regardless of any declaration.
+- **Visible in `describe_table`.** The value is stored with the table schema and surfaces in the Operations API's `describe_table` output.
+
+The declaration can equivalently be made as a `static cacheControl` property on an exported JavaScript resource class:
+
+```javascript
+export class Product extends tables.Product {
+	static cacheControl = 'public, max-age=60';
+}
+```
+
+See [REST Headers / Cache-Control](../rest/headers.md#cache-control) for the full caching behavior and how `Cache-Control` interacts with authentication headers.
 
 ### `@export`
 

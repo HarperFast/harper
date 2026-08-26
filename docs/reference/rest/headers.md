@@ -20,6 +20,39 @@ These headers are included in all Harper REST API responses:
 | `etag`          | `"abc123"`         | Encoded version/last-modification time of the returned record. Used for conditional requests.                                                                                                             |
 | `location`      | `/MyTable/new-id`  | Returned on `POST` responses. Contains the path to the newly created record.                                                                                                                              |
 
+## Cache-Control
+
+<VersionBadge version="v5.2.0" />
+
+Harper applies a tiered Cache-Control policy to REST responses.
+
+### Anonymous reads
+
+For tables (or JS resource classes) that declare a `cacheControl` value, Harper emits that value verbatim on anonymous (unauthenticated) GET/HEAD `200`/`304` responses:
+
+```
+Cache-Control: public, max-age=60
+```
+
+See [`@table(cacheControl: "...")`](../database/schema.md#cachecontrol) for how to declare this value in your schema.
+
+### Authenticated reads (identity floor)
+
+Any response where a principal was resolved — or where credentials were rejected (including `401` and the login-redirect `302`) — receives an identity floor regardless of any table declaration:
+
+```
+Cache-Control: private, no-cache
+Vary: Authorization
+```
+
+When cookie-based sessions are in use, `Cookie` is appended to `Vary`.
+
+An app may explicitly set a `public` or `s-maxage` directive in a resource handler to opt an authenticated response into shared caching (per RFC 9111). The opt-in is trusted, except on `401` responses: a rejected request always receives `private, no-cache`.
+
+### CORS responses
+
+When CORS is enabled, responses that reflect an `Origin` header also emit `Vary: Origin` so that shared caches key correctly by origin. See [CORS configuration](../http/configuration.md#cors).
+
 ## Request Headers
 
 ### Content-Type

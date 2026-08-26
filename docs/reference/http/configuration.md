@@ -159,6 +159,8 @@ Default: `"Accept, Content-Type, Authorization"`
 
 Comma-separated list of headers allowed in the [`Access-Control-Allow-Headers`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers) response header for OPTIONS (preflight) requests.
 
+<VersionBadge version="v5.2.0" /> When CORS is enabled, Harper emits `Vary: Origin` on all responses (including no-origin requests whose `Access-Control-Allow-Origin`-less variant is also origin-dependent), so that shared caches key responses correctly by origin.
+
 ## Session Affinity
 
 ### `http.sessionAffinity`

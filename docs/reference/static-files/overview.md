@@ -114,6 +114,40 @@ Note the tradeoff: `after: 'rest'` runs the static handler after authentication,
 
 Ordering is applied when the component loads; changing `before` or `after` in `config.yaml` automatically restarts the component so the new ordering takes effect.
 
+### Cache Headers
+
+<VersionBadge version="v5.2.0" />
+
+Static files are served before authentication runs, so they are public by construction. Use the following options to control the `Cache-Control` header Harper emits for served files:
+
+- **`maxAge`** - `number` (seconds) or `string` (duration) - _optional_ - Freshness lifetime for served files. A number is treated as seconds; a string like `'5m'` or `'1d'` is parsed as a duration. Emits `Cache-Control: public, max-age=<seconds>`. Defaults to `0` (revalidate on every request via ETag/Last-Modified). Malformed values throw at startup rather than silently degrading. Duration suffixes are `y` (year), `M` (30-day month), `d` (day), `h` (hour), and `m` (minute) — note the case-sensitive distinction between `M` (month) and `m` (minute).
+
+- **`immutable`** - `boolean` - _optional_ - When `true`, appends the `immutable` directive to the `Cache-Control` header. Use this for content-hashed assets whose URL changes when the content changes, so browsers and CDNs never revalidate them. Defaults to `false`.
+
+- **`cacheControl`** - `string | false` - _optional_ - Full `Cache-Control` override string. Takes precedence over `maxAge` and `immutable` when set. Set to `false` to suppress the `Cache-Control` header entirely.
+
+- **`cacheOverrides`** - `object` - _optional_ - A map of glob pattern → per-file cache options (any of `maxAge`, `immutable`, `cacheControl`), letting specific files opt out of the top-level defaults. The typical case is long-lived `immutable` defaults for content-hashed assets while `index.html` gets a short window or `stale-while-revalidate`. Patterns use the same [`micromatch`](https://github.com/micromatch/micromatch) engine as `files`, and are matched against both the request URL path (relative to the mount) and the served file's basename — so `index.html` also targets the directory-index (`/`) response. Entries are tested in config order and the **first match wins**; each entry is a partial — options it sets replace the top-level default, options it omits are inherited, with the same `cacheControl`-over-`maxAge`/`immutable` precedence.
+
+The `notFound` fallback always uses `max-age=0` regardless of `maxAge`, which is correct for SPA index fallbacks — a `200 index.html` response should revalidate so updated builds are picked up promptly.
+
+Example: serve a build directory with long-lived immutable caching for hashed assets, while the entry `index.html` revalidates every request (optionally serving stale content while it does):
+
+```yaml
+static:
+  files: 'web/**'
+  maxAge: '1y'
+  immutable: true
+  cacheOverrides:
+    # First match wins; index.html is matched by basename on the `/` serve.
+    'index.html':
+      cacheControl: 'public, max-age=0, stale-while-revalidate=60'
+    '*.html':
+      maxAge: '5m'
+      immutable: false
+```
+
+> `stale-while-revalidate` support varies by CDN — CloudFront and Cloudflare honor it, Azure CDN does not. Where it is unsupported the directive is simply ignored (the resource is treated as `max-age=0`), so it is safe to set.
+
 ## Auto-Updates
 
 <VersionBadge version="v4.7.0" />
