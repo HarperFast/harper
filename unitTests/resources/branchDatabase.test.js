@@ -285,6 +285,26 @@ describe('branch rollback is scoped to the failing application (harper#643)', ()
 		await removeBranches();
 	});
 
+	it('does not close a branch a load already running is using', async function () {
+		this.timeout(30000);
+		// A branch handle is cached per path for the whole thread, so a second load of the same
+		// application shares it. If that second load fails, closing the shared handle would leave the
+		// first load's Table classes pointing at a closed store.
+		const first = await prepareBranches('reuseApp', ['rollbase1'], undefined);
+		const branch = first.get('rollbase1');
+		await branch.tables.Roll.put({ id: 'live', note: 'x' });
+
+		const blocked = resolveBranchPath('rollbase2', 'reuseApp', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
+		mkdirSync(blocked, { recursive: true });
+		writeFileSync(join(blocked, 'occupied'), 'x');
+		await assert.rejects(() => prepareBranches('reuseApp', ['rollbase1', 'rollbase2'], undefined));
+
+		assert.ok(
+			await branch.tables.Roll.get('live'),
+			"a later failed load must not close the running load's branch handle"
+		);
+	});
+
 	it('lets a branch be created again after a transient failure', async function () {
 		this.timeout(30000);
 		const { rmSync } = require('node:fs');

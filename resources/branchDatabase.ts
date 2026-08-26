@@ -4,6 +4,7 @@ import { dirname, join, relative } from 'node:path';
 import { COMPONENT_PREPARATION_PROCESS_INSTANCE_ID } from '../components/componentPreparationLock.ts';
 import logger from '../utility/logging/harper_logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import {
 	BRANCH_ROOT_DIR,
@@ -30,6 +31,8 @@ import {
 const UNCLAIMED = 0n;
 const CREATING = 1n;
 const READY = 2n;
+
+const MAX_NAME_LENGTH = commonValidators.schema_length.maximum;
 
 /** How long a loser waits for the winner's checkpoint before giving up on the branch. */
 const CLAIM_TIMEOUT_MS = 10 * 60 * 1000;
@@ -292,21 +295,35 @@ export async function prepareBranches(
 		if (!databases[baseName]) {
 			throw new Error(`Application '${appName}' declares a branch of database '${baseName}', which does not exist`);
 		}
+		// Up front, not inside the open: two individually legal names can compose a store identity past
+		// the 250-character limit, and `openBranchDatabase` only checks it after the claim is taken and
+		// a potentially full-copy checkpoint is already on disk.
+		const storeName = branchStoreName(appName, baseName);
+		if (storeName.length > MAX_NAME_LENGTH) {
+			throw new Error(
+				`Application '${appName}' cannot branch '${baseName}': the branch store identity would be ` +
+					`${storeName.length} characters, over the ${MAX_NAME_LENGTH} allowed`
+			);
+		}
 	}
+	// Only the branches this call actually opened are this call's to give up. A branch handle is
+	// cached per path for the whole thread, so a later load of the same application -- a component
+	// reload, or a second component with the same appName -- must not close the branch the load
+	// already running is serving from.
+	const opened: string[] = [];
 	try {
 		for (const baseName of branchedDatabases) {
+			const branchPath = resolveBranchPath(baseName, appName, COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
+			const isNew = !branchesByPath.has(branchPath);
 			branches.set(baseName, await getOrCreateBranch(baseName, appName));
+			if (isNew) opened.push(branchPath);
 		}
 	} catch (error) {
 		// A partially branched application is worse than one that failed to load: some of its names
 		// would resolve to a branch and the rest to the base. Only this application's handles go, and
 		// only handles: another worker thread may have loaded the same application successfully and be
 		// serving queries out of the very directories this thread is giving up.
-		for (const baseName of branchedDatabases) {
-			await closeBranchAt(resolveBranchPath(baseName, appName, COMPONENT_PREPARATION_PROCESS_INSTANCE_ID)).catch(
-				() => {}
-			);
-		}
+		for (const branchPath of opened) await closeBranchAt(branchPath).catch(() => {});
 		throw error;
 	}
 	return branches;

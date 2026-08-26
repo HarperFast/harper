@@ -321,7 +321,16 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources, br
 	for (const typeDef of tables) {
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
-		assertTableTargetNotBranched(branches, typeDef.database, typeDef.table, 'a GraphQL @table directive');
+		try {
+			assertTableTargetNotBranched(branches, typeDef.database, typeDef.table, 'a GraphQL @table directive');
+		} catch (error) {
+			// Reported and skipped rather than thrown: a rejection here is a pending operation of the
+			// entry handler, and `Scope` never emits `initialLoadComplete` once one rejects, so the
+			// plugin would stall to its timeout and fail with a message naming nothing about branching.
+			// Skipping leaves the base schema untouched, which is the point of the refusal.
+			harperLogger.error?.((error as Error).message);
+			continue;
+		}
 		typeDef.tableClass = table(typeDef);
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
