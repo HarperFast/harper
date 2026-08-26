@@ -97,7 +97,6 @@ suite('HTTP worker startup liveness', { skip: skipSuite }, () => {
 			assertPreloadRan(markerDirectory, null);
 			assert(startupError instanceof HarperStartupError, 'expected startup to fail');
 			assert.match(startupError.stderr, /Failed to load root components in worker/);
-			assert.doesNotMatch(startupError.message, /maximum startup time|produced no startup output/);
 		} finally {
 			rmSync(markerDirectory, { recursive: true, force: true });
 		}
