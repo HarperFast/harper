@@ -224,7 +224,13 @@ suite(
 			});
 			let legacyDisconnects = 0;
 			legacyClient.on('disconnect', () => legacyDisconnects++);
-			const legacyClosed = new Promise<void>((resolve) => legacyClient.on('close', () => resolve()));
+			const legacyClosed = new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('the v3.1.1 client was never closed')), 60_000);
+				legacyClient.on('close', () => {
+					clearTimeout(timer);
+					resolve();
+				});
+			});
 			try {
 				const disconnected = new Promise<any>((resolve, reject) => {
 					const timer = setTimeout(() => reject(new Error('no DISCONNECT received before the socket closed')), 60_000);
