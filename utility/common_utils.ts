@@ -851,7 +851,13 @@ export function resolveTargetDatabase(req: any): string {
  * @param req
  */
 export function transformReq(req: any) {
-	req.schema = resolveTargetDatabase(req);
+	const database = resolveTargetDatabase(req);
+	// Only write when it would change something. The previous implementation left `req.schema` alone
+	// whenever it was already the resolved value, and an unconditional assignment is not equivalent:
+	// re-assigning an identical value still throws on a frozen or sealed object under strict mode,
+	// which every module here is. Nothing is known to pass one, but a write that cannot change the
+	// outcome is not worth the failure mode.
+	if (req.schema !== database) req.schema = database;
 }
 
 export function convertToMS(interval: any) {
