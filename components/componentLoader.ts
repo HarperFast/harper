@@ -451,6 +451,7 @@ function symlinkHarperModule(componentDirectory: string) {
 	});
 }
 
+// Direct access keeps lock timing deterministic without exposing a broader component-load seam.
 export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
 /**

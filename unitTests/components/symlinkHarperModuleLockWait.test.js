@@ -13,7 +13,9 @@ const { Status } = require('#src/server/status/index');
 describe('componentLoader symlinkHarperModule lock wait', () => {
 	let componentDirectory;
 	let createdTimers;
+	let clearedTimers;
 	const realSetTimeout = global.setTimeout;
+	const realClearTimeout = global.clearTimeout;
 
 	before(() => {
 		componentDirectory = mkdtempSync(join(tmpdir(), 'harper-symlink-lock-wait-'));
@@ -21,6 +23,7 @@ describe('componentLoader symlinkHarperModule lock wait', () => {
 
 	beforeEach(() => {
 		createdTimers = [];
+		clearedTimers = new Set();
 		const trackingSetTimeout = (callback, ms, ...args) => {
 			const timer = realSetTimeout(callback, ms, ...args);
 			createdTimers.push({ timer, ms });
@@ -28,17 +31,23 @@ describe('componentLoader symlinkHarperModule lock wait', () => {
 		};
 		Object.assign(trackingSetTimeout, realSetTimeout); // keep setTimeout.__promisify__ etc.
 		global.setTimeout = trackingSetTimeout;
+		global.clearTimeout = (timer) => {
+			clearedTimers.add(timer);
+			return realClearTimeout(timer);
+		};
 	});
 
 	afterEach(() => {
 		global.setTimeout = realSetTimeout;
+		global.clearTimeout = realClearTimeout;
 	});
 
 	after(() => {
 		rmSync(componentDirectory, { recursive: true, force: true });
 	});
 
-	const liveRefdLockWaitTimer = () => createdTimers.some(({ timer, ms }) => ms === 10_000 && timer.hasRef());
+	const liveRefdLockWaitTimer = () =>
+		createdTimers.some(({ timer, ms }) => ms === 10_000 && timer.hasRef() && !clearedTimers.has(timer));
 
 	it('a waiter behind a held lock keeps a ref-holding timer until the unlock wake arrives', async () => {
 		const store = Status.primaryStore;
