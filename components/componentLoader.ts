@@ -392,7 +392,7 @@ function harperModulesAreLinked(componentDirectory: string) {
 	const harperModule = join(nodeModulesDir, 'harper');
 	try {
 		lstatSync(harperModule);
-		if (realpathSync(harperModule) !== realpathSync(PACKAGE_ROOT)) return false;
+		if (realpathSync(harperModule) !== PACKAGE_ROOT) return false;
 	} catch {
 		return false;
 	}
@@ -404,7 +404,7 @@ function harperModulesAreLinked(componentDirectory: string) {
 		return true;
 	}
 	try {
-		return realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
+		return realpathSync(harperdbModule) === PACKAGE_ROOT;
 	} catch {
 		return false;
 	}
@@ -418,7 +418,7 @@ function repairHarperModuleLinks(componentDirectory: string) {
 	let harperModuleLinked = false;
 	try {
 		lstatSync(harperModule);
-		harperModuleLinked = realpathSync(harperModule) === realpathSync(PACKAGE_ROOT);
+		harperModuleLinked = realpathSync(harperModule) === PACKAGE_ROOT;
 	} catch {}
 	if (!harperModuleLinked) {
 		rmSync(harperModule, { recursive: true, force: true });
@@ -431,7 +431,7 @@ function repairHarperModuleLinks(componentDirectory: string) {
 	try {
 		lstatSync(harperdbModule);
 		harperdbModulePresent = true;
-		harperdbModuleLinked = realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
+		harperdbModuleLinked = realpathSync(harperdbModule) === PACKAGE_ROOT;
 	} catch {}
 	if (harperdbModulePresent && !harperdbModuleLinked) {
 		rmSync(harperdbModule, { recursive: true, force: true });
