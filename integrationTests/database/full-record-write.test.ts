@@ -22,7 +22,7 @@
  *   npm run test:integration -- "integrationTests/database/full-record-write.test.ts"
  *   HARPER_STORAGE_ENGINE=lmdb npm run test:integration -- "integrationTests/database/full-record-write.test.ts"
  */
-import { suite, test, before, after } from 'node:test';
+import { suite, test, describe, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -549,6 +549,78 @@ suite('full_record: full replace over the operations API', { skip: skipSuite }, 
 			ok(r.status >= 400, `__unset__: ${JSON.stringify(unset)} should be refused; got ${r.status}`);
 		}
 		strictEqual((await read('Dog', 'us-8')).color, 'black', 'no rejected request may have written');
+	});
+
+	// The attribute-permission denials above are scoped to the operations the directives actually
+	// change. `verifyPerms` runs for every operation, and both keys pass validation on requests where
+	// they mean nothing — so an unscoped check denies a client that simply sets them on every call.
+	describe('the directives do not deny operations they have no effect on', () => {
+		let headers: Record<string, string>;
+
+		before(async () => {
+			headers = await addScopedRole(
+				'attr_scoped_inert',
+				{
+					data: {
+						tables: {
+							Dog: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: false,
+								attribute_permissions: [
+									{ attribute_name: 'id', read: true, insert: true, update: true },
+									{ attribute_name: 'name', read: true, insert: true, update: true },
+									// Neither writable nor removable by this role — the trigger for both denials.
+									{ attribute_name: 'color', read: true, insert: false, update: false },
+								],
+							},
+						},
+					},
+				},
+				'attr_scoped_inert_user'
+			);
+		});
+
+		// `full_record` is inert on `insert` (there is never an existing record to replace), and the
+		// shared insert/update/upsert validator accepts the key, so an insert carrying it must not 403.
+		test('full_record does not deny an insert', async () => {
+			const r = await asUser(headers, {
+				operation: 'insert',
+				database: 'data',
+				table: 'Dog',
+				full_record: true,
+				records: [{ id: 'inert-1', name: 'Penny' }],
+			});
+			strictEqual(r.status, 200, `insert should not be denied; got ${r.status} ${JSON.stringify(r.body)}`);
+			strictEqual((await read('Dog', 'inert-1')).name, 'Penny');
+		});
+
+		// Unknown keys pass validation everywhere, so a stray flag on a read must not deny it either.
+		test('a stray full_record does not deny a search', async () => {
+			const r = await asUser(headers, {
+				operation: 'search_by_id',
+				database: 'data',
+				table: 'Dog',
+				ids: ['inert-1'],
+				get_attributes: ['id', 'name'],
+				full_record: true,
+			});
+			strictEqual(r.status, 200, `search should not be denied; got ${r.status} ${JSON.stringify(r.body)}`);
+		});
+
+		// Same shape for `__unset__`: it removes nothing on an insert, so its names must not be
+		// demanded as attributes the insert is writing.
+		test('__unset__ does not deny an insert naming an attribute the role cannot write', async () => {
+			const r = await asUser(headers, {
+				operation: 'insert',
+				database: 'data',
+				table: 'Dog',
+				records: [{ id: 'inert-2', name: 'Penny', __unset__: ['color'] }],
+			});
+			strictEqual(r.status, 200, `insert should not be denied; got ${r.status} ${JSON.stringify(r.body)}`);
+			strictEqual((await read('Dog', 'inert-2')).name, 'Penny');
+		});
 	});
 
 	test('a non-boolean full_record is rejected rather than coerced', async () => {

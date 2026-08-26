@@ -841,7 +841,16 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// runs before any record is read. So refuse the combination outright rather than authorize a
 	// write whose removals nobody checked. Roles that scope no attribute are unaffected, which is
 	// every role that hasn't deliberately been given `attribute_permissions` on this table.
-	if (attrPermissions.size > 0 && requestJson.full_record === true) {
+	// Scoped to the two operations the flag actually changes. `verifyPerms` runs for EVERY operation
+	// and `full_record` is an accepted key on the shared insert/update/upsert validator (and unknown
+	// keys pass validation everywhere), so an unscoped test denies an `insert`, a `search_by_*`, or
+	// anything else whose body merely carries the flag — plausible for a client that sets it on every
+	// write. Those operations never reach `Table.patch`, so there is nothing for the check to protect.
+	if (
+		attrPermissions.size > 0 &&
+		requestJson.full_record === true &&
+		(op === write.update.name || op === write.upsert.name)
+	) {
 		return permsResponse.handleUnauthorizedItem(
 			HDB_ERROR_MSGS.FULL_RECORD_WITH_ATTRIBUTE_PERMS(operationSchema, table)
 		);
@@ -1094,9 +1103,16 @@ function getRecordAttributes(json) {
 					// instead of the key itself, so removing one is checked against the same `update`
 					// permission that writing it would be. Without this the removals are invisible to
 					// checkAttributePerms, which only ever sees the attributes a request supplies.
+					//
+					// Only for the operations it does something on. `upsertRecords` strips the directive
+					// for every write, so on an `insert` — which never writes over an existing record —
+					// it removes nothing, and contributing its names would demand `insert` permission on
+					// attributes the request is not touching.
 					if (key === terms.UNSET_ATTRIBUTES) {
 						const unset = record[key];
-						if (Array.isArray(unset)) {
+						const removes =
+							json.operation === terms.OPERATIONS_ENUM.UPDATE || json.operation === terms.OPERATIONS_ENUM.UPSERT;
+						if (removes && Array.isArray(unset)) {
 							for (const name of unset) {
 								affectedAttributes.add(name);
 							}
