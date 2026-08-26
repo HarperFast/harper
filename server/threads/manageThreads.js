@@ -601,7 +601,6 @@ async function restartWorkers(
 					continue;
 				}
 			}
-			onProgress?.();
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			try {
 				worker.postMessage({
@@ -649,6 +648,10 @@ async function restartWorkers(
 				// worker's EXTEND request can only arrive after it exists.
 				worker.extendTerminateDeadline = (deadlineMs) => {
 					clearTimeout(timeout);
+					// A worker only asks for more time while its drain is still moving, so this doubles as the
+					// progress signal for a caller waiting on the restart: a long-but-live drain keeps the wait
+					// alive, a wedged one does not.
+					onProgress?.();
 					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
 					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
@@ -659,6 +662,7 @@ async function restartWorkers(
 				};
 				worker.on('exit', () => {
 					clearTimeout(timeout);
+					onProgress?.();
 					worker.extendTerminateDeadline = undefined;
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);

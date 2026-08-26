@@ -539,15 +539,16 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							// Only errors this layer maps to a code of their own are safe to describe: any other
 							// failure carries an internal message that a client must not be handed. Both limits
 							// are in encoded bytes, so measure and trim the string in bytes too.
-							const describable = error.statusCode === 403 || error.statusCode === 404;
-							const reasonString =
-								describable && error.message
-									? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
-									: undefined;
-							if (
+							const describable =
 								mqttOptions.protocolVersion >= 5 &&
-								reasonString &&
 								sendProblemInformation &&
+								error.message &&
+								(error.statusCode === 403 || error.statusCode === 404);
+							const reasonString = describable
+								? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
+								: undefined;
+							if (
+								reasonString &&
 								(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
 							)
 								publishPacket.properties = { reasonString };
