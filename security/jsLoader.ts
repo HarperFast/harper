@@ -864,24 +864,31 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 // same values surfaced as the top-level package exports and bare globals), not per-compartment
 // copies — only `server`/`logger`/`resources`/`config` are scope-overridable.
 /**
- * The `databases`/`tables` a scope sees. An application that declared `branchedDatabases` gets a
- * plain object whose branched names resolve to its private graph — built once here, at load, so the
- * request path costs nothing and no Proxy trap sits on `databases.data`.
+ * The `databases`/`tables` a scope sees. An application that declared `branchedDatabases` gets a view
+ * in which those names resolve to its private graph and everything else falls through to the real
+ * map, live: `databases` gains entries at runtime (`ensureDB`), so a copy taken at load would
+ * silently stop showing databases created afterwards.
  *
- * An unbranched scope gets the process-wide singletons **by identity**, not a copy: that is the
- * overwhelmingly common case and it must stay indistinguishable from before. `databases.system` is
- * deliberately non-enumerable (`resources/databases.ts`), so the branched object is built by
- * descriptor copy rather than spread, which would drop it.
+ * An unbranched scope gets the process-wide singletons **by identity**, not a view: that is the
+ * overwhelmingly common case and it must stay indistinguishable from before, and it means only
+ * branched applications pay for the indirection. Proxying rather than copying also keeps
+ * `databases.system` — deliberately non-enumerable (`resources/databases.ts`) — reachable for free.
  */
 export function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tables: any } {
-	if (!scope.branches?.size) return { databases, tables };
-	const scoped = Object.create(null);
-	for (const name of Object.getOwnPropertyNames(databases)) {
-		Object.defineProperty(scoped, name, Object.getOwnPropertyDescriptor(databases, name)!);
-	}
-	for (const [name, branch] of scope.branches) scoped[name] = branch.tables;
+	const branches = scope.branches;
+	if (!branches?.size) return { databases, tables };
+	// Every branched name already exists on the target as a writable, configurable property (a branch
+	// is only ever taken of a database that exists), so overriding it here breaks no Proxy invariant.
+	const scoped = new Proxy(databases, {
+		get: (target, key, receiver) =>
+			typeof key === 'string' && branches.has(key) ? branches.get(key)!.tables : Reflect.get(target, key, receiver),
+		getOwnPropertyDescriptor(target, key) {
+			if (typeof key !== 'string' || !branches.has(key)) return Reflect.getOwnPropertyDescriptor(target, key);
+			return { value: branches.get(key)!.tables, writable: true, enumerable: true, configurable: true };
+		},
+	});
 	// `tables` is the flat alias for the default database, so it follows that database's branch.
-	return { databases: scoped, tables: scope.branches.get(DEFAULT_DATABASE_NAME)?.tables ?? tables };
+	return { databases: scoped, tables: branches.get(DEFAULT_DATABASE_NAME)?.tables ?? tables };
 }
 
 function getHarperExports(scope: ApplicationScope) {

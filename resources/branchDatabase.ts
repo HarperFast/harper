@@ -162,25 +162,29 @@ async function pruneEmptyParents(root: string, branchPath: string): Promise<void
 	}
 }
 
-function baseNameOf(branchPath: string): string {
+function branchRootOf(branchPath: string): string {
 	// `<storage>/<BRANCH_ROOT_DIR>/<instance>/<app>/<db>` — the root is three levels up from the db.
 	return dirname(dirname(dirname(branchPath)));
 }
 
-/** Close and delete every branch this process opened. Branches do not outlive the process. */
-export async function removeBranches(): Promise<void> {
-	for (const [branchPath, pending] of [...branchesByPath]) {
-		branchesByPath.delete(branchPath);
-		const opened = await pending.catch(() => null);
-		if (!opened) continue;
+async function removeBranchAt(branchPath: string): Promise<void> {
+	const pending = branchesByPath.get(branchPath);
+	branchesByPath.delete(branchPath);
+	const opened = await pending?.catch(() => null);
+	if (opened) {
 		opened.branch.close();
 		Atomics.store(opened.claimState, 0, UNCLAIMED);
 		wakeWaiters(opened.claimState);
-		await rm(branchPath, { recursive: true, force: true }).catch((error) =>
-			logger.warn?.(`Could not remove branch directory ${branchPath}`, error)
-		);
-		await pruneEmptyParents(baseNameOf(branchPath), branchPath);
 	}
+	await rm(branchPath, { recursive: true, force: true }).catch((error) =>
+		logger.warn?.(`Could not remove branch directory ${branchPath}`, error)
+	);
+	await pruneEmptyParents(branchRootOf(branchPath), branchPath);
+}
+
+/** Close and delete every branch this process opened. Branches do not outlive the process. */
+export async function removeBranches(): Promise<void> {
+	for (const branchPath of [...branchesByPath.keys()]) await removeBranchAt(branchPath);
 }
 
 /**
@@ -265,8 +269,14 @@ export async function prepareBranches(
 		}
 	} catch (error) {
 		// A partially branched application is worse than one that failed to load: some of its names
-		// would resolve to a branch and the rest to the base.
-		await removeBranches();
+		// would resolve to a branch and the rest to the base. Roll back only this application's own
+		// branches — applications load one after another, and tearing down the whole process's
+		// branches here would pull the data out from under every application already loaded.
+		for (const baseName of branchedDatabases) {
+			await removeBranchAt(resolveBranchPath(baseName, appName, COMPONENT_PREPARATION_PROCESS_INSTANCE_ID)).catch(
+				() => {}
+			);
+		}
 		throw error;
 	}
 	return branches;

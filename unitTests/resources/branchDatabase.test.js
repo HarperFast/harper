@@ -1,6 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { existsSync } = require('node:fs');
+const { join } = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
 const { getOrCreateBranch, removeBranches, sweepStaleBranches } = require('#src/resources/branchDatabase');
@@ -229,9 +230,9 @@ describe('scoped databases binding (harper#643)', () => {
 		assert.notStrictEqual(databases.bindbase, branch.tables);
 	});
 
-	it('keeps `databases.system` non-enumerable in the branched object', async function () {
-		// It is defined non-enumerable on the real map, so building the copy by spread would drop it
-		// and a branched application would lose access to the system database entirely.
+	it('keeps `databases.system` reachable and non-enumerable', async function () {
+		// It is defined non-enumerable on the real map, so building the view by copying enumerable
+		// properties would drop it and a branched application would lose the system database entirely.
 		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
 		const bindings = scopedDatabaseBindings({ branches: new Map([['bindbase', branch]]) });
 
@@ -240,6 +241,62 @@ describe('scoped databases binding (harper#643)', () => {
 			Object.propertyIsEnumerable.call(bindings.databases, 'system'),
 			false,
 			'and must stay non-enumerable'
+		);
+	});
+
+	it('keeps showing databases created after the application loaded', async function () {
+		// `databases` gains entries at runtime, which is exactly what ensureTable/@table do. A view
+		// snapshotted at load would leave a branched application unable to see them.
+		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
+		const bindings = scopedDatabaseBindings({ branches: new Map([['bindbase', branch]]) });
+		assert.strictEqual(bindings.databases.bindlater, undefined);
+
+		table({ table: 'Later', database: 'bindlater', attributes: [{ name: 'id', isPrimaryKey: true }] });
+
+		assert.ok(bindings.databases.bindlater?.Later, 'a database created after load must be visible');
+		assert.strictEqual(bindings.databases.bindbase, branch.tables, 'and the branch still wins for its own name');
+	});
+});
+
+describe('branch rollback is scoped to the failing application (harper#643)', () => {
+	const { mkdirSync, writeFileSync } = require('node:fs');
+	const { COMPONENT_PREPARATION_PROCESS_INSTANCE_ID } = require('#src/components/componentPreparationLock');
+	const { prepareBranches } = require('#src/resources/branchDatabase');
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		for (const db of ['rollbase1', 'rollbase2']) {
+			table({ table: 'Roll', database: db, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		}
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	it("leaves an already-loaded application's branch open when a later application fails", async function () {
+		this.timeout(30000);
+		const survivor = await getOrCreateBranch('rollbase1', 'loadedFirst');
+		await survivor.tables.Roll.put({ id: 'kept', note: 'x' });
+
+		// Applications load one after another. Make the second declared database of a *later*
+		// application fail to materialize: an occupied branch path makes the rename into place fail,
+		// which is the same shape as a checkpoint that cannot complete.
+		const blocked = resolveBranchPath('rollbase2', 'loadedSecond', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
+		mkdirSync(blocked, { recursive: true });
+		writeFileSync(join(blocked, 'occupied'), 'x');
+
+		await assert.rejects(() => prepareBranches('loadedSecond', ['rollbase1', 'rollbase2'], undefined));
+
+		assert.ok(
+			await survivor.tables.Roll.get('kept'),
+			"a failed application's rollback must not close a loaded application's branch"
+		);
+		assert.strictEqual(
+			existsSync(resolveBranchPath('rollbase1', 'loadedSecond', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID)),
+			false,
+			'while the failing application keeps none of its own'
 		);
 	});
 });
