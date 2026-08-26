@@ -150,8 +150,7 @@ export type CorruptFrameError = RangeError & {
  * entry the broken log yielded, and whether the entries it swallowed continued that entry's version
  * is exactly what can no longer be read. That version's transaction is therefore incomplete, and
  * replay must discard it rather than commit the part of it that was still readable. A log that
- * broke before yielding anything truncates no transaction. Only an aggregate range attributes
- * versions; a single-log range reports the count alone.
+ * broke before yielding anything truncates no transaction.
  */
 export interface CorruptFrameStop {
 	breaks: number;

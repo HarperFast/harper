@@ -246,6 +246,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 	}): TransactionLogIterable {
 		let iterable = new ExtendedIterable<TransactionEntry>();
 		let aggregateIterator: TransactionLogIterator;
+		// Set only for a single-log range, where every entry comes from the same log.
+		let singleLog: TransactionLog;
 		const corruptFrameStop: CorruptFrameStop = { breaks: 0, truncatedVersions: new Set() };
 		// The version of the last entry each log yielded in this range, so a break can be attributed to
 		// the source transaction whose remaining entries it swallowed.
@@ -271,6 +273,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
+			singleLog = log;
 			const queryIterator = endIteratorOnCorruptFrame(log.query(options), onCorruptFrame(log));
 			iterable.iterate = () => queryIterator;
 		} else {
@@ -381,7 +384,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 						if (earliestIndex >= 0) {
 							// before the refill, which is where a break surfaces and needs this entry's version
 							lastVersionByLog.set(logs[earliestIndex], earliest.timestamp);
-							// replace the entry with the next one from the iterator we pulled from
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
@@ -415,6 +417,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterable.iterate = () => aggregateIterator;
 		}
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
+			// A break surfaces on the pull after this entry, so recording it here is in time to
+			// attribute that break to this entry's transaction. The aggregate branch records its own,
+			// per source log, because there this callback cannot tell which log an entry came from.
+			if (singleLog) lastVersionByLog.set(singleLog, timestamp);
 			// Per-entry try/catch: a corrupt rocks prelude (first 4-16 bytes) would otherwise
 			// throw a raw `RangeError: Offset is outside the bounds of the DataView` out
 			// through `iterable.map`, escape the for-of consumer, and land as an

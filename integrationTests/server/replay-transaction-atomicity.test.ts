@@ -88,7 +88,7 @@ function tearLastTransaction(path: string, readableBefore: number): number {
 		const lengthPos = pos + 8;
 		const length = buf.readUInt32BE(lengthPos);
 		const next = pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
-		if (length === 0 || next > buf.length) break; // ran past the end / already unframable
+		if (length === 0 || next > buf.length) break;
 		entries.push({ lengthPos, timestamp });
 		pos = next;
 	}
