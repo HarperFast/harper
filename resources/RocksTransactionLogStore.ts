@@ -23,6 +23,8 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	removeLog(logName: string);
 };
 
+type TrackedIterator = IterableIterator<TransactionEntry> & { lastVersion?: number };
+
 export type TransactionLogIterable = Iterable<AuditRecord> & {
 	/** Corrupt frames that ended a log's iteration during this range. */
 	corruptFrameStop: CorruptFrameStop;
@@ -247,18 +249,20 @@ export class RocksTransactionLogStore extends EventEmitter {
 		let iterable = new ExtendedIterable<TransactionEntry>();
 		let aggregateIterator: TransactionLogIterator;
 		// Set only for a single-log range, where every entry comes from the same log.
-		let singleLog: TransactionLog;
+		let singleLogIterator: TrackedIterator;
 		const corruptFrameStop: CorruptFrameStop = { breaks: 0, truncatedVersions: new Set() };
-		// The version of the last entry each log yielded in this range, so a break can be attributed to
-		// the source transaction whose remaining entries it swallowed.
-		const lastVersionByLog = new Map<TransactionLog, number>();
-		const onCorruptFrame = (log: TransactionLog) => {
+		// Each log's iterator carries the version of the last entry it yielded, so a break can be
+		// attributed to the source transaction whose remaining entries it swallowed. On the iterator
+		// itself, not in a map keyed by log: this is written per entry on the replay/broadcast path,
+		// and it stays attached when a removed log is spliced out of the aggregate.
+		const trackCorruptFrames = (log: TransactionLog, queryOptions: typeof options): TrackedIterator => {
 			const report = reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`);
-			return (error) => {
+			const iterator: TrackedIterator = endIteratorOnCorruptFrame(log.query(queryOptions), (error) => {
 				corruptFrameStop.breaks++;
-				if (lastVersionByLog.has(log)) corruptFrameStop.truncatedVersions.add(lastVersionByLog.get(log));
+				if (iterator.lastVersion !== undefined) corruptFrameStop.truncatedVersions.add(iterator.lastVersion);
 				report(error);
-			};
+			});
+			return iterator;
 		};
 		if (options.log !== undefined) {
 			let log = typeof options.log === 'number' ? this.nodeLogs?.[options.log] : this.logByName.get(options.log);
@@ -273,8 +277,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
-			singleLog = log;
-			const queryIterator = endIteratorOnCorruptFrame(log.query(options), onCorruptFrame(log));
+			const queryIterator = trackCorruptFrames(log, options);
+			singleLogIterator = queryIterator;
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
@@ -282,7 +286,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// holds the queue of next entries from each iterator
 			let nextEntries: any[];
 			let latestUpdates: number;
-			const iterators: IterableIterator<TransactionEntry>[] = [];
+			const iterators: TrackedIterator[] = [];
 			// Iterators that have permanently failed (corrupt entry stuck at the same
 			// position). Tracked by identity so the retry-poll path in next() and
 			// updateIterators() never calls .next() on them again — otherwise every
@@ -325,7 +329,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
-							iterators.push(endIteratorOnCorruptFrame(log.query(queryOptions), onCorruptFrame(log)));
+							iterators.push(trackCorruptFrames(log, queryOptions));
 						}
 					}
 					latestUpdates = this.updates;
@@ -383,7 +387,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						}
 						if (earliestIndex >= 0) {
 							// before the refill, which is where a break surfaces and needs this entry's version
-							lastVersionByLog.set(logs[earliestIndex], earliest.timestamp);
+							iterators[earliestIndex].lastVersion = earliest.timestamp;
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
@@ -417,10 +421,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterable.iterate = () => aggregateIterator;
 		}
 		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
-			// A break surfaces on the pull after this entry, so recording it here is in time to
-			// attribute that break to this entry's transaction. The aggregate branch records its own,
-			// per source log, because there this callback cannot tell which log an entry came from.
-			if (singleLog) lastVersionByLog.set(singleLog, timestamp);
+			// A break surfaces on the pull after this entry, so recording it here is in time to attribute
+			// that break to this entry's transaction. The aggregate branch records its own, per source
+			// log, because there this callback cannot tell which log an entry came from.
+			if (singleLogIterator) singleLogIterator.lastVersion = timestamp;
 			// Per-entry try/catch: a corrupt rocks prelude (first 4-16 bytes) would otherwise
 			// throw a raw `RangeError: Offset is outside the bounds of the DataView` out
 			// through `iterable.map`, escape the for-of consumer, and land as an
