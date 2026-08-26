@@ -133,7 +133,10 @@ jobs:
           if grep -Fq "harper#2025 fetch discriminator:" "$test_output_file"; then
             reproduced=true
           fi
-          if [ "$test_exit" -ne 0 ]; then
+          if grep -Fq "harper#2025 canary inconclusive:" "$test_output_file"; then
+            echo "::error::the Node $(node --version) canary observed one uncorroborated slow fetch — inconclusive, not evidence either way about harper#2025."
+            exit 1
+          elif [ "$test_exit" -ne 0 ]; then
             echo "::error::the Node $(node --version) canary failed outside harper#2025's handled discriminator path (exit $test_exit)."
             exit 1
           elif [ "$REQUESTED_NODE_VERSION" = "26.5.0" ]; then

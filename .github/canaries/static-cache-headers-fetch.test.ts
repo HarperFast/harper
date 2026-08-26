@@ -31,13 +31,18 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 	});
 
 	after(async () => {
-		await teardownHarper(context);
+		let inconclusiveError: Error | undefined;
 		if (stallEvidence.length === 1) {
-			throw new Error(`harper#2025 canary inconclusive: only one slow fetch observed (${stallEvidence[0]})`);
+			inconclusiveError = new Error(
+				`harper#2025 canary inconclusive: only one slow fetch observed (${stallEvidence[0]})`
+			);
+			console.error(inconclusiveError.message);
 		}
 		if (stallEvidence.length >= 2) {
 			console.error(`${FETCH_DISCRIMINATOR} ${stallEvidence.join('; ')}`);
 		}
+		await teardownHarper(context);
+		if (inconclusiveError) throw inconclusiveError;
 	});
 
 	async function getPath(path: string): Promise<Response> {
