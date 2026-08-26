@@ -39,7 +39,8 @@ concurrency:
   # in parallel on the same PR. cancel-in-progress is per-group, so a
   # synchronize push cancels the in-flight Gemini run without touching
   # the Claude run (and vice versa).
-  group: gemini-review-${{ github.event.pull_request.number }}
+  # Ineligible events get a unique run_id group — see claude-review.yml.
+  group: gemini-review-${{ github.event.pull_request.number }}-${{ (vars.GEMINI_ALWAYS_ON == 'true' || github.event.action == 'labeled' || (github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'gemini-review'))) && 'eligible' || github.run_id }}
   cancel-in-progress: true
 
 jobs:
