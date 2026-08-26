@@ -91,15 +91,15 @@ function parseNPMStdErr(stderr: string) {
 }
 
 /**
- * Validator for both installModules & auditModules
+ * Validator for installModules
  * @param {Object} req
- * @returns {{ error: Error | undefined, value: any }}
  */
 function modulesValidator(req: any) {
+	// `dryRun` was the only spelling that worked before dry_run was honored; keep it accepted
 	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
-	});
+	}).rename('dryRun', 'dry_run', { override: true, ignoreUndefined: true });
 
 	return validator.validateAndConvertBySchema(req, funcSchema);
 }

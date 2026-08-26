@@ -43,25 +43,49 @@ describe('install_node_modules', () => {
 		fs.rmSync(path.join(componentsRoot, 'application', 'node_modules'), { recursive: true, force: true });
 	});
 
-	it('honors the documented dry_run field', async () => {
-		await installModules({ projects: ['application'], dry_run: true });
+	// npm still reports the dependency it would add under --dry-run, so asserting on the output
+	// distinguishes a real dry run from npm never running at all
+	function assertDryRun(response) {
+		assert.match(String(response.application.npm_output), /add local-dependency/);
+		assert.equal(installedDependencyExists(), false);
+	}
 
-		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), false);
+	function assertInstalled(response) {
+		assert.equal(response.application.npm_output.added, 1, JSON.stringify(response.application));
+		assert.equal(installedDependencyExists(), true);
+	}
+
+	function installedDependencyExists() {
+		return fs.existsSync(path.join(componentsRoot, 'application', 'node_modules', 'local-dependency'));
+	}
+
+	it('honors the documented dry_run field', async () => {
+		const response = await installModules({ projects: ['application'], dry_run: true });
+
+		assertDryRun(response);
 	});
 
 	it('honors a dry_run field that arrives as a string', async () => {
-		await installModules({ projects: ['application'], dry_run: 'true' });
+		const response = await installModules({ projects: ['application'], dry_run: 'true' });
 
-		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), false);
+		assertDryRun(response);
 	});
 
-	it('installs when dry_run is false or omitted', async () => {
-		await installModules({ projects: ['application'], dry_run: 'false' });
-		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), true);
+	it('honors the undocumented camelCase dryRun spelling', async () => {
+		const response = await installModules({ projects: ['application'], dryRun: true });
 
-		fs.rmSync(path.join(componentsRoot, 'application', 'node_modules'), { recursive: true, force: true });
+		assertDryRun(response);
+	});
 
-		await installModules({ projects: ['application'] });
-		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), true);
+	it('installs when dry_run is false', async () => {
+		const response = await installModules({ projects: ['application'], dry_run: 'false' });
+
+		assertInstalled(response);
+	});
+
+	it('installs when dry_run is omitted', async () => {
+		const response = await installModules({ projects: ['application'] });
+
+		assertInstalled(response);
 	});
 });
