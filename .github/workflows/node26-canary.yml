@@ -113,18 +113,6 @@ jobs:
             fi
           done
 
-      # No continue-on-error anywhere in this job: it lives in its own workflow specifically so
-      # it CAN fail honestly (see the header comment) without corrupting integration-tests.yml's
-      # conclusion. Let it fail naturally.
-      # Inverted on purpose: this job's conclusion needs to mean "a human should look at this",
-      # not "the known defect reproduced" — nightly-gate's scheduled-run sweep
-      # (~/.claude/skills/nightly-gate/SKILL.md) enumerates every `--event schedule` workflow and
-      # expects `success`, with no per-workflow allowlist. If this step's own exit code were the
-      # job's conclusion, the EXPECTED nightly outcome (harper#2025 still reproducing) would be a
-      # permanent red that nightly-gate dutifully triages and re-triages forever, while the one
-      # outcome anyone actually wants to hear about — the defect clearing upstream — would be
-      # silently green and fire no alert. So: the tests failing (matching harper#2025) is this
-      # job's SUCCESS; the tests unexpectedly passing is what fails it loudly.
       - name: Run harper#2025 canary tests
         id: canary-tests
         env:
@@ -165,9 +153,6 @@ jobs:
             exit 0
           fi
 
-      # Always, not `if: failure()`: the canary-tests step exits 0 on its expected-reproduction
-      # path (see above), so `failure()` alone would miss the run anyone chasing harper#2025
-      # actually wants logs from. Cheap either way at retention-days: 3.
       - name: Upload Harper server logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

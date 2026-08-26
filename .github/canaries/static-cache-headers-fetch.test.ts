@@ -5,7 +5,7 @@
  * node:http client. The Node 26 canary invokes it explicitly because global fetch is the
  * bundled-undici path whose regression keeps the default Node 26 matrix pinned at 26.5.0.
  */
-import { after, before, suite, test, type TestContext } from 'node:test';
+import { after, before, suite, test } from 'node:test';
 import assert from 'node:assert';
 import { resolve } from 'node:path';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -23,7 +23,7 @@ class FetchStallError extends Error {}
 suite('Node 26 fetch canary: static plugin cache-header options', (context: ContextWithHarper) => {
 	let client: any;
 	let maxFetchDurationMs = 0;
-	let defectReproduced = false;
+	const stallEvidence: string[] = [];
 
 	before(async () => {
 		await setupHarperWithFixture(context, FIXTURE_PATH);
@@ -32,6 +32,12 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 
 	after(async () => {
 		await teardownHarper(context);
+		if (stallEvidence.length === 1) {
+			throw new Error(`harper#2025 canary inconclusive: only one slow fetch observed (${stallEvidence[0]})`);
+		}
+		if (stallEvidence.length >= 2) {
+			console.error(`${FETCH_DISCRIMINATOR} ${stallEvidence.join('; ')}`);
+		}
 	});
 
 	async function getPath(path: string): Promise<Response> {
@@ -51,7 +57,7 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 				request,
 				new Promise<never>((_resolve, reject) => {
 					timeout = setTimeout(
-						() => reject(new FetchStallError(`${FETCH_DISCRIMINATOR} GET ${path} exceeded ${FETCH_HARD_TIMEOUT_MS}ms`)),
+						() => reject(new FetchStallError(`GET ${path} exceeded ${FETCH_HARD_TIMEOUT_MS}ms`)),
 						FETCH_HARD_TIMEOUT_MS
 					);
 				}),
@@ -63,25 +69,19 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 		maxFetchDurationMs = Math.max(maxFetchDurationMs, durationMs);
 		if (durationMs >= FETCH_STALL_THRESHOLD_MS) {
 			throw new FetchStallError(
-				`${FETCH_DISCRIMINATOR} GET ${path} took ${Math.round(durationMs)}ms ` +
-					`(threshold ${FETCH_STALL_THRESHOLD_MS}ms)`
+				`GET ${path} took ${Math.round(durationMs)}ms (threshold ${FETCH_STALL_THRESHOLD_MS}ms)`
 			);
 		}
 		return response;
 	}
 
 	function canaryTest(name: string, body: () => Promise<void>): void {
-		test(name, async (testContext: TestContext) => {
-			if (defectReproduced) {
-				testContext.skip('harper#2025 already reproduced');
-				return;
-			}
+		test(name, async () => {
 			try {
 				await body();
 			} catch (error) {
 				if (!(error instanceof FetchStallError)) throw error;
-				defectReproduced = true;
-				console.error(error.message);
+				stallEvidence.push(error.message);
 			}
 		});
 	}
@@ -91,7 +91,10 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 	}
 
 	async function setStaticConfig(yaml: string): Promise<void> {
-		await client.req().send({ operation: 'set_component_file', project: PROJECT, file: 'config.yaml', payload: yaml });
+		await client
+			.req()
+			.send({ operation: 'set_component_file', project: PROJECT, file: 'config.yaml', payload: yaml })
+			.timeout({ response: 5_000, deadline: 10_000 });
 	}
 
 	async function applyAndWaitForCacheControl(
