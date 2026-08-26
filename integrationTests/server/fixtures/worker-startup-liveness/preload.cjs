@@ -1,7 +1,10 @@
 'use strict';
 
 const Module = require('node:module');
+const { writeFileSync } = require('node:fs');
+const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
+const { threadId } = require('node:worker_threads');
 
 // Worker execArgv loads this before threadServer. Replacing only the worker-side root loader
 // isolates the ready handshake from incidental component/storage handles; the main process still
@@ -12,6 +15,7 @@ replacement.filename = loadRootComponentsPath;
 replacement.loaded = true;
 replacement.exports = {
 	loadRootComponents() {
+		writeFileSync(join(process.env.HARPER_TEST_WORKER_STARTUP_MARKER_DIR, `worker-${threadId}`), '');
 		const startupMode = process.env.HARPER_TEST_WORKER_STARTUP_MODE;
 		return delay(100, undefined, { ref: startupMode === 'ref' }).then(() => {
 			if (startupMode === 'reject') throw new Error('deliberate worker component startup rejection');

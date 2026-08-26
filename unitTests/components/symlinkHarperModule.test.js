@@ -100,4 +100,38 @@ describe('symlinkHarperModule', () => {
 
 		await linked;
 	});
+
+	it('rejects a lock waiter when the winning worker did not repair the links', async () => {
+		let notifyUnlocked;
+		const linked = symlinkHarperModule(
+			componentDirectory,
+			{
+				tryLock(_key, callback) {
+					notifyUnlocked = callback;
+					return false;
+				},
+				unlock() {
+					throw new Error('waiter must not unlock');
+				},
+			},
+			100
+		);
+
+		notifyUnlocked();
+
+		await assert.rejects(linked, /completed without valid links/);
+	});
+
+	it('preserves a tryLock error and clears the wait timer', async () => {
+		const lockError = new Error('lock store unavailable');
+		await assert.rejects(
+			symlinkHarperModule(componentDirectory, {
+				tryLock() {
+					throw lockError;
+				},
+				unlock() {},
+			}),
+			(error) => error === lockError
+		);
+	});
 });
