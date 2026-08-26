@@ -106,7 +106,7 @@ suite('an application with a branched database', (ctx: ContextWithHarper) => {
 	});
 
 	test('the branch lives under the reserved root', () => {
-		const branchRoot = resolve(ctx.harper!.dataRootDir, 'database', '.harper-branches');
+		const branchRoot = resolve(ctx.harper!.dataRootDir, 'database', '`branches`');
 		ok(existsSync(branchRoot), `expected a branch root at ${branchRoot}`);
 	});
 });

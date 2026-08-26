@@ -678,11 +678,13 @@ function readRocksMetaDb(
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
 			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
-			// a caller-owned graph is replayed into as well: nothing else will ever replay this store.
-			// `replayLogs` is a no-op off the main thread, so a branch opened on a worker sees only
-			// what the checkpoint's SSTs hold — see the note on `openBranchDatabase`
-			if (!isReadOnlyMode()) {
-				replayLogs(rootStore, destination ?? databases[databaseName]);
+			// A branch (`destination`) is a checkpoint and nothing more, deliberately. Replaying into one
+			// would make its content depend on which thread opened it — `replayLogs` is a no-op off the
+			// main thread, and applications load on workers — and it hands an un-awaited writer to a
+			// store the branch's owner may close moments later, which aborts the process rather than
+			// failing a load. See the contract note on `openBranchDatabase` (harper#643).
+			if (!isReadOnlyMode() && !destination) {
+				replayLogs(rootStore, databases[databaseName]);
 			}
 		}
 		return rootStore;
@@ -1041,10 +1043,11 @@ function initStores(
  * target share a filesystem — off-volume it degrades to a full byte copy, which is the property the
  * whole feature rests on.
  *
- * Reserved name, so the boot scan can refuse it outright rather than relying on it happening to hold
- * no CURRENT/MANIFEST at its own level.
+ * The backticks are what make the name reserved rather than merely conventional: `schemaRegex`
+ * (validation/common_validators.ts) excludes 0x60, so no database can ever be created under this
+ * name and shadow the branch root -- the same protection RESTORE_META_DIR uses.
  */
-export const BRANCH_ROOT_DIR = '.harper-branches';
+export const BRANCH_ROOT_DIR = '`branches`';
 
 /**
  * Where one branch of `baseName` lives for this process instance. App and database are separate path

@@ -4133,6 +4133,10 @@ export function makeTable(options) {
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {
+				// Turning auditing on is a schema write, and a branch's Table classes carry the base's
+				// logical name: without this a subscribe through a branched application would enable
+				// auditing on the live base table for every other consumer, with no DDL call involved.
+				TableResource.assertSchemaMutable('enable auditing for a subscription');
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
 			const getFullRecord = !request.rawEvents;

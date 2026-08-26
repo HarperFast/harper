@@ -188,9 +188,8 @@ export function assertApplicationConfig(
 }
 
 /**
- * Every rejection here is deliberate: a branch that cannot be honoured must fail the application's
- * load rather than silently fall back to the base, which would give the application the shared
- * database it explicitly asked not to have — with no signal that it happened.
+ * A branch that cannot be honoured fails the application's load: falling back would hand it the
+ * shared database it asked not to have, with no signal that it happened.
  */
 export function assertBranchedDatabases(applicationName: string, value: unknown): void {
 	if (value === undefined) return;

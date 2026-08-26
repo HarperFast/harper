@@ -620,12 +620,12 @@ export async function loadComponent(
 		// code first reaches `databases`, and a declared branch that cannot be created must fail this
 		// application's load rather than let it run against the base it asked not to share.
 		if (!isRoot && config?.branchedDatabases !== undefined) {
-			assertBranchedDatabases(basename(componentDirectory), config.branchedDatabases);
-			applicationScope.branches = await prepareBranches(
-				basename(componentDirectory),
-				config.branchedDatabases,
-				applicationScope.mode
-			);
+			// The loader's own application identity, not the directory's basename: a branch path is
+			// keyed by this, and two components can share a basename (a nested one and a top-level one)
+			// while being different applications that must not share a fork each believes is private.
+			const branchAppName = options.appName ?? basename(componentDirectory);
+			assertBranchedDatabases(branchAppName, config.branchedDatabases);
+			applicationScope.branches = await prepareBranches(branchAppName, config.branchedDatabases, applicationScope.mode);
 		}
 
 		// For non-root components with empty/null config (e.g., comment-only YAML),

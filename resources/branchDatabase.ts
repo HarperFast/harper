@@ -172,7 +172,7 @@ async function pruneEmptyParents(root: string, branchPath: string): Promise<void
 	// Stop at the branch root itself: it is shared, and `relative` going outside it means we walked past.
 	while (dir !== root && !relative(root, dir).startsWith('..')) {
 		try {
-			await rmdir(dir); // fails with ENOTEMPTY while anything else still lives here, which is the guard
+			await rmdir(dir);
 		} catch {
 			return;
 		}
@@ -181,7 +181,6 @@ async function pruneEmptyParents(root: string, branchPath: string): Promise<void
 }
 
 function branchRootOf(branchPath: string): string {
-	// `<storage>/<BRANCH_ROOT_DIR>/<instance>/<app>/<db>` — the root is three levels up from the db.
 	return dirname(dirname(dirname(branchPath)));
 }
 

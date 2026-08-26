@@ -916,11 +916,7 @@ function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 	} as typeof defineTable;
 }
 
-/**
- * Everything an application sees differently because of what it declared. Built once at load, so
- * nothing on the request path pays for it, and an application that declared no branches gets the
- * process-wide values back by identity.
- */
+/** Everything an application sees differently because of what it declared. Built once, at load. */
 export function scopedBindings(scope: ApplicationScope): { databases: any; tables: any; defineTable: any } {
 	return { ...scopedDatabaseBindings(scope), defineTable: scopedDefineTable(scope) };
 }
