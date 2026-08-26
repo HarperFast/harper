@@ -921,8 +921,8 @@ export class DatabaseTransaction implements Transaction {
 		// their pre-read base — their convergence contract is the replay pass itself.
 		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
 		if (reloadEntry || operation.entry === undefined || reloadsCommitBase) {
-			// the other two triggers are pre-existing reads of kinds that keep their own conflict
-			// semantics, so only a base that feeds stored state gives up the cache vouch
+			// a cold read for a kind that keeps its own conflict semantics is the one case that can
+			// still take the vouch fast path; a state-deriving base or a conflict reload cannot
 			const uncachedRead = !!operation.reloadCommitBase || reloadEntry;
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
