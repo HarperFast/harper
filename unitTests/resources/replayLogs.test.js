@@ -7,7 +7,6 @@ const {
 	isUndecodableValidatedWrite,
 	RECORD_BEARING_FLAGS,
 	endIteratorOnCorruptFrame,
-	createTruncatedTransactionTracker,
 	MAX_CORRUPT_FRAME_REPORTS,
 	createCorruptFrameReporter,
 	getCorruptFrameReports,
@@ -307,71 +306,6 @@ describe('endIteratorOnCorruptFrame', () => {
 			() => endIteratorOnCorruptFrame({ next: source.next }, () => {}).throw(boom),
 			(error) => error === boom
 		);
-	});
-});
-
-// harper#2016 / harper#2063: replay groups equal-version entries into one source transaction, so a
-// break inside such a group leaves the surviving part of a transaction that never committed that
-// way at the source. The tracker is what tells replay which staged transaction to drop.
-describe('createTruncatedTransactionTracker', () => {
-	it('reports nothing truncated while no break has been seen', () => {
-		const stop = { breaks: 0 };
-		const tracker = createTruncatedTransactionTracker(stop);
-		for (const version of [10, 10, 20]) tracker.observe(version);
-
-		assert.strictEqual(tracker.wasTruncated(10), false);
-		assert.strictEqual(tracker.wasTruncated(20), false);
-		assert.strictEqual(tracker.wasTruncated(20, true), false);
-	});
-
-	// The break surfaces on the entry whose successors it destroyed, because the aggregate iterator
-	// refills that log's lookahead as it hands the entry back.
-	it('attributes a break to the version of the entry it surfaced on', () => {
-		const stop = { breaks: 0 };
-		const tracker = createTruncatedTransactionTracker(stop);
-		tracker.observe(10);
-		stop.breaks++;
-		tracker.observe(10);
-		tracker.observe(20);
-
-		assert.strictEqual(tracker.wasTruncated(10), true);
-		assert.strictEqual(tracker.wasTruncated(20), false);
-	});
-
-	// A break seen as the FIRST entry of the next transaction arrives belongs to that next
-	// transaction, not to the one just completed — the opposite attribution would commit the torn
-	// one and discard an intact one.
-	it('attributes a break on a boundary entry to the transaction that entry starts', () => {
-		const stop = { breaks: 0 };
-		const tracker = createTruncatedTransactionTracker(stop);
-		tracker.observe(10);
-		stop.breaks++;
-		tracker.observe(20);
-
-		assert.strictEqual(tracker.wasTruncated(10), false);
-		assert.strictEqual(tracker.wasTruncated(20), true);
-	});
-
-	it('attributes a break with no entry after it to the transaction still staged at the end', () => {
-		const stop = { breaks: 0 };
-		const tracker = createTruncatedTransactionTracker(stop);
-		tracker.observe(10);
-		stop.breaks++;
-
-		assert.strictEqual(tracker.wasTruncated(10), false);
-		assert.strictEqual(tracker.wasTruncated(10, true), true);
-	});
-
-	it('follows the latest break when several logs break during one replay', () => {
-		const stop = { breaks: 0 };
-		const tracker = createTruncatedTransactionTracker(stop);
-		stop.breaks++;
-		tracker.observe(10);
-		stop.breaks++;
-		tracker.observe(20);
-
-		assert.strictEqual(tracker.wasTruncated(10), false);
-		assert.strictEqual(tracker.wasTruncated(20), true);
 	});
 });
 

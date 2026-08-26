@@ -11,7 +11,6 @@ import {
 	isUndecodableValidatedWrite,
 	shouldAbortStalledReplay,
 	shouldAbortSlowReplay,
-	createTruncatedTransactionTracker,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
 import { purgeAgedLogs } from './auditStore.ts';
@@ -128,7 +127,6 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		};
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
 		const entries = txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true });
-		const truncated = createTruncatedTransactionTracker(entries.corruptFrameStop);
 		for (const auditRecord of entries as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
 				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table.`;
@@ -141,7 +139,6 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				);
 				break;
 			}
-			truncated.observe(auditRecord.version);
 			const {
 				type,
 				tableId,
@@ -209,7 +206,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
 				}
 				if (lastTimestamp !== version) {
-					const torn = truncated.wasTruncated(lastTimestamp);
+					const torn = entries.corruptFrameStop.truncatedVersions.has(lastTimestamp);
 					lastTimestamp = version;
 					try {
 						// commit the last transaction since we are starting a new one, unless a corrupt
@@ -347,7 +344,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				});
 			}
 		}
-		const finalTorn = truncated.wasTruncated(lastTimestamp, true);
+		const finalTorn = entries.corruptFrameStop.truncatedVersions.has(lastTimestamp);
 		if (!strictFailure) {
 			try {
 				if (finalTorn) {

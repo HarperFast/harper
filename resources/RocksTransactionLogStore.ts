@@ -246,14 +246,15 @@ export class RocksTransactionLogStore extends EventEmitter {
 	}): TransactionLogIterable {
 		let iterable = new ExtendedIterable<TransactionEntry>();
 		let aggregateIterator: TransactionLogIterator;
-		// Shared by every per-log iterator of this range so a consumer can tell iteration that ended at
-		// a corrupt frame from iteration that reached the end of the logs, and can attribute the break
-		// to the entry it was reading when the break surfaced.
-		const corruptFrameStop: CorruptFrameStop = { breaks: 0 };
+		const corruptFrameStop: CorruptFrameStop = { breaks: 0, truncatedVersions: new Set() };
+		// The version of the last entry each log yielded in this range, so a break can be attributed to
+		// the source transaction whose remaining entries it swallowed.
+		const lastVersionByLog = new Map<TransactionLog, number>();
 		const onCorruptFrame = (log: TransactionLog) => {
 			const report = reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`);
 			return (error) => {
 				corruptFrameStop.breaks++;
+				if (lastVersionByLog.has(log)) corruptFrameStop.truncatedVersions.add(lastVersionByLog.get(log));
 				report(error);
 			};
 		};
@@ -378,6 +379,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 							}
 						}
 						if (earliestIndex >= 0) {
+							// before the refill, which is where a break surfaces and needs this entry's version
+							lastVersionByLog.set(logs[earliestIndex], earliest.timestamp);
 							// replace the entry with the next one from the iterator we pulled from
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							return {

@@ -137,13 +137,11 @@ suite('Replay transaction atomicity across a corrupt frame', (ctx: ContextWithHa
 
 		await startHarper(ctx);
 
-		const tornRows = await countInRange(ctx.harper, 1001, TORN_IDS);
-		ok(
-			tornRows === 0 || tornRows === TORN_IDS,
-			`the truncated transaction must be all-or-nothing, found ${tornRows} of ${TORN_IDS} rows`
-		);
-		// The entries before it are intact, so the transaction that completed ahead of the break is
-		// unaffected — fail-stop must not cost more than the transaction it landed in.
+		// None of it: the break makes the rest of that insert unreadable, so the readable prefix is
+		// discarded rather than committed as a transaction the source never committed.
+		equal(await countInRange(ctx.harper, 1001, TORN_IDS), 0, 'the truncated transaction must not be applied in part');
+		// The transactions that completed ahead of the break are unaffected: fail-stop costs the
+		// transaction the break landed in, not the log up to it.
 		equal(await countInRange(ctx.harper, 1, EARLIER_IDS), EARLIER_IDS);
 	});
 });

@@ -146,42 +146,16 @@ export type CorruptFrameError = RangeError & {
 /**
  * Corrupt frames hit by one `getRange` call, shared by its per-log iterators.
  *
- * A count, not a flag, because a consumer has to attribute each break to the source transaction it
- * truncated: the entries an aggregate iterator has yielded from the broken log stop at the break,
- * so the transaction those last entries belong to is the one left incomplete. Replay must discard
- * that transaction rather than commit the surviving part of it.
+ * `truncatedVersions` is what a consumer has to act on: a break destroys the framing after the last
+ * entry the broken log yielded, and whether the entries it swallowed continued that entry's version
+ * is exactly what can no longer be read. That version's transaction is therefore incomplete, and
+ * replay must discard it rather than commit the part of it that was still readable. A log that
+ * broke before yielding anything truncates no transaction. Only an aggregate range attributes
+ * versions; a single-log range reports the count alone.
  */
 export interface CorruptFrameStop {
 	breaks: number;
-}
-
-/**
- * Attributes each corrupt frame to the source transaction it truncated, so a replay can drop that
- * transaction whole instead of committing the part of it that was still readable.
- *
- * An aggregate transaction-log iterator refills a log's lookahead as it hands back that log's
- * entry, so a break becomes visible on the very entry whose successors it destroyed — the version
- * that entry belongs to is the incomplete transaction. Call {@link observe} for every entry, in
- * order, then ask about a version when its transaction is about to be committed.
- */
-export function createTruncatedTransactionTracker(corruptFrameStop: CorruptFrameStop) {
-	let accountedBreaks = 0;
-	let truncatedVersion: number;
-	return {
-		observe(version: number) {
-			if (corruptFrameStop.breaks > accountedBreaks) {
-				accountedBreaks = corruptFrameStop.breaks;
-				truncatedVersion = version;
-			}
-		},
-		/**
-		 * @param final the transaction staged when iteration ended — a break on the final pull has no
-		 *              following entry to be attributed to, so it belongs to this one
-		 */
-		wasTruncated(version: number, final = false): boolean {
-			return truncatedVersion === version || (final && corruptFrameStop.breaks > accountedBreaks);
-		},
-	};
+	truncatedVersions: Set<number>;
 }
 
 /**
