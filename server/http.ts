@@ -543,32 +543,45 @@ export function pipeBodyToResponse(
 		} else {
 			recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
 			recordAction(bytesSent, 'bytes-sent', handlerPath, method);
-			endConnectionIfClientRequestedClose(nodeResponse);
+			endConnectionIfClientExpectsClose(nodeResponse);
 		}
 	});
 }
 
 /**
- * Close the connection of a client that sent `Connection: close`, once a streamed response has
- * flushed. Bun's node:http never derives keep-alive from the request — `shouldKeepAlive` stays true
- * for a `Connection: close` request, and neither a `Connection: close` response header nor
- * `response.socket.end()` closes the connection — so a stream-ended response delivers its full body
- * and terminal chunk and then leaves the client hanging until its own timeout (#2210). Ending the
- * request's socket is the one thing that works on both runtimes; it flushes what's queued before the
- * FIN, unlike a destroy. Node closes such a connection itself, so this only ever fires under Bun.
- * The error path needs nothing: pipeline() destroys the response, which closes the connection on
- * both runtimes.
+ * Bun's node:http never derives keep-alive from the request, so a stream-ended response delivers its
+ * full body and then leaves the client attached until its own timeout (#2210). Ending the *request's*
+ * socket is the only remedy that works there, and it is graceful, so nothing is truncated (measured
+ * on plain TCP and TLS). DESIGN.md carries the measurements and the alternatives that don't work.
  */
-function endConnectionIfClientRequestedClose(nodeResponse: any) {
+function endConnectionIfClientExpectsClose(nodeResponse: any) {
 	if (!isBun) return;
 	const nodeRequest = nodeResponse.req;
-	// HTTP/2 multiplexes streams over one connection, so there is no per-request socket to end
 	if (nodeRequest?.httpVersionMajor !== 1) return;
+	const socket = nodeRequest.socket;
+	// a peer that RSTs right after the terminal chunk can leave this callback holding a destroyed
+	// socket; end()ing it would throw from inside stream internals, i.e. an uncaughtException
+	if (!socket || socket.destroyed) return;
 	const connection = nodeRequest.headers?.connection;
-	if (!connection) return;
-	for (const token of connection.split(',')) {
-		if (token.trim().toLowerCase() === 'close') return nodeRequest.socket?.end();
+	const tokens = typeof connection === 'string' ? connection.split(',') : [];
+	if (hasConnectionToken(tokens, 'close')) {
+		socket.end();
+		return;
 	}
+	// HTTP/1.0 persistence needs an explicit keep-alive AND a length to read to, so a 1.0 response
+	// that got no Content-Length is delimited by the close — the same line Node draws
+	if (
+		nodeRequest.httpVersionMinor === 0 &&
+		!(hasConnectionToken(tokens, 'keep-alive') && nodeResponse.hasHeader?.('content-length'))
+	)
+		socket.end();
+}
+
+function hasConnectionToken(tokens: string[], wanted: string) {
+	for (const token of tokens) {
+		if (token.trim().toLowerCase() === wanted) return true;
+	}
+	return false;
 }
 
 function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {

@@ -905,10 +905,28 @@ One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from th
 `Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
 header nor `response.socket.end()` closes the connection — a **stream-ended** response (an async
 source ended through `pipeline()`; a direct `response.end()` is fine) delivers its full body and
-terminal chunk, then hangs the client until its own timeout. `pipeBodyToResponse()` therefore ends
-`request.socket` itself when the client asked to close (`endConnectionIfClientRequestedClose`,
-`isBun`-gated, HTTP/1 only, clean path only — the error path already closes because `pipeline()`
-destroys the response). Ending the _request's_ socket is the only remedy that works on Bun.
+terminal chunk, then holds the connection until Bun's own idle timeout — a chunked-aware client
+completes the message and can walk away, but the un-honored close still violates RFC 9112 §9.6 and
+strands the socket; a raw client waiting on the FIN (and the HTTP/1.0 case below, which has no
+terminal chunk to stop at) hangs outright. An HTTP/1.0 client hangs the same way
+without asking to close at all, since 1.0 persistence needs both an explicit `keep-alive` and a length
+to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
+draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
+both versions. A 1.0 `keep-alive` request whose response _did_ get a
+`Content-Length` (`body.size` on a blob, `server/http.ts:698-709`) is left open, which is again what
+Node does and what Bun then handles correctly.
+
+`pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
+(`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path only — the error path
+already closes because `pipeline()` destroys the response). Ending the _request's_ socket is the only
+remedy that works on Bun: a `Connection: close` response header, `response.socket.end()` and
+`response.destroy()` were all measured as no-ops there. `socket.end()` is graceful, so it does not
+truncate — 8 MB over plain TCP and 6 MB over TLS to a deliberately slow reader each arrive whole. The
+`Content-Length` check reads `response.hasHeader()`, which Bun populates from the `writeHead(status,
+headers)` fast path this file uses (Node does not, but the branch is Bun-only). A
+keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
+HTTP/1.0 arms are Node/Bun-only, because uWS does not route an HTTP/1.0 request to the resource at
+all.
 
 ## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
 

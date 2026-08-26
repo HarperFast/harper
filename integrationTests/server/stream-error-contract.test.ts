@@ -120,7 +120,7 @@ function rawCapture(
 	authHeader: string,
 	surface: string,
 	throwPoint: string,
-	opts: { timeoutMs?: number } = {}
+	opts: { timeoutMs?: number; http10?: boolean; connection?: string } = {}
 ): Promise<RawCapture> {
 	const timeoutMs = opts.timeoutMs ?? 15_000;
 	const url = new URL(restBase);
@@ -135,12 +135,13 @@ function rawCapture(
 		let settled = false;
 
 		const socket = net.createConnection({ host, port }, () => {
+			const connection = opts.connection ?? (opts.http10 ? undefined : 'close');
 			const req =
-				`GET ${path} HTTP/1.1\r\n` +
+				`GET ${path} HTTP/${opts.http10 ? '1.0' : '1.1'}\r\n` +
 				`Host: ${host}:${port}\r\n` +
 				`Accept: ${acceptHeader}\r\n` +
 				`Authorization: ${authHeader}\r\n` +
-				`Connection: close\r\n` +
+				(connection ? `Connection: ${connection}\r\n` : '') +
 				`\r\n`;
 			socket.write(req);
 		});
@@ -207,6 +208,50 @@ function assertServerTerminated(cap: RawCapture) {
 		cap.socketEvents.some((e) => e.startsWith('close(')),
 		`${cap.caseName}: connection never closed (events: ${cap.socketEvents.join(', ')})`
 	);
+}
+
+function captureKeepAliveReuse(
+	restBase: string,
+	path: string,
+	acceptHeader: string,
+	authHeader: string,
+	timeoutMs = 10_000
+): Promise<{ responses: number; serverClosedEarly: boolean }> {
+	const url = new URL(restBase);
+	const host = url.hostname;
+	const port = Number.parseInt(url.port, 10) || (url.protocol === 'https:' ? 443 : 80);
+	const request =
+		`GET ${path} HTTP/1.1\r\n` +
+		`Host: ${host}:${port}\r\n` +
+		`Accept: ${acceptHeader}\r\n` +
+		`Authorization: ${authHeader}\r\n` +
+		`Connection: keep-alive\r\n` +
+		`\r\n`;
+
+	return new Promise((resolvePromise) => {
+		let raw = '';
+		let sentSecond = false;
+		let settled = false;
+		const socket = net.createConnection({ host, port }, () => socket.write(request));
+		const finish = (serverClosedEarly: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			socket.destroy();
+			resolvePromise({ responses: raw.split('HTTP/1.1 200').length - 1, serverClosedEarly });
+		};
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		socket.on('data', (d: Buffer) => {
+			raw += d.toString('latin1');
+			const completeResponses = raw.split('0\r\n\r\n').length - 1;
+			if (!sentSecond && completeResponses >= 1) {
+				sentSecond = true;
+				socket.write(request);
+			} else if (sentSecond && completeResponses >= 2) finish(false);
+		});
+		socket.on('end', () => finish(!settled));
+		socket.on('error', () => finish(false));
+	});
 }
 
 async function getProbeJson(restBase: string, authHeaders: Record<string, string>): Promise<any> {
@@ -368,6 +413,32 @@ suite(
 			);
 			captures.push(cap);
 			assertCleanCompletion(cap);
+		});
+
+		// A 1.0 response with no Content-Length is close-delimited whatever the client asked for
+		for (const connection of [undefined, 'keep-alive']) {
+			test(
+				`control: IterHealth iterable-rest over HTTP/1.0${connection ? ` (Connection: ${connection})` : ''} clean completion`,
+				{ timeout: 20_000, skip: VARIANT === 'uws' ? 'uWS does not serve HTTP/1.0 requests' : false },
+				async () => {
+					const cap = await captureWithLifecycle('iterHealth', () =>
+						rawCapture(restBase, '/IterHealth/', 'application/json', authHeader, 'iterable-rest', 'control-http10', {
+							http10: true,
+							connection,
+						})
+					);
+					captures.push(cap);
+					strictEqual(cap.status, 200, `expected 200, got ${cap.status}`);
+					deepStrictEqual(decodedRecords(cap), [{ n: 0 }, { n: 1 }, { n: 2 }]);
+					assertServerTerminated(cap);
+				}
+			);
+		}
+
+		test('control: a keep-alive client is left connected and reuses the socket', { timeout: 20_000 }, async () => {
+			const reuse = await captureKeepAliveReuse(restBase, '/IterHealth/', 'application/json', authHeader);
+			strictEqual(reuse.serverClosedEarly, false, 'server closed a keep-alive connection after a streamed response');
+			strictEqual(reuse.responses, 2, 'a keep-alive client must get both responses on one connection');
 		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
