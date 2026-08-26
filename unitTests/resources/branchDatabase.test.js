@@ -7,7 +7,12 @@ const { table, databases, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/r
 const { getOrCreateBranch, removeBranches, sweepStaleBranches } = require('#src/resources/branchDatabase');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-describe('branch lifecycle (harper#643)', () => {
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const describeUnlessLmdb = isLMDB ? describe.skip : describe;
+const itUnlessLmdb = isLMDB ? it.skip : it;
+const itOnLmdb = isLMDB ? it : it.skip;
+
+describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	let Source;
 	before(async function () {
 		this.timeout(30000);
@@ -187,11 +192,18 @@ describe('branch preparation rejects rather than falling back (harper#643)', () 
 		await assert.rejects(() => prepareBranches('app', ['prepbase'], 'native'), /native.*module loader/);
 	});
 
-	it('refuses a database that does not exist rather than creating one', async function () {
+	itOnLmdb('refuses the LMDB engine rather than falling back to the base', async function () {
+		await assert.rejects(
+			() => prepareBranches('app', ['prepbase'], 'vm-current-context'),
+			/requires the RocksDB storage engine/
+		);
+	});
+
+	itUnlessLmdb('refuses a database that does not exist rather than creating one', async function () {
 		await assert.rejects(() => prepareBranches('app', ['no-such-db'], 'vm-current-context'), /does not exist/);
 	});
 
-	it('branches a real database and exposes it under its logical name', async function () {
+	itUnlessLmdb('branches a real database and exposes it under its logical name', async function () {
 		const branches = await prepareBranches('app', ['prepbase'], 'vm-current-context');
 		assert.ok(branches.get('prepbase')?.tables.PrepSource);
 	});
@@ -227,7 +239,7 @@ describe('scoped databases binding (harper#643)', () => {
 		assert.strictEqual(bindings.tables, tables);
 	});
 
-	it('resolves a branched name to the branch and leaves the rest alone', async function () {
+	itUnlessLmdb('resolves a branched name to the branch and leaves the rest alone', async function () {
 		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
 		const bindings = scopedBindings({ branches: new Map([['bindbase', branch]]) });
 
@@ -239,7 +251,7 @@ describe('scoped databases binding (harper#643)', () => {
 		assert.notStrictEqual(databases.bindbase, branch.tables);
 	});
 
-	it('keeps `databases.system` reachable and non-enumerable', async function () {
+	itUnlessLmdb('keeps `databases.system` reachable and non-enumerable', async function () {
 		// It is defined non-enumerable on the real map, so building the view by copying enumerable
 		// properties would drop it and a branched application would lose the system database entirely.
 		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
@@ -253,7 +265,7 @@ describe('scoped databases binding (harper#643)', () => {
 		);
 	});
 
-	it('keeps showing databases created after the application loaded', async function () {
+	itUnlessLmdb('keeps showing databases created after the application loaded', async function () {
 		// `databases` gains entries at runtime, which is exactly what ensureTable/@table do. A view
 		// snapshotted at load would leave a branched application unable to see them.
 		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
@@ -267,7 +279,7 @@ describe('scoped databases binding (harper#643)', () => {
 	});
 });
 
-describe('branch rollback is scoped to the failing application (harper#643)', () => {
+describeUnlessLmdb('branch rollback is scoped to the failing application (harper#643)', () => {
 	const { mkdirSync, writeFileSync } = require('node:fs');
 	let COMPONENT_PREPARATION_PROCESS_INSTANCE_ID, prepareBranches;
 
@@ -394,7 +406,7 @@ describe('defineTable through a branched application (harper#643)', () => {
 		await removeBranches();
 	});
 
-	it('refuses to define into a branched database rather than defining into the base', async function () {
+	itUnlessLmdb('refuses to define into a branched database rather than defining into the base', async function () {
 		// defineTable registers in the process-wide catalog, so without this the table would appear in
 		// the base -- replicated and visible to every other application -- while this application's
 		// own reads and writes went to its branch. Landing it in the branch is harper#2264.
@@ -405,7 +417,7 @@ describe('defineTable through a branched application (harper#643)', () => {
 		assert.strictEqual(databases.defbase.Defined, undefined, 'and nothing must be created in the base');
 	});
 
-	it('still defines into databases the application did not branch', async function () {
+	itUnlessLmdb('still defines into databases the application did not branch', async function () {
 		const branch = await getOrCreateBranch('defbase', 'defApp', 'inst1');
 		const { defineTable } = scopedBindings({ branches: new Map([['defbase', branch]]) });
 
