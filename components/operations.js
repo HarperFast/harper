@@ -431,6 +431,30 @@ async function packageComponent(req) {
 	return { project, payload };
 }
 
+/** Report a restart outcome that a caller cannot see from `restart_completed` alone. */
+function logRestartOutcome(restart, what) {
+	const { RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+	if (restart.replacementsNotStarted)
+		log.warn(
+			`${restart.replacementsNotStarted} replacement worker thread(s) did not report starting after ${what}; the pool is short until they are restarted`
+		);
+	if (restart.error) log.error(`Restart after ${what} failed`, restart.error);
+	else if (restart.workersKeptOnOldCode)
+		log.warn(
+			`${restart.workersKeptOnOldCode} worker thread(s) could not be replaced after ${what} and are still running the previous code`
+		);
+	else if (restart.declined) log.warn(`No restart was performed after ${what}: the process is already shutting down`);
+	else if (restart.handedOff)
+		log.debug?.(`The restart after ${what} was handed to the main thread, which reports its own completion`);
+	else if (restart.stalled)
+		log.warn(
+			`The restart after ${what} stopped making progress for ${RESTART_IDLE_TIMEOUT_MS}ms; worker threads may still be running the previous code`
+		);
+	else if (!restart.completed)
+		log.warn(
+			`The restart after ${what} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
+		);
+}
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -695,7 +719,7 @@ async function deployComponent(req) {
 			// replacements share a port they keep accepting connections for the whole rolling restart, so
 			// a caller that reads success as "the component is live" can be served by a worker that has
 			// never heard of it.
-			const { awaitRestart, RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+			const { awaitRestart } = require('./awaitRestart.ts');
 			const restart = await awaitRestart((onProgress) =>
 				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
 			);
@@ -703,29 +727,7 @@ async function deployComponent(req) {
 			// Only the thread that performed the restart can say whether it finished; a handoff leaves the
 			// field off rather than reporting a restart that is proceeding elsewhere as incomplete.
 			if (!restart.handedOff) response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
-			if (restart.replacementsNotStarted)
-				log.warn(
-					`${restart.replacementsNotStarted} replacement worker thread(s) did not report starting after deploying ${application.name}; the pool is short until they are restarted`
-				);
-			if (restart.error) log.error(`Restart after deploying ${application.name} failed`, restart.error);
-			else if (restart.workersKeptOnOldCode)
-				log.warn(
-					`${restart.workersKeptOnOldCode} worker thread(s) could not be replaced after deploying ${application.name} and are still running the previous code`
-				);
-			else if (restart.declined)
-				log.warn(`No restart was performed after deploying ${application.name}: the process is already shutting down`);
-			else if (restart.handedOff)
-				log.debug?.(
-					`The restart after deploying ${application.name} was handed to the main thread, which reports its own completion`
-				);
-			else if (restart.stalled)
-				log.warn(
-					`The restart after deploying ${application.name} stopped making progress for ${RESTART_IDLE_TIMEOUT_MS}ms; worker threads may still be running the previous code`
-				);
-			else if (!restart.completed)
-				log.warn(
-					`The restart after deploying ${application.name} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
-				);
+			logRestartOutcome(restart, `deploying ${application.name}`);
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
 			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
@@ -1255,7 +1257,7 @@ async function dropComponent(req) {
 			manageThreads.restartWorkers('http', undefined, undefined, onProgress)
 		);
 		if (!restart.handedOff) response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
-		if (restart.error) log.error(`Restart after dropping ${projectPath} failed`, restart.error);
+		logRestartOutcome(restart, `dropping ${projectPath}`);
 		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
 	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;

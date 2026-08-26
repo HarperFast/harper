@@ -90,10 +90,10 @@ describe('awaitRestart', () => {
 			return new Promise(() => {});
 		}, TIMERS);
 		assert.deepStrictEqual(outcome, { completed: false, stalled: true });
-		// Well past the 60ms idle window is the claim; the exact deadline is timer-precision noise.
+		// A timer may fire a millisecond or two early against Date.now(); the claim is the deadline.
 		assert.ok(
-			Date.now() - started >= TIMERS.idleTimeoutMs * 2,
-			`the wait should have honored the deadline, gave up after ${Date.now() - started}ms`
+			Date.now() - started >= 240,
+			`the wait should have honored the 250ms deadline, gave up after ${Date.now() - started}ms`
 		);
 	});
 
@@ -107,7 +107,7 @@ describe('awaitRestart', () => {
 			{ idleTimeoutMs: 60, ceilingMs: 150 }
 		);
 		assert.deepStrictEqual(outcome, { completed: false });
-		assert.ok(Date.now() - started >= 120, `ceiling fired early, after ${Date.now() - started}ms`);
+		assert.ok(Date.now() - started >= 140, `the 150ms ceiling fired early, after ${Date.now() - started}ms`);
 	});
 
 	it('clears its timers and ignores progress once it has settled', async () => {

@@ -299,7 +299,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 			switch (command) {
 				case 'connect':
 					mqttOptions.protocolVersion = packet.protocolVersion;
-					sendProblemInformation = packet.properties?.requestProblemInformation !== 0;
+					// mqtt-packet parses this byte into a boolean, and a client may also send the raw 0.
+					const requestProblemInformation = packet.properties?.requestProblemInformation;
+					sendProblemInformation = requestProblemInformation !== false && requestProblemInformation !== 0;
 					maximumPacketSize = packet.properties?.maximumPacketSize;
 					if (packet.username) {
 						try {

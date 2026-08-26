@@ -57,7 +57,12 @@ async function buildPayload(): Promise<string> {
 	}
 }
 
-function connect(url: string, clientId: string, admin: { username: string; password: string }): Promise<MqttClient> {
+function connect(
+	url: string,
+	clientId: string,
+	admin: { username: string; password: string },
+	options: Partial<mqtt.IClientOptions> = {}
+): Promise<MqttClient> {
 	return new Promise((resolve, reject) => {
 		const client = mqtt.connect(url, {
 			clientId,
@@ -67,6 +72,7 @@ function connect(url: string, clientId: string, admin: { username: string; passw
 			clean: true,
 			reconnectPeriod: 0,
 			connectTimeout: 10_000,
+			...options,
 		});
 		const timer = setTimeout(() => {
 			client.end(true);
@@ -93,12 +99,13 @@ async function connectWhenAvailable(
 	url: string,
 	clientId: string,
 	admin: { username: string; password: string },
+	options: Partial<mqtt.IClientOptions> = {},
 	timeoutMs = 30_000
 ): Promise<MqttClient> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
 		try {
-			return await connect(url, clientId, admin);
+			return await connect(url, clientId, admin, options);
 		} catch (error) {
 			if (Date.now() >= deadline) throw error;
 			await new Promise((resolve) => setTimeout(resolve, 250));
@@ -190,8 +197,34 @@ suite(
 			}
 		});
 
+		test('a client that asks for no problem information is not sent a reason string', async () => {
+			// [MQTT-3.1.2-29]: the code still has to come back, only the string is withheld.
+			const client = await connectWhenAvailable(url, 'deploy-restart-no-problem-info', ctx.harper.admin, {
+				// mqtt-packet serializes this byte from a boolean and refuses a raw 0.
+				properties: { requestProblemInformation: false },
+			});
+			try {
+				const { error, ack } = await publish(client, 'NoSuchTopicResource/anything');
+				strictEqual(error?.code, TOPIC_NAME_INVALID, `expected reason code 0x90, got ${error?.code}`);
+				strictEqual(
+					ack?.properties?.reasonString,
+					undefined,
+					`expected no reason string, got: ${ack?.properties?.reasonString}`
+				);
+			} finally {
+				client.end(true);
+			}
+		});
+
 		test('a worker restart disconnects MQTT clients with "Server shutting down"', async () => {
 			const client = await connectWhenAvailable(url, 'deploy-restart-shutdown-notice', ctx.harper.admin);
+			// v3.1.1 has no server-to-client DISCONNECT, so that client must only be closed.
+			const legacyClient = await connectWhenAvailable(url, 'deploy-restart-legacy-notice', ctx.harper.admin, {
+				protocolVersion: 4,
+			});
+			let legacyDisconnects = 0;
+			legacyClient.on('disconnect', () => legacyDisconnects++);
+			const legacyClosed = new Promise<void>((resolve) => legacyClient.on('close', () => resolve()));
 			try {
 				const disconnected = new Promise<any>((resolve, reject) => {
 					const timer = setTimeout(() => reject(new Error('no DISCONNECT received before the socket closed')), 60_000);
@@ -203,8 +236,11 @@ suite(
 				await sendOperation(ctx.harper, { operation: 'restart_service', service: 'http' });
 				const packet = await disconnected;
 				strictEqual(packet.reasonCode, SERVER_SHUTTING_DOWN, `unexpected DISCONNECT reason ${packet.reasonCode}`);
+				await legacyClosed;
+				strictEqual(legacyDisconnects, 0, 'a v3.1.1 client must not be sent a DISCONNECT packet');
 			} finally {
 				client.end(true);
+				legacyClient.end(true);
 			}
 		});
 	}
