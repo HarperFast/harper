@@ -64,18 +64,17 @@ export class RootConfigWatcher extends EventEmitter {
 			if (!this.#usingPolling) {
 				warnWatcherFallback(this.#configFilePath);
 				this.#usingPolling = true;
-				// Guard against reopen-after-close: the caller may have invoked
-				// close() while this teardown was in flight. The .catch is required
-				// because `finally` would re-raise a teardown rejection as an
-				// unhandled one.
-				this.#watcher
-					.close()
+				// Start close() from a microtask, not directly here, so a synchronous throw
+				// can't escape this 'error' listener as an uncaught exception.
+				Promise.resolve()
+					.then(() => this.#watcher.close())
 					.catch(() => {
 						// Teardown errors on an already-failed watcher are not actionable.
 					})
-					.finally(() => {
+					.then(() => {
 						if (!this.#closed) this.#openWatcher();
-					});
+					})
+					.catch((error) => console.error(`Could not reopen the ${this.#configFilePath} watch on polling:`, error));
 			}
 			return;
 		}
