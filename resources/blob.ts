@@ -52,7 +52,6 @@ import { Readable, Transform, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import { isMainThread } from 'node:worker_threads';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
@@ -1499,8 +1498,17 @@ function resetDrainedQueue(): void {
 const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
 const UNLINK_QUEUE_DRAIN_DELAY = 25; // coalescing debounce; the row is already durable and due when this fires
 const UNLINK_SAFETY_INTERVAL = 5000; // main-thread backstop cadence; one empty range peek when idle
+// The startup drain runs against a backlog a dead process left behind, so the fan-out is bounded by
+// nothing this code controls; unlinks are issued a batch at a time and the next batch is only armed
+// once the current one settles, which also keeps the libuv threadpool available to request traffic.
+const UNLINK_DRAIN_BATCH = 64;
+// After this many failed unlinks the row is abandoned and the file left to `cleanup_orphan_blobs`.
+// A row that can never succeed (EPERM/EACCES on a mount) otherwise pins its hash-shared reclaim slot
+// forever, which makes every colliding fileId report as unavailable to holders.
+const MAX_UNLINK_ATTEMPTS = 5;
 const pendingLocalDrains = new Map<any, ReturnType<typeof setTimeout>>(); // per-root coalesced drain timer (this thread)
 const mainSafetyDrains = new WeakSet<any>(); // roots with a main-thread safety interval armed
+const inFlightUnlinks = new Map<any, Set<string>>(); // per-root fileIds this thread has an unlink open on
 
 function unlinkQueueDb(store: any): any {
 	return store?.dbisDb;
@@ -1544,29 +1552,70 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 		logger.debug?.('Unable to read blob unlink queue', error);
 		return;
 	}
+	let inFlight = inFlightUnlinks.get(rootStore);
+	if (!inFlight) inFlightUnlinks.set(rootStore, (inFlight = new Set()));
+	let outstanding = 0;
+	let batchTruncated = false;
+	const settleOne = () => {
+		if (--outstanding === 0 && batchTruncated) scheduleBlobUnlinkDrain(rootStore);
+	};
 	for (const { key, value } of entries) {
 		if (!value || value.due > now) continue; // not yet due
 		const fileId = key[1];
+		if (inFlight.has(fileId)) continue; // a concurrent drain on this thread already owns this row
+		if (outstanding >= UNLINK_DRAIN_BATCH) {
+			batchTruncated = true;
+			break;
+		}
+		outstanding++;
+		inFlight.add(fileId);
 		const storageInfo = { storageIndex: value.storageIndex ?? 0, fileId, store: rootStore };
 		const filePath = getFilePath(storageInfo);
 		unlink(filePath, (error) => {
+			inFlight.delete(fileId);
 			if (error && error.code !== 'ENOENT') {
-				// keep the row; a later drain retries (e.g. a reader still holds the file open on Windows)
-				logger.debug?.('Error trying to remove blob file, will retry', error);
-				return;
+				const attempts = (value.attempts ?? 0) + 1;
+				if (attempts < MAX_UNLINK_ATTEMPTS) {
+					// keep the row; a later drain retries (e.g. a reader still holds the file open on Windows)
+					logger.debug?.('Error trying to remove blob file, will retry', error);
+					try {
+						queueDb.putSync(key, { ...value, attempts });
+					} catch (putError) {
+						logger.debug?.('Unable to record blob unlink retry count', putError);
+					}
+					settleOne();
+					return;
+				}
+				logger.warn?.(
+					`Giving up on removing blob file ${filePath} after ${attempts} attempts; it is left for ` +
+						`cleanup_orphan_blobs`,
+					error
+				);
 			}
-			try {
-				if (queueDb instanceof RocksDatabase) queueDb.removeSync(key);
-				else queueDb.remove(key);
-			} catch (removeError) {
-				logger.debug?.('Unable to remove blob unlink queue entry', removeError);
-			}
+			// The row is dropped before the claim is handed back, so a hold taken after the release can
+			// never be followed by another drain unlinking the file out from under it.
+			removeUnlinkQueueRow(queueDb, key);
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
 			// Hand the slot back: it is shared by hash, so leaving it claimed would make every later
 			// hold on a colliding fileId report the file as already reclaimed.
 			releaseReclaimClaim(storageInfo);
+			settleOne();
 		});
+	}
+}
+
+/**
+ * `removeSync` on both engines, never the async `remove()`: this runs in an unlink callback, so an
+ * async rejection (a dbi mid-close during the very teardown this queue exists to survive) would land
+ * after the frame returned, as an unhandled rejection — the same reason `databases.ts` uses
+ * `removeSync` in its retry accounting.
+ */
+function removeUnlinkQueueRow(queueDb: any, key: any): void {
+	try {
+		queueDb.removeSync(key);
+	} catch (error) {
+		logger.debug?.('Unable to remove blob unlink queue entry', error);
 	}
 }
 
@@ -1770,7 +1819,21 @@ function runReclamation(): void {
 		// this decision and the actual unlink can't lose it (#1832): the claim taken above stays held
 		// until drainBlobUnlinkQueue confirms the file is gone and releases it, so a hold can't be
 		// acquired on a file already durably committed to disappear.
-		if (enqueueBlobUnlink(storageInfo)) {
+		let enqueued: boolean;
+		try {
+			enqueued = enqueueBlobUnlink(storageInfo);
+		} catch (error) {
+			// Same closed-store hazard the hold-state reads above guard against, and this is a raw timer
+			// callback: an uncaught throw here takes the worker down. Hand the claim back so the retry
+			// can re-take it, and let the entry age out through the cap if the store never reopens.
+			logger.debug?.('Could not durably record the blob unlink; deferring', filePath, error);
+			pending.unlinking = false;
+			releaseReclaimClaim(storageInfo);
+			const deferred = enqueue(filePath, pending, now + HELD_RECHECK_INTERVAL);
+			if (deferred < earliest) earliest = deferred;
+			continue;
+		}
+		if (enqueued) {
 			scheduleBlobUnlinkDrain(storageInfo.store);
 			continue;
 		}
@@ -2838,6 +2901,27 @@ function generateFilePath(storageInfo: StorageInfo) {
 	if (!existsSync(fileDir)) ensureDirSync(fileDir);
 	storageInfo.filePath = filePath;
 }
+/**
+ * The highest file id with an outstanding unlink intent. The allocator re-seeds from the highest id
+ * found *on disk*, but a queue row outlives its file by design (the drain unlinks first and removes
+ * the row second), so without this floor a row stranded by a crash can name an id that is handed out
+ * again — and the next drain would unlink that new, live file.
+ */
+function highestQueuedUnlinkFileId(store: any): number {
+	const queueDb = unlinkQueueDb(store);
+	if (!queueDb) return 0;
+	let highest = 0;
+	try {
+		for (const key of queueDb.getKeys({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
+			const id = parseInt(key[1], 16);
+			if (id > highest) highest = id;
+		}
+	} catch (error) {
+		logger.debug?.('Unable to scan the blob unlink queue for the highest file id', error);
+	}
+	return highest;
+}
+
 const idIncrementers = new Map<RootDatabase, BigInt64Array>();
 function getNextFileId(): number {
 	// all threads will use a shared buffer to atomically increment the id
@@ -2872,6 +2956,7 @@ function getNextFileId(): number {
 			}
 			highestId = Math.max(highestId, id);
 		}
+		highestId = Math.max(highestId, highestQueuedUnlinkFileId(currentStore));
 		idIncrementer = new BigInt64Array([BigInt(highestId) + 1n]);
 		// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
 		idIncrementer = new BigInt64Array(currentStore.getUserSharedBuffer('blob-file-id', idIncrementer.buffer));
