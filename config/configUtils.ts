@@ -1347,6 +1347,20 @@ export function getConfigFromFile(param: string) {
  * @param values - JSON value which should have top level element
  * @returns {Promise<void>}
  */
+/**
+ * One top-level config entry, read fresh from the YAML file rather than from the memoized boot object.
+ * `getConfigObj()` is a boot-time snapshot that `addConfig`/`deleteConfigFromFile` do not refresh, so a
+ * caller that needs the CURRENT entry — e.g. to record what a failed deploy must restore — has to read
+ * the file. Returns `null` when the entry is absent.
+ */
+export function readConfigEntryFromFile(topLevelElement: string): Record<string, any> | null {
+	const configDoc = parseYamlDoc(getConfigFilePath());
+	if (!configDoc.hasIn([topLevelElement])) return null;
+	const entry = configDoc.getIn([topLevelElement], true) as any;
+	const plain = entry && typeof entry.toJSON === 'function' ? entry.toJSON() : entry;
+	return plain && typeof plain === 'object' ? (plain as Record<string, any>) : null;
+}
+
 export async function addConfig(topLevelElement, values) {
 	const configDoc = parseYamlDoc(getConfigFilePath());
 	configDoc.hasIn([topLevelElement])

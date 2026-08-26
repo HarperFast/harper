@@ -595,12 +595,16 @@ async function deployComponent(req) {
 	// failed or rejected deploy, and installApplications() reinstalls whatever it names — so the rejected
 	// release would come back at the next restart, with the tree correctly rolled back and the config
 	// still pointing at it.
-	const existingConfigEntry = configUtils.getConfigObj()?.[req.project];
-	const configBefore = existingConfigEntry ? structuredClone(existingConfigEntry) : null;
+	// Read FRESH from the config file, not from `getConfigObj()`: that is a memoized boot snapshot which
+	// `addConfig` does not refresh, so a second queued deploy of this component would otherwise record the
+	// predecessor the FIRST one replaced and roll back to the wrong entry. Read here, inside the request,
+	// and re-read under the component lock at journal time (see `readConfigEntry` below).
+	const readCurrentConfigEntry = () => configUtils.readConfigEntryFromFile(req.project);
 	let configAfter;
 	if (pendingConfigEntry) {
 		configAfter = pendingConfigEntry;
 	} else {
+		const configBefore = readCurrentConfigEntry();
 		// A payload deploy REPLACES whatever was installed, so it has to remove any `package:` the entry
 		// still names: "no package" is not "no config opinion". Leaving it behind means a cold install —
 		// a fresh peer, a wiped components directory — resolves the old package over the payload release.
@@ -742,7 +746,7 @@ async function deployComponent(req) {
 				emit('phase', { phase: 'prepare', status: 'done' });
 				await validateComponentLoads(candidateDirPath, emit);
 			},
-			configBefore,
+			readConfigEntry: readCurrentConfigEntry,
 			configAfter,
 			publishConfig: (entry) => publishComponentConfig(req.project, entry),
 		});

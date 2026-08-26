@@ -898,16 +898,29 @@ async function syncDirectory(dirPath: string): Promise<void> {
 	let handle;
 	try {
 		handle = await open(dirPath, 'r');
-	} catch {
+	} catch (error) {
+		// Windows cannot open a directory for fsync at all, so this is the expected path there rather than
+		// a fault. Traced, not warned, because the protocol tolerates it by design.
+		logger.trace?.(`Directory sync of ${dirPath} unavailable: ${errorMessage(error)}`);
 		return;
 	}
 	try {
 		await handle.sync();
-	} catch {
-		// Unsupported here; see above.
+	} catch (error) {
+		logger.trace?.(`Directory sync of ${dirPath} failed: ${errorMessage(error)}`);
 	} finally {
 		await handle.close();
 	}
+}
+
+/**
+ * A rename changes an entry in BOTH parents — the removal in the source's and the addition in the
+ * destination's — so durability has to be attempted on both. Syncing only the destination can leave the
+ * source entry present after power loss, which reads as "candidate still there" and rolls forward twice.
+ */
+async function syncRenameParents(fromPath: string, toPath: string): Promise<void> {
+	const parents = new Set([dirname(fromPath), dirname(toPath)]);
+	for (const parent of parents) await syncDirectory(parent);
 }
 
 /** Write a small control file and fsync it before its parent, so it cannot appear empty after a crash. */
@@ -1205,7 +1218,7 @@ async function settleInterruptedActivation(
 
 	const rollForward = async () => {
 		if (!liveExists) await rename(candidateDirPath, liveDirPath);
-		await syncDirectory(componentsRootDirPath);
+		await syncRenameParents(candidateDirPath, liveDirPath);
 		if (journal.publishesConfig) await publishConfig(journal.component, journal.configAfter ?? null);
 		for (const record of asideRecords) {
 			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components
@@ -1221,7 +1234,7 @@ async function settleInterruptedActivation(
 	const rollBack = async (restoreFrom?: string) => {
 		if (restoreFrom) {
 			await rename(restoreFrom, liveDirPath);
-			await syncDirectory(componentsRootDirPath);
+			await syncRenameParents(restoreFrom, liveDirPath);
 		}
 		if (journal.publishesConfig) await publishConfig(journal.component, journal.configBefore ?? null);
 		for (const record of asideRecords) await rm(record, { recursive: true, force: true });
@@ -1343,18 +1356,18 @@ export async function activateCandidateApplication(
 		);
 		await writeFile(priorAbsentRecordPath, '', { flag: 'wx', mode: 0o600 });
 	}
-	await syncDirectory(dirname(liveDirPath));
+	await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
 
 	const restoreLive = async () => {
 		if (asidePath) await rename(asidePath, liveDirPath);
 		else if (priorAbsentRecordPath) await rm(priorAbsentRecordPath, { force: true });
-		await syncDirectory(dirname(liveDirPath));
+		await syncRenameParents(asidePath ?? priorAbsentRecordPath!, liveDirPath);
 	};
 
 	// B2 — the candidate becomes live.
 	try {
 		await rename(candidateDirPath, liveDirPath);
-		await syncDirectory(dirname(liveDirPath));
+		await syncRenameParents(candidateDirPath, liveDirPath);
 	} catch (error) {
 		await compensate(error, 'move the candidate into place', restoreLive, application);
 		throw error;
@@ -2398,8 +2411,13 @@ export type PrepareApplicationOptions = {
 	 * broken release.
 	 */
 	validateCandidate?: (candidateDirPath: string) => Promise<void>;
-	/** This component's root-config entry as it stands, so a failed activation can put it back. */
-	configBefore?: Record<string, any> | null;
+	/**
+	 * Reads this component's CURRENT root-config entry, so a failed activation can put it back. A reader
+	 * rather than a value: it is called under the component preparation lock, at journal time, so a deploy
+	 * queued behind another one records the entry that one actually committed instead of a snapshot taken
+	 * before it ran.
+	 */
+	readConfigEntry?: () => Record<string, any> | null;
 	/** What the entry must say once the candidate is live; `null` removes it. */
 	configAfter?: Record<string, any> | null;
 	/**
@@ -2465,7 +2483,7 @@ export async function prepareApplication(application: Application, options: Prep
 							);
 						}
 						await activateCandidateApplication(application, deploymentId, {
-							configBefore: options.configBefore,
+							configBefore: options.readConfigEntry?.() ?? null,
 							configAfter: options.configAfter,
 							publishConfig: options.publishConfig,
 						});
