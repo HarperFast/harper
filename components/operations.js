@@ -700,7 +700,9 @@ async function deployComponent(req) {
 				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
 			);
 			emit('phase', { phase: 'restart', status: 'done' });
-			response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
+			// Only the thread that performed the restart can say whether it finished; a handoff leaves the
+			// field off rather than reporting a restart that is proceeding elsewhere as incomplete.
+			if (!restart.handedOff) response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
 			if (restart.replacementsNotStarted)
 				log.warn(
 					`${restart.replacementsNotStarted} replacement worker thread(s) did not report starting after deploying ${application.name}; the pool is short until they are restarted`
@@ -711,8 +713,8 @@ async function deployComponent(req) {
 					`${restart.workersKeptOnOldCode} worker thread(s) could not be replaced after deploying ${application.name} and are still running the previous code`
 				);
 			else if (restart.handedOff)
-				log.warn(
-					`The restart after deploying ${application.name} was handed to the main thread and could not be awaited here; worker threads may still be running the previous code`
+				log.debug?.(
+					`The restart after deploying ${application.name} was handed to the main thread, which reports its own completion`
 				);
 			else if (restart.stalled)
 				log.warn(
@@ -1244,7 +1246,14 @@ async function dropComponent(req) {
 	);
 	const response = await server.replication.replicateOperation(req);
 	if (req.restart === true) {
-		manageThreads.restartWorkers('http');
+		// Same race as a deploy, in the removal direction: until a worker is replaced it still serves the
+		// dropped component's resources, so a caller that reads success as "it is gone" can be wrong.
+		const { awaitRestart } = require('./awaitRestart.ts');
+		const restart = await awaitRestart((onProgress) =>
+			manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+		);
+		if (!restart.handedOff) response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
+		if (restart.error) log.error(`Restart after dropping ${projectPath} failed`, restart.error);
 		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
 	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;

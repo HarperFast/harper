@@ -182,10 +182,8 @@ const REASON_STRING_LIMIT = 256; // bytes
 const ACK_PACKET_OVERHEAD = 16;
 
 /**
- * Every live MQTT connection on this worker. A worker restart is routine — any `deploy_component`
- * with `restart: true` performs one — and without this the worker just exits: the client sees an
- * unannounced socket close it cannot distinguish from a network failure, with no indication that
- * reconnecting will reach a healthy worker.
+ * Every live MQTT connection on this worker, so a shutdown can announce itself: a bare socket close
+ * is indistinguishable to the client from a network failure.
  */
 const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
 let shutdownDisconnectRegistered = false;

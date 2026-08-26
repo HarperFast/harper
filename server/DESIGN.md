@@ -91,12 +91,13 @@ and it force-terminates the remaining worker set rather than waiting for applica
 
 A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
 `SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a
-component deploy is not live pool-wide until `restartWorkers()` resolves. It waits for each replacement to report
-`CHILD_STARTED` — including the ones that can only be started after their predecessor releases its
-exclusive ports (Windows/macOS/Bun) — and reports how many workers it left on the old code because a
-replacement never came up, versus how many replacements never started after their predecessor was
-already gone. Both are bounded by a per-worker startup backstop, so resolution means "the restart
-finished", not "every worker is new". A caller that treats its own success as
+component deploy is not live pool-wide until `restartWorkers()` resolves. For the overlapping types
+(HTTP) it waits for each replacement to report `CHILD_STARTED` — including the ones that can only be
+started after their predecessor releases its exclusive ports (Windows/macOS/Bun) — and reports how
+many workers it left on the old code because a replacement never came up, versus how many
+replacements never started after their predecessor was already gone. Other thread types start their
+replacement without being awaited. Each wait is bounded by a per-worker startup backstop, so
+resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
 "the component is live" must await it (see `deployComponent` in `components/operations.js`).
 
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.

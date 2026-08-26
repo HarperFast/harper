@@ -498,6 +498,8 @@ async function restartWorkers(
 		if (startReplacementThreads) {
 			const { loadRootComponents } = require('../loadRootComponents.js');
 			await loadRootComponents();
+			// Installing and loading every root component can outlast a caller's idle window on its own.
+			onProgress?.();
 		}
 
 		module.exports.restartNumber++;
