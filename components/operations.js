@@ -432,13 +432,11 @@ async function packageComponent(req) {
 }
 
 /**
- * Wait for a worker restart, but not past the point where holding the operations-API response open
- * stops being useful: each replacement carries its own multi-minute startup backstop, so a wide
- * thread pool could otherwise keep the request open far longer than any client will wait. The
- * restart continues regardless of what this resolves; a restart that failed outright does not fail
- * the deploy, since the component is already on disk and replicated. Only the main thread performs
- * the restart — from a worker, restartWorkers() hands it off and resolves with nothing, which is
- * reported as not (yet) complete rather than as a completed restart.
+ * Wait for a worker restart, bounded: each replacement carries its own multi-minute startup
+ * backstop, so a wide thread pool could hold the operations-API response open longer than any
+ * client will wait. The restart continues regardless, and a restart that failed does not fail the
+ * deploy — the component is already on disk and replicated. A restartWorkers() call from a worker
+ * only hands the restart to the main thread, so its empty result counts as not complete.
  */
 const RESTART_WAIT_BUDGET_MS = 120_000;
 function awaitRestart(restarting) {
@@ -725,12 +723,10 @@ async function deployComponent(req) {
 		}
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
-			// Until the restart finishes, workers that have not been replaced yet are still serving the
-			// pre-deploy component set — where the OS lets replacements share a port they keep accepting
-			// connections for the whole rolling restart — so a caller that reads this operation's success
-			// as "the component is live" is served by a worker that has never heard of it. Wait for the
-			// restart instead of firing it, and say so when the wait ran out or a replacement never came
-			// up, because both leave workers on the old code.
+			// Workers not yet replaced keep serving the pre-deploy component set, and where the OS lets
+			// replacements share a port they keep accepting connections for the whole rolling restart, so
+			// a caller that reads success as "the component is live" can be served by a worker that has
+			// never heard of it.
 			const restart = await awaitRestart(manageThreads.restartWorkers('http'));
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.restart_completed = restart.completed && !restart.replacementsFailed;
