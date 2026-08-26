@@ -25,9 +25,17 @@
 		// Type checking only by default; use `tsconfig.build.json` for emitting
 		"noEmit": true,
 
-		// Emit ES2022 while type-checking the Node 22+ ES2024 runtime surface
+		// Preserve the ES2022 type surface while declaring Node 22's Promise.withResolvers()
 		"target": "ES2022",
-		"lib": ["ES2024", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+		"lib": [
+			"ES2022",
+			"ES2024.Promise",
+			"DOM",
+			"WebWorker.ImportScripts",
+			"ScriptHost",
+			"DOM.Iterable",
+			"DOM.AsyncIterable"
+		],
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
 
