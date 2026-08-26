@@ -46,6 +46,7 @@ describe('symlinkHarperModule', () => {
 
 		await symlinkHarperModule(componentDirectory, store);
 
+		assert.strictEqual(readlinkSync(join(nodeModulesDirectory, 'harper')), PACKAGE_ROOT);
 		assert.strictEqual(readlinkSync(join(nodeModulesDirectory, 'harperdb')), PACKAGE_ROOT);
 	});
 
@@ -122,7 +123,7 @@ describe('symlinkHarperModule', () => {
 		await assert.rejects(linked, /completed without valid links/);
 	});
 
-	it('preserves a tryLock error and clears the wait timer', async () => {
+	it('preserves a tryLock error', async () => {
 		const lockError = new Error('lock store unavailable');
 		await assert.rejects(
 			symlinkHarperModule(componentDirectory, {
