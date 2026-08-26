@@ -289,7 +289,10 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		unregisterProcessGroup(123);
 	});
 
-	it('keeps a Linux process group alive when a proc stat entry is unreadable', () => {
+	it('does not let an unrelated unreadable proc entry keep a Linux process group alive', () => {
+		// A pid we can't read (e.g. EACCES under hidepid/ProtectProc) cannot be one of our own
+		// children — we spawned them as this same user, so their stat is always readable — so it
+		// must not block confirming that a group whose own members are all zombie is gone.
 		const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
 		assert.strictEqual(
 			isProcessGroupAlive(678, {
@@ -301,7 +304,7 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 					throw permissionError;
 				},
 			}),
-			true
+			false
 		);
 		unregisterProcessGroup(678);
 	});

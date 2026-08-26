@@ -903,17 +903,23 @@ if (parentPort && workerData?.addPorts) {
 			}
 		});
 	let awaitTerminationRequestId = 0;
-	awaitProcessGroupTermination = (ownerThreadId) =>
+	awaitProcessGroupTermination = (ownerThreadId, signal) =>
 		new Promise((resolve) => {
 			// Deliberately no timeout: a contender must not reclaim a dead owner's lock while its
 			// process group might still be alive and mutating files, so this mirrors the unbounded
-			// wait Application.ts's waitForConfirmedTermination uses for the same reason.
+			// wait Application.ts's waitForConfirmedTermination uses for the same reason. A caller
+			// that needs its own bound (isThreadRunning) passes `signal` so this listener still gets
+			// torn down when that caller gives up, instead of leaking for the life of the worker.
 			const requestId = ++awaitTerminationRequestId;
 			parentPort.on('message', receiveConfirmation);
+			signal?.addEventListener('abort', cleanup, { once: true });
 			parentPort.postMessage({ type: AWAIT_PROCESS_GROUP_TERMINATION, ownerThreadId, requestId });
+			function cleanup() {
+				parentPort.off('message', receiveConfirmation);
+			}
 			function receiveConfirmation(message) {
 				if (message.type === PROCESS_GROUP_TERMINATION_CONFIRMED && message.requestId === requestId) {
-					parentPort.off('message', receiveConfirmation);
+					cleanup();
 					resolve();
 				}
 			}
@@ -948,15 +954,8 @@ const pendingProcessGroupTerminations = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
 const ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS = 1000;
 const PROCESS_GROUP_LIVENESS_WARNING_MS = 30000;
-// isThreadRunning's own bound on awaitProcessGroupTermination — NOT a change to that function's
-// own contract, which stays deliberately unbounded for its other caller (Application.ts's
-// post-SIGKILL waitForConfirmedTermination, which prefers a wedged deployment over risking a
-// resumed descendant corrupting node_modules). componentPreparationLock's callers of
-// isThreadRunning need the opposite trade-off: its own bounded-wait timeout is a documented
-// backstop for exactly the case where liveness can't be established (componentPreparationLock.ts),
-// and that backstop is defeated if the ownership check it awaits never settles. Matches
-// PROCESS_GROUP_LIVENESS_WARNING_MS so the backstop fires right after that warning has already
-// logged once.
+// Bounds isThreadRunning's own wait (below); Application.ts's waitForConfirmedTermination stays
+// deliberately unbounded.
 const THREAD_RUNNING_TERMINATION_BACKSTOP_MS = PROCESS_GROUP_LIVENESS_WARNING_MS;
 const zombieGroupScanTimes = new Map();
 const processGroupLivenessStates = new Map();
@@ -1008,12 +1007,12 @@ function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 		let stat;
 		try {
 			stat = readStat(`/proc/${processId}/stat`, 'utf8');
-		} catch (error) {
-			if (error.code === 'ENOENT' || error.code === 'ESRCH') continue;
-			return {
-				isAlive: null,
-				reason: `reading /proc/${processId}/stat failed (${processProbeError(error)})`,
-			};
+		} catch {
+			// A pid we can't read (e.g. EACCES under hidepid/ProtectProc on an unrelated process)
+			// cannot be one of our own group's members — we spawned those as this same user, so
+			// their stat is always readable. Skip it rather than treating a foreign restricted pid
+			// as a reason the whole scan can never confirm this group is gone.
+			continue;
 		}
 		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
 		if (Number(fields[2]) !== processGroupId) continue;
@@ -1214,30 +1213,49 @@ function unregisterProcessGroup(processGroupId) {
 	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
 }
 
+class ProcessGroupTerminationUnconfirmedError extends Error {
+	code = 'ERR_PROCESS_GROUP_TERMINATION_UNCONFIRMED';
+	constructor(ownerThreadId, timeoutMs) {
+		super(`Thread ${ownerThreadId}'s process-group termination could not be confirmed after ${timeoutMs}ms`);
+		this.name = 'ProcessGroupTerminationUnconfirmedError';
+	}
+}
+
+// Bounds awaitProcessGroupTermination for isThreadRunning below. Throws rather than resolving to
+// "not running": componentPreparationLock's ownerIsAlive/ownerLivenessConfirmed already treat a
+// throwing isOwnerAlive as "can't confirm — don't steal the claim, don't renew the deadline"
+// (componentPreparationLock.ts:86-91, 111-116), so the *lock's own* bounded wait is what eventually
+// fails the waiter, never this function silently declaring a possibly-still-writing owner gone.
+async function awaitConfirmedProcessGroupTermination(ownerThreadId) {
+	const abortController = new AbortController();
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		abortController.abort();
+	}, THREAD_RUNNING_TERMINATION_BACKSTOP_MS);
+	timer.unref?.();
+	try {
+		await Promise.race([
+			awaitProcessGroupTermination(ownerThreadId, abortController.signal),
+			new Promise((resolve) => abortController.signal.addEventListener('abort', resolve, { once: true })),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+	if (timedOut) {
+		harperLogger.warn(
+			`Thread ${ownerThreadId}'s process-group termination could not be confirmed after ${THREAD_RUNNING_TERMINATION_BACKSTOP_MS}ms`
+		);
+		throw new ProcessGroupTerminationUnconfirmedError(ownerThreadId, THREAD_RUNNING_TERMINATION_BACKSTOP_MS);
+	}
+}
+
 async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TIMEOUT_MS) {
 	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
 	if ((await getThreadInfo(timeoutMs)).some((worker) => worker.threadId === ownerThreadId)) return true;
 	// The thread itself is gone, but it may still own process groups whose forced termination is
-	// in flight — wait for that to be confirmed before reporting the owner as reclaimable. That
-	// confirmation can itself never settle (e.g. a persistently indeterminate procfs read under a
-	// hardened/hidepid kernel), so bound the wait here rather than block this function's own
-	// callers — all of them are componentPreparationLock-style ownership checks — forever.
-	let timedOut = false;
-	await Promise.race([
-		awaitProcessGroupTermination(ownerThreadId),
-		new Promise((resolve) => {
-			const timer = setTimeout(() => {
-				timedOut = true;
-				resolve();
-			}, THREAD_RUNNING_TERMINATION_BACKSTOP_MS);
-			timer.unref?.();
-		}),
-	]);
-	if (timedOut) {
-		harperLogger.warn(
-			`Thread ${ownerThreadId}'s process-group termination could not be confirmed after ${THREAD_RUNNING_TERMINATION_BACKSTOP_MS}ms; reporting the owner as no longer running so its lock claim isn't held past its own bounded timeout.`
-		);
-	}
+	// in flight — wait for that to be confirmed before reporting the owner as reclaimable.
+	await awaitConfirmedProcessGroupTermination(ownerThreadId);
 	return false;
 }
 
