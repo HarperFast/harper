@@ -2721,6 +2721,36 @@ describe('durable blob-unlink queue (#1832)', () => {
 		assert.equal(swept.orphans, 1, 'a queued file must not be counted as an orphan the sweep reclaimed');
 	});
 
+	it('fails the sweep rather than deleting while the set of claimed files is unknown', async () => {
+		const FailTest = table({
+			table: 'BlobSweepFailTest',
+			database: 'blobsweepfail',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const failRoot = FailTest.primaryStore.rootStore;
+		const candidate = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(candidate).saving, failRoot);
+		const candidatePath = getFilePathForBlob(candidate);
+		const { getRange } = failRoot.dbisDb;
+		failRoot.dbisDb.getRange = () => {
+			throw new Error('queue unreadable');
+		};
+
+		try {
+			await assert.rejects(
+				() => cleanupOrphans(getDatabases().blobsweepfail, 'blobsweepfail'),
+				/queue unreadable/,
+				'an unreadable queue must fail the sweep, not silently narrow its exclusion set'
+			);
+			assert.ok(existsSync(candidatePath), 'nothing may be deleted while the claimed set is unknown');
+		} finally {
+			failRoot.dbisDb.getRange = getRange;
+		}
+	});
+
 	it('drains a backlog larger than one batch to completion', async () => {
 		setDeletionDelay(600000);
 		const staged = [];
