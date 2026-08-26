@@ -1,26 +1,29 @@
 'use strict';
 
-const { expect } = require('chai');
-const sinon = require('sinon');
+const assert = require('node:assert');
+const chokidar = require('chokidar');
 
 const { watchDir } = require('#src/server/threads/manageThreads');
+const { _resetForTests: resetWatcherFallbackWarning } = require('#src/utility/watcherFallback');
 
-// watchDir is the WATCH_DIR dev reloader's watch site. It runs on the thread that owns every
-// worker, and chokidar emits 'error' unguarded for anything but ENOENT/ENOTDIR, so an exhausted
-// watcher pool there would otherwise take the main thread down. These tests drive the listener
-// directly with a stubbed chokidar — no real watcher, no real reload.
 describe('watchDir watcher fallback', () => {
-	const sandbox = sinon.createSandbox();
+	const realWatch = chokidar.watch;
 
-	afterEach(() => sandbox.restore());
+	afterEach(() => {
+		chokidar.watch = realWatch;
+		// warnWatcherFallback's first-fallback gate is process-global; leaving it set would make a
+		// later suite's warning assertion silently observe nothing.
+		resetWatcherFallbackWarning();
+	});
 
 	const exhausted = () => Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' });
 
+	// Never open a real watcher here: these cases drive the 'error' listener directly, and real
+	// watchers would leak fds across repeated runs.
 	const stubChokidar = (close) => {
-		const chokidar = require('chokidar');
 		const openedOptions = [];
 		const errorHandlers = [];
-		sandbox.stub(chokidar, 'watch').callsFake((_watchedPath, options) => {
+		chokidar.watch = (_watchedPath, options) => {
 			openedOptions.push(options);
 			const watcher = {
 				on: (event, handler) => {
@@ -30,7 +33,7 @@ describe('watchDir watcher fallback', () => {
 				close,
 			};
 			return watcher;
-		});
+		};
 		return { openedOptions, errorHandlers };
 	};
 
@@ -38,21 +41,19 @@ describe('watchDir watcher fallback', () => {
 		const { openedOptions, errorHandlers } = stubChokidar(() => Promise.resolve());
 
 		await watchDir(__dirname);
-		expect(openedOptions).to.have.lengthOf(1);
-		expect(openedOptions[0].usePolling).to.equal(undefined);
+		assert.equal(openedOptions.length, 1);
+		assert.equal(openedOptions[0].usePolling, undefined);
 
 		errorHandlers[0](exhausted());
 		await new Promise((resolve) => setImmediate(resolve));
 
-		expect(openedOptions).to.have.lengthOf(2);
-		expect(openedOptions[1].usePolling).to.equal(true);
+		assert.equal(openedOptions.length, 2);
+		assert.equal(openedOptions[1].usePolling, true);
 
-		// Repeated exhaustion errors — from the failed watcher and the polling one — must not open a
-		// third watcher.
 		errorHandlers[0](exhausted());
 		errorHandlers[1](exhausted());
 		await new Promise((resolve) => setImmediate(resolve));
-		expect(openedOptions).to.have.lengthOf(2);
+		assert.equal(openedOptions.length, 2);
 	});
 
 	it('a synchronous throw from close() stays inside the reopen chain', async () => {
@@ -65,12 +66,12 @@ describe('watchDir watcher fallback', () => {
 		});
 
 		await watchDir(__dirname);
-		expect(openedOptions).to.have.lengthOf(1);
+		assert.equal(openedOptions.length, 1);
 
-		expect(() => errorHandlers[0](exhausted())).to.not.throw();
+		assert.doesNotThrow(() => errorHandlers[0](exhausted()));
 		await new Promise((resolve) => setImmediate(resolve));
 
-		expect(openedOptions).to.have.lengthOf(2);
-		expect(openedOptions[1].usePolling).to.equal(true);
+		assert.equal(openedOptions.length, 2);
+		assert.equal(openedOptions[1].usePolling, true);
 	});
 });

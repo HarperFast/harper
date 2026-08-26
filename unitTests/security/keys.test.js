@@ -15,6 +15,7 @@ const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
 const { waitFor } = require('../waitFor.js');
+const { _resetForTests: resetWatcherFallbackWarning } = require('#src/utility/watcherFallback');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -1099,6 +1100,9 @@ describe('Test keys module', () => {
 
 		afterEach(() => {
 			localSandbox.restore();
+			// warnWatcherFallback's first-fallback gate is process-global; leaving it set would make a
+			// later suite's warning assertion silently observe nothing.
+			resetWatcherFallbackWarning();
 			const timer = watchTimers.get(watchPath);
 			if (timer) clearInterval(timer);
 			watchTimers.delete(watchPath);
@@ -1175,8 +1179,6 @@ describe('Test keys module', () => {
 			expect(openedOptions).to.have.lengthOf(2);
 			expect(openedOptions[1].usePolling).to.equal(true);
 
-			// chokidar can emit several exhaustion errors before the failed watcher closes; none of them
-			// may open a third.
 			errorHandlers[0](exhausted());
 			errorHandlers[1](exhausted());
 			await new Promise((resolve) => setImmediate(resolve));

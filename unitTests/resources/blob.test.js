@@ -2301,8 +2301,6 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 		return Object.assign(new Error('watcher pool exhausted'), { code: 'ENOSPC' });
 	}
 
-	// `opening` hands out the watchers a repeated registration returns, in order, and records the
-	// change listener each one was armed with so a test can deliver an event to a chosen watcher.
 	function opening(...watchers) {
 		const pending = [...watchers];
 		return (path, options, onChange) => {
