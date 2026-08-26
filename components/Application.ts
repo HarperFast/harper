@@ -1261,21 +1261,48 @@ async function settleInterruptedActivation(
  * onto a truncated tree that `.complete` swears is good. Bounded by the candidate's own size and only on
  * the deploy path.
  */
+// Codes that mean "this platform or filesystem will not fsync this handle", as opposed to "the write did
+// not reach storage". Windows raises EPERM fsyncing perfectly healthy files, and network/overlay mounts
+// return EINVAL or ENOTSUP — none of which say anything about durability, and all of which would otherwise
+// fail every deploy on those platforms.
+const UNSUPPORTED_SYNC_CODES = new Set(['EPERM', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EBADF', 'EISDIR']);
+
+function isUnsupportedSync(error: unknown): boolean {
+	return UNSUPPORTED_SYNC_CODES.has((error as NodeJS.ErrnoException)?.code ?? '');
+}
+
 async function syncTreeContents(rootPath: string): Promise<void> {
-	// Failures PROPAGATE. `.complete` is written only after this returns and is recovery's roll-forward
-	// authority, so swallowing an EIO or ENOSPC here would let the marker vouch for a tree that never
-	// reached storage. Failing the deploy instead is safe: the live tree has not been touched yet.
+	// A REAL durability failure propagates — `.complete` is written only after this returns and is
+	// recovery's roll-forward authority, so an EIO or ENOSPC swallowed here would leave the marker
+	// vouching for a tree that never reached storage. Failing the deploy instead is safe, because the live
+	// tree has not been touched yet.
+	//
+	// But "this platform cannot fsync that handle" is not a durability failure, and treating it as one
+	// failed every deploy on Windows with `EPERM: operation not permitted, fsync`. Those codes are traced
+	// and tolerated, which is the same bargain `syncDirectory` already makes.
 	const entries = await readdir(rootPath, { withFileTypes: true });
 	for (const entry of entries) {
 		const entryPath = join(rootPath, entry.name);
 		if (entry.isDirectory()) {
 			await syncTreeContents(entryPath);
 		} else if (entry.isFile()) {
-			const handle = await open(entryPath, 'r');
+			let handle;
+			try {
+				handle = await open(entryPath, 'r');
+			} catch (error) {
+				if (isUnsupportedSync(error)) {
+					logger.trace?.(`Sync of ${entryPath} unavailable: ${errorMessage(error)}`);
+					continue;
+				}
+				throw error;
+			}
 			try {
 				await handle.sync();
+			} catch (error) {
+				if (!isUnsupportedSync(error)) throw error;
+				logger.trace?.(`Sync of ${entryPath} unsupported: ${errorMessage(error)}`);
 			} finally {
-				await handle.close();
+				await handle.close().catch(() => {});
 			}
 		}
 	}
