@@ -73,15 +73,16 @@ type MyTable @table {
 
 Optional arguments:
 
-| Argument       | Type      | Default                       | Description                                                                                 |
-| -------------- | --------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
-| `table`        | `String`  | type name                     | Override the table name                                                                     |
-| `database`     | `String`  | `"data"`                      | Database to place the table in                                                              |
-| `expiration`   | `Int`     | —                             | Seconds until a record goes stale (useful for caching tables)                               |
-| `eviction`     | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed                 |
-| `scanInterval` | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                                              |
-| `replicate`    | `Boolean` | true                          | Enable replication of this table                                                            |
-| `cacheControl` | `String`  | —                             | `Cache-Control` header value emitted on anonymous GET/HEAD 200/304 responses for this table |
+| Argument             | Type      | Default                       | Description                                                                                 |
+| -------------------- | --------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `table`              | `String`  | type name                     | Override the table name                                                                     |
+| `database`           | `String`  | `"data"`                      | Database to place the table in                                                              |
+| `expiration`         | `Int`     | —                             | Seconds until a record goes stale (useful for caching tables)                               |
+| `eviction`           | `Int`     | `0`                           | Additional seconds after `expiration` before a record is physically removed                 |
+| `scanInterval`       | `Int`     | `(expiration + eviction) / 4` | Seconds between eviction scans                                                              |
+| `replicate`          | `Boolean` | true                          | Enable replication of this table                                                            |
+| `cacheControl`       | `String`  | —                             | `Cache-Control` header value emitted on anonymous GET/HEAD 200/304 responses for this table |
+| `randomAccessFields` | `Boolean` | `storage.randomAccessFields`  | [Pin this table's record encoding](#randomaccessfields)                                     |
 
 **`expiration`, `eviction`, and `scanInterval`**
 
@@ -126,6 +127,23 @@ If the server starts at 12:05, the first eviction runs at 12:15 — not 12:20. T
 #### Eviction with Indexing
 
 Eviction removes non-indexed record data, but it does _not_ remove a record from its secondary indexes. If an evicted record matches a search query, Harper fetches the full record from the source on demand to satisfy the query. This means indexes remain fully functional even when most of the data has been evicted.
+
+#### `randomAccessFields`
+
+<VersionBadge version="v5.1.0" />
+
+Encodes this table's records as typed random-access structures, so a single field can be read without decoding the whole record. It suits tables whose records carry a stable set of fields with stable types, and should be left off for wide, sparse, or variably typed schemas. See [Storage Tuning — Record Encoding](./storage-tuning.md#storagerandomaccessfields) for the trade-off and for how to check where a table sits against the structure bound.
+
+Declaring the argument _pins_ this table's encoding when the table is created: the table keeps it regardless of the [`storage.randomAccessFields`](../configuration/options.md#storage) setting, which otherwise applies to every table that does not declare it. That cuts both ways — a fleet-wide change to the global setting will not move a table that pins its own encoding, and editing the argument later does not repin an existing table. Omit the argument when creating a new table to follow the global setting instead.
+
+```graphql
+type Reading @table(randomAccessFields: true) {
+	id: ID @primaryKey
+	sensorId: String @indexed
+	celsius: Float
+	recordedAt: Int
+}
+```
 
 **Examples:**
 

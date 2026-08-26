@@ -53,6 +53,8 @@ Within each database, a table is represented by multiple key-value stores:
 
 All stores for a given database reside within the same RocksDB directory (or LMDB environment file), so cross-table operations within a database share the same underlying I/O path.
 
+How the record bytes inside the primary store are laid out — and the choice between the classic and random-access encodings — is covered in [Storage Tuning — Record Encoding](./storage-tuning.md#storagerandomaccessfields).
+
 ## Compression
 
 <VersionBadge type="changed" version="v4.3.0" /> — Compression is now enabled by default for all records over 4KB
@@ -130,3 +132,4 @@ Indexes are ordered — booleans first, then numbers (numerically), then strings
 - [Schema](./schema.md) — Defining indexed attributes and vector indexes
 - [Compaction](./compaction.md) — Reclaiming free space and applying new storage configuration to existing databases
 - [Configuration](../configuration/options.md) — Storage configuration options (compression, memory maps, blob paths)
+- [Storage Tuning — Record Encoding](./storage-tuning.md#storagerandomaccessfields) — How records are encoded within the primary store

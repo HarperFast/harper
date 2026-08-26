@@ -47,7 +47,7 @@ Detailed documentation: [Database Overview](../database/overview.md)
 
 ### `describe_all`
 
-Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`.
+Returns the definitions of all databases and tables within the database. Record counts above 5000 records are estimated; the response includes `estimated_record_range` when estimated. To force an exact count (requires full table scan), include `"exact_count": true`. Each table definition includes the [record-structure dictionary fields](#describe_table) described for `describe_table`.
 
 ```json
 { "operation": "describe_all" }
@@ -55,7 +55,7 @@ Returns the definitions of all databases and tables within the database. Record 
 
 ### `describe_database`
 
-Returns all table definitions within the specified database.
+Returns all table definitions within the specified database. Each table definition includes the [record-structure dictionary fields](#describe_table) described for `describe_table`.
 
 ```json
 { "operation": "describe_database", "database": "dev" }
@@ -68,6 +68,43 @@ Returns the definition of a specific table.
 ```json
 { "operation": "describe_table", "table": "dog", "database": "dev" }
 ```
+
+<VersionBadge type="changed" version="v5.2.5" />
+
+Alongside the schema, the response carries the size of the table's **record-structure dictionaries**
+— the physical record layouts Harper has seen for this table. They are how you check whether a table
+is getting
+[random-access field encoding](../database/storage-tuning.md#storagerandomaccessfields) and how much
+room it has left before novel layouts stop receiving it:
+
+| Field                      | Description                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `typed_structures_enabled` | Whether random-access (typed) encoding is enabled for this table                     |
+| `typed_structure_count`    | Structures in the random-access dictionary                                           |
+| `typed_structure_limit`    | Bound past which novel record shapes are stored without random-access field encoding |
+| `classic_structure_count`  | Structures in the classic named-record dictionary                                    |
+
+A typed structure is minted per distinct _shape_, where shape means the ordered list of fields plus
+the encoded type and width each field's value takes — so `{a, b}` and `{b, a}` are different shapes,
+and so are `{v: 1}`, `{v: 70000}`, and `{v: "ok"}`. Dictionary size therefore tracks the variety of
+shapes a table has ever written, not its column count, and it only grows: structures are never
+pruned, because stored records, transaction-log entries, and replication backlogs all reference them
+by id. A classic structure keys on the ordered field names alone, so `classic_structure_count` moves
+only when a table writes a field-name set it has not written before, and it stops at 32 — the
+classic dictionary's own bound, which is why the response carries no limit field for it.
+
+[`storage.randomAccessFields`](../configuration/options.md#storage) defaults to off, so `typed_structures_enabled: false` with
+`typed_structure_count: 0` is the normal state for most tables — that is typed encoding being
+disabled, not spare headroom. Where it is enabled, reaching `typed_structure_limit` is not an error:
+records with novel shapes past that point still write and read correctly, but are stored without
+random-access field encoding, which makes reading individual fields of large records slower. Harper
+logs a warning when a thread first observes the bound, but that depends on which thread served the
+writes and whether it has loaded the dictionary — the counts here are the reliable signal.
+
+To keep the typed dictionary small, write records in a consistent field order, avoid making the _set_
+of present fields vary per write (nest volatile or optional fields inside one sub-object rather than
+adding and removing top-level fields), keep a given field to one value type across records, and
+expect a small fixed number of extra shapes from numeric fields whose values cross a width boundary.
 
 ### `create_database`
 

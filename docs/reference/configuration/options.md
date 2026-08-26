@@ -272,6 +272,7 @@ storage:
 - `maxTransactionQueueTime` — Per-thread write-commit duration threshold for HTTP 503 backpressure; see [Storage Tuning](../database/storage-tuning.md#storagemaxtransactionqueuetime); _Default_: `45s`
 - `noReadAhead` — Advise OS against read-ahead; _Default_: `false`
 - `prefetchWrites` — Prefetch before write transactions; _Default_: `true`
+- `randomAccessFields` <VersionBadge version="v5.1.0" /> — Encode records as typed random-access structures, so a single field can be read without decoding the whole record. Best for tables whose records have a stable set of fields with stable types; leave off for wide, sparse, or variably typed schemas. Read by each table when its store opens, so a change applies to existing tables on restart, and ignored entirely by tables declaring the [`@table(randomAccessFields:)`](../database/schema.md#randomaccessfields) directive; _Default_: `false`. See [Storage Tuning — Record Encoding](../database/storage-tuning.md#storagerandomaccessfields)
 - `path` — Database files directory; _Default_: `<rootPath>/database`
 - `backupPath` — Directory for managed database backups (created by [`create_backup`](../backups/operations.md#create_backup)), one subdirectory per database; _Default_: `<rootPath>/backup` (Added in: v5.2.0)
 - `blobPaths` — Blob storage directory or directories; _Default_: `<rootPath>/blobs` (Added in: v4.5.0)
