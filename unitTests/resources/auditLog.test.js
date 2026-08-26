@@ -3,14 +3,20 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const {
 	setAuditRetention,
+	openAuditStore,
 	readAuditEntry,
 	createAuditEntry,
 	transactionKeyEncoder,
 	removeAuditEntry,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { removeStorageReclamation } = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
+const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
@@ -126,6 +132,71 @@ describe('Audit log', () => {
 		assert.equal(AuditedTable.primaryStore.getEntry(1), undefined); // verify that the delete entry was removed
 		// verify that the twice-written entry was not removed
 		assert.equal(AuditedTable.primaryStore.getEntry(2)?.value?.name, 'two-changed');
+	});
+	it('re-arms Rocks audit cleanup without another pressure signal', async function () {
+		const store = AuditedTable.auditStore;
+		if (!(store instanceof RocksTransactionLogStore)) this.skip();
+
+		const rootStore = store.rootStore;
+		const originalPurgeLogs = rootStore.purgeLogs;
+		let purgeCalls = 0;
+		rootStore.purgeLogs = () => {
+			purgeCalls++;
+			return [];
+		};
+		setAuditRetention(100, 1);
+		try {
+			await store.scheduleAuditCleanup(1);
+			await waitFor(() => purgeCalls >= 2, {
+				timeout: 1000,
+				message: 'Rocks audit cleanup did not schedule a later retention pass',
+			});
+		} finally {
+			rootStore.purgeLogs = originalPurgeLogs;
+			setAuditRetention(60_000, 10_000);
+		}
+	});
+	it('purges aged, flushed Rocks segments through the Harper retention pass', async function () {
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-'));
+		const rootStore = new RocksDatabase(scratch, { transactionLogMaxSize: 128 }).open();
+		const originalPurgeLogs = rootStore.purgeLogs;
+		let purgeCalls = 0;
+		rootStore.purgeLogs = function (options) {
+			purgeCalls++;
+			return originalPurgeLogs.call(this, options);
+		};
+		setAuditRetention(60_000, 10_000);
+		try {
+			const auditStore = openAuditStore(rootStore);
+			const log = rootStore.useLog('retention-test');
+			for (let sequence = 1; sequence <= 3; sequence++) {
+				await rootStore.transaction(async (transaction) => {
+					const value = Buffer.alloc(256, sequence);
+					log.addEntry(value, transaction.id);
+					rootStore.putSync(`key-${sequence}`, value, { transaction });
+				});
+				if (sequence < 3) rootStore.flushSync();
+				if (sequence === 2) {
+					await delay(75);
+					setAuditRetention(50, 1);
+				}
+			}
+
+			await auditStore.scheduleAuditCleanup(1);
+			const logDirectory = join(scratch, 'transaction_logs', 'retention-test');
+			const segments = readdirSync(logDirectory).filter((name) => name.endsWith('.txnlog'));
+			assert.deepEqual(segments, ['3.txnlog']);
+
+			rootStore.close();
+			const purgeCallsAtClose = purgeCalls;
+			await delay(20);
+			assert.equal(purgeCalls, purgeCallsAtClose, 'cleanup continued after the root store closed');
+		} finally {
+			setAuditRetention(60_000, 10_000);
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
+		}
 	});
 	// Regression test for harper#F-264 (see DESIGN.md's audit-entry-removal-loop invariant).
 	// Run with both a throwing and a non-throwing failure logger: with a throwing one, an

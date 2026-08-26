@@ -15,9 +15,10 @@
  *     ITSELF from its own `finally` (line 216), backing off when idle. That self-re-arm is the
  *     whole mechanism under test: if it ever stops re-arming, audit entries grow without bound
  *     and the only recovery is an explicit operator prune.
- *   - `resources/auditStore.ts:164-172` — the RocksDB branch calls `purgeLogs()` once and
- *     returns with no re-arm (F-218). That asymmetry is deliberately NOT asserted here; this
- *     file pins only the behavior that is correct today, so it stays green.
+ *   - The RocksDB branch now shares the same self-rearming lifecycle but purges whole native
+ *     transaction-log segments. This file keeps the LMDB per-entry oracle; Rocks retention uses
+ *     separate scheduler and native segment-lifecycle regressions because cached log mappings make
+ *     `read_audit_log` an invalid deletion oracle for RocksDB.
  *   - `resources/databases.ts:862` — `HARPER_STORAGE_ENGINE` wins over config, which is how the
  *     LMDB arm is selected (same mechanism as `eviction-secondary-index.test.ts`).
  *
@@ -216,7 +217,7 @@ suite(
 						`If this fails, F-218's "RocksDB-specific" framing does not hold — LMDB fails too, which is a bigger/different finding.`
 				);
 				lmdbFindings.push(
-					`2. VERDICT: LMDB's self-re-arming scheduleAuditCleanup branch (auditStore.ts:174-222) DID purge aged audit entries with no operator intervention, confirming the RocksDB gap is engine-specific.`
+					`2. VERDICT: LMDB's scheduleAuditCleanup pass DID purge aged audit entries with no operator intervention, preserving the engine-independent retention cadence.`
 				);
 			}
 		);

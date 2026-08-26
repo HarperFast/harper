@@ -234,6 +234,16 @@ A tombstone whose cleanup fails this way is not swept automatically — `schedul
 pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
 in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
 
+## Audit retention cleanup is a self-rearming, engine-independent lifecycle
+
+One call to `scheduleAuditCleanup` establishes a retention cadence that ends when the root store closes
+(or immediately in process-wide read-only mode). Storage-engine selection changes the work inside each pass, not whether the timer,
+serialization barrier, error containment, adaptive backoff, and unconditional re-arm exist. LMDB
+removes bounded batches of audit entries; RocksDB asks rocksdb-js to purge conservatively eligible log
+segments before the same time cutoff. Disk-pressure callbacks may accelerate the next pass and shorten
+the effective window, but ordinary retention progress must not depend on pressure. Rocks passes keep a
+production floor on their delay because `purgeLogs()` is synchronous and scans database-wide logs.
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.

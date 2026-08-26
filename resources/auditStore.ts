@@ -164,6 +164,7 @@ export function openAuditStore(rootStore) {
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
 	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	const isRocksAuditStore = auditStore instanceof RocksTransactionLogStore;
 	onStorageReclamation(rootStore.path, (priority) => {
 		cleanupPriority = priority; // update the priority
 		if (priority) {
@@ -174,7 +175,7 @@ export function openAuditStore(rootStore) {
 	/**
 	 * Schedules a pass of the audit cleanup loop. The returned promise fulfills once the pass that
 	 * serves this call has finished, so callers (notably tests) can await completion instead of
-	 * guessing a delay. Two things it does not promise: a pass removes at most
+	 * guessing a delay. Two things it does not promise: an LMDB pass removes at most
 	 * MAX_DELETES_PER_CLEANUP entries before rescheduling itself, so fulfillment means "that pass
 	 * finished", not "the audit log is fully pruned"; and a pass that failed logs and fulfills rather
 	 * than rejecting, since this promise doubles as the loop's serialization barrier.
@@ -182,12 +183,6 @@ export function openAuditStore(rootStore) {
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
 		// Skip audit cleanup/purge in read-only mode
 		if (isReadOnlyMode()) return Promise.resolve();
-		if (auditStore instanceof RocksTransactionLogStore) {
-			auditStore.rootStore.purgeLogs({
-				before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
-			});
-			return Promise.resolve();
-		}
 
 		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
 		// the pass we are about to cancel has not started, so its callers are handed over to this one
@@ -209,27 +204,34 @@ export function openAuditStore(rootStore) {
 					resolve();
 					return;
 				}
+				const passCleanupPriority = cleanupPriority;
 				let deleted = 0;
 				let lastKey: any;
 				try {
-					for (const auditRecord of auditStore.getRange({
-						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
-						snapshot: false,
-						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
-					})) {
-						try {
-							// awaited so a rejection (not just a synchronous throw) is caught here instead of
-							// escaping as an unhandled rejection once a later iteration's promise replaces this one
-							await removeAuditEntry(auditStore, auditRecord);
-						} catch (error) {
-							harperLogger.warn('Error removing audit entry', error);
-						}
-						lastKey = auditRecord.key;
-						await new Promise(setImmediate);
-						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
-							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-							auditCleanupDelay = 10; // and keep trying very soon
-							break;
+					if (isRocksAuditStore) {
+						deleted = auditStore.rootStore.purgeLogs({
+							before: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority),
+						}).length;
+					} else {
+						for (const auditRecord of auditStore.getRange({
+							start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
+							snapshot: false,
+							end: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+						})) {
+							try {
+								// awaited so a rejection (not just a synchronous throw) is caught here instead of
+								// escaping as an unhandled rejection once a later iteration's promise replaces this one
+								await removeAuditEntry(auditStore, auditRecord);
+							} catch (error) {
+								harperLogger.warn('Error removing audit entry', error);
+							}
+							lastKey = auditRecord.key;
+							await new Promise(setImmediate);
+							if (++deleted >= MAX_DELETES_PER_CLEANUP) {
+								// limit the amount we cleanup per event turn so we don't use too much memory/CPU
+								auditCleanupDelay = 10; // and keep trying very soon
+								break;
+							}
 						}
 					}
 				} catch (error) {
@@ -250,10 +252,19 @@ export function openAuditStore(rootStore) {
 						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
 						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
 					} else {
-						// if we did delete something, update our updates since timestamp
-						updateLastRemoved(auditStore, lastKey);
-						// and do updates faster
-						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
+						if (!isRocksAuditStore) {
+							// if we did delete something, update our updates since timestamp
+							updateLastRemoved(auditStore, lastKey);
+							// and do updates faster
+							if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
+						}
+					}
+					if (isRocksAuditStore) {
+						const minimumDelay = Math.max(
+							1,
+							Math.min(DEFAULT_AUDIT_CLEANUP_DELAY, auditRetention / 10, MAX_CLEANUP_DELAY)
+						);
+						auditCleanupDelay = Math.max(auditCleanupDelay, minimumDelay);
 					}
 					scheduleAuditCleanup();
 				}
