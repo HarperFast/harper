@@ -953,19 +953,6 @@ type ActivationJournal = {
 	v: number;
 	component: string;
 	candidateId: string;
-	/**
-	 * Whether this activation owns a config effect at all. Boot re-installs deliberately have none: they
-	 * start FROM authoritative config, so they must neither republish nor compensate it. Without this flag
-	 * their absent entries journal identically to an explicit "remove this component's entry", and recovery
-	 * of a crashed boot reinstall would DELETE the config it was installing from.
-	 */
-	publishesConfig: boolean;
-	// This component's root-config entry ONLY, never a whole-file snapshot: two components activating at
-	// once would each restore a snapshot predating the other's write and delete its entry. `null` means
-	// the component had (or should have) no entry — meaningful only when `publishesConfig` is true.
-	// Credential REFERENCES only, never resolved tokens.
-	configBefore: Record<string, any> | null;
-	configAfter: Record<string, any> | null;
 };
 
 function candidateCompleteMarkerPath(componentDirPath: string, deploymentId: string): string {
@@ -1003,15 +990,6 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 	}
 	if (typeof parsed.component !== 'string' || !parsed.component || typeof parsed.candidateId !== 'string') {
 		throw new Error(`Activation journal ${journalPath} does not identify its component and candidate`);
-	}
-	if (typeof parsed.publishesConfig !== 'boolean') {
-		throw new Error(`Activation journal ${journalPath} does not say whether it owns a config effect`);
-	}
-	if (parsed.configBefore !== null && typeof parsed.configBefore !== 'object') {
-		throw new Error(`Activation journal ${journalPath} has a malformed configBefore`);
-	}
-	if (parsed.configAfter !== null && typeof parsed.configAfter !== 'object') {
-		throw new Error(`Activation journal ${journalPath} has a malformed configAfter`);
 	}
 	return parsed as ActivationJournal;
 }
@@ -1143,13 +1121,8 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
  * healthy sibling — a single unreadable journal must not take down the whole node, and must not let a
  * component load over state nobody reconciled.
  *
- * `publishConfig` applies one component's root-config entry (`null` removes it). It is supplied by the
- * caller so this module stays out of the business of deciding config policy.
  */
-export async function recoverInterruptedActivations(
-	componentsRootDirPath: string,
-	publishConfig: (component: string, entry: Record<string, any> | null) => Promise<void>
-): Promise<Map<string, Error>> {
+export async function recoverInterruptedActivations(componentsRootDirPath: string): Promise<Map<string, Error>> {
 	const failures = new Map<string, Error>();
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
 	let deployments;
@@ -1189,7 +1162,7 @@ export async function recoverInterruptedActivations(
 			const settling = journal;
 			await withComponentPreparationLock(
 				join(componentsRootDirPath, settling.component),
-				() => settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, settling, publishConfig),
+				() => settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, settling),
 				{ purpose: 'activation-recovery' }
 			);
 		} catch (error) {
@@ -1209,8 +1182,7 @@ export async function recoverInterruptedActivations(
 async function settleInterruptedActivation(
 	componentsRootDirPath: string,
 	deploymentDirPath: string,
-	journal: ActivationJournal,
-	publishConfig: (component: string, entry: Record<string, any> | null) => Promise<void>
+	journal: ActivationJournal
 ): Promise<void> {
 	const liveDirPath = join(componentsRootDirPath, journal.component);
 	const candidateDirPath = join(deploymentDirPath, journal.component);
@@ -1233,7 +1205,6 @@ async function settleInterruptedActivation(
 	const rollForward = async () => {
 		if (!liveExists) await rename(candidateDirPath, liveDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
-		if (journal.publishesConfig) await publishConfig(journal.component, journal.configAfter ?? null);
 		for (const record of asideRecords) {
 			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components
 			// root from growing by a component version for every activation a crash interrupted.
@@ -1250,7 +1221,6 @@ async function settleInterruptedActivation(
 			await rename(restoreFrom, liveDirPath);
 			await syncRenameParents(restoreFrom, liveDirPath);
 		}
-		if (journal.publishesConfig) await publishConfig(journal.component, journal.configBefore ?? null);
 		for (const record of asideRecords) await rm(record, { recursive: true, force: true });
 	};
 
@@ -1280,15 +1250,6 @@ async function settleInterruptedActivation(
 	await rm(journalPath, { force: true });
 	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }
-
-type CandidateActivation = {
-	/** This component's root-config entry as it stands now, so a roll back can put it back. */
-	configBefore?: Record<string, any> | null;
-	/** What the entry should say once the candidate is live. `null` removes it. */
-	configAfter?: Record<string, any> | null;
-	/** Publishes `configAfter`. Called after the tree is live and before the aside is retired. */
-	publishConfig?: (entry: Record<string, any> | null) => Promise<void>;
-};
 
 /** Mark a candidate build+validation complete. Idempotent, so a retried activation is not a failure. */
 /**
@@ -1342,11 +1303,7 @@ async function markCandidateComplete(componentDirPath: string, deploymentId: str
  * is deliberate: config is published only once the candidate is actually live, because a config entry that
  * outlives the tree it names is what makes a rejected release come back at the next restart.
  */
-export async function activateCandidateApplication(
-	application: Application,
-	deploymentId: string,
-	activation: CandidateActivation = {}
-): Promise<void> {
+export async function activateCandidateApplication(application: Application, deploymentId: string): Promise<void> {
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
@@ -1371,9 +1328,6 @@ export async function activateCandidateApplication(
 				v: ACTIVATION_JOURNAL_VERSION,
 				component: application.name,
 				candidateId: deploymentId,
-				publishesConfig: Boolean(activation.publishConfig),
-				configBefore: activation.configBefore ?? null,
-				configAfter: activation.configAfter ?? null,
 			})
 		);
 	} catch (error) {
@@ -1419,24 +1373,6 @@ export async function activateCandidateApplication(
 	} catch (error) {
 		await compensate(error, 'move the candidate into place', restoreLive, application);
 		throw error;
-	}
-
-	// B3 — config is published only now, with the tree it describes already serving.
-	if (activation.publishConfig) {
-		try {
-			await activation.publishConfig(activation.configAfter ?? null);
-		} catch (error) {
-			await compensate(
-				error,
-				'publish the component configuration',
-				async () => {
-					await rename(liveDirPath, candidateDirPath);
-					await restoreLive();
-				},
-				application
-			);
-			throw error;
-		}
 	}
 
 	// B4/B5/B6 — past the point of no return. Each of these failing leaves a state recovery settles
@@ -2459,20 +2395,6 @@ export type PrepareApplicationOptions = {
 	 * broken release.
 	 */
 	validateCandidate?: (candidateDirPath: string) => Promise<void>;
-	/**
-	 * Reads this component's CURRENT root-config entry, so a failed activation can put it back. A reader
-	 * rather than a value: it is called under the component preparation lock, at journal time, so a deploy
-	 * queued behind another one records the entry that one actually committed instead of a snapshot taken
-	 * before it ran.
-	 */
-	readConfigEntry?: () => Record<string, any> | null;
-	/** What the entry must say once the candidate is live; `null` removes it. */
-	configAfter?: Record<string, any> | null;
-	/**
-	 * Publishes an entry. Omitted by boot, which already starts FROM authoritative config and so must
-	 * neither republish nor compensate it.
-	 */
-	publishConfig?: (entry: Record<string, any> | null) => Promise<void>;
 };
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
@@ -2530,11 +2452,7 @@ export async function prepareApplication(application: Application, options: Prep
 								application.installationIsOpaque
 							);
 						}
-						await activateCandidateApplication(application, deploymentId, {
-							configBefore: options.readConfigEntry?.() ?? null,
-							configAfter: options.configAfter,
-							publishConfig: options.publishConfig,
-						});
+						await activateCandidateApplication(application, deploymentId);
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation (or a
 						// compensated activation) would otherwise leave a whole installed dependency tree under

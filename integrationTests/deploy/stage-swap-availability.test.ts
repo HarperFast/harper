@@ -13,10 +13,8 @@
  * first sample fails, because the directory has already been moved into `.deploy-aside`.
  *
  * Scope, stated precisely because it is easy to overclaim: this samples the component directory ON DISK
- * through the real operations API. It does NOT prove request-level availability — no route is exercised —
- * and it does not prove the config ordering for a rejected deploy, since both deploys here succeed. What it
- * does additionally cover is that a payload deploy strips a stale `package` entry, which is the cold-install
- * hazard. Request-path and rejected-deploy config coverage live in the unit suites.
+ * through the real operations API. It does NOT prove request-level availability — no route is exercised.
+ * Config ordering is deliberately out of this PR entirely.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -124,25 +122,5 @@ suite('deploy_component keeps the previous version in place while the replacemen
 		} finally {
 			await rm(scratch, { recursive: true, force: true });
 		}
-	});
-
-	test('a payload deploy removes a stale package entry a cold install would otherwise resolve', async () => {
-		const configPath = join(ctx.harper.dataRootDir, 'harper-config.yaml');
-		const project = `${PROJECT}-pkg`;
-		// Seeded directly: the entry has to exist BEFORE the payload deploy, or the assertion below cannot
-		// fail. (An earlier version of this test deployed two payloads, so no package entry ever existed and
-		// the check passed vacuously.)
-		await writeFile(configPath, `${await readFile(configPath, 'utf8')}\n${project}:\n  package: '@org/stale@1.0.0'\n`);
-		ok(/package:/.test((await readFile(configPath, 'utf8')).split(`${project}:`)[1] ?? ''), 'seed landed');
-
-		await operation(ctx, {
-			operation: 'deploy_component',
-			project,
-			payload: await buildPayload(1),
-			restart: false,
-		});
-
-		const after = (await readFile(configPath, 'utf8')).split(`${project}:`)[1] ?? '';
-		ok(!/^\s+package:/m.test(after.split(/^\S/m)[0] ?? after), `stale package entry survived: ${after.slice(0, 120)}`);
 	});
 });

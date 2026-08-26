@@ -516,28 +516,6 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 	}
 }
 
-/**
- * Publish one component's root-config entry; `null` removes it.
- *
- * Serialized across components: `addConfig` is a read-modify-write of the whole config document, so two
- * components publishing at once can lose each other's entry. Keyed on a pseudo-path no real component can
- * collide with, since component names are never dot-prefixed.
- */
-async function publishComponentConfig(project, entry) {
-	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	await withComponentPreparationLock(
-		path.join(componentsRoot, '.root-config'),
-		async () => {
-			if (entry === null) {
-				configUtils.deleteConfigFromFile([project]);
-			} else {
-				await configUtils.addConfig(project, entry);
-			}
-		},
-		{ purpose: 'root-config-publish' }
-	);
-}
-
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -561,7 +539,6 @@ async function deployComponent(req) {
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
 
 	// Write to root config if the request contains a package identifier
-	let pendingConfigEntry;
 	if (req.package) {
 		// Check if trying to overwrite a core component (requires force)
 		// Lazy-load to avoid circular dependency with componentLoader
@@ -588,30 +565,7 @@ async function deployComponent(req) {
 		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
 		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
-		pendingConfigEntry = applicationConfig;
-	}
-
-	// Published by the activation transaction, NOT here. An entry written before the build survives a
-	// failed or rejected deploy, and installApplications() reinstalls whatever it names — so the rejected
-	// release would come back at the next restart, with the tree correctly rolled back and the config
-	// still pointing at it.
-	// Read FRESH from the config file, not from `getConfigObj()`: that is a memoized boot snapshot which
-	// `addConfig` does not refresh, so a second queued deploy of this component would otherwise record the
-	// predecessor the FIRST one replaced and roll back to the wrong entry. Read here, inside the request,
-	// and re-read under the component lock at journal time (see `readConfigEntry` below).
-	const readCurrentConfigEntry = () => configUtils.readConfigEntryFromFile(req.project);
-	let configAfter;
-	if (pendingConfigEntry) {
-		configAfter = pendingConfigEntry;
-	} else {
-		const configBefore = readCurrentConfigEntry();
-		// A payload deploy REPLACES whatever was installed, so it has to remove any `package:` the entry
-		// still names: "no package" is not "no config opinion". Leaving it behind means a cold install —
-		// a fresh peer, a wiped components directory — resolves the old package over the payload release.
-		const { package: removedPackage, credentials: removedCredentials, ...remainder } = configBefore ?? {};
-		void removedPackage;
-		void removedCredentials;
-		configAfter = Object.keys(remainder).length ? remainder : null;
+		await configUtils.addConfig(req.project, applicationConfig);
 	}
 
 	// Create a hdb_deployment row up front so the deploy is observable and auditable
@@ -746,9 +700,6 @@ async function deployComponent(req) {
 				emit('phase', { phase: 'prepare', status: 'done' });
 				await validateComponentLoads(candidateDirPath, emit);
 			},
-			readConfigEntry: readCurrentConfigEntry,
-			configAfter,
-			publishConfig: (entry) => publishComponentConfig(req.project, entry),
 		});
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.

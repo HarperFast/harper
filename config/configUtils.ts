@@ -1347,20 +1347,6 @@ export function getConfigFromFile(param: string) {
  * @param values - JSON value which should have top level element
  * @returns {Promise<void>}
  */
-/**
- * One top-level config entry, read fresh from the YAML file rather than from the memoized boot object.
- * `getConfigObj()` is a boot-time snapshot that `addConfig`/`deleteConfigFromFile` do not refresh, so a
- * caller that needs the CURRENT entry — e.g. to record what a failed deploy must restore — has to read
- * the file. Returns `null` when the entry is absent.
- */
-export function readConfigEntryFromFile(topLevelElement: string): Record<string, any> | null {
-	const configDoc = parseYamlDoc(getConfigFilePath());
-	if (!configDoc.hasIn([topLevelElement])) return null;
-	const entry = configDoc.getIn([topLevelElement], true) as any;
-	const plain = entry && typeof entry.toJSON === 'function' ? entry.toJSON() : entry;
-	return plain && typeof plain === 'object' ? (plain as Record<string, any>) : null;
-}
-
 export async function addConfig(topLevelElement, values) {
 	const configDoc = parseYamlDoc(getConfigFilePath());
 	configDoc.hasIn([topLevelElement])
@@ -1376,17 +1362,13 @@ export async function addConfig(topLevelElement, values) {
 	atomicWriteFile(getConfigFilePath(), String(configDoc));
 }
 
-// The parameter is a YAML document PATH, forwarded to `deleteIn` — every caller passes a single-element
-// array. It was annotated `string`, which happened to compile only because no TypeScript caller existed.
-export function deleteConfigFromFile(param: string[]) {
+export function deleteConfigFromFile(param: string) {
 	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
 	const configDoc = parseYamlDoc(configFilePath);
 	configDoc.deleteIn(param);
-	// Written back to the file it was READ from. It used to reconstruct `rootPath/harper-config.yaml`
-	// instead, which is a different file on layouts where the config does not sit at the root — so the
-	// deletion was lost and an unrelated file was overwritten with this document. `addConfig` already
-	// writes to `getConfigFilePath()`; this now matches.
-	atomicWriteFile(configFilePath, String(configDoc));
+	const hdbRoot = configDoc.getIn(['rootPath']) as string;
+	const configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
+	atomicWriteFile(configFileLocation, String(configDoc));
 }
 
 export function getConfigObj() {

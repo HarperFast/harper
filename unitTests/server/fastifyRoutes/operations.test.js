@@ -532,11 +532,10 @@ describe('Test custom functions operations', () => {
 			});
 
 			// Verify addConfig was called
-			// Config is published by the activation transaction inside prepareApplication (which is stubbed
-			// here), so the observable contract is the entry handed to preparation.
-			expect(addConfigStub.called).to.be.false;
+			expect(addConfigStub.calledOnce).to.be.true;
+			expect(addConfigStub.firstCall.args[0]).to.equal('existing-component');
+			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/new-package');
 			expect(prepareApplicationStub.calledOnce).to.be.true;
-			expect(prepareApplicationStub.firstCall.args[1].configAfter.package).to.equal('@org/new-package');
 
 			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;
@@ -559,11 +558,9 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			// Config is published inside prepareApplication (stubbed here), so assert on what preparation
-			// was handed rather than on a write that now happens beyond the stub.
-			expect(addConfigStub.called).to.be.false;
+			expect(addConfigStub.calledOnce).to.be.true;
+			expect(addConfigStub.firstCall.args[0]).to.equal('new-component');
 			expect(prepareApplicationStub.calledOnce).to.be.true;
-			expect(prepareApplicationStub.firstCall.args[1].configAfter.package).to.equal('@org/new-package');
 		});
 
 		it('Test deployComponent prevents overwriting core component without force flag', async () => {
@@ -605,11 +602,10 @@ describe('Test custom functions operations', () => {
 				force: true,
 			});
 
-			// Config is published inside prepareApplication (stubbed here), so assert on what preparation
-			// was handed rather than on a write that now happens beyond the stub.
-			expect(addConfigStub.called).to.be.false;
+			expect(addConfigStub.calledOnce).to.be.true;
+			expect(addConfigStub.firstCall.args[0]).to.equal('graphql');
+			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/override-package');
 			expect(prepareApplicationStub.calledOnce).to.be.true;
-			expect(prepareApplicationStub.firstCall.args[1].configAfter.package).to.equal('@org/override-package');
 		});
 
 		it('Test deployComponent prevents overwriting multiple core component names', async () => {

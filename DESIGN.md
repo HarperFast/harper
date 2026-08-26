@@ -277,11 +277,12 @@ document, so two components publishing at once can lose each other's entry.
 
 ### Recovering an interrupted activation
 
-An `activation.json` journal is written and fsynced beside the candidate — with a `.complete` marker
-recording that build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()`
-can settle a crash at any boundary. It holds only this component's config entry, never a whole-file
-snapshot: two components activating concurrently would each restore a snapshot predating the other's
-write and delete its entry.
+An `activation.json` journal is written beside the candidate — with a `.complete` marker recording that
+build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()` can
+settle a crash at any boundary. Both go to a temp name, are fsynced, then linked into place, so the final
+name never exists with partial contents; the candidate's own contents are fsynced before `.complete` is
+written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
+installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
 
 The journal is consulted **first**. Its absence means no staged activation was in flight, so the legacy
 in-place extraction recovery applies unchanged — a crash in that path also leaves an in-progress aside
@@ -290,7 +291,7 @@ the good one.
 
 Ambiguity exists only while the live path is absent, and there `.complete` is the roll-forward authority:
 without it the candidate was never validated, so the committed tree in the aside wins. Live-present with a
-candidate is pre-swap (or already rolled back) — discard the candidate and put the old entry back.
+candidate is pre-swap (or already rolled back) — discard the candidate.
 Live-present without a candidate is a lost tail — finish forward; never revert a completed activation.
 Neither a live tree nor a rollback record is unrecoverable, so that component fails closed rather than
 guessing. Every branch is idempotent, so a crash _during_ recovery is settled by the next run, and
@@ -303,9 +304,10 @@ observable, which means a lost directory update degrades to a roll back rather t
 Retiring the rollback record only marks the displaced tree disposable; both the activation path and
 recovery then sweep it, or the components root would grow by a whole component version per deploy.
 
-Two limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
 briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
-request can still see a gap), and validation does not run on the main-thread deploy path.
+request can still see a gap); validation does not run on the main-thread deploy path; and config
+publication is not yet an effect of this transaction, as above.
 
 ## Component preparation is serialized across worker threads
 

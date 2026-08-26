@@ -39,33 +39,18 @@ async function stageState(root, component, id, state) {
 	if (state.journal !== undefined) {
 		await fs.writeFile(
 			path.join(deploymentDir, 'activation.json'),
-			typeof state.journal === 'string'
-				? state.journal
-				: JSON.stringify({
-						v: 1,
-						component,
-						candidateId: id,
-						publishesConfig: state.publishesConfig !== false,
-						configBefore: state.configBefore ?? null,
-						configAfter: state.configAfter ?? null,
-					})
+			typeof state.journal === 'string' ? state.journal : JSON.stringify({ v: 1, component, candidateId: id })
 		);
 	}
 	if (state.live) await writeTree(path.join(root, component), state.live);
-	let asidePath;
 	if (state.aside || state.priorAbsent) {
 		const asideDir = path.join(root, ASIDE_STAGING_DIR, component);
 		await fs.mkdir(asideDir, { recursive: true });
-		asidePath = path.join(asideDir, `${IN_PROGRESS}1-1-aaa${state.priorAbsent ? '-prior-absent' : ''}`);
+		const asidePath = path.join(asideDir, `${IN_PROGRESS}1-1-aaa${state.priorAbsent ? '-prior-absent' : ''}`);
 		if (state.priorAbsent) await fs.writeFile(asidePath, '');
 		else await writeTree(asidePath, state.aside);
 	}
-	return { deploymentDir, asidePath };
-}
-
-function recorder() {
-	const calls = [];
-	return { calls, publish: async (component, entry) => void calls.push({ component, entry }) };
+	return { deploymentDir };
 }
 
 async function readLive(root, component) {
@@ -80,15 +65,12 @@ describe('interrupted activation recovery', () => {
 			complete: true,
 			journal: true,
 			aside: 'PREVIOUS\n',
-			configAfter: { package: 'web@2.0.0' },
 		});
-		const config = recorder();
 
-		const failures = await recoverInterruptedActivations(root, config.publish);
+		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 0);
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the validated candidate becomes live');
-		assert.deepStrictEqual(config.calls, [{ component: 'web', entry: { package: 'web@2.0.0' } }]);
 		assert.strictEqual(
 			existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
 			false,
@@ -105,33 +87,20 @@ describe('interrupted activation recovery', () => {
 			complete: false,
 			journal: true,
 			aside: 'PREVIOUS\n',
-			configBefore: { package: 'web@1.0.0' },
-			configAfter: { package: 'web@2.0.0' },
 		});
-		const config = recorder();
 
-		const failures = await recoverInterruptedActivations(root, config.publish);
+		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 0);
 		assert.strictEqual(await readLive(root, 'web'), 'PREVIOUS\n', 'an unvalidated candidate never goes live');
-		assert.deepStrictEqual(
-			config.calls,
-			[{ component: 'web', entry: { package: 'web@1.0.0' } }],
-			'and config is put back, so the next boot cannot reinstall the rejected release'
-		);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
 	it('rolls back from the aside when the candidate is gone entirely', async () => {
 		const root = await newRoot('lostcand');
-		await stageState(root, 'web', 'd1', {
-			journal: true,
-			aside: 'PREVIOUS\n',
-			configBefore: { package: 'web@1.0.0' },
-		});
-		const config = recorder();
+		await stageState(root, 'web', 'd1', { journal: true, aside: 'PREVIOUS\n' });
 
-		const failures = await recoverInterruptedActivations(root, config.publish);
+		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 0);
 		assert.strictEqual(await readLive(root, 'web'), 'PREVIOUS\n');
@@ -141,98 +110,42 @@ describe('interrupted activation recovery', () => {
 	it('fails the component closed when neither a live tree nor a rollback record survives', async () => {
 		const root = await newRoot('bothgone');
 		await stageState(root, 'web', 'd1', { journal: true });
-		const config = recorder();
 
-		const failures = await recoverInterruptedActivations(root, config.publish);
+		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 1, 'the component is reported, not silently skipped');
 		assert.match(failures.get('web').message, /neither a live tree/);
-		assert.deepStrictEqual(config.calls, [], 'and no config was published on a state we cannot settle');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('discards a candidate that never activated, leaving the live tree and old config', async () => {
+	it('discards a candidate that never activated, leaving the live tree', async () => {
 		const root = await newRoot('preb1');
-		await stageState(root, 'web', 'd1', {
-			live: 'LIVE\n',
-			candidate: 'CANDIDATE\n',
-			complete: true,
-			journal: true,
-			configBefore: { package: 'web@1.0.0' },
-			configAfter: { package: 'web@2.0.0' },
-		});
-		const config = recorder();
+		await stageState(root, 'web', 'd1', { live: 'LIVE\n', candidate: 'CANDIDATE\n', complete: true, journal: true });
 
-		await recoverInterruptedActivations(root, config.publish);
+		await recoverInterruptedActivations(root);
 
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
-		assert.deepStrictEqual(config.calls, [{ component: 'web', entry: { package: 'web@1.0.0' } }]);
 		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
 	it('finishes the tail when the candidate is already live', async () => {
 		const root = await newRoot('postb2');
-		await stageState(root, 'web', 'd1', {
-			live: 'CANDIDATE\n',
-			journal: true,
-			aside: 'PREVIOUS\n',
-			configAfter: { package: 'web@2.0.0' },
-		});
-		const config = recorder();
+		await stageState(root, 'web', 'd1', { live: 'CANDIDATE\n', journal: true, aside: 'PREVIOUS\n' });
 
-		await recoverInterruptedActivations(root, config.publish);
+		await recoverInterruptedActivations(root);
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'a completed activation is not reverted');
-		assert.deepStrictEqual(config.calls, [{ component: 'web', entry: { package: 'web@2.0.0' } }]);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('leaves config alone when the interrupted activation never owned a config effect', async () => {
-		// Boot re-installs start FROM authoritative config, so they journal no config effect. Publishing the
-		// journaled `null` here would DELETE the entry that boot was installing from.
-		const root = await newRoot('noconfigeffect');
-		await stageState(root, 'web', 'd1', {
-			candidate: 'CANDIDATE\n',
-			complete: true,
-			journal: true,
-			publishesConfig: false,
-			aside: 'PREVIOUS\n',
-		});
-		const config = recorder();
-
-		const failures = await recoverInterruptedActivations(root, config.publish);
-
-		assert.strictEqual(failures.size, 0);
-		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the tree still rolls forward');
-		assert.deepStrictEqual(config.calls, [], 'but nothing is published or removed');
-		await fs.rm(root, { recursive: true, force: true });
-	});
-
-	it('rejects a journal that does not say whether it owns a config effect', async () => {
-		const root = await newRoot('noflag');
-		await stageState(root, 'web', 'd1', {
-			live: 'LIVE\n',
-			candidate: 'CANDIDATE\n',
-			journal: JSON.stringify({ v: 1, component: 'web', candidateId: 'd1', configBefore: null, configAfter: null }),
-		});
-
-		const failures = await recoverInterruptedActivations(root, recorder().publish);
-
-		assert.strictEqual(failures.size, 1);
-		assert.match(failures.get('web').message, /does not say whether it owns a config effect/);
-		await fs.rm(root, { recursive: true, force: true });
-	});
-
-	it('treats a candidate with no journal as build residue and touches no config', async () => {
+	it('treats a candidate with no journal as build residue', async () => {
 		const root = await newRoot('nojournal');
 		await stageState(root, 'web', 'd1', { live: 'LIVE\n', candidate: 'ABANDONED\n' });
-		const config = recorder();
 
-		await recoverInterruptedActivations(root, config.publish);
+		await recoverInterruptedActivations(root);
 
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
-		assert.deepStrictEqual(config.calls, []);
 		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false);
 		await fs.rm(root, { recursive: true, force: true });
 	});
@@ -244,9 +157,8 @@ describe('interrupted activation recovery', () => {
 			candidate: 'CANDIDATE\n',
 			journal: '{"v":1,"component":"web","candi',
 		});
-		const config = recorder();
 
-		const failures = await recoverInterruptedActivations(root, config.publish);
+		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 1);
 		assert.match(failures.get('web').message, /could not be parsed/);
@@ -260,10 +172,10 @@ describe('interrupted activation recovery', () => {
 		await stageState(root, 'web', 'd1', {
 			live: 'LIVE\n',
 			candidate: 'CANDIDATE\n',
-			journal: JSON.stringify({ v: 99, component: 'web', candidateId: 'd1', configBefore: null, configAfter: null }),
+			journal: JSON.stringify({ v: 99, component: 'web', candidateId: 'd1' }),
 		});
 
-		const failures = await recoverInterruptedActivations(root, recorder().publish);
+		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(failures.size, 1);
 		assert.match(failures.get('web').message, /version 99, expected 1/);
@@ -278,69 +190,32 @@ describe('interrupted activation recovery', () => {
 			complete: true,
 			journal: true,
 			aside: 'PREVIOUS\n',
-			configAfter: { package: 'healthy@2.0.0' },
 		});
-		const config = recorder();
 
-		const failures = await recoverInterruptedActivations(root, config.publish);
+		const failures = await recoverInterruptedActivations(root);
 
 		assert.deepStrictEqual([...failures.keys()], ['broken'], 'only the affected component is reported');
 		assert.strictEqual(await readLive(root, 'healthy'), 'CANDIDATE\n', 'the healthy sibling still settles');
-		assert.deepStrictEqual(config.calls, [{ component: 'healthy', entry: { package: 'healthy@2.0.0' } }]);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });
 
 describe('activation transaction', () => {
-	it('swaps the candidate in, publishes config, and clears its own records', async () => {
+	it('swaps the candidate in and clears its own records', async () => {
 		const root = await newRoot('happy');
 		await writeTree(path.join(root, 'web'), 'LIVE\n');
 		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
-		const config = recorder();
 
-		await activateCandidateApplication(app, 'd1', {
-			configBefore: { package: 'web@1.0.0' },
-			configAfter: { package: 'web@2.0.0' },
-			publishConfig: (entry) => config.publish('web', entry),
-		});
+		await activateCandidateApplication(app, 'd1');
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
-		assert.deepStrictEqual(config.calls, [{ component: 'web', entry: { package: 'web@2.0.0' } }]);
 		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false, 'staging is cleaned up');
 		assert.strictEqual(
 			existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
 			false,
 			'and the version it displaced is swept rather than accumulating per deploy'
-		);
-		await fs.rm(root, { recursive: true, force: true });
-	});
-
-	it('restores the previous version when publishing config fails', async () => {
-		const root = await newRoot('configfail');
-		await writeTree(path.join(root, 'web'), 'LIVE\n');
-		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
-		const app = new Application({ name: 'web' });
-		app.dirPath = path.join(root, 'web');
-
-		await assert.rejects(
-			() =>
-				activateCandidateApplication(app, 'd1', {
-					configAfter: { package: 'web@2.0.0' },
-					publishConfig: async () => {
-						throw new Error('config volume is read-only');
-					},
-				}),
-			/config volume is read-only/
-		);
-
-		// The whole point of ordering config last: a config failure cannot leave the new tree serving.
-		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n', 'the previous version is serving again');
-		assert.strictEqual(
-			await fs.readFile(path.join(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'index.js'), 'utf8'),
-			'CANDIDATE\n',
-			'and the candidate is back where it was, so the deploy can be retried'
 		);
 		await fs.rm(root, { recursive: true, force: true });
 	});
@@ -361,12 +236,8 @@ describe('activation transaction', () => {
 		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
-		const config = recorder();
 
-		await activateCandidateApplication(app, 'd1', {
-			configAfter: { package: 'web@1.0.0' },
-			publishConfig: (entry) => config.publish('web', entry),
-		});
+		await activateCandidateApplication(app, 'd1');
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(app.isNewComponent, true, 'and it is recognized as a new component');

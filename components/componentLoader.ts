@@ -38,7 +38,7 @@ import { table } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
-import { addConfig, deleteConfigFromFile, getConfigObj, getConfigPath } from '../config/configUtils.ts';
+import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
 import { bootstrapModels } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
@@ -61,15 +61,6 @@ import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
-/**
- * Apply one component's root-config entry while settling an interrupted activation; `null` removes it.
- * Startup is single-threaded here, so no cross-component lock is needed — unlike the deploy path, where
- * two components can publish at once.
- */
-export async function publishComponentConfigEntry(component: string, entry: Record<string, any> | null): Promise<void> {
-	if (entry === null) deleteConfigFromFile([component]);
-	else await addConfig(component, entry);
-}
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
