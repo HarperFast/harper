@@ -91,6 +91,12 @@ and it force-terminates the remaining worker set rather than waiting for applica
 
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
 >
+> An HTTP worker refs its `parentPort` synchronously on entry to `threadServer.startServers()` and
+> holds that ref through root-component loading. Startup is allowed to await work whose own handles
+> are unref'd, so the parent port owns liveness until the worker posts `child_started`; a root-load
+> rejection is terminal. Shutdown still unrefs the port in `manageThreads`, including when the
+> shutdown message arrives during component loading.
+>
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
 > `sockaddr_un.sun_path` byte limit (some Node versions reject it; others silently truncate it).
 > Every actual `listen()` error rejects startup, and the temporary bind-error listener is removed

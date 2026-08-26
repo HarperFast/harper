@@ -284,6 +284,14 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
+Each non-root component also needs `node_modules/harper` (and an existing legacy `harperdb` entry)
+linked to the running package. `componentLoader.symlinkHarperModule()` validates those links before
+taking the cross-thread store lock, so normal multi-worker startup does not serialize on already-valid
+links. A repair winner revalidates under the lock and clears its timeout before releasing ownership. A
+loser retains a bounded, ref'd wait and validates the winner's result when notified, but never calls
+`unlock()` itself: a wait timeout does not transfer lock ownership, and unlocking there can release a
+different worker's critical section and leave a stale timer to unlock a later owner.
+
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
 `readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:

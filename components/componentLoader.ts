@@ -60,6 +60,7 @@ import { ComponentPreparationLockTimeoutError } from './componentPreparationLock
 import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+const COMPONENT_SYMLINK_LOCK_TIMEOUT = 10_000;
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
@@ -386,60 +387,94 @@ export const getComponentName = () => compName;
  * ../index.ts), so the import yields live data, not an empty separate copy. The link is verified on
  * every non-root component load and repaired if missing or pointing elsewhere.
  */
-function symlinkHarperModule(componentDirectory: string) {
+function harperModulesAreLinked(componentDirectory: string) {
+	const nodeModulesDir = join(componentDirectory, 'node_modules');
+	const harperModule = join(nodeModulesDir, 'harper');
+	try {
+		lstatSync(harperModule);
+		if (realpathSync(harperModule) !== realpathSync(PACKAGE_ROOT)) return false;
+	} catch {
+		return false;
+	}
+
+	const harperdbModule = join(nodeModulesDir, 'harperdb');
+	try {
+		lstatSync(harperdbModule);
+	} catch {
+		return true;
+	}
+	try {
+		return realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
+	} catch {
+		return false;
+	}
+}
+
+function repairHarperModuleLinks(componentDirectory: string) {
+	const nodeModulesDir = join(componentDirectory, 'node_modules');
+	if (!existsSync(nodeModulesDir)) mkdirSync(nodeModulesDir);
+
+	const harperModule = join(nodeModulesDir, 'harper');
+	let harperModuleLinked = false;
+	try {
+		lstatSync(harperModule);
+		harperModuleLinked = realpathSync(harperModule) === realpathSync(PACKAGE_ROOT);
+	} catch {}
+	if (!harperModuleLinked) {
+		rmSync(harperModule, { recursive: true, force: true });
+		symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
+	}
+
+	const harperdbModule = join(nodeModulesDir, 'harperdb');
+	let harperdbModulePresent = false;
+	let harperdbModuleLinked = false;
+	try {
+		lstatSync(harperdbModule);
+		harperdbModulePresent = true;
+		harperdbModuleLinked = realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
+	} catch {}
+	if (harperdbModulePresent && !harperdbModuleLinked) {
+		rmSync(harperdbModule, { recursive: true, force: true });
+		symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
+	}
+}
+
+export function symlinkHarperModule(
+	componentDirectory: string,
+	store = Status.primaryStore,
+	lockTimeout = COMPONENT_SYMLINK_LOCK_TIMEOUT
+) {
+	if (harperModulesAreLinked(componentDirectory)) return Promise.resolve();
+
 	return new Promise<void>((resolve, reject) => {
-		const store = Status.primaryStore;
-		// Create timeout to avoid deadlocks
 		const timeout = setTimeout(() => {
-			store.unlock(componentDirectory);
+			// A waiter never owns the lock, so timing out must not unlock another worker's
+			// critical section. The owner releases it, including when that worker closes.
 			reject(new Error('symlinking harperdb module timed out'));
-		}, 10_000);
+		}, lockTimeout);
 
 		const callback = () => {
 			clearTimeout(timeout);
-			resolve();
+			if (harperModulesAreLinked(componentDirectory)) resolve();
+			else reject(new Error('symlinking harperdb module completed without valid links'));
 		};
-		const lockAcquired = store.tryLock(componentDirectory, callback);
-
-		if (!lockAcquired) {
+		let lockAcquired;
+		try {
+			lockAcquired = store.tryLock(componentDirectory, callback);
+		} catch (error) {
 			clearTimeout(timeout);
-		} else {
+			reject(error);
+			return;
+		}
+
+		if (lockAcquired) {
 			try {
-				// validate node_modules directory exists
-				const nodeModulesDir = join(componentDirectory, 'node_modules');
-				if (!existsSync(nodeModulesDir)) {
-					// create it if not
-					mkdirSync(nodeModulesDir);
-				}
-
-				// validate harper module
-				const harperModule = join(nodeModulesDir, 'harper');
-				let harperModuleLinked = false;
-				try {
-					lstatSync(harperModule); // throws ENOENT if absent; succeeds even for dangling symlinks
-					harperModuleLinked = realpathSync(harperModule) === realpathSync(PACKAGE_ROOT);
-				} catch {}
-				if (!harperModuleLinked) {
-					rmSync(harperModule, { recursive: true, force: true });
-					symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
-				}
-				// if there is a harperdb module, fix that too
-				const harperdbModule = join(nodeModulesDir, 'harperdb');
-				let harperdbModulePresent = false;
-				let harperdbModuleLinked = false;
-				try {
-					lstatSync(harperdbModule);
-					harperdbModulePresent = true;
-					harperdbModuleLinked = realpathSync(harperdbModule) === realpathSync(PACKAGE_ROOT);
-				} catch {}
-				if (harperdbModulePresent && !harperdbModuleLinked) {
-					rmSync(harperdbModule, { recursive: true, force: true });
-					symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
-				}
-
+				repairHarperModuleLinks(componentDirectory);
 				resolve();
+			} catch (error) {
+				reject(error);
 			} finally {
-				// finally release the lock
+				clearTimeout(timeout);
 				store.unlock(componentDirectory);
 			}
 		}
