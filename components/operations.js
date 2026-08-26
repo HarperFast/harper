@@ -698,7 +698,15 @@ async function deployComponent(req) {
 		}
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
-			manageThreads.restartWorkers('http');
+			// Await the restart: until it finishes, workers that have not been replaced yet are still
+			// serving the *pre-deploy* component set (on platforms with SO_REUSEPORT they keep accepting
+			// connections throughout the rolling restart), so a client that takes this operation's success
+			// as "the component is live" gets served by a worker that has never heard of it — a REST 404,
+			// or an MQTT publish refused because no resource handles the topic (harper#2335). Awaiting
+			// makes a successful response mean what callers already assume it means. Each worker's
+			// replacement is individually bounded by the startup backstop in restartWorkers(), so this
+			// cannot wait indefinitely.
+			await manageThreads.restartWorkers('http');
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {

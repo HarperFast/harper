@@ -503,6 +503,11 @@ async function restartWorkers(
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
 		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
+		// Promises for replacements that could only be started *after* their predecessor exited (the
+		// non-overlapping platforms below). Kept out of waitingToFinish, which is spliced as each worker
+		// exits to drive the maxWorkersDown throttle; these are awaited once at the end so that this
+		// function resolving means every replacement is accepting connections (harper#2335).
+		let replacementsStarting = [];
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
 		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
 		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
@@ -601,7 +606,8 @@ async function restartWorkers(
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
-			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) worker.startCopy();
+			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown)
+				replacementsStarting.push(whenWorkerStarted(worker.startCopy()));
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
@@ -638,7 +644,8 @@ async function restartWorkers(
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
-					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
+					if (!overlapping && startReplacementThreads && !processShuttingDown)
+						replacementsStarting.push(whenWorkerStarted(worker.startCopy()));
 					resolve();
 				});
 			});
@@ -648,15 +655,56 @@ async function restartWorkers(
 				await Promise.race(waitingToFinish);
 			}
 		}
-		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
-		// to finish, so not that important
 		await Promise.all(waitingToFinish);
+		// Callers that await this (deploy_component with restart: true) rely on it meaning "the pool is
+		// serving the new code". On the overlapping path each replacement was already awaited above; this
+		// covers the ones that could only be started once their predecessor released its ports.
+		await Promise.all(replacementsStarting);
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
 			workerType: name,
 		});
 	}
+}
+/**
+ * Resolve once a newly started worker reports that it is accepting connections, or gives up trying.
+ * Unlike the overlapping-restart path above there is no old worker left to fall back on, so a
+ * replacement that fails to start is left to startWorker's own auto-restart handling — this only
+ * stops waiting on it. The timeout is the same generous backstop used there, far longer than any
+ * legitimate startup.
+ * @param newWorker The replacement worker
+ * @returns {Promise<boolean>} whether the worker reported that it started
+ */
+function whenWorkerStarted(newWorker) {
+	return new Promise((resolve) => {
+		const cleanup = () => {
+			clearTimeout(timeout);
+			newWorker.off('message', startListener);
+			newWorker.off('exit', exitListener);
+		};
+		const timeout = setTimeout(
+			() => {
+				harperLogger.error('Replacement worker did not start in time', newWorker.threadId);
+				cleanup();
+				resolve(false);
+			},
+			Math.max(threadTerminationTimeout * 2, 60000)
+		).unref();
+		const startListener = (message) => {
+			if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
+				cleanup();
+				resolve(true);
+			}
+		};
+		const exitListener = () => {
+			harperLogger.warn('Replacement worker exited before starting', newWorker.threadId);
+			cleanup();
+			resolve(false);
+		};
+		newWorker.on('message', startListener);
+		newWorker.on('exit', exitListener);
+	});
 }
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
