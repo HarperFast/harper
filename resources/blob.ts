@@ -1476,22 +1476,10 @@ function resetDrainedQueue(): void {
 }
 
 // -- Durable blob-unlink queue (#1832) -------------------------------------------------
-// A decided-and-safe blob deletion must survive its executor's death. Reclamation above is
-// what decides a file is safe to unlink (no holder, no open snapshot, no re-reference) — the
-// durable queue's only job is making that decision survive past the moment it's made: once
-// `runReclamation` claims a file with no holders, it records the unlink as a durable intent
-// row in the database's internal dbi (synchronously, so it's durable before a dying worker
-// can lose it) instead of unlinking inline. Unlinks are executed by drains, which see only
-// due rows (a row is due the instant it's written — reclamation already did the waiting):
-//   - a per-thread coalesced timer shortly after each enqueue (fast path),
-//   - a main-thread safety interval (backstop for worker-thread death),
-//   - a startup drain (backstop for process death, picking up rows a prior life enqueued
-//     but never got to execute).
-// A row is removed only once its file is unlinked or already gone; any other unlink error
-// (e.g. a Windows reader holding the file open) keeps the row for retry. The reclaim claim
-// taken above is released only once the drain confirms the file is gone (see
-// drainBlobUnlinkQueue), never at enqueue time, so a hold cannot be acquired on a file that
-// is already durably committed to disappear.
+// Reclamation above decides that a file is safe to unlink (no holder, no open snapshot, no
+// re-reference); this queue is what makes that decision survive the death of the thread that
+// made it. The reclaim claim is released only once a drain confirms the file is gone, never
+// at enqueue time, so a hold cannot be acquired on a file already committed to disappear.
 // Keys are [symbol, fileId] tuples (like the residency entries): symbol-led keys sort below
 // every boolean/string key, so the attribute-catalog scans over this dbi (which start at
 // `true`) never see them, and they cannot collide with table/attribute names.
@@ -1506,9 +1494,13 @@ const UNLINK_DRAIN_BATCH = 64;
 // A row that can never succeed (EPERM/EACCES on a mount) otherwise pins its hash-shared reclaim slot
 // forever, which makes every colliding fileId report as unavailable to holders.
 const MAX_UNLINK_ATTEMPTS = 5;
-const pendingLocalDrains = new Map<any, ReturnType<typeof setTimeout>>(); // per-root coalesced drain timer (this thread)
+// Keyed weakly: a dropped database's root must not be pinned by this thread's queue bookkeeping.
+const pendingLocalDrains = new WeakMap<any, ReturnType<typeof setTimeout>>(); // per-root coalesced drain timer (this thread)
 const mainSafetyDrains = new WeakSet<any>(); // roots with a main-thread safety interval armed
-const inFlightUnlinks = new Map<any, Set<string>>(); // per-root fileIds this thread has an unlink open on
+const inFlightUnlinks = new WeakMap<any, Set<string>>(); // per-root fileIds this thread has an unlink open on
+// Backstop for the durable `attempts` counter: on a closing or full dbi the retry count cannot be
+// written, and without a thread-local count the cap would never be reached and the claim never freed.
+const localUnlinkAttempts = new WeakMap<any, Map<string, number>>();
 
 function unlinkQueueDb(store: any): any {
 	return store?.dbisDb;
@@ -1554,30 +1546,42 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 	}
 	let inFlight = inFlightUnlinks.get(rootStore);
 	if (!inFlight) inFlightUnlinks.set(rootStore, (inFlight = new Set()));
-	let outstanding = 0;
+	let attemptCounts = localUnlinkAttempts.get(rootStore);
+	if (!attemptCounts) localUnlinkAttempts.set(rootStore, (attemptCounts = new Map()));
+	let started = 0;
 	let batchTruncated = false;
 	const settleOne = () => {
-		if (--outstanding === 0 && batchTruncated) scheduleBlobUnlinkDrain(rootStore);
+		if (--started === 0 && batchTruncated) scheduleBlobUnlinkDrain(rootStore);
 	};
 	for (const { key, value } of entries) {
 		if (!value || value.due > now) continue; // not yet due
 		const fileId = key[1];
 		if (inFlight.has(fileId)) continue; // a concurrent drain on this thread already owns this row
-		if (outstanding >= UNLINK_DRAIN_BATCH) {
+		// Bounded on everything this thread has open, not just this pass: the safety interval can start
+		// a drain while an earlier batch is still settling on a slow filesystem.
+		if (inFlight.size >= UNLINK_DRAIN_BATCH) {
 			batchTruncated = true;
 			break;
 		}
-		outstanding++;
-		inFlight.add(fileId);
 		const storageInfo = { storageIndex: value.storageIndex ?? 0, fileId, store: rootStore };
-		const filePath = getFilePath(storageInfo);
+		let filePath: string;
+		try {
+			filePath = getFilePath(storageInfo);
+		} catch (error) {
+			// Resolved before the row is marked in flight: a fileId left in that set is never retried.
+			logger.debug?.('Could not resolve the path for a queued blob unlink', fileId, error);
+			continue;
+		}
+		started++;
+		inFlight.add(fileId);
 		unlink(filePath, (error) => {
 			inFlight.delete(fileId);
 			if (error && error.code !== 'ENOENT') {
-				const attempts = (value.attempts ?? 0) + 1;
+				const attempts = Math.max(value.attempts ?? 0, attemptCounts.get(fileId) ?? 0) + 1;
 				if (attempts < MAX_UNLINK_ATTEMPTS) {
 					// keep the row; a later drain retries (e.g. a reader still holds the file open on Windows)
 					logger.debug?.('Error trying to remove blob file, will retry', error);
+					attemptCounts.set(fileId, attempts);
 					try {
 						queueDb.putSync(key, { ...value, attempts });
 					} catch (putError) {
@@ -1592,6 +1596,7 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 					error
 				);
 			}
+			attemptCounts.delete(fileId);
 			// The row is dropped before the claim is handed back, so a hold taken after the release can
 			// never be followed by another drain unlinking the file out from under it.
 			removeUnlinkQueueRow(queueDb, key);
