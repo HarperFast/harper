@@ -84,6 +84,28 @@ function connect(url: string, clientId: string, admin: { username: string; passw
 	});
 }
 
+/**
+ * Connect, retrying a refused connection for up to `timeoutMs`. Only the first test asserts on
+ * connection availability; the others are about what the server answers once connected, so they
+ * wait out any restart still in progress rather than failing for the wrong reason.
+ */
+async function connectWhenAvailable(
+	url: string,
+	clientId: string,
+	admin: { username: string; password: string },
+	timeoutMs = 30_000
+): Promise<MqttClient> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			return await connect(url, clientId, admin);
+		} catch (error) {
+			if (Date.now() >= deadline) throw error;
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
+	}
+}
+
 /** Resolves to null on success, or the publish error (which carries the v5 reason code). */
 function publish(client: MqttClient, topic: string): Promise<any> {
 	return new Promise((resolve, reject) => {
@@ -146,7 +168,7 @@ suite('MQTT topic availability across a deploy restart (harper#2335)', (ctx: Con
 	});
 
 	test('a publish to an unhandled topic is refused as "Topic Name invalid", not "Unspecified error"', async () => {
-		const client = await connect(url, 'deploy-restart-unknown-topic', ctx.harper.admin);
+		const client = await connectWhenAvailable(url, 'deploy-restart-unknown-topic', ctx.harper.admin);
 		try {
 			const error = await publish(client, 'NoSuchTopicResource/anything');
 			ok(error, 'expected the publish to an unhandled topic to be refused');
@@ -157,7 +179,7 @@ suite('MQTT topic availability across a deploy restart (harper#2335)', (ctx: Con
 	});
 
 	test('a worker restart disconnects MQTT clients with "Server shutting down"', async () => {
-		const client = await connect(url, 'deploy-restart-shutdown-notice', ctx.harper.admin);
+		const client = await connectWhenAvailable(url, 'deploy-restart-shutdown-notice', ctx.harper.admin);
 		try {
 			const disconnected = new Promise<any>((resolve, reject) => {
 				const timer = setTimeout(() => reject(new Error('no DISCONNECT received before the socket closed')), 60_000);
