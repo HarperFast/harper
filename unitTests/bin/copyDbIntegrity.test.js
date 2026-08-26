@@ -235,6 +235,18 @@ describe('copy-db integrity (harper#2048)', () => {
 		}
 	});
 
+	it('rejects a blob-copy target inside the source blob root even when its name starts with ".."', async () => {
+		// A lexical `startsWith('..')` containment check misclassifies a real child whose name happens
+		// to start with those two characters (e.g. `..copy-blobs`) as outside the directory, letting the
+		// destination land inside the source blob root it is supposed to be rejected against.
+		const copy_path = path.join(blob_root, '..copy-inside');
+		await assert.rejects(
+			() => copyDB.copyDb(DATABASE, copy_path, { blobs: 'copy' }),
+			/overlaps the source blob root/,
+			'a blob-copy destination inside the source blob root must be rejected regardless of its name'
+		);
+	});
+
 	it('restores as a different database, blob attachment and all, from the copy plus its blob directory', async () => {
 		const restored_database = 'copy-integrity-restored';
 		const copy_path = path.join(storage_path, restored_database + '.mdb');

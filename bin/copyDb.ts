@@ -6,7 +6,7 @@ import {
 	toRocksCompression,
 } from '../resources/databases.ts';
 import { open, asBinary } from 'lmdb';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { move, remove } from 'fs-extra';
 import { existsSync, mkdirSync } from 'node:fs';
 import { rename, writeFile } from 'node:fs/promises';
@@ -198,7 +198,11 @@ const MSGPACK_NIL = 0xc0;
 
 function isWithin(path: string, directory: string): boolean {
 	const relativePath = relative(directory, path);
-	return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+	if (relativePath === '') return true;
+	if (isAbsolute(relativePath)) return false;
+	// Segment-aware: a child literally named e.g. `..copy.mdb-blobs` is a real child, not an escape —
+	// only a first segment of exactly `..` walks up out of `directory`.
+	return relativePath.split(sep)[0] !== '..';
 }
 
 /**
@@ -221,6 +225,14 @@ function useRawBytes(store) {
  */
 async function copyDatabaseBlobs(sourceDatabase: string, targetDatabasePath: string, blobRoots: string[]) {
 	const populatedRoots = blobRoots.filter((root) => existsSync(root));
+	const missingRoots = blobRoots.filter((root) => !existsSync(root));
+	if (missingRoots.length > 0) {
+		const message =
+			`Configured blob root(s) ${missingRoots.join(', ')} of ${sourceDatabase} do not exist and will be copied as ` +
+			`empty; if this database has ever written blobs to them (rather than never having used them), this copy is missing those blobs.`;
+		hdbLogger.warn(message);
+		console.warn(message);
+	}
 	if (populatedRoots.length === 0) return;
 	const destination = targetDatabasePath + BLOB_COPY_SUFFIX;
 	await copyBlobRootsByIndex(destination, blobRoots);
