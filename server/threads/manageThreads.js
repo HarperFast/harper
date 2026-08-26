@@ -55,6 +55,7 @@ const MAX_UNEXPECTED_RESTARTS = 50;
 // down mid-disposal crashes the process, so give that teardown more room before the forced backstop.
 let threadTerminationTimeout = process.env.DEV_MODE === 'true' || process.env.DEV_MODE === '1' ? 30000 : 10000;
 const RESTART_TYPE = 'restart';
+const RESTART_PROGRESS_HEARTBEAT_MS = 15000;
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
 const THREAD_INFO = 'thread_info';
@@ -497,8 +498,15 @@ async function restartWorkers(
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
 			const { loadRootComponents } = require('../loadRootComponents.js');
-			await loadRootComponents();
-			// Installing and loading every root component can outlast a caller's idle window on its own.
+			// Installing and loading every root component reports nothing and can outlast a caller's idle
+			// window on its own (a cold npm cache, a large dependency graph), so beat while it runs. The
+			// caller's absolute ceiling is what bounds a load that never finishes.
+			const loading = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
+			try {
+				await loadRootComponents();
+			} finally {
+				clearInterval(loading);
+			}
 			onProgress?.();
 		}
 
