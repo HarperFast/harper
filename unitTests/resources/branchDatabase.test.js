@@ -128,7 +128,10 @@ describe('branch lifecycle (harper#643)', () => {
 });
 
 describe('branchedDatabases config (harper#643)', () => {
-	const { assertBranchedDatabases } = require('#src/components/Application');
+	let assertBranchedDatabases;
+	before(function () {
+		({ assertBranchedDatabases } = require('#src/components/Application'));
+	});
 
 	it('accepts an absent or empty declaration', function () {
 		assert.doesNotThrow(() => assertBranchedDatabases('app', undefined));
@@ -156,9 +159,10 @@ describe('branchedDatabases config (harper#643)', () => {
 });
 
 describe('branch preparation rejects rather than falling back (harper#643)', () => {
-	const { prepareBranches } = require('#src/resources/branchDatabase');
+	let prepareBranches;
 
 	before(function () {
+		({ prepareBranches } = require('#src/resources/branchDatabase'));
 		setupTestDBPath();
 		setMainIsWorker(true);
 		table({
@@ -194,10 +198,14 @@ describe('branch preparation rejects rather than falling back (harper#643)', () 
 });
 
 describe('scoped databases binding (harper#643)', () => {
-	const { scopedBindings } = require('#src/security/jsLoader');
-	const { tables } = require('#src/resources/databases');
+	// Required lazily, inside the hook: an eager require here pulls the components layer -- and with
+	// it resources/dataLoader, which captures its logger at import time -- into memory before
+	// dataLoader.test.js can stub the logger factory, silently breaking that suite.
+	let scopedBindings, tables;
 
 	before(function () {
+		({ scopedBindings } = require('#src/security/jsLoader'));
+		({ tables } = require('#src/resources/databases'));
 		setupTestDBPath();
 		setMainIsWorker(true);
 		table({
@@ -261,10 +269,11 @@ describe('scoped databases binding (harper#643)', () => {
 
 describe('branch rollback is scoped to the failing application (harper#643)', () => {
 	const { mkdirSync, writeFileSync } = require('node:fs');
-	const { COMPONENT_PREPARATION_PROCESS_INSTANCE_ID } = require('#src/components/componentPreparationLock');
-	const { prepareBranches } = require('#src/resources/branchDatabase');
+	let COMPONENT_PREPARATION_PROCESS_INSTANCE_ID, prepareBranches;
 
 	before(function () {
+		({ COMPONENT_PREPARATION_PROCESS_INSTANCE_ID } = require('#src/components/componentPreparationLock'));
+		({ prepareBranches } = require('#src/resources/branchDatabase'));
 		setupTestDBPath();
 		setMainIsWorker(true);
 		for (const db of ['rollbase1', 'rollbase2']) {
@@ -303,9 +312,10 @@ describe('branch rollback is scoped to the failing application (harper#643)', ()
 });
 
 describe('defineTable through a branched application (harper#643)', () => {
-	const { scopedBindings } = require('#src/security/jsLoader');
+	let scopedBindings;
 
 	before(function () {
+		({ scopedBindings } = require('#src/security/jsLoader'));
 		setupTestDBPath();
 		setMainIsWorker(true);
 		table({ table: 'DefSource', database: 'defbase', attributes: [{ name: 'id', isPrimaryKey: true }] });
