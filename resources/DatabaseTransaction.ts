@@ -1042,16 +1042,16 @@ export class DatabaseTransaction implements Transaction {
 		// flags so an ordinary write never reads the property (harper#2412).
 		const writeVersion =
 			this.sourceApply || this.isReplay ? getAppliedWriteVersion(operation.recordVersion, txnTime) : txnTime;
-		// The commit base must come from this transaction's snapshot, never the cross-worker cache
-		// vouch (stale when a resequenced write reused a version); a write landing between this
-		// snapshot and commit still surfaces as a conflict and retries. Replays keep their
-		// pre-read base — their convergence contract is the replay pass itself.
-		if (
-			reloadEntry ||
-			operation.entry === undefined ||
-			(operation.reloadCommitBase && !operation.saved && !this.isReplay)
-		) {
-			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead: true });
+		// A base that feeds stored state must come from this transaction's snapshot, never the
+		// cross-worker cache vouch (stale when a resequenced write reused a version); a write landing
+		// between this snapshot and commit still surfaces as a conflict and retries. Replays keep
+		// their pre-read base — their convergence contract is the replay pass itself.
+		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
+		if (reloadEntry || operation.entry === undefined || reloadsCommitBase) {
+			// the other two triggers are pre-existing reads of kinds that keep their own conflict
+			// semantics, so only a base that feeds stored state gives up the cache vouch
+			const uncachedRead = !!operation.reloadCommitBase || reloadEntry;
+			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {
 			operation.saved = true;
