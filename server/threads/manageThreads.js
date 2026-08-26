@@ -648,17 +648,20 @@ async function restartWorkers(
 				// worker's EXTEND request can only arrive after it exists.
 				worker.extendTerminateDeadline = (deadlineMs) => {
 					clearTimeout(timeout);
-					// A worker only asks for more time while its drain is still moving, so this doubles as the
-					// progress signal for a caller waiting on the restart: a long-but-live drain keeps the wait
-					// alive, a wedged one does not.
-					onProgress?.();
 					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
 					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
 					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
-					timeout = armTerminate(
-						boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
+					const delay = boundedTerminateDelay(
+						deadlineMs,
+						Date.now(),
+						threadTerminationTimeout * 2,
+						getShutdownDrainCeilingMs()
 					);
+					timeout = armTerminate(delay);
+					// The worker is telling us it has work still moving and how long it may take, so pass that
+					// on: a caller waiting on the restart must not treat a live drain as a stalled one.
+					onProgress?.(Date.now() + delay);
 				};
 				worker.on('exit', () => {
 					clearTimeout(timeout);

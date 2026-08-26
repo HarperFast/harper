@@ -530,9 +530,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 								reasonCode:
 									mqttOptions.protocolVersion < 5
 										? 0x80 // the only error code in v3.1.1
-										: error.statusCode === 403
+										: error?.statusCode === 403
 											? 0x87 // not authorized
-											: error.statusCode === 404
+											: error?.statusCode === 404
 												? 0x90 // topic name invalid
 												: 0x80, // unspecified error
 							};
@@ -542,7 +542,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							const describable =
 								mqttOptions.protocolVersion >= 5 &&
 								sendProblemInformation &&
-								error.message &&
+								error?.message &&
 								(error.statusCode === 403 || error.statusCode === 404);
 							const reasonString = describable
 								? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')

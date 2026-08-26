@@ -431,48 +431,6 @@ async function packageComponent(req) {
 	return { project, payload };
 }
 
-/**
- * Wait for a worker restart, but stop waiting when it stops making progress rather than on a flat
- * clock: each replacement carries its own multi-minute startup backstop, so a wide pool can
- * legitimately take minutes to roll and a fixed cap would report a healthy restart as incomplete,
- * while a wedged one must not hold the operations-API response open. `startRestart` is handed the
- * progress callback restartWorkers() reports each replaced worker through. The restart continues
- * whatever this resolves, and a restart that failed does not fail the deploy — the component is
- * already on disk and replicated. A restartWorkers() call from a worker only hands the restart to
- * the main thread, so its empty result counts as not complete.
- */
-const RESTART_IDLE_TIMEOUT_MS = 60_000;
-const RESTART_WAIT_CEILING_MS = 600_000;
-function awaitRestart(startRestart) {
-	let idleTimer, ceilingTimer;
-	let reportStalled;
-	const armIdle = () => {
-		clearTimeout(idleTimer);
-		idleTimer = setTimeout(() => reportStalled({ completed: false, stalled: true }), RESTART_IDLE_TIMEOUT_MS);
-	};
-	const stalled = new Promise((resolve) => {
-		reportStalled = resolve;
-		armIdle();
-	});
-	const restarted = Promise.resolve(startRestart(armIdle)).then(
-		(result) =>
-			result && typeof result === 'object'
-				? {
-						completed: true,
-						workersKeptOnOldCode: result.workersKeptOnOldCode ?? 0,
-						replacementsNotStarted: result.replacementsNotStarted ?? 0,
-					}
-				: { completed: false, handedOff: true },
-		(error) => ({ completed: false, error })
-	);
-	const ceiling = new Promise((resolve) => {
-		ceilingTimer = setTimeout(() => resolve({ completed: false }), RESTART_WAIT_CEILING_MS);
-	});
-	return Promise.race([restarted, stalled, ceiling]).finally(() => {
-		clearTimeout(idleTimer);
-		clearTimeout(ceilingTimer);
-	});
-}
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -737,6 +695,7 @@ async function deployComponent(req) {
 			// replacements share a port they keep accepting connections for the whole rolling restart, so
 			// a caller that reads success as "the component is live" can be served by a worker that has
 			// never heard of it.
+			const { awaitRestart, RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
 			const restart = await awaitRestart((onProgress) =>
 				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
 			);
