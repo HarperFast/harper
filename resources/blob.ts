@@ -1486,13 +1486,9 @@ function resetDrainedQueue(): void {
 const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
 const UNLINK_QUEUE_DRAIN_DELAY = 25; // coalescing debounce; the row is already durable and due when this fires
 const UNLINK_SAFETY_INTERVAL = 5000; // main-thread backstop cadence; one empty range peek when idle
-// The startup drain runs against a backlog a dead process left behind, so the fan-out is bounded by
-// nothing this code controls; unlinks are issued a batch at a time and the next batch is only armed
-// once the current one settles, which also keeps the libuv threadpool available to request traffic.
+// A backlog a dead process left behind is bounded by nothing this code controls, so unlinks go out a
+// batch at a time, leaving the libuv threadpool available to request traffic.
 const UNLINK_DRAIN_BATCH = 64;
-// After this many failed unlinks the row is abandoned and the file left to `cleanup_orphan_blobs`.
-// A row that can never succeed (EPERM/EACCES on a mount) otherwise pins its hash-shared reclaim slot
-// forever, which makes every colliding fileId report as unavailable to holders.
 const MAX_UNLINK_ATTEMPTS = 5;
 // Keyed weakly: a dropped database's root must not be pinned by this thread's queue bookkeeping.
 const pendingLocalDrains = new WeakMap<any, ReturnType<typeof setTimeout>>(); // per-root coalesced drain timer (this thread)
@@ -1570,7 +1566,15 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 		} catch (error) {
 			// Resolved before the row is marked in flight, and counted as an attempt: an id whose path
 			// cannot be resolved would otherwise be retried by every drain for the life of the process.
-			recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error);
+			if (recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
+				// no path to key the local entry by, so find it the only way left
+				for (const [path, pending] of pendingReclamation) {
+					if (storageInfoForBlob.get(pending.blob)?.fileId === fileId) {
+						pendingReclamation.delete(path);
+						break;
+					}
+				}
+			}
 			continue;
 		}
 		started++;
@@ -1633,10 +1637,8 @@ function recordUnlinkFailure(
 }
 
 /**
- * `removeSync` on both engines, never the async `remove()`: this runs in an unlink callback, so an
- * async rejection (a dbi mid-close during the very teardown this queue exists to survive) would land
- * after the frame returned, as an unhandled rejection — the same reason `databases.ts` uses
- * `removeSync` in its retry accounting.
+ * `removeSync` on both engines, never the async `remove()`: called from an unlink callback, whose
+ * frame has returned by the time an async rejection (a dbi mid-close) would land.
  */
 function removeUnlinkQueueRow(queueDb: any, key: any): void {
 	try {
@@ -1842,9 +1844,7 @@ function runReclamation(): void {
 			const instanceStorageInfo = storageInfoForBlob.get(blob);
 			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
 		}
-		// Durably record the decided unlink before executing it, so a worker/process death between
-		// this decision and the actual unlink can't lose it (#1832): the claim taken above stays held
-		// until drainBlobUnlinkQueue confirms the file is gone and releases it, so a hold can't be
+		// The claim taken above stays held until a drain confirms the file is gone, so a hold cannot be
 		// acquired on a file already durably committed to disappear.
 		let enqueued: boolean;
 		try {
@@ -3698,12 +3698,15 @@ export async function cleanupOrphans(
 			else pathsToCheck.delete(path);
 		}
 		logger.warn?.(dryRun ? 'Measuring' : 'Deleting', pathsToCheck.size, 'orphaned blobs');
+		let reclaimed = 0;
 		for (const path of pathsToCheck) {
-			let size = 0;
+			let size: number;
 			try {
 				size = (await statPromised(path)).size;
 			} catch (error) {
+				// gone underneath us (or unreadable): not an orphan this sweep can claim
 				logger.debug?.('Error sizing orphaned file', error);
+				continue;
 			}
 			try {
 				if (!dryRun) await unlinkPromised(path);
@@ -3716,10 +3719,11 @@ export async function cleanupOrphans(
 				const lockKey = repairTempLocks.get(path);
 				if (lockKey) (store as any).unlock(lockKey);
 			}
+			reclaimed++;
 			orphansFound++;
 			orphanBytes += size;
 		}
-		logger.warn?.(dryRun ? 'Finished measuring' : 'Finished deleting', pathsToCheck.size, 'orphaned blobs');
+		logger.warn?.(dryRun ? 'Finished measuring' : 'Finished deleting', reclaimed, 'orphaned blobs');
 		pathsToCheck.clear();
 	}
 	// check each object for any blob references and removes from the paths to check if found
