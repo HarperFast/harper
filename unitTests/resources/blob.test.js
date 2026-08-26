@@ -36,10 +36,12 @@ const {
 	isBlobReceiveInFlight,
 	createPendingMarkerBarrier,
 	watchInProgressFile,
+	drainBlobUnlinkQueue,
 } = require('#src/resources/blob');
 const {
 	existsSync,
 	unlinkSync,
+	mkdirSync,
 	openSync,
 	writeSync,
 	ftruncateSync,
@@ -52,7 +54,7 @@ const {
 	renameSync,
 	rmSync,
 } = require('fs');
-const { dirname } = require('path');
+const { dirname, join } = require('path');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
@@ -2546,6 +2548,116 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 
 		it('cannot drop the read to polling with a late error', () => {
 			superseded.emit('error', exhaustion());
+		});
+	});
+});
+
+describe('durable blob-unlink queue (#1832)', () => {
+	const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
+	const RECLAIMING = -1 << 20;
+	let QueueTest;
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		QueueTest = table({
+			table: 'BlobQueueTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	afterEach(() => setDeletionDelay(500));
+
+	const rootStore = () => QueueTest.primaryStore.rootStore;
+	const queueDb = () => rootStore().dbisDb;
+	const queueRow = (fileId) => queueDb().getSync([UNLINK_QUEUE_KEY, fileId]);
+	const stageUnlink = (fileId) =>
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
+
+	async function fileBackedBlob(id, size = 20000) {
+		await QueueTest.put({ id, blob: await createBlob(randomBytes(size)) });
+		const record = await QueueTest.get(id);
+		const filePath = getFilePathForBlob(record.blob);
+		assert.ok(filePath && existsSync(filePath), 'expected a file-backed blob on disk');
+		return { fileId: getFileId(record.blob), filePath };
+	}
+
+	it('executes an intent committed by a process that died before unlinking', async () => {
+		setDeletionDelay(600000); // no in-thread reclamation can reach this file; only the drain can
+		const { fileId, filePath } = await fileBackedBlob('recovered');
+		stageUnlink(fileId); // exactly what a prior life's reclamation committed before dying
+
+		drainBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'a recovered intent must unlink its file',
+		});
+		await waitFor(() => queueRow(fileId) === undefined, {
+			timeout: 5000,
+			message: 'the row must be removed once the file is gone',
+		});
+	});
+
+	it('commits the unlink to the queue before executing it', async () => {
+		// The durability guarantee itself: without it the deletion exists only as a timer, and a
+		// worker recycle loses it (the leak behind #1832).
+		setDeletionDelay(150);
+		const { fileId, filePath } = await fileBackedBlob('committed-first');
+		let sawRow = false;
+		const poll = setInterval(() => {
+			if (queueRow(fileId)) sawRow = true;
+		}, 5);
+		try {
+			await QueueTest.put({ id: 'committed-first', blob: await createBlob(randomBytes(20000)) });
+			await waitFor(() => !existsSync(filePath), {
+				timeout: 5000,
+				message: 'the superseded blob should be reclaimed',
+			});
+		} finally {
+			clearInterval(poll);
+		}
+		assert.ok(sawRow, 'the unlink must be durably committed before the file is removed');
+	});
+
+	it('abandons a row whose unlink can never succeed, handing back the reclaim slot', async () => {
+		const { fileId, filePath } = await fileBackedBlob('undeletable');
+		// A path unlink() can never remove, standing in for the EPERM/EACCES case the retry loop
+		// would otherwise repeat forever.
+		unlinkSync(filePath);
+		mkdirSync(filePath);
+		writeFileSync(join(filePath, 'occupied'), 'x');
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		Atomics.store(state.table, state.slot, RECLAIMING); // as reclamation leaves it when it enqueues
+		stageUnlink(fileId);
+
+		for (let attempt = 0; attempt < 8 && queueRow(fileId); attempt++) {
+			drainBlobUnlinkQueue(rootStore());
+			await delay(50);
+		}
+
+		assert.equal(queueRow(fileId), undefined, 'the row must be abandoned once the retry cap is reached');
+		assert.equal(
+			Atomics.load(state.table, state.slot),
+			0,
+			'the hash-shared reclaim slot must not stay claimed by a retry that can never succeed'
+		);
+		rmSync(filePath, { recursive: true, force: true });
+	});
+
+	it('drains a backlog larger than one batch to completion', async () => {
+		setDeletionDelay(600000);
+		const staged = [];
+		for (let i = 0; i < 70; i++) staged.push(await fileBackedBlob(`backlog-${i}`, 9000));
+		for (const { fileId } of staged) stageUnlink(fileId);
+
+		drainBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => staged.every(({ filePath }) => !existsSync(filePath)), {
+			timeout: 15000,
+			message: 'a backlog past the per-pass batch limit must still drain to completion',
 		});
 	});
 });
