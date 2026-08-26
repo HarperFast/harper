@@ -73,7 +73,15 @@ type StorageInfo = {
 	saved?: boolean; // saving settled successfully; distinguishes durable from still-streaming when fileId is already assigned
 	asString?: string;
 	deleteOnFailure?: boolean;
+	// Slices share this state with their source, so condemning either instance invalidates every view
+	// that can still re-encode the same fileId.
+	fileState?: { discarded?: boolean };
 };
+type BlobFileInfo = { store?: any; fileId?: string };
+
+function discardStorage(storageInfo: StorageInfo): void {
+	(storageInfo.fileState ??= {}).discarded = true;
+}
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
 const HEADER_SIZE = 8;
@@ -903,6 +911,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		if (sourceStorageInfo?.fileId) {
 			const slicedStorageInfo = {
 				...sourceStorageInfo,
+				fileState: (sourceStorageInfo.fileState ??= {}),
 				start,
 				end,
 			};
@@ -937,7 +946,9 @@ const RECLAMATION_AGE_CAP = 1_200_000;
 const HELD_RECHECK_INTERVAL = 1000;
 
 interface PendingReclamation {
-	blob: Blob;
+	blobs: WeakRef<Blob>[];
+	seenBlobs: WeakSet<Blob>;
+	fileInfo: BlobFileInfo;
 	deadline: number;
 	enqueuedAt: number;
 	supersededAt: number;
@@ -1067,7 +1078,7 @@ export function holdBlobFile(blob: Blob): (() => void) | null {
  * Whether a record version referencing this file again was written since it was queued — by any
  * worker. Reading clears it, so the next supersession starts from a clean slate.
  */
-function consumeRereferenced(storageInfo: StorageInfo | undefined): boolean {
+function consumeRereferenced(storageInfo: BlobFileInfo | undefined): boolean {
 	const store = storageInfo?.store;
 	const fileId = storageInfo?.fileId;
 	if (!store || !fileId) return false;
@@ -1088,14 +1099,14 @@ function consumeRereferenced(storageInfo: StorageInfo | undefined): boolean {
  * the retention window. The second of granularity is padded rather than rounded: a snapshot opened
  * in the same second as the supersession is treated as possibly older than it.
  */
-function snapshotStillSees(storageInfo: StorageInfo | undefined, supersededAt: number): boolean {
+function snapshotStillSees(storageInfo: BlobFileInfo | undefined, supersededAt: number): boolean {
 	const oldestSnapshotSeconds = storageInfo?.store?.getOldestSnapshotTimestamp?.();
 	if (!oldestSnapshotSeconds) return false;
 	return oldestSnapshotSeconds * 1000 <= supersededAt + 1000;
 }
 
 /** Undo a reclaimer's claim once its unlink has landed, leaving the slot usable again. */
-function releaseReclaimClaim(storageInfo: StorageInfo | undefined): void {
+function releaseReclaimClaim(storageInfo: BlobFileInfo | undefined): void {
 	const store = storageInfo?.store;
 	const fileId = storageInfo?.fileId;
 	if (!store || !fileId) return;
@@ -1107,7 +1118,7 @@ function releaseReclaimClaim(storageInfo: StorageInfo | undefined): void {
  * Whether anything is still using the file. `claim` is for the reclaimer: it atomically takes the
  * count from 0 to RECLAIMING so a hold cannot be acquired between this check and the unlink.
  */
-function isBlobHeld(storageInfo: StorageInfo | undefined, claim = false): boolean {
+function isBlobHeld(storageInfo: BlobFileInfo | undefined, claim = false): boolean {
 	const store = storageInfo?.store;
 	const fileId = storageInfo?.fileId;
 	if (!store || !fileId) return false;
@@ -1182,8 +1193,23 @@ export function deleteBlob(blob: Blob): void {
 		if (state) Atomics.store(state.table, state.slot + REREFERENCED, 0);
 	}
 	// Reusing the queued entry when two writes supersede the same file keeps the age cap measuring
-	// from the first supersession.
-	const pending = pendingReclamation.get(filePath) ?? { blob, deadline: 0, enqueuedAt: now, supersededAt: now };
+	// from the first supersession and tracks every live blob instance that carries the condemned fileId.
+	const pending = pendingReclamation.get(filePath) ?? {
+		blobs: [],
+		seenBlobs: new WeakSet<Blob>(),
+		fileInfo: { store: storageInfo?.store, fileId: storageInfo?.fileId },
+		deadline: 0,
+		enqueuedAt: now,
+		supersededAt: now,
+	};
+	if (!pending.seenBlobs.has(blob)) {
+		pending.seenBlobs.add(blob);
+		pending.blobs.push(new WeakRef(blob));
+	}
+	if (pending.unlinking) {
+		if (storageInfo) discardStorage(storageInfo);
+		return;
+	}
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
 }
 
@@ -1230,7 +1256,7 @@ function runReclamation(): void {
 			earliest = pending.deadline;
 			break; // insertion order is deadline order; nothing behind this entry is due
 		}
-		const storageInfo = storageInfoForBlob.get(pending.blob);
+		const storageInfo = pending.fileInfo;
 		const expired = now - pending.enqueuedAt >= ageCap;
 		let held: boolean;
 		try {
@@ -1287,6 +1313,14 @@ function runReclamation(): void {
 		// Keep the entry until the unlink lands so a concurrent re-reference can tell that the file is
 		// already going away instead of silently adopting a doomed path.
 		pending.unlinking = true;
+		// Once reclamation has claimed this file, a later write must not preserve its soon-to-be-deleted
+		// fileId. The retention window above still permits legitimate re-references before this point.
+		for (const blobRef of pending.blobs) {
+			const blob = blobRef.deref();
+			if (!blob) continue;
+			const instanceStorageInfo = storageInfoForBlob.get(blob);
+			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
+		}
 		unlink(filePath, (error) => {
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
@@ -1356,6 +1390,15 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
 		storageInfoForBlob.set(blob, storageInfo);
 	} else {
+		if (storageInfo.fileState?.discarded) {
+			// The file this blob was saved to has been deleted (an aborted/skipped write's cleanup, or an
+			// explicit delete). Re-storing it would commit a reference to a file that no longer exists —
+			// a permanently unreadable record, and for a replicated one a blob the peer can never fetch.
+			// Fail here, where the cause is still known, instead of at the eventual read (issue #2062).
+			throw new Error(
+				'Blob was discarded (its file was deleted by an aborted or superseded write) and can no longer be stored; the data must be re-supplied'
+			);
+		}
 		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
@@ -2470,6 +2513,10 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
 		if (retainedFileIds?.has(storageInfo.fileId)) continue; // the committed record still references this blob
+		// Tombstone the instance as soon as the deletion is DECIDED, not when the unlink is issued: the
+		// unlink waits for an in-flight save to settle, and a re-store in that window would otherwise
+		// mint a reference to a file that is already condemned (issue #2062).
+		discardStorage(storageInfo);
 		const settle = storageInfo.saving ?? Promise.resolve();
 		settle.then(
 			() => deleteBlob(blob),

@@ -11,6 +11,7 @@ const {
 	blobFileMissingOrIncomplete,
 	repairBlobFile,
 	getFilePathForBlob,
+	deleteBlob,
 	setDeletionDelay,
 	holdBlobFile,
 	getBlobHoldStateForTesting,
@@ -1007,6 +1008,74 @@ describe('Blob test', () => {
 		assert(ids.has(getFileId(blob)));
 		assert.equal(collectRetainedFileIds(null), undefined); // no record
 		assert.equal(collectRetainedFileIds({ no: 'blobs' }), undefined); // no blobs → no set allocated
+	});
+	it('#2062: a blob whose file was deleted cannot be silently re-stored', async () => {
+		// A blob instance outlives its file: the fileId stays set and saveBlob short-circuits on it, so a
+		// caller still holding the instance (the deploy recorder re-puts the same record object across a
+		// deploy) would otherwise mint a second reference to a destroyed file — a permanently unreadable
+		// record, and one replication can never satisfy on a peer. Fail where the cause is still known.
+		setDeletionDelay(0);
+		const blob = createBlob(Buffer.alloc(20000, 'e'));
+		const record = { id: 2062, blob };
+		await BlobTest.put(record);
+		const filePath = getFilePathForBlob(blob);
+		const slice = blob.slice(0, 1024);
+		const decodedBlob = (await BlobTest.get(2062)).blob;
+		assert.notStrictEqual(decodedBlob, blob, 'the stored record should decode to a distinct blob instance');
+		deleteBlob(decodedBlob);
+		deleteBlob(blob);
+		await waitFor(() => !existsSync(filePath), { message: `discarded blob ${filePath} should be deleted` });
+		// the failure surfaces synchronously from the record encode, so catch rather than assert.rejects
+		let storeError;
+		try {
+			await BlobTest.put(record);
+		} catch (error) {
+			storeError = error;
+		}
+		assert.match(storeError?.message ?? '', /discarded/, 're-storing a discarded blob must fail loudly');
+		let sliceError;
+		try {
+			await BlobTest.put({ id: 2062, blob: slice });
+		} catch (error) {
+			sliceError = error;
+		}
+		assert.match(sliceError?.message ?? '', /discarded/, 'a slice sharing the condemned file must also fail');
+		await BlobTest.delete(2062); // leave no record referencing the destroyed file
+	});
+	it('#2062: cleanup tombstones a blob before its in-flight save settles', async () => {
+		setDeletionDelay(0);
+		const slow = new PassThrough();
+		const blob = createBlob(slow, { saveBeforeCommit: true });
+		const record = { id: 2063, blob };
+		const preCommit = startPreCommitBlobsForRecord(record, BlobTest.primaryStore.rootStore, false, false);
+		const saving = preCommit.complete();
+		slow.write(Buffer.alloc(16384, 'q'));
+		const filePath = await waitFor(
+			() => {
+				const path = getFilePathForBlob(blob);
+				return path && existsSync(path) && path;
+			},
+			{
+				message: 'the in-flight save should create its file',
+			}
+		);
+		cleanupUnusedBlobs(preCommit.blobs);
+		const ending = setTimeout(() => slow.end(Buffer.alloc(16384, 'r')), 250);
+		let storeError;
+		try {
+			assert(existsSync(filePath), 'the file should still be present while its source is open');
+			try {
+				await BlobTest.put(record);
+			} catch (error) {
+				storeError = error;
+			}
+		} finally {
+			clearTimeout(ending);
+			if (!slow.writableEnded) slow.end(Buffer.alloc(16384, 'r'));
+		}
+		assert.match(storeError?.message ?? '', /discarded/, 're-storing must fail before the condemned file is unlinked');
+		await saving;
+		await waitFor(() => !existsSync(filePath), { message: `discarded blob ${filePath} should be deleted` });
 	});
 	it('cleanupUnusedBlobs is a no-op for unsaved blobs and clears the list', () => {
 		const unsavedBlob = createBlob(Buffer.from('not yet saved'));
