@@ -1568,8 +1568,9 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 		try {
 			filePath = getFilePath(storageInfo);
 		} catch (error) {
-			// Resolved before the row is marked in flight: a fileId left in that set is never retried.
-			logger.debug?.('Could not resolve the path for a queued blob unlink', fileId, error);
+			// Resolved before the row is marked in flight, and counted as an attempt: an id whose path
+			// cannot be resolved would otherwise be retried by every drain for the life of the process.
+			recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error);
 			continue;
 		}
 		started++;
@@ -1577,37 +1578,58 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 		unlink(filePath, (error) => {
 			inFlight.delete(fileId);
 			if (error && error.code !== 'ENOENT') {
-				const attempts = Math.max(value.attempts ?? 0, attemptCounts.get(fileId) ?? 0) + 1;
-				if (attempts < MAX_UNLINK_ATTEMPTS) {
-					// keep the row; a later drain retries (e.g. a reader still holds the file open on Windows)
-					logger.debug?.('Error trying to remove blob file, will retry', error);
-					attemptCounts.set(fileId, attempts);
-					try {
-						queueDb.putSync(key, { ...value, attempts });
-					} catch (putError) {
-						logger.debug?.('Unable to record blob unlink retry count', putError);
-					}
-					settleOne();
+				if (!recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
+					settleOne(); // still queued; a later drain retries
 					return;
 				}
-				logger.warn?.(
-					`Giving up on removing blob file ${filePath} after ${attempts} attempts; it is left for ` +
-						`cleanup_orphan_blobs`,
-					error
-				);
+			} else {
+				attemptCounts.delete(fileId);
+				// The row is dropped before the claim is handed back, so a hold taken after the release
+				// can never be followed by another drain unlinking the file out from under it.
+				removeUnlinkQueueRow(queueDb, key);
+				releaseReclaimClaim(storageInfo);
 			}
-			attemptCounts.delete(fileId);
-			// The row is dropped before the claim is handed back, so a hold taken after the release can
-			// never be followed by another drain unlinking the file out from under it.
-			removeUnlinkQueueRow(queueDb, key);
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
-			// Hand the slot back: it is shared by hash, so leaving it claimed would make every later
-			// hold on a colliding fileId report the file as already reclaimed.
-			releaseReclaimClaim(storageInfo);
 			settleOne();
 		});
 	}
+}
+
+/**
+ * Account for a failed unlink attempt, returning true once the retry cap is reached and the row has
+ * been abandoned. A file that can never be removed (EPERM on a mount, an unresolvable path) must not
+ * pin its hash-shared reclaim slot, which would make every colliding fileId read as unavailable to
+ * holders; it is left for `cleanup_orphan_blobs` instead.
+ */
+function recordUnlinkFailure(
+	queueDb: any,
+	key: any,
+	value: any,
+	storageInfo: StorageInfo,
+	attemptCounts: Map<string, number>,
+	error: any
+): boolean {
+	const fileId = storageInfo.fileId;
+	const attempts = Math.max(value.attempts ?? 0, attemptCounts.get(fileId) ?? 0) + 1;
+	if (attempts < MAX_UNLINK_ATTEMPTS) {
+		logger.debug?.('Could not remove a queued blob file, will retry', fileId, error);
+		attemptCounts.set(fileId, attempts);
+		try {
+			queueDb.putSync(key, { ...value, attempts });
+		} catch (putError) {
+			logger.debug?.('Unable to record blob unlink retry count', putError);
+		}
+		return false;
+	}
+	logger.warn?.(
+		`Giving up on removing blob file ${fileId} after ${attempts} attempts; it is left for cleanup_orphan_blobs`,
+		error
+	);
+	attemptCounts.delete(fileId);
+	removeUnlinkQueueRow(queueDb, key);
+	releaseReclaimClaim(storageInfo);
+	return true;
 }
 
 /**
@@ -3676,21 +3698,26 @@ export async function cleanupOrphans(
 			else pathsToCheck.delete(path);
 		}
 		logger.warn?.(dryRun ? 'Measuring' : 'Deleting', pathsToCheck.size, 'orphaned blobs');
-		orphansFound += pathsToCheck.size;
 		for (const path of pathsToCheck) {
+			let size = 0;
 			try {
-				orphanBytes += (await statPromised(path)).size;
+				size = (await statPromised(path)).size;
 			} catch (error) {
 				logger.debug?.('Error sizing orphaned file', error);
 			}
 			try {
 				if (!dryRun) await unlinkPromised(path);
 			} catch (error) {
+				// A file that could not be removed was not reclaimed; counting it would report freed
+				// space that is still occupied.
 				logger.debug?.('Error deleting file', error);
+				continue;
 			} finally {
 				const lockKey = repairTempLocks.get(path);
 				if (lockKey) (store as any).unlock(lockKey);
 			}
+			orphansFound++;
+			orphanBytes += size;
 		}
 		logger.warn?.(dryRun ? 'Finished measuring' : 'Finished deleting', pathsToCheck.size, 'orphaned blobs');
 		pathsToCheck.clear();

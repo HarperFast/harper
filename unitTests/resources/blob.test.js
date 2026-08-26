@@ -37,6 +37,7 @@ const {
 	createPendingMarkerBarrier,
 	watchInProgressFile,
 	drainBlobUnlinkQueue,
+	initBlobUnlinkQueue,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -2645,6 +2646,21 @@ describe('durable blob-unlink queue (#1832)', () => {
 			'the hash-shared reclaim slot must not stay claimed by a retry that can never succeed'
 		);
 		rmSync(filePath, { recursive: true, force: true });
+	});
+
+	it('recovers stranded intents through the database-open hook, not just a direct drain', async () => {
+		// The hook is the only thing that reaches a prior process's rows; a refactor that drops it
+		// would otherwise leave every drain test still green.
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('startup-recovered');
+		stageUnlink(fileId);
+
+		initBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'opening the database must drain intents left by a prior process',
+		});
 	});
 
 	it('never re-issues a file id that still has a queued unlink', async () => {
