@@ -833,6 +833,19 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 
 	const recordAttrs = getRecordAttributes(requestJson);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
+	// `full_record: true` makes a write a full replace, which REMOVES every attribute the request
+	// omits. `checkAttributePerms` below only sees the attributes the request SUPPLIES, so it cannot
+	// police that: an attribute-scoped role could erase an attribute it has no `update` permission
+	// for simply by leaving it out. REST's `PUT` closes the same gap in `Table.allowUpdate`, by
+	// restoring those attributes from the stored record — which needs the stored record, and this
+	// runs before any record is read. So refuse the combination outright rather than authorize a
+	// write whose removals nobody checked. Roles that scope no attribute are unaffected, which is
+	// every role that hasn't deliberately been given `attribute_permissions` on this table.
+	if (attrPermissions.size > 0 && requestJson.full_record === true) {
+		return permsResponse.handleUnauthorizedItem(
+			HDB_ERROR_MSGS.FULL_RECORD_WITH_ATTRIBUTE_PERMS(operationSchema, table)
+		);
+	}
 	checkAttributePerms(recordAttrs, attrPermissions, op, table, operationSchema, permsResponse, action);
 
 	//This result value will be null if no perms issues were found in checkAttributePerms

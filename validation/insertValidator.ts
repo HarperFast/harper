@@ -33,6 +33,16 @@ const insertSchema = Joi.object({
 	schema: hdbDatabase,
 	table: hdbTable,
 	records: Joi.array().items(Joi.object().custom(customRecordsVal)).required(),
+	// Full replace rather than merge, for `update`/`upsert` (see ResourceBridge.upsertRecords).
+	//
+	// Declared even though `validateBySchema` allows unknown keys, and `.strict()` on this one key
+	// (not the whole object, which would tighten the long-standing contract of the others) so it has
+	// to be an actual boolean. Joi coerces by default and `validateBySchema` discards the converted
+	// value, so without this a string `"false"` would validate and then reach the bridge still a
+	// string — and a request that never asked for a replace decides the question by truthiness.
+	// Rejecting is the safe direction: silently ignoring `"true"` would be just as wrong in reverse.
+	// Same rationale as `analyticsValidator`'s `.strict()`.
+	full_record: Joi.boolean().strict(),
 });
 
 export default function (insertObject: any) {

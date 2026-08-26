@@ -203,6 +203,23 @@ export class ResourceBridge extends BridgeMethods {
 		const { attributes } = insertUpdateValidate(upsertObj);
 
 		let new_attributes;
+		// `full_record: true` makes this a full replace instead of a merge: an attribute absent from
+		// the submitted record is REMOVED rather than left at its stored value. Without it, a write
+		// over an existing record lands on `Table.patch`, so there is no way to drop an attribute
+		// through the operations API — omitting it keeps the stored value and `null` stores a null
+		// (HarperFast/studio#1643).
+		//
+		// The flag is orthogonal to each operation's create rule, which is what makes one flag cover
+		// both useful shapes: `update` still requires an existing record (a missing one is skipped),
+		// while `upsert` still creates one — so `upsert` + `full_record` is exactly REST's
+		// `PUT /Table/id`, and `update` + `full_record` is that same replace, refused if the record
+		// isn't there. It has no effect on `insert`, which never writes over an existing record.
+		//
+		// Compared with the delete-then-insert this replaces, a full replace is one operation rather
+		// than two: the record is never absent between them, subscribers see a single write instead of
+		// a delete followed by an insert, and `__createdtime__` survives (`Table._writeUpdate` retains
+		// the stored created time on a full update and only stamps a new one for a new entry).
+		const fullRecord = upsertObj.full_record === true;
 		const Table = getDatabases()[upsertObj.schema][upsertObj.table];
 		const context: Context = {
 			user: upsertObj.hdb_user,
@@ -261,7 +278,7 @@ export class ResourceBridge extends BridgeMethods {
 				}
 				await (id == undefined
 					? Table.create(record, context)
-					: existingRecord
+					: existingRecord && !fullRecord
 						? Table.patch(record, context)
 						: Table.put(record, context));
 				keys.push(record[Table.primaryKey]);
