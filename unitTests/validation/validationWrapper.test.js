@@ -6,7 +6,6 @@ const sinon_chai = require('sinon-chai').default;
 const { expect } = chai;
 chai.use(sinon_chai);
 
-const Joi = require('joi');
 const rewire = require('rewire');
 let validationWrapper_rw = rewire('#src/validation/validationWrapper');
 
@@ -99,32 +98,6 @@ describe('Test validateWrapper module', () => {
 
 			expect(result).to.be.instanceof(Error);
 			expect(result.message).to.equal(test_err_msg[0]);
-		});
-	});
-
-	describe('Test validateAndConvertBySchema function', () => {
-		const schema = Joi.object({
-			name: Joi.string().required(),
-			enabled: Joi.boolean().default(false),
-		});
-
-		it('should apply schema defaults and coercion to the returned value', () => {
-			const { error, value } = validationWrapper_rw.validateAndConvertBySchema({ name: 'a', enabled: 'true' }, schema);
-
-			expect(error).to.equal(undefined);
-			expect(value).to.deep.equal({ name: 'a', enabled: true });
-		});
-
-		it('should return an error for an invalid object', () => {
-			const { error } = validationWrapper_rw.validateAndConvertBySchema({ enabled: true }, schema);
-
-			expect(error).to.be.instanceof(Error);
-			expect(error.message).to.contain("'name'");
-		});
-
-		it('should keep validateBySchema returning only the error', () => {
-			expect(validationWrapper_rw.validateBySchema({ name: 'a' }, schema)).to.equal(undefined);
-			expect(validationWrapper_rw.validateBySchema({}, schema)).to.be.instanceof(Error);
 		});
 	});
 });

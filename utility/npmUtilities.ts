@@ -95,11 +95,12 @@ function parseNPMStdErr(stderr: string) {
  * @param {Object} req
  */
 function modulesValidator(req: any) {
-	// `dryRun` was the only spelling that worked before dry_run was honored; keep it accepted
+	// `dryRun` was the only spelling that worked before dry_run was honored; keep it accepted, but
+	// reject a request that carries both rather than picking a winner
 	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
-	}).rename('dryRun', 'dry_run', { override: true, ignoreUndefined: true });
+	}).rename('dryRun', 'dry_run', { ignoreUndefined: true });
 
 	return validator.validateAndConvertBySchema(req, funcSchema);
 }

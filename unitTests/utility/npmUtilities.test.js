@@ -43,10 +43,10 @@ describe('install_node_modules', () => {
 		fs.rmSync(path.join(componentsRoot, 'application', 'node_modules'), { recursive: true, force: true });
 	});
 
-	// npm still reports the dependency it would add under --dry-run, so asserting on the output
+	// npm still reports the dependency it would add under --dry-run, so asserting on that output
 	// distinguishes a real dry run from npm never running at all
 	function assertDryRun(response) {
-		assert.match(String(response.application.npm_output), /add local-dependency/);
+		assert.match(JSON.stringify(response.application.npm_output), /add local-dependency/);
 		assert.equal(installedDependencyExists(), false);
 	}
 
@@ -87,5 +87,14 @@ describe('install_node_modules', () => {
 		const response = await installModules({ projects: ['application'] });
 
 		assertInstalled(response);
+	});
+
+	it('rejects a request carrying both dry_run spellings', async () => {
+		await assert.rejects(installModules({ projects: ['application'], dry_run: true, dryRun: false }));
+		assert.equal(installedDependencyExists(), false);
+	});
+
+	it('rejects a request without projects', async () => {
+		await assert.rejects(installModules({ dry_run: true }));
 	});
 });

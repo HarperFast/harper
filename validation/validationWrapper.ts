@@ -84,6 +84,8 @@ export async function validateObjectAsync(object, fileConstraints) {
 	return null;
 }
 
+const SCHEMA_VALIDATION_OPTIONS = { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } };
+
 /**
  *
  * @param {{}} object
@@ -91,7 +93,10 @@ export async function validateObjectAsync(object, fileConstraints) {
  * @returns {*}
  */
 export function validateBySchema(object, schema) {
-	return validateAndConvertBySchema(object, schema).error;
+	const { error } = schema.validate(object, SCHEMA_VALIDATION_OPTIONS);
+	if (error) {
+		return new Error(error.message);
+	}
 }
 
 /**
@@ -102,7 +107,7 @@ export function validateBySchema(object, schema) {
  * @param {Joi.ObjectSchema} schema
  */
 export function validateAndConvertBySchema(object, schema): { error: Error | undefined; value: any } {
-	const result = schema.validate(object, { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } });
+	const { error, value } = schema.validate(object, SCHEMA_VALIDATION_OPTIONS);
 
-	return { error: result.error ? new Error(result.error.message) : undefined, value: result.value };
+	return { error: error ? new Error(error.message) : undefined, value };
 }
