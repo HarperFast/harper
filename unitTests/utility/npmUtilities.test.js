@@ -39,9 +39,29 @@ describe('install_node_modules', () => {
 		fs.rmSync(componentsRoot, { recursive: true, force: true });
 	});
 
+	afterEach(() => {
+		fs.rmSync(path.join(componentsRoot, 'application', 'node_modules'), { recursive: true, force: true });
+	});
+
 	it('honors the documented dry_run field', async () => {
 		await installModules({ projects: ['application'], dry_run: true });
 
 		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), false);
+	});
+
+	it('honors a dry_run field that arrives as a string', async () => {
+		await installModules({ projects: ['application'], dry_run: 'true' });
+
+		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), false);
+	});
+
+	it('installs when dry_run is false or omitted', async () => {
+		await installModules({ projects: ['application'], dry_run: 'false' });
+		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), true);
+
+		fs.rmSync(path.join(componentsRoot, 'application', 'node_modules'), { recursive: true, force: true });
+
+		await installModules({ projects: ['application'] });
+		assert.equal(fs.existsSync(path.join(componentsRoot, 'application', 'node_modules')), true);
 	});
 });

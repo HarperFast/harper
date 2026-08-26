@@ -26,12 +26,12 @@ export async function installModules(req: any) {
 		'install_node_modules is deprecated. Dependencies are automatically installed on' +
 		' deploy, and install_node_modules can lead to inconsistent behavior';
 	harperLogger.warn(deprecationWarning, req.projects);
-	const validation = modulesValidator(req);
+	const { error: validation, value: validatedRequest } = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let { projects, dry_run: dryRun } = req;
+	const { projects, dry_run: dryRun } = validatedRequest;
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
@@ -93,7 +93,7 @@ function parseNPMStdErr(stderr: string) {
 /**
  * Validator for both installModules & auditModules
  * @param {Object} req
- * @returns {*}
+ * @returns {{ error: Error | undefined, value: any }}
  */
 function modulesValidator(req: any) {
 	const funcSchema = Joi.object({
@@ -101,5 +101,5 @@ function modulesValidator(req: any) {
 		dry_run: Joi.boolean().default(false),
 	});
 
-	return validator.validateBySchema(req, funcSchema);
+	return validator.validateAndConvertBySchema(req, funcSchema);
 }

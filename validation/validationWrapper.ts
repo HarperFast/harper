@@ -91,9 +91,18 @@ export async function validateObjectAsync(object, fileConstraints) {
  * @returns {*}
  */
 export function validateBySchema(object, schema) {
-	let result = schema.validate(object, { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } });
+	return validateAndConvertBySchema(object, schema).error;
+}
 
-	if (result.error) {
-		return new Error(result.error.message);
-	}
+/**
+ * Same validation as `validateBySchema`, but also returns Joi's converted value, so callers can use
+ * the coerced types and schema defaults instead of the raw request body.
+ * @param {{}} object
+ * @param {Joi.ObjectSchema} schema
+ * @returns {{ error: Error | undefined, value: any }}
+ */
+export function validateAndConvertBySchema(object, schema) {
+	const result = schema.validate(object, { allowUnknown: true, abortEarly: false, errors: { wrap: { label: "'" } } });
+
+	return { error: result.error ? new Error(result.error.message) : undefined, value: result.value };
 }
