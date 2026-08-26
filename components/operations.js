@@ -729,13 +729,15 @@ async function deployComponent(req) {
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.restart_completed = restart.completed && !restart.replacementsFailed;
 			if (restart.error) log.error(`Restart after deploying ${application.name} failed`, restart.error);
-			response.message = response.restart_completed
-				? `Successfully deployed: ${application.name}, restarted Harper`
-				: restart.error
-					? `Successfully deployed: ${application.name}, but the restart failed: ${restart.error.message}`
-					: restart.completed
-						? `Successfully deployed: ${application.name}, restarted Harper, but ${restart.replacementsFailed} worker thread(s) could not be replaced and are still running the previous code`
-						: `Successfully deployed: ${application.name}, restarting Harper (the restart is still in progress)`;
+			else if (restart.replacementsFailed)
+				log.warn(
+					`${restart.replacementsFailed} worker thread(s) could not be replaced after deploying ${application.name} and are still running the previous code`
+				);
+			else if (!restart.completed)
+				log.warn(
+					`The restart after deploying ${application.name} had not finished after ${RESTART_WAIT_BUDGET_MS}ms; worker threads may still be running the previous code`
+				);
+			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
 			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
 			emit('phase', { phase: 'restart', status: 'start' });
