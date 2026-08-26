@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { Worker } = require('node:worker_threads');
@@ -11,6 +11,12 @@ const FIXTURE = join(__dirname, 'threadServerStartupLiveness-fixture.js');
 describe('threadServer startup liveness', () => {
 	it('keeps a pre-ready worker alive while component loading has no ref-holding completion source', async () => {
 		const storagePath = mkdtempSync(join(tmpdir(), 'harper-worker-liveness-'));
+		const config = readFileSync(join(__dirname, '../../../static/defaultConfig.yaml'), 'utf8')
+			.replace(/^  file: true$/m, '  file: false')
+			.replace(/^  root: null$/m, `  root: ${JSON.stringify(storagePath)}`)
+			.replace(/^rootPath: null$/m, `rootPath: ${JSON.stringify(storagePath)}`)
+			.replace(/^  path: null$/m, `  path: ${JSON.stringify(storagePath)}`);
+		writeFileSync(join(storagePath, 'harper-config.yaml'), config);
 		let worker;
 		try {
 			worker = new Worker(FIXTURE, {

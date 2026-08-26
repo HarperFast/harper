@@ -4,25 +4,31 @@ const assert = require('node:assert');
 const { parentPort, workerData } = require('node:worker_threads');
 
 process.env.STORAGE_PATH = workerData.storagePath;
-process.env.HDB_ROOT = workerData.storagePath;
+process.env.ROOTPATH = workerData.storagePath;
 
-const loadRootComponentsPath = require.resolve('#src/server/loadRootComponents');
+let stubRan = false;
+const loadRootComponentsPath = require.resolve('#js/server/loadRootComponents');
 require.cache[loadRootComponentsPath] = {
 	id: loadRootComponentsPath,
 	filename: loadRootComponentsPath,
 	loaded: true,
 	exports: {
 		loadRootComponents() {
-			return new Promise((resolve) => {
-				const completionTimer = setTimeout(resolve, 50);
-				completionTimer.unref();
-				assert.equal(completionTimer.hasRef(), false, 'fixture completion source must not hold the event loop');
+			stubRan = true;
+			let resolveLoading;
+			const loading = new Promise((resolve) => {
+				resolveLoading = resolve;
 			});
+			const completionTimer = setTimeout(resolveLoading, 50);
+			completionTimer.unref();
+			assert.equal(completionTimer.hasRef(), false, 'fixture completion source must not hold the event loop');
+			return loading;
 		},
 	},
 };
 
-const { startServers } = require('#src/server/threads/threadServer');
+const { startServers } = require('#js/server/threads/threadServer');
 
 parentPort.unref();
 startServers();
+assert.equal(stubRan, true, 'fixture loadRootComponents stub was not used');
