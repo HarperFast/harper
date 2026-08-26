@@ -44,19 +44,8 @@ jobs:
             # the full 22/24/26 matrix runs on push to main/release and on the nightly schedule.
             echo "node-versions=[24]" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
-            # TEMPORARY: pinned to 26.5.0 instead of floating "26" — 26.5.1's undici 8.7.0->8.9.0
-            # bump introduced multi-second global-fetch stalls. The later harper#2029 investigation
-            # isolated the stall with Harper-independent node:http servers; curl/node:http controls
-            # stay responsive because they do not exercise Node's bundled-undici client path.
-            # Remove this pin only after the preserved pre-#2029 fetch discriminator passes on the
-            # latest Node 26 while its 26.5.0 control passes, and the harper-pro canary corroborates
-            # that its Node-26 failures are also clear. See harper#2025; do not extend this pin to
-            # unit-test.yml or other workflows without new evidence.
-            echo "node-versions=[22, 24, \"26.5.0\"]" >> $GITHUB_OUTPUT
+            echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           else
-            # Manual dispatch intentionally does NOT apply the 26.5.0 pin above: selecting "26"
-            # here floats to the latest 26.x release, so it doubles as the live reproducer for
-            # checking whether harper#2025 is still reproducing on the newest Node 26 patch.
             echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
           fi
 
@@ -79,11 +68,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
-          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
-          # 26.x release (see the comment on the manual-dispatch branch above); without this,
-          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
-          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
-          # don't pay an extra manifest lookup on every run.
+          # Keep the Node 26 matrix entry on the latest patch instead of silently preferring an
+          # older 26.x release already present in the runner's tool cache.
           check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Install dependencies
@@ -122,11 +108,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
-          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
-          # 26.x release (see the comment on the manual-dispatch branch above); without this,
-          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
-          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
-          # don't pay an extra manifest lookup on every run.
+          # Keep the Node 26 matrix entry on the latest patch instead of silently preferring an
+          # older 26.x release already present in the runner's tool cache.
           check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Download build artifacts
