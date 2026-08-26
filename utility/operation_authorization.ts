@@ -674,7 +674,15 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	//we need to use the action value, if present, to ensure the correct permission is checked below
 	let action = requestJson.action;
 
-	let operationSchema = requestJson.schema ?? requestJson.database;
+	// Resolved through the same helper the handlers use (`transformReq` delegates to it), because
+	// authorization runs BEFORE `transformReq` and any disagreement about the target means the
+	// permissions checked are not the permissions for the write that happens. This used to be a
+	// local `schema ?? database`, which diverged from the handlers in two separately exploitable
+	// ways: it kept a falsy-but-present `database: 0` instead of defaulting, and it preferred
+	// `schema` where the handlers prefer `database` — so a request could be authorized against one
+	// database and written to another. With no target resolved at all, `schemaTableMap` stayed empty
+	// and `hasPermissions` iterated nothing, authorizing by vacuous truth.
+	let operationSchema = commonUtils.resolveTargetDatabase(requestJson);
 	let table = requestJson.table;
 
 	let schemaTableMap = new Map();
@@ -799,6 +807,16 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 				return permsResponse.handleInvalidItem(HDB_ERROR_MSGS.TABLE_NOT_FOUND(operationSchema, table));
 			}
 		}
+	}
+
+	// Fail closed on an unresolved target. `hasPermissions` iterates `schemaTableMap`, so an empty map
+	// authorizes by vacuous truth — the shape of this whole bug class, and of the SQL path's
+	// GHSA-5c29-q62v-jrwf, whose fix carries the same backstop. `resolveTargetDatabase` always
+	// returns a database, so a named table always populates the map and this is unreachable today; it
+	// is here so that a future change to target resolution fails safe instead of silently authorizing
+	// everything. That also means no test can cover it, which is the point rather than an omission.
+	if (table && schemaTableMap.size === 0) {
+		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, operationSchema, table));
 	}
 
 	let failedPermissions = hasPermissions(requestJson.hdb_user, op, schemaTableMap, permsResponse, action);

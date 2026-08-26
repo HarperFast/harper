@@ -623,6 +623,147 @@ suite('full_record: full replace over the operations API', { skip: skipSuite }, 
 		});
 	});
 
+	// Authorization resolves the target database with `commonUtils.resolveTargetDatabase`, the same
+	// helper the handlers use via `transformReq`. Each case below was a working bypass against a
+	// divergent copy of that logic: `hasPermissions` iterates `schemaTableMap`, so a target it fails
+	// to resolve leaves the map empty and authorizes by vacuous truth, while the handler goes on to
+	// write whatever the handlers' own resolution says.
+	describe('target-database resolution is shared with the handlers', () => {
+		let deniedHeaders: Record<string, string>;
+		let dataOnlyHeaders: Record<string, string>;
+
+		before(async () => {
+			await insert('Dog', [{ id: 'authz-1', name: 'Penny', breed: 'Mutt' }]);
+			deniedHeaders = await addScopedRole(
+				'no_update_data',
+				{
+					data: {
+						tables: {
+							Dog: { read: true, insert: false, update: false, delete: false, attribute_permissions: [] },
+						},
+					},
+				},
+				'no_update_data_user'
+			);
+			// Full rights on `data` and none anywhere else.
+			dataOnlyHeaders = await addScopedRole(
+				'data_only',
+				{
+					data: {
+						tables: {
+							Dog: { read: true, insert: true, update: true, delete: true, attribute_permissions: [] },
+						},
+					},
+				},
+				'data_only_user'
+			);
+		});
+
+		// The original finding: no database key at all.
+		test('an omitted database does not skip the table permission check', async () => {
+			const r = await asUser(deniedHeaders, {
+				operation: 'update',
+				table: 'Dog',
+				records: [{ id: 'authz-1', name: 'bypass' }],
+			});
+			strictEqual(r.status, 403, `expected a denial; got ${r.status} ${JSON.stringify(r.body)}`);
+			strictEqual((await read('Dog', 'authz-1')).name, 'Penny', 'nothing may have been written');
+		});
+
+		test('the same request is denied when it does name the database', async () => {
+			const r = await asUser(deniedHeaders, {
+				operation: 'update',
+				database: 'data',
+				table: 'Dog',
+				records: [{ id: 'authz-1', name: 'bypass' }],
+			});
+			strictEqual(r.status, 403, `expected a denial; got ${r.status} ${JSON.stringify(r.body)}`);
+		});
+
+		// A falsy-but-present database. `??` kept the `0`, which is not a database and left the map
+		// empty; `transformReq` tests falsy and so defaulted to `data` and wrote there. `Joi.number()`
+		// is an accepted type for the field, so `0` arrives validated.
+		//
+		// Both directions, because "denied" alone does not prove resolution: the fail-closed backstop
+		// also denies an unresolved target, so a nullish-coalescing resolver would pass a
+		// denial-only assertion while still not agreeing with the handlers. The role that HAS rights on
+		// `data` must be allowed, and the write must land in `data` — which only holds if authorization
+		// resolved `database: 0` to the default database exactly as `transformReq` does.
+		test('a falsy database value resolves to the default database, not to nothing', async () => {
+			for (const database of [0, -0]) {
+				const denied = await asUser(deniedHeaders, {
+					operation: 'update',
+					database,
+					table: 'Dog',
+					records: [{ id: 'authz-1', name: 'bypass' }],
+				});
+				strictEqual(
+					denied.status,
+					403,
+					`database: ${JSON.stringify(database)} must be denied for a role without update; got ${denied.status} ${JSON.stringify(denied.body)}`
+				);
+			}
+			strictEqual((await read('Dog', 'authz-1')).name, 'Penny', 'nothing may have been written');
+
+			const allowed = await asUser(dataOnlyHeaders, {
+				operation: 'update',
+				database: 0,
+				table: 'Dog',
+				records: [{ id: 'authz-1', name: 'resolved to data' }],
+			});
+			strictEqual(
+				allowed.status,
+				200,
+				`a role with rights on the default database must be allowed; got ${allowed.status} ${JSON.stringify(allowed.body)}`
+			);
+			strictEqual((await read('Dog', 'authz-1')).name, 'resolved to data', 'the write must land in `data`');
+		});
+
+		// The worst of the three, because it reaches any named database rather than just the default:
+		// authorization preferred `schema` while the handlers prefer `database`, so a role with rights
+		// on `data` could be authorized against `data` and have the write land in another database.
+		test('a request cannot be authorized against one database and written to another', async () => {
+			strictEqual((await ops({ operation: 'create_database', database: 'elsewhere' })).status, 200);
+			strictEqual(
+				(await ops({ operation: 'create_table', database: 'elsewhere', table: 'Dog', primary_key: 'id' })).status,
+				200
+			);
+			strictEqual(
+				(
+					await ops({
+						operation: 'insert',
+						database: 'elsewhere',
+						table: 'Dog',
+						records: [{ id: 'e-1', name: 'Keep' }],
+					})
+				).status,
+				200
+			);
+
+			const r = await asUser(dataOnlyHeaders, {
+				operation: 'update',
+				schema: 'data',
+				database: 'elsewhere',
+				table: 'Dog',
+				records: [{ id: 'e-1', name: 'crossed over' }],
+			});
+			strictEqual(
+				r.status,
+				403,
+				`the write targets 'elsewhere', which this role has no rights to; got ${r.status} ${JSON.stringify(r.body)}`
+			);
+
+			const stored = await ops({
+				operation: 'search_by_id',
+				database: 'elsewhere',
+				table: 'Dog',
+				ids: ['e-1'],
+				get_attributes: ['*'],
+			});
+			strictEqual(stored.body?.[0]?.name, 'Keep', `the record in 'elsewhere' must be untouched`);
+		});
+	});
+
 	test('a non-boolean full_record is rejected rather than coerced', async () => {
 		await insert('Dog', [{ id: 'fr-6', name: 'Penny', breed: 'Mutt', color: 'black' }]);
 
