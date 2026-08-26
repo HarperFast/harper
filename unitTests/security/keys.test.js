@@ -1183,6 +1183,41 @@ describe('Test keys module', () => {
 			expect(openedOptions).to.have.lengthOf(2);
 		});
 
+		it('a synchronous throw from close() stays inside the reopen chain', async () => {
+			// The reopen used to be spelled `Promise.resolve(opened.close())`, whose argument is
+			// evaluated eagerly: a close() that throws synchronously threw out of the 'error' listener
+			// itself, past the chained .catch(), and Node reported it as an uncaught exception instead
+			// of reopening on polling.
+			localSandbox.restore();
+			const chokidar = require('chokidar');
+			const openedOptions = [];
+			const errorHandlers = [];
+			localSandbox.stub(chokidar, 'watch').callsFake((_watchedPath, options) => {
+				openedOptions.push(options);
+				const watcher = {
+					on: (event, handler) => {
+						if (event === 'error') errorHandlers.push(handler);
+						return watcher;
+					},
+					close: () => {
+						throw new Error('close failed synchronously');
+					},
+				};
+				return watcher;
+			});
+
+			loadAndWatch(watchPath, () => {}, 'certificate');
+			expect(openedOptions).to.have.lengthOf(1);
+
+			expect(() =>
+				errorHandlers[0](Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' }))
+			).to.not.throw();
+			await new Promise((resolve) => setImmediate(resolve));
+
+			expect(openedOptions).to.have.lengthOf(2);
+			expect(openedOptions[1].usePolling).to.equal(true);
+		});
+
 		it('does not reload when the file is unchanged (mtime fingerprint dedup)', () => {
 			const loaded = [];
 			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
