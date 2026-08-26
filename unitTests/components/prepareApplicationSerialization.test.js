@@ -82,19 +82,15 @@ describe('prepareApplication serialization', () => {
 		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
 		await writeFile(join(componentDirPath, 'nested', 'old-only.txt'), 'previous bytes\n');
 		// This script used to be able to move the rollback record out from under the deploy, forcing the
-		// restore to fail too and producing an AggregateError. It now finds nothing to sabotage: the
-		// install runs in the candidate directory and the live tree has not been touched at all.
-		const installScript = `
-			const fs = require('node:fs');
-			const path = require('node:path');
-			let sawAside = false;
-			try {
-				fs.readdirSync(path.resolve('..', '..', '.deploy-aside', 'shared'));
-				sawAside = true;
-			} catch {}
-			fs.writeFileSync(${JSON.stringify(join(rootDir, 'saw-aside'))}, String(sawAside));
-			process.exit(2);
-		`;
+		// restore to fail too and producing an AggregateError. It now has nothing to sabotage: the install
+		// runs in the candidate directory and the live tree has not been moved at all.
+		//
+		// It deliberately does NOT probe for `.deploy-aside`. An earlier version did, and the probe was
+		// unfalsifiable twice over: its `path.resolve` was a level short of the components root (the cwd is
+		// now `.deploy-staging/<id>/shared`), and no aside exists at build time at ANY depth, so
+		// `readdirSync` threw either way. The real assertions are the single-error rejection and the
+		// untouched live tree below.
+		const installScript = `process.exit(2);`;
 		const application = new Application({
 			name: 'shared',
 			payload: await makePayload(rootDir, 'shared', '2.0.0', installScript),
@@ -107,11 +103,6 @@ describe('prepareApplication serialization', () => {
 			await assert.rejects(
 				() => prepareApplication(application),
 				(error) => !(error instanceof AggregateError) && /Failed to install dependencies/.test(error.message)
-			);
-			assert.equal(
-				await readFile(join(rootDir, 'saw-aside'), 'utf8'),
-				'false',
-				'no rollback record exists while the install runs, so nothing can move it'
 			);
 			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '1.0.0');
 			assert.equal(await readFile(join(componentDirPath, 'nested', 'old-only.txt'), 'utf8'), 'previous bytes\n');
