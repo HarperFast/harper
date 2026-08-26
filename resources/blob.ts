@@ -1567,9 +1567,10 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 			// Resolved before the row is marked in flight, and counted as an attempt: an id whose path
 			// cannot be resolved would otherwise be retried by every drain for the life of the process.
 			if (recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
-				// no path to key the local entry by, so find it the only way left
+				// no path to key the local entry by, and fileIds are only unique per store
 				for (const [path, pending] of pendingReclamation) {
-					if (storageInfoForBlob.get(pending.blob)?.fileId === fileId) {
+					const pendingInfo = storageInfoForBlob.get(pending.blob);
+					if (pendingInfo?.fileId === fileId && pendingInfo.store === rootStore) {
 						pendingReclamation.delete(path);
 						break;
 					}
@@ -2937,14 +2938,13 @@ function generateFilePath(storageInfo: StorageInfo) {
 function highestQueuedUnlinkFileId(store: any): number {
 	const queueDb = unlinkQueueDb(store);
 	if (!queueDb) return 0;
+	// Deliberately unguarded: a queue this cannot read may hold an id above the on-disk high water
+	// mark, and issuing that id again means a later drain unlinks a live file. Failing the write is
+	// the recoverable direction.
 	let highest = 0;
-	try {
-		for (const key of queueDb.getKeys({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
-			const id = parseInt(key[1], 16);
-			if (id > highest) highest = id;
-		}
-	} catch (error) {
-		logger.debug?.('Unable to scan the blob unlink queue for the highest file id', error);
+	for (const key of queueDb.getKeys({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
+		const id = parseInt(key[1], 16);
+		if (id > highest) highest = id;
 	}
 	return highest;
 }
@@ -3700,28 +3700,20 @@ export async function cleanupOrphans(
 		logger.warn?.(dryRun ? 'Measuring' : 'Deleting', pathsToCheck.size, 'orphaned blobs');
 		let reclaimed = 0;
 		for (const path of pathsToCheck) {
-			let size: number;
 			try {
-				size = (await statPromised(path)).size;
-			} catch (error) {
-				// gone underneath us (or unreadable): not an orphan this sweep can claim
-				logger.debug?.('Error sizing orphaned file', error);
-				continue;
-			}
-			try {
+				// A file that is already gone, or that could not be removed, was not reclaimed by this
+				// sweep; counting it would report freed space that is still occupied.
+				const { size } = await statPromised(path);
 				if (!dryRun) await unlinkPromised(path);
+				reclaimed++;
+				orphansFound++;
+				orphanBytes += size;
 			} catch (error) {
-				// A file that could not be removed was not reclaimed; counting it would report freed
-				// space that is still occupied.
-				logger.debug?.('Error deleting file', error);
-				continue;
+				logger.debug?.('Error removing orphaned file', error);
 			} finally {
 				const lockKey = repairTempLocks.get(path);
 				if (lockKey) (store as any).unlock(lockKey);
 			}
-			reclaimed++;
-			orphansFound++;
-			orphanBytes += size;
 		}
 		logger.warn?.(dryRun ? 'Finished measuring' : 'Finished deleting', reclaimed, 'orphaned blobs');
 		pathsToCheck.clear();

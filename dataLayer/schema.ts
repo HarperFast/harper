@@ -382,8 +382,10 @@ export function cleanupOrphanBlobs(request: any) {
 	if (!request.database) throw new ClientError('Must provide "database" name for search for orphaned blobs');
 	const database: any = (databases as any)[request.database];
 	if (!database) throw new ClientError(`Unknown database '${request.database}'`);
-	// don't await, it will probably take hours
-	cleanupOrphans((databases as any)[request.database], request.database, request.dryRun);
+	// don't await, it will probably take hours — but a rejection here must not take the process down
+	cleanupOrphans((databases as any)[request.database], request.database, request.dryRun).catch((error) =>
+		logger.error?.('Orphaned blob cleanup failed', error)
+	);
 	return {
 		message: request.dryRun
 			? 'Orphaned blobs check started (dry run, nothing will be deleted), check logs for the count and bytes found'
