@@ -15,7 +15,7 @@ import {
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, join, relative } from 'node:path';
 import {
 	access,
 	chmod,
@@ -27,6 +27,7 @@ import {
 	open,
 	readdir,
 	readFile,
+	readlink,
 	rename,
 	rmdir,
 	rm,
@@ -1396,6 +1397,8 @@ export async function activateCandidateApplication(application: Application, dep
 	try {
 		await rename(candidateDirPath, liveDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
+		// The tree moved, so any dependency link that named its build path is now dangling.
+		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 	} catch (error) {
 		await compensate(error, 'move the candidate into place', restoreLive, application);
 		throw error;
@@ -1452,6 +1455,60 @@ async function compensate(
 				`also failed to restore the previous version: ${errorMessage(undoError)}`
 		);
 	}
+}
+
+/**
+ * Re-point dependency links that name the candidate's build path, after the candidate has become live.
+ *
+ * `npm install` runs in `.deploy-staging/<deploymentId>/<component>`, and for a `file:` dependency it links
+ * `node_modules/<dep>` at the dependency directory. On POSIX npm writes a RELATIVE symlink, which keeps
+ * working after the rename. On Windows it writes a junction, and junctions are ABSOLUTE — so after the swap
+ * they still name the staging path, which no longer exists, and the dependency stops resolving with
+ * `Cannot find module`.
+ *
+ * Rewriting them is preferred over `npm install --install-links` (which copies instead of linking) because
+ * that would change dependency semantics for every deploy on every platform to fix one platform.
+ */
+async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: string): Promise<void> {
+	const modulesPath = join(liveDirPath, 'node_modules');
+	const walk = async (dirPath: string): Promise<void> => {
+		let entries;
+		try {
+			entries = await readdir(dirPath, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			const entryPath = join(dirPath, entry.name);
+			if (entry.isSymbolicLink()) {
+				let target: string;
+				try {
+					target = await readlink(entryPath);
+				} catch {
+					continue;
+				}
+				const normalized = stripExtendedLengthPrefix(target);
+				if (!normalized.startsWith(builtAtPath)) continue;
+				const repaired = join(liveDirPath, relative(builtAtPath, normalized));
+				try {
+					await rm(entryPath, { recursive: true, force: true });
+					await symlink(repaired, entryPath, 'junction');
+				} catch (error) {
+					logger.warn(`Could not re-point ${entryPath} after activation: ${errorMessage(error)}`);
+				}
+			} else if (entry.isDirectory() && (entry.name.startsWith('@') || entry.name === 'node_modules')) {
+				// Only scoped-package containers and nested module roots are worth descending into; a
+				// package's own source tree cannot hold a link npm created for this install.
+				await walk(entryPath);
+			}
+		}
+	};
+	await walk(modulesPath);
+}
+
+/** Windows junction targets come back with an extended-length `\\?\` prefix that plain paths never have. */
+function stripExtendedLengthPrefix(target: string): string {
+	return target.startsWith('\\\\?\\') ? target.slice(4) : target;
 }
 
 /** Remove a candidate's whole deployment directory, best-effort — it is never the last good copy. */

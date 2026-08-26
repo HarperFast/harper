@@ -220,6 +220,41 @@ describe('activation transaction', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('re-points a dependency link that named the candidate build path', async () => {
+		// npm links a `file:` dependency into node_modules. POSIX gets a relative symlink that survives the
+		// rename; Windows gets an ABSOLUTE junction, which after the swap still names the staging path and
+		// leaves the dependency unresolvable. Simulated here with an absolute link, which is the shape that
+		// breaks regardless of platform.
+		const root = await newRoot('links');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		const candidate = candidateApplicationPath(live, 'd1');
+		await writeTree(candidate, 'CANDIDATE\n');
+		const vendored = path.join(candidate, 'vendor', 'probe');
+		await fs.mkdir(vendored, { recursive: true });
+		await fs.writeFile(path.join(vendored, 'index.js'), 'module.exports = 1;\n');
+		await fs.mkdir(path.join(candidate, 'node_modules'), { recursive: true });
+		await fs.symlink(vendored, path.join(candidate, 'node_modules', 'probe'), 'dir');
+
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+		await activateCandidateApplication(app, 'd1');
+
+		const linkPath = path.join(live, 'node_modules', 'probe');
+		const target = await fs.readlink(linkPath);
+		assert.strictEqual(
+			target,
+			path.join(live, 'vendor', 'probe'),
+			'the link follows the tree to its live path instead of naming the deleted candidate'
+		);
+		assert.strictEqual(
+			await fs.readFile(path.join(linkPath, 'index.js'), 'utf8'),
+			'module.exports = 1;\n',
+			'and it resolves'
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('refuses to activate when there is no candidate build', async () => {
 		const root = await newRoot('nocand');
 		await writeTree(path.join(root, 'web'), 'LIVE\n');
