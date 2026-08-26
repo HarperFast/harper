@@ -102,6 +102,27 @@ storage:
 
 Blobs are not relocated when `blobPaths` changes — only new blobs honor the updated configuration. Existing blob references continue to resolve at their original path.
 
+### `storage.blobRetention`
+
+Type: `number` (milliseconds)
+
+Default: `2000`
+
+How long a superseded blob file is kept on disk after the record that referenced it is overwritten or removed.
+
+A blob's bytes are read lazily: a request resolves the record first, then opens the backing file when it starts streaming the response. If the record is overwritten in between, the file it pointed at is on its way out — and because the failure surfaces after the response headers are already committed, the client sees a truncated body rather than an error status. `blobRetention` is the window that lets those in-flight reads finish.
+
+Raise it when reads are slow enough to outlive the default window — large blobs, slow or heavily backpressured clients, or a busy cache table whose entries are rewritten while being served. Replication peers that have not yet fetched a superseded blob are also covered by this window, so a cluster with significant replication lag wants a value comfortably above that lag.
+
+The cost is disk: superseded blobs written during the window stay on disk for its duration, so the overhang is roughly your blob write rate multiplied by the retention window. Set it to `0` to reclaim as soon as the queue drains.
+
+```yaml
+storage:
+  blobRetention: 30000
+```
+
+If the process exits before a deferred reclamation runs, the file is left behind until the `cleanup_orphan_blobs` operation reclaims it — a longer window widens that gap.
+
 ## Read & Write Behavior
 
 ### `storage.prefetchWrites`
