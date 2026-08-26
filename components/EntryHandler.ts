@@ -5,7 +5,7 @@ import type { Stats } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { Component, FileAndURLPathConfig } from './Component.ts';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { deriveURLPath } from './deriveURLPath.ts';
@@ -545,9 +545,18 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		const normalizedDirectory = watchDirectory.replace(/\\/g, '/');
 		const normalizedBases = this.#component.patternBases.map((base) => join(watchDirectory, base).replace(/\\/g, '/'));
 
+		// chokidar resolves a relative pattern base against `cwd`, but an absolute one reaches the
+		// native watch as spelled, bypassing the canonicalized `cwd` above.
+		let watchPattern = this.#component.commonPatternBase;
+		if (isAbsolute(watchPattern)) {
+			const patternTarget = resolveWatchTarget(watchPattern);
+			if (patternTarget.mustPoll) this.#usingPolling = true;
+			watchPattern = patternTarget.path;
+		}
+
 		this.#openCount++;
 		const watcher = (this.#watcher = chokidar
-			.watch(this.#component.commonPatternBase, {
+			.watch(watchPattern, {
 				cwd: watchDirectory,
 				persistent: false,
 				followSymlinks: false,

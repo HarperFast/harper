@@ -2370,6 +2370,19 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 		assert.deepStrictEqual(calls, { change: 0, failure: 1 });
 	});
 
+	it('still drops to polling when the failed watcher throws on close', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const opened = fakeWatcher();
+		opened.close = () => {
+			throw new Error('close failed synchronously');
+		};
+		const { calls, handlers } = recordingHandlers((candidate) => candidate === opened);
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, opening(opened)), opened);
+		assert.doesNotThrow(() => opened.emit('error', exhaustion()));
+		assert.strictEqual(target.mustPoll, true);
+		assert.deepStrictEqual(calls, { change: 0, failure: 1 });
+	});
+
 	// Acting on either callback from a superseded watcher would close the live watcher and start a
 	// second read sharing the first one's fd and position.
 	describe('a watcher the read has already replaced', () => {

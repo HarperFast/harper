@@ -277,7 +277,12 @@ export function watchInProgressFile(
 		if (!handlers.isLive(watcher)) return;
 		logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
 		watchTarget.mustPoll = true;
-		watcher.close();
+		try {
+			watcher.close();
+		} catch {
+			// A close() that throws here must not skip onFailure — the poll fallback is what recovers
+			// the read, and the exception would otherwise escape this listener uncaught.
+		}
 		handlers.onFailure();
 	});
 	return watcher;
