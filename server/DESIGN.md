@@ -89,6 +89,14 @@ calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts 
 `shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
 and it force-terminates the remaining worker set rather than waiting for application drain hooks.
 
+A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
+`SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a
+component deploy is not live pool-wide until `restartWorkers()` resolves. It resolves only once every
+replacement has reported `CHILD_STARTED`, including the ones that can only be started after their
+predecessor releases its exclusive ports (Windows/macOS/Bun), and reports how many workers were left
+on the old code versus how many replacements never started. A caller that treats its own success as
+"the component is live" must await it (see `deployComponent` in `components/operations.js`).
+
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
