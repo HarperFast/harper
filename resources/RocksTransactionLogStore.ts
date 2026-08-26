@@ -3,7 +3,7 @@ import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { getIdOfRemoteNode } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
-import { createCorruptFrameReporter, endIteratorOnCorruptFrame } from './replayLogsGuards.ts';
+import { createCorruptFrameReporter, endIteratorOnCorruptFrame, type CorruptFrameStop } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { asBinary } from 'lmdb';
@@ -21,6 +21,11 @@ const HAS_PREVIOUS_VERSION = 0x20000000;
 type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	addLog(logName: string);
 	removeLog(logName: string);
+};
+
+export type TransactionLogIterable = Iterable<AuditRecord> & {
+	/** Corrupt frames that ended a log's iteration during this range. */
+	corruptFrameStop: CorruptFrameStop;
 };
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
@@ -238,9 +243,20 @@ export class RocksTransactionLogStore extends EventEmitter {
 		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
-	}): Iterable<AuditRecord> {
+	}): TransactionLogIterable {
 		let iterable = new ExtendedIterable<TransactionEntry>();
 		let aggregateIterator: TransactionLogIterator;
+		// Shared by every per-log iterator of this range so a consumer can tell iteration that ended at
+		// a corrupt frame from iteration that reached the end of the logs, and can attribute the break
+		// to the entry it was reading when the break surfaced.
+		const corruptFrameStop: CorruptFrameStop = { breaks: 0 };
+		const onCorruptFrame = (log: TransactionLog) => {
+			const report = reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`);
+			return (error) => {
+				corruptFrameStop.breaks++;
+				report(error);
+			};
+		};
 		if (options.log !== undefined) {
 			let log = typeof options.log === 'number' ? this.nodeLogs?.[options.log] : this.logByName.get(options.log);
 			if (!log) {
@@ -254,10 +270,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
-			const queryIterator = endIteratorOnCorruptFrame(
-				log.query(options),
-				reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`)
-			);
+			const queryIterator = endIteratorOnCorruptFrame(log.query(options), onCorruptFrame(log));
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
@@ -308,12 +321,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
-							iterators.push(
-								endIteratorOnCorruptFrame(
-									log.query(queryOptions),
-									reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`)
-								)
-							);
+							iterators.push(endIteratorOnCorruptFrame(log.query(queryOptions), onCorruptFrame(log)));
 						}
 					}
 					latestUpdates = this.updates;
@@ -460,7 +468,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 			mappedAggregateIterable.addLog = aggregateIterator.addLog;
 			mappedAggregateIterable.removeLog = aggregateIterator.removeLog;
 		}
-		return mappedAggregateIterable;
+		mappedAggregateIterable.corruptFrameStop = corruptFrameStop;
+		return mappedAggregateIterable as TransactionLogIterable;
 	}
 	getKeys(_options?: any) {
 		return []; // TODO: implement this
