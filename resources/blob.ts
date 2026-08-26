@@ -1601,21 +1601,17 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 	}
 }
 
-/** The file paths every outstanding unlink intent for this root resolves to. */
+/**
+ * The file paths every outstanding unlink intent for this root resolves to. Throws rather than
+ * returning a partial set: the only caller uses it to decide what a destructive sweep may NOT
+ * delete, and a silently short list there deletes a file whose drain still holds the claim.
+ */
 function queuedUnlinkPaths(rootStore: any): string[] {
 	const queueDb = unlinkQueueDb(rootStore);
 	if (!queueDb) return [];
 	const paths: string[] = [];
-	try {
-		for (const { key, value } of queueDb.getRange({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
-			try {
-				paths.push(getFilePath({ storageIndex: value?.storageIndex ?? 0, fileId: key[1], store: rootStore }));
-			} catch (error) {
-				logger.debug?.('Could not resolve a queued blob unlink path', key[1], error);
-			}
-		}
-	} catch (error) {
-		logger.debug?.('Unable to read blob unlink queue', error);
+	for (const { key, value } of queueDb.getRange({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
+		paths.push(getFilePath({ storageIndex: value?.storageIndex ?? 0, fileId: key[1], store: rootStore }));
 	}
 	return paths;
 }
