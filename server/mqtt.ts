@@ -536,10 +536,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 												? 0x90 // topic name invalid
 												: 0x80, // unspecified error
 							};
-							// Both limits are in encoded bytes, so measure and trim the string in bytes too.
-							const reasonString = error.message
-								? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
-								: undefined;
+							// Only errors this layer maps to a code of their own are safe to describe: any other
+							// failure carries an internal message that a client must not be handed. Both limits
+							// are in encoded bytes, so measure and trim the string in bytes too.
+							const describable = error.statusCode === 403 || error.statusCode === 404;
+							const reasonString =
+								describable && error.message
+									? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
+									: undefined;
 							if (
 								mqttOptions.protocolVersion >= 5 &&
 								reasonString &&

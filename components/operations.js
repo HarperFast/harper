@@ -444,14 +444,18 @@ function awaitRestart(restarting) {
 	const restarted = Promise.resolve(restarting).then(
 		(result) =>
 			result && typeof result === 'object'
-				? { completed: true, replacementsFailed: result.replacementsFailed ?? 0 }
-				: { completed: false, replacementsFailed: 0 },
-		(error) => ({ completed: false, replacementsFailed: 0, error })
+				? {
+						completed: true,
+						workersKeptOnOldCode: result.workersKeptOnOldCode ?? 0,
+						replacementsNotStarted: result.replacementsNotStarted ?? 0,
+					}
+				: { completed: false, handedOff: true },
+		(error) => ({ completed: false, error })
 	);
 	return Promise.race([
 		restarted,
 		new Promise((resolve) => {
-			timer = setTimeout(() => resolve({ completed: false, replacementsFailed: 0 }), RESTART_WAIT_BUDGET_MS);
+			timer = setTimeout(() => resolve({ completed: false }), RESTART_WAIT_BUDGET_MS);
 		}),
 	]).finally(() => clearTimeout(timer));
 }
@@ -729,11 +733,19 @@ async function deployComponent(req) {
 			// never heard of it.
 			const restart = await awaitRestart(manageThreads.restartWorkers('http'));
 			emit('phase', { phase: 'restart', status: 'done' });
-			response.restart_completed = restart.completed && !restart.replacementsFailed;
-			if (restart.error) log.error(`Restart after deploying ${application.name} failed`, restart.error);
-			else if (restart.replacementsFailed)
+			response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
+			if (restart.replacementsNotStarted)
 				log.warn(
-					`${restart.replacementsFailed} worker thread(s) could not be replaced after deploying ${application.name} and are still running the previous code`
+					`${restart.replacementsNotStarted} replacement worker thread(s) did not report starting after deploying ${application.name}; the pool is short until they are restarted`
+				);
+			if (restart.error) log.error(`Restart after deploying ${application.name} failed`, restart.error);
+			else if (restart.workersKeptOnOldCode)
+				log.warn(
+					`${restart.workersKeptOnOldCode} worker thread(s) could not be replaced after deploying ${application.name} and are still running the previous code`
+				);
+			else if (restart.handedOff)
+				log.warn(
+					`The restart after deploying ${application.name} was handed to the main thread and could not be awaited here; worker threads may still be running the previous code`
 				);
 			else if (!restart.completed)
 				log.warn(

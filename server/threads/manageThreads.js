@@ -468,9 +468,9 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * threads at the same time we shutdown new ones. However, we usually want to limit how many we do at once to avoid
  * excessive load and to keep things responsive. This parameter throttles the restarts to minimize load from
  * thread startups.
- * @returns {Promise<{replacementsFailed: number}|undefined>} from the main thread, how many
- * replacements never reported that they started; from a worker, nothing — the restart is handed to
- * the main thread.
+ * @returns {Promise<{workersKeptOnOldCode: number, replacementsNotStarted: number}|undefined>} from
+ * the main thread, how many workers were left running the old code and how many replacements never
+ * reported that they started; from a worker, nothing — the restart is handed to the main thread.
  */
 
 async function restartWorkers(
@@ -509,7 +509,12 @@ async function restartWorkers(
 		// spliced as each worker exits to drive the maxWorkersDown throttle, so that this function can
 		// still resolve only once every replacement is accepting connections.
 		let replacementsStarting = [];
-		let replacementsFailed = 0;
+		// A replacement that never came up leaves the pool in one of two very different states, and a
+		// caller waiting on this restart needs them apart: the pre-start path keeps the *old* worker
+		// serving old code, while a replacement that exits after its predecessor is already gone only
+		// costs capacity until startWorker's auto-restart brings a fresh one up.
+		let workersKeptOnOldCode = 0;
+		let replacementsNotStarted = 0;
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
 		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
 		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
@@ -588,7 +593,7 @@ async function restartWorkers(
 					// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
 					// protection if it is still alive (it may have exited on its own during the wait).
 					if (workers.includes(worker)) worker.wasShutdown = false;
-					replacementsFailed++;
+					workersKeptOnOldCode++;
 					continue;
 				}
 			}
@@ -660,11 +665,9 @@ async function restartWorkers(
 		}
 		await Promise.all(waitingToFinish);
 		// A caller awaiting this needs it to mean "the pool is serving the new code", so wait out the
-		// replacements that could only be started once their predecessor released its exclusive ports,
-		// and report the ones that never came up — their predecessors were deliberately left serving the
-		// old code, which a caller reporting a completed restart has to be able to see.
-		replacementsFailed += (await Promise.all(replacementsStarting)).filter((started) => !started).length;
-		return { replacementsFailed };
+		// replacements that could only be started once their predecessor released its exclusive ports.
+		replacementsNotStarted = (await Promise.all(replacementsStarting)).filter((started) => !started).length;
+		return { workersKeptOnOldCode, replacementsNotStarted };
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
