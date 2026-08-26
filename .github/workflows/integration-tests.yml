@@ -1,5 +1,9 @@
 name: Integration Tests
 
+env:
+  # Node 26.8.0 bundles Undici 8.10.0; this CI-only floor guards against a stale toolcache fallback.
+  NODE26_CI_MINIMUM: 26.8.0
+
 on:
   push:
     branches: [main, 'v[0-9]+.[0-9]+']
@@ -68,8 +72,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
-          # Keep the Node 26 matrix entry on the latest patch instead of silently preferring an
-          # older 26.x release already present in the runner's tool cache.
           check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Verify Node.js version
@@ -78,7 +80,7 @@ jobs:
         run: |
           node --eval "require('node:assert').strictEqual(process.versions.node.split('.')[0], process.env.EXPECTED_NODE_MAJOR)"
           if [ "$EXPECTED_NODE_MAJOR" = 26 ]; then
-            node --eval "const assert = require('node:assert'); const [major, minor, patch] = process.versions.node.split('.').map((part) => Number.parseInt(part, 10)); assert.ok(major > 26 || (major === 26 && (minor > 8 || (minor === 8 && patch >= 0))), 'Node 26 must be at least 26.8.0')"
+            node --eval 'const assert = require("node:assert"); const [major, minor] = process.versions.node.split(".").map((part) => Number.parseInt(part, 10)); const [minimumMajor, minimumMinor] = process.env.NODE26_CI_MINIMUM.split(".").map((part) => Number.parseInt(part, 10)); assert.ok(major > minimumMajor || (major === minimumMajor && minor >= minimumMinor), "check-latest resolved stale Node " + process.versions.node + "; expected >=" + process.env.NODE26_CI_MINIMUM)'
           fi
 
       - name: Install dependencies
@@ -117,8 +119,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
-          # Keep the Node 26 matrix entry on the latest patch instead of silently preferring an
-          # older 26.x release already present in the runner's tool cache.
           check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Verify Node.js version
@@ -127,7 +127,7 @@ jobs:
         run: |
           node --eval "require('node:assert').strictEqual(process.versions.node.split('.')[0], process.env.EXPECTED_NODE_MAJOR)"
           if [ "$EXPECTED_NODE_MAJOR" = 26 ]; then
-            node --eval "const assert = require('node:assert'); const [major, minor, patch] = process.versions.node.split('.').map((part) => Number.parseInt(part, 10)); assert.ok(major > 26 || (major === 26 && (minor > 8 || (minor === 8 && patch >= 0))), 'Node 26 must be at least 26.8.0')"
+            node --eval 'const assert = require("node:assert"); const [major, minor] = process.versions.node.split(".").map((part) => Number.parseInt(part, 10)); const [minimumMajor, minimumMinor] = process.env.NODE26_CI_MINIMUM.split(".").map((part) => Number.parseInt(part, 10)); assert.ok(major > minimumMajor || (major === minimumMajor && minor >= minimumMinor), "check-latest resolved stale Node " + process.versions.node + "; expected >=" + process.env.NODE26_CI_MINIMUM)'
           fi
 
       - name: Download build artifacts
