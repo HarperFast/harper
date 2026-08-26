@@ -76,7 +76,7 @@ export async function compactOnStart() {
 			const backupDest = join(rootPath, 'backup', databaseName + '.mdb');
 			const copyDest = join(rootPath, DATABASES_DIR_NAME, databaseName + '-copy.mdb');
 			if (existsSync(copyDest)) {
-				const message = `Skipping compaction of database ${databaseName}: ${copyDest} already exists; inspect and rename or remove it before retrying`;
+				const message = `Skipping compaction of database ${databaseName}: ${copyDest} already exists; inspect and rename or remove it, then re-enable '${CONFIG_PARAMS.STORAGE_COMPACTONSTART}' before retrying (this run already disabled it)`;
 				hdbLogger.warn(message);
 				console.warn(message);
 				continue;
@@ -287,11 +287,21 @@ export async function copyDb(
 	if (blobDisposition === 'copy') {
 		if (existsSync(blobDestination))
 			throw new Error(`Blob copy target ${blobDestination} already exists; remove it first`);
+		// Every path a failure can remove or write through, not just the final blob destination — a
+		// staging or lock sibling landing inside a blob root would be just as destructive on cleanup.
+		const destinationPaths = [
+			targetDatabasePath,
+			targetDatabasePath + '-lock',
+			blobDestination,
+			blobDestination + '.tmp',
+		];
 		for (const root of blobRoots) {
-			if (isWithin(blobDestination, root) || isWithin(root, blobDestination))
-				throw new Error(
-					`Copy target ${targetDatabasePath} overlaps the source blob root ${root}; choose a target outside it`
-				);
+			for (const destinationPath of destinationPaths) {
+				if (isWithin(destinationPath, root) || isWithin(root, destinationPath))
+					throw new Error(
+						`Copy target ${targetDatabasePath} overlaps the source blob root ${root}; choose a target outside it`
+					);
+			}
 		}
 	}
 	// Suppress source writes only once the copy is going ahead: a caller that catches a rejection above
