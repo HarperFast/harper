@@ -468,7 +468,9 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * threads at the same time we shutdown new ones. However, we usually want to limit how many we do at once to avoid
  * excessive load and to keep things responsive. This parameter throttles the restarts to minimize load from
  * thread startups.
- * @returns {Promise<void>}
+ * @returns {Promise<{replacementsFailed: number}|undefined>} from the main thread, how many
+ * replacements never reported that they started; from a worker, nothing — the restart is handed to
+ * the main thread.
  */
 
 async function restartWorkers(

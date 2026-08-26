@@ -177,7 +177,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	}
 }
 const SERVER_SHUTTING_DOWN = 0x8b; // MQTT v5 DISCONNECT reason code
-const REASON_STRING_LIMIT = 256;
+const REASON_STRING_LIMIT = 256; // bytes
 /** Fixed header, message id and reason code, plus the property identifier and its length prefix. */
 const ACK_PACKET_OVERHEAD = 16;
 
@@ -192,6 +192,7 @@ let shutdownDisconnectRegistered = false;
 
 /** v3.1.1 has no server-to-client DISCONNECT, so those connections are only closed. */
 export function disconnectClientsForShutdown() {
+	if (liveConnections.size === 0) return;
 	const disconnectPacket = generate({ cmd: 'disconnect', reasonCode: SERVER_SHUTTING_DOWN } as any, {
 		protocolVersion: 5,
 	});
@@ -535,12 +536,15 @@ function onSocket(socket, send, request, user, mqttSettings) {
 												? 0x90 // topic name invalid
 												: 0x80, // unspecified error
 							};
-							const reasonString = error.message ? String(error.message).slice(0, REASON_STRING_LIMIT) : undefined;
+							// Both limits are in encoded bytes, so measure and trim the string in bytes too.
+							const reasonString = error.message
+								? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
+								: undefined;
 							if (
 								mqttOptions.protocolVersion >= 5 &&
 								reasonString &&
 								sendProblemInformation &&
-								(!maximumPacketSize || maximumPacketSize >= reasonString.length + ACK_PACKET_OVERHEAD)
+								(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
 							)
 								publishPacket.properties = { reasonString };
 							generateAndSendPacket(publishPacket, packet.topic);

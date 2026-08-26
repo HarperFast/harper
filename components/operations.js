@@ -432,24 +432,22 @@ async function packageComponent(req) {
 }
 
 /**
- * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
- * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
- * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
- * @param req
- * @returns {Promise<string>}
- */
-/**
  * Wait for a worker restart, but not past the point where holding the operations-API response open
  * stops being useful: each replacement carries its own multi-minute startup backstop, so a wide
  * thread pool could otherwise keep the request open far longer than any client will wait. The
  * restart continues regardless of what this resolves; a restart that failed outright does not fail
- * the deploy, since the component is already on disk and replicated.
+ * the deploy, since the component is already on disk and replicated. Only the main thread performs
+ * the restart — from a worker, restartWorkers() hands it off and resolves with nothing, which is
+ * reported as not (yet) complete rather than as a completed restart.
  */
 const RESTART_WAIT_BUDGET_MS = 120_000;
 function awaitRestart(restarting) {
 	let timer;
 	const restarted = Promise.resolve(restarting).then(
-		(result) => ({ completed: true, replacementsFailed: result?.replacementsFailed ?? 0 }),
+		(result) =>
+			result && typeof result === 'object'
+				? { completed: true, replacementsFailed: result.replacementsFailed ?? 0 }
+				: { completed: false, replacementsFailed: 0 },
 		(error) => ({ completed: false, replacementsFailed: 0, error })
 	);
 	return Promise.race([
@@ -459,6 +457,14 @@ function awaitRestart(restarting) {
 		}),
 	]).finally(() => clearTimeout(timer));
 }
+
+/**
+ * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
+ * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
+ * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
+ * @param req
+ * @returns {Promise<string>}
+ */
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
