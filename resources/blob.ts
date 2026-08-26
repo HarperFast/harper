@@ -12,7 +12,16 @@
  */
 
 import { addExtension, pack, Packr } from 'msgpackr';
-import { readFile, rename, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
+import {
+	readFile,
+	rename,
+	statfs,
+	readdir,
+	rmdir,
+	open as openFile,
+	type FileHandle,
+	unlink as unlinkPromised,
+} from 'node:fs/promises';
 import {
 	close,
 	closeSync,
@@ -73,9 +82,11 @@ const DEFLATE_TYPE = 1;
 const ERROR_TYPE = 0xff;
 // A write that aborted on a re-streamable external source (replication receive / origin fetch) stamps the
 // file with this type so a downstream read returns 503 (retry) rather than 500 (confidently incomplete).
-// The bytes are still expected — the receive side holds a blob gap and re-streams on reconnect, which
-// overwrites this stub; a terminal give-up unlinks the file (→ 404). Distinct from ERROR_TYPE (a permanent
-// corrupt/error stub, replicated as-is). See harper-pro#481.
+// The re-stream builds a fresh blob and takes a NEW file id (harper-pro's `createBlob` → `saveBlob`), so
+// this stub is orphaned rather than overwritten; a terminal give-up unlinks it (→ 404). No path rewrites
+// a published blob file in place: `repairBlobFile` is the only same-id writer and it publishes via a
+// `.repair` temp + rename. Distinct from ERROR_TYPE (a permanent corrupt/error stub, replicated as-is).
+// See harper-pro#481.
 const PENDING_TYPE = 0xfe;
 const BLOB_REPAIR_SUFFIX = '.repair';
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
@@ -1528,8 +1539,8 @@ function writeBlobWithStream(
 					// half-replicated blob returns 503 (retry) instead of 500 (confidently incomplete → the peer
 					// advances its resume cursor past it = silent loss, harper-pro#481). Hold the write lock until the
 					// marker is durable so no concurrent read/send observes the bare partial file (lock-free + short =
-					// classified 500 = the very loss this prevents). The re-stream overwrites this stub
-					// (createWriteStream flags 'w'); a terminal give-up on the receive side unlinks it (→ 404). Build
+					// classified 500 = the very loss this prevents). The re-stream builds a fresh blob and so takes a
+					// new file id, leaving this stub for orphan GC; a terminal give-up unlinks it (→ 404). Build
 					// the header directly rather than via createHeader so its compress-type OR can't collide with the
 					// PENDING type bits.
 					// Bounded so a `writeFile` that never calls back cannot leave `saving` un-settled for the
@@ -1811,6 +1822,88 @@ export function repairBlobFile(
 		logger.warn?.('Unable to start in-place blob repair', error);
 		return undefined;
 	}
+}
+
+/** Fail-closed storage and descriptor errors that must abort the capture instead of producing an unverified backup. */
+const SYSTEMIC_IO_ERRORS = new Set(['EMFILE', 'ENFILE', 'ENOSPC', 'EIO', 'EROFS']);
+
+export function isSystemicIoError(error: unknown): boolean {
+	return SYSTEMIC_IO_ERRORS.has((error as { code?: string })?.code ?? '');
+}
+
+/**
+ * How a consumer that captures a blob root (backup snapshot, backup archive) should treat one file.
+ * `skip` is not a blob to capture at all; `pending` and `gone` require markers; `capture` is taken as-is.
+ * `capture` means settled as far as the path can show, which is short of a guarantee: a known-size write
+ * that has landed every byte is indistinguishable here from a finished one, and if it then aborts, the
+ * PENDING stamp rewrites that inode in place, truncating any same-filesystem hard link taken from it.
+ * Telling the two apart needs the blob write lock, which is keyed by file id and unreachable from a walk.
+ */
+export async function classifyBlobFileForCapture(filePath: string): Promise<BlobCaptureDisposition> {
+	if (filePath.endsWith(BLOB_REPAIR_SUFFIX)) return 'skip';
+	let header: Buffer;
+	let fileSize: number;
+	let handle: FileHandle;
+	try {
+		handle = await openFile(filePath, 'r');
+	} catch (error) {
+		// Reclamation can unlink a superseded blob after the engine checkpoint but before this walk. The
+		// checkpointed record may still reference it, so reserve the id. Treat local absence as terminal
+		// rather than making every read wait for repair; this gives up peer repair of that checkpointed version.
+		if ((error as { code?: string }).code === 'ENOENT') return 'gone';
+		throw error;
+	}
+	try {
+		fileSize = (await handle.stat()).size;
+		header = Buffer.alloc(HEADER_SIZE);
+		const { bytesRead } = await handle.read(header, 0, HEADER_SIZE, 0);
+		header = header.subarray(0, bytesRead);
+	} finally {
+		await handle.close();
+	}
+	if (blobHeaderIsAbortMarker(header)) return 'capture';
+	if (blobHeaderIndicatesIncomplete(header, fileSize)) return 'pending';
+	// A deflate header records the *uncompressed* length, so the check above compares lengths only for
+	// UNCOMPRESSED_TYPE and a short compressed body reaches here looking whole. Both producers of one
+	// need this: saveBlob stamps a known size before the first compressed byte, so a live write is
+	// invisible above and caught only here, and an unclean shutdown can leave a torn body the
+	// asynchronous repair sweep has not reached yet. Compression is opt-in per createBlob and unused
+	// inside Harper, so this reads nothing on an ordinary corpus.
+	if (header[1] !== DEFLATE_TYPE) return 'capture';
+	const uncompressedSize = Number(
+		new DataView(header.buffer, header.byteOffset, HEADER_SIZE).getBigUint64(0) & 0xffffffffffffn
+	);
+	return (await inflatesToExactly(filePath, uncompressedSize)) ? 'capture' : 'pending';
+}
+
+/**
+ * Whether the header is a deliberate abort marker rather than content. Written once and never
+ * rewritten, so a consumer sharing blob inodes can keep them: dropping a PENDING marker downgrades a
+ * retryable 503 to a 404 the replication layer reads as "cleanly gone" (harper-pro#481).
+ */
+function blobHeaderIsAbortMarker(header: Buffer): boolean {
+	if (header.length < HEADER_SIZE) return false;
+	const type = header.readUInt16BE(0);
+	return type === PENDING_TYPE || type === ERROR_TYPE;
+}
+
+/**
+ * What a consumer capturing a blob root should do with one file. `pending` is a blob that was not
+ * whole *yet* (retryable 503); `gone` is absent from this capture and represented as terminal 500.
+ * Both still put a file at the id, because `getNextFileId` recovers the counter by scanning the
+ * directory and an absent file lets a restored record's id be reissued.
+ */
+export type BlobCaptureDisposition = 'skip' | 'capture' | 'pending' | 'gone';
+
+/** The stand-in bytes for a blob that could not be captured whole. */
+export function createCaptureMarker(disposition: 'pending' | 'gone', message: string): Buffer {
+	const messageBuffer = Buffer.from(message);
+	const header = Buffer.alloc(HEADER_SIZE);
+	new DataView(header.buffer, header.byteOffset, HEADER_SIZE).setBigInt64(
+		0,
+		BigInt(messageBuffer.length) | (BigInt(disposition === 'gone' ? ERROR_TYPE : PENDING_TYPE) << 48n)
+	);
+	return Buffer.concat([header, messageBuffer]);
 }
 
 export function blobHeaderIndicatesIncomplete(header: Buffer, fileSize: number): boolean {
@@ -2713,10 +2806,12 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 }
 
 async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
-	let filePath: string;
+	return isBlobFileCompleteAtPath(getFilePath(storageInfo));
+}
+
+async function isBlobFileCompleteAtPath(filePath: string): Promise<boolean> {
 	let fileSize: number;
 	try {
-		filePath = getFilePath(storageInfo);
 		fileSize = statSync(filePath).size;
 	} catch (e) {
 		if ((e as any).code === 'ENOENT') return false;
@@ -2738,30 +2833,45 @@ async function isBlobFileComplete(storageInfo: StorageInfo): Promise<boolean> {
 	// for a compressed blob it does not, so the body length can't be compared to it directly.
 	const size = Number(headerValue & 0xffffffffffffn);
 	if (header[1] === DEFLATE_TYPE) {
-		// A compressed blob's header size is the uncompressed length, so it can't be compared to the
-		// compressed on-disk body. Verify by streaming the body through inflate and counting the
-		// decompressed bytes: a fully-written deflate stream inflates to exactly `size` bytes; a
-		// truncated one errors (Z_BUF_ERROR) or yields fewer. Streaming (rather than inflateSync on
-		// the whole buffer) keeps memory bounded during the repair sweep, which may touch many large
-		// blobs.
-		return new Promise<boolean>((resolve) => {
-			let inflatedLength = 0;
-			const source = createReadStream(filePath, { start: HEADER_SIZE });
-			const inflate = createInflate();
-			const fail = () => {
-				source.destroy();
-				resolve(false);
-			};
-			source.on('error', fail);
-			inflate.on('error', fail);
-			inflate.on('data', (chunk: Buffer) => {
-				inflatedLength += chunk.length;
-			});
-			inflate.on('end', () => resolve(inflatedLength === size));
-			source.pipe(inflate);
-		});
+		// This function's contract is to resolve true/false; harper-pro's repair sweep awaits it without a
+		// catch (replication/blobRepair.ts), so an I/O fault must not become a rejection here. The capture
+		// classifier calls inflatesToExactly directly, where the distinction does matter.
+		return inflatesToExactly(filePath, size).catch(() => false);
 	}
 	return true;
+}
+
+/**
+ * Whether the deflate body after the header inflates to exactly `size` bytes. A compressed blob's
+ * header records the uncompressed length, so it cannot be compared to the on-disk body; a truncated
+ * stream errors (Z_BUF_ERROR) or yields fewer bytes. Streamed rather than inflateSync so memory stays
+ * bounded over a sweep that may touch many large blobs.
+ */
+function inflatesToExactly(filePath: string, size: number): Promise<boolean> {
+	return new Promise<boolean>((resolve, reject) => {
+		let inflatedLength = 0;
+		const source = createReadStream(filePath, { start: HEADER_SIZE });
+		const inflate = createInflate();
+		// A zlib error is the answer (body truncated or corrupt); an I/O error is a failure to answer and
+		// must propagate, or a systemic fault would classify a corpus of complete blobs as incomplete.
+		// The reject arm is unverified: it needs a read fault raised mid-inflate on a file that opened
+		// cleanly, which no test here can produce.
+		const fail = (error: NodeJS.ErrnoException) => {
+			// Both: pipe() does not tear down the destination when the source errors, so the inflate's
+			// native zlib handle would sit allocated until GC — once per blob, on every backup walk.
+			source.destroy();
+			inflate.destroy();
+			if (error?.code?.startsWith('Z_')) resolve(false);
+			else reject(error);
+		};
+		source.on('error', fail);
+		inflate.on('error', fail);
+		inflate.on('data', (chunk: Buffer) => {
+			inflatedLength += chunk.length;
+		});
+		inflate.on('end', () => resolve(inflatedLength === size));
+		source.pipe(inflate);
+	});
 }
 
 /**
