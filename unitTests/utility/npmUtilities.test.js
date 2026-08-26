@@ -90,11 +90,14 @@ describe('install_node_modules', () => {
 	});
 
 	it('rejects a request carrying both dry_run spellings', async () => {
-		await assert.rejects(installModules({ projects: ['application'], dry_run: true, dryRun: false }));
+		await assert.rejects(installModules({ projects: ['application'], dry_run: true, dryRun: false }), {
+			statusCode: 400,
+			message: /dryRun/,
+		});
 		assert.equal(installedDependencyExists(), false);
 	});
 
 	it('rejects a request without projects', async () => {
-		await assert.rejects(installModules({ dry_run: true }));
+		await assert.rejects(installModules({ dry_run: true }), { statusCode: 400, message: /'projects'/ });
 	});
 });
