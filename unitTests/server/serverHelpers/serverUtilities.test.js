@@ -9,6 +9,7 @@ const sandbox = sinon.createSandbox();
 const { TEST_JSON_SUPER_USER, TEST_JSON_NON_SU } = require('../../test_data');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const registeredOperations = require('#src/server/serverHelpers/registeredOperations');
+const manageThreads = require('#src/server/threads/manageThreads');
 const operationAuthorizationState = require('#src/server/serverHelpers/operationAuthorizationState');
 const { runWithDeployValidationGuard } = require('#src/server/serverHelpers/deployValidationState');
 const quota = require('#src/components/mcp/quota');
@@ -306,7 +307,7 @@ describe('Test serverUtilities.js module ', () => {
 			});
 			assert.equal(validateOperations([ROLLED]), null, 'still declared by the first thread');
 
-			registeredOperations.notifyThreadExitedForTest(DECLARING_THREAD);
+			manageThreads.notifyThreadExit(DECLARING_THREAD);
 
 			assert.notEqual(validateOperations([ROLLED]), null, 'no live worker declares it grantable any more');
 			assert.equal(
@@ -343,7 +344,7 @@ describe('Test serverUtilities.js module ', () => {
 		});
 
 		it('ignores an announcement that lost a race with its own thread exit', function () {
-			registeredOperations.notifyThreadExitedForTest(DEAD_THREAD);
+			manageThreads.notifyThreadExit(DEAD_THREAD);
 
 			registeredOperations.operationRegisteredHandler({
 				message: { name: ZOMBIE, grantable: true, originator: DEAD_THREAD },

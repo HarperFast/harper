@@ -152,6 +152,8 @@ module.exports = {
 	restoreShutdownDeadline,
 	registerWorkerDataProvider,
 	onThreadExit,
+	hasThreadExited,
+	notifyThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
 	isThreadRunning,
@@ -1117,6 +1119,15 @@ if (isMainThread) {
 	process.on('exit', () => {
 		for (const ownerThreadId of [...processGroupsByThread.keys()]) terminateProcessGroupsForThread(ownerThreadId);
 	});
+}
+
+/**
+ * Whether a thread has already been reported dead. Sync, unlike `isThreadRunning`, because it only
+ * reads the tombstone `notifyThreadExit` records below — callers on the exit path need an answer
+ * without awaiting process-group confirmation.
+ */
+function hasThreadExited(threadId) {
+	return notifiedDeadThreadIds.has(threadId);
 }
 
 function notifyThreadExit(deadThreadId) {
