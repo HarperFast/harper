@@ -25,6 +25,20 @@ Resource classes have static methods that directly map to RESTful methods or HTT
 
 Static methods are defined on a Resource class and are the preferred way to interact with tables and resources from application code. When invoked through an external request path, they handle transaction setup, access checks, and request parsing automatically. Direct calls from server-side code run in a trusted context and do not automatically apply the caller's role permissions; see [Server-side table reads](../components/javascript-environment.md#tables). These methods also map to RESTful HTTP verbs and can be overridden to define custom behavior for requests.
 
+### `static loadAsInstance?: boolean`
+
+> **New v5 code does not need this flag.** It is a v4-era compatibility flag that selects between two behavioral modes for a resource's **instance** methods. It has no effect on a static method you define yourself.
+>
+> When you override a static verb (`static get`, `static post`, …), your method _replaces_ Harper's built-in dispatch — including the code that reads `loadAsInstance`. Your static method always receives `(target, data)`, so the flag is irrelevant to it. This is a large part of why static methods are the recommended shape for custom endpoints: they sidestep the flag entirely.
+>
+> The flag does still apply in v5 to the legacy pattern of defining REST-mirroring **instance** verbs (instance `get`, `put`, `patch`, `post`, `delete`, `publish`, `search`), where it selects the argument order those methods receive and whether the record is preloaded onto the instance. Because that behavior is live rather than inert, **`static loadAsInstance = false;` cannot simply be deleted** from an existing resource — dropping the line reverses the argument order for those instance methods and will break them. Remove it only as part of converting them to static methods.
+>
+> The two modes are documented in full in the v4 reference — see [API Versions](../../reference_versioned_docs/version-v4/resources/resource-api.md#api-versions).
+>
+> For new code, prefer static methods and omit the flag. Reserve instance methods for record mutation via `update()` and for `validate()` — see [Resource Instance Methods](#resource-instance-methods).
+
+---
+
 ### `get(target: RequestTarget | Id | Query, context?: Resource | Context): Promise<object> | ExtendedIterable`
 
 Retrieves a record by primary key, or queries for records when given a `Query` object or a collection `RequestTarget`.
@@ -854,6 +868,8 @@ The following instances are also implemented on Resource instances for [backward
 - `post`
 - `create`
 - `subscribe`
+
+The arguments these instance methods receive depend on [`static loadAsInstance`](#static-loadasinstance-boolean). Overriding the equivalent static method avoids that dependency entirely and is preferred for new code.
 
 ## Concurrency and Safe Concurrent Writes
 
