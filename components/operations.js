@@ -712,6 +712,8 @@ async function deployComponent(req) {
 				log.warn(
 					`${restart.workersKeptOnOldCode} worker thread(s) could not be replaced after deploying ${application.name} and are still running the previous code`
 				);
+			else if (restart.declined)
+				log.warn(`No restart was performed after deploying ${application.name}: the process is already shutting down`);
 			else if (restart.handedOff)
 				log.debug?.(
 					`The restart after deploying ${application.name} was handed to the main thread, which reports its own completion`

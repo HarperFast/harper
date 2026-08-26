@@ -47,6 +47,11 @@ describe('awaitRestart', () => {
 		assert.deepStrictEqual(outcome, { completed: false, handedOff: true });
 	});
 
+	it('distinguishes a declined restart from one handed to another thread', async () => {
+		const outcome = await awaitRestart(async () => ({ declined: true }), TIMERS);
+		assert.deepStrictEqual(outcome, { completed: false, declined: true });
+	});
+
 	it('reports a rejected restart without rejecting itself', async () => {
 		const failure = new Error('no workers');
 		const outcome = await awaitRestart(async () => {

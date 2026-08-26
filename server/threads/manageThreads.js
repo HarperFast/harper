@@ -471,9 +471,10 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * thread startups.
  * @param onProgress Called each time a worker has been replaced (or its replacement has been given
  * up on), so a caller waiting on a wide pool can tell a slow restart from a stalled one.
- * @returns {Promise<{workersKeptOnOldCode: number, replacementsNotStarted: number}|undefined>} from
- * the main thread, how many workers were left running the old code and how many replacements never
- * reported that they started; from a worker, nothing — the restart is handed to the main thread.
+ * @returns {Promise<{workersKeptOnOldCode: number, replacementsNotStarted: number}|{declined: true}|undefined>}
+ * from the main thread, how many workers were left running the old code and how many replacements
+ * never reported that they started — or `{declined: true}` when the process is already shutting down;
+ * from a worker, nothing — the restart is handed to the main thread.
  */
 
 async function restartWorkers(
@@ -483,7 +484,9 @@ async function restartWorkers(
 	onProgress = null
 ) {
 	if (isMainThread) {
-		if (processShuttingDown && startReplacementThreads) return;
+		// Declining is not the same as delegating: a caller reporting on the restart must not read this
+		// as "another thread is completing it".
+		if (processShuttingDown && startReplacementThreads) return { declined: true };
 		try {
 			// we do this because it is possible for a component to chdir to itself, get re-deployed and then the cwd
 			// inode link is invalid and it can cause a lot of problems. But process.cwd() still returns the path, for
@@ -720,6 +723,14 @@ function whenWorkerStarted(newWorker) {
 			() => {
 				harperLogger.error('Replacement worker did not start in time', newWorker.threadId);
 				cleanup();
+				// Its predecessor is already gone, so a replacement wedged in boot is a worker slot serving
+				// nothing until the process restarts. Stop it and let startWorker's exit handling replace it.
+				if (isBun) {
+					// terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead.
+					try {
+						newWorker.postMessage({ type: FORCE_EXIT });
+					} catch {}
+				} else newWorker.terminate();
 				resolve(false);
 			},
 			Math.max(threadTerminationTimeout * 2, 60000)

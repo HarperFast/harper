@@ -23,6 +23,8 @@ export interface RestartOutcome {
 	stalled?: boolean;
 	/** The restart was handed to another thread, which reports its own completion. */
 	handedOff?: boolean;
+	/** No restart was performed: the process is already shutting down. */
+	declined?: boolean;
 	error?: any;
 }
 
@@ -65,11 +67,13 @@ export function awaitRestart(
 			(result) =>
 				done(
 					result && typeof result === 'object'
-						? {
-								completed: true,
-								workersKeptOnOldCode: result.workersKeptOnOldCode ?? 0,
-								replacementsNotStarted: result.replacementsNotStarted ?? 0,
-							}
+						? result.declined
+							? { completed: false, declined: true }
+							: {
+									completed: true,
+									workersKeptOnOldCode: result.workersKeptOnOldCode ?? 0,
+									replacementsNotStarted: result.replacementsNotStarted ?? 0,
+								}
 						: // Only the thread performing the restart can report on it; from a worker
 							// restartWorkers() hands it off and resolves with nothing.
 							{ completed: false, handedOff: true }
