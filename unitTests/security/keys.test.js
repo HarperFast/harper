@@ -1076,8 +1076,12 @@ describe('Test keys module', () => {
 		const watchTimers = keys.__get__('certificateWatchTimers');
 		const watchPollers = keys.__get__('certificateWatchPollers');
 		const localSandbox = sinon.createSandbox();
+		const chokidar = require('chokidar');
+		const realChokidarWatch = chokidar.watch;
 		let watchPath;
 
+		// Never open a real watcher here: these tests exercise only the poll/reopen paths, and real
+		// watchers would leak fds and risk EMFILE across repeated runs.
 		const fakeWatcher = (captureHandler) => {
 			const watcher = {
 				on: (event, handler) => {
@@ -1090,15 +1094,13 @@ describe('Test keys module', () => {
 		};
 
 		beforeEach(() => {
-			// Stub chokidar's watch so these tests exercise only the poll path and never open a real
-			// FSWatcher (real watchers would leak fds and risk EMFILE across repeated runs).
-			const chokidar = require('chokidar');
-			localSandbox.stub(chokidar, 'watch').returns(fakeWatcher());
+			chokidar.watch = () => fakeWatcher();
 			watchPath = path.join(test_dir, `watch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
 			fs.writeFileSync(watchPath, 'PEM-V1');
 		});
 
 		afterEach(() => {
+			chokidar.watch = realChokidarWatch;
 			localSandbox.restore();
 			// warnWatcherFallback's first-fallback gate is process-global; leaving it set would make a
 			// later suite's warning assertion silently observe nothing.
@@ -1132,13 +1134,10 @@ describe('Test keys module', () => {
 			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
 			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
 			let changeHandler;
-			localSandbox.restore();
-			const chokidar = require('chokidar');
-			localSandbox.stub(chokidar, 'watch').returns(
+			chokidar.watch = () =>
 				fakeWatcher((event, handler) => {
 					if (event === 'change') changeHandler = handler;
-				})
-			);
+				});
 
 			const loaded = [];
 			loadAndWatch(watchPath, (pem) => loaded.push(pem), 'certificate');
@@ -1157,17 +1156,15 @@ describe('Test keys module', () => {
 		it('reopens on polling when the watcher reports exhaustion', async () => {
 			// chokidar emits 'error' unguarded for any code other than ENOENT/ENOTDIR, so without a
 			// listener an ENOSPC here becomes an uncaughtException and the cert fast path dies silently.
-			localSandbox.restore();
-			const chokidar = require('chokidar');
 			const openedOptions = [];
 			const errorHandlers = [];
 			const exhausted = () => Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' });
-			localSandbox.stub(chokidar, 'watch').callsFake((_watchedPath, options) => {
+			chokidar.watch = (_watchedPath, options) => {
 				openedOptions.push(options);
 				return fakeWatcher((event, handler) => {
 					if (event === 'error') errorHandlers.push(handler);
 				});
-			});
+			};
 
 			loadAndWatch(watchPath, () => {}, 'certificate');
 			expect(openedOptions).to.have.lengthOf(1);
@@ -1190,11 +1187,9 @@ describe('Test keys module', () => {
 			// evaluated eagerly: a close() that throws synchronously threw out of the 'error' listener
 			// itself, past the chained .catch(), and Node reported it as an uncaught exception instead
 			// of reopening on polling.
-			localSandbox.restore();
-			const chokidar = require('chokidar');
 			const openedOptions = [];
 			const errorHandlers = [];
-			localSandbox.stub(chokidar, 'watch').callsFake((_watchedPath, options) => {
+			chokidar.watch = (_watchedPath, options) => {
 				openedOptions.push(options);
 				const watcher = {
 					on: (event, handler) => {
@@ -1206,7 +1201,7 @@ describe('Test keys module', () => {
 					},
 				};
 				return watcher;
-			});
+			};
 
 			loadAndWatch(watchPath, () => {}, 'certificate');
 			expect(openedOptions).to.have.lengthOf(1);
