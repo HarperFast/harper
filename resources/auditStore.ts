@@ -246,7 +246,7 @@ export function openAuditStore(rootStore) {
 					// cleanup loop for the life of the store.
 					resolve();
 					const minimumDelay = isRocksAuditStore
-						? Math.max(1, Math.min(DEFAULT_AUDIT_CLEANUP_DELAY, auditRetention / 10, MAX_CLEANUP_DELAY))
+						? Math.max(1, Math.min(DEFAULT_AUDIT_CLEANUP_DELAY, MAX_CLEANUP_DELAY))
 						: 0;
 					if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of

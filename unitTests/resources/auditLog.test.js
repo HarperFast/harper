@@ -186,19 +186,23 @@ describe('Audit log', () => {
 		setAuditRetention(1_000, 10);
 		try {
 			const firstResolution = store.scheduleAuditCleanup(10);
+			assert.equal(scheduled.length, 1);
 			const first = scheduled.shift();
 			assert.equal(first.delay, 10);
 			await first.callback();
 			await firstResolution;
 
+			assert.equal(scheduled.length, 1);
 			const second = scheduled.shift();
 			assert.equal(second.delay, 20);
 			await second.callback();
 
+			assert.equal(scheduled.length, 1);
 			const third = scheduled.shift();
 			assert.equal(third.delay, 40);
 			await third.callback();
 
+			assert.equal(scheduled.length, 1);
 			assert.equal(scheduled.shift().delay, 10, 'active purge should reset Rocks cleanup backoff');
 		} finally {
 			rootStore.purgeLogs = originalPurgeLogs;
