@@ -39,8 +39,14 @@ For operations tools, the descriptor fields are sourced from:
 | `description`                 | Hand-authored entry in the operations descriptions catalog; falls back to a generic template when an operator opts in a non-cataloged operation |
 | `inputSchema`                 | Hand-curated JSON Schema in the operations input-schemas catalog; falls back to `{ type: 'object', additionalProperties: true }`                |
 | `annotations.readOnlyHint`    | `true` if the operation matches a read-only prefix (`describe_`, `list_`, `search_`, `get_`, `read_`) or is the literal `system_information`    |
-| `annotations.destructiveHint` | `true` for operations in the curated destructive set (`drop_*`, `delete_*`, `restart`, `set_configuration`, etc.)                               |
+| `annotations.destructiveHint` | `true` for operations in the curated destructive set — an explicit list, not a prefix match; see below                                          |
 | `annotations.idempotentHint`  | Default empty; opt-in per operation after end-to-end verification that the second call produces the same observable outcome                     |
+
+The curated destructive set is enumerated in core rather than matched by prefix, and this is its full membership:
+
+`drop_schema`, `drop_database`, `drop_table`, `drop_attribute`, `drop_user`, `drop_role`, `delete`, `delete_files_before`, `delete_records_before`, `delete_audit_logs_before`, `delete_transaction_logs_before`, `delete_deployment_payload`, `delete_backup`, `purge_backups`, `restore_backup`, `restart`, `restart_service`, `set_configuration`, `remove_node`.
+
+Operations that look destructive but are absent from it carry no hint — `drop_component`, `deploy_component`, `drop_waf_rule`, `delete_secret`, and `remove_certificate` among them — so do not read the hint as an inventory of what an operation can damage.
 
 Operations registered outside core (for example, `cluster_status` from harper-pro) don't have catalog entries; they fall back to the generic description template until the per-operation metadata registry lands.
 

@@ -87,6 +87,8 @@ Groups expand to a predefined set of operations and can be mixed with individual
 
 - `standard_user` — Everything in `read_only` plus full data manipulation and bulk load. Does not include any `super_user`-restricted operations, schema DDL (`create_attribute`), or token management. Additional operations beyond `read_only`: `insert`, `update`, `upsert`, `delete`, `csv_data_load`, `csv_file_load`, `csv_url_load`, `import_from_s3`
 
+- `agent` — Drive the [built-in agent](../operations-api/operations.md#agent) without full `super_user`. Operations: `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `cancel_agent_run`, `approve_agent_action`. `set_agent_config` is deliberately excluded, so a delegated role cannot change the agent's model or approval policy. Read the agent section's security warning before granting this: the session reads are not caller-scoped, and a prompt directs tools that run at process privilege
+
 **Example: read-only role**
 
 ```json

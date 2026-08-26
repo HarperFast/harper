@@ -38,6 +38,8 @@ Operations exposed as MCP tools. Glob `*` matches any sequence of characters; li
 
 The default list intentionally avoids `get_*` as a glob because that pulls in `get_configuration` (which can return TLS / S3 / authentication secrets), `get_components` / `get_component_file` / `get_custom_function*` (which return component source that can embed secrets), `get_backup`, and `get_deployment*`. These are all gated by `verifyPerms` at dispatch, but defaulting to "expose them to an LLM if a super_user calls them" is the wrong default — opt them in deliberately.
 
+This setting is not MCP-only. With [`agent.enabled`](../configuration/options.md#agent) on, the built-in agent's operations tools are drawn from this same allow list, so anything you add here becomes a tool the agent can call on its own initiative — and `agent.allowDestructive` and `agent.autoApprove` only cover the operations on the [curated destructive set](./tool-metadata.md), which is not every damaging operation. Read [Agent operations](../operations-api/operations.md#agent) before widening this list on a node with the agent enabled.
+
 ### `mcp.operations.deny`
 
 Type: `array<string>` (glob patterns or literal operation names)

@@ -77,6 +77,7 @@ Operations are grouped by topic. See [Operations](./operations.md) for the compl
 | [Configuration](./operations.md#configuration)                       | Read and update Harper configuration                           | —                                                               |
 | [Web Application Firewall](./operations.md#web-application-firewall) | Manage WAF rules, mode, and score threshold                    | [WAF Operations](../web-application-firewall/operations.md)     |
 | [System](./operations.md#system)                                     | Restart, system information, status management                 | —                                                               |
+| [Agent](./operations.md#agent)                                       | Drive the built-in Harper agent                                | [Models Overview](../models/overview.md)                        |
 | [Jobs](./operations.md#jobs)                                         | Query background job status                                    | [Database Jobs](../database/jobs.md)                            |
 | [Logs](./operations.md#logs)                                         | Read standard, transaction, and audit logs                     | [Logging Operations](../logging/operations.md)                  |
 | [Certificate Management](./operations.md#certificate-management)     | Manage TLS certificates                                        | [Certificate Management](../security/certificate-management.md) |

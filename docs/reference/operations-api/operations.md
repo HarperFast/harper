@@ -1322,6 +1322,174 @@ Manage in-memory application status values. Status types: `primary`, `maintenanc
 
 ---
 
+## Agent
+
+<VersionBadge version="v5.2.0" />
+
+Operations for driving Harper's built-in agent — an LLM loop that operates the instance through Harper's own operations, scoped filesystem access, followup scheduling, the V8 inspector, and outbound HTTP. The loop runs on the main thread, so an active run competes with Harper's other main-thread work; prefer running exploratory prompts against a node that is not serving production traffic.
+
+The agent component is **disabled by default**. Enable it with `agent.enabled: true` in `harper-config.yaml` (see [`agent`](../configuration/options.md#agent)) and configure a generative model under [`models`](../models/overview.md#configuration). With the component disabled at startup none of these operations are registered, so calling one is an unknown-operation error rather than a permission or state error.
+
+All six operations are `super_user` by default. They participate in the role [`operations` allowlist](../users-and-roles/overview.md#operation-permissions), so a non-`super_user` role can be granted a scoped subset without granting full `super_user` — either individual names (`operations: ['agent_prompt', 'get_agent_session']`) or the built-in [`agent` permission group](../users-and-roles/overview.md#operation-permissions), which covers all of these except `set_agent_config`. Note that the read operations are not caller-scoped: a role granted `get_agent_session` or `list_agent_sessions` reads every session on the instance, including transcripts of runs it did not start. Because a transcript records the _arguments and output_ of every tool call, and those calls ran as `agent.user`, delegating a read operation hands that role the results of work done at the agent's privilege — table contents, log excerpts, configuration — regardless of its own permissions. Delegate the read operations only to roles you would trust with the agent itself.
+
+:::warning
+Anyone who can call `agent_prompt` can direct whatever the agent does. Understand the boundary before enabling it:
+
+- `agent.user` (default: a `super_user` bootstrap identity) governs only the **operations** tools. Setting it to a restricted user narrows those, and nothing else.
+- The agent's other tools — scoped filesystem access, outbound `http_fetch`, followup scheduling, and the V8 inspector — run at the Harper process's own privilege, whatever `agent.user` is. (The inspector tools additionally need `threads.debug`, and fail with an explanatory error without it.)
+- `http_fetch` blocks only the known cloud-metadata hostnames and the IPv4 link-local range `169.254.0.0/16`, and it checks the literal hostname you pass — a name that resolves to a blocked address is not caught, and redirects are followed without re-checking. Every other host, including anything private or internal the server can route to, is reachable. Reading is ungated too: `read_file` covers the log and configuration directories as well as the component tree, so an enabled agent puts a read path and an egress path in the same toolset. Treat it as an outbound network client and apply egress policy to the host.
+- With the default `agent.allowDestructive: false`, destructive tools (including filesystem writes) are removed from the toolset entirely. Turning it on admits component writes, and component code is executed by the Harper process — a write is effectively code execution at process privilege.
+- Leave `agent.autoApprove` off so any destructive call that is admitted still pauses for [approval](#approve_agent_action). The gate covers only the tools marked destructive — filesystem writes, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) (`drop_table`, `delete`, `restart`, `set_configuration`, ...). `http_fetch` and followup scheduling are not gated, so an outbound POST and a self-rescheduling run proceed without an approval prompt.
+- That set is an explicit list in core rather than a prefix match, and it is not a list of every damaging operation, so `allowDestructive` and `autoApprove` are not a boundary by themselves. The component operations are the ones to know about: `drop_component` and `deploy_component` are both off the set, so opting either into [`mcp.operations.allow`](../mcp/configuration.md#mcpoperationsallow) puts it in the agent's toolset where `allowDestructive: false` does not remove it and no approval gates it — and `deploy_component` writes code the Harper process then executes. Vet anything you add to that allow list on its own merits rather than assuming these two settings cover it.
+  :::
+
+| Operation              | Description                                                   | Role Required |
+| ---------------------- | ------------------------------------------------------------- | ------------- |
+| `agent_prompt`         | Starts or continues an agent session and kicks off a run      | super_user    |
+| `get_agent_session`    | Returns a session: status, full transcript, pending approvals | super_user    |
+| `list_agent_sessions`  | Lists agent sessions                                          | super_user    |
+| `approve_agent_action` | Approves or denies a gated tool call and resumes the run      | super_user    |
+| `cancel_agent_run`     | Cancels a run and marks the session aborted                   | super_user    |
+| `set_agent_config`     | Updates agent settings in memory for the life of the process  | super_user    |
+
+### Sessions and run status
+
+Each conversation is a session, persisted to `system.hdb_agent_session` so transcripts survive a restart. Runs are asynchronous: `agent_prompt` returns as soon as the run is started, and you poll `get_agent_session` for progress and results.
+
+Transcripts are retained indefinitely — the table is audited and none of these operations delete a session — and each tool call is recorded with its arguments as well as its output, so a bearer token in an `http_fetch` header or a secret in a `set_configuration` call is stored verbatim. Treat a prompt and everything a run passes to a tool as durably recorded, and keep credentials out of both.
+
+The table also carries no replication opt-out: it is not on core's list of non-replicating system tables, so on a cluster that replicates the `system` database, expect transcripts to reach peer nodes with it, and a backup of `system` to carry them as well. Treat a run's prompts and tool output as cluster-wide rather than local to the node that served the request.
+
+A run does not resume across a restart, and nothing reconciles session status at startup: a session the restart caught in `running` or `awaiting_approval` keeps that status indefinitely, so polling never terminates and `agent_prompt` rejects it with a 409. Clear it with [`cancel_agent_run`](#cancel_agent_run), which reports `"signalledLiveRun": false` because there is no live run left to signal.
+
+A session's `status` is one of:
+
+| Status              | Meaning                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `idle`              | Created, or resumable — no run in flight                                                      |
+| `running`           | A run is in progress                                                                          |
+| `awaiting_approval` | Paused on one or more destructive tool calls; see `pendingApprovals`                          |
+| `completed`         | The run ended without throwing — a final answer, or the `maxTurns` ceiling; check `lastError` |
+| `aborted`           | Cancelled by an operator via `cancel_agent_run`                                               |
+| `error`             | The run failed; `lastError` carries the message                                               |
+
+`completed` also covers hitting the `agent.maxTurns` ceiling — in that case `lastError` reads `Reached maxTurns=<n> without a final answer.`, so check it before treating a completed session as finished.
+
+### `agent_prompt`
+
+Sends a prompt to the agent. Omit `session_id` to start a new session; supply one to continue an existing conversation. Returns immediately with the session id and `"status": "running"`.
+
+| Parameter    | Type   | Description                                                     |
+| ------------ | ------ | --------------------------------------------------------------- |
+| `message`    | string | The instruction for the agent. **Required**, must be non-empty. |
+| `session_id` | string | Existing session to continue. Omit to create a new session.     |
+
+```json
+{
+	"operation": "agent_prompt",
+	"message": "Create a component called inventory with a Product table keyed by sku, then verify it responds over REST."
+}
+```
+
+Response:
+
+```json
+{ "session_id": "3f7c...", "status": "running" }
+```
+
+A session that is `running` or `awaiting_approval` rejects a new prompt with a 409 — resolve the pending approval or cancel the run first.
+
+### `get_agent_session`
+
+Returns the full session record: `status`, `user` (the Operations API caller who created the session, falling back to `agent.user`), the `messages` transcript (user, assistant, and tool messages, including tool calls and their observations), `pendingApprovals`, `model`, `provider`, `createdAt`/`updatedAt`, and `lastError`. This is the polling endpoint for a run in flight.
+
+```json
+{ "operation": "get_agent_session", "session_id": "3f7c..." }
+```
+
+Unknown `session_id` returns a 404.
+
+### `list_agent_sessions`
+
+Lists agent sessions.
+
+| Parameter | Type    | Description                              |
+| --------- | ------- | ---------------------------------------- |
+| `limit`   | integer | Maximum sessions to return. Default 100. |
+
+```json
+{ "operation": "list_agent_sessions", "limit": 20 }
+```
+
+Response:
+
+```json
+{ "sessions": [{ "session_id": "3f7c...", "status": "completed", "...": "..." }] }
+```
+
+Through v5.2.4 the result order is not chronological — session ids are UUIDs and the listing walks them in reverse key order — and `limit` is applied by that scan, so once there are more sessions than `limit` the ones left out are an arbitrary subset rather than the oldest. On those versions, request a `limit` above your session count and sort on `updatedAt` or `createdAt` yourself if you need recency. The ordering is fixed in core by [harper#2268](https://github.com/HarperFast/harper/issues/2268) — check the release notes for the version it ships in.
+
+### `approve_agent_action`
+
+When `agent.autoApprove` is off (the default), any tool call the agent makes to a destructive operation pauses the run and lands in the session's `pendingApprovals`. This operation resolves one of them and resumes the run. Each entry carries its identifier in an `id` field — pass that as `approval_id` — alongside `toolName`, `arguments`, and `reason`.
+
+| Parameter     | Type    | Description                                                                      |
+| ------------- | ------- | -------------------------------------------------------------------------------- |
+| `session_id`  | string  | **Required.**                                                                    |
+| `approval_id` | string  | The `id` of the entry in `get_agent_session`'s `pendingApprovals`. **Required.** |
+| `approved`    | boolean | `true` to approve (default). `false` denies the call.                            |
+
+```json
+{
+	"operation": "approve_agent_action",
+	"session_id": "3f7c...",
+	"approval_id": "9b21...",
+	"approved": true
+}
+```
+
+Both decisions resume the loop: an approval executes the saved tool call, and a denial hands the refusal back to the model as an observation so it can adjust. Neither ends the run — use `cancel_agent_run` for that. If a single turn produced several gated calls, the session stays `awaiting_approval` until every one of them is resolved. Resolving an already-resolved approval is an error.
+
+Whether a tool is treated as destructive at all is governed by `agent.allowDestructive`: when it is `false` (the default), destructive tools are removed from the agent's toolset entirely rather than gated. Which tools carry that mark is fixed in core — `write_file`, the inspector's code-evaluation tools, and the operations on MCP's [curated destructive set](../mcp/tool-metadata.md) — so an operation outside it (`drop_component` and `deploy_component` among them) is neither removed nor gated.
+
+### `cancel_agent_run`
+
+Cancels a session's run, clears any followups it scheduled, and marks the session `aborted`. Works on a paused (`awaiting_approval`) or `idle` session as well as an actively running one.
+
+```json
+{ "operation": "cancel_agent_run", "session_id": "3f7c..." }
+```
+
+Response:
+
+```json
+{ "cancelled": true, "signalledLiveRun": true }
+```
+
+`cancelled` is `false` if the session had already reached a terminal state (`completed`, `aborted`, `error`). `signalledLiveRun` reports whether there was an in-flight run to abort — a paused session yields `false` while still being marked aborted.
+
+One gap is worth knowing: changing `allowDestructive` with [`set_agent_config`](#set_agent_config) rebuilds the toolset, and followups scheduled before that change are no longer tracked, so a later cancel does not clear them. A stray followup starts a fresh run even after a cancel and even with `enabled` set to `false`. If a run has scheduled followups, avoid toggling `allowDestructive` mid-session, and restart the node if one escapes.
+
+### `set_agent_config`
+
+Updates agent settings and returns the resulting configuration. Accepts any of `enabled`, `provider`, `model`, `maxTurns`, `maxCostUsd`, `autoApprove`, `allowDestructive`, and `systemPromptAppend`; keys not supplied are left unchanged. Each field is described under [`agent`](../configuration/options.md#agent).
+
+```json
+{ "operation": "set_agent_config", "autoApprove": false, "maxTurns": 20 }
+```
+
+Three limits are worth knowing:
+
+- **The change is in-memory and not persisted.** It applies for the life of the process and is lost on restart; edit `harper-config.yaml` for a durable change.
+- **A run already in flight keeps the settings it started with** — its toolset, `autoApprove`, `model`, and `systemPromptAppend` are all captured at start. Changes take effect on the next run. To stop a run immediately, use `cancel_agent_run`.
+- **`enabled` is not a kill switch.** It cannot turn the agent on — if it was off at startup, this operation does not exist. Setting it to `false` only makes subsequent `agent_prompt` calls return 409; a run already in flight continues, and `approve_agent_action` still resumes a paused one. Use `cancel_agent_run` to stop a run.
+
+### MCP access
+
+When the [MCP server](../mcp/overview.md) is enabled with the operations profile, `agent_prompt`, `get_agent_session`, `list_agent_sessions`, `approve_agent_action`, and `cancel_agent_run` are also exposed as MCP tools, with no allow-list entry required. They dispatch through the same authorization path as the operations above, and are listed only for users whose role could call them. `set_agent_config` is deliberately not exposed over MCP — it is an operator action.
+
+---
+
 ## Backup & Restore
 
 Operations for backing up and restoring databases. Managed backups <VersionBadge version="v5.2.0" /> require the RocksDB storage engine; `get_backup` works with both RocksDB and LMDB.
