@@ -1601,6 +1601,25 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 	}
 }
 
+/** The file paths every outstanding unlink intent for this root resolves to. */
+function queuedUnlinkPaths(rootStore: any): string[] {
+	const queueDb = unlinkQueueDb(rootStore);
+	if (!queueDb) return [];
+	const paths: string[] = [];
+	try {
+		for (const { key, value } of queueDb.getRange({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
+			try {
+				paths.push(getFilePath({ storageIndex: value?.storageIndex ?? 0, fileId: key[1], store: rootStore }));
+			} catch (error) {
+				logger.debug?.('Could not resolve a queued blob unlink path', key[1], error);
+			}
+		}
+	} catch (error) {
+		logger.debug?.('Unable to read blob unlink queue', error);
+	}
+	return paths;
+}
+
 /**
  * Account for a failed unlink attempt, returning true once the retry cap is reached and the row has
  * been abandoned. A file that can never be removed (EPERM on a mount, an unresolvable path) must not
@@ -1679,16 +1698,19 @@ export function initBlobUnlinkQueue(rootStore: any): void {
 	scheduleBlobUnlinkDrain(rootStore); // startup drain; prior-life rows are all due already
 	if (isMainThread && !mainSafetyDrains.has(rootStore)) {
 		mainSafetyDrains.add(rootStore);
+		// Held weakly: a store dropped without an explicit close (an ephemeral database, a dropped
+		// test fixture) would otherwise be pinned for the life of the process by this closure, since
+		// the timer itself is a GC root and the `status` check below only fires on a clean close.
+		const storeRef = new WeakRef(rootStore);
 		const interval = setInterval(() => {
-			// self-clear once the database is closed/dropped so the interval's closure doesn't
-			// pin the store and spin on a dead handle
-			if ((rootStore as any).status === 'closed' || (rootStore as any).dbisDb?.status === 'closed') {
+			const store = storeRef.deref();
+			if (!store || (store as any).status === 'closed' || (store as any).dbisDb?.status === 'closed') {
 				clearInterval(interval);
-				mainSafetyDrains.delete(rootStore);
+				if (store) mainSafetyDrains.delete(store);
 				return;
 			}
 			try {
-				drainBlobUnlinkQueue(rootStore);
+				drainBlobUnlinkQueue(store);
 			} catch (error) {
 				logger.debug?.('Blob unlink safety drain failed', error);
 			}
@@ -3609,7 +3631,7 @@ export async function cleanupOrphans(
 	logger.warn?.(
 		dryRun
 			? `Checked Orphan Blobs in ${databaseName ?? 'database'}, found ${orphansFound} orphaned blobs holding ${orphanBytes} bytes (dry run, nothing deleted)`
-			: `Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansFound} blobs holding ${orphanBytes} bytes)`
+			: `Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansFound} blobs holding ${orphanBytes} bytes`
 	);
 	return { orphans: orphansFound, bytes: orphanBytes };
 	async function searchPath(path: string) {
@@ -3690,6 +3712,10 @@ export async function cleanupOrphans(
 		for (const path of pathsToCheck) {
 			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
 		}
+		// The durable rows are the same claim across a restart, where the in-memory map above is empty
+		// by definition. Sweeping one deletes the file out from under its drain, which then burns its
+		// retry budget on a file that is already gone and reports it as an orphan twice.
+		for (const path of queuedUnlinkPaths(store)) pathsToCheck.delete(path);
 		const repairTempLocks = new Map<string, string>();
 		for (const path of pathsToCheck) {
 			if (!path.endsWith(BLOB_REPAIR_SUFFIX)) continue;

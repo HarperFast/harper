@@ -2690,6 +2690,37 @@ describe('durable blob-unlink queue (#1832)', () => {
 		);
 	});
 
+	it('leaves a file with an outstanding unlink intent for its drain, not for the orphan sweep', async () => {
+		// The post-restart shape: the durable row is the live claim and the in-memory map is empty, so
+		// the sweep's pendingReclamation exclusion cannot see it. Its own database, because the sweep
+		// reclaims every unreferenced file in the one it is pointed at.
+		const SweepTest = table({
+			table: 'BlobSweepTest',
+			database: 'blobsweep',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const sweepRoot = SweepTest.primaryStore.rootStore;
+		const claimed = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(claimed).saving, sweepRoot);
+		const claimedPath = getFilePathForBlob(claimed);
+		const unclaimed = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(unclaimed).saving, sweepRoot);
+		const unclaimedPath = getFilePathForBlob(unclaimed);
+		sweepRoot.dbisDb.putSync([UNLINK_QUEUE_KEY, getFileId(claimed)], {
+			due: Date.now() + 600000,
+			storageIndex: 0,
+		});
+
+		const swept = await cleanupOrphans(getDatabases().blobsweep, 'blobsweep');
+
+		assert.ok(existsSync(claimedPath), 'a file with an outstanding unlink intent must survive the sweep');
+		assert.ok(!existsSync(unclaimedPath), 'a genuinely unreferenced file must still be swept');
+		assert.equal(swept.orphans, 1, 'a queued file must not be counted as an orphan the sweep reclaimed');
+	});
+
 	it('drains a backlog larger than one batch to completion', async () => {
 		setDeletionDelay(600000);
 		const staged = [];
