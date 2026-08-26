@@ -686,7 +686,11 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	let table = requestJson.table;
 
 	let schemaTableMap = new Map();
-	if (operationSchema && table) {
+	// `table != undefined`, not truthy: `hdbTable` is `Joi.alternatives(Joi.string(), Joi.number())`
+	// (validation/common_validators.ts), so a table named `0` validates and a truthy test drops it
+	// from the map — leaving `hasPermissions` nothing to iterate, which authorizes by vacuous truth.
+	// The same falsy-vs-nullish distinction the database resolution above turns on.
+	if (operationSchema != undefined && table != undefined) {
 		schemaTableMap.set(operationSchema, [table]);
 	}
 
@@ -815,7 +819,7 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 	// returns a database, so a named table always populates the map and this is unreachable today; it
 	// is here so that a future change to target resolution fails safe instead of silently authorizing
 	// everything. That also means no test can cover it, which is the point rather than an omission.
-	if (table && schemaTableMap.size === 0) {
+	if (table != undefined && schemaTableMap.size === 0) {
 		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, operationSchema, table));
 	}
 
@@ -1165,7 +1169,10 @@ export function getAttributePermissions(rolePerms, operationSchema, table) {
 	}
 	//Some commands do not require a table to be specified.  If there is no table, there is likely not
 	// anything attribute permissions needs to check.
-	if (!operationSchema || !table) {
+	// Nullish rather than falsy for the same reason as the map guard in verifyPerms: a table named `0`
+	// validates (`hdbTable` accepts a number), and skipping it here means its attribute permissions
+	// go unchecked.
+	if (operationSchema == undefined || table == undefined) {
 		return roleAttributePermissions;
 	}
 	try {

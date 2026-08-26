@@ -90,10 +90,32 @@ export async function validation(writeObject: any) {
 		dups.add(hdbUtils.autoCast(record[hash_attribute]));
 
 		for (let attr in record) {
-			// Kept in step with the sync twin in harperBridge/bridgeUtility/insertUpdateValidate.js:
-			// `__unset__` names attributes to remove and is not one itself, so it must not be registered
-			// as a table attribute.
-			if (attr === terms.UNSET_ATTRIBUTES) continue;
+			// `__unset__` names attributes to remove and is not one itself, so the key never counts as
+			// an attribute — but the names it removes DO. This list is the bulk-load path's
+			// attribute-permission input: `bulkLoad.validateChunk` hands it to
+			// `verifyBulkLoadAttributePerms`, so a name missing from it is a removal nobody authorized.
+			// The direct operations path gets the same treatment from `getRecordAttributes`
+			// (utility/operation_authorization.ts); without it here, `import_from_s3` with
+			// `action: "update"` could unset an attribute the role has no permission to write while the
+			// equivalent `update` returns 403.
+			//
+			// Contributed for every action, not just update/upsert: requiring the permission is the safe
+			// direction, and `__unset__` is refused outright on an insert anyway (see
+			// ResourceBridge.takeUnsetAttributes).
+			//
+			// The sync twin in harperBridge/bridgeUtility/insertUpdateValidate.js feeds
+			// `Table.addAttributes` instead, so it must skip the key WITHOUT adding the removed names —
+			// registering an attribute in order to delete it would be backwards. The two lists are
+			// deliberately not identical; keep both comments in step.
+			if (attr === terms.UNSET_ATTRIBUTES) {
+				const unset = record[attr];
+				if (Array.isArray(unset)) {
+					for (const name of unset) {
+						if (typeof name === 'string' && name.length > 0) attributes[name] = 1;
+					}
+				}
+				continue;
+			}
 			attributes[attr] = 1;
 		}
 	});

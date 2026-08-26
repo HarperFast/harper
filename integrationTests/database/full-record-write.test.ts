@@ -609,18 +609,80 @@ suite('full_record: full replace over the operations API', { skip: skipSuite }, 
 			strictEqual(r.status, 200, `search should not be denied; got ${r.status} ${JSON.stringify(r.body)}`);
 		});
 
-		// Same shape for `__unset__`: it removes nothing on an insert, so its names must not be
-		// demanded as attributes the insert is writing.
-		test('__unset__ does not deny an insert naming an attribute the role cannot write', async () => {
+		// `__unset__` on an insert is refused outright rather than authorized-then-applied, so the
+		// authorization pass contributes nothing for it — the refusal is not a permission decision.
+		test('__unset__ on an insert is refused, not denied on permissions', async () => {
 			const r = await asUser(headers, {
 				operation: 'insert',
 				database: 'data',
 				table: 'Dog',
 				records: [{ id: 'inert-2', name: 'Penny', __unset__: ['color'] }],
 			});
-			strictEqual(r.status, 200, `insert should not be denied; got ${r.status} ${JSON.stringify(r.body)}`);
-			strictEqual((await read('Dog', 'inert-2')).name, 'Penny');
+			ok(r.status >= 400, `insert with __unset__ should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+			strictEqual(r.status !== 403, true, `refusal should not be a permission denial; got ${JSON.stringify(r.body)}`);
 		});
+	});
+
+	// An insert has no existing record to remove anything from. Applying the directive deleted
+	// attributes the same request had just supplied — a silent partial write returning 200 — and
+	// ignoring it would be a directive that quietly does nothing, which is the thing the primary-key
+	// refusal exists to avoid. So it is refused.
+	test('__unset__ is refused on an insert rather than silently dropping supplied attributes', async () => {
+		const r = await ops({
+			operation: 'insert',
+			table: 'Dog',
+			records: [{ id: 'ins-unset', name: 'Penny', color: 'black', __unset__: ['color'] }],
+		});
+		ok(r.status >= 400, `insert with __unset__ should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+
+		const stored = await read('Dog', 'ins-unset');
+		ok(stored == null, `nothing should have been written; got ${JSON.stringify(stored)}`);
+	});
+
+	// `hdbTable` is `Joi.alternatives(Joi.string(), Joi.number())`, so a table named `0` validates. A
+	// truthy `table` test dropped it from `schemaTableMap`, leaving `hasPermissions` nothing to
+	// iterate — the same vacuous-truth bypass the database resolution fixed, one guard over.
+	test('a numeric table name is still authorized', async () => {
+		strictEqual(
+			(await ops({ operation: 'create_table', database: 'data', table: '0', primary_key: 'id' })).status,
+			200
+		);
+		strictEqual(
+			(await ops({ operation: 'insert', database: 'data', table: '0', records: [{ id: 'z-1', name: 'Keep' }] })).status,
+			200
+		);
+
+		const headers = await addScopedRole(
+			'no_numeric_table',
+			{
+				data: {
+					tables: { '0': { read: true, insert: false, update: false, delete: false, attribute_permissions: [] } },
+				},
+			},
+			'no_numeric_table_user'
+		);
+
+		// Sent as a JSON number, which is what makes the guard's falsy test bite.
+		const denied = await asUser(headers, {
+			operation: 'update',
+			database: 'data',
+			table: 0,
+			records: [{ id: 'z-1', name: 'bypass' }],
+		});
+		strictEqual(
+			denied.status,
+			403,
+			`a numeric table must be authorized; got ${denied.status} ${JSON.stringify(denied.body)}`
+		);
+
+		const stored = await ops({
+			operation: 'search_by_id',
+			database: 'data',
+			table: '0',
+			ids: ['z-1'],
+			get_attributes: ['*'],
+		});
+		strictEqual(stored.body?.[0]?.name, 'Keep', 'the denied write must not have landed');
 	});
 
 	// Authorization resolves the target database with `commonUtils.resolveTargetDatabase`, the same

@@ -36,6 +36,9 @@ const { HDB_ERROR_MSGS } = hdbErrors;
 const DEFAULT_DATABASE = 'data';
 const DELETE_CHUNK = 10000;
 const DELETE_PAUSE_MS = 10;
+/** Shared result for the overwhelmingly common case of a record carrying no `__unset__`, so the
+ * default write path allocates nothing per record. Frozen because it is handed out repeatedly. */
+const NO_UNSET_ATTRIBUTES = Object.freeze([]) as unknown as string[];
 
 export type SearchByConditionsRequest = Query &
 	Context & {
@@ -277,7 +280,7 @@ export class ResourceBridge extends BridgeMethods {
 						}
 					}
 				}
-				const unset = takeUnsetAttributes(record, Table.primaryKey);
+				const unset = takeUnsetAttributes(record, Table.primaryKey, upsertObj.requires_no_existing);
 				// `__unset__` removes named attributes while everything else still merges, which a patch
 				// cannot express — so it resolves the merge here, against the record this transaction
 				// already loaded, and writes the result as a full replace. Doing it server-side inside the
@@ -811,13 +814,28 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
  * otherwise be silently ignored — `Table._writeUpdate` re-asserts the primary key on a full update —
  * and a directive that quietly does nothing is worse than one that says no.
  */
-function takeUnsetAttributes(record: Record<string, unknown>, primaryKey: string): string[] {
-	if (!(OPERATIONS_UNSET_KEY in record)) return [];
+function takeUnsetAttributes(
+	record: Record<string, unknown>,
+	primaryKey: string,
+	isCreateOnly: boolean | undefined
+): string[] {
+	if (!(OPERATIONS_UNSET_KEY in record)) return NO_UNSET_ATTRIBUTES;
 	const unset = record[OPERATIONS_UNSET_KEY];
 	// Removed before the shape is judged, and on every exit below: the key is a directive, so
 	// leaving it on a record that is about to be written stores it as data. `in` rather than an
 	// `undefined` check for the same reason — an explicitly-undefined key still has to come off.
 	delete record[OPERATIONS_UNSET_KEY];
+	// `insert` has no existing record to remove anything from, so the directive can only mean the
+	// caller misunderstood it. Refused rather than applied: applying it deleted attributes the same
+	// request had just supplied, which is a silent partial write, and rather than ignored, because a
+	// directive that quietly does nothing is worse than one that says no — the same reason the primary
+	// key below is refused instead of skipped. Authorization contributes nothing for `insert` on the
+	// strength of this (`utility/operation_authorization.ts` getRecordAttributes).
+	if (isCreateOnly) {
+		throw new ClientError(
+			`'${OPERATIONS_UNSET_KEY}' is not valid on an insert, which has no existing record to remove attributes from`
+		);
+	}
 	// Self-safeguarding rather than trusting the caller. `validation/insertValidator.ts` rejects a
 	// malformed value, and every current route here goes through it (`dataLayer/insert.ts`
 	// create/update/upsertRecords, including the replication catchup path) — but the bridge's own
@@ -832,7 +850,7 @@ function takeUnsetAttributes(record: Record<string, unknown>, primaryKey: string
 	// makes for an unrecognized CRDT operation, and the reason it makes it.
 	if (!Array.isArray(unset) || unset.some((name) => typeof name !== 'string' || name.length === 0)) {
 		logger.warn(`Ignoring a malformed '${OPERATIONS_UNSET_KEY}' on a record; expected an array of attribute names`);
-		return [];
+		return NO_UNSET_ATTRIBUTES;
 	}
 	const names = unset as string[];
 	if (primaryKey && names.includes(primaryKey)) {
