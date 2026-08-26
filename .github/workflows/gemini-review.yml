@@ -32,14 +32,20 @@ on:
     # `labeled` admits the `gemini-review` opt-in gesture. `vars.*`
     # can't be read in `on:` (only in a job `if:`), so the trigger
     # lists the union and the `review` job gates on GEMINI_ALWAYS_ON.
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 concurrency:
   # Different group key from claude-review so the two providers can run
   # in parallel on the same PR. cancel-in-progress is per-group, so a
   # synchronize push cancels the in-flight Gemini run without touching
   # the Claude run (and vice versa).
-  group: gemini-review-${{ github.event.pull_request.number }}
+  # NOTE: this predicate is deliberately NARROWER than the review job's
+  # `if:` — the cancelling set must be a subset of the running set.
+  # ready_for_review runs review (job gate) but never cancel: their
+  # authorization is author-based, so on a bot-authored PR they could
+  # kill a labeler-authorized run and then be rejected themselves.
+  # Ineligible events get a unique run_id group — see claude-review.yml.
+  group: gemini-review-${{ github.event.pull_request.number }}-${{ ((github.event.action == 'labeled' && github.event.label.name == 'gemini-review') || (github.event.action != 'labeled' && vars.GEMINI_ALWAYS_ON == 'true')) && 'eligible' || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -51,8 +57,10 @@ jobs:
     # (CODEOWNERS trust set; the labeler, not the author, on `labeled`).
     # Note: the `gemini-review` label name is matched there too —
     # `_gemini-review.yml`'s authorize `if:`, not in this caller.
-    if: ${{ vars.GEMINI_ALWAYS_ON == 'true' || github.event.action == 'labeled' }}
-    uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@4b59dc0ddb15aff517884127b58204f79193b4f2 # main 2026-08-20 (#86 reliable review evidence, context, and run binding)
+    # `ready_for_review` is admitted when the PR still carries the
+    # opt-in label — mirrors claude-review.yml.
+    if: ${{ (github.event.action == 'labeled' && github.event.label.name == 'gemini-review') || (github.event.action != 'labeled' && vars.GEMINI_ALWAYS_ON == 'true') || (github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'gemini-review')) }}
+    uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@be549ad08aa6d34b909ea8b542a7ffebdaae1e81 # main 2026-08-25 (#90 cost gates: draft skip, mechanical-diff skip, effort-by-size, debounce; #89 defaults; #88 lenses)
     # Caller-side permissions at the calling-job level (NOT workflow-
     # level — that placement caps the reusable's per-job grants below
     # what they need and breaks the workflow at startup; see
@@ -70,7 +78,7 @@ jobs:
       # duplication is unavoidable: reusable workflows can't introspect
       # their own ref (`github.workflow_ref` resolves to the CALLER's
       # ref in workflow_call context), and `uses: …@<ref>` is literal.
-      ai-review-prompts-ref: 4b59dc0ddb15aff517884127b58204f79193b4f2
+      ai-review-prompts-ref: be549ad08aa6d34b909ea8b542a7ffebdaae1e81
       review-layers: |
         universal
         harper/common
