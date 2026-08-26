@@ -468,6 +468,8 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * threads at the same time we shutdown new ones. However, we usually want to limit how many we do at once to avoid
  * excessive load and to keep things responsive. This parameter throttles the restarts to minimize load from
  * thread startups.
+ * @param onProgress Called each time a worker has been replaced (or its replacement has been given
+ * up on), so a caller waiting on a wide pool can tell a slow restart from a stalled one.
  * @returns {Promise<{workersKeptOnOldCode: number, replacementsNotStarted: number}|undefined>} from
  * the main thread, how many workers were left running the old code and how many replacements never
  * reported that they started; from a worker, nothing — the restart is handed to the main thread.
@@ -476,7 +478,8 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
 async function restartWorkers(
 	name = null,
 	maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1), // restart 1/8 of the threads at a time, but at least 1
-	startReplacementThreads = true
+	startReplacementThreads = true,
+	onProgress = null
 ) {
 	if (isMainThread) {
 		if (processShuttingDown && startReplacementThreads) return;
@@ -594,9 +597,11 @@ async function restartWorkers(
 					// protection if it is still alive (it may have exited on its own during the wait).
 					if (workers.includes(worker)) worker.wasShutdown = false;
 					workersKeptOnOldCode++;
+					onProgress?.();
 					continue;
 				}
 			}
+			onProgress?.();
 			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			try {
 				worker.postMessage({
@@ -615,7 +620,12 @@ async function restartWorkers(
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
 			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown)
-				replacementsStarting.push(whenWorkerStarted(worker.startCopy()));
+				replacementsStarting.push(
+					whenWorkerStarted(worker.startCopy()).then((started) => {
+						onProgress?.();
+						return started;
+					})
+				);
 
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside

@@ -432,16 +432,29 @@ async function packageComponent(req) {
 }
 
 /**
- * Wait for a worker restart, bounded: each replacement carries its own multi-minute startup
- * backstop, so a wide thread pool could hold the operations-API response open longer than any
- * client will wait. The restart continues regardless, and a restart that failed does not fail the
- * deploy — the component is already on disk and replicated. A restartWorkers() call from a worker
- * only hands the restart to the main thread, so its empty result counts as not complete.
+ * Wait for a worker restart, but stop waiting when it stops making progress rather than on a flat
+ * clock: each replacement carries its own multi-minute startup backstop, so a wide pool can
+ * legitimately take minutes to roll and a fixed cap would report a healthy restart as incomplete,
+ * while a wedged one must not hold the operations-API response open. `startRestart` is handed the
+ * progress callback restartWorkers() reports each replaced worker through. The restart continues
+ * whatever this resolves, and a restart that failed does not fail the deploy — the component is
+ * already on disk and replicated. A restartWorkers() call from a worker only hands the restart to
+ * the main thread, so its empty result counts as not complete.
  */
-const RESTART_WAIT_BUDGET_MS = 120_000;
-function awaitRestart(restarting) {
-	let timer;
-	const restarted = Promise.resolve(restarting).then(
+const RESTART_IDLE_TIMEOUT_MS = 60_000;
+const RESTART_WAIT_CEILING_MS = 600_000;
+function awaitRestart(startRestart) {
+	let idleTimer, ceilingTimer;
+	let reportStalled;
+	const armIdle = () => {
+		clearTimeout(idleTimer);
+		idleTimer = setTimeout(() => reportStalled({ completed: false, stalled: true }), RESTART_IDLE_TIMEOUT_MS);
+	};
+	const stalled = new Promise((resolve) => {
+		reportStalled = resolve;
+		armIdle();
+	});
+	const restarted = Promise.resolve(startRestart(armIdle)).then(
 		(result) =>
 			result && typeof result === 'object'
 				? {
@@ -452,21 +465,14 @@ function awaitRestart(restarting) {
 				: { completed: false, handedOff: true },
 		(error) => ({ completed: false, error })
 	);
-	return Promise.race([
-		restarted,
-		new Promise((resolve) => {
-			timer = setTimeout(() => resolve({ completed: false }), RESTART_WAIT_BUDGET_MS);
-		}),
-	]).finally(() => clearTimeout(timer));
+	const ceiling = new Promise((resolve) => {
+		ceilingTimer = setTimeout(() => resolve({ completed: false }), RESTART_WAIT_CEILING_MS);
+	});
+	return Promise.race([restarted, stalled, ceiling]).finally(() => {
+		clearTimeout(idleTimer);
+		clearTimeout(ceilingTimer);
+	});
 }
-
-/**
- * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
- * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
- * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
- * @param req
- * @returns {Promise<string>}
- */
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -731,7 +737,9 @@ async function deployComponent(req) {
 			// replacements share a port they keep accepting connections for the whole rolling restart, so
 			// a caller that reads success as "the component is live" can be served by a worker that has
 			// never heard of it.
-			const restart = await awaitRestart(manageThreads.restartWorkers('http'));
+			const restart = await awaitRestart((onProgress) =>
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+			);
 			emit('phase', { phase: 'restart', status: 'done' });
 			response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
 			if (restart.replacementsNotStarted)
@@ -747,9 +755,13 @@ async function deployComponent(req) {
 				log.warn(
 					`The restart after deploying ${application.name} was handed to the main thread and could not be awaited here; worker threads may still be running the previous code`
 				);
+			else if (restart.stalled)
+				log.warn(
+					`The restart after deploying ${application.name} stopped making progress for ${RESTART_IDLE_TIMEOUT_MS}ms; worker threads may still be running the previous code`
+				);
 			else if (!restart.completed)
 				log.warn(
-					`The restart after deploying ${application.name} had not finished after ${RESTART_WAIT_BUDGET_MS}ms; worker threads may still be running the previous code`
+					`The restart after deploying ${application.name} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
 				);
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
