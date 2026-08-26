@@ -309,6 +309,24 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		unregisterProcessGroup(678);
 	});
 
+	it('keeps a Linux process group alive when a scan read fails for a reason other than permission or absence', () => {
+		// Unlike EACCES/ENOENT (proof the pid isn't one of our own), an error like EMFILE or a torn
+		// read proves nothing either way, so it must stay conservative rather than skip the pid.
+		assert.strictEqual(
+			isProcessGroupAlive(680, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['680', '681'],
+				readStat: (path) => {
+					if (path === '/proc/680/stat') return '680 (installer) Z 1 680 680';
+					throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
+				},
+			}),
+			true
+		);
+		unregisterProcessGroup(680);
+	});
+
 	it('warns once when process-group termination remains unconfirmed', () => {
 		let now = 0;
 		const warnings = [];

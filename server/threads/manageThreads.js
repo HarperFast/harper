@@ -1007,15 +1007,23 @@ function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
 		let stat;
 		try {
 			stat = readStat(`/proc/${processId}/stat`, 'utf8');
-		} catch {
-			// A pid we can't read (e.g. EACCES under hidepid/ProtectProc on an unrelated process)
-			// cannot be one of our own group's members — we spawned those as this same user, so
-			// their stat is always readable. Skip it rather than treating a foreign restricted pid
-			// as a reason the whole scan can never confirm this group is gone.
-			continue;
+		} catch (error) {
+			if (error.code === 'ENOENT' || error.code === 'ESRCH') continue; // already gone
+			// EACCES/EPERM (e.g. hidepid/ProtectProc) can only happen on a pid we don't own — we
+			// spawned our own group's members as this same user, so their stat is always readable —
+			// so it's not one of ours. Anything else is genuinely unknown, not "not ours".
+			if (error.code === 'EACCES' || error.code === 'EPERM') continue;
+			return {
+				isAlive: null,
+				reason: `reading /proc/${processId}/stat failed (${processProbeError(error)})`,
+			};
 		}
 		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-		if (Number(fields[2]) !== processGroupId) continue;
+		const pgrp = Number(fields[2]);
+		if (!Number.isFinite(pgrp)) {
+			return { isAlive: null, reason: `/proc/${processId}/stat had an unparseable process-group field` };
+		}
+		if (pgrp !== processGroupId) continue;
 		if (fields[0] !== 'Z') return { isAlive: true, reason: `a live member was observed at pid ${processId}` };
 	}
 	return { isAlive: false };
@@ -1223,9 +1231,8 @@ class ProcessGroupTerminationUnconfirmedError extends Error {
 
 // Bounds awaitProcessGroupTermination for isThreadRunning below. Throws rather than resolving to
 // "not running": componentPreparationLock's ownerIsAlive/ownerLivenessConfirmed already treat a
-// throwing isOwnerAlive as "can't confirm — don't steal the claim, don't renew the deadline"
-// (componentPreparationLock.ts:86-91, 111-116), so the *lock's own* bounded wait is what eventually
-// fails the waiter, never this function silently declaring a possibly-still-writing owner gone.
+// throwing isOwnerAlive as "can't confirm — don't steal the claim, don't renew the deadline", so
+// the lock's own bounded wait is what eventually fails the waiter.
 async function awaitConfirmedProcessGroupTermination(ownerThreadId) {
 	const abortController = new AbortController();
 	let timedOut = false;
