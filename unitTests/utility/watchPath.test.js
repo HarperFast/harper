@@ -13,8 +13,10 @@ const {
 const { join, relative } = require('node:path');
 const { tmpdir } = require('node:os');
 
-// A symlink named `RUNNER~1` pointing at a long-named directory models the Windows 8.3 alias this
-// exists for: `realpathSync.native` rewrites the component.
+// A symlink pointing at a long-named directory models the Windows 8.3 alias this exists for:
+// `realpathSync.native` rewrites the component. The link must NOT be named after the alias NTFS
+// would itself generate for its sibling (`runneradmin` -> `RUNNER~1`): on a volume with 8.3 name
+// creation enabled that name is already taken, and symlinkSync fails EEXIST before any test runs.
 describe('watchPath', () => {
 	let root;
 	let longDirectory;
@@ -24,7 +26,7 @@ describe('watchPath', () => {
 	before(() => {
 		root = realpathSync.native(mkdtempSync(join(tmpdir(), 'watch-path-')));
 		longDirectory = join(root, 'runneradmin');
-		aliasLink = join(root, 'RUNNER~1');
+		aliasLink = join(root, 'WPLINK~1');
 		longFile = join(longDirectory, 'config.yaml');
 		mkdirSync(longDirectory);
 		symlinkSync(longDirectory, aliasLink, 'dir');
