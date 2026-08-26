@@ -30,7 +30,7 @@ import {
 } from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { constants, RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
@@ -123,18 +123,13 @@ export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
 // A resequenced write keeps the (newer) version it merged onto, so one version identifies two
-// different stored values; read caching's freshness oracle is version equality, so such a record
-// must never be cached or vouched for. Deliberately above every audit extendedType bit, which the
-// record metadata word borrows from for HAS_BLOBS/LOCAL_ONLY.
-export const VERSION_REUSED = 0x10000;
-// Parked in a VerificationTable slot to mark a key unvouchable (the VT has no invalidate call): the
-// cross-worker signal that a key's version identifies more than one stored value. A timestamp
-// ~285,000 years out — improbable rather than impossible, since write timestamps are
-// caller-supplied, so a record read back at exactly this version is never cached either.
-export const VERSION_UNVOUCHABLE = Number.MAX_SAFE_INTEGER;
-// The single definition of "this write stores under a reused version" — the durable VERSION_REUSED
-// bit (recordUpdater) and the post-commit sentinel park (Table's writeCommit) must never diverge.
-export function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
+// different stored values; every freshness oracle keyed on version equality is then wrong. This is
+// rocksdb-js's VERSION_NOT_UNIQUE_FLAG, and the record metadata word written at value offset 8 is
+// the same header word the VerificationTable reads (its ACTION_32_BIT tag byte is the tag the
+// native predicate requires), so setting it here is what stops the native layer vouching for or
+// publishing this version. Above every audit extendedType bit the metadata word borrows from.
+export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
+function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
 

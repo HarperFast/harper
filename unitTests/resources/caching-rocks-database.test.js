@@ -6,7 +6,7 @@ const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-const { VERSION_UNVOUCHABLE } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -132,32 +132,24 @@ describe('PrimaryRocksDatabase', function () {
 	});
 
 	it('VT does not vouch for a version a resequenced write reused', async function () {
+		const store = TestTable.primaryStore;
 		const now = Date.now();
 		await TestTable.put(9, { name: 'base', count: 0 });
 		await TestTable.patch(9, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
 		await TestTable.get(9);
-		const inOrder = TestTable.primaryStore.getEntry(9);
-		assert(TestTable.primaryStore.verifyVersion(9, inOrder.version), 'VT should vouch for an in-order version');
+		const inOrder = store.getEntry(9);
+		assert(store.verifyVersion(9, inOrder.version), 'VT should vouch for an in-order version');
 
 		// out-of-order: merges onto the newer record and stores under its (reused) version
 		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
-		// Asserted before any read: with every worker warm, no reader ever decodes the flagged
-		// record, so only the writer can park in time.
-		assert(
-			TestTable.primaryStore.verifyVersion(9, VERSION_UNVOUCHABLE),
-			'the resequenced write itself must park the unvouchable sentinel'
-		);
-		const resequenced = TestTable.primaryStore.getEntry(9);
+		const resequenced = store.getEntry(9);
 		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
 		assert.equal(resequenced.value.count, 2, 'both increments are applied');
-		assert(
-			!TestTable.primaryStore.verifyVersion(9, resequenced.version),
-			'VT must not vouch for a version shared by two stored values'
-		);
-		assert(
-			TestTable.primaryStore.verifyVersion(9, VERSION_UNVOUCHABLE),
-			'reading a resequenced record must leave the slot parked as unvouchable'
-		);
+		assert(resequenced.metadataFlags & VERSION_REUSED, 'the stored record is marked non-unique for the native layer');
+		assert(!store.verifyVersion(9, resequenced.version), 'VT must not vouch for a version shared by two stored values');
+		// a read of a flagged record must publish nothing and cache nothing, however many times it runs
+		assert.notEqual(store.getEntry(9).value, resequenced.value, 'a flagged record is never served from cache');
+		assert(!store.verifyVersion(9, resequenced.version), 'reading a flagged record must not publish its version');
 	});
 
 	it('an uncachedRead bypasses the cache vouch and returns the stored record', async function () {
@@ -184,6 +176,7 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.patch(11, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
 		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
 		const reused = store.getEntry(11);
+		assert(reused.metadataFlags & VERSION_REUSED, 'the reused version is marked');
 		assert(!store.verifyVersion(11, reused.version), 'the reused version is not vouched for');
 
 		// the next in-order write gives the record a version of its own; vouching resumes with the
