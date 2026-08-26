@@ -84,17 +84,13 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 }
 
 function startHTTPWorker(index, threadCount = 1) {
-	let resolveReady, rejectReady;
+	const { promise: ready, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers<void>();
 	let waitingForInitialReady = true;
 	let finishCurrentStartup = () => {};
 	let startupAttempts = 0;
 	// A Worker's threadId reads back as -1 once it has exited, which is exactly when the diagnostics
 	// below run, so each attempt records its id while the worker is still alive.
 	let lastThreadId = -1;
-	const ready = new Promise<void>((resolve, reject) => {
-		resolveReady = resolve;
-		rejectReady = reject;
-	});
 	const finishStartup = () => {
 		waitingForInitialReady = false;
 		finishCurrentStartup();

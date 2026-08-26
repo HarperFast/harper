@@ -25,8 +25,9 @@
 		// Type checking only by default; use `tsconfig.build.json` for emitting
 		"noEmit": true,
 
-		// Target Node 20+ with ES2022 features
+		// Emit ES2022 while type-checking the Node 22+ ES2024 runtime surface
 		"target": "ES2022",
+		"lib": ["ES2024", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
 
