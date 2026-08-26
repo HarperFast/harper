@@ -100,16 +100,10 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
 			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
-<<<<<<< HEAD
 			const result = immediateTxn.commit({}) as any;
 			// Nothing may be sent back to this throwaway: the write is already committed, and its
 			// durability is the promise below.
 			operation.stagedIn = undefined;
-||||||| parent of b21d6b433 (fix(transaction): bound a poisoned transaction's retained read snapshot)
-			const result = immediateTxn.commit({});
-=======
-			const result = immediateTxn.commit({}) as any;
->>>>>>> b21d6b433 (fix(transaction): bound a poisoned transaction's retained read snapshot)
 			if (result?.then) {
 				operation.promise = result;
 			} else {
