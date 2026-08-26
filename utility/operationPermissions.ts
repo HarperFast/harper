@@ -97,6 +97,11 @@ const validGroups: Set<string> = new Set(Object.keys(OPERATION_PERMISSION_GROUPS
 // permission) whose names may fall outside OPERATIONS_ENUM. Tracked so they're grantable in a
 // role's `operations` allowlist (add_role/alter_role/impersonation validate against this set too).
 const dynamicallyRegisteredOps: Set<string> = new Set();
+// The same, for ops registered on a WORKER and mirrored here by the OPERATION_REGISTERED bridge.
+// Deliberately a separate set: the two threads can register the same name independently (a hot
+// deploy can add a `startOnMainThread` component while the worker offering that name is retiring),
+// so worker-lifecycle cleanup must not be able to revoke a mark this thread made itself.
+const workerRegisteredOps: Set<string> = new Set();
 
 /**
  * Mark a dynamically-registered operation name as a valid target for role `operations` grants.
@@ -115,13 +120,24 @@ export function unregisterGrantableOperation(name: string): void {
 	dynamicallyRegisteredOps.delete(name);
 }
 
+export function registerWorkerGrantableOperation(name: string): void {
+	workerRegisteredOps.add(name);
+}
+
+export function unregisterWorkerGrantableOperation(name: string): void {
+	workerRegisteredOps.delete(name);
+}
+
 /**
  * Validates that every entry in an operations array is a known operation name or group name.
  * Returns the first invalid entry, or null if all entries are valid.
  */
 export function validateOperations(operations: readonly unknown[]): string | null {
 	for (const op of operations) {
-		if (typeof op !== 'string' || (!validOps.has(op) && !validGroups.has(op) && !dynamicallyRegisteredOps.has(op))) {
+		if (
+			typeof op !== 'string' ||
+			(!validOps.has(op) && !validGroups.has(op) && !dynamicallyRegisteredOps.has(op) && !workerRegisteredOps.has(op))
+		) {
 			return String(op);
 		}
 	}

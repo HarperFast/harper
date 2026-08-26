@@ -187,6 +187,10 @@ export type OperationDefinition = {
 	requiresSuperUser?: boolean;
 };
 
+// Operation names this API installed a permission entry for, so a later registration that drops
+// `requiresSuperUser` can retract exactly that entry and nothing else.
+const declaredPermissionNames = new Set<string>();
+
 /**
  * Register an operation function with the server.
  * @param operationDefinition
@@ -196,7 +200,14 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	if (isDeployValidating()) return;
 	const { name, execute, requiresSuperUser } = operationDefinition;
 	let handler = execute;
-	if (requiresSuperUser !== undefined) {
+	if (requiresSuperUser === undefined) {
+		// A re-registration that drops the flag must also drop the entry the earlier one installed, or
+		// declaration and enforcement disagree: main retracts the grantable mark while this worker keeps
+		// honouring an already-persisted role grant. Scoped to names declared through this API, so one it
+		// never declared is untouched — a component that declared a built-in's name already overwrote
+		// that entry by declaring it, and this only follows.
+		if (declaredPermissionNames.delete(name)) opAuth.unregisterOperationPermission(name);
+	} else {
 		// verifyPerms keys requiredPermissions by the handler's function `.name`, but registered ops
 		// are typically anonymous arrows (all named "execute") which collide and can't be keyed. Wrap
 		// in a FRESH function named after the op so the lookup resolves the right entry. Wrap rather
@@ -206,12 +217,14 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		handler = (...args: any[]) => (execute as any)(...args);
 		Object.defineProperty(handler, 'name', { value: name, configurable: true });
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
+		declaredPermissionNames.add(name);
 	}
 	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
 	// Components load per-worker, so a registration made there is invisible to the main-thread
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
-	// so the main thread can forward calls to this worker (#1736).
-	if (!isMainThread) announceRegisteredOperation(name);
+	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
+	// registerOperationPermission above made only in this thread's scope.
+	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
 };
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,
