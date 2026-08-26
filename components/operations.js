@@ -509,6 +509,9 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 			await validation;
 		} finally {
 			componentLoader.setErrorReporter(priorErrorReporter);
+			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
+			// one dead entry per deploy for the life of the process.
+			componentLoader.forgetLoadedPath?.(candidateDirPath);
 		}
 		emit('phase', { phase: 'load', status: 'done' });
 

@@ -250,10 +250,10 @@ Future agents touching `components/deploymentRecorder.ts` for Slice B's streamin
 
 `deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, runs the
 load validation against _that_ tree, and only then activates it. Activation is one compensating
-transaction over three effects, in this order: the live tree moves into `.deploy-aside`, the candidate
-is renamed into the live path, and the component's root-config entry is published.
+transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
+into the live path.
 
-The ordering is the design. Each of the three used to be wrong in a way the others hid:
+The ordering is the design. Two things used to be wrong in a way each other hid:
 
 - **The live tree was moved aside first**, so the component was broken for the whole extract +
   `npm install`. Worse than unavailable — the live path held the _new_ code before its dependencies were
@@ -266,14 +266,13 @@ The ordering is the design. Each of the three used to be wrong in a way the othe
   incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
   deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
   is separate work; this only fixed the order.
-- **Config was published before the build and never rolled back**, so `installApplications()` reinstalled
-  a rejected release at the next restart. It is now the transaction's last effect, because an entry that
-  outlives the tree it names is precisely how a rejected release comes back. A payload deploy replacing a
-  package-installed component explicitly REMOVES the `package` key rather than expressing no opinion;
-  otherwise a cold install resolves the old package over the payload release.
-
-Config publication is serialized across components: `addConfig` is a read-modify-write of the whole
-document, so two components publishing at once can lose each other's entry.
+  **Root config is deliberately NOT part of this transaction.** It is still written before the build and
+  never rolled back, so `installApplications()` can reinstall a rejected release at the next restart —
+  unchanged from before this change. Making config an effect of the activation was implemented and then
+  pulled back out: it kept surfacing durability and locking problems that had nothing to do with the tree
+  swap (a memoized config object a disk write does not refresh, `atomicWriteFile` not fsyncing, writers that
+  do not share the publication lock). It is tracked as its own step so the tree half can land on its own
+  evidence.
 
 ### Recovering an interrupted activation
 

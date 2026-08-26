@@ -910,7 +910,10 @@ async function syncDirectory(dirPath: string): Promise<void> {
 	} catch (error) {
 		logger.trace?.(`Directory sync of ${dirPath} failed: ${errorMessage(error)}`);
 	} finally {
-		await handle.close();
+		// Also swallowed: this runs at points that sit OUTSIDE a compensation block, so a rejecting close
+		// would surface as an activation failure (or an unhandled rejection) for something the protocol
+		// already treats as best-effort.
+		await handle.close().catch((error) => logger.trace?.(`Closing ${dirPath} failed: ${errorMessage(error)}`));
 	}
 }
 
@@ -1259,22 +1262,18 @@ async function settleInterruptedActivation(
  * the deploy path.
  */
 async function syncTreeContents(rootPath: string): Promise<void> {
-	const entries = await readdir(rootPath, { withFileTypes: true }).catch(() => []);
+	// Failures PROPAGATE. `.complete` is written only after this returns and is recovery's roll-forward
+	// authority, so swallowing an EIO or ENOSPC here would let the marker vouch for a tree that never
+	// reached storage. Failing the deploy instead is safe: the live tree has not been touched yet.
+	const entries = await readdir(rootPath, { withFileTypes: true });
 	for (const entry of entries) {
 		const entryPath = join(rootPath, entry.name);
 		if (entry.isDirectory()) {
 			await syncTreeContents(entryPath);
 		} else if (entry.isFile()) {
-			let handle;
-			try {
-				handle = await open(entryPath, 'r');
-			} catch {
-				continue;
-			}
+			const handle = await open(entryPath, 'r');
 			try {
 				await handle.sync();
-			} catch (error) {
-				logger.trace?.(`Sync of ${entryPath} failed: ${errorMessage(error)}`);
 			} finally {
 				await handle.close();
 			}
@@ -1385,6 +1384,10 @@ export async function activateCandidateApplication(application: Application, dep
 		// displaces stays under `.deploy-aside/<component>` forever, so the components root grows by a
 		// whole component version per deploy.
 		await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
+		// Before the journal goes: if the journal's removal persists but the record's does not, startup sees
+		// an in-progress aside with no journal and the legacy pass restores the old tree over the new one.
+		await syncDirectory(asideStagingDir);
+		await syncDirectory(dirname(asideStagingDir));
 		retired = true;
 	} catch (error) {
 		application.logger.warn(`Deployed ${application.name} but could not retire its rollback record:`, error);
