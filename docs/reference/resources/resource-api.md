@@ -23,7 +23,7 @@ Resource classes have static methods that directly map to RESTful methods or HTT
 
 ## Resource Static Methods
 
-Static methods are defined on a Resource class and are the preferred way to interact with tables and resources from application code. They handle transaction setup, access checks, and request parsing automatically. These methods also map to RESTful HTTP verbs and can be overridden to define custom behavior for requests.
+Static methods are defined on a Resource class and are the preferred way to interact with tables and resources from application code. When invoked through an external request path, they handle transaction setup, access checks, and request parsing automatically. Direct calls from server-side code run in a trusted context and do not automatically apply the caller's role permissions; see [Server-side table reads](../components/javascript-environment.md#tables). These methods also map to RESTful HTTP verbs and can be overridden to define custom behavior for requests.
 
 ### `get(target: RequestTarget | Id | Query, context?: Resource | Context): Promise<object> | ExtendedIterable`
 

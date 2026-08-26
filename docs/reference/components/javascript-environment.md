@@ -85,6 +85,10 @@ An object whose properties are the tables in the default database (`data`). Each
 
 See [Database API](../database/api.md) for full reference.
 
+:::note Server-side table reads run in a trusted context
+Calls to `tables.X.get()`, `tables.X.search()`, and equivalent `databases.<database>.<table>` methods from within resource code execute in a **trusted system context** and do **not** re-apply the target table's `allowRead` guard or role-level `attribute_permissions`. This is by design — server-side code is responsible for its own authorization checks. A computed attribute or custom resource that cross-reads a protected table can return raw data regardless of the caller's role. Do not expose protected data through a computed attribute when access depends on the caller. Instead, use a custom resource and apply authorization explicitly (e.g. call `this.getCurrentUser()` in a `Resource` method, or use `getUser()`, and enforce the relevant restrictions before returning the data).
+:::
+
 ### `databases`
 
 An object containing all databases defined in Harper. Each database is an object of its tables — `databases.data` is always equivalent to `tables`.

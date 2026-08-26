@@ -174,6 +174,10 @@ type MyTable @table @export(name: "my-table") {
 
 The optional `name` parameter specifies the URL path segment (e.g., `/my-table/`). Without `name`, the type name is used.
 
+:::warning `@export` is a routing directive, not an access control
+Omitting `@export` removes the REST/MQTT route for a table (callers get 404), but it does **not** protect the data. The table still exists in the database and remains accessible through the Operations API and SQL, subject to RBAC, to administrators and roles with the required operation and table permissions. For table-level confidentiality, omit the table from a role's grants or set its table-level `read` permission to `false` rather than relying on the absence of an export route. To protect individual fields, configure `attribute_permissions` as a whitelist: list every field the role may read and omit the restricted field (or list it with `read: false`). Also account for the [filter side-channel on exported Resources](../users-and-roles/overview.md#filter-side-channel-for-read-restricted-attributes).
+:::
+
 ### `@sealed`
 
 Prevents records from including any properties beyond those explicitly declared in the type. By default, Harper allows records to have additional properties.
@@ -187,7 +191,7 @@ type StrictRecord @table @sealed {
 
 ### `@hidden` (Type Directive)
 
-Suppresses the type from introspectable surfaces — MCP tool descriptors and the OpenAPI document. The table still exists; data is still queryable through Harper's other interfaces subject to RBAC. `@hidden` is a **metadata-visibility** directive, not an access-control mechanism: use `attribute_permissions` on roles to control data access.
+Suppresses the type from introspectable surfaces — MCP tool descriptors and the OpenAPI document. The table still exists; data is still queryable through Harper's other interfaces subject to RBAC. `@hidden` is a **metadata-visibility** directive, not an access-control mechanism: use table-level role permissions to control access to the table and `attribute_permissions` to control access to individual fields.
 
 ```graphql
 type InternalConfig @table @hidden {
@@ -195,6 +199,10 @@ type InternalConfig @table @hidden {
 	value: String
 }
 ```
+
+:::warning `@hidden` does not restrict data access
+`@hidden` only suppresses a type or field from generated API specs and MCP tool schemas. The underlying data remains available on every surface through which the table is reachable — REST, MQTT, and GraphQL when the table is exported, plus SQL and the Operations API — subject to the user's role permissions. Do not use `@hidden` as a confidentiality control. To restrict access to a table, omit it from a role's grants or set its table-level `read` permission to `false`. To restrict access to an individual field, configure role `attribute_permissions` as a whitelist: list every permitted field and omit the restricted field (or list it with `read: false`). Also account for the [filter side-channel on exported Resources](../users-and-roles/overview.md#filter-side-channel-for-read-restricted-attributes).
+:::
 
 `@hidden` is also available as a [field directive](#hidden-field-directive) to suppress individual attributes.
 
@@ -344,7 +352,7 @@ The `@expiresAt` field is authoritative over the table-level [`expiration`](#tab
 
 ### `@hidden` (Field Directive)
 
-Suppresses the field from MCP tool descriptors and the OpenAPI document. The attribute still exists in the table; data is still queryable through other interfaces subject to RBAC. Use this for fields that should not appear in introspectable surfaces.
+Suppresses the field from MCP tool descriptors and the OpenAPI document. The attribute still exists in the table and can be returned through every surface on which the table is reachable (REST GET, MQTT, and GraphQL when exported, plus SQL and the Operations API), subject to the user's field permissions. Use this for fields that should not appear in generated specs or tool schemas, not to restrict data access.
 
 ```graphql
 type Customer @table {
@@ -358,7 +366,7 @@ type Customer @table {
 }
 ```
 
-`@hidden` is a metadata-visibility directive, not access control: `attribute_permissions` on roles remains the data-access enforcement mechanism.
+`@hidden` is a metadata-visibility directive, not access control: `attribute_permissions` on roles remains the field-level data-access enforcement mechanism. To prevent a role from reading a field value, configure `attribute_permissions` as a whitelist: list every permitted field and omit the restricted field (or list it with `read: false`). Also account for the [filter side-channel on exported Resources](../users-and-roles/overview.md#filter-side-channel-for-read-restricted-attributes).
 
 ## Relationships
 
@@ -467,6 +475,8 @@ tables.Product.setComputedAttribute('totalPrice', (record) => {
 ```
 
 Computed properties are not included in query results by default — use `select` to include them explicitly.
+
+Computed properties that read other tables use the same [trusted server-side authorization context](../components/javascript-environment.md#tables) as other direct `tables` or `databases` calls. Do not expose protected cross-read data through a computed property when access depends on the caller.
 
 ### Computed Indexes
 
