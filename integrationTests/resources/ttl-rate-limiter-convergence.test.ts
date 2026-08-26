@@ -175,6 +175,11 @@ suite(
 					if (finalHits! >= acked && finalHits! <= acked + errs) {
 						convergedLate++;
 						anomalyLogs.push(`${id}: CONVERGED_LATE acked=${acked} seen=[${seen.join(',')}]`);
+					} else if (finalHits! > acked + errs) {
+						over++;
+						anomalyLogs.push(
+							`${id}: OVER-LATE final=${finalHits} acked=${acked} errs=${errs} seen=[${seen.join(',')}]`
+						);
 					} else if (expired) {
 						inconclusive++;
 						anomalyLogs.push(`${id}: EXPIRED-WHILE-SHORT acked=${acked} seen=[${seen.join(',')}]`);
