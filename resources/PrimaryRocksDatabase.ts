@@ -3,8 +3,7 @@ import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transa
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, VERSION_UNVOUCHABLE, type Entry } from './RecordEncoder.ts';
-import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -142,11 +141,6 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				? (entryMap.get(cachedValue) as Entry | undefined)
 				: undefined;
 		const expectedVersion = cached?.version;
-		// The sentinel must be consulted before the native get on cold AND warm paths: a cold get
-		// would seed the slot with the version it reads, and a warm get's soft-miss re-confirms
-		// freshness off the stored record's version and republishes it — for a reused version that
-		// overwrites the sentinel and vouches a version two different values share.
-		const unvouchable = cache !== undefined && this.verifyVersion(id, VERSION_UNVOUCHABLE);
 
 		// Build get options, always merging with caller options to preserve
 		// transaction snapshot. Pass expectedVersion when cached:
@@ -154,11 +148,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
 		// native layer seeds the VT slot in the same call.
-		// An unvouchable key takes a plain decoding read: no version trust, no VT seeding.
+		// A record stored under a reused version carries VERSION_REUSED, and the native layer answers
+		// neither FRESH nor a slot publication for it, so both branches are safe for such a key.
 		let getOptions: any;
-		if (unvouchable) {
-			getOptions = options;
-		} else if (expectedVersion != null) {
+		if (expectedVersion != null) {
 			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
 		} else if (cache) {
 			getOptions = options ? { ...options, populateVersion: true } : { populateVersion: true };
@@ -175,19 +168,8 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				return undefined;
 			}
 			if (entry.version != null && cache) {
-				// ahead of the cacheability gate: a flagged null/primitive value is just as unvouchable
-				if (entry.metadataFlags & VERSION_REUSED || entry.version === VERSION_UNVOUCHABLE) {
-					if (!unvouchable) {
-						try {
-							this.populateVersion(id, VERSION_UNVOUCHABLE);
-						} catch {
-							/* leave the slot alone; this record is not cached regardless */
-						}
-					}
-					if (cachedValue !== undefined) cache.delete(id);
-				} else if (unvouchable) {
-					// clean record under a parked sentinel: stay uncached (a JS-side slot restore would be
-					// an unguarded force-set racing concurrent writes); the key's next write clears it
+				// its version no longer identifies its value, so drop any copy already held
+				if (entry.metadataFlags & VERSION_REUSED) {
 					if (cachedValue !== undefined) cache.delete(id);
 				} else if (entry.value != null && typeof entry.value === 'object') {
 					// Only object values can be weakly cached and mapped back to their Entry;
@@ -198,52 +180,6 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			}
 			return entry;
 		});
-	}
-
-	/**
-	 * Park the unvouchable sentinel for a key whose stored version no longer identifies a single
-	 * value (see VERSION_REUSED). Called by the transaction's commit success path — the writer is
-	 * the only party that knows before any reader decodes the record. Returns whether the sentinel
-	 * is in place; a slot held by a newer write's intent refuses it.
-	 */
-	parkUnvouchable(id: any): boolean {
-		try {
-			this.populateVersion(id, VERSION_UNVOUCHABLE);
-			return this.verifyVersion(id, VERSION_UNVOUCHABLE);
-		} catch {
-			// never fail (or leak) a completed commit over the advisory park
-			return false;
-		}
-	}
-
-	/**
-	 * parkUnvouchable with a bounded backoff for slots held by a concurrent write's intent. On
-	 * final refusal, reads the stored head: a competitor that committed an advancing version
-	 * resolved the key legitimately (debug), while a still-flagged head means warm peers may be
-	 * vouched a stale value until the key's next write (warn — the hole is otherwise invisible).
-	 */
-	parkUnvouchableWithRetry(id: any, delays: number[] = [10, 50, 250]): void {
-		if (this.parkUnvouchable(id)) return;
-		const retry = (attempt: number) => {
-			try {
-				if (this.parkUnvouchable(id)) return;
-				if (attempt < delays.length) {
-					setTimeout(() => retry(attempt + 1), delays[attempt]).unref?.();
-					return;
-				}
-				const head = this.getEntry(id, { uncachedRead: true });
-				if (head && (head.metadataFlags & VERSION_REUSED || head.version === VERSION_UNVOUCHABLE)) {
-					harperLogger.warn?.(
-						`unvouchable sentinel could not be parked for ${(this as any).path ?? ''} key ${String(id)}; warm readers may serve a stale value until the next write to it`
-					);
-				} else {
-					harperLogger.debug?.('unvouchable park superseded by an advancing write', id);
-				}
-			} catch {
-				/* store closing; nothing left to protect */
-			}
-		};
-		setTimeout(() => retry(1), delays[0]).unref?.();
 	}
 
 	getSync(id: any, options?: any): any {

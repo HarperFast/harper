@@ -92,7 +92,6 @@ import {
 	type StructureCounts,
 	entryMap,
 	storedFieldsOnly,
-	versionIsReused,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
@@ -2268,13 +2267,10 @@ export function makeTable(options) {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					write.storedReusedVersion = false; // likewise
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
 						write.skipped = true;
 						return;
 					}
-					// a nodeId-won timestamp tie stores at the existing version — a reuse
-					if (isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 					partialRecord ??= null;
 					for (const name in indices) {
 						if (!partialRecord) partialRecord = {};
@@ -2333,10 +2329,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
-					write.storedReusedVersion = false; // reset per round
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
-					// a nodeId-won timestamp tie stores at the existing version — a reuse
-					if (isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
@@ -2415,9 +2408,6 @@ export function makeTable(options) {
 				false,
 				null // the audit record value should be empty since there are no changes to the actual data
 			);
-			// stored at the unchanged version — always a reuse, and outside the tracked-write flow
-			// whose commit path would otherwise park it
-			if (isRocksDB) (primaryStore as any).parkUnvouchableWithRetry(existingEntry.key);
 			return true;
 		}
 		/**
@@ -3031,7 +3021,6 @@ export function makeTable(options) {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
-					write.storedReusedVersion = false; // likewise: only the round that commits decides it
 					// The record a preceding write in this transaction left for this key is what this write
 					// applies to (see priorStagedWrite): a staged write is not visible to a read, so without
 					// this the index diff re-removes the values that write already removed and never removes
@@ -3620,8 +3609,6 @@ export function makeTable(options) {
 						}
 					}
 					function writeCommit(storeRecord: boolean) {
-						// marked, not parked: the VT slot holds this write's own intent until commit
-						if (storeRecord && isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 						// we need to write the commit. if storeRecord then we need to store the record, otherwise we just need to store the audit record
 						updateRecord(
 							id,
@@ -3772,7 +3759,6 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
-					write.storedReusedVersion = false; // likewise
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -3795,8 +3781,6 @@ export function makeTable(options) {
 					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
 					if (audit || trackDeletes) {
-						// a tie-timestamp tombstone stores under the reused version too (see writeCommit)
-						if (isRocksDB && versionIsReused(txnTime, existingEntry)) write.storedReusedVersion = true;
 						updateRecord(
 							id,
 							null,

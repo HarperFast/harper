@@ -372,9 +372,6 @@ export type TransactionWrite = {
 	// this settles (fire-and-forget from the if-branch), so Table.save()'s lock-writable path awaits
 	// it to ensure the write is durable before resolving to the caller.
 	innerCommit?: MaybePromise<CommitResolution>;
-	// this round stored under a reused version (a resequenced fold), so the commit success path
-	// parks the unvouchable sentinel for the key. Reset per commit-handler round, like stagedEntry.
-	storedReusedVersion?: boolean;
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
@@ -812,29 +809,6 @@ export class DatabaseTransaction implements Transaction {
 		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
 		this.writesByKey = undefined;
-	}
-
-	/**
-	 * After a successful commit, park the unvouchable sentinel for every key this batch stored
-	 * under a reused version (see VERSION_REUSED). The writer parks it because no reader can be
-	 * relied on to: with every worker's cache warm, no read ever decodes the flagged record, and
-	 * the native soft-miss re-confirm keeps vouching the reused version off the stored record.
-	 * Runs after durability, so nothing here may disturb the commit's cleanup.
-	 */
-	private parkReusedVersionSentinels(): void {
-		try {
-			for (const write of this.writes) {
-				if (
-					write?.storedReusedVersion &&
-					!write.skipped &&
-					typeof write.store.parkUnvouchableWithRetry === 'function'
-				) {
-					write.store.parkUnvouchableWithRetry(write.key);
-				}
-			}
-		} catch (parkError) {
-			harperLogger.debug?.('parking unvouchable sentinels failed', parkError);
-		}
 	}
 
 	/**
@@ -1362,7 +1336,6 @@ export class DatabaseTransaction implements Transaction {
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
 							if (this.recordLocks) this.noteCommittedLockVersions();
-							this.parkReusedVersionSentinels();
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
@@ -1501,7 +1474,6 @@ export class DatabaseTransaction implements Transaction {
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
 				if (this.recordLocks) this.noteCommittedLockVersions();
-				this.parkReusedVersionSentinels();
 				this.clearWrites();
 				this.releaseRecordLocks();
 				if (options.doneWriting) this.endScopeOwnership();
