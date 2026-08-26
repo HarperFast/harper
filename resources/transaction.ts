@@ -4,6 +4,7 @@ import {
 	DatabaseTransaction,
 	isJoinableScope,
 	isReleasedTransaction,
+	TRANSACTION_STATE,
 	type Transaction,
 } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
