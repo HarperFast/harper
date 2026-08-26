@@ -30,7 +30,6 @@ import {
 const UNCLAIMED = 0n;
 const CREATING = 1n;
 const READY = 2n;
-const FAILED = 3n;
 
 /** How long a loser waits for the winner's checkpoint before giving up on the branch. */
 const CLAIM_TIMEOUT_MS = 10 * 60 * 1000;
@@ -84,17 +83,16 @@ function wakeWaiters(state: BigInt64Array): void {
 	if (isShared(state)) Atomics.notify(state, 0);
 }
 
-async function awaitClaim(state: BigInt64Array, branchPath: string): Promise<void> {
-	const deadline = Date.now() + CLAIM_TIMEOUT_MS;
+/** Wait until the claim leaves CREATING, and report the state it settled on. */
+async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: number): Promise<bigint> {
 	for (;;) {
 		const current = Atomics.load(state, 0);
-		if (current === READY) return;
-		if (current === FAILED) throw new Error(`Branch database at ${branchPath} failed to be created by another thread`);
+		if (current !== CREATING) return current;
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new Error(`Timed out waiting for another thread to create the branch at ${branchPath}`);
 		const slice = Math.min(remaining, 1000);
 		if (isShared(state)) {
-			const wait = (Atomics as any).waitAsync(state, 0, current, slice);
+			const wait = (Atomics as any).waitAsync(state, 0, CREATING, slice);
 			if (wait.async) await wait.value;
 		} else {
 			await new Promise((resolve) => setTimeout(resolve, Math.min(slice, 5)));
@@ -122,25 +120,45 @@ export async function getOrCreateBranch(
 	return (await pending).branch;
 }
 
+/**
+ * Two (application, database) pairs must never name one store: blob file ids restart from each
+ * store's own counter, so a shared identity means two branches minting identical file paths. Joining
+ * with a separator is not injective -- ('a__b', 'c') and ('a', 'b__c') both give 'a__b__c' -- so the
+ * application name's length goes in front, the way the directory layout keeps them separate.
+ */
+function branchStoreName(appName: string, baseName: string): string {
+	return `${appName.length}_${appName}__${baseName}`;
+}
+
 async function openOrCreate(baseName: string, appName: string, branchPath: string): Promise<OpenBranch> {
 	const claimState = claimStateFor(baseName, branchPath);
-	const won = Atomics.compareExchange(claimState, 0, UNCLAIMED, CREATING) === UNCLAIMED;
-	if (won) {
-		try {
-			await materializeBranch(baseName, branchPath);
-			Atomics.store(claimState, 0, READY);
-		} catch (error) {
-			// Publish the failure before waking anyone: a loser that sees CREATING forever is a worker
-			// that never finishes loading its application.
-			Atomics.store(claimState, 0, FAILED);
-			throw error;
-		} finally {
-			wakeWaiters(claimState);
+	const deadline = Date.now() + CLAIM_TIMEOUT_MS;
+	for (;;) {
+		// The deadline bounds the whole protocol, not just a single wait: an unexpected state word --
+		// a future state, a buffer another version wrote -- must fail this load, never spin forever.
+		if (Date.now() > deadline) throw new Error(`Timed out claiming the branch at ${branchPath}`);
+		const previous = Atomics.compareExchange(claimState, 0, UNCLAIMED, CREATING);
+		if (previous === READY) break;
+		if (previous === UNCLAIMED) {
+			try {
+				await materializeBranch(baseName, branchPath);
+				Atomics.store(claimState, 0, READY);
+			} catch (error) {
+				// Release rather than record the failure. A claim that stays un-releasable turns one
+				// transient error -- a full disk, a rename losing a race -- into a branch that can never
+				// be created again for the life of the process, because the buffer outlives every retry.
+				Atomics.store(claimState, 0, UNCLAIMED);
+				throw error;
+			} finally {
+				wakeWaiters(claimState);
+			}
+			break;
 		}
-	} else {
-		await awaitClaim(claimState, branchPath);
+		// Someone else holds it. A wait that settles on UNCLAIMED means they failed and released, so
+		// take another turn at being the one who creates it.
+		if ((await awaitClaim(claimState, branchPath, deadline)) === READY) break;
 	}
-	return { branch: openBranchDatabase(branchPath, baseName, `${appName}__${baseName}`), claimState };
+	return { branch: openBranchDatabase(branchPath, baseName, branchStoreName(appName, baseName)), claimState };
 }
 
 /**
@@ -167,6 +185,19 @@ function branchRootOf(branchPath: string): string {
 	return dirname(dirname(dirname(branchPath)));
 }
 
+/**
+ * Release this thread's handle on a branch WITHOUT touching the directory. One branch directory is
+ * shared by every worker thread that loaded the application, so a thread that gives up its handle --
+ * a failed load, most often -- must not delete storage another thread is serving queries from.
+ */
+async function closeBranchAt(branchPath: string): Promise<void> {
+	const pending = branchesByPath.get(branchPath);
+	branchesByPath.delete(branchPath);
+	const opened = await pending?.catch(() => null);
+	opened?.branch.close();
+}
+
+/** Release the handle and delete the directory. Only safe once nothing is using it: teardown. */
 async function removeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
@@ -269,11 +300,11 @@ export async function prepareBranches(
 		}
 	} catch (error) {
 		// A partially branched application is worse than one that failed to load: some of its names
-		// would resolve to a branch and the rest to the base. Roll back only this application's own
-		// branches — applications load one after another, and tearing down the whole process's
-		// branches here would pull the data out from under every application already loaded.
+		// would resolve to a branch and the rest to the base. Only this application's handles go, and
+		// only handles: another worker thread may have loaded the same application successfully and be
+		// serving queries out of the very directories this thread is giving up.
 		for (const baseName of branchedDatabases) {
-			await removeBranchAt(resolveBranchPath(baseName, appName, COMPONENT_PREPARATION_PROCESS_INSTANCE_ID)).catch(
+			await closeBranchAt(resolveBranchPath(baseName, appName, COMPONENT_PREPARATION_PROCESS_INSTANCE_ID)).catch(
 				() => {}
 			);
 		}

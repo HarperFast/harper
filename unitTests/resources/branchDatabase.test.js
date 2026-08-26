@@ -285,6 +285,23 @@ describe('branch rollback is scoped to the failing application (harper#643)', ()
 		await removeBranches();
 	});
 
+	it('lets a branch be created again after a transient failure', async function () {
+		this.timeout(30000);
+		const { rmSync } = require('node:fs');
+		const blocked = resolveBranchPath('rollbase2', 'retryApp', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
+		mkdirSync(blocked, { recursive: true });
+		writeFileSync(join(blocked, 'occupied'), 'x');
+
+		await assert.rejects(() => getOrCreateBranch('rollbase2', 'retryApp'));
+
+		// The claim word lives in a buffer the base store shares for the life of the process, so a
+		// claim that is not released turns one full disk or lost rename into a branch that can never
+		// be created again -- component reload and redeploy included.
+		rmSync(blocked, { recursive: true, force: true });
+		const branch = await getOrCreateBranch('rollbase2', 'retryApp');
+		assert.ok(branch.tables.Roll, 'the retry must actually create the branch');
+	});
+
 	it("leaves an already-loaded application's branch open when a later application fails", async function () {
 		this.timeout(30000);
 		const survivor = await getOrCreateBranch('rollbase1', 'loadedFirst');
@@ -303,10 +320,12 @@ describe('branch rollback is scoped to the failing application (harper#643)', ()
 			await survivor.tables.Roll.get('kept'),
 			"a failed application's rollback must not close a loaded application's branch"
 		);
-		assert.strictEqual(
+		// One branch directory is shared by every worker thread that loaded the application, so the
+		// storage must outlive a single thread's failed load: deleting it here would pull RocksDB
+		// files out from under a thread that loaded the same application successfully.
+		assert.ok(
 			existsSync(resolveBranchPath('rollbase1', 'loadedSecond', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID)),
-			false,
-			'while the failing application keeps none of its own'
+			'a failed load releases its handles but must not delete storage other threads may hold'
 		);
 	});
 });
