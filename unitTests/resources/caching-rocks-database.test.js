@@ -147,7 +147,6 @@ describe('PrimaryRocksDatabase', function () {
 		assert.equal(resequenced.value.count, 2, 'both increments are applied');
 		assert(resequenced.metadataFlags & VERSION_REUSED, 'the stored record is marked non-unique for the native layer');
 		assert(!store.verifyVersion(9, resequenced.version), 'VT must not vouch for a version shared by two stored values');
-		// a read of a flagged record must publish nothing and cache nothing, however many times it runs
 		assert.notEqual(store.getEntry(9).value, resequenced.value, 'a flagged record is never served from cache');
 		assert(!store.verifyVersion(9, resequenced.version), 'reading a flagged record must not publish its version');
 	});
@@ -158,9 +157,7 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.get(12); // warm the cache and seed the VT slot
 		const cached = store.getEntry(12);
 		assert(store.verifyVersion(12, cached.version), 'VT vouches for the in-order version');
-		// The vouch fast path returns the cached object itself, so identity is what distinguishes
-		// the two paths — an equal-values assertion would stay green if uncachedRead regressed
-		// into the vouch path and went back to serving stale commit bases.
+		// the vouch fast path returns the cached object itself, so identity is what distinguishes them
 		assert.equal(store.getEntry(12).value, cached.value, 'the vouch path serves the cached object');
 		const direct = store.getEntry(12, { uncachedRead: true });
 		assert.notEqual(direct.value, cached.value, 'uncachedRead must decode from the store, not serve the cache');

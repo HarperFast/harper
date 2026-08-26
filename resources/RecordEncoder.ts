@@ -123,12 +123,17 @@ export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
 // A resequenced write keeps the (newer) version it merged onto, so one version identifies two
-// different stored values; every freshness oracle keyed on version equality is then wrong. This is
-// rocksdb-js's VERSION_NOT_UNIQUE_FLAG, and the record metadata word written at value offset 8 is
-// the same header word the VerificationTable reads (its ACTION_32_BIT tag byte is the tag the
-// native predicate requires), so setting it here is what stops the native layer vouching for or
-// publishing this version. Above every audit extendedType bit the metadata word borrows from.
+// different stored values and version equality proves nothing. The metadata word this is set in is
+// the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
+// byte its predicate requires — so the bit is what stops the native layer vouching for the version.
 export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
+// The bit is persisted in every resequenced record, so a rocksdb-js that moved it down onto one of
+// the flags above (or up into the tag byte) would silently change what records already on disk
+// mean: it must stay a single bit strictly between them.
+if ((VERSION_REUSED & (VERSION_REUSED - 1)) !== 0 || VERSION_REUSED < 0x10000 || VERSION_REUSED > 0x800000)
+	throw new Error(
+		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it`
+	);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
 }
@@ -894,9 +899,8 @@ export function recordUpdater(store, tableId, auditStore) {
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
-		// A RocksDB write whose version does not advance past the record it replaces stores a second
-		// value under that version, so the version stops identifying one stored value (VERSION_REUSED).
-		// Derived here rather than at the call sites because every record write goes through this one.
+		// A write whose version does not advance past the record it replaces stores a second value
+		// under that version; every record write reaches this one place, so it is derived here.
 		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
 			metadataInNextEncoding |= VERSION_REUSED;
 		const putOptions: {

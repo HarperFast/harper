@@ -3,6 +3,13 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
+describe('warm cached read', function () {
+	it('measures warm getEntry throughput', async function () {
+		this.timeout(120_000);
+		await main();
+	});
+});
+
 async function main() {
 	setupTestDBPath();
 	setMainIsWorker(true);
@@ -24,9 +31,4 @@ async function main() {
 	const warmNs = Number(t1 - t0) / N;
 
 	console.log(`warm getEntry: ${warmNs.toFixed(0)} ns/op (${(1e9 / warmNs / 1e6).toFixed(2)} M ops/s)`);
-	process.exit(0);
 }
-main().catch((e) => {
-	console.error(e);
-	process.exit(1);
-});

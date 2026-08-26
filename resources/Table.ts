@@ -2552,10 +2552,13 @@ export function makeTable(options) {
 											: txnTime;
 							}
 							if (createdTimeProperty) {
-								if (entry?.value) {
+								// the reloaded commit base, not the pre-read one: a full PUT racing a create
+								// would otherwise stamp a fresh created time over the real one
+								const base = write.entry;
+								if (base?.value) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
 									}
 								} else {
 									// new entry, set created time

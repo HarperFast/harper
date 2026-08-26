@@ -148,8 +148,6 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		//   VT miss → native reads DB and auto-populates VT slot
 		// For cold reads (no cached version), use populateVersion flag so the
 		// native layer seeds the VT slot in the same call.
-		// A record stored under a reused version carries VERSION_REUSED, and the native layer answers
-		// neither FRESH nor a slot publication for it, so both branches are safe for such a key.
 		let getOptions: any;
 		if (expectedVersion != null) {
 			getOptions = options ? { ...options, expectedVersion } : { expectedVersion };
