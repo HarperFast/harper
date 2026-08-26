@@ -874,7 +874,7 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
  * branched applications pay for the indirection. Proxying rather than copying also keeps
  * `databases.system` — deliberately non-enumerable (`resources/databases.ts`) — reachable for free.
  */
-export function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tables: any } {
+function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tables: any } {
 	const branches = scope.branches;
 	if (!branches?.size) return { databases, tables };
 	// Every branched name already exists on the target as a writable, configurable property (a branch
@@ -891,6 +891,40 @@ export function scopedDatabaseBindings(scope: ApplicationScope): { databases: an
 	return { databases: scoped, tables: branches.get(DEFAULT_DATABASE_NAME)?.tables ?? tables };
 }
 
+/**
+ * `defineTable` registers into the process-wide catalog, so a branched application defining a table
+ * in one of its branched databases would create it in the BASE — visible to every other application
+ * and replicated — while the application's own reads and writes went to the branch. Making it land
+ * in the branch is harper#2264, the same work as GraphQL `@table` and `scope.ensureTable`; until
+ * then it is refused rather than silently misdirected. Databases this application did not branch are
+ * unaffected.
+ */
+function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
+	const branches = scope.branches;
+	if (!branches?.size) return defineTable;
+	return function (name: string, shape: any, options: any = {}) {
+		const target = options.database ?? DEFAULT_DATABASE_NAME;
+		if (branches.has(target)) {
+			const error: any = new Error(
+				`Cannot define table '${name}' in branched database '${target}': defineTable registers the table in ` +
+					`the base database's schema rather than in this application's branch`
+			);
+			error.statusCode = 400;
+			throw error;
+		}
+		return defineTable(name, shape, options);
+	} as typeof defineTable;
+}
+
+/**
+ * Everything an application sees differently because of what it declared. Built once at load, so
+ * nothing on the request path pays for it, and an application that declared no branches gets the
+ * process-wide values back by identity.
+ */
+export function scopedBindings(scope: ApplicationScope): { databases: any; tables: any; defineTable: any } {
+	return { ...scopedDatabaseBindings(scope), defineTable: scopedDefineTable(scope) };
+}
+
 function getHarperExports(scope: ApplicationScope) {
 	return {
 		server: scope.server ?? server,
@@ -901,8 +935,7 @@ function getHarperExports(scope: ApplicationScope) {
 		// the process-wide singletons below.
 		secrets: getSecretsForComponent(scope.name),
 		Resource,
-		...scopedDatabaseBindings(scope),
-		defineTable,
+		...scopedBindings(scope),
 		types,
 		defineResource,
 		t,

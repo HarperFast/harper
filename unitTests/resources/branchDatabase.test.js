@@ -104,6 +104,7 @@ describe('branch lifecycle (harper#643)', () => {
 		// unchanged, which is exactly why a drop through one would delete the live base table.
 		await assert.rejects(() => branch.tables.LifecycleSource.dropTable(), /branched database/);
 		await assert.rejects(() => branch.tables.LifecycleSource.addAttributes([{ name: 'added' }]), /branched database/);
+		await assert.rejects(() => branch.tables.LifecycleSource.removeAttributes(['note']), /branched database/);
 
 		assert.strictEqual(
 			databases.lifebase.LifecycleSource,
@@ -193,7 +194,7 @@ describe('branch preparation rejects rather than falling back (harper#643)', () 
 });
 
 describe('scoped databases binding (harper#643)', () => {
-	const { scopedDatabaseBindings } = require('#src/security/jsLoader');
+	const { scopedBindings } = require('#src/security/jsLoader');
 	const { tables } = require('#src/resources/databases');
 
 	before(function () {
@@ -213,14 +214,14 @@ describe('scoped databases binding (harper#643)', () => {
 	it('gives an unbranched scope the process-wide singletons by identity', function () {
 		// This is the overwhelmingly common path and it must be indistinguishable from before: a copy
 		// would silently stop reflecting databases created after load.
-		const bindings = scopedDatabaseBindings({});
+		const bindings = scopedBindings({});
 		assert.strictEqual(bindings.databases, databases);
 		assert.strictEqual(bindings.tables, tables);
 	});
 
 	it('resolves a branched name to the branch and leaves the rest alone', async function () {
 		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
-		const bindings = scopedDatabaseBindings({ branches: new Map([['bindbase', branch]]) });
+		const bindings = scopedBindings({ branches: new Map([['bindbase', branch]]) });
 
 		assert.strictEqual(bindings.databases.bindbase, branch.tables);
 		assert.notStrictEqual(bindings.databases.bindbase, databases.bindbase);
@@ -234,7 +235,7 @@ describe('scoped databases binding (harper#643)', () => {
 		// It is defined non-enumerable on the real map, so building the view by copying enumerable
 		// properties would drop it and a branched application would lose the system database entirely.
 		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
-		const bindings = scopedDatabaseBindings({ branches: new Map([['bindbase', branch]]) });
+		const bindings = scopedBindings({ branches: new Map([['bindbase', branch]]) });
 
 		assert.ok(bindings.databases.system, 'system must still be reachable');
 		assert.strictEqual(
@@ -248,7 +249,7 @@ describe('scoped databases binding (harper#643)', () => {
 		// `databases` gains entries at runtime, which is exactly what ensureTable/@table do. A view
 		// snapshotted at load would leave a branched application unable to see them.
 		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
-		const bindings = scopedDatabaseBindings({ branches: new Map([['bindbase', branch]]) });
+		const bindings = scopedBindings({ branches: new Map([['bindbase', branch]]) });
 		assert.strictEqual(bindings.databases.bindlater, undefined);
 
 		table({ table: 'Later', database: 'bindlater', attributes: [{ name: 'id', isPrimaryKey: true }] });
@@ -298,5 +299,44 @@ describe('branch rollback is scoped to the failing application (harper#643)', ()
 			false,
 			'while the failing application keeps none of its own'
 		);
+	});
+});
+
+describe('defineTable through a branched application (harper#643)', () => {
+	const { scopedBindings } = require('#src/security/jsLoader');
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({ table: 'DefSource', database: 'defbase', attributes: [{ name: 'id', isPrimaryKey: true }] });
+		table({ table: 'OtherSource', database: 'otherbase', attributes: [{ name: 'id', isPrimaryKey: true }] });
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	it('refuses to define into a branched database rather than defining into the base', async function () {
+		// defineTable registers in the process-wide catalog, so without this the table would appear in
+		// the base -- replicated and visible to every other application -- while this application's
+		// own reads and writes went to its branch. Landing it in the branch is harper#2264.
+		const branch = await getOrCreateBranch('defbase', 'defApp', 'inst1');
+		const { defineTable } = scopedBindings({ branches: new Map([['defbase', branch]]) });
+
+		assert.throws(() => defineTable('Defined', { id: 'string' }, { database: 'defbase' }), /branched database/);
+		assert.strictEqual(databases.defbase.Defined, undefined, 'and nothing must be created in the base');
+	});
+
+	it('still defines into databases the application did not branch', async function () {
+		const branch = await getOrCreateBranch('defbase', 'defApp', 'inst1');
+		const { defineTable } = scopedBindings({ branches: new Map([['defbase', branch]]) });
+
+		defineTable('Unbranched', { id: 'string' }, { database: 'otherbase' });
+		assert.ok(databases.otherbase.Unbranched, 'an unbranched database is untouched by the gate');
+	});
+
+	it('leaves defineTable itself alone for an unbranched application', function () {
+		const { defineTable: real } = require('#src/resources/defineTable');
+		assert.strictEqual(scopedBindings({}).defineTable, real, 'no wrapper for the common case');
 	});
 });

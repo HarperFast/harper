@@ -4924,6 +4924,7 @@ export function makeTable(options) {
 			return (TableResource as any).indexingOperation;
 		}
 		static async removeAttributes(names: string[]) {
+			TableResource.assertSchemaMutable('remove attributes');
 			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
