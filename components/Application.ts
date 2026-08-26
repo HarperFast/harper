@@ -57,6 +57,12 @@ interface ApplicationConfig {
 	// Recorded by deploy_component so every (cold) install — reboot, new peer, rollback — re-resolves
 	// the credential from the store rather than needing it re-supplied.
 	credentials?: CredentialReference[];
+	/**
+	 * Databases this application gets a private, ephemeral fork of (harper#642). The application's
+	 * code is unchanged — it still imports `databases` from `harper` — but those names resolve to a
+	 * branch that lives for the process and is invisible to other applications and to replication.
+	 */
+	branchedDatabases?: string[];
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -98,6 +104,12 @@ export class InvalidCredentialsPropertyError extends TypeError {
 		super(
 			`Invalid 'credentials' property for application ${applicationName}: expected array, got ${typeof credentials}`
 		);
+	}
+}
+
+export class InvalidBranchedDatabasesError extends TypeError {
+	constructor(applicationName: string, detail: string) {
+		super(`Invalid 'branchedDatabases' for application ${applicationName}: ${detail}`);
 	}
 }
 
@@ -171,6 +183,39 @@ export function assertApplicationConfig(
 				throw new InvalidCredentialEntryError(applicationName);
 			}
 		}
+	}
+	assertBranchedDatabases(applicationName, applicationConfig.branchedDatabases);
+}
+
+/**
+ * Every rejection here is deliberate: a branch that cannot be honoured must fail the application's
+ * load rather than silently fall back to the base, which would give the application the shared
+ * database it explicitly asked not to have — with no signal that it happened.
+ */
+export function assertBranchedDatabases(applicationName: string, value: unknown): void {
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		throw new InvalidBranchedDatabasesError(applicationName, `expected an array, got ${typeof value}`);
+	}
+	const seen = new Set<string>();
+	for (const name of value) {
+		if (typeof name !== 'string' || name === '') {
+			throw new InvalidBranchedDatabasesError(applicationName, `expected database names, got ${typeof name}`);
+		}
+		// A branch is a directory named by this value; a separator or traversal segment would escape
+		// the reserved branch root.
+		if (name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+			throw new InvalidBranchedDatabasesError(applicationName, `'${name}' is not a usable database name`);
+		}
+		// `system` carries the instance's own catalog, users and jobs; a private fork of it would give
+		// the application a divergent view of the instance rather than of its data.
+		if (name === 'system') {
+			throw new InvalidBranchedDatabasesError(applicationName, `the 'system' database cannot be branched`);
+		}
+		if (seen.has(name)) {
+			throw new InvalidBranchedDatabasesError(applicationName, `'${name}' is listed more than once`);
+		}
+		seen.add(name);
 	}
 }
 

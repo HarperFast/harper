@@ -3,10 +3,14 @@ import { mkdir, readdir, rename, rm, rmdir } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { COMPONENT_PREPARATION_PROCESS_INSTANCE_ID } from '../components/componentPreparationLock.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import * as env from '../utility/environment/environmentManager.ts';
 import {
 	BRANCH_ROOT_DIR,
 	type BranchDatabase,
 	database,
+	databases,
+	getDatabases,
 	openBranchDatabase,
 	resolveBranchPath,
 	resolveDatabaseStorageRoot,
@@ -217,4 +221,53 @@ export async function sweepStaleBranches(
 		);
 	}
 	return retained;
+}
+
+/**
+ * Create every branch an application declared, or fail its load. These checks need the live
+ * environment, so they cannot live in the static config validator: whether the database exists,
+ * which storage engine is in effect, and whether the application's loader mode can carry a scoped
+ * `databases` binding at all.
+ *
+ * Failing is always right here. Falling back to the base would hand the application the shared
+ * database it explicitly asked not to have, and nothing downstream could tell the difference.
+ */
+export async function prepareBranches(
+	appName: string,
+	branchedDatabases: string[] | undefined,
+	loaderMode: string | undefined
+): Promise<Map<string, BranchDatabase>> {
+	const branches = new Map<string, BranchDatabase>();
+	if (!branchedDatabases?.length) return branches;
+
+	// The scoped `databases` binding is delivered through the module loader. Under `native` the
+	// loader hands back the process-wide exports, so a branch would be created and then never
+	// reached — the application would silently write the base.
+	if (loaderMode === 'native') {
+		throw new Error(
+			`Application '${appName}' declares branchedDatabases but runs under the 'native' module loader, ` +
+				`which cannot carry a scoped databases binding; use the default loader or remove branchedDatabases`
+		);
+	}
+	if ((process.env.HARPER_STORAGE_ENGINE || env.get(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb') {
+		throw new Error(`Application '${appName}' declares branchedDatabases, which requires the RocksDB storage engine`);
+	}
+
+	getDatabases();
+	for (const baseName of branchedDatabases) {
+		if (!databases[baseName]) {
+			throw new Error(`Application '${appName}' declares a branch of database '${baseName}', which does not exist`);
+		}
+	}
+	try {
+		for (const baseName of branchedDatabases) {
+			branches.set(baseName, await getOrCreateBranch(baseName, appName));
+		}
+	} catch (error) {
+		// A partially branched application is worse than one that failed to load: some of its names
+		// would resolve to a branch and the rest to the base.
+		await removeBranches();
+		throw error;
+	}
+	return branches;
 }

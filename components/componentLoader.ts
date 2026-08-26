@@ -30,6 +30,8 @@ import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
+import { assertBranchedDatabases } from './Application.ts';
+import { prepareBranches } from '../resources/branchDatabase.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
@@ -613,6 +615,18 @@ export async function loadComponent(
 			config = DEFAULT_CONFIG;
 		}
 		applicationScope.config ??= config;
+
+		// Before any of the application's modules are imported: a branch has to exist by the time its
+		// code first reaches `databases`, and a declared branch that cannot be created must fail this
+		// application's load rather than let it run against the base it asked not to share.
+		if (!isRoot && config?.branchedDatabases !== undefined) {
+			assertBranchedDatabases(basename(componentDirectory), config.branchedDatabases);
+			applicationScope.branches = await prepareBranches(
+				basename(componentDirectory),
+				config.branchedDatabases,
+				applicationScope.mode
+			);
+		}
 
 		// For non-root components with empty/null config (e.g., comment-only YAML),
 		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing

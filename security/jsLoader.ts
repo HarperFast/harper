@@ -15,7 +15,7 @@ import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import * as child_process from 'node:child_process';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type {} from 'ses';
 import {
@@ -863,6 +863,27 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 // `Resource`/`tables`/`databases`/`createBlob`/… below are the live, process-wide singletons (the
 // same values surfaced as the top-level package exports and bare globals), not per-compartment
 // copies — only `server`/`logger`/`resources`/`config` are scope-overridable.
+/**
+ * The `databases`/`tables` a scope sees. An application that declared `branchedDatabases` gets a
+ * plain object whose branched names resolve to its private graph — built once here, at load, so the
+ * request path costs nothing and no Proxy trap sits on `databases.data`.
+ *
+ * An unbranched scope gets the process-wide singletons **by identity**, not a copy: that is the
+ * overwhelmingly common case and it must stay indistinguishable from before. `databases.system` is
+ * deliberately non-enumerable (`resources/databases.ts`), so the branched object is built by
+ * descriptor copy rather than spread, which would drop it.
+ */
+export function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tables: any } {
+	if (!scope.branches?.size) return { databases, tables };
+	const scoped = Object.create(null);
+	for (const name of Object.getOwnPropertyNames(databases)) {
+		Object.defineProperty(scoped, name, Object.getOwnPropertyDescriptor(databases, name)!);
+	}
+	for (const [name, branch] of scope.branches) scoped[name] = branch.tables;
+	// `tables` is the flat alias for the default database, so it follows that database's branch.
+	return { databases: scoped, tables: scope.branches.get(DEFAULT_DATABASE_NAME)?.tables ?? tables };
+}
+
 function getHarperExports(scope: ApplicationScope) {
 	return {
 		server: scope.server ?? server,
@@ -873,8 +894,7 @@ function getHarperExports(scope: ApplicationScope) {
 		// the process-wide singletons below.
 		secrets: getSecretsForComponent(scope.name),
 		Resource,
-		tables,
-		databases,
+		...scopedDatabaseBindings(scope),
 		defineTable,
 		types,
 		defineResource,

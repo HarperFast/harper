@@ -124,3 +124,122 @@ describe('branch lifecycle (harper#643)', () => {
 		assert.throws(() => resolveBranchPath('lifebase', 'appA', 'a/b'), /Invalid instance name/);
 	});
 });
+
+describe('branchedDatabases config (harper#643)', () => {
+	const { assertBranchedDatabases } = require('#src/components/Application');
+
+	it('accepts an absent or empty declaration', function () {
+		assert.doesNotThrow(() => assertBranchedDatabases('app', undefined));
+		assert.doesNotThrow(() => assertBranchedDatabases('app', []));
+		assert.doesNotThrow(() => assertBranchedDatabases('app', ['data', 'other']));
+	});
+
+	it('rejects the shapes that would silently mean something else', function () {
+		assert.throws(() => assertBranchedDatabases('app', 'data'), /expected an array/);
+		assert.throws(() => assertBranchedDatabases('app', [42]), /expected database names/);
+		assert.throws(() => assertBranchedDatabases('app', ['']), /expected database names/);
+		assert.throws(() => assertBranchedDatabases('app', ['data', 'data']), /listed more than once/);
+	});
+
+	it('rejects names that would escape the reserved branch root', function () {
+		assert.throws(() => assertBranchedDatabases('app', ['..']), /not a usable database name/);
+		assert.throws(() => assertBranchedDatabases('app', ['a/b']), /not a usable database name/);
+	});
+
+	it('rejects branching the system database', function () {
+		// `system` carries the instance's catalog, users and jobs — a private fork would give the
+		// application a divergent view of the instance rather than of its data.
+		assert.throws(() => assertBranchedDatabases('app', ['system']), /'system' database cannot be branched/);
+	});
+});
+
+describe('branch preparation rejects rather than falling back (harper#643)', () => {
+	const { prepareBranches } = require('#src/resources/branchDatabase');
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({
+			table: 'PrepSource',
+			database: 'prepbase',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	it('does nothing when no databases are declared', async function () {
+		assert.strictEqual((await prepareBranches('app', undefined, 'vm-current-context')).size, 0);
+		assert.strictEqual((await prepareBranches('app', [], 'vm-current-context')).size, 0);
+	});
+
+	it('refuses the native loader, which cannot carry a scoped databases binding', async function () {
+		// Under `native` the branch would be created and then never reached: the application would
+		// silently write the base, which is the one outcome this feature exists to prevent.
+		await assert.rejects(() => prepareBranches('app', ['prepbase'], 'native'), /native.*module loader/);
+	});
+
+	it('refuses a database that does not exist rather than creating one', async function () {
+		await assert.rejects(() => prepareBranches('app', ['no-such-db'], 'vm-current-context'), /does not exist/);
+	});
+
+	it('branches a real database and exposes it under its logical name', async function () {
+		const branches = await prepareBranches('app', ['prepbase'], 'vm-current-context');
+		assert.ok(branches.get('prepbase')?.tables.PrepSource);
+	});
+});
+
+describe('scoped databases binding (harper#643)', () => {
+	const { scopedDatabaseBindings } = require('#src/security/jsLoader');
+	const { tables } = require('#src/resources/databases');
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({
+			table: 'BindSource',
+			database: 'bindbase',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	it('gives an unbranched scope the process-wide singletons by identity', function () {
+		// This is the overwhelmingly common path and it must be indistinguishable from before: a copy
+		// would silently stop reflecting databases created after load.
+		const bindings = scopedDatabaseBindings({});
+		assert.strictEqual(bindings.databases, databases);
+		assert.strictEqual(bindings.tables, tables);
+	});
+
+	it('resolves a branched name to the branch and leaves the rest alone', async function () {
+		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
+		const bindings = scopedDatabaseBindings({ branches: new Map([['bindbase', branch]]) });
+
+		assert.strictEqual(bindings.databases.bindbase, branch.tables);
+		assert.notStrictEqual(bindings.databases.bindbase, databases.bindbase);
+		// An unbranched name still resolves to the real database, by identity.
+		assert.strictEqual(bindings.databases.lifebase, databases.lifebase);
+		// And the global map is untouched.
+		assert.notStrictEqual(databases.bindbase, branch.tables);
+	});
+
+	it('keeps `databases.system` non-enumerable in the branched object', async function () {
+		// It is defined non-enumerable on the real map, so building the copy by spread would drop it
+		// and a branched application would lose access to the system database entirely.
+		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
+		const bindings = scopedDatabaseBindings({ branches: new Map([['bindbase', branch]]) });
+
+		assert.ok(bindings.databases.system, 'system must still be reachable');
+		assert.strictEqual(
+			Object.propertyIsEnumerable.call(bindings.databases, 'system'),
+			false,
+			'and must stay non-enumerable'
+		);
+	});
+});
