@@ -2647,6 +2647,33 @@ describe('durable blob-unlink queue (#1832)', () => {
 		rmSync(filePath, { recursive: true, force: true });
 	});
 
+	it('never re-issues a file id that still has a queued unlink', async () => {
+		// A separate database, because the id allocator seeds once per store: the floor is only
+		// observable before anything has been written to it.
+		const FloorTest = table({
+			table: 'BlobFloorTest',
+			database: 'blobfloor',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const strandedId = (0xf0000).toString(16);
+		// due far out, so the drain leaves the row alone while the allocator seeds
+		FloorTest.primaryStore.rootStore.dbisDb.putSync([UNLINK_QUEUE_KEY, strandedId], {
+			due: Date.now() + 600000,
+			storageIndex: 0,
+		});
+
+		await FloorTest.put({ id: 1, blob: await createBlob(randomBytes(20000)) });
+		const record = await FloorTest.get(1);
+
+		assert.ok(
+			parseInt(getFileId(record.blob), 16) > 0xf0000,
+			'a stranded queue row must raise the allocator floor, or its later drain unlinks a live file'
+		);
+	});
+
 	it('drains a backlog larger than one batch to completion', async () => {
 		setDeletionDelay(600000);
 		const staged = [];
