@@ -795,11 +795,7 @@ function transactional(
 		//    starting fresh) makes the write throw transactionOpenTooLongError/requestAbortedError via
 		//    addWrite()/commit()'s poison check, correctly propagating the abort to the caller. See
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
-		if (
-			isJoinableScope(context?.transaction) ||
-			context?.transaction?.timedOut ||
-			context?.transaction?.disconnected
-		) {
+		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut || context?.transaction?.disconnected) {
 			// we are already in a transaction (or it was poisoned and must fail), proceed
 			const resource = this.getResource(query, context, resourceOptions);
 			return resource.then
