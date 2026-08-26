@@ -24,7 +24,7 @@ import type {
 	Operator,
 } from '../../resources/ResourceInterface.ts';
 import { collapseData } from '../../resources/tracked.ts';
-import { errorToString } from '../../utility/logging/harper_logger.ts';
+import logger, { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
@@ -812,9 +812,28 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
  * and a directive that quietly does nothing is worse than one that says no.
  */
 function takeUnsetAttributes(record: Record<string, unknown>, primaryKey: string): string[] {
+	if (!(OPERATIONS_UNSET_KEY in record)) return [];
 	const unset = record[OPERATIONS_UNSET_KEY];
-	if (unset === undefined) return [];
+	// Removed before the shape is judged, and on every exit below: the key is a directive, so
+	// leaving it on a record that is about to be written stores it as data. `in` rather than an
+	// `undefined` check for the same reason — an explicitly-undefined key still has to come off.
 	delete record[OPERATIONS_UNSET_KEY];
+	// Self-safeguarding rather than trusting the caller. `validation/insertValidator.ts` rejects a
+	// malformed value, and every current route here goes through it (`dataLayer/insert.ts`
+	// create/update/upsertRecords, including the replication catchup path) — but the bridge's own
+	// `insertUpdateValidate` does not check this key, so that safety lives in a different layer, and
+	// this is a module boundary an internal caller could reach directly. A non-iterable reaching the
+	// `for…of` in `upsertRecords` would throw and take the write down; a bare string would iterate
+	// per character and delete single-letter attributes.
+	//
+	// Ignored with a warning rather than thrown: this is the write and replication apply path, where
+	// throwing aborts the commit and can wedge a subscription. Skipping the directive degrades to a
+	// plain merge, which removes nothing — the safe direction. Same choice `resources/tracked.ts`
+	// makes for an unrecognized CRDT operation, and the reason it makes it.
+	if (!Array.isArray(unset) || unset.some((name) => typeof name !== 'string' || name.length === 0)) {
+		logger.warn(`Ignoring a malformed '${OPERATIONS_UNSET_KEY}' on a record; expected an array of attribute names`);
+		return [];
+	}
 	const names = unset as string[];
 	if (primaryKey && names.includes(primaryKey)) {
 		throw new ClientError(`'${primaryKey}' is the primary key of this table and cannot be unset`);
