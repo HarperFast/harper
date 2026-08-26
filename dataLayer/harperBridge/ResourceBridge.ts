@@ -39,8 +39,11 @@ const DELETE_PAUSE_MS = 10;
 /** Shared result for the overwhelmingly common case of a record carrying no `__unset__`, so the
  * default write path allocates nothing per record. Frozen because it is handed out repeatedly. */
 const NO_UNSET_ATTRIBUTES = Object.freeze([]) as unknown as string[];
-/** Latch for the malformed-directive warning; see takeUnsetAttributes. */
-let warnedMalformedUnset = false;
+/** Tables that have already logged a malformed-directive warning. Latched per table, not per
+ * process: `warnedNullSourcePut` (resources/Table.ts, declared inside `makeTable`) is one warn per
+ * table per worker, and a single module-level flag would let a bad batch on one table silence the
+ * warning for every other table until restart. Weak so it never keeps a dropped table alive. */
+const warnedMalformedUnset = new WeakSet<object>();
 
 export type SearchByConditionsRequest = Query &
 	Context & {
@@ -848,10 +851,10 @@ function takeUnsetAttributes(record: Record<string, unknown>, Table: any, hasNoE
 	// module this one does not own: a non-iterable would throw in the caller's `for…of` and take the
 	// write down, and a bare string would iterate per character, deleting single-letter attributes.
 	if (!Array.isArray(unset) || unset.some((name) => typeof name !== 'string' || name.length === 0)) {
-		// Latched, following `warnedNullSourcePut` in resources/Table.ts: one line per record would
-		// bury the log under a single bad batch.
-		if (!warnedMalformedUnset) {
-			warnedMalformedUnset = true;
+		// Latched per table, following `warnedNullSourcePut` in resources/Table.ts: one line per record
+		// would bury the log under a single bad batch.
+		if (!warnedMalformedUnset.has(Table)) {
+			warnedMalformedUnset.add(Table);
 			logger.warn(
 				`Ignoring a malformed '${OPERATIONS_UNSET_KEY}' on a record in ${Table.databaseName}.${Table.tableName}; expected an array of attribute names`
 			);
