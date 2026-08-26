@@ -1,5 +1,6 @@
 import { hdbTable, hdbDatabase } from './common_validators.ts';
 import * as validator from './validationWrapper.ts';
+import { TIME_STAMP_NAMES, UNSET_ATTRIBUTES } from '../utility/hdbTerms.ts';
 import Joi from 'joi';
 const INVALID_ATTRIBUTE_NAMES = {
 	undefined: 'undefined',
@@ -25,8 +26,45 @@ const customRecordsVal = (value, helpers) => {
 		return helpers.message(errorMsg);
 	}
 
+	const unsetError = unsetAttributesError(value[UNSET_ATTRIBUTES]);
+	if (unsetError) {
+		return helpers.message(unsetError);
+	}
+
 	return value;
 };
+
+/**
+ * `__unset__` names the attributes a write should remove (see `ResourceBridge.upsertRecords`). It is
+ * a reserved record key rather than a stored attribute, so it is validated here per record instead
+ * of by the operation schema below.
+ *
+ * An array of names, not a map with ignored values: the value would carry no meaning, and a shape
+ * that accepts anything invites callers to read significance into it.
+ */
+function unsetAttributesError(unset: unknown): string | undefined {
+	if (unset === undefined) {
+		return undefined;
+	}
+	if (!Array.isArray(unset)) {
+		return `'${UNSET_ATTRIBUTES}' must be an array of attribute names`;
+	}
+	for (const name of unset) {
+		if (typeof name !== 'string' || name.length === 0) {
+			return `'${UNSET_ATTRIBUTES}' must contain only non-empty attribute names`;
+		}
+		// The server owns these; `checkAttributePerms` already refuses to let a role write them, and
+		// a full-record write retains __createdtime__ rather than dropping it, so removing them here
+		// would be the one way to lose them.
+		if ((TIME_STAMP_NAMES as readonly string[]).includes(name)) {
+			return `'${name}' is maintained by Harper and cannot be unset`;
+		}
+		if (name === UNSET_ATTRIBUTES) {
+			return `'${UNSET_ATTRIBUTES}' is not an attribute and cannot be unset`;
+		}
+	}
+	return undefined;
+}
 
 const insertSchema = Joi.object({
 	database: hdbDatabase,

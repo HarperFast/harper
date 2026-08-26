@@ -4,6 +4,7 @@ const hdbUtils = require('../../../utility/common_utils.ts');
 const log = require('../../../utility/logging/harper_logger.ts');
 const { getDatabases } = require('../../../resources/databases.ts');
 const { ClientError } = require('../../../utility/errors/hdbError.ts');
+const { UNSET_ATTRIBUTES } = require('../../../utility/hdbTerms.ts');
 
 module.exports = insertUpdateValidate;
 
@@ -73,6 +74,10 @@ function insertUpdateValidate(writeObject) {
 		dups.add(hdbUtils.autoCast(record[hash_attribute]));
 
 		for (let attr in record) {
+			// `__unset__` names attributes to remove; it is not one itself. Collecting it would make an
+			// open (non-schemaDefined) table register `__unset__` as a real attribute, since
+			// upsertRecords feeds this list straight to Table.addAttributes.
+			if (attr === UNSET_ATTRIBUTES) continue;
 			attributes[attr] = 1;
 		}
 	});

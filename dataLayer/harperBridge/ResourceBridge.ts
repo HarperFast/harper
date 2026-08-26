@@ -8,6 +8,7 @@ import {
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
+	UNSET_ATTRIBUTES as OPERATIONS_UNSET_KEY,
 } from '../../utility/hdbTerms.ts';
 import * as signalling from '../../utility/signalling.ts';
 import { SchemaEventMsg } from '../../server/threads/itc.js';
@@ -276,12 +277,24 @@ export class ResourceBridge extends BridgeMethods {
 						}
 					}
 				}
+				const unset = takeUnsetAttributes(record, Table.primaryKey);
+				// `__unset__` removes named attributes while everything else still merges, which a patch
+				// cannot express — so it resolves the merge here, against the record this transaction
+				// already loaded, and writes the result as a full replace. Doing it server-side inside the
+				// write transaction is the point: a client emulating this with read-then-replace races
+				// every other writer, and `full_record` would make the caller resend attributes it never
+				// meant to touch. Under `full_record` the submitted record is already the whole intended
+				// state, so there is nothing to merge and the names are simply dropped from it.
+				const toWrite = unset.length && existingRecord && !fullRecord ? { ...existingRecord, ...record } : record;
+				for (const attribute of unset) {
+					delete toWrite[attribute];
+				}
 				await (id == undefined
-					? Table.create(record, context)
-					: existingRecord && !fullRecord
-						? Table.patch(record, context)
-						: Table.put(record, context));
-				keys.push(record[Table.primaryKey]);
+					? Table.create(toWrite, context)
+					: existingRecord && !fullRecord && !unset.length
+						? Table.patch(toWrite, context)
+						: Table.put(toWrite, context));
+				keys.push(toWrite[Table.primaryKey]);
 			}
 			return {
 				txn_time: (transaction as any).timestamp,
@@ -787,4 +800,24 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 		}
 	}
 	if (enqueued) yield enqueued;
+}
+
+/**
+ * Read and remove a record's `__unset__` list, returning the attribute names to drop.
+ *
+ * Removed from the record because it is a directive, not data: leaving it in place would store it as
+ * an attribute. Shape is already validated (`validation/insertValidator.ts`); the primary key is
+ * refused here instead, since only this layer knows which attribute that is. Unsetting it would
+ * otherwise be silently ignored — `Table._writeUpdate` re-asserts the primary key on a full update —
+ * and a directive that quietly does nothing is worse than one that says no.
+ */
+function takeUnsetAttributes(record: Record<string, unknown>, primaryKey: string): string[] {
+	const unset = record[OPERATIONS_UNSET_KEY];
+	if (unset === undefined) return [];
+	delete record[OPERATIONS_UNSET_KEY];
+	const names = unset as string[];
+	if (primaryKey && names.includes(primaryKey)) {
+		throw new ClientError(`'${primaryKey}' is the primary key of this table and cannot be unset`);
+	}
+	return names;
 }

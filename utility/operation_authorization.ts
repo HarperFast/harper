@@ -1090,6 +1090,19 @@ function getRecordAttributes(json) {
 			for (const record of json.records) {
 				let keys = Object.keys(record);
 				for (const key of keys) {
+					// `__unset__` is a directive, not an attribute: contribute the attributes it REMOVES
+					// instead of the key itself, so removing one is checked against the same `update`
+					// permission that writing it would be. Without this the removals are invisible to
+					// checkAttributePerms, which only ever sees the attributes a request supplies.
+					if (key === terms.UNSET_ATTRIBUTES) {
+						const unset = record[key];
+						if (Array.isArray(unset)) {
+							for (const name of unset) {
+								affectedAttributes.add(name);
+							}
+						}
+						continue;
+					}
 					affectedAttributes.add(key);
 				}
 			}

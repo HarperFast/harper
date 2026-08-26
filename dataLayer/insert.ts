@@ -15,6 +15,7 @@ import * as globalSchema from '../utility/globalSchema.ts';
 import log from '../utility/logging/harper_logger.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
+import * as terms from '../utility/hdbTerms.ts';
 
 const pGlobalSchema = util.promisify(globalSchema.getTableSchema);
 
@@ -89,6 +90,10 @@ export async function validation(writeObject: any) {
 		dups.add(hdbUtils.autoCast(record[hash_attribute]));
 
 		for (let attr in record) {
+			// Kept in step with the sync twin in harperBridge/bridgeUtility/insertUpdateValidate.js:
+			// `__unset__` names attributes to remove and is not one itself, so it must not be registered
+			// as a table attribute.
+			if (attr === terms.UNSET_ATTRIBUTES) continue;
 			attributes[attr] = 1;
 		}
 	});

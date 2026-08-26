@@ -879,6 +879,14 @@ export const TIME_STAMP_NAMES_ENUM = {
 export const TIME_STAMP_NAMES = [CREATED_TIME, UPDATED_TIME] as const;
 
 /**
+ * Reserved record key naming attributes to REMOVE, for `update`/`upsert`: `__unset__: ["age"]`.
+ * A write is otherwise a merge, so an attribute can only be dropped by replacing the whole record
+ * (`full_record`); this removes named attributes while still merging everything else.
+ * Reserved like the timestamp keys above — it is never stored, and never becomes a table attribute.
+ */
+export const UNSET_ATTRIBUTES = '__unset__';
+
+/**
  * This value is used to help evaluate whether or not a permissions translation error is related to old permissions values or if it could be another code-related bug/error.
  */
 export const PERMS_UPDATE_RELEASE_TIMESTAMP = 1598486400000;

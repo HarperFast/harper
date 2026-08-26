@@ -1,5 +1,6 @@
 /**
- * `full_record: true` on the operations API — full replace instead of merge.
+ * Removing an attribute over the operations API: `full_record: true` (full replace) and
+ * `__unset__: ["attr"]` (merge, minus named attributes).
  *
  * Background: `update` and `upsert` both land on `Table.patch` for a record that already exists
  * (`dataLayer/harperBridge/ResourceBridge.ts` `upsertRecords`), which merges the submitted
@@ -12,6 +13,10 @@
  * The flag is orthogonal to each operation's create rule, and these probes pin both halves:
  *   update + full_record → full replace, still refuses a record that isn't there
  *   upsert + full_record → full replace, still creates one — i.e. exactly REST `PUT /Table/id`
+ *
+ * `__unset__` is the narrower tool: it keeps merge semantics for everything the request does send,
+ * so the caller doesn't have to resend (and therefore risk clobbering) attributes it never meant to
+ * touch, and the removals are visible to the attribute-permission check by name.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/full-record-write.test.ts"
@@ -324,6 +329,226 @@ suite('full_record: full replace over the operations API', { skip: skipSuite }, 
 			200,
 			`a plain merge should still work; got ${merged.status} ${JSON.stringify(merged.body)}`
 		);
+	});
+
+	// `__unset__`: remove named attributes, merge everything else. The distinguishing property vs
+	// full_record is that unsent attributes are KEPT, so a caller can drop one field without having
+	// to resend (and risk clobbering) the rest of the record.
+	test('__unset__ removes the named attributes and merges the rest', async () => {
+		await insert('Dog', [{ id: 'us-1', name: 'Penny', breed: 'Mutt', color: 'black' }]);
+
+		const r = await ops({
+			operation: 'update',
+			table: 'Dog',
+			records: [{ id: 'us-1', name: 'Pen', __unset__: ['color'] }],
+		});
+		strictEqual(r.status, 200, `update should 200; got ${r.status} ${JSON.stringify(r.body)}`);
+
+		const stored = await read('Dog', 'us-1');
+		ok(!('color' in stored), `color should be gone; stored=${JSON.stringify(stored)}`);
+		strictEqual(stored.name, 'Pen', 'a supplied attribute is still written');
+		strictEqual(stored.breed, 'Mutt', 'an attribute the request never mentioned must survive');
+		ok(!('__unset__' in stored), 'the directive itself must never be stored');
+	});
+
+	test('__unset__ removes several attributes at once', async () => {
+		await insert('Dog', [{ id: 'us-2', name: 'Penny', breed: 'Mutt', color: 'black' }]);
+
+		await ops({
+			operation: 'update',
+			table: 'Dog',
+			records: [{ id: 'us-2', __unset__: ['color', 'breed'] }],
+		});
+
+		const stored = await read('Dog', 'us-2');
+		ok(!('color' in stored) && !('breed' in stored), `both should be gone; stored=${JSON.stringify(stored)}`);
+		strictEqual(stored.name, 'Penny');
+	});
+
+	// The directive is not data. `upsertRecords` collects the submitted keys and feeds any it doesn't
+	// recognise to `Table.addAttributes` — but only when `!Table.schemaDefined`, so this needs a table
+	// created WITHOUT a declared schema. The fixture's graphql tables are schema-defined and never
+	// reach that branch, which is exactly why this probe creates its own open table: against a
+	// schema-defined table the assertion passes whether or not the key is excluded.
+	test('__unset__ does not become an attribute of an open table', async () => {
+		const created = await ops({ operation: 'create_table', database: 'data', table: 'OpenDog', primary_key: 'id' });
+		strictEqual(created.status, 200, `create_table should 200; got ${created.status} ${JSON.stringify(created.body)}`);
+		await insert('OpenDog', [{ id: 'us-3', name: 'Penny', color: 'black' }]);
+
+		const r = await ops({ operation: 'update', table: 'OpenDog', records: [{ id: 'us-3', __unset__: ['color'] }] });
+		strictEqual(r.status, 200, `update should 200; got ${r.status} ${JSON.stringify(r.body)}`);
+
+		const described = await ops({ operation: 'describe_table', database: 'data', table: 'OpenDog' });
+		strictEqual(described.status, 200, `describe_table should 200; got ${described.status}`);
+		const names = (described.body?.attributes ?? []).map((a: any) => a.attribute);
+		ok(!names.includes('__unset__'), `__unset__ must not be an attribute; got ${JSON.stringify(names)}`);
+
+		// ...and the removal still worked. Read with SQL rather than the `read()` helper: on a legacy
+		// open table the operations-API attribute projection reports every REGISTERED attribute, filling
+		// in `null` for one the record doesn't have (see the next test), so it cannot tell a removed
+		// attribute from a present-and-null one. `SELECT *` reflects the stored record.
+		const rows = await ops({ operation: 'sql', sql: `SELECT * FROM data.OpenDog WHERE id = 'us-3'` });
+		strictEqual(rows.status, 200, `sql should 200; got ${rows.status} ${JSON.stringify(rows.body)}`);
+		const stored = rows.body?.[0];
+		ok(!('color' in stored), `color should be gone; stored=${JSON.stringify(stored)}`);
+		strictEqual(stored.name, 'Penny');
+	});
+
+	// Not a property of this feature, but the reason the probe above can't use the usual read, and
+	// worth pinning because it makes a successful removal LOOK like a failed one: on a legacy open
+	// table the operations-API attribute projection is driven by the table's registered attributes, so
+	// an attribute the record simply does not have comes back as `null`. A record that never had the
+	// attribute reads identically to one it was removed from. Schema-defined tables omit it properly.
+	// Consequence for clients: after removing an attribute from an open table, a `get_attributes` read
+	// still shows the key with a null value even though nothing is stored.
+	test('an absent attribute reads back as null on an open table (read-path projection)', async () => {
+		await ops({ operation: 'create_table', database: 'data', table: 'OpenNull', primary_key: 'id' });
+		// Registers `color` as a table attribute...
+		await insert('OpenNull', [{ id: 'had-color', name: 'A', color: 'black' }]);
+		// ...which this record never sets.
+		await insert('OpenNull', [{ id: 'never-had', name: 'B' }]);
+
+		const projected = await read('OpenNull', 'never-had');
+		ok('color' in projected, `expected the projection to include color; got ${JSON.stringify(projected)}`);
+		strictEqual(projected.color, null, 'an attribute the record never had projects as null');
+
+		const rows = await ops({ operation: 'sql', sql: `SELECT * FROM data.OpenNull WHERE id = 'never-had'` });
+		const row = rows.body?.[0];
+		ok(row, `sql should have returned the row; got ${JSON.stringify(rows.body)}`);
+		ok(!('color' in row), `nothing is stored for it; got ${JSON.stringify(row)}`);
+	});
+
+	test('__unset__ preserves @createdTime, like any other merge', async () => {
+		await insert('Dog', [{ id: 'us-4', name: 'Penny', color: 'black' }]);
+		const before = await read('Dog', 'us-4');
+		await sleep(10);
+
+		await ops({ operation: 'update', table: 'Dog', records: [{ id: 'us-4', __unset__: ['color'] }] });
+
+		const after = await read('Dog', 'us-4');
+		strictEqual(after.createdAt, before.createdAt, '@createdTime must survive');
+		ok(after.updatedAt > before.updatedAt, `@updatedTime should advance; ${before.updatedAt} -> ${after.updatedAt}`);
+	});
+
+	// Relationship attributes are resolved at read time from a stored foreign key. Resolving the
+	// merge server-side reads the stored record back, so this pins that a relationship table survives
+	// the round trip — a read that materialised a relationship property would fail the write, since
+	// Harper rejects any record that assigns one.
+	test('__unset__ works on a table with relationships, and keeps the foreign key', async () => {
+		await insert('Owner', [{ id: 'us-own', name: 'Ada' }]);
+		await insert('OwnedDog', [{ id: 'us-od', name: 'Penny', ownerId: 'us-own', nickname: 'Pen' }]);
+
+		const r = await ops({
+			operation: 'update',
+			table: 'OwnedDog',
+			records: [{ id: 'us-od', __unset__: ['nickname'] }],
+		});
+		strictEqual(r.status, 200, `update should 200; got ${r.status} ${JSON.stringify(r.body)}`);
+
+		const stored = await read('OwnedDog', 'us-od');
+		ok(!('nickname' in stored), `nickname should be gone; stored=${JSON.stringify(stored)}`);
+		strictEqual(stored.ownerId, 'us-own', 'the foreign key must survive');
+
+		const owner = await request(client.restURL).get('/Owner/us-own?select(id,dogs{id})').set(client.headers);
+		strictEqual(owner.status, 200, `owner GET should 200; got ${owner.status}`);
+		const dogIds = (owner.body?.dogs ?? []).map((d: any) => d.id);
+		ok(dogIds.includes('us-od'), `the relationship should still resolve; got ${JSON.stringify(owner.body)}`);
+	});
+
+	test('__unset__ of an attribute the record does not have is a no-op', async () => {
+		await insert('Dog', [{ id: 'us-5', name: 'Penny' }]);
+
+		const r = await ops({
+			operation: 'update',
+			table: 'Dog',
+			records: [{ id: 'us-5', __unset__: ['nonexistent'] }],
+		});
+		strictEqual(r.status, 200, `update should 200; got ${r.status} ${JSON.stringify(r.body)}`);
+		strictEqual((await read('Dog', 'us-5')).name, 'Penny');
+	});
+
+	// A removal is a write to that attribute, so it needs the same `update` permission writing it
+	// would — otherwise `__unset__` would be a way around attribute permissions, which is exactly
+	// what the blanket `full_record` denial exists to prevent. Here the removals are named, so the
+	// check can be precise instead: the role may unset what it can write, and nothing else.
+	test('__unset__ is checked against attribute update permission', async () => {
+		await insert('Dog', [{ id: 'us-perm', name: 'Penny', breed: 'Mutt', color: 'black' }]);
+		const headers = await addScopedRole(
+			'unset_scoped',
+			{
+				data: {
+					tables: {
+						Dog: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: false,
+							attribute_permissions: [
+								{ attribute_name: 'id', read: true, insert: true, update: true },
+								{ attribute_name: 'breed', read: true, insert: true, update: true },
+								{ attribute_name: 'color', read: true, insert: true, update: false },
+							],
+						},
+					},
+				},
+			},
+			'unset_scoped_user'
+		);
+
+		const denied = await asUser(headers, {
+			operation: 'update',
+			database: 'data',
+			table: 'Dog',
+			records: [{ id: 'us-perm', __unset__: ['color'] }],
+		});
+		strictEqual(
+			denied.status,
+			403,
+			`unsetting an attribute the role can't update must be refused; got ${denied.status} ${JSON.stringify(denied.body)}`
+		);
+		strictEqual((await read('Dog', 'us-perm')).color, 'black', 'the denied request must not have removed anything');
+
+		const allowed = await asUser(headers, {
+			operation: 'update',
+			database: 'data',
+			table: 'Dog',
+			records: [{ id: 'us-perm', __unset__: ['breed'] }],
+		});
+		strictEqual(
+			allowed.status,
+			200,
+			`unsetting an attribute the role CAN update must work; got ${allowed.status} ${JSON.stringify(allowed.body)}`
+		);
+		ok(!('breed' in (await read('Dog', 'us-perm'))), 'breed should be gone');
+	});
+
+	test('__unset__ refuses the primary key rather than silently ignoring it', async () => {
+		await insert('Dog', [{ id: 'us-6', name: 'Penny' }]);
+
+		const r = await ops({ operation: 'update', table: 'Dog', records: [{ id: 'us-6', __unset__: ['id'] }] });
+		ok(r.status >= 400, `unsetting the primary key should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+		strictEqual((await read('Dog', 'us-6')).name, 'Penny', 'nothing should have changed');
+	});
+
+	test('__unset__ refuses a system timestamp', async () => {
+		await insert('Dog', [{ id: 'us-7', name: 'Penny' }]);
+
+		const r = await ops({
+			operation: 'update',
+			table: 'Dog',
+			records: [{ id: 'us-7', __unset__: ['__createdtime__'] }],
+		});
+		ok(r.status >= 400, `unsetting a system timestamp should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+	});
+
+	test('a malformed __unset__ is rejected', async () => {
+		await insert('Dog', [{ id: 'us-8', name: 'Penny', color: 'black' }]);
+
+		for (const unset of ['color', { color: 1 }, [''], [42]]) {
+			const r = await ops({ operation: 'update', table: 'Dog', records: [{ id: 'us-8', __unset__: unset }] });
+			ok(r.status >= 400, `__unset__: ${JSON.stringify(unset)} should be refused; got ${r.status}`);
+		}
+		strictEqual((await read('Dog', 'us-8')).color, 'black', 'no rejected request may have written');
 	});
 
 	test('a non-boolean full_record is rejected rather than coerced', async () => {
