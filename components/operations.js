@@ -29,7 +29,13 @@ const {
 	streamPackagedDirectory,
 } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
-const { Application, prepareApplication, ASIDE_STAGING_DIR, dropComponentDirectory } = require('./Application.ts');
+const {
+	Application,
+	prepareApplication,
+	ASIDE_STAGING_DIR,
+	DEPLOY_STAGING_DIR,
+	dropComponentDirectory,
+} = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
 const { server } = require('../server/Server.ts');
 const {
@@ -940,9 +946,13 @@ async function getComponents() {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
 				const itemName = item.name;
+				// Deny-list, not a dot-prefix skip: component CONTENTS legitimately include dot-files
+				// (`.aiignore`, `.env.example`) that callers expect to see, so only Harper's own
+				// bookkeeping directories are excluded by name.
 				if (
 					itemName === 'node_modules' ||
 					itemName === ASIDE_STAGING_DIR ||
+					itemName === DEPLOY_STAGING_DIR ||
 					itemName === COMPONENT_PREPARATION_LOCK_DIR
 				)
 					continue;

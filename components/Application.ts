@@ -1402,6 +1402,7 @@ export async function activateCandidateApplication(application: Application, dep
 		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
 			application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
 		);
+		await rmdir(dirname(deploymentDirPath)).catch(() => {});
 	}
 }
 
@@ -1432,6 +1433,9 @@ async function discardCandidate(application: Application, deploymentId: string):
 	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
 		application.logger.warn(`Failed to remove the abandoned deploy candidate at ${deploymentDirPath}:`, error)
 	);
+	// And the staging root itself once nothing is in it, so an idle install leaves the components root as
+	// it found it. ENOTEMPTY just means a concurrent deploy still owns a candidate.
+	await rmdir(dirname(deploymentDirPath)).catch(() => {});
 }
 
 export async function buildCandidateApplication(application: Application, deploymentId: string): Promise<string> {
