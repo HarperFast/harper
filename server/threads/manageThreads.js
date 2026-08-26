@@ -503,11 +503,11 @@ async function restartWorkers(
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
 		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
-		// Promises for replacements that could only be started *after* their predecessor exited (the
-		// non-overlapping platforms below). Kept out of waitingToFinish, which is spliced as each worker
-		// exits to drive the maxWorkersDown throttle; these are awaited once at the end so that this
-		// function resolving means every replacement is accepting connections (harper#2335).
+		// Replacements started without waiting for them first. Kept out of waitingToFinish, which is
+		// spliced as each worker exits to drive the maxWorkersDown throttle, so that this function can
+		// still resolve only once every replacement is accepting connections.
 		let replacementsStarting = [];
+		let replacementsFailed = 0;
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
 		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
 		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
@@ -586,6 +586,7 @@ async function restartWorkers(
 					// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
 					// protection if it is still alive (it may have exited on its own during the wait).
 					if (workers.includes(worker)) worker.wasShutdown = false;
+					replacementsFailed++;
 					continue;
 				}
 			}
@@ -608,6 +609,7 @@ async function restartWorkers(
 			// well before the replacement finishes booting and binds.
 			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown)
 				replacementsStarting.push(whenWorkerStarted(worker.startCopy()));
+
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
@@ -644,8 +646,7 @@ async function restartWorkers(
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
-					if (!overlapping && startReplacementThreads && !processShuttingDown)
-						replacementsStarting.push(whenWorkerStarted(worker.startCopy()));
+					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
 					resolve();
 				});
 			});
@@ -656,10 +657,12 @@ async function restartWorkers(
 			}
 		}
 		await Promise.all(waitingToFinish);
-		// Callers that await this (deploy_component with restart: true) rely on it meaning "the pool is
-		// serving the new code". On the overlapping path each replacement was already awaited above; this
-		// covers the ones that could only be started once their predecessor released its ports.
-		await Promise.all(replacementsStarting);
+		// A caller awaiting this needs it to mean "the pool is serving the new code", so wait out the
+		// replacements that could only be started once their predecessor released its exclusive ports,
+		// and report the ones that never came up — their predecessors were deliberately left serving the
+		// old code, which a caller reporting a completed restart has to be able to see.
+		replacementsFailed += (await Promise.all(replacementsStarting)).filter((started) => !started).length;
+		return { replacementsFailed };
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
@@ -668,11 +671,9 @@ async function restartWorkers(
 	}
 }
 /**
- * Resolve once a newly started worker reports that it is accepting connections, or gives up trying.
- * Unlike the overlapping-restart path above there is no old worker left to fall back on, so a
- * replacement that fails to start is left to startWorker's own auto-restart handling — this only
- * stops waiting on it. The timeout is the same generous backstop used there, far longer than any
- * legitimate startup.
+ * Resolve once a newly started worker reports that it is accepting connections, or gives up on it.
+ * There is no old worker left to fall back on here, so a replacement that fails to start is left to
+ * startWorker's own auto-restart handling; this only stops waiting on it.
  * @param newWorker The replacement worker
  * @returns {Promise<boolean>} whether the worker reported that it started
  */

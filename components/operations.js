@@ -438,6 +438,27 @@ async function packageComponent(req) {
  * @param req
  * @returns {Promise<string>}
  */
+/**
+ * Wait for a worker restart, but not past the point where holding the operations-API response open
+ * stops being useful: each replacement carries its own multi-minute startup backstop, so a wide
+ * thread pool could otherwise keep the request open far longer than any client will wait. The
+ * restart continues regardless of what this resolves; a restart that failed outright does not fail
+ * the deploy, since the component is already on disk and replicated.
+ */
+const RESTART_WAIT_BUDGET_MS = 120_000;
+function awaitRestart(restarting) {
+	let timer;
+	const restarted = Promise.resolve(restarting).then(
+		(result) => ({ completed: true, replacementsFailed: result?.replacementsFailed ?? 0 }),
+		(error) => ({ completed: false, replacementsFailed: 0, error })
+	);
+	return Promise.race([
+		restarted,
+		new Promise((resolve) => {
+			timer = setTimeout(() => resolve({ completed: false, replacementsFailed: 0 }), RESTART_WAIT_BUDGET_MS);
+		}),
+	]).finally(() => clearTimeout(timer));
+}
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -698,17 +719,23 @@ async function deployComponent(req) {
 		}
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
-			// Await the restart: until it finishes, workers that have not been replaced yet are still
-			// serving the *pre-deploy* component set (on platforms with SO_REUSEPORT they keep accepting
-			// connections throughout the rolling restart), so a client that takes this operation's success
-			// as "the component is live" gets served by a worker that has never heard of it — a REST 404,
-			// or an MQTT publish refused because no resource handles the topic (harper#2335). Awaiting
-			// makes a successful response mean what callers already assume it means. Each worker's
-			// replacement is individually bounded by the startup backstop in restartWorkers(), so this
-			// cannot wait indefinitely.
-			await manageThreads.restartWorkers('http');
+			// Until the restart finishes, workers that have not been replaced yet are still serving the
+			// pre-deploy component set — where the OS lets replacements share a port they keep accepting
+			// connections for the whole rolling restart — so a caller that reads this operation's success
+			// as "the component is live" is served by a worker that has never heard of it. Wait for the
+			// restart instead of firing it, and say so when the wait ran out or a replacement never came
+			// up, because both leave workers on the old code.
+			const restart = await awaitRestart(manageThreads.restartWorkers('http'));
 			emit('phase', { phase: 'restart', status: 'done' });
-			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
+			response.restart_completed = restart.completed && !restart.replacementsFailed;
+			if (restart.error) log.error(`Restart after deploying ${application.name} failed`, restart.error);
+			response.message = response.restart_completed
+				? `Successfully deployed: ${application.name}, restarted Harper`
+				: restart.error
+					? `Successfully deployed: ${application.name}, but the restart failed: ${restart.error.message}`
+					: restart.completed
+						? `Successfully deployed: ${application.name}, restarted Harper, but ${restart.replacementsFailed} worker thread(s) could not be replaced and are still running the previous code`
+						: `Successfully deployed: ${application.name}, restarting Harper (the restart is still in progress)`;
 		} else if (rollingRestart) {
 			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
 			emit('phase', { phase: 'restart', status: 'start' });

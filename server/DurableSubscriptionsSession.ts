@@ -469,8 +469,8 @@ async function publishMessage(message: any, data: any, context: any) {
 	context.authorize = true;
 	const entry = resources.getMatch(topic, 'mqtt');
 	if (!entry) {
-		// Typed as 404 so the MQTT layer can answer with a specific reason code (topic name invalid)
-		// rather than a bare "unspecified error", matching how addSubscription reports the same miss.
+		// Typed like addSubscription's identical miss, so a protocol layer can map it to a specific
+		// code rather than a generic failure.
 		const notFoundError: any = new Error(
 			`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
 		);

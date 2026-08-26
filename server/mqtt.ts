@@ -176,35 +176,36 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		);
 	}
 }
-/** MQTT v5 DISCONNECT reason code 0x8B, "Server shutting down". */
-const SERVER_SHUTTING_DOWN = 0x8b;
+const SERVER_SHUTTING_DOWN = 0x8b; // MQTT v5 DISCONNECT reason code
+const REASON_STRING_LIMIT = 256;
+/** Fixed header, message id and reason code, plus the property identifier and its length prefix. */
+const ACK_PACKET_OVERHEAD = 16;
 
 /**
- * Every live MQTT connection on this worker, so a worker shutdown can tell its clients what
- * happened. Without this the worker exits and the socket simply dies: an MQTT v5 client sees an
- * unannounced close, and a QoS >= 1 PUBLISH that was in flight is never acknowledged and never
- * refused — it just hangs (harper#2335). A worker restart is routine (any `deploy_component`
- * with `restart: true` does one), so this is the common case, not an edge case.
+ * Every live MQTT connection on this worker. A worker restart is routine — any `deploy_component`
+ * with `restart: true` performs one — and without this the worker just exits: the client sees an
+ * unannounced socket close it cannot distinguish from a network failure, with no indication that
+ * reconnecting will reach a healthy worker.
  */
 const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
 let shutdownDisconnectRegistered = false;
 
-/**
- * Send every live client a DISCONNECT before this worker stops, then close the connection.
- * v3.1.1 has no server-to-client DISCONNECT, so those connections are only closed.
- */
+/** v3.1.1 has no server-to-client DISCONNECT, so those connections are only closed. */
 export function disconnectClientsForShutdown() {
+	const disconnectPacket = generate({ cmd: 'disconnect', reasonCode: SERVER_SHUTTING_DOWN } as any, {
+		protocolVersion: 5,
+	});
 	for (const connection of liveConnections) {
 		try {
-			if (connection.protocolVersion() >= 5)
-				connection.send(
-					generate({ cmd: 'disconnect', reasonCode: SERVER_SHUTTING_DOWN } as any, {
-						protocolVersion: 5,
-					})
-				);
-			connection.close();
+			if (connection.protocolVersion() >= 5) connection.send(disconnectPacket);
 		} catch (error) {
-			mqttLog.debug?.('Could not disconnect MQTT connection during shutdown', error);
+			mqttLog.debug?.('Could not notify MQTT connection of shutdown', error);
+		} finally {
+			try {
+				connection.close();
+			} catch (error) {
+				mqttLog.debug?.('Could not close MQTT connection during shutdown', error);
+			}
 		}
 	}
 	liveConnections.clear();
@@ -214,8 +215,7 @@ function registerShutdownDisconnect() {
 	if (shutdownDisconnectRegistered) return;
 	shutdownDisconnectRegistered = true;
 	registerShutdownDrain({
-		// Notifying clients is bounded and synchronous, so it must never extend the shutdown
-		// deadline — it only needs to run before the servers close.
+		// Notifying clients is bounded and synchronous; it must never extend the shutdown deadline.
 		hasWork: () => false,
 		drain: async () => disconnectClientsForShutdown(),
 	});
@@ -251,6 +251,10 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	};
 	liveConnections.add(connection);
 	let session: DurableSubscriptionsSession;
+	// [MQTT-3.1.2-29]: a client that asks for no problem information must not be sent a reason
+	// string on a PUBACK/PUBREC, and [MQTT-3.1.2-24] caps what it will accept at all.
+	let sendProblemInformation = true;
+	let maximumPacketSize: number | undefined;
 	const mqttOptions = { protocolVersion: 4 };
 	const parser = makeParser({ protocolVersion: 5 });
 	function onMessage(data) {
@@ -296,6 +300,8 @@ function onSocket(socket, send, request, user, mqttSettings) {
 			switch (command) {
 				case 'connect':
 					mqttOptions.protocolVersion = packet.protocolVersion;
+					sendProblemInformation = packet.properties?.requestProblemInformation !== 0;
+					maximumPacketSize = packet.properties?.maximumPacketSize;
 					if (packet.username) {
 						try {
 							user = await server.getUser(packet.username, packet.password.toString(), request);
@@ -513,11 +519,9 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						emitEvent('error', error, socket, packet, session);
 						mqttLog.warn?.(error);
 						if (packet.qos > 0) {
-							// Report *why* the publish failed. A publish to a topic no resource handles is the
-							// same miss addSubscription already answers with a specific code, and it is what a
-							// client sees against a worker that has not (yet) loaded the component that defines
-							// the topic — reporting it as "unspecified error" leaves that indistinguishable from
-							// an internal failure (harper#2335).
+							// A publish to a topic no resource handles is the same miss addSubscription already
+							// answers with a specific code; reporting it as "unspecified error" leaves it
+							// indistinguishable from an internal failure.
 							const publishPacket: any = {
 								// Send a publish acknowledgment
 								cmd: responseCmd,
@@ -531,9 +535,14 @@ function onSocket(socket, send, request, user, mqttSettings) {
 												? 0x90 // topic name invalid
 												: 0x80, // unspecified error
 							};
-							// v5 carries a human-readable reason alongside the code; v3.1.1 has no properties field.
-							if (mqttOptions.protocolVersion >= 5 && error.message)
-								publishPacket.properties = { reasonString: String(error.message).slice(0, 1024) };
+							const reasonString = error.message ? String(error.message).slice(0, REASON_STRING_LIMIT) : undefined;
+							if (
+								mqttOptions.protocolVersion >= 5 &&
+								reasonString &&
+								sendProblemInformation &&
+								(!maximumPacketSize || maximumPacketSize >= reasonString.length + ACK_PACKET_OVERHEAD)
+							)
+								publishPacket.properties = { reasonString };
 							generateAndSendPacket(publishPacket, packet.topic);
 						}
 						break;
