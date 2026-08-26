@@ -22,6 +22,7 @@ import {
 	constants,
 	lstat,
 	mkdir,
+	link,
 	mkdtemp,
 	open,
 	readdir,
@@ -923,14 +924,27 @@ async function syncRenameParents(fromPath: string, toPath: string): Promise<void
 	for (const parent of parents) await syncDirectory(parent);
 }
 
-/** Write a small control file and fsync it before its parent, so it cannot appear empty after a crash. */
+/**
+ * Write a control file so its final name NEVER exists with partial contents. Opening the final path with
+ * `wx` publishes the directory entry before anything is written, so a crash in between leaves a zero-byte
+ * file — which for the journal means "unreadable", failing a component closed over a deploy that had not
+ * actually started. Contents land in a temp name, are fsynced, and only then renamed into place.
+ */
 async function writeControlFileDurably(filePath: string, contents: string): Promise<void> {
-	const handle = await open(filePath, 'wx', 0o600);
+	const tempPath = `${filePath}.partial-${process.pid}-${randomUUID()}`;
+	const handle = await open(tempPath, 'wx', 0o600);
 	try {
 		await handle.writeFile(contents, 'utf8');
 		await handle.sync();
 	} finally {
 		await handle.close();
+	}
+	try {
+		// `wx` on the temp name plus this rename keeps the EEXIST semantics callers rely on to detect a
+		// retry of the same activation.
+		await link(tempPath, filePath);
+	} finally {
+		await rm(tempPath, { force: true });
 	}
 	await syncDirectory(dirname(filePath));
 }
@@ -1277,7 +1291,41 @@ type CandidateActivation = {
 };
 
 /** Mark a candidate build+validation complete. Idempotent, so a retried activation is not a failure. */
+/**
+ * fsync every regular file in the candidate tree, then its directories bottom-up. Without this the small
+ * control files can survive a power loss while the candidate's contents do not, so recovery rolls forward
+ * onto a truncated tree that `.complete` swears is good. Bounded by the candidate's own size and only on
+ * the deploy path.
+ */
+async function syncTreeContents(rootPath: string): Promise<void> {
+	const entries = await readdir(rootPath, { withFileTypes: true }).catch(() => []);
+	for (const entry of entries) {
+		const entryPath = join(rootPath, entry.name);
+		if (entry.isDirectory()) {
+			await syncTreeContents(entryPath);
+		} else if (entry.isFile()) {
+			let handle;
+			try {
+				handle = await open(entryPath, 'r');
+			} catch {
+				continue;
+			}
+			try {
+				await handle.sync();
+			} catch (error) {
+				logger.trace?.(`Sync of ${entryPath} failed: ${errorMessage(error)}`);
+			} finally {
+				await handle.close();
+			}
+		}
+	}
+	await syncDirectory(rootPath);
+}
+
 async function markCandidateComplete(componentDirPath: string, deploymentId: string): Promise<void> {
+	// Contents first: `.complete` is roll-forward AUTHORITY, so it must not be durable before the tree it
+	// vouches for.
+	await syncTreeContents(candidateApplicationPath(componentDirPath, deploymentId));
 	try {
 		await writeControlFileDurably(candidateCompleteMarkerPath(componentDirPath, deploymentId), '');
 	} catch (error) {

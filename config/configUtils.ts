@@ -1382,9 +1382,11 @@ export function deleteConfigFromFile(param: string[]) {
 	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
 	const configDoc = parseYamlDoc(configFilePath);
 	configDoc.deleteIn(param);
-	const hdbRoot = configDoc.getIn(['rootPath']) as string;
-	const configFileLocation = path.join(hdbRoot, hdbTerms.HARPER_CONFIG_FILE);
-	atomicWriteFile(configFileLocation, String(configDoc));
+	// Written back to the file it was READ from. It used to reconstruct `rootPath/harper-config.yaml`
+	// instead, which is a different file on layouts where the config does not sit at the root — so the
+	// deletion was lost and an unrelated file was overwritten with this document. `addConfig` already
+	// writes to `getConfigFilePath()`; this now matches.
+	atomicWriteFile(configFilePath, String(configDoc));
 }
 
 export function getConfigObj() {

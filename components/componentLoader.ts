@@ -53,7 +53,6 @@ import { materializeGlobalSecrets, processComponentEnv } from './componentSecret
 import { PluginModule } from './PluginModule.ts';
 import {
 	getEnvBuiltInComponents,
-	recoverInterruptedActivations,
 	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
 } from './Application.ts';
@@ -67,7 +66,7 @@ const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
  * Startup is single-threaded here, so no cross-component lock is needed — unlike the deploy path, where
  * two components can publish at once.
  */
-async function publishComponentConfigEntry(component: string, entry: Record<string, any> | null): Promise<void> {
+export async function publishComponentConfigEntry(component: string, entry: Record<string, any> | null): Promise<void> {
 	if (entry === null) deleteConfigFromFile([component]);
 	else await addConfig(component, entry);
 }
@@ -169,40 +168,15 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 export async function loadComponentDirectories(
 	loadedPluginModules?: Map<any, any>,
 	loadedResources?: Resources,
-	readyComponentPromises: ComponentReadyPromises = new WeakMap()
+	readyComponentPromises: ComponentReadyPromises = new WeakMap(),
+	// Settled by boot BEFORE installApplications(), because that installs from the root config and would
+	// otherwise reinstall the previous release over an already-live candidate.
+	interruptedActivationFailures: Map<string, Error> = new Map()
 ) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
-	const failedRecoveries = new Map<string, Error>();
-	if (isMainThread) {
-		// FIRST, before the legacy aside recovery below, and before anything loads.
-		//
-		// The order is load-bearing. A crash between candidate→live and the config write leaves live=new, an
-		// in-progress aside holding the old tree, and a journal. The legacy pass keys only on that aside, so
-		// running it first restores the OLD tree over the new one; this pass then sees live-present-with-no-
-		// candidate, finishes forward, and publishes the NEW config — leaving the old tree running under the
-		// new release's configuration, deterministically. Settling journaled activations first means the
-		// legacy pass only ever sees asides that no activation owns.
-		//
-		// Main thread only: workers would race each other over the same trees. Failures are per component, so
-		// one unsettleable component is failed closed and healthy siblings still load; a failure to inspect
-		// staging at all is logged and loading continues, as the legacy pass also does.
-		try {
-			for (const [component, error] of await recoverInterruptedActivations(
-				CF_ROUTES_DIR,
-				publishComponentConfigEntry
-			)) {
-				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
-			}
-		} catch (error) {
-			const recoveryError = error instanceof Error ? error : new Error(String(error));
-			harperLogger.warn(
-				'Loading existing filesystem components without activation recovery because staging could not be inspected:',
-				errorForLog(recoveryError)
-			);
-		}
-	}
+	const failedRecoveries = new Map<string, Error>(interruptedActivationFailures);
 	try {
 		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
 			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);

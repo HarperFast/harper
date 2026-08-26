@@ -117,9 +117,6 @@ suite('deploy_component keeps the previous version in place while the replacemen
 			await redeploy;
 
 			strictEqual(await readFile(versionFile, 'utf8'), '2', 'the replacement is live once it is complete');
-			// A payload deploy must not leave a `package` entry a cold install would resolve instead.
-			const config = await readFile(join(ctx.harper.dataRootDir, 'harperdb-config.yaml'), 'utf8').catch(() => '');
-			ok(!/^\s*package:/m.test(config.split(PROJECT)[1] ?? ''), 'no stale package entry survives a payload deploy');
 			// Nothing left behind: no candidate, and no displaced tree accumulating per deploy.
 			const staged = await readdir(join(componentsRoot, '.deploy-staging')).catch(() => []);
 			strictEqual(staged.length, 0, `staging should be empty, found ${JSON.stringify(staged)}`);
@@ -127,5 +124,25 @@ suite('deploy_component keeps the previous version in place while the replacemen
 		} finally {
 			await rm(scratch, { recursive: true, force: true });
 		}
+	});
+
+	test('a payload deploy removes a stale package entry a cold install would otherwise resolve', async () => {
+		const configPath = join(ctx.harper.dataRootDir, 'harper-config.yaml');
+		const project = `${PROJECT}-pkg`;
+		// Seeded directly: the entry has to exist BEFORE the payload deploy, or the assertion below cannot
+		// fail. (An earlier version of this test deployed two payloads, so no package entry ever existed and
+		// the check passed vacuously.)
+		await writeFile(configPath, `${await readFile(configPath, 'utf8')}\n${project}:\n  package: '@org/stale@1.0.0'\n`);
+		ok(/package:/.test((await readFile(configPath, 'utf8')).split(`${project}:`)[1] ?? ''), 'seed landed');
+
+		await operation(ctx, {
+			operation: 'deploy_component',
+			project,
+			payload: await buildPayload(1),
+			restart: false,
+		});
+
+		const after = (await readFile(configPath, 'utf8')).split(`${project}:`)[1] ?? '';
+		ok(!/^\s+package:/m.test(after.split(/^\S/m)[0] ?? after), `stale package entry survived: ${after.slice(0, 120)}`);
 	});
 });
