@@ -31,7 +31,7 @@ export async function installModules(req: any) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let { projects, dryRun } = req;
+	let { projects, dry_run: dryRun } = req;
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
