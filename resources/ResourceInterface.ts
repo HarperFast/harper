@@ -136,7 +136,9 @@ export interface Context {
 	/**
 	 * Abort signal carried through ALS so generator bodies can forward cancellation to
 	 * external work (e.g. `scope.models.generateStream({ signal })`). Populated on the
-	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513.
+	 * Request that becomes the ALS-bound Context for HTTP/WS paths via #513. Also consumed
+	 * by `resources/transaction.ts` (harper#2001) to abort a request-scoped transaction
+	 * promptly on client disconnect rather than leaving it open until the handler settles.
 	 */
 	signal?: AbortSignal;
 }

@@ -290,7 +290,7 @@ describe('Request class', function () {
 	});
 
 	describe('signal (AbortSignal)', function () {
-		const { EventEmitter } = require('node:events');
+		const { EventEmitter, getMaxListeners } = require('node:events');
 
 		function makeNodeRequest() {
 			return {
@@ -316,6 +316,11 @@ describe('Request class', function () {
 			assert.ok(request.signal instanceof AbortSignal);
 			assert.strictEqual(request.signal.aborted, false);
 			assert.strictEqual(request.isAborted, false);
+		});
+
+		it('allows concurrent WebSocket transactions to listen without warnings', function () {
+			const request = new Request(makeNodeRequest());
+			assert.strictEqual(getMaxListeners(request.signal), 0);
 		});
 
 		it('aborts the signal on nodeResponse close before write is finished', function () {

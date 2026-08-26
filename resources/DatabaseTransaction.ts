@@ -250,7 +250,19 @@ export function transactionOpenTooLongError(): ServerError {
 	);
 }
 
+/** Thrown by a transaction poisoned via abortDueToDisconnect (see below) if still used afterward. */
+export function requestAbortedError(): ServerError {
+	// 499 (client closed request) rather than a retryable 503/408: no client is left to retry.
+	return new ServerError('Transaction was aborted because the client disconnected', 499);
+}
+
 type MaybePromise<T> = T | Promise<T>;
+
+/**
+ * A search result set holding a read reference on a transaction. `onDone` returns that reference and
+ * clears itself, so calling it more than once is safe.
+ */
+export type OwnedReadIterator = { onDone?: (() => void) | null };
 
 export type CommitOptions = {
 	doneWriting?: boolean;
@@ -258,6 +270,13 @@ export type CommitOptions = {
 	retries?: number;
 	flush?: boolean;
 	transaction?: RocksTransaction;
+	/**
+	 * Internal: this call continues a commit attempt already under way on this chain (the extra-writes
+	 * recursion, or the head's cascade into `next`) rather than starting a new one. It is what lets a
+	 * poison that landed mid-attempt spare the rest of that attempt without also sparing a genuinely
+	 * fresh commit issued while it is still running.
+	 */
+	continuation?: boolean;
 };
 
 type ReadTransaction = (LMDBTransaction | RocksTransaction) & {
@@ -432,6 +451,31 @@ export class DatabaseTransaction implements Transaction {
 	// asks to stop reading a pinned snapshot, so re-pinning one for the rest of the scope would take
 	// back what it asked for.
 	snapshotFree = false;
+	declare disconnected?: boolean;
+	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
+	// retained read snapshot. See closeOwnedReadIterators().
+	declare ownedReadIterators?: Set<OwnedReadIterator>;
+	// Depth of commit() attempts on this link that have not reached a native outcome.
+	declare commitsInFlight?: number;
+	// A poison landed while a commit was already in flight somewhere in the chain. Excuses the head's
+	// cascade into `next`, but not a link the monitor poisoned BEFORE any commit started.
+	declare poisonedMidCommit?: boolean;
+	// The bound exists because a commit that never settles would otherwise make the point-of-no-return
+	// spare permanent and hold its write intents forever — the harper#2001 wedge. A deadline rather than
+	// a tick count, and root-scoped: both engines' monitors visit every link of a chain, so a counter
+	// would be advanced once per link per tick and exhaust the spare early on a multi-store transaction.
+	declare deferredPoisonDeadline?: number;
+	// Per LINK, not per root: a commit detaches `next` before it settles, so an escalation recorded on
+	// the root would leave a detached link's own hung commit permanently unforced. It stops the monitor
+	// re-forcing the same abort every tick — a hung attempt never decrements commitsInFlight — while
+	// still letting the arm that reclaims the retained read snapshot run.
+	declare poisonEscalated?: boolean;
+	// Root-only: the owning scope ended while a commit was in flight, so the wrapper could neither abort
+	// it nor close the iterators it owns. Both are finished by endCommitAttempt() when the attempt settles,
+	// against the links captured here rather than the `next` chain a settling commit detaches.
+	declare scopeAbandoned?: boolean;
+	declare abandonedLinks?: DatabaseTransaction[];
+	declare committingWrites?: boolean;
 
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -526,6 +570,49 @@ export class DatabaseTransaction implements Transaction {
 		return transaction;
 	}
 
+	/**
+	 * Record that `iterator` owes a doneReadTxn(). Without the record, a retained handle's only
+	 * reclamation path is an onDone() an abandoned request leaves nobody to call.
+	 */
+	registerReadIterator(iterator: OwnedReadIterator): void {
+		// A transaction with no handle of its own (an ImmediateTransaction, which a context reuses for
+		// every search it makes) has nothing to reclaim and is in no monitor's registry, so an entry here
+		// would never be swept — it would just pin every partially-consumed result set on that context.
+		if (!this.transaction && !this.readTxn) return;
+		(this.ownedReadIterators ??= new Set()).add(iterator);
+	}
+
+	unregisterReadIterator(iterator: OwnedReadIterator): void {
+		this.ownedReadIterators?.delete(iterator);
+	}
+
+	/**
+	 * Close every read iterator this transaction still owns, returning how many references came back.
+	 * Idempotent — each onDone() clears itself — but only safe once nothing can still be consuming them.
+	 */
+	closeOwnedReadIterators(): number {
+		let closed = 0;
+		// The whole multi-store chain: a handler that searched a second database registered that
+		// iterator on the `next` link that owns its handle, not on the head.
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			const iterators = txn.ownedReadIterators;
+			if (!iterators?.size) continue;
+			// Snapshot first: onDone() deregisters, mutating the set as we walk it.
+			for (const iterator of [...iterators]) {
+				iterators.delete(iterator);
+				try {
+					if (iterator.onDone) {
+						iterator.onDone();
+						closed++;
+					}
+				} catch (error) {
+					harperLogger.warn?.('Failed to close a read iterator owned by an abandoned transaction', error);
+				}
+			}
+		}
+		return closed;
+	}
+
 	useReadTxn(disableSnapshot?: boolean) {
 		const readTxn = this.getReadTxn(disableSnapshot);
 		// stackTraces is seeded by the same getReadTxn branch that registers the transaction with
@@ -558,6 +645,16 @@ export class DatabaseTransaction implements Transaction {
 				harperLogger.warn?.('Failed to release a transaction’s native handle', error);
 			}
 			this.completeDeferredContextRelease();
+		}
+	}
+
+	private releaseRetainedWriteIntents(): void {
+		if (this.writesAbandoned) return;
+		this.writesAbandoned = true;
+		try {
+			(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
+		} catch (error) {
+			harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
 		}
 	}
 
@@ -777,6 +874,7 @@ export class DatabaseTransaction implements Transaction {
 
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.disconnected) throw requestAbortedError();
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
 		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
 		// and only an idle one holding write intents is reaped.
@@ -891,10 +989,140 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Resolves with information on the timestamp and success of the commit
+	 * Whether any link of this multi-store chain has a commit attempt that has not reached a native
+	 * outcome. Asked of the whole chain, not just this link: the head commits its own writes and then
+	 * cascades into `next`, so that cascade is a continuation of one logical commit, not a fresh one.
+	 * Walked from here as well when a settling commit has already detached this link from that chain.
+	 */
+	isChainCommitting(): boolean {
+		let attached = false;
+		for (let txn: DatabaseTransaction = this.root ?? this; txn; txn = txn.next) {
+			if (txn.commitsInFlight) return true;
+			if (txn === this) attached = true;
+		}
+		if (attached) return false;
+		// Only a link a settling commit already detached needs its own walk, and its own attempt is
+		// exactly the one that must not be torn out from under it. The ordinary case — asked of the root,
+		// or of a link still on the chain — is answered by the single walk above.
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			if (txn.commitsInFlight) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Entry into commit() is this transaction's point of no return. Only a FRESH attempt — none already
+	 * in flight, and no `options.transaction` from an immediate-commit re-entry — is rejected by the
+	 * poison flags. Everything that continues an already-started attempt (a RETRY_NOW/ERR_BUSY/
+	 * ERR_TRY_AGAIN recursion, the extra-writes recursion inside performCommit) must reach its native
+	 * outcome instead of abandoning a handle uncommitted-and-unaborted; a poison that lands during that
+	 * window rejects only the work that comes after it (see abortAndPoison).
+	 *
+	 * Resolves with information on the timestamp and success of the commit.
 	 */
 	commit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
-		if (this.timedOut) throw transactionOpenTooLongError();
+		if (!options.transaction && !(options.continuation && this.poisonedMidCommit)) {
+			if (this.timedOut) throw transactionOpenTooLongError();
+			if (this.disconnected) throw requestAbortedError();
+		}
+		this.commitsInFlight = (this.commitsInFlight ?? 0) + 1;
+		// Only a top-level attempt records the intent: a continuation would re-read hasPendingWrites()
+		// after clearWrites() has already emptied it.
+		if (this.commitsInFlight === 1 && !options.continuation && this.hasPendingWrites()) {
+			(this.root ?? this).committingWrites = true;
+		}
+		let resolution: MaybePromise<CommitResolution>;
+		try {
+			resolution = this.performCommit(options);
+		} catch (error) {
+			this.endCommitAttempt();
+			throw error;
+		}
+		if (!(resolution as Promise<CommitResolution>)?.then) {
+			this.endCommitAttempt();
+			return resolution;
+		}
+		return (resolution as Promise<CommitResolution>).then(
+			(settled) => {
+				this.endCommitAttempt();
+				return settled;
+			},
+			(error) => {
+				this.endCommitAttempt();
+				throw error;
+			}
+		);
+	}
+
+	private endCommitAttempt(): void {
+		this.commitsInFlight--;
+		// A link closes its OWN iterators the moment its own attempt settles, without waiting for the
+		// chain: LMDBTransaction's commit detaches `next` before awaiting the child, so a scope abandoned
+		// in that window never captured this link and the chain-wide cleanup below cannot reach it. Safe
+		// here and not earlier because this link's attempt is the one that just reached its outcome.
+		if ((this.root ?? this).scopeAbandoned) this.closeOwnedReadIterators();
+		if (this.isChainCommitting()) return;
+		// The window has closed: a commit entered from here on is a fresh one, and the flags that landed
+		// during the finished attempt must reject it like any other poisoned commit.
+		const root = this.root ?? this;
+		root.committingWrites = false;
+		root.deferredPoisonDeadline = undefined;
+		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) {
+			txn.poisonedMidCommit = false;
+			txn.poisonEscalated = false;
+		}
+		if (root.scopeAbandoned) {
+			root.scopeAbandoned = false;
+			// The links captured when the scope was abandoned, not the current `next` chain: a successful
+			// multi-store commit clears `next` before this runs, which would otherwise leave a former
+			// child's iterators owning a snapshot nothing can reach.
+			const abandoned = root.abandonedLinks;
+			root.abandonedLinks = undefined;
+			if (abandoned) for (const link of abandoned) link.closeOwnedReadIterators();
+			else root.closeOwnedReadIterators();
+		}
+	}
+
+	/**
+	 * The scope that owned this transaction ended while a commit attempt was still in flight, so the
+	 * wrapper could not abort it. Surrender scope ownership now, or the attempt's own
+	 * rotateAfterMidScopeCommit reopens an instance with no wrapper left to commit or abort it and the
+	 * next transaction() on that context joins it and never commits. Iterator cleanup is deferred to
+	 * endCommitAttempt(), since closing them mid-attempt can pull the handle the commit is still
+	 * staging through.
+	 */
+	abandonScope(): void {
+		const root = this.root ?? this;
+		root.scopeAbandoned = true;
+		const links: DatabaseTransaction[] = [];
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			links.push(txn);
+			txn.endScopeOwnership();
+			// Ending ownership alone only stops the attempt's own rotation; until it reaches its native
+			// outcome the instance is still OPEN, and a hung `before` hook makes that window arbitrarily
+			// long. The successful attempt reaches CLOSED here itself, and both monitors defer while a
+			// commit is in flight, so nothing reads this as reapable early. Not on its own sufficient:
+			// LMDBTransaction's own commit reassigns `open`, so the release below is what actually keeps
+			// the next write on this context off an instance with no wrapper behind it.
+			txn.open = TRANSACTION_STATE.CLOSED;
+		}
+		root.abandonedLinks = links;
+		// By abort()'s own rule, so a poisoned chain stays joined and throws while an ordinary one lets
+		// the next write start fresh.
+		this.releaseContext(!this.timedOut && !this.disconnected);
+	}
+
+	/**
+	 * Whether this chain has a write-bearing commit attempt in flight. `hasPendingWrites()` cannot
+	 * answer that: commit() marks itself CLOSED and clears its staged writes well before the native
+	 * commit settles, so between those points a write-bearing transaction looks read-only and idle to
+	 * anything reading its public state — including transaction.ts's disconnect listener.
+	 */
+	isCommittingWrites(): boolean {
+		return Boolean((this.root ?? this).committingWrites) && this.isChainCommitting();
+	}
+
+	protected performCommit(options: CommitOptions = {}): MaybePromise<CommitResolution> {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
@@ -906,12 +1134,12 @@ export class DatabaseTransaction implements Transaction {
 		this.validated = this.writes.length;
 		const completions = this.completions;
 		if (completions.length > 0) this.completions = []; // reset
-		return when(
-			completions.length > 0 ? Promise.all(completions) : null,
-			() => {
+		let commitResult: MaybePromise<CommitResolution>;
+		try {
+			commitResult = when(completions.length > 0 ? Promise.all(completions) : null, () => {
 				if (this.writes.length > this.validated) {
 					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
-					return this.commit(options);
+					return this.commit({ ...options, continuation: true });
 				}
 				// The save loop above can be what opened this transaction's native handle — save() attaches
 				// one when it had none, which is every ImmediateTransaction commit since its getReadTxn
@@ -991,14 +1219,7 @@ export class DatabaseTransaction implements Transaction {
 					// post-submit steps here: the replay commit is already in flight, so a throw must
 					// not skip onCommit/the chain-store commit below. Optional: rocksdb-js < 2.7
 					// lacks the method.
-					if (!this.writesAbandoned) {
-						this.writesAbandoned = true;
-						try {
-							(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
-						} catch (error) {
-							harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
-						}
-					}
+					this.releaseRetainedWriteIntents();
 				} else {
 					// no more reads need to be performed, just commit/abort based if there are any writes
 					this.detachOwnedTransaction(); // any further operations operate immediately
@@ -1083,9 +1304,7 @@ export class DatabaseTransaction implements Transaction {
 							if (this.next) {
 								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
 								// the next store — it must commit its own writes through its own transaction
-								completions.push(
-									this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
-								);
+								completions.push(this.next.commit({ ...options, transaction: undefined, continuation: true }));
 							}
 							if (options?.flush) {
 								completions.push(this.writes[0].store.flushed);
@@ -1208,9 +1427,8 @@ export class DatabaseTransaction implements Transaction {
 									harperLogger.debug?.('aborting transaction after failed commit', abortError);
 								}
 								// A terminal failure is just as final as a success — release the context's
-								// back-reference here too, or transaction.ts's onComplete() (which has no
-								// rejection handler of its own) would leave a long-lived context pinning this
-								// CLOSED wrapper forever.
+								// back-reference while handling the native transaction. performCommit's outer
+								// rejection handler then aborts the wrapper and its linked chain.
 								// A failed commit must never be followed by a resumed segment: this generation is
 								// finished and its durability is unknown, so ownership goes with it.
 								this.endScopeOwnership();
@@ -1236,7 +1454,7 @@ export class DatabaseTransaction implements Transaction {
 					// as above: the next store must not inherit this store's explicit native transaction
 					let nextResolution;
 					try {
-						nextResolution = this.next?.commit(options.transaction ? { ...options, transaction: undefined } : options);
+						nextResolution = this.next?.commit({ ...options, transaction: undefined, continuation: true });
 					} catch (error) {
 						// A synchronous throw reaches neither rejection handler below, and the head has already
 						// committed — surrender ownership here too, or the scope stays resumable on top of a
@@ -1268,12 +1486,13 @@ export class DatabaseTransaction implements Transaction {
 				}
 				this.completeMidScopeCommit(options);
 				return txnResolution;
-			},
-			(error) => {
-				this.abort();
-				throw error;
-			}
-		);
+			});
+		} catch (error) {
+			this.abortAfterCommitError(error);
+		}
+		if ((commitResult as Promise<CommitResolution>)?.then)
+			return (commitResult as Promise<CommitResolution>).catch((error) => this.abortAfterCommitError(error));
+		return commitResult;
 	}
 	/**
 	 * A successful commit that is NOT the scope's final one leaves the scope still running and still
@@ -1307,16 +1526,41 @@ export class DatabaseTransaction implements Transaction {
 
 	/** See completeMidScopeCommit, which is the only caller and carries the reasoning. */
 	private rotateAfterMidScopeCommit(options: CommitOptions): void {
-		if (options.doneWriting || this.timedOut || this.transaction || !this.#scopeOwned) return;
+		if (options.doneWriting || this.timedOut || this.disconnected || this.transaction || !this.#scopeOwned) return;
 		this.open = TRANSACTION_STATE.OPEN;
 		this.snapshotFree = true;
 		this.writesAbandoned = false;
 	}
 
-	abort(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
-		// Defensively release any native handle whose reference bookkeeping was already consumed.
-		if (this.transaction) this.releaseReadTxn();
+	protected abortAfterCommitError(error): never {
+		try {
+			// Not "always retain": abort(true) keeps the native handle only while read iterators still
+			// own it. resources/transaction.ts's own post-error abort passes the same argument, so the
+			// two layers cannot contradict each other one frame apart.
+			this.abort(true);
+		} catch (abortError) {
+			harperLogger.debug?.('aborting transaction after a failed commit', abortError);
+		}
+		throw error;
+	}
+	abort(retainReadTransaction = false): void {
+		const hasOpenReadIterator =
+			retainReadTransaction &&
+			this.transaction &&
+			(this.readTxnsUsed > 1 || (this.baseReadRefConsumed && this.readTxnsUsed > 0));
+		if (hasOpenReadIterator) {
+			this.releaseRetainedWriteIntents();
+			if (!this.baseReadRefConsumed) {
+				this.doneReadTxn();
+				this.baseReadRefConsumed = true;
+			}
+		} else {
+			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		}
+		// A write-only transaction never took a read reference (getReadTxn was never called), so the
+		// loop above releases nothing even though save() created a native handle. Keep an iterator's
+		// handle alive, but release every other remaining handle through the shared cleanup path.
+		if (this.transaction && !hasOpenReadIterator) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
 		try {
@@ -1333,12 +1577,12 @@ export class DatabaseTransaction implements Transaction {
 			// poison check in addWrite()/commit(), rather than silently landing a later write on a
 			// brand-new transaction after an earlier one was rolled back (#1411). Releasing here would
 			// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
-			this.releaseContext(!this.timedOut);
+			this.releaseContext(!this.timedOut && !this.disconnected);
 			const next = this.next;
-			this.next = null;
+			if (!retainReadTransaction) this.next = null;
 			if (next) {
 				try {
-					next.abort();
+					next.abort(retainReadTransaction);
 				} catch (error) {
 					harperLogger.debug?.('cleaning up a chained transaction during abort', error);
 				}
@@ -1403,25 +1647,76 @@ export class DatabaseTransaction implements Transaction {
 		return false;
 	}
 	/**
-	 * Abort and poison this transaction because it exceeded the open-transaction limit. The next write or
-	 * commit throws transactionOpenTooLongError so the request fails cleanly and rolls back, rather than the
-	 * monitor force-committing a partial write set on the application's behalf (issue #1407). The whole
-	 * multi-store `next` chain is poisoned and aborted: writes to a second database live on `next`, so
-	 * leaving it un-poisoned would let the head's commit cascade force-commit them (or orphan its resources
-	 * until it self-times-out).
+	 * Abort and poison this transaction (and its multi-store `next` chain) for `reason`, throwing on any
+	 * further addWrite/commit (transactionOpenTooLongError / requestAbortedError) rather than the monitor
+	 * force-committing a partial write set on the application's behalf (issue #1407) or a chain link
+	 * silently committing on behalf of a request that was supposed to have been cut off (harper#2001).
+	 * Poisons every link first, then aborts each — so a throw from one link's abort() can't leave a later
+	 * link un-poisoned and eligible for a commit cascade to force-commit it or leak its native handle.
+	 *
+	 * A commit already in flight anywhere in the chain is past the point of no return: poison it for
+	 * everything that comes after, but let that attempt reach its native outcome rather than racing a
+	 * torn-out handle into a success the caller cannot trust. Accepted consequence: a write whose commit
+	 * had already started can land after the client is gone.
 	 */
-	abortDueToTimeout(): void {
-		// Poison every link first, then abort each, so a throw from one link's abort() can't leave later links
-		// in the chain un-poisoned (and thus eligible to be force-committed by a later commit cascade).
+	abortAndPoison(reason: 'timedOut' | 'disconnected', force?: boolean): void {
+		const committing = !force && this.isChainCommitting();
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			txn.timedOut = true;
-			txn.open = TRANSACTION_STATE.CLOSED;
+			txn[reason] = true;
+			if (committing) txn.poisonedMidCommit = true;
+			else txn.open = TRANSACTION_STATE.CLOSED;
 		}
+		if (committing) return;
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
 			try {
-				txn.abort();
+				// An iterator's native cursor is owned by this transaction. Drop the staged writes now, but
+				// leave its handle for doneReadTxn() so the iterator can finish without using a freed handle.
+				txn.abort(true);
 			} catch (error) {
-				harperLogger.debug?.(`Error aborting timed-out transaction in chain: ${error.message}`);
+				harperLogger.debug?.(`Error aborting ${reason} transaction in chain`, error);
+			}
+		}
+	}
+	/**
+	 * The long-transaction monitor calls this when a write-bearing transaction stays open too long.
+	 * `force` overrides the in-flight-commit spare: the monitor uses it once a commit has failed to
+	 * settle for MAX_DEFERRED_POISON_TICKS, because holding write intents forever is worse than aborting
+	 * under a commit that is evidently not coming back.
+	 */
+	abortDueToTimeout(force?: boolean): void {
+		this.abortAndPoison('timedOut', force);
+	}
+	/** resources/transaction.ts calls this when the request's client disconnects mid-handler (harper#2001). */
+	abortDueToDisconnect(): void {
+		this.abortAndPoison('disconnected');
+	}
+
+	/**
+	 * Both monitors' escalation arm: a commit on this chain has not settled for long enough that its write
+	 * intents are worth more than its outcome. Aborts from the ROOT rather than the link the monitor
+	 * happened to reach first — abortAndPoison walks `this → next`, so escalating from a chained link
+	 * would leave the head un-poisoned, still holding pending writes, logging an error every tick for a
+	 * transaction nothing can reclaim. Every link is marked so the same abort is not re-forced next tick;
+	 * a link a settled commit already detached is marked and aborted on its own.
+	 */
+	forcePoisonAfterStalledCommit(): void {
+		const root = this.root ?? this;
+		let attached = false;
+		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) {
+			txn.poisonEscalated = true;
+			if (txn === this) attached = true;
+		}
+		this.poisonEscalated = true;
+		try {
+			root.abortDueToTimeout(true);
+		} catch (error) {
+			harperLogger.debug?.('Error aborting a transaction whose commit never settled', error);
+		}
+		if (!attached) {
+			try {
+				this.abortDueToTimeout(true);
+			} catch (error) {
+				harperLogger.debug?.('Error aborting a detached link whose commit never settled', error);
 			}
 		}
 	}
@@ -1578,6 +1873,48 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 	return false;
 }
 
+/**
+ * A commit that entered its attempt owns the outcome (see abortAndPoison), so the monitor defers rather
+ * than aborting under it — but only for a bounded number of ticks. Past that the commit is not coming
+ * back, and its write intents are worth more than its outcome.
+ */
+const MAX_DEFERRED_POISON_TICKS = 2;
+
+/**
+ * True when this tick must leave `txn` alone because a commit attempt on its chain has not reached a
+ * native outcome. Also covers the head that detached its handle for an in-flight commit: without this,
+ * the CLOSED/`!transaction` arm below reads that as "nothing left to supervise" and releases a chained
+ * link's still-uncommitted handle.
+ */
+function deferForCommitInFlight(txn: DatabaseTransaction, url: string | undefined): boolean {
+	const root = txn.root ?? txn;
+	// Once escalated, never defer again: the hung attempt never decrements commitsInFlight, so deferring
+	// on it forever would re-force the same abort every tick and never reach the arm that reclaims the
+	// read snapshot the force-abort deliberately retained for its iterators.
+	if (txn.poisonEscalated || !txn.isChainCommitting()) return false;
+	// performance.now(), not Date.now(): a clock correction must not extend a stalled commit's hold on its
+	// write intents, nor force-abort a legitimately slow one early.
+	const deadline = (root.deferredPoisonDeadline ??= performance.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
+	if (performance.now() >= deadline) {
+		harperLogger.error(
+			`Transaction exceeded the open-transaction limit with a commit that has not settled after a further ${
+				MAX_DEFERRED_POISON_TICKS * txnExpiration
+			}ms; aborting it to release its write intents, from table: ${
+				(txn.db as any)?.name + (url ? ' path: ' + url : '')
+			}`
+		);
+		txn.forcePoisonAfterStalledCommit();
+		return false; // fall through this same tick so the CLOSED arm reclaims what the abort retained
+	}
+	harperLogger.warn?.(
+		`Transaction exceeded the open-transaction limit while its commit is still in flight; deferring, from table: ${
+			(txn.db as any)?.name + (url ? ' path: ' + url : '')
+		}`
+	);
+	txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
+	return true;
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
@@ -1594,6 +1931,7 @@ function startMonitoringTxns() {
 			if (txn.writeTimeout > 0) txn.writeTimeout -= txnExpiration;
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
+				if (deferForCommitInFlight(txn, url)) return;
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
 					if (!txn.transaction) {
 						// Nothing left to supervise, and this is the registry's only unconditional exit:
@@ -1603,14 +1941,17 @@ function startMonitoringTxns() {
 						txn.dropWriteSupervision();
 						return;
 					}
-					// The commit was already acknowledged; any staged writes are riding an in-flight
-					// replay commit (see the outstanding-iterators branch in commit()) and are not the
-					// monitor's to abort — dropping them here would re-introduce the silent
-					// write-loss-after-ack this branch structure exists to prevent. Only the read
-					// snapshot's lifetime is left to enforce: release the retained native handle that
-					// the overdue iterators are holding open.
+					// Staged writes are not the monitor's to abort here: on the committed path they ride an
+					// in-flight replay commit (see the outstanding-iterators branch in commit()) and dropping
+					// them would re-introduce the silent write-loss-after-ack this structure prevents; on the
+					// poisoned path abort(true) already discarded them. Only the snapshot's lifetime is left.
+					// Close the owning iterators first so the handle comes back through doneReadTxn() — a
+					// transaction poisoned outside transaction() has no callback settlement to do it.
+					if (txn.closeOwnedReadIterators() > 0 && !txn.transaction) return;
 					harperLogger.warn?.(
-						`Read iterators held a committed transaction's snapshot past the open-transaction limit; releasing it, from table: ${
+						`Read iterators held a ${
+							txn.timedOut || txn.disconnected ? 'poisoned' : 'committed'
+						} transaction's snapshot past the open-transaction limit; releasing it, from table: ${
 							(txn.db as any)?.name + (url ? ' path: ' + url : '')
 						}`
 					);

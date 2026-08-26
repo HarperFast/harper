@@ -4,9 +4,11 @@ import {
 	DatabaseTransaction,
 	isJoinableScope,
 	isReleasedTransaction,
+	TRANSACTION_STATE,
 	type Transaction,
 } from './DatabaseTransaction.ts';
 import { AsyncLocalStorage } from 'async_hooks';
+import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
 
@@ -53,6 +55,17 @@ export function transaction<T>(
 	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
 	if (context.sourceApply) transaction.sourceApply = true;
 	transaction.setContext(context);
+
+	// Abort promptly on client disconnect (harper#2001) rather than waiting on the callback or the
+	// long-transaction monitor. Gated like the monitor gates abortDueToTimeout: write-bearing only, never
+	// sourceApply/isReplay (no resume path, harper-pro#348). No `signal.aborted` fast path — a signal
+	// stays aborted forever and later transaction() calls share it, so only a disconnect that happens
+	// while THIS transaction is open poisons it. That is not a compensation-work escape hatch, and the
+	// static-API and transaction() spellings of the same post-disconnect write behave oppositely.
+	// DESIGN.md carries the full reasoning for all three.
+	const signal = context.signal;
+	let onDisconnect: (() => void) | undefined;
+
 	let result;
 	try {
 		result =
@@ -60,6 +73,28 @@ export function transaction<T>(
 				? callback(transaction)
 				: contextStorage.run(context, () => callback(transaction));
 		if ((result as any)?.then) {
+			// A synchronous callback cannot yield to the event loop, so arming before it would be pure
+			// overhead; no microtask has run yet, so nothing was missed.
+			if (signal) {
+				onDisconnect = () => {
+					try {
+						// isCommittingWrites() is not redundant: commit() marks itself CLOSED and clears its
+						// staged writes before the native commit settles, so for that whole window a
+						// write-bearing transaction reads as idle and read-only.
+						if (
+							!transaction.sourceApply &&
+							!transaction.isReplay &&
+							((transaction.open === TRANSACTION_STATE.OPEN && transaction.hasPendingWrites()) ||
+								transaction.isCommittingWrites())
+						) {
+							transaction.abortDueToDisconnect();
+						}
+					} catch (error) {
+						harperLogger.debug?.('aborting transaction on client disconnect', error);
+					}
+				};
+				signal.addEventListener('abort', onDisconnect, { once: true });
+			}
 			return (result as any).then(onComplete, onError);
 		}
 	} catch (error) {
@@ -68,18 +103,56 @@ export function transaction<T>(
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		const committed = transaction.commit({ doneWriting: true });
+		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
+		let committed;
+		try {
+			committed = transaction.commit({ doneWriting: true });
+		} catch (error) {
+			return onCommitError(error, result);
+		}
 		if ((committed as any).then) {
-			return (committed as any).then(() => {
-				return result;
-			});
+			return (committed as any).then(
+				() => result,
+				(error) => onCommitError(error, result)
+			);
 		} else {
 			return result;
 		}
 	}
+	function onCommitError(error, result) {
+		try {
+			if (typeof result?.onDone === 'function') result.onDone();
+		} catch (cleanupError) {
+			harperLogger.debug?.('closing results after a failed commit', cleanupError);
+		}
+		abortAndThrow(error);
+	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
-		transaction.abort();
+		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
+		abortAndThrow(error);
+	}
+	function abortAndThrow(error): never {
+		// A commit attempt that has not reached its native outcome owns its own teardown — a handler that
+		// fired txn.commit() without awaiting it can get here while it is still running, and aborting
+		// would clear the writes it is committing and abort the handle it is committing them through.
+		// Ownership of the scope still ends here, or that attempt would rotate the instance back OPEN with
+		// no wrapper left to commit or abort it; abandonScope() also defers the iterator cleanup below to
+		// the point where the attempt settles.
+		if (transaction.isChainCommitting()) {
+			transaction.abandonScope();
+		} else {
+			try {
+				// "retain only while read iterators still own the handle", the same rule
+				// abortAfterCommitError uses — so the two layers cannot undo each other one frame apart.
+				transaction.abort(true);
+			} catch (abortError) {
+				harperLogger.debug?.('aborting transaction after an error', abortError);
+			}
+			// Nothing was returned, so no live response can own an iterator opened inside this call: hand
+			// their read references back now, or the retained handle waits on an onDone() nobody will call.
+			transaction.closeOwnedReadIterators();
+		}
 		throw error;
 	}
 }

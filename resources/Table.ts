@@ -3586,80 +3586,94 @@ export function makeTable(options) {
 			// scans), the read transaction reads against the latest committed data without pinning a
 			// consistent snapshot, so the scan doesn't hold a snapshot that blocks compaction.
 			const readTxn = txn.useReadTxn(target.snapshot === false);
-			// The explicit row filter participates in query execution: it is pushed into HNSW
-			// traversal for vector sorts, applied after conditions otherwise, and checked again after
-			// cache/source materialization below. A policy error aborts the query instead of silently
-			// returning a partial result set.
-			const boundRowFilter = rowFilter
-				? (record: any) => {
-						const result = rowFilter(record, context as Context);
-						if (typeof (result as any)?.then === 'function') {
-							(result as any).then(undefined, () => {});
-							throw new ClientError('rowFilter must be synchronous');
+			// The reference above is owed until an iterator returns it, and the query execution below can
+			// throw (a bad condition, a policy error) long before there is a result set to own it. Hand it
+			// back on that path: leaving it outstanding makes a later abort() classify the transaction as
+			// iterator-bearing and retain the native handle until the monitor's next tick.
+			let results;
+			try {
+				// The explicit row filter participates in query execution: it is pushed into HNSW
+				// traversal for vector sorts, applied after conditions otherwise, and checked again after
+				// cache/source materialization below. A policy error aborts the query instead of silently
+				// returning a partial result set.
+				const boundRowFilter = rowFilter
+					? (record: any) => {
+							const result = rowFilter(record, context as Context);
+							if (typeof (result as any)?.then === 'function') {
+								(result as any).then(undefined, () => {});
+								throw new ClientError('rowFilter must be synchronous');
+							}
+							return Boolean(result);
 						}
-						return Boolean(result);
-					}
-				: undefined;
-			const recordAccess =
-				boundRowFilter || typeof target.vectorFilter === 'function'
-					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
-			const entries = executeConditions(
-				conditions,
-				operator,
-				TableResource,
-				readTxn,
-				target,
-				context,
-				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
-				filtered,
-				recordAccess
-			);
-			const ensure_loaded = (target as any).ensureLoaded !== false;
-			// The guards inside executeConditions evaluate the
-			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
-			// expired/invalidated row from source and return a DIFFERENT record. The explicit row filter
-			// must hold on the record actually returned, so it is re-checked
-			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
-			// traversal). vectorFilter and condition filters intentionally keep the local-record
-			// semantics all query filters have on caching tables.
-			//
-			// A row that is past its TTL but not yet swept by the background eviction
-			// scan is still physically present. A write that is about to overwrite it
-			// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
-			// it as a match — the same leniency a direct by-id put/patch already gets,
-			// since those never run the ensureLoaded-gated freshness check this transform
-			// otherwise applies unconditionally to every read.
-			const includeExpired = (target as any).includeExpired === true;
-			const transformToRecord = TableResource.transformEntryForSelect(
-				select,
-				context,
-				readTxn,
-				filtered,
-				ensure_loaded,
-				true,
-				boundRowFilter,
-				includeExpired,
-				postOrdering
-			);
-			let results = TableResource.transformToOrderedSelect(
-				entries,
-				select,
-				postOrdering,
-				context,
-				readTxn,
-				transformToRecord
-			);
-			// apply any offset/limit after all the sorting and filtering
-			if (target.offset || target.limit !== undefined)
-				results = results.slice(
-					target.offset,
-					target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
+				const recordAccess =
+					boundRowFilter || typeof target.vectorFilter === 'function'
+						? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
+						: undefined;
+				const entries = executeConditions(
+					conditions,
+					operator,
+					TableResource,
+					readTxn,
+					target,
+					context,
+					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
+					filtered,
+					recordAccess
 				);
-			results.onDone = () => {
-				results.onDone = null; // ensure that it isn't called twice
+				const ensure_loaded = (target as any).ensureLoaded !== false;
+				// The guards inside executeConditions evaluate the
+				// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
+				// expired/invalidated row from source and return a DIFFERENT record. The explicit row filter
+				// must hold on the record actually returned, so it is re-checked
+				// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
+				// traversal). vectorFilter and condition filters intentionally keep the local-record
+				// semantics all query filters have on caching tables.
+				//
+				// A row that is past its TTL but not yet swept by the background eviction
+				// scan is still physically present. A write that is about to overwrite it
+				// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
+				// it as a match — the same leniency a direct by-id put/patch already gets,
+				// since those never run the ensureLoaded-gated freshness check this transform
+				// otherwise applies unconditionally to every read.
+				const includeExpired = (target as any).includeExpired === true;
+				const transformToRecord = TableResource.transformEntryForSelect(
+					select,
+					context,
+					readTxn,
+					filtered,
+					ensure_loaded,
+					true,
+					boundRowFilter,
+					includeExpired,
+					postOrdering
+				);
+				results = TableResource.transformToOrderedSelect(
+					entries,
+					select,
+					postOrdering,
+					context,
+					readTxn,
+					transformToRecord
+				);
+				// apply any offset/limit after all the sorting and filtering
+				if (target.offset || target.limit !== undefined)
+					results = results.slice(
+						target.offset,
+						target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
+					);
+				results.onDone = () => {
+					results.onDone = null; // ensure that it isn't called twice
+					txn.unregisterReadIterator(results);
+					txn.doneReadTxn();
+				};
+				// Recorded ownership: if the request dies before anything consumes these results, the
+				// transaction closes them itself rather than leaving its read snapshot pinned.
+				txn.registerReadIterator(results);
+			} catch (error) {
 				txn.doneReadTxn();
-			};
+				throw error;
+			}
 			results.selectApplied = true;
 			results.getColumns = getColumns;
 			return results;
@@ -5866,6 +5880,12 @@ export function makeTable(options) {
 						// regardless of this state.
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
+					// A poison flag must travel with `open`, or a link created after the poisoning (a
+					// handler touching this database for the first time post-poison) sees CLOSED but not
+					// the reason, takes save()'s immediateCommit path, and commits on behalf of a request
+					// that was supposed to have been cut off.
+					if (transaction.timedOut) transaction.next.timedOut = true;
+					if (transaction.disconnected) transaction.next.disconnected = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;

@@ -1,5 +1,6 @@
 import {
 	DatabaseTransaction,
+	requestAbortedError,
 	transactionOpenTooLongError,
 	type CommitOptions,
 	type TransactionWrite,
@@ -50,6 +51,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.readTxn = (this.db as any).useReadTransaction();
 
 		this.readTxnsUsed = 1;
+		this.baseReadRefConsumed = false;
 		if ((this.readTxn as any).openTimer) (this.readTxn as any).openTimer = 0;
 		trackedTxns.add(this as any);
 		return this.readTxn;
@@ -89,6 +91,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 	addWrite(operation: TransactionWrite): any {
 		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.disconnected) throw requestAbortedError();
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
@@ -97,7 +100,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
 			const immediateTxn = new ImmediateTransaction(this.db);
 			immediateTxn.addWrite(operation);
-			const result = immediateTxn.commit({});
+			const result = immediateTxn.commit({}) as any;
 			// Nothing may be sent back to this throwaway: the write is already committed, and its
 			// durability is the promise below.
 			operation.stagedIn = undefined;
@@ -122,8 +125,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(options: CommitOptions = {}): any {
-		if (this.timedOut) throw transactionOpenTooLongError();
+	protected performCommit(options: CommitOptions = {}): any {
 		options = options || {};
 		let txnTime = this.timestamp;
 		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();
@@ -172,19 +174,20 @@ export class LMDBTransaction extends DatabaseTransaction {
 								if (completion) await (completion.push ? Promise.all(completion) : completion);
 							}
 						} catch (error) {
-							this.abort();
-							throw error;
+							this.abortAfterCommitError(error);
 						}
-						return this.commit(options);
+						return this.commit({ ...options, continuation: true });
 					})();
 				}
 			} catch (error) {
-				this.abort();
-				throw error;
+				this.abortAfterCommitError(error);
 			}
 		}
 		// release the read snapshot so we don't keep it open longer than necessary
-		if (!retries) this.doneReadTxn();
+		if (!retries && !this.baseReadRefConsumed) {
+			this.baseReadRefConsumed = true;
+			this.doneReadTxn();
+		}
 		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
 		let resolution;
 		const completions = [];
@@ -267,7 +270,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			return resolution.then((resolution) => {
 				if (resolution) {
 					if (this.next) {
-						completions.push(this.next.commit(options));
+						completions.push(this.next.commit({ ...options, continuation: true }));
 					}
 					if (options?.flush) {
 						completions.push(this.writes[0].store.flushed);
@@ -308,7 +311,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 					}
 					if (options) options.retries = retries + 1;
 					else options = { retries: 1 };
-					return this.commit(options); // try again
+					// A continuation, not a fresh attempt: a poison that landed mid-commit must not abandon
+					// the retry ladder (DESIGN.md's "a retry continuation is never abandoned").
+					return this.commit({ ...options, continuation: true }); // try again
 				}
 			});
 		}
@@ -317,7 +322,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		};
 		if (this.next) {
 			// now run any other transactions
-			const nextResolution = this.next?.commit(options);
+			const nextResolution = this.next?.commit({ ...options, continuation: true });
 			if ((nextResolution as any)?.then)
 				return (nextResolution as any)?.then((nextResolution) => ({
 					txnTime,
@@ -327,8 +332,28 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		return txnResolution;
 	}
-	abort(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+	/**
+	 * Force-release the retained read snapshot without touching staged writes. The base class's
+	 * version acts on `this.transaction`; LMDB's snapshot lives on `this.readTxn`, so the monitor
+	 * would otherwise have nothing that can reclaim a handle abort(true) retained.
+	 */
+	releaseReadTxn(): void {
+		while (this.readTxn && this.readTxnsUsed > 0) this.doneReadTxn();
+	}
+
+	abort(retainReadTransaction = false): void {
+		const hasOpenReadIterator =
+			retainReadTransaction &&
+			this.readTxn &&
+			(this.readTxnsUsed > 1 || (this.baseReadRefConsumed && this.readTxnsUsed > 0));
+		if (hasOpenReadIterator) {
+			if (!this.baseReadRefConsumed) {
+				this.doneReadTxn();
+				this.baseReadRefConsumed = true;
+			}
+		} else {
+			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		}
 		this.open = TRANSACTION_STATE.CLOSED;
 		this.drainCompletions();
 		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
@@ -370,11 +395,64 @@ export class ImmediateTransaction extends LMDBTransaction {
 let txnExpiration = 30000;
 let timer;
 
+/** See the RocksDB monitor's constant of the same name (resources/DatabaseTransaction.ts). */
+const MAX_DEFERRED_POISON_TICKS = 2;
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of trackedTxns) {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
+				// A commit that entered its attempt owns the outcome (DatabaseTransaction.abortAndPoison), so
+				// defer rather than re-entering commit() under it. Bounded: LMDB leaves `open` OPEN for the
+				// whole write commit, so without the escalation a commit that never settles would hold its
+				// write intents forever. The deadline lives on the chain root; the escalation is per link.
+				const root = txn.root ?? txn;
+				if (!txn.poisonEscalated && txn.isChainCommitting()) {
+					// Monotonic, as in the RocksDB monitor: a clock correction must not move this bound.
+					const deadline = (root.deferredPoisonDeadline ??=
+						performance.now() + MAX_DEFERRED_POISON_TICKS * txnExpiration);
+					if (performance.now() >= deadline) {
+						harperLogger.error(
+							`Transaction exceeded the open-transaction limit with a commit that has not settled after a further ${
+								MAX_DEFERRED_POISON_TICKS * txnExpiration
+							}ms; aborting it to release its write intents, from table: ${
+								(txn.db as any)?.name + (url ? ' path: ' + url : '')
+							}`
+						);
+						// Escalation is recorded per LINK, and the abort runs from the chain root — see
+						// forcePoisonAfterStalledCommit. This file's commit detaches `next` before awaiting the
+						// child, so a root-scoped flag would leave that child's own hung commit unforced.
+						txn.forcePoisonAfterStalledCommit();
+					} else {
+						harperLogger.warn?.(
+							`Transaction exceeded the open-transaction limit while its commit is still in flight; deferring, from table: ${
+								(txn.db as any)?.name + (url ? ' path: ' + url : '')
+							}`
+						);
+						txn.timeout = txnExpiration;
+						continue;
+					}
+				}
+				if (txn.open === TRANSACTION_STATE.CLOSED) {
+					// Only reachable through abort(true), which retained the snapshot for read iterators
+					// that own it. Nothing else here can reclaim it: the branches below would re-enter
+					// commit() on a poisoned transaction every tick, throw on its own poison check, and
+					// re-arm the timer — pinning an LMDB read snapshot, which blocks free-page reuse and
+					// grows the data file, for the life of the process. Close the owning iterators first so
+					// the reference comes back through doneReadTxn(), and force the release if it does not.
+					txn.closeOwnedReadIterators();
+					if (txn.readTxn) {
+						harperLogger.warn?.(
+							`Read iterators held a closed transaction's snapshot past the open-transaction limit; releasing it, from table: ${
+								(txn.db as any)?.name + (url ? ' path: ' + url : '')
+							}`
+						);
+						txn.releaseReadTxn();
+					}
+					trackedTxns.delete(txn);
+					continue;
+				}
 				if (txn.hasPendingWrites() && !txn.sourceApply && !txn.isReplay) {
 					// Abort and surface an error rather than force-committing a partial write set: silently
 					// committing on the application's behalf breaks atomicity and can leave orphaned

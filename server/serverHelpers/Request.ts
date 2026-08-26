@@ -1,7 +1,7 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, setMaxListeners } from 'node:events';
 import { Readable, PassThrough } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
@@ -78,6 +78,7 @@ export class Request {
 				if (!nodeResponse.writableFinished) this.#abortController.abort();
 			});
 		} else if (typeof nodeRequest.socket?.once === 'function') {
+			setMaxListeners(0, this.#abortController.signal);
 			// No response on this Request — typically the WebSocket-upgrade path
 			// (http.ts creates the Request before the ws library takes over). The TCP
 			// socket close is the fallback abort trigger; REST.ts's ws.on('close') hook
@@ -564,10 +565,11 @@ export class UwsRequest {
 		return this.#signal?.aborted ?? false;
 	}
 	get signal(): AbortSignal {
-		return this.#signal ?? new AbortController().signal;
+		return (this.#signal ??= new AbortController().signal);
 	}
 	_abort(): void {
-		// Abort is driven by the uWS res.onAborted handler wired into the provided signal.
+		// Abort is driven externally, wired into the provided signal (uWS res.onAborted for plain HTTP,
+		// the ws adapter's 'close' event for WebSocket upgrades — see server/http.ts's wsHandler).
 	}
 	get nodeRequest() {
 		return null;

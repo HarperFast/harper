@@ -10,6 +10,7 @@ const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const { waitFor } = require('../waitFor.js');
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -488,6 +489,753 @@ describe('Write txn timeout', () => {
 			assert.strictEqual(aborted, 1, 'a failed direct commit must release the handle it orphaned');
 			assert.strictEqual(txn.transaction, null);
 		});
+	});
+});
+
+// harper#2001: a client that disconnects mid-handler must not leave its request-scoped transaction's
+// staged writes / native write intents held until the handler's own promise happens to settle (which,
+// for a client that is never coming back, may be effectively never) or the long-transaction monitor's
+// next cycle catches it. `resources/transaction.ts` listens for `context.signal`'s 'abort' event (the
+// same signal a Request/UwsRequest populates on client disconnect) and, while the callback is still
+// running, aborts the transaction immediately instead.
+describe('Disconnect abort', () => {
+	let DisconnectResource;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		DisconnectResource = table({
+			table: 'DisconnectTxnTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+	});
+
+	// On RocksDB the table's first access claims `context.transaction` itself (txnForContext in
+	// Table.ts). On LMDB, that same first access always chains a fresh `LMDBTransaction` onto
+	// `context.transaction.next` (LMDB never claims the head in place) — so the transaction actually
+	// holding the write, and its native handle, can live one link into the chain. Walk the whole chain
+	// so the assertion holds under either engine.
+	function assertChainReleased(head) {
+		let found = false;
+		for (let txn = head; txn; txn = txn.next) {
+			assert.equal(txn.open, TRANSACTION_STATE.CLOSED, 'every link in the chain should be closed');
+			assert.ok(!txn.readTxnsUsed, 'no outstanding read references (write intents) should remain');
+			assert.ok(!txn.transaction, 'native RocksDB transaction handle should be released');
+			assert.ok(!txn.readTxn, 'native LMDB read transaction handle should be released');
+			found = true;
+		}
+		assert.ok(found, 'expected at least the head transaction');
+	}
+
+	function getReadTransaction(head) {
+		for (let txn = head; txn; txn = txn.next) {
+			const nativeTransaction = txn.transaction ?? txn.readTxn;
+			if (nativeTransaction) return { txn, nativeTransaction };
+		}
+	}
+
+	function setDisconnectExpiration(ms) {
+		return DisconnectResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
+	}
+
+	it('aborts a write-bearing txn when the client disconnects mid-handler, releasing the native transaction', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(501, { name: 'orphaned' }, context);
+				ac.abort(); // simulate the client disconnecting mid-handler, after a write is staged
+				await delay(20); // give the handler a chance to keep running past the disconnect
+				// Check from INSIDE the still-running handler, not after transaction() settles: the point
+				// of this fix is releasing the intent promptly, not eventually (which onError's fallback
+				// abort() would also achieve, and wouldn't distinguish this from the pre-fix behavior).
+				assertChainReleased(context.transaction);
+			}),
+			/disconnected/
+		);
+		assert.ok((await DisconnectResource.get(501)) == null, 'the orphaned write must not have been committed');
+	});
+
+	it('lets an open read iterator finish without retaining the disconnected write intents', async function () {
+		await DisconnectResource.put(507, { name: 'iterator seed' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let iterator;
+		await assert.rejects(
+			transaction(context, async () => {
+				const results = await DisconnectResource.search({}, context);
+				iterator = results[Symbol.asyncIterator]();
+				await iterator.next();
+				await DisconnectResource.put(508, { name: 'must be discarded' }, context);
+				const { txn: iteratorTransaction, nativeTransaction } = getReadTransaction(context.transaction);
+				let abandonCalls = 0;
+				if (!isLMDB) {
+					const originalAbandonWrites = nativeTransaction.abandonWrites.bind(nativeTransaction);
+					nativeTransaction.abandonWrites = () => {
+						abandonCalls++;
+						return originalAbandonWrites();
+					};
+				}
+				ac.abort();
+				assert.equal(iteratorTransaction.disconnected, true, 'disconnect must still poison the staged write');
+				assert.equal(
+					iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
+					nativeTransaction,
+					'the open iterator must retain its native transaction until it finishes'
+				);
+				if (!isLMDB) {
+					let competingWriteSettled = false;
+					const competingWrite = transaction({}, () => DisconnectResource.put(508, { name: 'competing write' })).then(
+						() => {
+							competingWriteSettled = true;
+						}
+					);
+					try {
+						await waitFor(() => competingWriteSettled, {
+							message: 'a competing write should not wait for the retained read iterator',
+						});
+					} finally {
+						while (!(await iterator.next()).done);
+						await competingWrite;
+					}
+				} else {
+					while (!(await iterator.next()).done);
+				}
+				if (!isLMDB) assert.equal(abandonCalls, 1, 'disconnect must release the retained handle write intents');
+				assert.equal(
+					iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
+					null,
+					'finishing the iterator releases the native transaction'
+				);
+			}),
+			/disconnected/
+		);
+		const record = await DisconnectResource.get(508);
+		if (isLMDB) assert.ok(record == null, 'the disconnected write must not commit');
+		else assert.equal(record?.name, 'competing write', 'only the competing write should commit');
+	});
+
+	it('closes a write-first iterator abandoned by a poisoned callback', async function () {
+		await DisconnectResource.put(509, { name: 'write-first iterator seed' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let iterator;
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(510, { name: 'must be discarded' }, context);
+				const results = await DisconnectResource.search({}, context);
+				iterator = results[Symbol.asyncIterator]();
+				await iterator.next();
+				ac.abort();
+				await DisconnectResource.put(511, { name: 'must reject' }, context);
+			}),
+			/disconnected/
+		);
+		// The callback rejected, so nothing was returned and no live response can own this iterator:
+		// the transaction closes the iterators it owns rather than pinning the read snapshot on a
+		// doneReadTxn() nobody is left to call.
+		assert.equal(
+			getReadTransaction(context.transaction),
+			undefined,
+			'an abandoned iterator must be closed when the poisoned callback settles'
+		);
+		// Idempotent: draining the already-closed iterator must not double-release, and must not fault
+		// on the released handle.
+		while (!(await iterator.next()).done);
+		assert.equal(
+			getReadTransaction(context.transaction),
+			undefined,
+			'draining an already-closed iterator must not resurrect a native transaction'
+		);
+		assert.ok((await DisconnectResource.get(510)) == null, 'the disconnected write must not commit');
+	});
+
+	it('retains a poisoned iterator immediately, then lets the monitor reclaim an undrained one', async function () {
+		setDisconnectExpiration(50);
+		try {
+			await DisconnectResource.put(512, { name: 'monitor iterator seed' }, {});
+			const ac = new AbortController();
+			const context = { signal: ac.signal };
+			await assert.rejects(
+				transaction(context, async () => {
+					const results = await DisconnectResource.search({}, context);
+					const iterator = results[Symbol.asyncIterator]();
+					await iterator.next();
+					await DisconnectResource.put(513, { name: 'must be discarded' }, context);
+					const { txn: iteratorTransaction, nativeTransaction } = getReadTransaction(context.transaction);
+					ac.abort();
+					// The poison itself never frees a handle an iterator still owns.
+					assert.equal(
+						iteratorTransaction.transaction ?? iteratorTransaction.readTxn,
+						nativeTransaction,
+						'poisoning must not release a native transaction an iterator still owns'
+					);
+					// But the retention is bounded: this handler never returns the iterator to anyone, so
+					// past the open-transaction limit the monitor closes it rather than pinning the read
+					// snapshot (and, on RocksDB, holding off compaction) for the life of the process.
+					await waitFor(() => (iteratorTransaction.transaction ?? iteratorTransaction.readTxn) == null, {
+						message: 'the monitor must reclaim an undrained poisoned iterator past the open-transaction limit',
+					});
+					while (!(await iterator.next()).done);
+				}),
+				/disconnected/
+			);
+		} finally {
+			setDisconnectExpiration(30000);
+		}
+	});
+
+	it('closes a returned iterator when the disconnected transaction cannot commit', async function () {
+		await DisconnectResource.put(514, { name: 'returned iterator seed' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				const results = await DisconnectResource.search({}, context);
+				await DisconnectResource.put(515, { name: 'must be discarded' }, context);
+				ac.abort();
+				return results;
+			}),
+			/disconnected/
+		);
+		assert.equal(
+			getReadTransaction(context.transaction),
+			undefined,
+			'the returned iterator must be closed when commit rejects'
+		);
+		assert.ok((await DisconnectResource.get(515)) == null, 'the disconnected write must not commit');
+	});
+
+	it('preserves the commit error when returned result cleanup is unusable', async function () {
+		for (const [id, onDone] of [
+			[516, true],
+			[
+				517,
+				() => {
+					throw new Error('cleanup failed');
+				},
+			],
+		]) {
+			const ac = new AbortController();
+			const context = { signal: ac.signal };
+			await assert.rejects(
+				transaction(context, async () => {
+					await DisconnectResource.put(id, { name: 'must be discarded' }, context);
+					ac.abort();
+					return { onDone };
+				}),
+				/disconnected/
+			);
+			assertChainReleased(context.transaction);
+		}
+	});
+
+	it('does not double-consume an LMDB iterator reference across explicit and wrapper commits', async function () {
+		if (!isLMDB) this.skip();
+		await DisconnectResource.put(518, { name: 'LMDB iterator seed' }, {});
+		const context = {};
+		let iterator;
+		let iteratorTransaction;
+		try {
+			await transaction(context, async () => {
+				const results = await DisconnectResource.search({}, context);
+				iterator = results[Symbol.asyncIterator]();
+				await iterator.next();
+				({ txn: iteratorTransaction } = getReadTransaction(context.transaction));
+				await context.transaction.commit();
+				assert.ok(iteratorTransaction.readTxn, 'the explicit commit must retain the iterator read transaction');
+			});
+			assert.ok(iteratorTransaction.readTxn, 'the wrapper commit must not consume the iterator reference');
+		} finally {
+			if (iteratorTransaction?.readTxn) await iterator?.return?.();
+		}
+		assert.equal(iteratorTransaction.readTxn, null, 'closing the iterator must release its read transaction');
+	});
+
+	// txnForContext only chains a `next` link when the second store's path differs from the head's, and
+	// setupTestDBPath points every database name at one directory, so this covers only the same-store
+	// case: the rejection comes from the head's own poison check. txnForContext's poison propagation onto
+	// a genuinely new link is untested here.
+	it('rejects a write to a database first touched after the disconnect', async function () {
+		const OtherDisconnectResource = table({
+			table: 'OtherDisconnectTxnTable2',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(510, { name: 'first table' }, context); // claims context.transaction
+				ac.abort();
+				await delay(10);
+				await OtherDisconnectResource.put(511, { name: 'second table, too late' }, context);
+			}),
+			/disconnected|no longer open/
+		);
+		assert.ok((await OtherDisconnectResource.get(511)) == null, 'the second table write must not commit either');
+	});
+
+	it('rejects a further write staged after the disconnect poisons an already write-bearing txn', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(502, { name: 'arms the poison' }, context); // stages a write first
+				ac.abort(); // now hasPendingWrites() is true, so this actually poisons
+				await delay(10);
+				await DisconnectResource.put(504, { name: 'too late' }, context); // must throw, not commit
+			}),
+			// Both engines' addWrite consults `disconnected`; LMDB can also reach its own pre-existing
+			// `open === CLOSED` rejection first, depending on which link the write lands on.
+			/disconnected|no longer open/
+		);
+		assert.ok((await DisconnectResource.get(502)) == null, 'the poisoned first write must not commit either');
+		assert.ok((await DisconnectResource.get(504)) == null, 'a write staged after disconnect must not commit');
+	});
+
+	// The disconnect abort is gated exactly like the long-transaction monitor gates abortDueToTimeout
+	// (DatabaseTransaction.ts's startMonitoringTxns): only a transaction with a pending write is poisoned.
+	// A read-only transaction's native handle can have live iterators streaming through it (a large
+	// search()/export) — aborting mid-stream would free that handle out from under them rather than just
+	// closing it early, so a disconnect with nothing staged yet must leave it alone entirely.
+	it('does not poison a read-only transaction on disconnect (no pending writes to protect)', async function () {
+		await DisconnectResource.put(505, { name: 'readable' }, {}); // seed, own (unrelated) txn
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let sawDuringRead;
+		const result = await transaction(context, async () => {
+			await DisconnectResource.get(505, context); // pure read, no writes staged
+			ac.abort();
+			await delay(10);
+			sawDuringRead = { open: context.transaction.open, disconnected: context.transaction.disconnected };
+			return DisconnectResource.get(505, context);
+		});
+		assert.equal(sawDuringRead.disconnected, undefined, 'a read-only transaction must not be poisoned on disconnect');
+		assert.equal(
+			sawDuringRead.open,
+			TRANSACTION_STATE.OPEN,
+			'a read-only transaction stays open through the disconnect'
+		);
+		assert.equal(result?.name, 'readable', 'the read must still complete normally');
+	});
+
+	it('does not poison a source-apply transaction on disconnect (no resume path, must never drop a write)', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal, sourceApply: true };
+		await transaction(context, async () => {
+			await DisconnectResource.put(506, { name: 'from source' }, context);
+			ac.abort();
+			await delay(10);
+			assert.equal(context.transaction.disconnected, undefined, 'a source-apply transaction must not be poisoned');
+		});
+		assert.equal((await DisconnectResource.get(506))?.name, 'from source', 'the source-applied write must commit');
+	});
+
+	it('does not affect a request that completes normally without disconnecting', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await transaction(context, async () => {
+			await DisconnectResource.put(503, { name: 'normal' }, context);
+		});
+		assert.equal((await DisconnectResource.get(503))?.name, 'normal');
+	});
+
+	// The read reference is taken at the top of search() and only owned by a result set at the bottom.
+	// A query that faults in between owes it back, or the next abort() reads the transaction as
+	// iterator-bearing and retains its native handle until the monitor's next tick.
+	it('returns the read reference when the query faults before a result set exists', async function () {
+		const context = {};
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.put(600, { name: 'seed' }, context);
+				await DisconnectResource.search(
+					{ conditions: [{ attribute: 'name', comparator: 'nonsense', value: 1 }] },
+					context
+				);
+			})
+		);
+		assertChainReleased(context.transaction);
+	});
+
+	// Entry into an explicit in-handler commit() is the point of no return: a later disconnect poisons
+	// everything that follows but must not tear the started attempt's handle out, so its write can land
+	// after the client is gone.
+	it('lets an explicit commit already in flight reach its outcome, rejecting only later work', async function () {
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let releaseCommitGate;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(530, { name: 'commits despite the disconnect' }, context);
+				// Hold the commit at its pre-commit completion barrier, so the disconnect arrives after
+				// commit() has been entered but before it reaches a native outcome.
+				txn.stageCompletion(new Promise((resolve) => (releaseCommitGate = resolve)));
+				const committing = txn.commit();
+				ac.abort();
+				assert.equal(txn.disconnected, true, 'the disconnect must still poison the transaction');
+				assert.notEqual(txn.open, TRANSACTION_STATE.CLOSED, 'a commit in flight must not be aborted');
+				releaseCommitGate();
+				await committing;
+				await assert.rejects(
+					DisconnectResource.put(531, { name: 'must reject' }, context),
+					/disconnected/,
+					'work after the started commit must be rejected'
+				);
+			}),
+			/disconnected/
+		);
+		assert.equal(
+			(await DisconnectResource.get(530))?.name,
+			'commits despite the disconnect',
+			'the started commit must reach its native outcome'
+		);
+		assert.ok((await DisconnectResource.get(531)) == null, 'the post-commit write must not land');
+	});
+
+	// The same boundary from the other side of commit()'s CLOSED flip: once the native commit is in
+	// flight the transaction has already marked itself CLOSED, so the listener's OPEN + hasPendingWrites()
+	// test alone would see nothing to protect and let the scope rotate back open and commit later writes
+	// for a client that is already gone. RocksDB only: LMDB commits its writes through the store's batch
+	// rather than a native transaction handle this can gate on.
+	it('poisons a disconnect that lands after the commit marked itself closed', async function () {
+		if (isLMDB) return;
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let sawRotation;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(532, { name: 'commits despite the disconnect' }, context);
+				// Hold the native commit open so the disconnect lands strictly inside the CLOSED window.
+				const { nativeTransaction } = getReadTransaction(context.transaction);
+				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+				let releaseNativeCommit;
+				const nativeGate = new Promise((resolve) => (releaseNativeCommit = resolve));
+				nativeTransaction.commit = () => nativeGate.then(nativeCommit);
+				const committing = txn.commit();
+				await waitFor(() => Boolean(releaseNativeCommit) && txn.open === TRANSACTION_STATE.CLOSED, {
+					message: 'the commit should reach its closed window',
+				});
+				ac.abort();
+				assert.equal(txn.disconnected, true, 'a disconnect in the commit window must still poison');
+				releaseNativeCommit();
+				await committing;
+				sawRotation = txn.open === TRANSACTION_STATE.OPEN;
+				await assert.rejects(
+					DisconnectResource.put(533, { name: 'must reject' }, context),
+					/disconnected/,
+					'the scope must not resume for a client that is gone'
+				);
+			}),
+			/disconnected/
+		);
+		assert.equal(sawRotation, false, 'a poisoned scope must not rotate back open after its commit');
+		assert.equal((await DisconnectResource.get(532))?.name, 'commits despite the disconnect');
+		assert.ok((await DisconnectResource.get(533)) == null, 'the post-commit write must not land');
+	});
+
+	// The deliberate limit of the no-sticky-fast-path rule, pinned so it cannot change by accident: a
+	// transaction created after the disconnect never sees an 'abort' event and is NOT poisoned, which is
+	// what keeps post-disconnect compensation work runnable. It falls back to the monitor instead.
+	it('does not poison a transaction created after the client already disconnected', async function () {
+		const ac = new AbortController();
+		ac.abort();
+		const context = { signal: ac.signal };
+		await transaction(context, async () => {
+			await DisconnectResource.put(534, { name: 'compensation write' }, context);
+		});
+		assert.equal((await DisconnectResource.get(534))?.name, 'compensation write');
+	});
+
+	it('keeps a returned iterator alive when the transaction commits normally', async function () {
+		await DisconnectResource.put(540, { name: 'returned iterator survives' }, {});
+		const context = {};
+		const results = await transaction(context, async () => {
+			await DisconnectResource.put(541, { name: 'committed alongside' }, context);
+			return DisconnectResource.search({}, context);
+		});
+		// Ownership tracking must not close an iterator the caller is entitled to consume.
+		const ids = [];
+		for await (const record of results) ids.push(record.id);
+		assert.ok(ids.includes(540), 'the returned iterator must still yield its rows after the commit');
+		assert.equal(getReadTransaction(context.transaction), undefined, 'draining it releases the native handle');
+	});
+
+	it('resumes a partially consumed iterator after the transaction settles', async function () {
+		for (const id of [550, 551, 552]) await DisconnectResource.put(id, { name: 'resumable ' + id }, {});
+		const context = {};
+		let iterator;
+		const seen = [];
+		await transaction(context, async () => {
+			await DisconnectResource.put(553, { name: 'committed alongside' }, context);
+			const results = await DisconnectResource.search({}, context);
+			iterator = results[Symbol.asyncIterator]();
+			seen.push((await iterator.next()).value?.id);
+		});
+		let iteration = await iterator.next();
+		while (!iteration.done) {
+			seen.push(iteration.value?.id);
+			iteration = await iterator.next();
+		}
+		assert.ok(seen.length > 1, 'the iterator must resume after the transaction settled');
+		assert.equal(getReadTransaction(context.transaction), undefined, 'finishing it releases the native handle');
+	});
+
+	// The point-of-no-return spare must not be permanent. commitsInFlight is only decremented when the
+	// attempt settles, so a commit that never settles would otherwise make every later poison — timeout
+	// and disconnect alike — a no-op, and the write intents it holds would never come back. That is
+	// harper#2001's wedge reached from the other side, so the monitor bounds the deferral.
+	it('escalates to a real abort when a poisoned commit never settles', async function () {
+		setDisconnectExpiration(50);
+		try {
+			const ac = new AbortController();
+			const context = { signal: ac.signal };
+			await assert.rejects(
+				transaction(context, async (txn) => {
+					await DisconnectResource.put(570, { name: 'never settles' }, context);
+					// An undrained iterator too: the force-abort retains its handle, so the monitor must
+					// stop deferring afterwards and go on to reclaim it.
+					const results = await DisconnectResource.search({}, context);
+					await results[Symbol.asyncIterator]().next();
+					// A pre-commit completion that never resolves — the shape a hung source `before` hook
+					// takes on a caching-table write.
+					txn.stageCompletion(new Promise(() => {}));
+					// On LMDB the write (and the monitor registration) lives one link into the chain.
+					const { txn: writeLink } = getReadTransaction(context.transaction);
+					txn.commit().catch(() => {});
+					ac.abort();
+					assert.equal(txn.disconnected, true, 'the disconnect poisons even though it cannot abort yet');
+					await waitFor(() => writeLink.timedOut === true, {
+						message: 'the monitor must stop deferring and abort a commit that never settles',
+					});
+					await waitFor(() => !getReadTransaction(context.transaction), {
+						message: 'the escalated abort must release the write intents',
+					});
+					throw new Error('handler done');
+				}),
+				/handler done/
+			);
+			assert.ok((await DisconnectResource.get(570)) == null, 'the wedged write must not commit');
+		} finally {
+			setDisconnectExpiration(30000);
+		}
+	});
+
+	// The wrapper cannot abort a commit it did not await, but its scope is still over. Without giving
+	// up scope ownership, that attempt's own mid-scope rotation reopens the instance with no wrapper
+	// left to commit or abort it, and the next transaction() on the same context joins it and never
+	// commits — a silent write loss reported as success.
+	it('does not leave a rotated-open transaction behind when the callback throws mid-commit', async function () {
+		const context = {};
+		let releaseCommitGate;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(590, { name: 'fire and forget' }, context);
+				txn.stageCompletion(new Promise((resolve) => (releaseCommitGate = resolve)));
+				txn.commit().catch(() => {});
+				throw new Error('handler threw mid-commit');
+			}),
+			/handler threw mid-commit/
+		);
+		releaseCommitGate();
+		await waitFor(() => context.transaction.open !== TRANSACTION_STATE.OPEN, {
+			message: 'an abandoned scope must not be rotated back open by its own in-flight commit',
+		});
+		await transaction(context, async () => {
+			await DisconnectResource.put(591, { name: 'second scope' }, context);
+		});
+		assert.equal(
+			(await DisconnectResource.get(591))?.name,
+			'second scope',
+			'a later transaction on the same context must get a wrapper that commits'
+		);
+	});
+
+	// The same hole one window earlier: while the abandoned attempt is still inside its `before` hooks
+	// the instance has not reached CLOSED on its own, so an OPEN check would still let the next write on
+	// this context join it. A hung hook makes that window arbitrarily long.
+	it('does not let a write join the abandoned scope while its commit is still in flight', async function () {
+		const context = {};
+		let releaseCommitGate;
+		let committing;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(592, { name: 'fire and forget' }, context);
+				txn.stageCompletion(new Promise((resolve) => (releaseCommitGate = resolve)));
+				committing = txn.commit().catch(() => {});
+				throw new Error('handler threw mid-commit');
+			}),
+			/handler threw mid-commit/
+		);
+		// Gate still held: the attempt has not settled and has not closed itself.
+		await transaction(context, async () => {
+			await DisconnectResource.put(593, { name: 'joined too early' }, context);
+		});
+		assert.equal(
+			(await DisconnectResource.get(593))?.name,
+			'joined too early',
+			'a write made while the abandoned attempt is still in flight must get its own committing wrapper'
+		);
+		releaseCommitGate();
+		await committing; // don't leave a native commit running into the next test
+	});
+
+	// The abandoned links are captured when the scope ends, not walked from `next` when the attempt
+	// settles: a successful multi-store commit clears `next` first, so a former child's iterator would
+	// own a snapshot nothing could reach. Built directly because setupTestDBPath gives every database
+	// name the same store path, so the resource API never forms a second link in this harness.
+	it("closes an abandoned chain link's iterator after the settling commit detaches it", function () {
+		const head = new DatabaseTransaction({ scopeOwned: true });
+		const link = new DatabaseTransaction();
+		link.root = head;
+		head.next = link;
+		link.transaction = {}; // a link with no handle of its own owns nothing to reclaim
+		let closed = 0;
+		const iterator = {
+			onDone() {
+				iterator.onDone = null;
+				closed++;
+			},
+		};
+		link.registerReadIterator(iterator);
+		head.commitsInFlight = 1;
+		head.abandonScope();
+		head.next = null; // what completeMidScopeCommit does before the outer commit() settles
+		head.endCommitAttempt();
+		assert.equal(closed, 1, "a detached link's iterator must still be closed when the attempt settles");
+	});
+
+	// The mirror case, which capturing the chain cannot cover: LMDB's commit clears `next` before it
+	// awaits the child, so a scope abandoned in that window never saw the link at all. The link closes
+	// its own iterators when its own attempt settles.
+	it("closes an abandoned link's iterator when a commit detached it before the scope ended", function () {
+		const head = new DatabaseTransaction({ scopeOwned: true });
+		const link = new DatabaseTransaction();
+		link.root = head; // already detached: head.next was cleared by the commit that started the child
+		link.transaction = {};
+		let closed = 0;
+		const iterator = {
+			onDone() {
+				iterator.onDone = null;
+				closed++;
+			},
+		};
+		link.registerReadIterator(iterator);
+		head.commitsInFlight = 1;
+		link.commitsInFlight = 1;
+		head.abandonScope();
+		link.endCommitAttempt();
+		assert.equal(closed, 1, 'a link detached before abandonment must close its own iterators on settle');
+	});
+
+	// The head marks itself CLOSED and detaches its handle as soon as its own commit starts, while a
+	// second database's link is still holding uncommitted writes for the cascade. Without the deferral
+	// the monitor reads that as "nothing left to supervise" and releases the chained link's handle,
+	// dropping its writes even though the head's commit succeeds.
+	it('does not unsupervise a multi-store chain while the head commit is in flight', async function () {
+		if (isLMDB) return; // gating a native handle's commit; LMDB commits through the store's batch
+		const SecondDbResource = table({
+			table: 'DisconnectSecondDbTable',
+			database: 'test2',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		setDisconnectExpiration(50);
+		try {
+			const context = {};
+			await transaction(context, async (txn) => {
+				await DisconnectResource.put(580, { name: 'head write' }, context);
+				await SecondDbResource.put(580, { name: 'chained write' }, context);
+				const nativeTransaction = context.transaction.transaction;
+				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+				let releaseNativeCommit;
+				const gate = new Promise((resolve) => (releaseNativeCommit = resolve));
+				nativeTransaction.commit = () => gate.then(nativeCommit);
+				const committing = txn.commit({ doneWriting: true });
+				await delay(180); // several monitor ticks while the head's commit is outstanding
+				releaseNativeCommit();
+				await committing;
+			});
+			assert.equal((await DisconnectResource.get(580))?.name, 'head write');
+			assert.equal(
+				(await SecondDbResource.get(580))?.name,
+				'chained write',
+				"the chained store's writes must survive a head commit that outlives a monitor tick"
+			);
+		} finally {
+			setDisconnectExpiration(30000);
+		}
+	});
+
+	// A write plus an undrained iterator, idle past the open-transaction limit, with NO disconnect: the
+	// poison retains the handle for the iterator that owns it, so the monitor is the only terminating
+	// condition and without one the read snapshot is pinned for the life of the process.
+	it('reclaims a timed-out transaction whose iterator is never drained', async function () {
+		setDisconnectExpiration(50);
+		try {
+			await DisconnectResource.put(560, { name: 'timeout iterator seed' }, {});
+			const context = {};
+			let releaseHandler;
+			const handlerGate = new Promise((resolve) => (releaseHandler = resolve));
+			const running = transaction(context, async () => {
+				await DisconnectResource.put(561, { name: 'must be discarded' }, context);
+				const results = await DisconnectResource.search({}, context);
+				await results[Symbol.asyncIterator]().next();
+				await handlerGate; // the handler never returns on its own
+			});
+			running.catch(() => {}); // asserted below; keep the rejection from being unhandled meanwhile
+			await waitFor(() => getReadTransaction(context.transaction) === undefined, {
+				message: 'the monitor must reclaim the retained handle of a timed-out transaction',
+			});
+			releaseHandler();
+			await assert.rejects(running, /open-transaction time/);
+			assert.ok((await DisconnectResource.get(561)) == null, 'the timed-out write must not commit');
+		} finally {
+			setDisconnectExpiration(30000);
+		}
+	});
+
+	// A caching table's on-demand fill-from-source runs `getFromSource`'s OWN `transaction(sourceContext,
+	// ...)` (resources/Table.ts), a completely separate DatabaseTransaction from the requester's — with no
+	// `signal` of its own (`sourceContext` never carries one). Independently, the requester's own (outer)
+	// transaction has no pending writes of its own while waiting on the fetch, so the hasPendingWrites()
+	// gate above leaves it unpoisoned too. Either guarantee alone would be enough; both hold. So a slow
+	// source fetch triggered by a GET must keep filling the cache, AND the original GET must still resolve
+	// normally, even after the requester who triggered it disconnects.
+	it('still caches a slow source fill for later requesters even if the requesting client disconnects mid-fetch', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // caching tables: see unitTests/resources/caching.test.js
+		const CachingResource = table({
+			table: 'DisconnectCachingTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		let releaseSource;
+		CachingResource.sourcedFrom({
+			get(id) {
+				return new Promise((resolve) => {
+					releaseSource = () => resolve({ id, name: 'from-source-' + id });
+				});
+			},
+		});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		const getPromise = CachingResource.get(701, context);
+		await delay(10); // let the fetch reach the gated source call
+		ac.abort(); // the requesting client disconnects while the source fetch is still in flight
+		await delay(5);
+		releaseSource();
+		const result = await getPromise; // read-only transaction, ungated — resolves normally despite the disconnect
+		assert.equal(result?.name, 'from-source-701');
+		// The cache fill commits via getFromSource's own background transaction (see the comment above),
+		// deliberately not awaited by the requester's own promise — poll for it rather than a fixed sleep.
+		// onlyIfCached throws (504) rather than returning falsy while still uncached, so swallow that.
+		const cached = await waitFor(async () => {
+			try {
+				return await CachingResource.get(701, { onlyIfCached: true });
+			} catch {
+				return undefined;
+			}
+		});
+		assert.equal(cached?.name, 'from-source-701', 'the fetched value must still be cached for a later requester');
 	});
 });
 

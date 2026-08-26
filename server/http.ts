@@ -6,6 +6,7 @@
 import { currentThreadId } from '@harperfast/rocksdb-js';
 import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
+import { setMaxListeners } from 'node:events';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { parentPort } from 'node:worker_threads';
 import * as env from '../utility/environment/environmentManager.ts';
@@ -1654,12 +1655,21 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			if (options.maxPayload != null) cfg.wsMaxPayload = options.maxPayload;
 			cfg.wsHandler = (ws: any, upgrade: any) => {
 				try {
+					// UwsRequest.signal falls back to a controller nothing can fire. Wire a real one, the
+					// same way uwsServer.ts's HTTP path wires res.onAborted.
+					const ac = new AbortController();
+					// One controller per connection, but one abort listener per in-flight message-handling
+					// transaction (resources/transaction.ts) — a busy connection can hold more than
+					// EventEmitter's default 10-listener warning threshold on perfectly normal traffic.
+					setMaxListeners(0, ac.signal);
+					ws.once('close', () => ac.abort());
 					const request: any = new UwsRequest({
 						method: 'GET',
 						url: upgrade.url,
 						headers: upgrade.headers,
 						secure,
 						ip: upgrade.ip,
+						signal: ac.signal,
 					});
 					request.isWebSocket = true;
 					const chainCompletion = httpChain[port](request);

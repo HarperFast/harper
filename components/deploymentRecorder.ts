@@ -87,11 +87,13 @@ interface CreateOptions {
  */
 function withIsolatedTransaction<T>(write: () => Promise<T>, timeoutMs?: number): Promise<T> {
 	const ambient = contextStorage.getStore();
+	// No `signal`: tracking is observability and the deploy must still succeed, so a deploy client that
+	// stops waiting (CLI ^C, proxy idle timeout) must not poison these writes and strand the row in a
+	// non-terminal phase.
 	const context = {
 		user: ambient?.user,
 		originatingOperation: ambient?.originatingOperation,
 		session: ambient?.session,
-		signal: ambient?.signal,
 	};
 	return transaction(context, (txn) => {
 		if (timeoutMs != null) {
