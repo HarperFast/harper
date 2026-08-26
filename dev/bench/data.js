@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787729483081,
+  "lastUpdate": 1787744640659,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -14039,6 +14039,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 338272,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "df5355aaa3243abbf21a0d74a538d6ae227e12b1",
+          "message": "Prevent worker respawns from blocking container restarts (#2316)\n\n* Fix worker respawn during process shutdown\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Harden restart shutdown safeguards\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Address shutdown review findings\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Clarify restart watchdog boundary\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Fail closed across restart teardown\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Recognize additional PID 1 init variants\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Wait for full startup in Docker stop smoke\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Tolerate an already-removed restart PID file\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Preserve shutdown exit semantics\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Harden watchdog parent comparison\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Preserve watchdog utility lookup portability\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Wait for full startup before restart smoke\n\nCo-Authored-By: OpenAI Codex <noreply@openai.com>\n\n* Address review feedback on the terminal shutdown latch\n\nCover the production ordering — latch first, then a rolling restart arriving\nduring teardown — with a harness mode that asserts the restart number, the\nworker pool, and the replacement count are all untouched. Guard the exit-code\ncontract left by dropping process.exit(0) from the 'exit' listener. Drop the\nunreachable !processShuttingDown conjunct in the overlapping pre-start branch,\nkeep the restart-watchdog error off platforms that can never arm it, and record\nthe image's PID 1 change in DESIGN.md.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Prove the restart exit watchdog armed before reporting it\n\nEvery way the watchdog script gives up is a silent exit 0 -- an unreadable\nprocfs or a base image without sleep -- so arming on a successful spawn told\noperators teardown was bounded in exactly the environments where it was not.\nThe script now emits a readiness token after proving both facilities, and\narming resolves false unless that token arrives.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Close the pre-latch restart window and the watchdog disarm gaps\n\nLatch terminal shutdown at the top of the restart teardown rather than at\nshutdownWorkersNow(): a debounced component reload landing in between reloaded\nroot components and pre-started an HTTP replacement into a process that was\nalready exiting, and the readiness handshake widened that window.\n\nAttach the watchdog child's error listener before the pid check so a spawn\nfailure on a wedged process cannot surface as an uncaughtException, and cover\nthe disarm wiring -- token, early exit, and readiness timeout -- directly.\n\nCorrect the DESIGN.md tini note: Harper-managed subprocesses are forked\ndetached, so tini's group signal never reaches them.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Skip the readiness handshake tests off Linux\n\nMatches the rest of the file: /bin/sh is not there to spawn on Windows.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* Bring launch failures into the restart teardown catch\n\nlaunch(true) is async; leaving it unawaited put any future rejection outside\nthe teardown catch that is supposed to log and exit 1. Also widen the watchdog\ntiming assertion, which bounded a 1s watchdog at 5s of wall clock.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: OpenAI Codex <noreply@openai.com>\nCo-authored-by: Claude Opus <noreply@anthropic.com>",
+          "timestamp": "2026-08-25T23:16:01Z",
+          "url": "https://github.com/HarperFast/harper/commit/df5355aaa3243abbf21a0d74a538d6ae227e12b1"
+        },
+        "date": 1787744638592,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 25284,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 15381,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 18607,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 30184960,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3193,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 482951,
             "unit": "ops"
           }
         ]
