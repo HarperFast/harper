@@ -72,6 +72,7 @@ Password hashing algorithm used when storing user passwords. Replaced the previo
 
 ## Related
 
+- [Response Header Hardening](./response-headers.md) — Setting browser security headers (`X-Content-Type-Options`, CSP, etc.) and cache-control on Harper responses.
 - [JWT Authentication](./jwt-authentication.md)
 - [Basic Authentication](./basic-authentication.md)
 - [Users & Roles / Configuration](../users-and-roles/configuration.md)
