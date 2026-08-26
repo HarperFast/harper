@@ -245,27 +245,24 @@ export function openAuditStore(rootStore) {
 					// serialization barrier every later pass awaits, and never settling it wedges the
 					// cleanup loop for the life of the store.
 					resolve();
+					const minimumDelay = isRocksAuditStore
+						? Math.max(1, Math.min(DEFAULT_AUDIT_CLEANUP_DELAY, auditRetention / 10, MAX_CLEANUP_DELAY))
+						: 0;
 					if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
 						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
 						// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
 						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
 						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
+					} else if (isRocksAuditStore) {
+						auditCleanupDelay = minimumDelay;
 					} else {
-						if (!isRocksAuditStore) {
-							// if we did delete something, update our updates since timestamp
-							updateLastRemoved(auditStore, lastKey);
-							// and do updates faster
-							if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
-						}
+						// if we did delete something, update our updates since timestamp
+						updateLastRemoved(auditStore, lastKey);
+						// and do updates faster
+						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
-					if (isRocksAuditStore) {
-						const minimumDelay = Math.max(
-							1,
-							Math.min(DEFAULT_AUDIT_CLEANUP_DELAY, auditRetention / 10, MAX_CLEANUP_DELAY)
-						);
-						auditCleanupDelay = Math.max(auditCleanupDelay, minimumDelay);
-					}
+					if (isRocksAuditStore) auditCleanupDelay = Math.max(auditCleanupDelay, minimumDelay);
 					scheduleAuditCleanup();
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries

@@ -156,6 +156,58 @@ describe('Audit log', () => {
 			setAuditRetention(60_000, 10_000);
 		}
 	});
+	it('returns Rocks cleanup to its production cadence after an active purge', async function () {
+		const store = AuditedTable.auditStore;
+		if (!(store instanceof RocksTransactionLogStore)) this.skip();
+
+		const rootStore = store.rootStore;
+		const originalPurgeLogs = rootStore.purgeLogs;
+		const originalSetTimeout = global.setTimeout;
+		const originalClearTimeout = global.clearTimeout;
+		const scheduled = [];
+		const fakeTimers = new Set();
+		let purgeCalls = 0;
+		rootStore.purgeLogs = () => (++purgeCalls < 3 ? [] : ['purged.txnlog']);
+		global.setTimeout = (callback, delay) => {
+			const timer = {
+				callback,
+				delay,
+				unref() {
+					return timer;
+				},
+			};
+			fakeTimers.add(timer);
+			scheduled.push(timer);
+			return timer;
+		};
+		global.clearTimeout = (timer) => {
+			if (!fakeTimers.has(timer)) originalClearTimeout(timer);
+		};
+		setAuditRetention(1_000, 10);
+		try {
+			const firstResolution = store.scheduleAuditCleanup(10);
+			const first = scheduled.shift();
+			assert.equal(first.delay, 10);
+			await first.callback();
+			await firstResolution;
+
+			const second = scheduled.shift();
+			assert.equal(second.delay, 20);
+			await second.callback();
+
+			const third = scheduled.shift();
+			assert.equal(third.delay, 40);
+			await third.callback();
+
+			assert.equal(scheduled.shift().delay, 10, 'active purge should reset Rocks cleanup backoff');
+		} finally {
+			rootStore.purgeLogs = originalPurgeLogs;
+			global.setTimeout = originalSetTimeout;
+			global.clearTimeout = originalClearTimeout;
+			setAuditRetention(60_000, 10_000);
+			store.scheduleAuditCleanup();
+		}
+	});
 	it('purges aged, flushed Rocks segments through the Harper retention pass', async function () {
 		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-'));
 		const rootStore = new RocksDatabase(scratch, { transactionLogMaxSize: 128 }).open();
