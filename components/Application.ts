@@ -58,9 +58,13 @@ interface ApplicationConfig {
 	// the credential from the store rather than needing it re-supplied.
 	credentials?: CredentialReference[];
 	/**
-	 * Databases this application gets a private, ephemeral fork of (harper#642). The application's
-	 * code is unchanged — it still imports `databases` from `harper` — but those names resolve to a
-	 * branch that lives for the process and is invisible to other applications and to replication.
+	 * Databases this application gets a private, ephemeral fork of (harper#642). The branch lives for
+	 * the process and is invisible to other applications and to replication.
+	 *
+	 * The application must reach its data through `import { databases } from 'harper'`. The bare
+	 * `databases`/`tables` globals are shared process-wide by the default `vm-current-context` loader
+	 * and cannot be scoped, so an application that uses them reads and writes the BASE — silently.
+	 * Per-application globals are a property of thread-level isolation, not of branching.
 	 */
 	branchedDatabases?: string[];
 	// an application config can have other arbitrary properties

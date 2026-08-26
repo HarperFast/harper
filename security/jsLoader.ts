@@ -16,6 +16,7 @@ import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
+import { assertTableTargetNotBranched } from '../resources/branchGuard.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type {} from 'ses';
 import {
@@ -892,26 +893,14 @@ function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tabl
 }
 
 /**
- * `defineTable` registers into the process-wide catalog, so a branched application defining a table
- * in one of its branched databases would create it in the BASE — visible to every other application
- * and replicated — while the application's own reads and writes went to the branch. Making it land
- * in the branch is harper#2264, the same work as GraphQL `@table` and `scope.ensureTable`; until
- * then it is refused rather than silently misdirected. Databases this application did not branch are
- * unaffected.
+ * `defineTable` registers into the process-wide catalog, so for a branched name it is refused rather
+ * than silently misdirected onto the base. See `assertTableTargetNotBranched`.
  */
 function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 	const branches = scope.branches;
 	if (!branches?.size) return defineTable;
 	return function (name: string, shape: any, options: any = {}) {
-		const target = options.database ?? DEFAULT_DATABASE_NAME;
-		if (branches.has(target)) {
-			const error: any = new Error(
-				`Cannot define table '${name}' in branched database '${target}': defineTable registers the table in ` +
-					`the base database's schema rather than in this application's branch`
-			);
-			error.statusCode = 400;
-			throw error;
-		}
+		assertTableTargetNotBranched(branches, options.database, name, 'defineTable');
 		return defineTable(name, shape, options);
 	} as typeof defineTable;
 }

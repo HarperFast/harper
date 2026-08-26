@@ -330,6 +330,35 @@ describe('branch rollback is scoped to the failing application (harper#643)', ()
 	});
 });
 
+describe('declaring a table from a branched application (harper#643)', () => {
+	const { assertTableTargetNotBranched } = require('#src/resources/branchGuard');
+
+	it('refuses every declaration path that would land in the base', function () {
+		// GraphQL @table, scope.ensureTable and defineTable all funnel into the process-wide table(),
+		// so gating only one of them leaves the base reachable through the other two -- and @table is
+		// the path most applications actually use.
+		const branches = new Map([['gatedbase', {}]]);
+		for (const how of ['a GraphQL @table directive', 'ensureTable', 'defineTable']) {
+			assert.throws(() => assertTableTargetNotBranched(branches, 'gatedbase', 'T', how), /branched database/);
+		}
+	});
+
+	it('defaults an unnamed database to the default one', function () {
+		// `@table` and defineTable both omit `database` to mean `data`, so a branch of `data` has to
+		// catch the omitted case or the most common declaration of all slips through.
+		assert.throws(
+			() => assertTableTargetNotBranched(new Map([['data', {}]]), undefined, 'T', 'defineTable'),
+			/branched database 'data'/
+		);
+	});
+
+	it('leaves unbranched targets and unbranched applications alone', function () {
+		assert.doesNotThrow(() => assertTableTargetNotBranched(new Map([['gatedbase', {}]]), 'other', 'T', 'defineTable'));
+		assert.doesNotThrow(() => assertTableTargetNotBranched(undefined, 'gatedbase', 'T', 'defineTable'));
+		assert.doesNotThrow(() => assertTableTargetNotBranched(new Map(), 'gatedbase', 'T', 'defineTable'));
+	});
+});
+
 describe('defineTable through a branched application (harper#643)', () => {
 	let scopedBindings;
 

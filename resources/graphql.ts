@@ -1,6 +1,7 @@
 import { dirname } from 'path';
 import { Script } from 'node:vm';
 import { table } from './databases.ts';
+import { assertTableTargetNotBranched } from './branchGuard.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
@@ -75,7 +76,13 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			return;
 		}
 
-		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
+		await processGraphQLSchema(
+			(entry as any).contents,
+			entry.urlPath,
+			entry.absolutePath,
+			scope.resources,
+			scope.applicationScope?.branches
+		);
 	});
 	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
 	initialLoadPromise.then(() => {
@@ -84,7 +91,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 	return initialLoadPromise;
 }
 
-async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
+async function processGraphQLSchema(gqlContent, urlPath, filePath, resources, branches?: Map<string, unknown>) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind } = await import('graphql');
 	const ast = parse(new Source(gqlContent.toString(), filePath));
@@ -314,6 +321,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 	for (const typeDef of tables) {
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
+		assertTableTargetNotBranched(branches, typeDef.database, typeDef.table, 'a GraphQL @table directive');
 		typeDef.tableClass = table(typeDef);
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
