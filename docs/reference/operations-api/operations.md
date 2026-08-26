@@ -543,13 +543,24 @@ Detailed documentation: [JWT Authentication](../security/jwt-authentication.md)
 
 ### `create_authentication_tokens`
 
-Does not require prior authentication. Returns `operation_token` (short-lived JWT) and `refresh_token` (long-lived JWT).
+Does not require prior authentication when called with `username`/`password`. Returns `operation_token` (short-lived JWT) and `refresh_token` (long-lived JWT).
 
 ```json
 {
 	"operation": "create_authentication_tokens",
 	"username": "my-user",
 	"password": "my-password"
+}
+```
+
+With `role` as an inline role object, instead mints a single **scoped token** whose bearer is limited to the embedded permissions — requires an authenticated `super_user` caller; `username` is attribution only and must not name an existing user (defaults to `scoped:<minter>`); no refresh token is issued and the token cannot be revoked before expiry. See [JWT Authentication / Scoped Tokens](../security/jwt-authentication.md#scoped-tokens-inline-role).
+
+```json
+{
+	"operation": "create_authentication_tokens",
+	"username": "reporting-service",
+	"role": { "permission": { "operations": ["read_only"] } },
+	"expires_in": "7d"
 }
 ```
 

@@ -89,6 +89,49 @@ Response:
 
 When both tokens have expired, call `create_authentication_tokens` again with your username and password.
 
+## Scoped Tokens (Inline Role)
+
+Available since: v5.2.0
+
+A super user can mint a **scoped token**: a single JWT whose permissions are embedded in the token itself, so the bearer needs no pre-existing user or role record. This is useful for handing a limited credential (for example, read-only access) to an external service or script without provisioning it in `hdb_user`.
+
+Pass `role` as an inline role-shaped object (the same `permission` structure used by [`add_role`](../users-and-roles/overview.md), including the `operations` allowlist). The request must be authenticated as a `super_user`; no `password` may be included:
+
+```json
+{
+	"operation": "create_authentication_tokens",
+	"username": "reporting-service",
+	"role": {
+		"permission": {
+			"operations": ["read_only"],
+			"dev": {
+				"tables": {
+					"dog": { "read": true, "insert": false, "update": false, "delete": false, "attribute_permissions": [] }
+				}
+			}
+		}
+	},
+	"expires_in": "7d"
+}
+```
+
+Response:
+
+```json
+{
+	"operation_token": "<jwt-scoped-token>"
+}
+```
+
+Behavior and constraints:
+
+- **`username` is attribution only, and must not name an existing user.** It appears in audit logs and `user_info` for requests made with the token; a name that collides with a real `hdb_user` is rejected at mint. It defaults to `scoped:<minting user>`.
+- **Permissions are enforced as embedded.** The `operations` allowlist limits which Operations API operations the bearer can call (including `sql`). Application/REST endpoints are governed by the embedded database/table permissions only — a token meant to be read-only on REST must set restrictive table permissions, not just a read-only `operations` list. `super_user` and `cluster_user` are always forced to `false` in the embedded role.
+- **No refresh token is issued**, and no user record is created or modified.
+- **Scoped tokens cannot be revoked before they expire.** They are not tied to a user row, so dropping or altering users has no effect on them; only expiry (or rotating the instance's JWT keys, which invalidates _all_ tokens) ends their validity. Choose `expires_in` accordingly — prefer short lifetimes.
+- The permission object is validated at mint time (unknown operations, malformed shapes, and references to nonexistent databases/tables are rejected), and the resulting token must fit in an `Authorization` header (12KB limit).
+- In mixed-version clusters, only nodes running a version with scoped-token support accept these tokens; older nodes reject them with a 401.
+
 ## Issuing Tokens from a Custom Resource
 
 Custom Resources can mint tokens programmatically by invoking the same operations via [`server.operation()`](../http/api.md#serveroperationoperation-context-authorize). This is useful when you want a Resource-style endpoint (e.g., `POST /IssueTokens`) instead of (or in addition to) the raw Operations API.
