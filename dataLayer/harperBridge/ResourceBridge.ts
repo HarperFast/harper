@@ -39,6 +39,8 @@ const DELETE_PAUSE_MS = 10;
 /** Shared result for the overwhelmingly common case of a record carrying no `__unset__`, so the
  * default write path allocates nothing per record. Frozen because it is handed out repeatedly. */
 const NO_UNSET_ATTRIBUTES = Object.freeze([]) as unknown as string[];
+/** Latch for the malformed-directive warning; see takeUnsetAttributes. */
+let warnedMalformedUnset = false;
 
 export type SearchByConditionsRequest = Query &
 	Context & {
@@ -280,7 +282,12 @@ export class ResourceBridge extends BridgeMethods {
 						}
 					}
 				}
-				const unset = takeUnsetAttributes(record, Table.primaryKey, upsertObj.requires_no_existing);
+				// Keyed on whether there IS a record to remove from, not on which operation asked. Guarding
+				// the insert flag alone left `upsert` with no primary key reaching the same silent partial
+				// write one branch over: `insertUpdateValidate` requires a hash attribute only for
+				// `update`, so such a record takes the `id == undefined → Table.create` path and stored an
+				// auto-keyed record with the named attributes stripped, returning 200.
+				const unset = takeUnsetAttributes(record, Table, !existingRecord);
 				// `__unset__` removes named attributes while everything else still merges, which a patch
 				// cannot express — so it resolves the merge here, against the record this transaction
 				// already loaded, and writes the result as a full replace. Doing it server-side inside the
@@ -288,6 +295,15 @@ export class ResourceBridge extends BridgeMethods {
 				// every other writer, and `full_record` would make the caller resend attributes it never
 				// meant to touch. Under `full_record` the submitted record is already the whole intended
 				// state, so there is nothing to merge and the names are simply dropped from it.
+				//
+				// SINGLE-WRITER ONLY, and the surrounding wording should not be read as more than that.
+				// Resolving the merge here still writes a `put`, and a full put is last-writer-wins over
+				// the whole record: out-of-order reconciliation folds field-wise only for patches
+				// (`resources/Table.ts:2902-2914`) and the commit-retry path re-reads the stored record
+				// only when `!fullUpdate` (`resources/Table.ts:2530`). So a concurrent write to an
+				// attribute this request never named can be lost — the opposite of what "everything else
+				// merges" implies. Tracked in HarperFast/harper#2350; fixing it properly means resolving
+				// removals at the patch layer instead.
 				const toWrite = unset.length && existingRecord && !fullRecord ? { ...existingRecord, ...record } : record;
 				for (const attribute of unset) {
 					delete toWrite[attribute];
@@ -808,53 +824,53 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 /**
  * Read and remove a record's `__unset__` list, returning the attribute names to drop.
  *
- * Removed from the record because it is a directive, not data: leaving it in place would store it as
- * an attribute. Shape is already validated (`validation/insertValidator.ts`); the primary key is
- * refused here instead, since only this layer knows which attribute that is. Unsetting it would
- * otherwise be silently ignored — `Table._writeUpdate` re-asserts the primary key on a full update —
- * and a directive that quietly does nothing is worse than one that says no.
+ * The key is removed because it is a directive, not data — left in place it would be stored as an
+ * attribute. The refusals below live here rather than in the validator because only this layer knows
+ * the table: which attribute is the primary key, and what the managed timestamps are called. Each is
+ * refused rather than skipped, because `_writeUpdate` re-asserts all three on a full update, so
+ * accepting them would return 200 and change nothing.
  */
-function takeUnsetAttributes(
-	record: Record<string, unknown>,
-	primaryKey: string,
-	isCreateOnly: boolean | undefined
-): string[] {
+function takeUnsetAttributes(record: Record<string, unknown>, Table: any, hasNoExistingRecord: boolean): string[] {
 	if (!(OPERATIONS_UNSET_KEY in record)) return NO_UNSET_ATTRIBUTES;
 	const unset = record[OPERATIONS_UNSET_KEY];
-	// Removed before the shape is judged, and on every exit below: the key is a directive, so
-	// leaving it on a record that is about to be written stores it as data. `in` rather than an
-	// `undefined` check for the same reason — an explicitly-undefined key still has to come off.
+	// Before the shape is judged, and on every exit: `in` rather than a value check, so an
+	// explicitly-undefined key still comes off the record.
 	delete record[OPERATIONS_UNSET_KEY];
-	// `insert` has no existing record to remove anything from, so the directive can only mean the
-	// caller misunderstood it. Refused rather than applied: applying it deleted attributes the same
-	// request had just supplied, which is a silent partial write, and rather than ignored, because a
-	// directive that quietly does nothing is worse than one that says no — the same reason the primary
-	// key below is refused instead of skipped. Authorization contributes nothing for `insert` on the
-	// strength of this (`utility/operation_authorization.ts` getRecordAttributes).
-	if (isCreateOnly) {
+	if (hasNoExistingRecord) {
 		throw new ClientError(
-			`'${OPERATIONS_UNSET_KEY}' is not valid on an insert, which has no existing record to remove attributes from`
+			`'${OPERATIONS_UNSET_KEY}' needs an existing record to remove attributes from; nothing is stored under this primary key`
 		);
 	}
-	// Self-safeguarding rather than trusting the caller. `validation/insertValidator.ts` rejects a
-	// malformed value, and every current route here goes through it (`dataLayer/insert.ts`
-	// create/update/upsertRecords, including the replication catchup path) — but the bridge's own
-	// `insertUpdateValidate` does not check this key, so that safety lives in a different layer, and
-	// this is a module boundary an internal caller could reach directly. A non-iterable reaching the
-	// `for…of` in `upsertRecords` would throw and take the write down; a bare string would iterate
-	// per character and delete single-letter attributes.
-	//
 	// Ignored with a warning rather than thrown: this is the write and replication apply path, where
-	// throwing aborts the commit and can wedge a subscription. Skipping the directive degrades to a
-	// plain merge, which removes nothing — the safe direction. Same choice `resources/tracked.ts`
-	// makes for an unrecognized CRDT operation, and the reason it makes it.
+	// throwing aborts the commit and can wedge a subscription, and skipping the directive degrades to
+	// a plain merge, which removes nothing. `resources/tracked.ts` makes the same choice for an
+	// unrecognized CRDT operation. Checked at all because the shape is validated one layer up, in a
+	// module this one does not own: a non-iterable would throw in the caller's `for…of` and take the
+	// write down, and a bare string would iterate per character, deleting single-letter attributes.
 	if (!Array.isArray(unset) || unset.some((name) => typeof name !== 'string' || name.length === 0)) {
-		logger.warn(`Ignoring a malformed '${OPERATIONS_UNSET_KEY}' on a record; expected an array of attribute names`);
+		// Latched, following `warnedNullSourcePut` in resources/Table.ts: one line per record would
+		// bury the log under a single bad batch.
+		if (!warnedMalformedUnset) {
+			warnedMalformedUnset = true;
+			logger.warn(
+				`Ignoring a malformed '${OPERATIONS_UNSET_KEY}' on a record in ${Table.databaseName}.${Table.tableName}; expected an array of attribute names`
+			);
+		}
 		return NO_UNSET_ATTRIBUTES;
 	}
 	const names = unset as string[];
+	const primaryKey = Table.primaryKey;
 	if (primaryKey && names.includes(primaryKey)) {
 		throw new ClientError(`'${primaryKey}' is the primary key of this table and cannot be unset`);
+	}
+	// `createdTimeProperty`/`updatedTimeProperty` resolve `assignCreatedTime` OR the legacy
+	// `__createdtime__` spelling (resources/Table.ts), so this covers a schema-declared
+	// `createdAt: Float @createdTime` as well as the legacy names — which a static list in the
+	// validator, with no schema in scope, could not.
+	for (const managed of [Table.createdTimeProperty, Table.updatedTimeProperty]) {
+		if (managed?.name && names.includes(managed.name)) {
+			throw new ClientError(`'${managed.name}' is maintained by Harper and cannot be unset`);
+		}
 	}
 	return names;
 }

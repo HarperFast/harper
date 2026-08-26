@@ -1,6 +1,6 @@
 import { hdbTable, hdbDatabase } from './common_validators.ts';
 import * as validator from './validationWrapper.ts';
-import { TIME_STAMP_NAMES, UNSET_ATTRIBUTES } from '../utility/hdbTerms.ts';
+import { UNSET_ATTRIBUTES } from '../utility/hdbTerms.ts';
 import Joi from 'joi';
 const INVALID_ATTRIBUTE_NAMES = {
 	undefined: 'undefined',
@@ -53,12 +53,12 @@ function unsetAttributesError(unset: unknown): string | undefined {
 		if (typeof name !== 'string' || name.length === 0) {
 			return `'${UNSET_ATTRIBUTES}' must contain only non-empty attribute names`;
 		}
-		// The server owns these; `checkAttributePerms` already refuses to let a role write them, and
-		// a full-record write retains __createdtime__ rather than dropping it, so removing them here
-		// would be the one way to lose them.
-		if ((TIME_STAMP_NAMES as readonly string[]).includes(name)) {
-			return `'${name}' is maintained by Harper and cannot be unset`;
-		}
+		// Managed timestamps are NOT refused here. This validator has no table schema, so a static
+		// list would catch only the legacy `__createdtime__`/`__updatedtime__` and miss a
+		// schema-declared `createdAt: Float @createdTime` — which the write path then silently
+		// re-asserts, a 200 that changes nothing. `ResourceBridge.takeUnsetAttributes` refuses them
+		// instead, off `Table.createdTimeProperty`/`updatedTimeProperty`, which resolve both spellings.
+		// One check in the layer that can do it completely, rather than two that disagree.
 		if (name === UNSET_ATTRIBUTES) {
 			return `'${UNSET_ATTRIBUTES}' is not an attribute and cannot be unset`;
 		}

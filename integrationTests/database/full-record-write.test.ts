@@ -530,15 +530,54 @@ suite('full_record: full replace over the operations API', { skip: skipSuite }, 
 		strictEqual((await read('Dog', 'us-6')).name, 'Penny', 'nothing should have changed');
 	});
 
-	test('__unset__ refuses a system timestamp', async () => {
+	// Both spellings, because they are refused by one check rather than two. `Table.createdTimeProperty`
+	// resolves `assignCreatedTime` OR the legacy `__createdtime__` name (`resources/Table.ts:504-505`),
+	// so a schema-declared `createdAt: Float @createdTime` — which this fixture has, and which a static
+	// name list in the validator could never catch — is refused by the same code as the legacy name.
+	// Without this the write path silently re-asserts the value: a 200 that changes nothing.
+	test('__unset__ refuses a schema-declared managed timestamp', async () => {
 		await insert('Dog', [{ id: 'us-7', name: 'Penny' }]);
+		const before = await read('Dog', 'us-7');
 
-		const r = await ops({
+		// This fixture declares `createdAt: Float @createdTime` / `updatedAt: Float @updatedTime`, so
+		// these are the table's managed timestamps and a static name list in the validator could never
+		// have caught them. Without the refusal the write path silently re-asserts the value.
+		for (const name of ['createdAt', 'updatedAt']) {
+			const r = await ops({ operation: 'update', table: 'Dog', records: [{ id: 'us-7', __unset__: [name] }] });
+			ok(r.status >= 400, `unsetting '${name}' should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+		}
+
+		const after = await read('Dog', 'us-7');
+		strictEqual(after.createdAt, before.createdAt, 'no refused request may have altered the record');
+		strictEqual(after.name, 'Penny');
+
+		// ...and on THIS table `__createdtime__` is not a managed attribute at all, just a name the
+		// record doesn't have — so it is an ordinary no-op, not a refusal. The legacy spelling is only
+		// managed where it is the table's actual timestamp attribute (next test).
+		const legacy = await ops({
 			operation: 'update',
 			table: 'Dog',
 			records: [{ id: 'us-7', __unset__: ['__createdtime__'] }],
 		});
-		ok(r.status >= 400, `unsetting a system timestamp should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+		strictEqual(legacy.status, 200, `an unknown attribute name is a no-op; got ${JSON.stringify(legacy.body)}`);
+	});
+
+	// The other half of "one check resolves both spellings": on an open table created through
+	// `create_table`, `__createdtime__` IS the table's createdTimeProperty — `Table.ts:504` assigns it
+	// by name when no `assignCreatedTime` flag exists — so the same code refuses it there.
+	test('__unset__ refuses the legacy timestamp names on an open table, where they are the managed ones', async () => {
+		strictEqual(
+			(await ops({ operation: 'create_table', database: 'data', table: 'OpenStamp', primary_key: 'id' })).status,
+			200
+		);
+		await insert('OpenStamp', [{ id: 'os-1', name: 'Penny' }]);
+
+		for (const name of ['__createdtime__', '__updatedtime__']) {
+			const r = await ops({ operation: 'update', table: 'OpenStamp', records: [{ id: 'os-1', __unset__: [name] }] });
+			ok(r.status >= 400, `unsetting '${name}' should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+		}
+
+		strictEqual((await read('OpenStamp', 'os-1')).name, 'Penny', 'no refused request may have altered the record');
 	});
 
 	test('a malformed __unset__ is rejected', async () => {
@@ -637,6 +676,42 @@ suite('full_record: full replace over the operations API', { skip: skipSuite }, 
 
 		const stored = await read('Dog', 'ins-unset');
 		ok(stored == null, `nothing should have been written; got ${JSON.stringify(stored)}`);
+	});
+
+	// The refusal keys on whether there is a record to remove from, not on which operation asked.
+	// Guarding the insert flag alone left this case reaching the same silent partial write one branch
+	// over: `insertUpdateValidate` requires a primary key only for `update`, so an `upsert` without one
+	// takes the auto-keyed `Table.create` path and stored the record with the named attributes stripped.
+	test('__unset__ is refused on an upsert that has no primary key to look up', async () => {
+		// A name no other probe in this suite uses, so the search below can only match the record this
+		// request would have auto-keyed. Querying on "name plus some null columns" matched records other
+		// tests had legitimately stripped attributes from.
+		const r = await ops({
+			operation: 'upsert',
+			table: 'Dog',
+			records: [{ name: 'UpsertNoPrimaryKey', color: 'black', __unset__: ['color'] }],
+		});
+		ok(r.status >= 400, `upsert with no primary key should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+
+		// Nothing auto-keyed should have been stored — a 200 here was the bug.
+		const all = await ops({
+			operation: 'sql',
+			sql: `SELECT id FROM data.Dog WHERE name = 'UpsertNoPrimaryKey'`,
+		});
+		strictEqual(all.status, 200, `sql should 200; got ${JSON.stringify(all.body)}`);
+		strictEqual((all.body ?? []).length, 0, `no auto-keyed record may exist; got ${JSON.stringify(all.body)}`);
+	});
+
+	// ...and the same for an `upsert` naming a primary key that isn't stored: there is still nothing to
+	// remove from, so it is a misunderstanding rather than a create.
+	test('__unset__ is refused on an upsert whose primary key is not stored', async () => {
+		const r = await ops({
+			operation: 'upsert',
+			table: 'Dog',
+			records: [{ id: 'ups-absent', name: 'Penny', color: 'black', __unset__: ['color'] }],
+		});
+		ok(r.status >= 400, `upsert of an absent record should be refused; got ${r.status} ${JSON.stringify(r.body)}`);
+		ok((await read('Dog', 'ups-absent')) == null, 'nothing should have been created');
 	});
 
 	// `hdbTable` is `Joi.alternatives(Joi.string(), Joi.number())`, so a table named `0` validates. A
