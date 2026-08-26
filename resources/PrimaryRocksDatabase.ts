@@ -125,8 +125,8 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		// answers "latest committed" — the wrong question there, and wrong outright for a version a
 		// resequenced write reused — so read the store directly, touching neither cache nor VT.
 		if (options?.uncachedRead) {
-			const raw = options.async ? super.get(id, options) : super.getSync(id, options);
-			return when(raw, (result) => this.#processEntry(result, id));
+			if (options.async) return when(super.get(id, options), (result) => this.#processEntry(result, id));
+			return this.#processEntry(super.getSync(id, options), id);
 		}
 		const cache = this.#cache;
 		// The cache stores the record *value* (weakly, via setValue) rather than

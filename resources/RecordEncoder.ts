@@ -130,7 +130,12 @@ export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
 // The bit is persisted in every resequenced record, so a rocksdb-js that moved it down onto one of
 // the flags above (or up into the tag byte) would silently change what records already on disk
 // mean: it must stay a single bit strictly between them.
-if ((VERSION_REUSED & (VERSION_REUSED - 1)) !== 0 || VERSION_REUSED < 0x10000 || VERSION_REUSED > 0x800000)
+if (
+	typeof VERSION_REUSED !== 'number' ||
+	(VERSION_REUSED & (VERSION_REUSED - 1)) !== 0 ||
+	VERSION_REUSED < 0x10000 ||
+	VERSION_REUSED > 0x800000
+)
 	throw new Error(
 		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it`
 	);
