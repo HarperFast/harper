@@ -44,14 +44,14 @@ jobs:
             # the full 22/24/26 matrix runs on push to main/release and on the nightly schedule.
             echo "node-versions=[24]" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
-            # TEMPORARY: pinned to 26.5.0 instead of floating "26" — 26.5.1's llhttp/undici bump
-            # (deps: llhttp 9.4.2->9.4.3, undici 8.7.0->8.9.0) exposed a genuine Harper-side defect
-            # (TTL-reset-on-write silently loses to the eviction sweep on the operations-API/SQL/
-            # custom-resource write surfaces; confirmed NOT an undici-client artifact via a curl-based
-            # discriminator, and NOT a request-latency race via direct commit timing) plus a
-            # pre-existing per-thread config-reload race (#1747) made more visible by the same bump.
-            # Remove this pin once the underlying race is fixed — see harper#2025, which stays open
-            # until then. Do not extend this pin to unit-test.yml or other workflows without new evidence.
+            # TEMPORARY: pinned to 26.5.0 instead of floating "26" — 26.5.1's undici 8.7.0->8.9.0
+            # bump introduced multi-second global-fetch stalls. The later harper#2029 investigation
+            # isolated the stall with Harper-independent node:http servers; curl/node:http controls
+            # stay responsive because they do not exercise Node's bundled-undici client path.
+            # Remove this pin only after the preserved pre-#2029 fetch discriminator passes on the
+            # latest Node 26 while its 26.5.0 control passes, and the harper-pro canary corroborates
+            # that its Node-26 failures are also clear. See harper#2025; do not extend this pin to
+            # unit-test.yml or other workflows without new evidence.
             echo "node-versions=[22, 24, \"26.5.0\"]" >> $GITHUB_OUTPUT
           else
             # Manual dispatch intentionally does NOT apply the 26.5.0 pin above: selecting "26"

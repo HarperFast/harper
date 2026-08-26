@@ -9,15 +9,11 @@ name: Node 26 Canary (harper#2025)
 # nightly-gate triage routine reads before drilling into individual jobs, and this canary's
 # steady state is not the same "green means fine" shape as an ordinary test job.
 #
-# The job's conclusion is intentionally INVERTED from what "canary" suggests: harper#2025's
-# fetch reproducer failing is this job's SUCCESS (the known defect is still there — expected, no action
-# needed), and the tests unexpectedly PASSING is what makes it FAIL loudly (the defect may be
-# fixed upstream — a human should look, and consider removing the pin). Naively wiring the raw
-# test exit code to the job conclusion would make the every-night-until-fixed EXPECTED outcome a
-# permanent red — nightly-gate enumerates every `--event schedule` workflow with no
-# per-workflow allowlist, so that red gets triaged and re-triaged forever, while the one event
-# anyone actually wants to hear about (the defect clearing) would be silently green and fire no
-# alert. See the "Run harper#2025 canary tests" step below for the inversion itself.
+# The floating Node 26 job's conclusion is intentionally INVERTED: the harper#2025 fetch-latency
+# reproducer failing is SUCCESS (the known defect is still there), while an unexpected pass fails
+# loudly for investigation. The scheduled 26.5.0 control uses ordinary polarity and must pass;
+# together the two jobs distinguish a current-Node regression from a broken discriminator. See the
+# "Run harper#2025 canary tests" step below for the classification itself.
 #
 # Remove this workflow when the pin in integration-tests.yml comes out — see harper#2025, which
 # stays open until then.
@@ -25,7 +21,8 @@ name: Node 26 Canary (harper#2025)
 # Coverage note: harper#2029 moved the supported static-cache-header and TTL suites from fetch to
 # node:http so they no longer exercise bundled undici. This canary explicitly runs the preserved
 # pre-#2029 static-cache fetch pattern instead. It does NOT cover replication, the NATS/MQTT
-# brokers, the operations API, or the uWS HTTP path.
+# brokers, the operations API, or the uWS HTTP path, so independent regressions on those surfaces
+# remain invisible until the pin comes out.
 on:
   schedule:
     - cron: '0 7 * * *'
@@ -45,9 +42,13 @@ permissions:
 
 jobs:
   canary-node26-latest:
-    name: Canary — Node 26 latest (harper#2025, non-blocking)
+    name: Canary — Node ${{ matrix.node-version }} (harper#2025, non-blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ github.event_name == 'schedule' && fromJSON('["26", "26.5.0"]') || fromJSON(format('["{0}"]', inputs.node-version)) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -55,16 +56,16 @@ jobs:
       - name: Setup Node.js 26
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: ${{ inputs.node-version || '26' }}
+          node-version: ${{ matrix.node-version }}
           package-manager-cache: false
           # Without this, setup-node prefers whatever 26.x is already in the runner's tool
           # cache over querying for the actual latest release — silently defeating the whole
           # point of this job once Node 26 lands in the ubuntu-latest image's default toolcache.
-          check-latest: ${{ inputs.node-version != '26.5.0' }}
+          check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Assert the requested Node version resolved
         env:
-          REQUESTED_NODE_VERSION: ${{ inputs.node-version || '26' }}
+          REQUESTED_NODE_VERSION: ${{ matrix.node-version }}
         # check-latest REQUESTS the newest 26.x; it does not guarantee one lands (a degraded
         # manifest lookup falls back to the toolcache). Silently running the pinned version
         # again and reporting green would be the canary's worst failure mode: it would look
@@ -100,7 +101,7 @@ jobs:
 
       - name: Guard against a moved/renamed canary target, or a missing build output
         run: |
-          for f in "dist/bin/harper.js" ".github/canaries/static-cache-headers-fetch.test.ts"; do
+          for f in "dist/bin/harper.js" ".github/canaries/static-cache-headers-fetch.test.ts" "integrationTests/fixtures/static-cache-headers/config.yaml" "integrationTests/apiTests/utils/client.mjs"; do
             if [ ! -f "$f" ]; then
               echo "::error::canary target missing: $f — a moved/renamed test would silently match nothing and exit 0; a missing dist/bin/harper.js means the 'npm run build || true' above swallowed a real build failure."
               exit 1
@@ -124,13 +125,17 @@ jobs:
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
-          REQUESTED_NODE_VERSION: ${{ inputs.node-version || '26' }}
+          REQUESTED_NODE_VERSION: ${{ matrix.node-version }}
         run: |
           set +e
           test_output_file="$RUNNER_TEMP/harper-2025-canary-output.log"
           npm run test:integration -- ".github/canaries/static-cache-headers-fetch.test.ts" 2>&1 | tee "$test_output_file"
           test_exit=${PIPESTATUS[0]}
           set -e
+          if ! grep -Fq "Node 26 fetch canary: static plugin cache-header options" "$test_output_file"; then
+            echo "::error::the canary suite did not execute — refusing to interpret exit $test_exit as evidence about harper#2025."
+            exit 1
+          fi
           if [ "$test_exit" -eq 0 ]; then
             if [ "$REQUESTED_NODE_VERSION" = "26.5.0" ]; then
               echo "harper#2025 fetch canary control passed as expected on pinned Node $(node --version)." | tee -a "$GITHUB_STEP_SUMMARY"
@@ -160,7 +165,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: harper-server-logs-canary-node26-latest
+          name: harper-server-logs-canary-node-${{ matrix.node-version }}
           path: /tmp/harper-integration-test-logs/
           retention-days: 3
           if-no-files-found: ignore

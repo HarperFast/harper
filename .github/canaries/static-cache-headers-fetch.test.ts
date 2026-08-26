@@ -14,9 +14,11 @@ import { createApiClient } from '../../integrationTests/apiTests/utils/client.mj
 
 const FIXTURE_PATH = resolve(import.meta.dirname, '../../integrationTests/fixtures/static-cache-headers');
 const PROJECT = 'static-cache-headers';
+const FETCH_STALL_THRESHOLD_MS = 2_000;
 
 suite('Node 26 fetch canary: static plugin cache-header options', (context: ContextWithHarper) => {
 	let client: any;
+	let maxFetchDurationMs = 0;
 
 	before(async () => {
 		await setupHarperWithFixture(context, FIXTURE_PATH);
@@ -28,7 +30,16 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 	});
 
 	async function getPath(path: string): Promise<Response> {
+		const startedAt = performance.now();
 		const response = await fetch(new URL(path, context.harper.httpURL));
+		const durationMs = performance.now() - startedAt;
+		maxFetchDurationMs = Math.max(maxFetchDurationMs, durationMs);
+		if (durationMs >= FETCH_STALL_THRESHOLD_MS) {
+			throw new Error(
+				`harper#2025 fetch discriminator: GET ${path} took ${Math.round(durationMs)}ms ` +
+					`(threshold ${FETCH_STALL_THRESHOLD_MS}ms)`
+			);
+		}
 		assert.strictEqual(response.status, 200);
 		await response.text();
 		return response;
@@ -62,8 +73,8 @@ suite('Node 26 fetch canary: static plugin cache-header options', (context: Cont
 			await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
 		}
 		throw new Error(
-			`harper#2025 fetch discriminator: Cache-Control never became ${JSON.stringify(expected)}; ` +
-				`last seen: ${JSON.stringify(last)}`
+			`Cache-Control never became ${JSON.stringify(expected)}; last seen: ${JSON.stringify(last)}; ` +
+				`slowest fetch: ${Math.round(maxFetchDurationMs)}ms`
 		);
 	}
 
