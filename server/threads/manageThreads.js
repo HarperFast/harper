@@ -23,6 +23,12 @@ const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
 const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
+const { resolveWatchTarget } = require('../../utility/watchPath.ts');
+const {
+	DIRECTORY_POLLING_FALLBACK_OPTIONS,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} = require('../../utility/watcherFallback.ts');
 let importModules;
 function getImportModules() {
 	if (importModules === undefined)
@@ -1405,23 +1411,48 @@ if (isMainThread) {
 	const ignoredPaths = ['node_modules', '.git'];
 	const watchDir = async (dir, beforeRestartCallback) => {
 		if (beforeRestartCallback) beforeRestart = beforeRestartCallback;
-		chokidar
-			.watch(dir, {
+		const watchTarget = resolveWatchTarget(dir);
+		let usingPolling = watchTarget.mustPoll;
+		let liveWatcher;
+		const openWatcher = () => {
+			const opened = (liveWatcher = chokidar.watch(watchTarget.path, {
 				persistent: false,
+				...(usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
 					return ignoredPaths.some((ignoredPath) => path.includes(ignoredPath));
 				},
-			})
-			.on('change', (path) => {
-				changedFiles.add(path);
-				if (queuedRestart) clearTimeout(queuedRestart);
-				queuedRestart = setTimeout(async () => {
-					if (beforeRestart) await beforeRestart();
-					await restartWorkers();
-					console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
-					changedFiles.clear();
-				}, 100);
-			});
+			}));
+			opened
+				// This runs on the thread that owns every worker, and chokidar emits 'error' unguarded for
+				// anything but ENOENT/ENOTDIR.
+				.on('error', (error) => {
+					if (isWatcherExhaustionError(error)) {
+						if (usingPolling || liveWatcher !== opened) return;
+						warnWatcherFallback(dir);
+						usingPolling = true;
+						Promise.resolve()
+							.then(() => opened.close())
+							.catch(() => {})
+							.then(openWatcher)
+							.catch((reopenError) =>
+								console.error(`Could not reopen the ${dir} component-reload watch on polling:`, reopenError)
+							);
+						return;
+					}
+					console.error(`Error watching ${dir} for component reloads:`, error);
+				})
+				.on('change', (path) => {
+					changedFiles.add(path);
+					if (queuedRestart) clearTimeout(queuedRestart);
+					queuedRestart = setTimeout(async () => {
+						if (beforeRestart) await beforeRestart();
+						await restartWorkers();
+						console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
+						changedFiles.clear();
+					}, 100);
+				});
+		};
+		openWatcher();
 	};
 	module.exports.watchDir = watchDir;
 	if (process.env.WATCH_DIR) watchDir(process.env.WATCH_DIR);
