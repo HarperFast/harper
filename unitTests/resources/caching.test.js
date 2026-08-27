@@ -28,6 +28,11 @@ describe('Caching', () => {
 	let returnNotModified = false;
 	let returnFrozen = false;
 	let revalidationRequests = 0;
+	function assertResolvedFieldsAreNotDurable(id) {
+		const binary = Buffer.from(RevalidatedTable.primaryStore.getBinarySync(id));
+		assert.equal(binary.includes(Buffer.from('cached computed')), false);
+		assert.equal(binary.includes(Buffer.from('relationship')), false);
+	}
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
@@ -237,13 +242,7 @@ describe('Caching', () => {
 			assert.strictEqual(entryMap.get(cachedBeforeRevalidation), entryBeforeRevalidation);
 			assert(revalidated.createdAt instanceof Date);
 			assert(revalidated.updatedAt instanceof Date);
-			const persisted = RevalidatedTable.primaryStore.getEntry('revalidated').value;
-			assert.equal(Object.hasOwn(persisted, 'related'), false);
-			const raw = RevalidatedTable.primaryStore.encoder.decode(
-				RevalidatedTable.primaryStore.getBinarySync('revalidated'),
-				{ skipResolverCleanup: true }
-			).value;
-			assert.equal(Object.hasOwn(raw, 'computed'), false);
+			assertResolvedFieldsAreNotDurable('revalidated');
 		} finally {
 			returnNotModified = false;
 		}
@@ -260,9 +259,7 @@ describe('Caching', () => {
 			await RevalidatedTable.primaryStore.committed;
 			assert(response.createdAt instanceof Date);
 			assert(response.updatedAt instanceof Date);
-			const persisted = RevalidatedTable.primaryStore.getEntry('frozen-source').value;
-			assert.equal(Object.hasOwn(persisted, 'computed'), false);
-			assert.equal(Object.hasOwn(persisted, 'related'), false);
+			assertResolvedFieldsAreNotDurable('frozen-source');
 		} finally {
 			returnFrozen = false;
 		}
