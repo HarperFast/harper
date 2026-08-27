@@ -199,6 +199,7 @@ describe('Test hdbChildIpcHandler module', () => {
 			const responseMessage = sendToThreadStub.firstCall.args[1];
 			expect(responseMessage.type).to.equal('component_status_response');
 			expect(responseMessage.message.requestId).to.equal('req-789');
+			expect(responseMessage.message.threadId).to.be.a('number');
 			// Should have a trace confirming direct send (no error/debug fallback)
 			expect(log_error_stub).to.not.have.been.called;
 			sendToThreadStub.restore();

@@ -6,6 +6,7 @@ import * as envMgr from '../utility/environment/environmentManager.ts';
 envMgr.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import { httpRequest } from '../utility/common_utils.ts';
+import { workloadIdentityAvailable, exchangeWorkloadIdentityForToken } from './workloadIdentity.ts';
 import * as fs from 'fs-extra';
 import * as YAML from 'yaml';
 import { Readable } from 'node:stream';
@@ -55,11 +56,11 @@ const TRANSPORT_ONLY_FIELDS = new Set([
 	'by_ref',
 	'ref',
 	'credential',
-	// `deploy setup=true`'s token, read off the parsed request by deploySetup and sealed locally. No
-	// operation takes a *top-level* `token`, so keeping it out of every body costs nothing and means a
-	// mistyped `setup` — which parses as a bare word and falls through to a real deploy — can't carry a
-	// PAT to the server. Distinct from `credentials[].token`, which is nested inside a field that IS
-	// sent (ingestCredentials seals it server-side) and is only kept out of the operations log.
+	// `deploy setup=true`'s token, read off the parsed request by deploySetup and sealed locally.
+	// Stripping it means a mistyped `setup` — which parses as a bare word and falls through to a real
+	// deploy — can't carry a PAT to the server. Distinct from `credentials[].token`, which is nested
+	// inside a field that IS sent (ingestCredentials seals it server-side) and is only kept out of the
+	// operations log. See OPERATIONS_TAKING_A_TOKEN for the one operation this must not apply to.
 	'token',
 ]);
 
@@ -179,10 +180,24 @@ async function* wrapPackagingStream(stream: Readable, projectPath: string): Asyn
 // Build the JSON operation-field set from `req`, dropping the CLI's internal (`_`-prefixed)
 // and transport-only fields so neither the CLI internals nor credentials leak into the
 // request body. Shared by the multipart and legacy-JSON deploy body builders.
+/**
+ * Operations whose own request body has a top-level `token`, which must therefore survive the
+ * transport-only stripping above.
+ *
+ * `exchange_oidc_token` (#2171) is one: the identity token IS the request. The blanket strip was
+ * written when no operation took a top-level `token`, and left this one reaching the server without
+ * the field it requires — so the issuer-agnostic path was unusable through the generic CLI even
+ * though direct HTTP worked. Keyed on the operation rather than dropping the strip, because the
+ * mistyped-`setup` case it guards against is real.
+ */
+const OPERATIONS_TAKING_A_TOKEN = new Set(['exchange_oidc_token']);
+
 function operationFields(req: any): any {
+	const keepsToken = OPERATIONS_TAKING_A_TOKEN.has(req?.operation);
 	const fields: any = {};
 	for (const [key, value] of Object.entries(req)) {
-		if (key.startsWith('_') || TRANSPORT_ONLY_FIELDS.has(key)) continue;
+		if (key.startsWith('_')) continue;
+		if (TRANSPORT_ONLY_FIELDS.has(key) && !(key === 'token' && keepsToken)) continue;
 		fields[key] = value;
 	}
 	return fields;
@@ -764,7 +779,8 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 	options.timeout = SSE_OPERATIONS.has(req.operation) ? SSE_OPERATION_TIMEOUT_MS : CLI_OPERATION_TIMEOUT_MS;
 	// Authentication precedence: explicitly configured credentials (dedicated args, URL
 	// userinfo, env vars) beat everything, then env-var tokens, then the saved `harper login`
-	// token, and only then the legacy `username=`/`password=` payload fallback below. The
+	// token, then a CI identity token exchanged via OIDC (#2171 — ambient, so it ranks below
+	// everything configured), and only then the legacy `username=`/`password=` fallback. The
 	// tokens must outrank that fallback: for add_user/alter_user those args are the credentials
 	// of the user being created/altered, so treating them as auth would authenticate as a user
 	// who doesn't exist yet (or as the wrong identity) instead of using the admin's session.
@@ -799,9 +815,12 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 		const envRefreshToken = tokenPrefix ? process.env[`${tokenPrefix}_REFRESH_TOKEN`]?.trim() : undefined;
 		// A namespace that is set but blank is a broken CI secret, not a request to fall back to
 		// whatever the developer last logged in as — say so rather than switching identity silently.
-		if (tokenPrefix && !envOperationToken && !envRefreshToken) {
+		const tokenNamespaceBlank = !!tokenPrefix && !envOperationToken && !envRefreshToken;
+		if (tokenNamespaceBlank) {
 			console.error(
-				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved login credentials.`
+				`Ignoring empty ${tokenPrefix}_OPERATION_TOKEN/${tokenPrefix}_REFRESH_TOKEN; falling back to saved ` +
+					`login credentials. Workload identity is deliberately NOT used here: a blank token namespace is a ` +
+					`failed secret, and deploying as a different identity would hide that.`
 			);
 		}
 
@@ -819,6 +838,24 @@ export async function resolveRequestOptions(req: any): Promise<{ options: any; t
 			if (tokens.operation_token) {
 				options.headers.Authorization = `Bearer ${tokens.operation_token}`;
 			}
+		} else if (workloadIdentityAvailable() && !tokenNamespaceBlank) {
+			// Last credential source: no configured token, but this runner can prove its identity to
+			// the cluster directly (#2171). Deliberately below the env-var and saved tokens — an
+			// explicitly configured credential should keep working exactly as it did when someone adds
+			// `id-token: write` to a workflow, rather than silently switching which identity deploys.
+			//
+			// `!tokenNamespaceBlank` extends that invariant to the half-configured case. A CI secret
+			// that failed to populate leaves the namespace set but empty; without this, such a run
+			// would quietly deploy as the OIDC policy's user instead of failing, which is the same
+			// silent identity switch in a shape that is harder to notice.
+			// Standard operation timeout, not the caller's — by this point `options.timeout` may carry
+			// the 10-minute SSE timeout for a streaming deploy_component, and the exchange is a small
+			// fast request. Without the override a stalled exchange hangs the deploy for ten minutes,
+			// on the very operation this feature exists to serve. Same reasoning, same fix as
+			// refreshExpiredOperationToken above.
+			const exchangeOptions = { ...options, timeout: CLI_OPERATION_TIMEOUT_MS };
+			const operationToken = await exchangeWorkloadIdentityForToken(exchangeOptions, target.resolvedTarget);
+			if (operationToken) options.headers.Authorization = `Bearer ${operationToken}`;
 		}
 	}
 	// Legacy fallback for operations where `username=`/`password=` genuinely ARE the caller's

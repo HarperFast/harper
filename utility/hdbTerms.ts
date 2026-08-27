@@ -155,6 +155,9 @@ export const MAX_SET_TIMEOUT_MS = 2147483647;
 /** Harper File Permissions Mode */
 export const HDB_FILE_PERMISSIONS = 0o700;
 
+/** Smallest `threads.maxHeapMemory` (MB) a worker thread is accepted on — see server/threads/threadHeapMemory.ts */
+export const MIN_THREAD_HEAP_MEMORY_MB = 64;
+
 /** Database directory */
 export const DATABASES_DIR_NAME = 'database';
 /** Suffix for in-progress LMDB→RocksDB migration staging directories: excluded from database
@@ -211,6 +214,8 @@ export const SYSTEM_TABLE_NAMES = {
 	DEPLOYMENT_TABLE_NAME: 'hdb_deployment',
 	AGENT_SESSION_TABLE_NAME: 'hdb_agent_session',
 	SECRET_TABLE_NAME: 'hdb_secret',
+	OIDC_TRUST_TABLE_NAME: 'hdb_oidc_trust',
+	OIDC_TOKEN_USE_TABLE_NAME: 'hdb_oidc_token_use',
 } as const;
 
 /** Hash attribute for the system info table */
@@ -348,6 +353,10 @@ export const OPERATIONS_ENUM = {
 	LIST_SECRETS: 'list_secrets',
 	DELETE_SECRET: 'delete_secret',
 	GET_SECRETS_PUBLIC_KEY: 'get_secrets_public_key',
+	ADD_OIDC_TRUST: 'add_oidc_trust',
+	LIST_OIDC_TRUST: 'list_oidc_trust',
+	DROP_OIDC_TRUST: 'drop_oidc_trust',
+	EXCHANGE_OIDC_TOKEN: 'exchange_oidc_token',
 	GET_DEPLOYMENT_PAYLOAD: 'get_deployment_payload',
 	DELETE_DEPLOYMENT_PAYLOAD: 'delete_deployment_payload',
 	AGENT_PROMPT: 'agent_prompt',

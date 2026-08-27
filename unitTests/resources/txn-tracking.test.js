@@ -1,15 +1,31 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { setTxnExpiration, DatabaseTransaction, TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
-const { setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
+const {
+	setTxnExpiration,
+	DatabaseTransaction,
+	TRANSACTION_STATE,
+	COMMIT_PHASE_GRACE,
+	shouldSpareCommitPhase,
+} = require('#src/resources/DatabaseTransaction');
+const { setTxnExpiration: setLMDBTxnExpiration, LMDBTransaction } = require('#src/resources/LMDBTransaction');
 const { setReadTxnExpiration, checkReadTxnTimeouts } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { PassThrough } = require('node:stream');
+const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
+const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const { waitFor } = require('../waitFor.js');
+
+function databaseTxns(context) {
+	const txns = [];
+	for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) txns.push(txn);
+	return txns;
+}
+
 describe('Txn Expiration', () => {
 	let SlowResource,
 		performedDBInteractions = false;
@@ -101,46 +117,53 @@ describe('Write txn timeout', () => {
 		return IndexedResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
 	}
 
-	it('keeps a RocksDB timeout budget across reads without shortening a larger global limit', async function () {
-		if (!(IndexedResource.primaryStore instanceof RocksDatabase)) this.skip();
+	it('keeps a timeout budget across reads without shortening a larger global limit', async function () {
 		try {
-			setTxnExpiration(30_000);
+			setExpiration(30_000);
 			const extendedContext = {};
 			await transaction(extendedContext, async (txn) => {
 				txn.timeoutBudget = 600_000;
 				await IndexedResource.put(900, { t: 9000 }, extendedContext);
-				assert.equal(txn.timeout, 600_000);
+				const databaseTxn = databaseTxns(extendedContext)[0];
+				assert.equal(databaseTxn.timeout, 600_000);
 				await IndexedResource.get(901, extendedContext);
-				assert.equal(txn.timeout, 600_000);
+				assert.equal(databaseTxn.timeout, 600_000);
 				await IndexedResource.get(902, extendedContext);
-				assert.equal(txn.timeout, 600_000);
+				assert.equal(databaseTxn.timeout, 600_000);
 			});
 
-			setTxnExpiration(1_200_000);
+			setExpiration(1_200_000);
 			const largerGlobalContext = {};
 			await transaction(largerGlobalContext, async (txn) => {
 				txn.timeoutBudget = 600_000;
 				await IndexedResource.get(903, largerGlobalContext);
-				assert.equal(txn.timeout, 1_200_000);
+				assert.equal(databaseTxns(largerGlobalContext)[0].timeout, 1_200_000);
 			});
 		} finally {
-			setTxnExpiration(30_000);
+			setExpiration(30_000);
 		}
 	});
 
-	it('does not abort a RocksDB write transaction whose budget exceeds the global limit', async function () {
-		if (!(IndexedResource.primaryStore instanceof RocksDatabase)) this.skip();
-		setTxnExpiration(20);
+	it('does not abort a write transaction whose budget exceeds the global limit', async function () {
+		const trackedTxns = setExpiration(20);
+		let databaseTxn;
 		try {
 			const context = {};
 			await transaction(context, async (txn) => {
 				txn.timeoutBudget = 5_000;
 				await IndexedResource.put(904, { t: 42 }, context);
-				await delay(150);
+				databaseTxn = databaseTxns(context)[0];
+				trackedTxns.add(databaseTxn);
+				await waitFor(() => databaseTxn.timeout < 5_000 || databaseTxn.timedOut, {
+					message: 'the monitor should tick while the transaction remains within its budget',
+				});
+				assert.ok(!databaseTxn.timedOut, 'the transaction must remain active within its timeout budget');
+				assert.ok(databaseTxn.timeout > 20, 'the global limit must not replace the larger timeout budget');
 			});
 			assert.equal((await IndexedResource.get(904))?.t, 42);
 		} finally {
-			setTxnExpiration(30_000);
+			if (databaseTxn) trackedTxns.delete(databaseTxn);
+			setExpiration(30_000);
 		}
 	});
 
@@ -375,6 +398,412 @@ describe('Write txn timeout', () => {
 		} finally {
 			setExpiration(30000);
 		}
+	});
+
+	describe('abort releases the native handle', () => {
+		// A write-first link (save() built the handle with no prior read) has no readTxnsUsed, so the
+		// refcount loop never runs and the handle was stranded — permanently, since rocksdb-js's
+		// registry keeps it alive and it holds a read snapshot (#2107).
+		it('releases a write-first native handle on abort, with no read refcount to drive the loop', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			txn.open = TRANSACTION_STATE.OPEN;
+			let aborted = 0;
+			txn.transaction = {
+				abort() {
+					aborted++;
+				},
+			};
+			assert.strictEqual(txn.readTxnsUsed, undefined, 'test setup: a write-first handle has no read refcount');
+
+			txn.abort();
+
+			assert.strictEqual(aborted, 1, 'abort() must release the native handle');
+			assert.strictEqual(txn.transaction, null, 'the released handle must not be reachable for reuse');
+		});
+
+		// Control: the refcount loop still owns the read-created release, and the fallback must not
+		// abort the same handle a second time.
+		it('releases a read-created native handle exactly once on abort', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			txn.open = TRANSACTION_STATE.OPEN;
+			let aborted = 0;
+			txn.transaction = {
+				abort() {
+					aborted++;
+				},
+			};
+			txn.readTxnsUsed = 1; // as getReadTxn() would leave behind
+
+			txn.abort();
+
+			assert.strictEqual(aborted, 1, 'the read refcount loop must release it, and the fallback must not re-abort');
+			assert.strictEqual(txn.transaction, null);
+		});
+
+		// A failed commitSync leaves the handle open, and directCommitSync has already untracked it, so
+		// nothing else can reach it.
+		it('returns the native snapshot to baseline after a blind-write abort', function () {
+			if (isLMDB) this.skip();
+			const store = IndexedResource.primaryStore;
+			const rootStore = store.rootStore;
+			const liveTxns = () => registryStatus().reduce((total, db) => total + db.transactions, 0);
+			const snapshots = () => rootStore.getDBIntProperty('rocksdb.num-snapshots');
+
+			const baselineTxns = liveTxns();
+			const baselineSnapshots = snapshots();
+
+			const txn = new DatabaseTransaction();
+			txn.db = store;
+			txn.addWrite({
+				key: 601,
+				store,
+				commit() {},
+			});
+			assert.strictEqual(txn.readTxnsUsed, 1, 'save() must attach the native handle with its base read reference');
+			assert.strictEqual(liveTxns(), baselineTxns + 1, 'test setup: the native handle must be registered');
+			assert.ok(snapshots() > baselineSnapshots, 'test setup: the blind-write lookup must pin a snapshot');
+
+			txn.abort();
+
+			assert.strictEqual(liveTxns(), baselineTxns, 'the native handle must be deregistered');
+			assert.strictEqual(snapshots(), baselineSnapshots, 'the read snapshot must be released');
+		});
+
+		// RocksTransaction.abort() throws on an already committed/aborted handle. abort() must absorb
+		// that: its callers (abortDueToTimeout, abortChainAfterRetries, commit()'s rejection wrapper)
+		// have no handler, and a throw out of the first statement would skip every later cleanup step.
+		it('completes its cleanup when the native abort throws', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			txn.open = TRANSACTION_STATE.OPEN;
+			txn.transaction = {
+				abort() {
+					throw Object.assign(new Error('Transaction has already been committed'), {
+						code: 'ERR_ALREADY_COMMITTED',
+					});
+				},
+			};
+			txn.readTxnsUsed = 1; // release goes through the read-refcount loop, abort()'s first statement
+
+			assert.doesNotThrow(() => txn.abort());
+
+			assert.strictEqual(txn.transaction, null, 'the handle must be detached even though its abort threw');
+			assert.strictEqual(txn.open, TRANSACTION_STATE.CLOSED, 'the cleanup after the release must still run');
+		});
+
+		it('releases the native handle when a direct commit throws', function () {
+			if (isLMDB) this.skip();
+			const txn = new DatabaseTransaction();
+			let aborted = 0;
+			txn.transaction = {
+				commitSync() {
+					throw new Error('commit failed');
+				},
+				abort() {
+					aborted++;
+				},
+			};
+
+			assert.throws(() => txn.directCommitSync(), /commit failed/);
+
+			assert.strictEqual(aborted, 1, 'a failed direct commit must release the handle it orphaned');
+			assert.strictEqual(txn.transaction, null);
+		});
+	});
+});
+
+// The open-transaction limit polices the APPLICATION holding a transaction open with an unfinished write
+// set. Once commit() has been entered the write set is sealed and the caller is awaiting the commit, so
+// time spent in the pre-commit phase (`before`/`beforeIntermediate` — in practice a blob's durable file
+// write) is core's own I/O and must not be poisoned: a multi-tens-of-MB deploy payload legitimately takes
+// longer than the limit, and aborting there both drops the write and unlinks the blob the write
+// references, leaving the caller holding a blob whose file is gone (issue #2062).
+describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', () => {
+	let BlobResource, SecondaryBlobResource;
+	before(async function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		BlobResource = table({
+			table: 'CommitPhaseBlobTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		SecondaryBlobResource = table({
+			table: 'CommitPhaseSecondaryBlobTable',
+			database: 'commit-phase-secondary',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'value', type: 'String' },
+			],
+		});
+	});
+
+	function setExpiration(ms) {
+		return BlobResource.primaryStore instanceof RocksDatabase ? setTxnExpiration(ms) : setLMDBTxnExpiration(ms);
+	}
+
+	async function forceMonitorTicks(txn, count) {
+		for (let tick = 0; tick < count; tick++) {
+			txn.timeout = 0;
+			await waitFor(() => txn.timeout > 0 || txn.timedOut, {
+				message: `the monitor should process commit-phase tick ${tick + 1}`,
+			});
+			assert.ok(!txn.timedOut, `the monitor must spare commit-phase tick ${tick + 1}`);
+		}
+	}
+
+	it('marks and clears the commit phase across an LMDB transaction chain', function () {
+		const head = new LMDBTransaction();
+		const next = new LMDBTransaction();
+		head.next = next;
+		head.commitPhaseTicks = 4;
+		next.commitPhaseTicks = 7;
+		head.setCommitPhase(true);
+		assert.ok(head.committing && next.committing, 'every linked database must be spared together');
+		assert.equal(head.commitChainHead, head);
+		assert.equal(next.commitChainHead, head);
+		assert.equal(head.commitPhaseTicks, 0);
+		assert.equal(next.commitPhaseTicks, 0);
+		const checkedCommitPhaseChains = new Set();
+		assert.ok(shouldSpareCommitPhase(head, checkedCommitPhaseChains));
+		assert.ok(shouldSpareCommitPhase(next, checkedCommitPhaseChains));
+		assert.equal(head.commitPhaseTicks, 1, 'one monitor pass must consume one grace tick per chain');
+		assert.equal(next.commitPhaseTicks, 0, 'a link must not run its own grace counter');
+		head.setCommitPhase(false);
+		assert.ok(!head.committing && !next.committing, 'every linked database must leave the phase together');
+		assert.equal(head.commitChainHead, undefined);
+		assert.equal(next.commitChainHead, undefined);
+	});
+
+	it('lets a commit whose blob save outruns the limit finish, keeping the record and its blob', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const trackedTxns = setExpiration(20);
+		let parked;
+		try {
+			const context = {};
+			const committing = transaction(context, async () => {
+				await BlobResource.put({ id: 2062, blob }, context);
+				parked = databaseTxns(context)[0];
+			});
+			committing.catch(() => {});
+			slow.write(Buffer.alloc(16384, 'a'));
+			await waitFor(() => parked?.committing, { message: 'the blob save should park the commit' });
+			trackedTxns.add(parked);
+			await forceMonitorTicks(parked, 2);
+			slow.end(Buffer.alloc(16384, 'b'));
+			await committing;
+		} finally {
+			if (parked) trackedTxns.delete(parked);
+			if (!slow.writableEnded) slow.end();
+			setExpiration(30000);
+		}
+		const stored = await BlobResource.get(2062);
+		assert.ok(stored, 'the write must not be dropped while its blob save runs past the limit');
+		assert.equal((await stored.blob.bytes()).length, 32768, 'the blob file must survive the commit');
+	});
+
+	it('keeps every multi-store link alive while the head waits on its blob save', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		const trackedTxns = setExpiration(20);
+		let links;
+		try {
+			const committing = transaction(context, async (txn) => {
+				txn.timeoutBudget = 200;
+				await BlobResource.put({ id: 2067, blob }, context);
+				await SecondaryBlobResource.put({ id: 2067, value: 'secondary' }, context);
+				links = databaseTxns(context);
+			});
+			committing.catch(() => {});
+			slow.write(Buffer.alloc(16384, 'h'));
+			await waitFor(
+				() => {
+					return links?.length === 2 && links.every((txn) => txn.committing);
+				},
+				{ message: 'both database links should enter the same commit phase' }
+			);
+			for (const link of links) trackedTxns.add(link);
+			await waitFor(() => links[0].commitPhaseTicks >= 2, {
+				timeout: 5000,
+				message: 'the monitor should consume the shared commit-phase grace repeatedly',
+			});
+			assert.ok(
+				links.every((txn) => txn.commitChainHead === links[0]),
+				'every link must share the chain head'
+			);
+			assert.ok(
+				links.every((txn) => !txn.timedOut),
+				'no link may be poisoned while its chain is committing'
+			);
+			assert.ok(
+				links.every((txn) => txn.timeout > 20),
+				'the commit-phase re-arm must preserve the transaction timeout budget'
+			);
+			slow.end(Buffer.alloc(16384, 'i'));
+			await committing;
+		} finally {
+			for (const link of links ?? []) trackedTxns.delete(link);
+			if (!slow.writableEnded) slow.end();
+			setExpiration(30000);
+		}
+		assert.ok(await BlobResource.get(2067), 'the head database write must commit');
+		assert.equal((await SecondaryBlobResource.get(2067))?.value, 'secondary', 'the linked database write must commit');
+	});
+
+	it('aborts a parked multi-store commit from the chain head when a later link exhausts the grace', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		const trackedTxns = setExpiration(20);
+		let links;
+		try {
+			const committing = transaction(context, async (txn) => {
+				txn.timeoutBudget = 200;
+				await BlobResource.put({ id: 2068 }, context);
+				await SecondaryBlobResource.put({ id: 2068, value: 'secondary' }, context);
+				await BlobResource.put({ id: 2069, blob }, context);
+				links = databaseTxns(context);
+			});
+			committing.catch(() => {});
+			slow.write(Buffer.alloc(16384, 'j'));
+			await waitFor(() => links?.length === 2 && links.every((txn) => txn.committing), {
+				message: 'both database links should enter the same commit phase',
+			});
+			for (const link of links) trackedTxns.add(link);
+			links[0].timeout = 200;
+			links[1].timeout = 0;
+			await waitFor(() => links.some((txn) => txn.timedOut), {
+				timeout: 10000,
+				message: 'the later link should exhaust the shared commit-phase grace',
+			});
+			assert.ok(
+				links.every((txn) => txn.timedOut),
+				'every link must be poisoned together'
+			);
+			slow.end(Buffer.alloc(16384, 'k'));
+			await assert.rejects(committing, /open-transaction time/);
+		} finally {
+			for (const link of links ?? []) trackedTxns.delete(link);
+			if (!slow.writableEnded) slow.end();
+			setExpiration(30000);
+		}
+		assert.equal(await BlobResource.get(2068), undefined, 'the head database must not partially commit');
+		assert.equal(await BlobResource.get(2069), undefined, 'the head blob write must not partially commit');
+		assert.equal(await SecondaryBlobResource.get(2068), undefined, 'the linked database must not commit');
+	});
+
+	// Belt and braces for the same window: a transaction can still be poisoned while parked there via the
+	// multi-store chain (abortDueToTimeout poisons every link). The in-flight commit must observe that and
+	// throw, not resume and resolve as a success with an empty (cleared) write set — a phantom commit that
+	// tells the caller its write landed and leaves it holding a blob whose file was just unlinked.
+	it('a transaction poisoned while parked in its pre-commit phase throws instead of resolving as success', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		let parked;
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2063, blob }, context);
+			parked = databaseTxns(context)[0];
+		});
+		slow.write(Buffer.alloc(16384, 'c'));
+		await waitFor(() => parked?.committing, {
+			message: 'commit should park in its pre-commit phase while the blob save runs',
+		});
+		parked.abortDueToTimeout();
+		slow.end();
+		await assert.rejects(committing, /open-transaction time/);
+		assert.equal(await BlobResource.get(2063), undefined, 'the poisoned write must not be committed');
+	});
+
+	// Same phantom-commit hazard reached by a plain abort rather than the monitor's poison.
+	it('a transaction aborted while parked in its pre-commit phase throws instead of resolving as success', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		let parked;
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2064, blob }, context);
+			parked = databaseTxns(context)[0];
+		});
+		slow.write(Buffer.alloc(16384, 'd'));
+		await waitFor(() => parked?.committing, {
+			message: 'commit should park in its pre-commit phase while the blob save runs',
+		});
+		parked.abort();
+		slow.end();
+		await assert.rejects(committing, /aborted while its commit was waiting/);
+		assert.equal(await BlobResource.get(2064), undefined, 'the aborted write must not be committed');
+	});
+
+	// A canonical-source apply must never be aborted (harper-pro#348) — but neither may it be
+	// force-committed while its blob file is still being written, which would durably commit a record
+	// pointing at an incomplete file on the replica. It is spared for as long as the write takes.
+	it('never force-commits a source-apply parked in its pre-commit phase', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = { sourceApply: true };
+		const trackedTxns = setExpiration(20);
+		let parked;
+		try {
+			const committing = transaction(context, async () => {
+				await BlobResource.put({ id: 2066, blob }, context);
+				parked = databaseTxns(context)[0];
+			});
+			slow.write(Buffer.alloc(16384, 'f'));
+			await waitFor(() => parked?.committing, { message: 'the blob save should park the source apply' });
+			trackedTxns.add(parked);
+			await forceMonitorTicks(parked, COMMIT_PHASE_GRACE + 2);
+			assert.equal(await BlobResource.get(2066), undefined, 'must not be committed while the blob is still writing');
+			assert.ok(!parked.timedOut, 'a source apply must not be poisoned');
+			slow.end(Buffer.alloc(16384, 'g'));
+			await committing;
+		} finally {
+			if (parked) trackedTxns.delete(parked);
+			setExpiration(30000);
+		}
+		const stored = await BlobResource.get(2066);
+		assert.equal((await stored.blob.bytes()).length, 32768, 'the apply commits once its blob has landed');
+	});
+
+	// The exemption is a grace, not an exemption forever: the transaction still pins a read snapshot, so
+	// a pre-commit source that stalls instead of finishing must eventually be poisoned like any other
+	// over-time transaction.
+	it('bounds the grace so a pre-commit source that never finishes is still aborted', async function () {
+		const stuck = new PassThrough(); // deliberately never ended
+		const blob = createBlob(stuck);
+		const context = {};
+		const trackedTxns = setExpiration(20);
+		let parked;
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2065, blob }, context);
+			parked = databaseTxns(context)[0];
+		});
+		committing.catch(() => {}); // settles only when the stuck source is destroyed below
+		stuck.write(Buffer.alloc(16384, 'e'));
+		try {
+			await waitFor(() => parked?.committing, { message: 'commit should park in its pre-commit phase' });
+			trackedTxns.add(parked);
+			parked.timeout = 0;
+			await waitFor(() => parked.timedOut, {
+				timeout: 10000,
+				message: 'a commit phase that never finishes should be aborted once its grace runs out',
+			});
+		} finally {
+			if (parked) trackedTxns.delete(parked);
+			setExpiration(30000);
+			stuck.destroy();
+		}
+		assert.ok(
+			parked.commitPhaseTicks > COMMIT_PHASE_GRACE,
+			`should have been spared ${COMMIT_PHASE_GRACE} ticks first, got ${parked.commitPhaseTicks}`
+		);
 	});
 });
 

@@ -5,6 +5,10 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 describe('Table.getRecordCount', () => {
+	// Used instead of the ambient 500ms default in the within-budget cases below, so a contended
+	// CI runner can't blow the budget and flip them into the estimator path.
+	const WITHIN_BUDGET_TIME_LIMIT = Infinity;
+
 	let RecordCountTable;
 
 	before(async function () {
@@ -25,7 +29,7 @@ describe('Table.getRecordCount', () => {
 	});
 
 	it('returns the exact count when the loop completes within the time budget', async function () {
-		const result = await RecordCountTable.getRecordCount();
+		const result = await RecordCountTable.getRecordCount({ timeLimit: WITHIN_BUDGET_TIME_LIMIT });
 		assert.equal(result.recordCount, 30);
 		assert.equal(result.estimatedRange, undefined);
 	});
@@ -129,7 +133,7 @@ describe('Table.getRecordCount', () => {
 		if (origKeys) store.getKeysCount = (...args) => (calls++, origKeys(...args));
 		if (origStats) store.getStats = (...args) => (calls++, origStats(...args));
 		try {
-			const completed = await RecordCountTable.getRecordCount({ timeLimit: 60_000 });
+			const completed = await RecordCountTable.getRecordCount({ timeLimit: WITHIN_BUDGET_TIME_LIMIT });
 			assert.equal(completed.recordCount, 30);
 			assert.equal(completed.estimatedRange, undefined);
 			assert.equal(calls, 0, 'entry-count source should not be consulted when the scan finishes within budget');

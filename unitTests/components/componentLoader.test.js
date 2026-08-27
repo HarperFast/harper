@@ -3,11 +3,14 @@ const sinon = require('sinon');
 const path = require('path');
 const { tmpdir } = require('os');
 const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } = require('fs');
+const fs = require('node:fs/promises');
+const { waitFor } = require('../waitFor.js');
 
 describe('ComponentLoader Status Integration', function () {
 	let componentStatusRegistry;
 	let tempDir;
 	let componentLoader;
+	let withComponentPreparationLock;
 	let lifecycle;
 	let sandbox;
 
@@ -20,7 +23,7 @@ describe('ComponentLoader Status Integration', function () {
 		// Mock environment to use our temp directory
 		const env = require('#src/utility/environment/environmentManager');
 		sandbox.stub(env, 'get').callsFake((key) => {
-			if (key === 'COMPONENTSROOT') {
+			if (key === 'componentsRoot') {
 				return tempDir;
 			}
 			// Return some default values for other config
@@ -60,6 +63,7 @@ describe('ComponentLoader Status Integration', function () {
 
 		// Load componentLoader after setting up spies
 		componentLoader = require('#src/components/componentLoader');
+		({ withComponentPreparationLock } = require('#src/components/componentPreparationLock'));
 	});
 
 	after(function () {
@@ -318,6 +322,39 @@ describe('ComponentLoader Status Integration', function () {
 		});
 	});
 
+	it('isolates a dangling component symlink while loading healthy siblings', async function () {
+		if (process.platform === 'win32') this.skip();
+		const danglingAppName = 'dangling-component-probe';
+		const healthyAppName = 'healthy-sibling-probe';
+		const healthyPluginName = 'healthySiblingProbe';
+		const danglingAppPath = path.join(tempDir, danglingAppName);
+		const healthyAppPath = path.join(tempDir, healthyAppName);
+		let healthyLoadCalls = 0;
+
+		await fs.symlink(path.join(tempDir, 'missing-component-target'), danglingAppPath, 'dir');
+		await fs.mkdir(healthyAppPath);
+		await fs.writeFile(path.join(healthyAppPath, 'config.yaml'), `${healthyPluginName}: {}\n`);
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[healthyPluginName] = {
+			start() {
+				healthyLoadCalls++;
+			},
+		};
+
+		try {
+			await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+
+			assert.strictEqual(healthyLoadCalls, 1, 'healthy sibling did not load');
+			const danglingFailure = lifecycle.failed.getCalls().find((call) => call.args[0] === danglingAppName);
+			assert.ok(danglingFailure, 'dangling component was not marked failed');
+			assert.strictEqual(danglingFailure.args[1].code, 'ENOENT');
+		} finally {
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[healthyPluginName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(danglingAppPath, { force: true });
+			await fs.rm(healthyAppPath, { recursive: true, force: true });
+		}
+	});
+
 	describe('deploy lifecycle listener lifecycle (#1462)', function () {
 		const { deployLifecycle } = require('#src/components/deployLifecycle');
 
@@ -400,6 +437,222 @@ describe('ComponentLoader Status Integration', function () {
 				componentLoader.loadedPaths.clear();
 			}
 		});
+	});
+
+	it('serializes deferred readiness per component without blocking unrelated loads', async function () {
+		this.timeout(15000);
+		const appName = 'deferred-generation-probe';
+		const pluginName = 'deferredGenerationProbe';
+		const independentAppName = 'independent-generation-probe';
+		const independentPluginName = 'independentGenerationProbe';
+		const componentDir = path.join(tempDir, appName);
+		const independentComponentDir = path.join(tempDir, independentAppName);
+		const asidePath = path.join(tempDir, '.deploy-aside', appName, '.in-progress-123-previous');
+		await fs.mkdir(asidePath, { recursive: true });
+		await fs.writeFile(path.join(asidePath, 'config.yaml'), `${pluginName}: {}\n`);
+		await fs.mkdir(componentDir, { recursive: true });
+		await fs.writeFile(path.join(componentDir, 'partial'), 'partial');
+
+		let releasePreparation;
+		let preparationHeld;
+		const preparationStarted = new Promise((resolve) => (preparationHeld = resolve));
+		const preparation = withComponentPreparationLock(componentDir, async () => {
+			preparationHeld();
+			await new Promise((resolve) => (releasePreparation = resolve));
+		});
+
+		let releaseStart;
+		let startEntered = false;
+		let readyCalls = 0;
+		let independentStartCalls = 0;
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName] = {
+			async start() {
+				startEntered = true;
+				await new Promise((resolve) => (releaseStart = resolve));
+				return { ready: () => readyCalls++ };
+			},
+		};
+		const loadedComponents = new Map();
+		const resources = { isWorker: true, set() {} };
+
+		try {
+			await preparationStarted;
+			await componentLoader.loadComponentDirectories(loadedComponents, resources, new WeakMap());
+			releasePreparation();
+			await preparation;
+			try {
+				await waitFor(() => startEntered, { timeout: 5000, message: 'deferred component load did not start' });
+			} catch (error) {
+				error.message += `: loading=${lifecycle.loading
+					.getCalls()
+					.map((call) => String(call.args[0]))
+					.join(',')} failed=${lifecycle.failed
+					.getCalls()
+					.map((call) => String(call.args[1]))
+					.join('; ')} live=${existsSync(componentDir)} staging=${existsSync(path.dirname(asidePath))} loaded=${[
+					...componentLoader.loadedPaths.keys(),
+				].join(',')}`;
+				throw error;
+			}
+			componentLoader.TRUSTED_RESOURCE_PLUGINS[independentPluginName] = {
+				start() {
+					independentStartCalls++;
+				},
+			};
+			await fs.mkdir(independentComponentDir);
+			await fs.writeFile(path.join(independentComponentDir, 'config.yaml'), `${independentPluginName}: {}\n`);
+
+			let supersedingLoadSettled = false;
+			const supersedingLoad = componentLoader
+				.loadComponentDirectories(loadedComponents, resources, new WeakMap())
+				.then(() => (supersedingLoadSettled = true));
+			await waitFor(() => independentStartCalls === 1, {
+				timeout: 5000,
+				message: 'unrelated component load was blocked by deferred readiness',
+			});
+			assert.strictEqual(supersedingLoadSettled, false);
+
+			releaseStart();
+			await supersedingLoad;
+			await waitFor(() => readyCalls === 1);
+			assert.strictEqual(readyCalls, 1);
+		} finally {
+			releasePreparation?.();
+			releaseStart?.();
+			await preparation;
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[pluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[independentPluginName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(path.join(tempDir, '.deploy-aside', appName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(componentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(independentComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it('keeps installed-package readiness scoped to each concurrent deferred component load', async function () {
+		this.timeout(15000);
+		const firstAppName = 'first-deferred-readiness-probe';
+		const firstPackageName = 'first-deferred-readiness-package';
+		const firstPluginName = 'firstDeferredReadinessProbe';
+		const secondAppName = 'second-deferred-readiness-probe';
+		const secondPluginName = 'secondDeferredReadinessProbe';
+		const secondBlockerName = 'secondDeferredReadinessBlocker';
+		const firstComponentDir = path.join(tempDir, firstAppName);
+		const secondComponentDir = path.join(tempDir, secondAppName);
+		const firstAsideDir = path.join(tempDir, '.deploy-aside', firstAppName, '.in-progress-123-previous');
+		const secondAsideDir = path.join(tempDir, '.deploy-aside', secondAppName, '.in-progress-123-previous');
+		await fs.mkdir(firstAsideDir, { recursive: true });
+		await fs.writeFile(
+			path.join(firstAsideDir, 'config.yaml'),
+			`${firstPackageName}:\n  package: ${firstPackageName}\n`
+		);
+		const firstPackageDir = path.join(firstAsideDir, 'node_modules', firstPackageName);
+		await fs.mkdir(firstPackageDir, { recursive: true });
+		await fs.writeFile(path.join(firstPackageDir, 'config.yaml'), `${firstPluginName}: {}\n`);
+		await fs.mkdir(secondAsideDir, { recursive: true });
+		await fs.writeFile(path.join(secondAsideDir, 'config.yaml'), `${secondPluginName}: {}\n${secondBlockerName}: {}\n`);
+		await fs.mkdir(firstComponentDir, { recursive: true });
+		await fs.writeFile(path.join(firstComponentDir, 'partial'), 'partial');
+		await fs.mkdir(secondComponentDir, { recursive: true });
+		await fs.writeFile(path.join(secondComponentDir, 'partial'), 'partial');
+
+		let releaseFirstPreparation;
+		let releaseSecondPreparation;
+		let firstPreparationHeld;
+		let secondPreparationHeld;
+		const firstPreparationStarted = new Promise((resolve) => (firstPreparationHeld = resolve));
+		const secondPreparationStarted = new Promise((resolve) => (secondPreparationHeld = resolve));
+		const firstPreparation = withComponentPreparationLock(firstComponentDir, async () => {
+			firstPreparationHeld();
+			await new Promise((resolve) => (releaseFirstPreparation = resolve));
+		});
+		const secondPreparation = withComponentPreparationLock(secondComponentDir, async () => {
+			secondPreparationHeld();
+			await new Promise((resolve) => (releaseSecondPreparation = resolve));
+		});
+
+		let releaseFirstStart;
+		let releaseSecondStart;
+		let firstStartEntered;
+		let secondBlockerEntered = false;
+		let firstReadyCalls = 0;
+		let secondReadyCalls = 0;
+		const firstStartReached = new Promise((resolve) => (firstStartEntered = resolve));
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[firstPluginName] = {
+			async start() {
+				firstStartEntered();
+				await new Promise((resolve) => (releaseFirstStart = resolve));
+				return { ready: () => firstReadyCalls++ };
+			},
+		};
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[secondPluginName] = {
+			async start() {
+				await firstStartReached;
+				return { ready: () => secondReadyCalls++ };
+			},
+		};
+		componentLoader.TRUSTED_RESOURCE_PLUGINS[secondBlockerName] = {
+			async start() {
+				secondBlockerEntered = true;
+				await new Promise((resolve) => (releaseSecondStart = resolve));
+			},
+		};
+		const loadedComponents = new Map();
+		const resources = { isWorker: true, set() {} };
+
+		try {
+			await Promise.all([firstPreparationStarted, secondPreparationStarted]);
+			await componentLoader.loadComponentDirectories(loadedComponents, resources, new WeakMap());
+			releaseFirstPreparation();
+			releaseSecondPreparation();
+			await Promise.all([firstPreparation, secondPreparation]);
+			await waitFor(() => secondBlockerEntered, {
+				timeout: 5000,
+				message: 'concurrent deferred loads did not reach the controlled interleaving',
+			});
+
+			releaseFirstStart();
+			await waitFor(() => firstReadyCalls === 1, {
+				timeout: 5000,
+				message: 'first deferred component did not become ready',
+			});
+			assert.strictEqual(secondReadyCalls, 0, 'second component became ready before its load completed');
+
+			releaseSecondStart();
+			await waitFor(() => secondReadyCalls === 1, {
+				timeout: 5000,
+				message: 'second deferred component did not become ready after its load completed',
+			});
+		} finally {
+			releaseFirstPreparation?.();
+			releaseSecondPreparation?.();
+			releaseFirstStart?.();
+			releaseSecondStart?.();
+			await Promise.all([firstPreparation, secondPreparation]);
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[firstPluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[secondPluginName];
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS[secondBlockerName];
+			componentLoader.loadedPaths.clear();
+			await fs.rm(path.join(tempDir, '.deploy-aside', firstAppName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(path.join(tempDir, '.deploy-aside', secondAppName), {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 100,
+			});
+			await fs.rm(firstComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await fs.rm(secondComponentDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
 	});
 
 	// A mounted application's deprecated `start`/`startOnMainThread` hooks receive the raw,

@@ -14,6 +14,7 @@ import {
 import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
@@ -36,7 +37,10 @@ import {
 	DatabaseTransaction,
 	ImmediateTransaction,
 	priorStagedWrite,
+	isJoinableScope,
+	isReleasedTransaction,
 	TRANSACTION_STATE,
+	writeKeyId,
 } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
@@ -46,6 +50,7 @@ import {
 	ServerError,
 	AccessViolation,
 	ValidationError,
+	UpdateAttributesLockTimeoutError,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -70,7 +75,15 @@ import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.
 import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, RecordObject, type Entry, entryMap } from './RecordEncoder.ts';
+import {
+	recordUpdater,
+	removeEntry,
+	PENDING_LOCAL_TIME,
+	RecordObject,
+	type Entry,
+	type StructureCounts,
+	entryMap,
+} from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -121,6 +134,8 @@ const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
+const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
 // RocksDB-only: number of eviction/tombstone removals coalesced into a single transaction commit.
 // Each evict otherwise pays a full transaction commit, so batching amortizes that cost. LMDB already
 // coalesces async writes per event turn (eventTurnBatching), so it keeps the per-record path.
@@ -143,6 +158,76 @@ const MAX_COUNT_PAGE = 10_000;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
+// This bounds schema-lock acquisition; LOCK_TIMEOUT bounds in-flight record writes during a drop.
+export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
+const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
+// Contention is otherwise only visible once it becomes a timeout (harper#2251).
+export const UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT = 1000;
+// raw ASCII bytes are ordered-binary's encoding of the string, so this addresses the same native
+// lock as string-keyed tryLock/unlock calls
+const updateAttributesLockKey = Buffer.from(UPDATE_ATTRIBUTES_LOCK);
+const lockWait = new Int32Array(new SharedArrayBuffer(4));
+
+/** The wait blocks the event loop, so the locked section must stay synchronous. */
+export function acquireUpdateAttributesLock(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	timeout = UPDATE_ATTRIBUTES_LOCK_TIMEOUT
+) {
+	if (rootStore.tryLock(updateAttributesLockKey)) return;
+	const startTime = performance.now();
+	let waitTime = 1;
+	while (!rootStore.tryLock(updateAttributesLockKey)) {
+		const elapsed = performance.now() - startTime;
+		if (elapsed >= timeout) {
+			throw new UpdateAttributesLockTimeoutError(
+				`Timed out after ${Math.round(elapsed)}ms waiting for the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription}; the lock holder did not release it before the deadline, so this schema/attribute update cannot proceed`
+			);
+		}
+		if (elapsed >= 2) {
+			Atomics.wait(lockWait, 0, 0, Math.min(waitTime, timeout - elapsed));
+			if (waitTime < 16) waitTime *= 2;
+		}
+	}
+	const waited = performance.now() - startTime;
+	// The caller cannot register its release until we return, so a throw here would leak the lock
+	// with no `finally` able to reach it.
+	if (waited >= UPDATE_ATTRIBUTES_LOCK_SLOW_WAIT)
+		try {
+			logger.warn?.(
+				`Acquired the exclusive '${UPDATE_ATTRIBUTES_LOCK}' lock on ${scopeDescription} after waiting ${Math.round(waited)}ms; this worker's event loop was blocked for that wait, and a holder that runs past ${UPDATE_ATTRIBUTES_LOCK_TIMEOUT}ms fails the update outright`
+			);
+		} catch {}
+}
+
+export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
+	rootStore.unlock(updateAttributesLockKey);
+}
+
+export function withUpdateAttributesLock<Callback extends () => unknown>(
+	rootStore: RocksDatabase,
+	scopeDescription: string,
+	callback: Callback & (ReturnType<Callback> extends PromiseLike<unknown> ? never : unknown)
+): ReturnType<Callback> {
+	acquireUpdateAttributesLock(rootStore, scopeDescription);
+	try {
+		const result = callback();
+		if (typeof (result as any)?.then === 'function') {
+			Promise.resolve(result).catch((error) =>
+				logger.error?.(
+					`Async update-attributes callback rejected after its lock was released (${scopeDescription})`,
+					error
+				)
+			);
+			throw new TypeError(
+				`withUpdateAttributesLock callback must be synchronous (${scopeDescription}); asynchronous work may continue after the lock is released`
+			);
+		}
+		return result as ReturnType<Callback>;
+	} finally {
+		releaseUpdateAttributesLock(rootStore);
+	}
+}
 // Tolerate a redundant column family drop. Drops are broadcast to every worker
 // thread and each holds its own handle to the same underlying family, so a
 // concurrent worker may already have dropped it; the storage engine reports
@@ -372,6 +457,15 @@ function detectCyclicEnumerable(start: any): boolean {
 }
 
 // #section: setup-and-factory
+/**
+ * Identity for the apply loop's per-key write chain. Never finer-grained than the store's own key
+ * identity or two writes to one record stop chaining; coarser only costs a wasted hop. Numbers and
+ * bigints must go through the encoder: they share a stored key but not a `toString` (`1e21` vs `10n ** 21n`).
+ */
+function chainKeyForId(id: any): string {
+	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
+}
+
 export function makeTable(options) {
 	const {
 		primaryKey,
@@ -718,6 +812,30 @@ export function makeTable(options) {
 					}
 				};
 
+				/** Keeps the writes to any one key in arrival order; see DESIGN.md (harper#2211). */
+				const stageWrite = (event, context) => {
+					let chainKey: string | undefined;
+					try {
+						const Table = event.table ? databases[databaseName][event.table] : TableResource;
+						const id = event.id ?? (event.value ? event.value[Table?.primaryKey] : undefined);
+						if (id != null && typeof id !== 'symbol') chainKey = `${event.table ?? tableName} ${chainKeyForId(id)}`;
+					} catch {
+						// writeUpdate()'s own id resolution fails the same way and reports it
+					}
+					// no record key, nothing to order: publishes and markers stage no record, and an id
+					// writeUpdate can't resolve throws there first
+					if (chainKey === undefined) return writeUpdate(event, context);
+					const chain = (context.writeChain ??= new Map<string, Promise<any>>());
+					const prior = chain.get(chainKey);
+					const staged = prior ? prior.then(() => writeUpdate(event, context)) : writeUpdate(event, context);
+					chain.set(chainKey, staged);
+					// Prune on success only: a rejected entry stays so later writes to the key short-circuit too
+					staged.then(() => {
+						if (chain.get(chainKey) === staged) chain.delete(chainKey);
+					}, noop);
+					return staged;
+				};
+
 				try {
 					const hasSubscribe = source.subscribe;
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
@@ -892,7 +1010,7 @@ export function makeTable(options) {
 										}
 									} else {
 										// write in the current transaction if one is in progress
-										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));
+										txnInProgress.writePromises.push(stageWrite(event, txnInProgress));
 										continue;
 									}
 								}
@@ -904,7 +1022,7 @@ export function makeTable(options) {
 										const promises: Promise<any>[] = [];
 										for (const write of event.writes) {
 											try {
-												promises.push(writeUpdate(write, event));
+												promises.push(stageWrite(write, event));
 											} catch (error) {
 												(error as Error).message +=
 													' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
@@ -939,7 +1057,7 @@ export function makeTable(options) {
 											// event/context as transaction in progress and then future events
 											// are applied with that context until the next transaction begins/ends
 											txnInProgress = event;
-											txnInProgress.writePromises = [writeUpdate(event, event)];
+											txnInProgress.writePromises = [stageWrite(event, event)];
 											return new Promise((resolve) => {
 												// callback for when this transaction is finished (will be called on next txn begin/end).
 												txnInProgress.resolve = () => resolve(Promise.all(txnInProgress.writePromises)); // and make sure we wait for the write update to finish
@@ -1479,14 +1597,12 @@ export function makeTable(options) {
 					// Serialize the drops + catalog removal against a concurrent
 					// same-name create (and completeInterruptedDrop) under the database's
 					// 'update-attributes' exclusive lock - the same lock the create path
-					// holds. It is a synchronous spin lock that blocks the event loop, so
+					// holds. It is a synchronous lock wait that blocks the event loop, so
 					// the locked section MUST stay synchronous: drop with dropSync (as
 					// completeInterruptedDrop does), never an awaited drop(), or a
-					// concurrent create's spin would deadlock waiting on a drop that the
-					// blocked event loop can never resolve.
-					while (!rootStore.tryLock('update-attributes')) {}
-					let removed = false;
-					try {
+					// concurrent create's wait would be stuck on a drop that the blocked
+					// event loop can never resolve, burning its full deadline before failing.
+					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						for (const attribute of attributes) {
 							const index = indices[attribute.name];
 							if (index)
@@ -1501,10 +1617,8 @@ export function makeTable(options) {
 						} catch (error) {
 							ignoreAlreadyDropped(error);
 						}
-						removed = removeTombstonedCatalog();
-					} finally {
-						rootStore.unlock('update-attributes');
-					}
+						return removeTombstonedCatalog();
+					});
 					if (removed) await dbisDb.committed;
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
@@ -1850,7 +1964,28 @@ export function makeTable(options) {
 		}
 		#saveOperation(operation: any) {
 			const transaction = txnForContext(this.getContext());
-			if (transaction.save) return transaction.save(operation) || operation.promise || operation.result;
+			const holder = operation.stagedIn;
+			// never-drop-on-conflict lives on the transaction and would not travel with the write, so an
+			// apply or a replay keeps it (harper-pro#348)
+			const holderOwnsPolicy = holder?.sourceApply || holder?.isReplay;
+			// stagesWriteOnSave: LMDBTransaction's addWrite never runs the write (its commit applies
+			// `writes`), so handing it one is a dead end
+			if (
+				holder &&
+				holder !== transaction &&
+				!holderOwnsPolicy &&
+				transaction.stagesWriteOnSave &&
+				isJoinableScope(transaction)
+			) {
+				holder.detachWrite(operation);
+				// The basis chain belongs to the holder: derived from a write this scope cannot commit, the
+				// merge and index diff would be relative to a record that may never land.
+				operation.priorWrite = undefined;
+				operation.deferSave = false;
+				return when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+			}
+			const owner = holder ?? transaction;
+			if (owner.save) return owner.save(operation) || operation.promise || operation.result;
 		}
 
 		addTo(property: any, value: any) {
@@ -2291,11 +2426,11 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				deferSave: true,
-				validate: (txnTime) => {
+				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
-							transaction.checkOverloaded();
+							committedBy.checkOverloaded();
 							// A record must be a plain object. Reject primitive, string/number, bare-binary,
 							// and bare-array roots — e.g. a raw Buffer from an application/octet-stream PUT, a
 							// JSON string/number body, or a top-level JSON array. Such roots carry no primary
@@ -2333,7 +2468,7 @@ export function makeTable(options) {
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
 							// (harper#1316, facet b).
-							if (!transaction.isReplay) this.validate(recordUpdate, !fullUpdate);
+							if (!committedBy.isReplay) this.validate(recordUpdate, !fullUpdate);
 							if (updatedTimeProperty) {
 								recordUpdate[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
@@ -2368,7 +2503,7 @@ export function makeTable(options) {
 							// TODO: else freeze after we have applied the changes
 						}
 					} else {
-						(transaction as any).removeWrite?.(write);
+						(committedBy as any).removeWrite?.(write);
 						return false;
 					}
 				},
@@ -2411,6 +2546,7 @@ export function makeTable(options) {
 					let incrementalUpdateToApply: boolean;
 
 					this.#savingOperation = null;
+					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
@@ -3055,6 +3191,7 @@ export function makeTable(options) {
 				key: id,
 				store: primaryStore,
 				entry,
+				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
@@ -4882,6 +5019,10 @@ export function makeTable(options) {
 			const stats = primaryStore.getStats();
 			return (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
 		}
+		/** Sizes of this table's durable record-structure dictionaries. */
+		static getStructureCounts(): StructureCounts | undefined {
+			return primaryStore.encoder?.getStructureCounts?.();
+		}
 		static getAuditSize(): number {
 			const stats = auditStore?.getStats();
 			return (
@@ -5254,29 +5395,90 @@ export function makeTable(options) {
 			this.userSetEmbedders.add(attribute_name);
 		}
 		static async deleteHistory(endTime = 0, cleanupDeletedRecords = false): Promise<number> {
-			let completion: Promise<void>;
+			const maxConcurrentRemovals = isRocksDB ? MAX_CONCURRENT_HISTORY_REMOVALS : MAX_CONCURRENT_LMDB_HISTORY_REMOVALS;
+			const inFlightRemovals = new Set<Promise<void>>();
+			const removalSlotWaiters: Array<() => void> = [];
+			let removalsAttempted = 0;
+			let removalsSucceeded = 0;
+			let firstRemovalError: unknown;
+			function startRemoval(remove: () => MaybePromise<void>, errorMessage: string, onSuccess?: () => void): void {
+				removalsAttempted++;
+				const removal = new Promise<void>((resolve) => resolve(remove()))
+					.then(
+						() => {
+							removalsSucceeded++;
+							onSuccess?.();
+						},
+						(error) => {
+							// capture before logging: a throwing logger must not cost us the error we may rethrow
+							if (firstRemovalError === undefined) firstRemovalError = error;
+							harperLogger.warn(errorMessage, error);
+						}
+					)
+					.catch(() => undefined)
+					.finally(() => {
+						inFlightRemovals.delete(removal);
+						removalSlotWaiters.shift()?.();
+					});
+				inFlightRemovals.add(removal);
+			}
+			function queueRemoval(
+				remove: () => MaybePromise<void>,
+				errorMessage: string,
+				onSuccess?: () => void
+			): Promise<void> | undefined {
+				if (inFlightRemovals.size >= maxConcurrentRemovals) {
+					return new Promise<void>((resolve) => {
+						removalSlotWaiters.push(resolve);
+					}).then(() => startRemoval(remove, errorMessage, onSuccess));
+				}
+				startRemoval(remove, errorMessage, onSuccess);
+			}
+			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
-			for (const auditRecord of auditStore.getRange({
-				start: 0,
-				end: endTime,
-			})) {
-				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
-				completion = removeAuditEntry(auditStore, auditRecord);
-				entriesDeleted++;
+			try {
+				for (const auditRecord of auditStore.getRange({
+					start: 0,
+					end: endTime,
+				})) {
+					await rest(); // yield to other async operations
+					if (auditRecord.tableId !== tableId) continue;
+					const backpressure = queueRemoval(
+						() => removeAuditEntry(auditStore, auditRecord),
+						'Error removing audit entry during deleteHistory',
+						() => {
+							entriesDeleted++;
+						}
+					);
+					if (backpressure) await backpressure;
+				}
+			} finally {
+				await drainRemovals();
 			}
 			if (cleanupDeletedRecords) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
 				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
-				for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
-					const { value, localTime } = entry;
-					await rest(); // yield to other async operations
-					if (value === null && localTime < endTime) {
-						completion = removeEntry(primaryStore, entry);
+				try {
+					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
+						const { key, value, localTime, version } = entry;
+						await rest(); // yield to other async operations
+						if (value === null && version != null && localTime < endTime) {
+							const backpressure = queueRemoval(
+								() => primaryStore.remove(key, version),
+								'Error removing deleted record during deleteHistory'
+							);
+							if (backpressure) await backpressure;
+						}
 					}
+				} finally {
+					await drainRemovals();
 				}
 			}
-			await completion;
+			if (removalsAttempted > 0 && removalsSucceeded === 0) {
+				// zero progress must not report the same success as "nothing was eligible" (see DESIGN.md);
+				// partial failures stay best-effort, logged and excluded from the returned count
+				throw firstRemovalError ?? new Error('Every removal attempted during deleteHistory failed');
+			}
 			return entriesDeleted;
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
@@ -5692,6 +5894,7 @@ export function makeTable(options) {
 	}
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
+		if (isReleasedTransaction(transaction)) transaction = undefined;
 		if (transaction) {
 			if (!transaction.db && isRocksDB) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
@@ -5703,10 +5906,37 @@ export function makeTable(options) {
 				// See if this is a transaction for our database and if so, use it
 				if (transaction.db?.path === primaryStore.path) return transaction;
 				// try the next one:
-				const nextTxn = transaction.next;
+				let nextTxn = transaction.next;
+				// A self-committing link is CLOSED once it has committed, and a further write through it
+				// commits on a native handle nothing awaits (#2323). Spent — closed, handle detached, none of
+				// its OWN writes left (hasPendingWrites walks successors, which is not this question) — it
+				// holds nothing, so drop it. A run of them can be spent, hence the loop. A timeout-poisoned
+				// link is kept: reusing it is what makes the rest of the operation fail atomically (#1411).
+				while (
+					nextTxn?.saveCommits &&
+					nextTxn.open !== TRANSACTION_STATE.OPEN &&
+					!nextTxn.timedOut &&
+					!nextTxn.transaction &&
+					!nextTxn.writes.some((write) => write)
+				) {
+					transaction.next = nextTxn.next;
+					nextTxn = transaction.next;
+				}
 				if (!nextTxn) {
 					// no next one, then add our database
-					transaction.next = isRocksDB ? new DatabaseTransaction() : new LMDBTransaction();
+					// A staging link under a self-committing head is committed only if the head's own database
+					// is written again and cascades the chain, so a handler writing this one last loses it (#2292).
+					transaction.next = transaction.saveCommits
+						? ((isRocksDB
+								? new ImmediateTransaction(primaryStore as any)
+								: new ImmediateLMDBTransaction(primaryStore as any)) as any)
+						: isRocksDB
+							? new DatabaseTransaction()
+							: new LMDBTransaction();
+					// The chain root, so a link that only ever receives a blind write is supervised by the
+					// long-transaction monitor as part of its logical transaction rather than as its own
+					// timeout root (issue #2231).
+					transaction.next.root = transaction.root ?? transaction;
 					// Inherit never-drop-on-conflict so a source-applied multi-store transaction doesn't
 					// drop the canonical write when a secondary store hits a transient conflict.
 					transaction.next.sourceApply = transaction.sourceApply;
@@ -5721,8 +5951,14 @@ export function makeTable(options) {
 					// commit is tracked with its own identity (DatabaseTransaction.ts's trackOutstandingCommit),
 					// so a wedged second-store commit is named just as precisely as a wedged first one.
 					transaction.next.startedFrom = transaction.startedFrom;
-					if (transaction.open === TRANSACTION_STATE.CLOSED) {
+					// A second database joined after a mid-scope commit belongs to the same snapshot-free
+					// generation as the head, or its reads would re-pin what the commit just unpinned.
+					transaction.next.snapshotFree = transaction.snapshotFree;
+					if (transaction.open === TRANSACTION_STATE.CLOSED && !transaction.next.saveCommits) {
 						// if the current transaction is already closed, we need to retain that state on new databases we work with
+						// Never onto a self-committing link: CLOSED is what routes its first write through the
+						// commit re-entry that drops the native commit promise (#2323), and it commits per write
+						// regardless of this state.
 						transaction.next.open = TRANSACTION_STATE.CLOSED;
 					}
 					transaction = transaction.next;
@@ -6456,7 +6692,7 @@ export function makeTable(options) {
 	}
 	function addDeleteRemoval() {
 		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(tableId, primaryStore, (id: Id, version: number) => {
-			primaryStore.remove(id, version);
+			return primaryStore.remove(id, version);
 		});
 	}
 	function runRecordExpirationEviction() {

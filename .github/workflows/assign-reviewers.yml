@@ -24,7 +24,11 @@ jobs:
           reviewers=$(echo "$REVIEWERS_JSON" | jq 'length')
           teams=$(echo "$TEAMS_JSON" | jq 'length')
           if [ "$reviewers" -eq 0 ] && [ "$teams" -eq 0 ]; then
-            echo '["cb1kenobi","heskew","Ethan-Arrowood","kriszyp"]' \
+            case "$PR_AUTHOR" in
+              'renovate[bot]' | 'dependabot[bot]') default_reviewers='["kriszyp"]' ;;
+              *) default_reviewers='["cb1kenobi","heskew","Ethan-Arrowood","kriszyp"]' ;;
+            esac
+            echo "$default_reviewers" \
               | jq --arg author "$PR_AUTHOR" '{"reviewers": [.[] | select(. != $author)]}' \
               | gh api "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" \
                 --method POST \

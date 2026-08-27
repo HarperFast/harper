@@ -25,6 +25,7 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
 import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
+import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -90,14 +91,11 @@ export function getConfigPath(param: string) {
 // in the same millisecond can't collide on the temp name and then race the rename.
 //
 // Windows has no POSIX-style "replace an open file" semantics: rename() fails with
-// EPERM/EACCES if another thread/process has the destination momentarily open for read.
-// Every worker thread runs its own RootConfigWatcher (chokidar), so a write on one thread
-// routinely races a hot-reload read on another; Windows Defender / AV real-time scanning can
-// hold a similar transient handle. Retry with exponential backoff to ride out the race -
-// callers are synchronous, so the wait is a synchronous sleep rather than an async one.
-// The budget must outlast a single AV real-time scan pass (seconds, not hundreds of ms):
-// the previous ~910ms budget was exhausted twice in a row by the same test on a CI runner
-// (harper#2036), so the worst case is now ~3.6s.
+// EPERM/EACCES while another descriptor is open on the destination. The sleep below blocks the
+// calling thread, so this can only ride out a holder that releases without needing that
+// thread's event loop. A holder on the calling thread would live exactly as long as the budget,
+// which is why config readers must not keep a descriptor on this file open across an event-loop
+// turn (RootConfigWatcher.handleChange, OptionsWatcher#handleChange).
 const RENAME_RETRY_MAX_ATTEMPTS = 12;
 const RENAME_RETRY_INITIAL_DELAY_MS = 10;
 const RENAME_RETRY_MAX_DELAY_MS = 500;
@@ -114,30 +112,41 @@ export function atomicWriteFile(
 	} = {}
 ) {
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
-	fs.writeFileSync(tempPath, content);
 	let retries = maxRetries;
 	let delayMs = initialDelayMs;
-	while (true) {
-		try {
-			fs.renameSync(tempPath, filePath);
-			break;
-		} catch (err) {
-			if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
-				retries--;
-				// Sleep synchronously (all call sites are sync) to allow the holder to close the
-				// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
-				// which is what makes a multi-second worst-case budget affordable.
-				if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
-				delayMs = Math.min(delayMs * 2, maxDelayMs);
-				continue;
+	let attempts = 0;
+	const startedAt = Date.now();
+	let renamed = false;
+	try {
+		// Inside the cleanup boundary: a write that fails partway leaves a partial temp behind.
+		fs.writeFileSync(tempPath, content);
+		while (!renamed) {
+			try {
+				attempts++;
+				fs.renameSync(tempPath, filePath);
+				renamed = true;
+			} catch (err) {
+				if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
+					retries--;
+					if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
+					delayMs = Math.min(delayMs * 2, maxDelayMs);
+					continue;
+				}
+				// Attempts and elapsed distinguish a holder that never released from one that lost
+				// a race, and neither survives on the rethrown error.
+				if (err.code === 'EPERM' || err.code === 'EACCES') {
+					logger.warn(
+						`Could not replace ${filePath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms`
+					);
+				}
+				throw err;
 			}
-			// if it fails we should clean up the tmp file
+		}
+	} finally {
+		if (!renamed) {
 			try {
 				fs.unlinkSync(tempPath);
-			} catch {
-				// ignore cleanup errors
-			}
-			throw err;
+			} catch {}
 		}
 	}
 }
@@ -154,7 +163,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	let schemasArgs;
 	for (const arg in args) {
-		let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
+		let configParam = lookupConfigParam(arg);
 
 		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 		if (configParam === CONFIG_PARAMS.DATABASES) {
@@ -169,7 +178,7 @@ export function createConfigFile(args, skipFsValidation = false) {
 			continue;
 		}
 
-		if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+		if (!configParam && isSuffixEscapedParam(arg)) {
 			configParam = arg;
 		}
 
@@ -273,7 +282,7 @@ export function getDefaultConfig(param: string) {
 		flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
 	}
 
-	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const paramMap = lookupConfigParam(param);
 	if (paramMap === undefined) return undefined;
 
 	return flatDefaultConfigObj[paramMap.toLowerCase()];
@@ -297,7 +306,7 @@ export function getConfigValue(param: string | null | undefined) {
 		return undefined;
 	}
 
-	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const paramMap = lookupConfigParam(param);
 	if (paramMap === undefined) return undefined;
 
 	return flatConfigObj[paramMap.toLowerCase()];
@@ -690,7 +699,7 @@ export function updateConfigObject(param: string, value: any) {
 		flatConfigObj = {};
 	}
 
-	const configObjKey = CONFIG_PARAM_MAP[param.toLowerCase()];
+	const configObjKey = lookupConfigParam(param);
 	if (configObjKey === undefined) {
 		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
 		return;
@@ -732,6 +741,49 @@ export function updateConfigObject(param: string, value: any) {
 		if (value === undefined) delete node[leaf];
 		else node[leaf] = value;
 	}
+}
+
+/**
+ * Canonical config param for an arg name, or `undefined` when the name is not a config param.
+ * `Object.hasOwn` because a bare lookup resolves inherited names: `constructor` yields an
+ * `Object.prototype` member that then fails `.split('_')` or `.toLowerCase()`.
+ */
+function lookupConfigParam(arg: string): string | undefined {
+	if (typeof arg !== 'string') return undefined;
+	const name = arg.toLowerCase();
+	return Object.hasOwn(CONFIG_PARAM_MAP, name) ? CONFIG_PARAM_MAP[name] : undefined;
+}
+
+/**
+ * Component entries (`my-component_package`, `my-component_port`) are operator-named, so they
+ * cannot be enumerated in CONFIG_PARAM_MAP and bypass it.
+ */
+function isSuffixEscapedParam(arg: string): boolean {
+	return typeof arg === 'string' && (arg.endsWith('_package') || arg.endsWith('_port'));
+}
+
+const MAX_REPORTED_UNRECOGNIZED = 10;
+
+/**
+ * Render unrecognized names for an error that also reaches the operations log: control characters
+ * are stripped so a name containing a newline cannot forge a log line, and the list is capped so a
+ * body carrying thousands of unknown keys cannot produce an unbounded message.
+ */
+function describeUnrecognized(names: string[]): string {
+	const shown = names
+		.slice(0, MAX_REPORTED_UNRECOGNIZED)
+		// eslint-disable-next-line no-control-regex
+		.map((name) => name.replace(/[\u0000-\u001f\u007f]/g, '?'));
+	const remaining = names.length - shown.length;
+	return remaining > 0 ? `${shown.join(', ')} (and ${remaining} more)` : shown.join(', ');
+}
+
+function findUnrecognizedParams(args: object): string[] {
+	let unrecognized;
+	for (const arg in args) {
+		if (lookupConfigParam(arg) === undefined && !isSuffixEscapedParam(arg)) (unrecognized ??= []).push(arg);
+	}
+	return unrecognized ?? [];
 }
 
 /**
@@ -794,7 +846,7 @@ export function updateConfigValue(
 		if (skipParamMap) {
 			configParam = param;
 		} else {
-			configParam = CONFIG_PARAM_MAP[param.toLowerCase()];
+			configParam = lookupConfigParam(param);
 			if (configParam === undefined) {
 				throw handleHDBError(
 					new Error(),
@@ -813,7 +865,7 @@ export function updateConfigValue(
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsedArgs) {
-			let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
+			let configParam = lookupConfigParam(arg);
 
 			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
 			if (
@@ -845,7 +897,7 @@ export function updateConfigValue(
 				}
 			}
 
-			if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+			if (!configParam && isSuffixEscapedParam(arg)) {
 				configParam = arg;
 			}
 
@@ -1039,14 +1091,54 @@ export function getConfiguration() {
 	return configDoc.toJSON();
 }
 
+// `set_configuration` is the one config writer that also fans out (`replicated: true`), so a value
+// accepted here lands on every peer at once and the next rolling restart takes the whole cluster
+// down together (harper-pro#558). Boot-time writers are deliberately not gated the same way: config
+// that already exists has to stay bootable, so it is recovered at the point of use instead
+// (server/threads/threadHeapMemory.ts).
+function assertThreadHeapMemoryStartable(configFields) {
+	for (const field in configFields) {
+		const configParam = CONFIG_PARAM_MAP[field.toLowerCase()];
+		let configured;
+		if (configParam === CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) configured = configFields[field];
+		else if (configParam === CONFIG_PARAMS.THREADS) configured = readSectionHeapMemory(configFields[field]);
+		else continue;
+		const value = castConfigValue(CONFIG_PARAMS.THREADS_MAXHEAPMEMORY, configured);
+		if (typeof value !== 'number' || isStartableThreadHeapMemory(value)) continue;
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.CONFIG_VALIDATION(
+				`'threads.maxHeapMemory' must be greater than or equal to ${hdbTerms.MIN_THREAD_HEAP_MEMORY_MB}`
+			),
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+}
+
+// A whole `threads` section reaches the same config key, and `threads` canonicalizes to itself
+// rather than to `threads_count`. It arrives either as an object or as the JSON string
+// castConfigValue parses, and flattenConfig lowercases every key on the way back out, so the nested
+// name has to be matched the same way the top-level one is.
+function readSectionHeapMemory(section) {
+	const parsed = castConfigValue(CONFIG_PARAMS.THREADS, section);
+	if (!hdbUtils.isObject(parsed)) return undefined;
+	for (const key in parsed) if (key.toLowerCase() === 'maxheapmemory') return parsed[key];
+}
+
 /**
  * Set Configuration - this function sets new configuration
  * @param setConfigJson
 
  */
 export async function setConfiguration(setConfigJson) {
+	// `hdb_auth_header` is the 4.x spelling of `hdbAuthHeader`, and `impersonate` is a generic
+	// operation-body field (server/operationsServer.ts): control fields, never config params.
 	// eslint-disable-next-line no-unused-vars
-	const { operation, hdb_user, hdbAuthHeader, replicated, ...configFields } = setConfigJson;
+	const { operation, hdb_user, hdbAuthHeader, hdb_auth_header, impersonate, replicated, ...configFields } =
+		setConfigJson;
 	// Operation-control field, not a config param: enforce boolean (matching other
 	// `replicated` surfaces, e.g. analyticsValidator) before any local write so a
 	// malformed value like the string "false" — which is truthy — can't apply config
@@ -1061,6 +1153,21 @@ export async function setConfiguration(setConfigJson) {
 			true
 		);
 	}
+	// Before any local write: the writer skips names it cannot resolve, so a request mixing
+	// recognized and unrecognized names would otherwise apply the recognized half and still report
+	// success.
+	const unrecognized = findUnrecognizedParams(configFields);
+	if (unrecognized.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Unable to update config, unrecognized config parameter${unrecognized.length > 1 ? 's' : ''}: ${describeUnrecognized(unrecognized)}`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	assertThreadHeapMemoryStartable(configFields);
 	try {
 		updateConfigValue(undefined, undefined, configFields, true);
 		if (replicated) {

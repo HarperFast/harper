@@ -33,6 +33,8 @@ export const getPrivateKeys = () => privateKeys;
 import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
 import { isMainThread } from 'worker_threads';
+import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { TLSSocket } from 'node:tls';
 
 const CERT_VALIDITY_DAYS = 3650;
@@ -338,7 +340,7 @@ const certificateWatchPollers = new Map<string, () => void>();
  */
 function loadAndWatch(path, loadCert, type) {
 	let lastModified;
-	const loadFile = (path, stats) => {
+	const loadFile = (path, stats?) => {
 		try {
 			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
 			// stat the file here when it's missing — otherwise the inotify fast path would throw and
@@ -355,7 +357,35 @@ function loadAndWatch(path, loadCert, type) {
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else logger.error?.(`${type} file not found:`, path);
-	watch(path, { persistent: false }).on('change', loadFile);
+	const watchTarget = resolveWatchTarget(path);
+	let usingPolling = watchTarget.mustPoll;
+	let liveWatcher;
+	const openWatcher = () => {
+		const opened = (liveWatcher = watch(watchTarget.path, {
+			persistent: false,
+			...(usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
+		}));
+		opened
+			// The event carries the watched spelling, which is not the configured one once canonicalized;
+			// reload through the configured path so a retargeted link is followed.
+			.on('change', () => loadFile(path))
+			// chokidar emits 'error' unguarded for anything but ENOENT/ENOTDIR.
+			.on('error', (error) => {
+				if (isWatcherExhaustionError(error)) {
+					if (usingPolling || liveWatcher !== opened) return;
+					warnWatcherFallback(path);
+					usingPolling = true;
+					Promise.resolve()
+						.then(() => opened.close())
+						.catch(() => {})
+						.then(openWatcher)
+						.catch((error) => logger.error?.(`Could not reopen the ${type} watch on polling:`, path, error));
+					return;
+				}
+				logger.error?.(`Error watching ${type}:`, path, error);
+			});
+	};
+	openWatcher();
 
 	// Periodic re-read safety net. For certificates, this runs on the main thread only — workers
 	// receive cert updates via the hdb_certificate table subscription, so polling the cert file on
@@ -392,13 +422,15 @@ function loadAndWatch(path, loadCert, type) {
 }
 
 function getHost() {
-	let url = getThisNodeUrl();
-	if (url == null) {
+	// urlToNodeName returns undefined for a missing or malformed node/replication URL, so a bad
+	// replication.url falls back to the default host here rather than throwing during cert review.
+	const name = urlToNodeName(getThisNodeUrl());
+	if (name == null) {
 		const host = CERT_DOMAINS[0];
 		logger.info?.('node url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
-	return urlToNodeName(url);
+	return name;
 }
 
 export function getCommonName() {

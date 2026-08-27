@@ -5,10 +5,12 @@ import { awaitJobCompleted } from './operations.mjs';
 const DEFAULT_READINESS_TIMEOUT_MS = 60000;
 const READINESS_POLL_INTERVAL_MS = 250;
 
+const routeIsRegistered = (response) => response.status !== 404;
+
 /**
- * Poll `probePath` until it stops returning 404, i.e. until the route is registered and
- * being served. Any response in [200, 499] excluding 404 is treated as ready; 4xx
- * auth/validation responses are fine.
+ * Poll `probePath` until `isReady` accepts the response. By default that means the route
+ * stopped returning 404, i.e. it is registered and being served; any other status counts as
+ * ready, so 4xx auth/validation responses are fine.
  *
  * Use this directly (without `restartHttpWorkers`) when the component/route is already
  * installed and only async post-boot route registration needs to be awaited — no worker
@@ -17,23 +19,35 @@ const READINESS_POLL_INTERVAL_MS = 250;
  * @param {ReturnType<import('./client.mjs').createApiClient>} client
  * @param {string} probePath REST path that should be served by the component
  * @param {number} [timeoutMs] overall readiness budget (default 60s)
+ * @param {{ isReady?: (response: import('supertest').Response) => boolean }} [options]
  */
-export async function waitForRouteReady(client, probePath, timeoutMs = DEFAULT_READINESS_TIMEOUT_MS) {
+export async function waitForRouteReady(client, probePath, timeoutMs = DEFAULT_READINESS_TIMEOUT_MS, options) {
+	const isReady = options?.isReady ?? routeIsRegistered;
 	const deadline = Date.now() + timeoutMs;
 	let lastStatus;
 	let lastError;
 	while (Date.now() < deadline) {
+		let response;
 		try {
-			const response = await client.reqRest(probePath).timeout(2000);
+			response = await client.reqRest(probePath).timeout(2000);
 			lastStatus = response.status;
-			if (response.status !== 404) return;
+			lastError = undefined;
 		} catch (err) {
+			lastStatus = undefined;
 			lastError = err;
+		}
+		if (response) {
+			const readiness = isReady(response);
+			if (typeof readiness?.then === 'function') {
+				Promise.resolve(readiness).catch(() => {});
+				throw new TypeError('waitForRouteReady isReady must return a boolean synchronously');
+			}
+			if (readiness) return;
 		}
 		await setTimeout(READINESS_POLL_INTERVAL_MS);
 	}
 	throw new Error(
-		`Probe ${probePath} did not become ready within ${timeoutMs}ms ` +
+		`Probe ${client.restURL}${probePath} did not become ready within ${timeoutMs}ms ` +
 			`(last status=${lastStatus ?? 'none'}, last error=${lastError?.message ?? 'none'})`
 	);
 }
@@ -47,8 +61,8 @@ export async function waitForRouteReady(client, probePath, timeoutMs = DEFAULT_R
  *
  * `probePath` should be a REST route that returns a non-404 once the
  * just-installed component has registered its resources — typically the
- * route the test is about to exercise. Any response in [200, 499] excluding
- * 404 is treated as ready; 4xx auth/validation responses are fine.
+ * route the test is about to exercise. This wrapper uses the default readiness policy:
+ * every response except 404 counts as ready, including auth/validation errors and 5xx.
  *
  * @param {ReturnType<import('./client.mjs').createApiClient>} client
  * @param {string} probePath REST path that should be served by the component

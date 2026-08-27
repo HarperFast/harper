@@ -42,6 +42,33 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // monitoring; the store name is passed as the metric path.
 const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
 
+// Reaching this bound is not an error: novel shapes fall back to plain msgpackr encoding, which
+// round-trips correctly but gives up random-access field reads.
+export const DEFAULT_MAX_TYPED_STRUCTURES = 256;
+
+export interface StructureCounts {
+	typed: number;
+	classic: number;
+	typedLimit: number;
+	typedEnabled: boolean;
+}
+
+// Mirrors structon's onLoadedStructures over the four durable payload shapes it accepts. The
+// bare-array and cbor-x forms carry named structures only; structon keeps the encoder's own typed
+// dictionary for them, and they are written by the capped fallback path (msgpackr's base save
+// overwriting the combined payload, before structon's best-effort re-save). That window is by
+// definition a saturated store, so reporting zero there would show an empty dictionary at the one
+// moment the count matters most.
+function countDurableStructures(sharedData: any, localTyped: number): { typed: number; classic: number } {
+	if (!sharedData) return { typed: 0, classic: 0 };
+	if (sharedData instanceof Map)
+		return { typed: sharedData.get('typed')?.length ?? 0, classic: sharedData.get('named')?.length ?? 0 };
+	if (Array.isArray(sharedData)) return { typed: localTyped, classic: sharedData.length };
+	if (!sharedData.named && !sharedData.typed && Array.isArray(sharedData.structures))
+		return { typed: localTyped, classic: sharedData.structures.length };
+	return { typed: sharedData.typed?.length ?? 0, classic: sharedData.named?.length ?? 0 };
+}
+
 // Terminal error messages msgpackr/structon throw when a record references a shared structure that
 // is not in this node's structures buffer. Both the typed (random-access) path (structon's
 // readStruct) and the classic path (msgpackr's createSecondByteReader) reload the structures from
@@ -128,6 +155,10 @@ export class RecordEncoder extends StructonEncoder {
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
+	declare typedStructs: any[];
+	declare structures: any[];
+	declare maxOwnStructures: number;
+	randomAccessStructure = false;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
@@ -143,7 +174,7 @@ export class RecordEncoder extends StructonEncoder {
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
 		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
 		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
-		options.maxOwnStructures ??= 256;
+		options.maxOwnStructures ??= DEFAULT_MAX_TYPED_STRUCTURES;
 		/**
 		 * The base class for records that provides the read-only methods for accessing
 		 * metadata and will be assigned computed property getters. On its own, these instances
@@ -159,6 +190,7 @@ export class RecordEncoder extends StructonEncoder {
 		// (e.g. __dbis__, useVersions=false) must not — see the encode hook + harper#1307. Default to
 		// true when unspecified so an option that doesn't propagate can't silently strip prefixes.
 		this.useVersions = options.useVersions !== false;
+		this.randomAccessStructure = options.randomAccessStructure === true;
 		// structon (the StructonEncoder base) always installs the struct write hook. For DBIs
 		// that don't opt into struct mode (non-primary, e.g. __dbis__), force it to bail (return
 		// 0) so objects are written in plain msgpackr records mode — decodable by readers without
@@ -343,12 +375,14 @@ export class RecordEncoder extends StructonEncoder {
 				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
 				if (committed === true) {
 					this.structureUpdate = structures;
+					this.checkStructureCapacity();
 					return true;
 				}
 				return false;
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
+				if (result !== false) this.checkStructureCapacity();
 				return result;
 			}
 		};
@@ -358,9 +392,50 @@ export class RecordEncoder extends StructonEncoder {
 				const buffer = this.rootStore.getBinarySync(sharedStructuresKey);
 				return buffer ? this.decode(buffer) : undefined;
 			} else {
-				return superGetStructures.call(this);
+				// msgpackr only defines getStructures when the option was supplied; a store with no
+				// shared-structures mechanism has no durable dictionary to report.
+				return superGetStructures?.call(this);
 			}
 		};
+	}
+	/**
+	 * Sizes of this store's record-structure dictionaries. Read from the durable payload, not this
+	 * encoder's arrays: each worker owns an encoder and loads lazily, so a worker that never encoded
+	 * for this store holds empty arrays for a store whose dictionary is full.
+	 */
+	getStructureCounts(): StructureCounts {
+		const { typed, classic } = countDurableStructures(this.getStructures(), this.typedStructs?.length ?? 0);
+		return {
+			typed,
+			classic,
+			typedLimit: this.maxOwnStructures ?? DEFAULT_MAX_TYPED_STRUCTURES,
+			typedEnabled: this.randomAccessStructure,
+		};
+	}
+	/**
+	 * Warn once per encoder when its typed dictionary is at the bound. Fires from the post-save path,
+	 * so it needs some structure save to happen -- any save, including a classic one -- and it needs
+	 * this encoder to have loaded the dictionary. Several workers can therefore each warn for one
+	 * table, and a worker that never saves after loading a full dictionary stays silent. The counts
+	 * above are the reliable signal; this is the heads-up. It must not escape into the save's return
+	 * value -- the structures are committed.
+	 */
+	#reportedStructureSaturation = false;
+	checkStructureCapacity() {
+		if (this.#reportedStructureSaturation) return;
+		const typedLimit = this.maxOwnStructures ?? DEFAULT_MAX_TYPED_STRUCTURES;
+		if ((this.typedStructs?.length ?? 0) < typedLimit) return;
+		this.#reportedStructureSaturation = true;
+		try {
+			harperLogger.warn(
+				`Typed-structure dictionary for store ${this.name ?? this.rootStore?.name ?? '(unnamed)'} reached its limit of ` +
+					`${typedLimit} structures; new record shapes will be stored without random-access field ` +
+					'encoding. Dictionary size follows the variety of shapes written -- field set, key order, ' +
+					'and per-field value width -- not column count (see HarperFast/harper#2220).'
+			);
+		} catch {
+			// the structures are already committed; a failing sink must not fail the write
+		}
 	}
 	decode(buffer, options) {
 		lastMetadata = null;

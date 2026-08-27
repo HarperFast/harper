@@ -27,9 +27,9 @@ on:
 
 jobs:
   validate:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@224c2adcfdb408d68c7ca48eb618623c990a96ad # main 2026-07-28 (#80 week-of-07-20 calibration: producing-side guard verification; on 82c9484)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@be549ad08aa6d34b909ea8b542a7ffebdaae1e81 # main 2026-08-25 (#90 cost gates: draft skip, mechanical-diff skip, effort-by-size, debounce; #89 defaults; #88 lenses)
     with:
       # Same SHA as the `uses:` ref above — the reusable uses this
       # to check out the validator script at the matching version.
       # Same SHA-twice pattern as the other caller workflows.
-      ai-review-prompts-ref: 224c2adcfdb408d68c7ca48eb618623c990a96ad
+      ai-review-prompts-ref: be549ad08aa6d34b909ea8b542a7ffebdaae1e81

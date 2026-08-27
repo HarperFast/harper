@@ -190,7 +190,13 @@ export async function authentication(request, nextHandler) {
 		if (request.user) {
 			// already authenticated
 		} else if (authorization) {
-			const cachedUser = authorizationCache.get(authorization);
+			let cachedUser = authorizationCache.get(authorization);
+			// A cached Bearer identity must not outlive its token: expiry is the only revocation
+			// mechanism for scoped tokens, so it has to be exact, not cache-TTL-fuzzy.
+			if (cachedUser?.authExpiresAt && cachedUser.authExpiresAt * 1000 <= Date.now()) {
+				authorizationCache.delete(authorization);
+				cachedUser = undefined;
+			}
 			if (cachedUser?.role) {
 				// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 				// doesn't mutate the cache entry (defense-in-depth; operations and other
@@ -235,6 +241,9 @@ export async function authentication(request, nextHandler) {
 										throw error;
 									}
 								}
+								// A non-'invalid token' rejection (e.g. expired) must propagate, not fall
+								// through to caching an undefined user (which would read as anonymous).
+								throw error;
 							}
 							break;
 					}

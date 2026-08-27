@@ -31,6 +31,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from '../apiTests/utils/client.mjs';
+// @ts-expect-error no type declarations
+import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'concurrent-patch-merge');
 const ENGINE = process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? 'lmdb' : 'rocksdb';
@@ -62,20 +64,9 @@ suite(`QA-328 concurrent PATCH field-level merge — ${ENGINE}`, (ctx: ContextWi
 		httpURL = ctx.harper.httpURL;
 		auth = client.headers.Authorization;
 
-		// Readiness poll — wait until CollabDoc endpoint responds (not 404)
-		const deadline = Date.now() + 30_000;
-		while (Date.now() < deadline) {
-			try {
-				const probe = await fetch(`${httpURL}/CollabDoc/`, {
-					headers: { Authorization: auth },
-					signal: AbortSignal.timeout(3_000),
-				});
-				if (probe.status !== 404) break;
-			} catch {
-				/* not ready yet */
-			}
-			await sleep(250);
-		}
+		await waitForRouteReady(client, '/CollabDoc/', 30_000, {
+			isReady: (response: { status: number }) => response.status >= 200 && response.status < 300,
+		});
 	});
 
 	after(async () => {

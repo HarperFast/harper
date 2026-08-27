@@ -264,6 +264,31 @@ describe('component preparation lock', () => {
 		);
 	});
 
+	it('treats a zero timeout as a non-blocking lock attempt', async () => {
+		const componentDirPath = join(rootDir, 'zero-timeout');
+		let releaseHolder;
+		let holderStarted;
+		const started = new Promise((resolve) => (holderStarted = resolve));
+		const holder = withComponentPreparationLock(componentDirPath, async () => {
+			holderStarted();
+			await new Promise((resolve) => (releaseHolder = resolve));
+		});
+
+		try {
+			await started;
+			await assert.rejects(
+				withComponentPreparationLock(componentDirPath, async () => {}, {
+					timeoutMs: 0,
+					isOwnerAlive: () => true,
+				}),
+				/Timed out waiting/
+			);
+		} finally {
+			releaseHolder();
+			await holder;
+		}
+	});
+
 	it('does not renew the wait deadline for a foreign-PID owner (the PID may have been recycled)', async () => {
 		// A bare kill(pid, 0) on another process only proves *some* process holds that PID, not that
 		// it is the original owner — after a hard crash the OS can recycle the PID to an unrelated

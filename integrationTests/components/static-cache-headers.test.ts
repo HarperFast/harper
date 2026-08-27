@@ -6,10 +6,20 @@
  * set_component_file and poll until the next request reflects the new policy.
  *
  * Run: npm run test:integration -- "integrationTests/components/static-cache-headers.test.ts"
+ *
+ * Polling GETs use node:http directly rather than fetch()/undici: a global-fetch client stall
+ * (of unbounded, multi-second duration under some Node/undici builds — see harper#2025) can block
+ * this suite's poll loop for tens of seconds and read as the chokidar reload never landing, when
+ * it's really the polling request itself that never landed. node:http isn't subject to that stall.
+ * Root cause: nodejs/undici#5600 (unref'd idle-socket-validation setImmediate stalls fetch() on an
+ * otherwise-idle event loop), bundled into Node via undici 8.9.0 (used by 26.5.1); fixed upstream by
+ * nodejs/undici#5609 but not yet in a released undici/Node build as of this writing.
  */
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -29,14 +39,55 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		await teardownHarper(ctx);
 	});
 
-	async function getPath(path: string): Promise<Response> {
-		const res = await fetch(new URL(path, ctx.harper.httpURL));
-		strictEqual(res.status, 200);
-		await res.text(); // drain
-		return res;
+	interface SimpleResponse {
+		status: number;
+		headers: { get(name: string): string | null };
 	}
 
-	async function getCss(): Promise<Response> {
+	function getPath(path: string, timeoutMs = 5_000): Promise<SimpleResponse> {
+		return new Promise((resolvePromise, reject) => {
+			const u = new URL(path, ctx.harper.httpURL);
+			const transport = u.protocol === 'https:' ? https : http;
+			let wallClockTimer: ReturnType<typeof setTimeout>;
+			const settle = (fn: () => void) => {
+				clearTimeout(wallClockTimer);
+				fn();
+			};
+			const req = transport.request(
+				{ hostname: u.hostname, port: u.port, path: u.pathname + u.search, timeout: timeoutMs },
+				(res) => {
+					res.on('data', () => {}); // drain
+					res.on('error', (err) => settle(() => reject(err)));
+					res.on('end', () => {
+						try {
+							strictEqual(res.statusCode, 200);
+						} catch (err) {
+							settle(() => reject(err));
+							return;
+						}
+						const headers = res.headers;
+						settle(() =>
+							resolvePromise({
+								status: res.statusCode!,
+								headers: { get: (name: string) => (headers[name.toLowerCase()] as string) ?? null },
+							})
+						);
+					});
+				}
+			);
+			req.on('timeout', () => req.destroy(new Error(`GET ${path} timed out after ${timeoutMs}ms`)));
+			req.on('error', (err) => settle(() => reject(err)));
+			// `timeout` above is socket-*inactivity*, not wall-clock — see ttlResetOnWrite.test.ts's
+			// httpRequest for the same fix and rationale.
+			wallClockTimer = setTimeout(
+				() => req.destroy(new Error(`GET ${path} timed out after ${timeoutMs}ms (wall-clock)`)),
+				timeoutMs
+			);
+			req.end();
+		});
+	}
+
+	function getCss(): Promise<SimpleResponse> {
 		return getPath('/test.css');
 	}
 
@@ -54,22 +105,41 @@ suite('static plugin cache-header options', (ctx: ContextWithHarper) => {
 		yaml: string,
 		expected: string | null,
 		timeoutMs = 20_000
-	): Promise<Response> {
+	): Promise<SimpleResponse> {
 		await setStaticConfig(yaml);
 		const deadline = Date.now() + timeoutMs;
 		let last: string | null = null;
+		let lastError: string | null = null;
 		let sinceResend = 0;
 		while (Date.now() < deadline) {
-			const res = await getCss();
-			last = res.headers.get('cache-control');
-			if (last === expected) return res;
+			// A single sample's timeout or a transient non-200 while the plugin is mid-reload
+			// shouldn't abort the whole poll — only the loop's own deadline should. `last` keeps the
+			// most recent successful sample's value, so a persistently-failing sample (e.g. the
+			// static plugin regresses and starts 404ing) would otherwise report a stale "last seen"
+			// value that points at the reload path instead of the real failure — lastError carries
+			// the failure itself into the timeout message so that doesn't get misdiagnosed.
+			try {
+				const res = await getCss();
+				last = res.headers.get('cache-control');
+				lastError = null;
+				if (last === expected) return res;
+			} catch (err: any) {
+				lastError = err?.message ?? String(err);
+			}
 			if (++sinceResend >= 10) {
 				sinceResend = 0;
-				await setStaticConfig(yaml);
+				try {
+					await setStaticConfig(yaml);
+				} catch (err: any) {
+					lastError = err?.message ?? String(err);
+				}
 			}
 			await new Promise((r) => setTimeout(r, 200));
 		}
-		throw new Error(`Cache-Control never became ${JSON.stringify(expected)}; last seen: ${JSON.stringify(last)}`);
+		throw new Error(
+			`Cache-Control never became ${JSON.stringify(expected)}; last seen: ${JSON.stringify(last)}` +
+				(lastError ? `; last error: ${lastError}` : '')
+		);
 	}
 
 	test('default: public, max-age=0 with ETag/Last-Modified', async () => {

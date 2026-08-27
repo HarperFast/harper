@@ -1390,7 +1390,7 @@ describe('Test configUtils module', () => {
 		it('Test happy path success response returned', async () => {
 			const test_set_config_json = {
 				operation: 'set_configuration',
-				operationsApi_processes: 18,
+				threads_count: 18,
 				hdb_user: {},
 				hdb_auth_header: 'test_header',
 			};
@@ -1418,6 +1418,70 @@ describe('Test configUtils module', () => {
 			}
 
 			expect(error.name).to.equal(STRING_ERROR);
+		});
+
+		describe('unrecognized config params (#2266)', () => {
+			async function rejection(body) {
+				try {
+					await config_utils_rw.setConfiguration({ operation: 'set_configuration', ...body });
+				} catch (err) {
+					return err.http_resp_msg ?? err.message;
+				}
+				return undefined;
+			}
+
+			it('rejects an unrecognized param instead of reporting success', async () => {
+				const message = await rejection({ not_a_real_param: 1 });
+				expect(message).to.include('unrecognized config parameter: not_a_real_param');
+			});
+
+			it('names every unrecognized param in one error', async () => {
+				const message = await rejection({ nope_one: 1, nope_two: 2 });
+				expect(message).to.include('unrecognized config parameters: nope_one, nope_two');
+			});
+
+			it('writes nothing when a request mixes recognized and unrecognized params', async () => {
+				const message = await rejection({ logging_level: 'debug', not_a_real_param: 1 });
+				expect(message).to.include('not_a_real_param');
+				expect(update_config_value_stub.called).to.equal(false);
+			});
+
+			it('still accepts recognized params', async () => {
+				expect(await rejection({ logging_level: 'debug' })).to.equal(undefined);
+				expect(update_config_value_stub.called).to.equal(true);
+			});
+
+			it('preserves the operator-named _package and _port escape hatch', async () => {
+				expect(await rejection({ 'my-component_package': 'x', 'my-component_port': 1 })).to.equal(undefined);
+			});
+
+			it('treats the escape hatch as case-sensitive, so an uppercase typo is still rejected', async () => {
+				expect(await rejection({ TYPO_PORT: 1 })).to.include('TYPO_PORT');
+			});
+
+			it('does not mistake control fields for config params', async () => {
+				const message = await rejection({ hdb_user: {}, hdbAuthHeader: 'h', hdb_auth_header: 'h', replicated: false });
+				expect(message).to.equal(undefined);
+			});
+
+			it('rejects an inherited Object.prototype name rather than resolving it', async () => {
+				expect(await rejection({ toString: 'x' })).to.include('toString');
+			});
+
+			it('replaces control characters in reported names so a name cannot forge a log line', async () => {
+				const message = await rejection({ 'bad\nname': 1 });
+				expect(message).to.include('bad?name');
+				expect(message).to.not.include('\n');
+			});
+
+			it('caps the reported names so a body full of unknown keys cannot make the message unbounded', async () => {
+				const body = {};
+				for (let i = 0; i < 25; i++) body[`nope_${i}`] = i;
+				const message = await rejection(body);
+				expect(message).to.include('(and 15 more)');
+				expect(message).to.include('nope_0');
+				expect(message).to.not.include('nope_10,');
+			});
 		});
 
 		describe('replicated: true', () => {
@@ -1470,14 +1534,13 @@ describe('Test configUtils module', () => {
 				const config_fields = update_config_value_stub.firstCall.args[2];
 				expect(config_fields).to.eql({
 					http_corsAccessList: ['harper.fast'],
-					hdb_auth_header: 'test_header',
 				});
 			});
 
 			it('Test no replicated flag does not fan out', async () => {
 				const test_set_config_json = {
 					operation: 'set_configuration',
-					operationsApi_processes: 18,
+					threads_count: 18,
 					hdb_user: {},
 					hdb_auth_header: 'test_header',
 				};

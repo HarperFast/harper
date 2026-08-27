@@ -7,7 +7,7 @@ const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { spawn, spawnSync } = require('node:child_process');
-const { readFileSync } = require('node:fs');
+const { readdirSync, readFileSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
@@ -21,7 +21,14 @@ const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals.js');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { resolvePreloadModules } = require('./resolvePreload.ts');
+const { resolveThreadHeapMemoryMb } = require('./threadHeapMemory.ts');
 const { getConfigPath } = require('../../config/configUtils.ts');
+const { resolveWatchTarget } = require('../../utility/watchPath.ts');
+const {
+	DIRECTORY_POLLING_FALLBACK_OPTIONS,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} = require('../../utility/watcherFallback.ts');
 let importModules;
 function getImportModules() {
 	if (importModules === undefined)
@@ -46,6 +53,7 @@ const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
+let processShuttingDown = false;
 const connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
 // Threads get 10s to die before they're forced. In dev (`harper dev`) we widen this: a reload's old
@@ -53,6 +61,7 @@ const MAX_UNEXPECTED_RESTARTS = 50;
 // down mid-disposal crashes the process, so give that teardown more room before the forced backstop.
 let threadTerminationTimeout = process.env.DEV_MODE === 'true' || process.env.DEV_MODE === '1' ? 30000 : 10000;
 const RESTART_TYPE = 'restart';
+const RESTART_PROGRESS_HEARTBEAT_MS = 15000;
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
 const THREAD_INFO = 'thread_info';
@@ -144,15 +153,20 @@ module.exports = {
 	broadcastWithAcknowledgement,
 	getWorkerIndex,
 	getWorkerCount,
+	getEligibleBroadcastRecipientThreadIds,
 	getTicketKeys,
 	setMainIsWorker,
 	setTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	beginProcessShutdown,
 	registerWorkerDataProvider,
 	onThreadExit,
+	hasThreadExited,
+	notifyThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
+	isProcessGroupAlive,
 	isThreadRunning,
 	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
@@ -192,6 +206,18 @@ function getWorkerIndex() {
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
+function isEligibleBroadcastRecipient(port) {
+	return !port.isJobWorker;
+}
+function getEligibleBroadcastRecipientThreadIds() {
+	const recipientThreadIds = new Set();
+	for (const port of connectedPorts) {
+		if (isEligibleBroadcastRecipient(port) && port.threadId !== undefined) {
+			recipientThreadIds.add(port.threadId);
+		}
+	}
+	return recipientThreadIds;
+}
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 	module.exports.threadsHaveStarted();
@@ -205,6 +231,7 @@ let workerCount = 1; // should be assigned when workers are created
 const RESERVED_WORKER_DATA_KEYS = [
 	'addPorts',
 	'addThreadIds',
+	'addPortIsJobWorkers',
 	'workerIndex',
 	'workerCount',
 	'name',
@@ -310,6 +337,11 @@ listenersByType.set(THREAD_INFO, null);
 listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
 function startWorker(path, options = {}) {
+	if (processShuttingDown) {
+		const error = new Error('Cannot start a worker while the Harper process is shutting down');
+		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
+		throw error;
+	}
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -324,7 +356,7 @@ function startWorker(path, options = {}) {
 	// and lower than total memory
 	availableMemory = Math.min(availableMemory, totalmem(), 20000 * MB);
 	const maxOldMemory =
-		envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) ??
+		resolveThreadHeapMemoryMb(envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY)) ??
 		Math.max(Math.floor(availableMemory / MB / (10 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
@@ -383,6 +415,7 @@ function startWorker(path, options = {}) {
 			...collectProvidedWorkerData(options),
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
+			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
@@ -420,7 +453,7 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (_code) => {
 		workers.splice(workers.indexOf(worker), 1);
-		if (!worker.wasShutdown && options.autoRestart !== false) {
+		if (!processShuttingDown && !worker.wasShutdown && options.autoRestart !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
@@ -445,15 +478,24 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * threads at the same time we shutdown new ones. However, we usually want to limit how many we do at once to avoid
  * excessive load and to keep things responsive. This parameter throttles the restarts to minimize load from
  * thread startups.
- * @returns {Promise<void>}
+ * @param onProgress Called each time a worker has been replaced (or its replacement has been given
+ * up on), so a caller waiting on a wide pool can tell a slow restart from a stalled one.
+ * @returns {Promise<{workersKeptOnOldCode: number, replacementsNotStarted: number}|{declined: true}|undefined>}
+ * from the main thread, how many workers were left running the old code and how many replacements
+ * never reported that they started — or `{declined: true}` when the process is already shutting down;
+ * from a worker, nothing — the restart is handed to the main thread.
  */
 
 async function restartWorkers(
 	name = null,
 	maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1), // restart 1/8 of the threads at a time, but at least 1
-	startReplacementThreads = true
+	startReplacementThreads = true,
+	onProgress = null
 ) {
 	if (isMainThread) {
+		// Declining is not the same as delegating: a caller reporting on the restart must not read this
+		// as "another thread is completing it".
+		if (processShuttingDown && startReplacementThreads) return { declined: true };
 		try {
 			// we do this because it is possible for a component to chdir to itself, get re-deployed and then the cwd
 			// inode link is invalid and it can cause a lot of problems. But process.cwd() still returns the path, for
@@ -468,7 +510,16 @@ async function restartWorkers(
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
 			const { loadRootComponents } = require('../loadRootComponents.js');
-			await loadRootComponents();
+			// Installing and loading every root component reports nothing and can outlast a caller's idle
+			// window on its own (a cold npm cache, a large dependency graph), so beat while it runs. The
+			// caller's absolute ceiling is what bounds a load that never finishes.
+			const loading = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
+			try {
+				await loadRootComponents();
+			} finally {
+				clearInterval(loading);
+			}
+			onProgress?.();
 		}
 
 		module.exports.restartNumber++;
@@ -479,6 +530,15 @@ async function restartWorkers(
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
 		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
+		// Every replacement that was started without being awaited first, so this function can still
+		// resolve only once each one is accepting connections.
+		let replacementsStarting = [];
+		// A replacement that never came up leaves the pool in one of two very different states, and a
+		// caller waiting on this restart needs them apart: the pre-start path keeps the *old* worker
+		// serving old code, while a replacement that exits after its predecessor is already gone only
+		// costs capacity until startWorker's auto-restart brings a fresh one up.
+		let workersKeptOnOldCode = 0;
+		let replacementsNotStarted = 0;
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
 		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
 		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
@@ -491,6 +551,8 @@ async function restartWorkers(
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		for (let worker of workers.slice(0)) {
+			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
+			if (processShuttingDown && startReplacementThreads) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			if (overlapping && startReplacementThreads && canPreStartReplacement) {
@@ -555,6 +617,8 @@ async function restartWorkers(
 					// Replacement didn't come up — keep the existing worker serving. Restore its auto-restart
 					// protection if it is still alive (it may have exited on its own during the wait).
 					if (workers.includes(worker)) worker.wasShutdown = false;
+					workersKeptOnOldCode++;
+					onProgress?.();
 					continue;
 				}
 			}
@@ -575,7 +639,14 @@ async function restartWorkers(
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
-			if (overlapping && startReplacementThreads && !canPreStartReplacement) worker.startCopy();
+			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown)
+				replacementsStarting.push(
+					whenWorkerStarted(worker.startCopy()).then((started) => {
+						onProgress?.();
+						return started;
+					})
+				);
+
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
@@ -602,17 +673,25 @@ async function restartWorkers(
 					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
 					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
-					timeout = armTerminate(
-						boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
+					const delay = boundedTerminateDelay(
+						deadlineMs,
+						Date.now(),
+						threadTerminationTimeout * 2,
+						getShutdownDrainCeilingMs()
 					);
+					timeout = armTerminate(delay);
+					// The worker is telling us it has work still moving and how long it may take, so pass that
+					// on: a caller waiting on the restart must not treat a live drain as a stalled one.
+					onProgress?.(Date.now() + delay);
 				};
 				worker.on('exit', () => {
 					clearTimeout(timeout);
+					onProgress?.();
 					worker.extendTerminateDeadline = undefined;
 					const index = waitingToFinish.indexOf(whenDone);
 					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
-					if (!overlapping && startReplacementThreads) worker.startCopy();
+					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
 					resolve();
 				});
 			});
@@ -622,9 +701,11 @@ async function restartWorkers(
 				await Promise.race(waitingToFinish);
 			}
 		}
-		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
-		// to finish, so not that important
 		await Promise.all(waitingToFinish);
+		// A caller awaiting this needs it to mean "the pool is serving the new code", so wait out the
+		// replacements that could only be started once their predecessor released its exclusive ports.
+		replacementsNotStarted = (await Promise.all(replacementsStarting)).filter((started) => !started).length;
+		return { workersKeptOnOldCode, replacementsNotStarted };
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
@@ -632,10 +713,59 @@ async function restartWorkers(
 		});
 	}
 }
+/**
+ * Resolve once a newly started worker reports that it is accepting connections, or gives up on it.
+ * There is no old worker left to fall back on here, so a replacement that fails to start is left to
+ * startWorker's own auto-restart handling; this only stops waiting on it.
+ * @param newWorker The replacement worker
+ * @returns {Promise<boolean>} whether the worker reported that it started
+ */
+function whenWorkerStarted(newWorker) {
+	return new Promise((resolve) => {
+		const cleanup = () => {
+			clearTimeout(timeout);
+			newWorker.off('message', startListener);
+			newWorker.off('exit', exitListener);
+		};
+		const timeout = setTimeout(
+			() => {
+				harperLogger.error('Replacement worker did not start in time', newWorker.threadId);
+				cleanup();
+				// Its predecessor is already gone, so a replacement wedged in boot is a worker slot serving
+				// nothing until the process restarts. Stop it and let startWorker's exit handling replace it.
+				if (isBun) {
+					// terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead.
+					try {
+						newWorker.postMessage({ type: FORCE_EXIT });
+					} catch {}
+				} else newWorker.terminate();
+				resolve(false);
+			},
+			Math.max(threadTerminationTimeout * 2, 60000)
+		).unref();
+		const startListener = (message) => {
+			if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
+				cleanup();
+				resolve(true);
+			}
+		};
+		const exitListener = () => {
+			harperLogger.warn('Replacement worker exited before starting', newWorker.threadId);
+			cleanup();
+			resolve(false);
+		};
+		newWorker.on('message', startListener);
+		newWorker.on('exit', exitListener);
+	});
+}
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }
+function beginProcessShutdown() {
+	processShuttingDown = true;
+}
 async function shutdownWorkersNow(name) {
+	if (name == null) beginProcessShutdown();
 	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	if (isBun) {
 		// worker.terminate() triggers a NAPI segfault in Bun; ask workers to self-exit instead
@@ -714,7 +844,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
 			// the job worker's ACK while the job worker's event loop is busy waiting for the
 			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (port.isJobWorker) continue;
+			if (!isEligibleBroadcastRecipient(port)) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = () => {
@@ -842,7 +972,7 @@ if (parentPort && workerData?.addPorts) {
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
-		addPort(port);
+		addPort(port, false, workerData.addPortIsJobWorkers?.[i]);
 	}
 	setInterval(() => {
 		// post our memory usage as a resource report, reporting our memory usage
@@ -887,17 +1017,23 @@ if (parentPort && workerData?.addPorts) {
 			}
 		});
 	let awaitTerminationRequestId = 0;
-	awaitProcessGroupTermination = (ownerThreadId) =>
+	awaitProcessGroupTermination = (ownerThreadId, signal) =>
 		new Promise((resolve) => {
 			// Deliberately no timeout: a contender must not reclaim a dead owner's lock while its
 			// process group might still be alive and mutating files, so this mirrors the unbounded
-			// wait Application.ts's waitForConfirmedTermination uses for the same reason.
+			// wait Application.ts's waitForConfirmedTermination uses for the same reason. A caller
+			// that needs its own bound (isThreadRunning) passes `signal` so this listener still gets
+			// torn down when that caller gives up, instead of leaking for the life of the worker.
 			const requestId = ++awaitTerminationRequestId;
 			parentPort.on('message', receiveConfirmation);
+			signal?.addEventListener('abort', cleanup, { once: true });
 			parentPort.postMessage({ type: AWAIT_PROCESS_GROUP_TERMINATION, ownerThreadId, requestId });
+			function cleanup() {
+				parentPort.off('message', receiveConfirmation);
+			}
 			function receiveConfirmation(message) {
 				if (message.type === PROCESS_GROUP_TERMINATION_CONFIRMED && message.requestId === requestId) {
-					parentPort.off('message', receiveConfirmation);
+					cleanup();
 					resolve();
 				}
 			}
@@ -930,33 +1066,142 @@ const processGroupsByThread = new Map();
 // window component-preparation locking exists to close.
 const pendingProcessGroupTerminations = new Map();
 const PROCESS_GROUP_TERMINATION_POLL_MS = 25;
+const ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS = 1000;
+const PROCESS_GROUP_LIVENESS_WARNING_MS = 30000;
+// Bounds isThreadRunning's own wait (below); Application.ts's waitForConfirmedTermination stays
+// deliberately unbounded.
+const THREAD_RUNNING_TERMINATION_BACKSTOP_MS = PROCESS_GROUP_LIVENESS_WARNING_MS;
+const zombieGroupScanTimes = new Map();
+const processGroupLivenessStates = new Map();
 
-// A process-group leader spawned by a worker thread's own event loop is normally reaped by that
-// same loop when it dies. But the only caller of this check (waitForProcessGroupExit, for a
-// *dead* owner thread) runs after that loop is already gone, so nothing will ever reap it here:
-// kill(pid, 0) keeps succeeding forever against the zombie's still-allocated PID slot. A zombie
-// can no longer touch the filesystem, so treat a confirmed zombie as dead rather than poll
-// forever for a reap that will never come. Reproduced by killing a worker mid-install: the
-// installer's process-group leader becomes a permanent `Z` in /proc without this check.
-function isZombieProcessGroupLeader(processGroupId) {
-	if (process.platform !== 'linux') return false;
-	let stat;
-	try {
-		stat = readFileSync(`/proc/${processGroupId}/stat`, 'utf8');
-	} catch {
-		return false;
-	}
-	// Format is "pid (comm) state ..."; comm can contain spaces/parens, so anchor on the last ')'.
-	return stat[stat.lastIndexOf(')') + 2] === 'Z';
-}
-
-function processGroupIsAlive(processGroupId) {
+function processGroupExists(processGroupId) {
 	try {
 		process.kill(-processGroupId, 0);
+		return true;
 	} catch (error) {
 		return error.code === 'EPERM';
 	}
-	return !isZombieProcessGroupLeader(processGroupId);
+}
+
+function processProbeError(error) {
+	return error?.code ?? error?.message ?? String(error ?? 'unknown error');
+}
+
+function processGroupLeaderState(processGroupId, platform, readStat) {
+	if (platform !== 'linux') {
+		return { state: 'unknown', reason: `zombie-process detection is unavailable on ${platform}` };
+	}
+	let stat;
+	try {
+		stat = readStat(`/proc/${processGroupId}/stat`, 'utf8');
+	} catch (error) {
+		if (error.code === 'ENOENT' || error.code === 'ESRCH') return { state: 'missing' };
+		return {
+			state: 'unknown',
+			reason: `reading /proc/${processGroupId}/stat failed (${processProbeError(error)})`,
+		};
+	}
+	const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+	if (Number(fields[2]) !== processGroupId) return { state: 'missing' };
+	return { state: fields[0] === 'Z' ? 'zombie' : 'alive' };
+}
+
+function scanLinuxProcessGroup(processGroupId, readDirectory, readStat) {
+	let processIds;
+	try {
+		processIds = readDirectory('/proc');
+	} catch (error) {
+		return {
+			isAlive: null,
+			reason: `reading /proc failed (${processProbeError(error)})`,
+		};
+	}
+	for (const processId of processIds) {
+		if (!/^\d+$/.test(processId)) continue;
+		let stat;
+		try {
+			stat = readStat(`/proc/${processId}/stat`, 'utf8');
+		} catch (error) {
+			if (error.code === 'ENOENT' || error.code === 'ESRCH') continue; // already gone
+			// EACCES/EPERM (e.g. hidepid/ProtectProc) can only happen on a pid we don't own — we
+			// spawned our own group's members as this same user, so their stat is always readable —
+			// so it's not one of ours. Anything else is genuinely unknown, not "not ours".
+			if (error.code === 'EACCES' || error.code === 'EPERM') continue;
+			return {
+				isAlive: null,
+				reason: `reading /proc/${processId}/stat failed (${processProbeError(error)})`,
+			};
+		}
+		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+		const pgrp = Number(fields[2]);
+		if (!Number.isFinite(pgrp)) {
+			return { isAlive: null, reason: `/proc/${processId}/stat had an unparseable process-group field` };
+		}
+		if (pgrp !== processGroupId) continue;
+		if (fields[0] !== 'Z') return { isAlive: true, reason: `a live member was observed at pid ${processId}` };
+	}
+	return { isAlive: false };
+}
+
+function keepProcessGroupAlive(processGroupId, reason, observationTime, warn) {
+	let livenessState = processGroupLivenessStates.get(processGroupId);
+	if (!livenessState) {
+		livenessState = { observedAt: observationTime, reason, warned: false };
+		processGroupLivenessStates.set(processGroupId, livenessState);
+	} else {
+		livenessState.reason = reason;
+	}
+	if (!livenessState.warned && observationTime - livenessState.observedAt >= PROCESS_GROUP_LIVENESS_WARNING_MS) {
+		livenessState.warned = true;
+		warn(
+			`Process group ${processGroupId} termination remains unconfirmed after ${PROCESS_GROUP_LIVENESS_WARNING_MS}ms: ${livenessState.reason}`
+		);
+	}
+	return true;
+}
+
+function clearProcessGroupLivenessState(processGroupId) {
+	zombieGroupScanTimes.delete(processGroupId);
+	processGroupLivenessStates.delete(processGroupId);
+}
+
+function isProcessGroupAlive(processGroupId, options) {
+	const platform = options?.platform ?? process.platform;
+	const groupExists = options?.processGroupExists ?? processGroupExists;
+	const readDirectory = options?.readDirectory ?? readdirSync;
+	const readStat = options?.readStat ?? readFileSync;
+	const observationTime = options?.now?.() ?? performance.now();
+	const warn = options?.warn ?? ((message) => harperLogger.warn(message));
+	if (!groupExists(processGroupId)) {
+		clearProcessGroupLivenessState(processGroupId);
+		return false;
+	}
+	const leaderState = processGroupLeaderState(processGroupId, platform, readStat);
+	if (leaderState.state === 'alive')
+		return keepProcessGroupAlive(processGroupId, 'the process-group leader is still alive', observationTime, warn);
+	if (leaderState.state === 'unknown')
+		return keepProcessGroupAlive(processGroupId, leaderState.reason, observationTime, warn);
+	const scanTime = observationTime;
+	const lastScan = zombieGroupScanTimes.get(processGroupId);
+	if (lastScan !== undefined && scanTime >= lastScan && scanTime - lastScan < ZOMBIE_GROUP_MEMBER_SCAN_INTERVAL_MS) {
+		const reason = processGroupLivenessStates.get(processGroupId)?.reason ?? 'the previous Linux scan is still current';
+		return keepProcessGroupAlive(processGroupId, reason, observationTime, warn);
+	}
+	zombieGroupScanTimes.set(processGroupId, scanTime);
+	let scanResult = scanLinuxProcessGroup(processGroupId, readDirectory, readStat);
+	if (scanResult.isAlive !== false)
+		return keepProcessGroupAlive(processGroupId, scanResult.reason, observationTime, warn);
+	// A second snapshot catches a member omitted after forking inside the first readdir/stat window.
+	// It narrows rather than closes the race because the second synchronous pass has the same gap.
+	scanResult = scanLinuxProcessGroup(processGroupId, readDirectory, readStat);
+	if (scanResult.isAlive !== false)
+		return keepProcessGroupAlive(processGroupId, scanResult.reason, observationTime, warn);
+	clearProcessGroupLivenessState(processGroupId);
+	return false;
+}
+
+function processGroupIsAlive(processGroupId) {
+	return isProcessGroupAlive(processGroupId);
 }
 
 async function waitForProcessGroupExit(processGroupId) {
@@ -1038,6 +1283,7 @@ function addProcessGroup(ownerThreadId, processGroupId) {
 }
 
 function removeProcessGroup(ownerThreadId, processGroupId) {
+	clearProcessGroupLivenessState(processGroupId);
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return;
 	processGroups.delete(processGroupId);
@@ -1089,12 +1335,48 @@ function unregisterProcessGroup(processGroupId) {
 	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
 }
 
+class ProcessGroupTerminationUnconfirmedError extends Error {
+	code = 'ERR_PROCESS_GROUP_TERMINATION_UNCONFIRMED';
+	constructor(ownerThreadId, timeoutMs) {
+		super(`Thread ${ownerThreadId}'s process-group termination could not be confirmed after ${timeoutMs}ms`);
+		this.name = 'ProcessGroupTerminationUnconfirmedError';
+	}
+}
+
+// Bounds awaitProcessGroupTermination for isThreadRunning below. Throws rather than resolving to
+// "not running": componentPreparationLock's ownerIsAlive/ownerLivenessConfirmed already treat a
+// throwing isOwnerAlive as "can't confirm — don't steal the claim, don't renew the deadline", so
+// the lock's own bounded wait is what eventually fails the waiter.
+async function awaitConfirmedProcessGroupTermination(ownerThreadId) {
+	const abortController = new AbortController();
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		abortController.abort();
+	}, THREAD_RUNNING_TERMINATION_BACKSTOP_MS);
+	timer.unref?.();
+	try {
+		await Promise.race([
+			awaitProcessGroupTermination(ownerThreadId, abortController.signal),
+			new Promise((resolve) => abortController.signal.addEventListener('abort', resolve, { once: true })),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+	if (timedOut) {
+		harperLogger.warn(
+			`Thread ${ownerThreadId}'s process-group termination could not be confirmed after ${THREAD_RUNNING_TERMINATION_BACKSTOP_MS}ms`
+		);
+		throw new ProcessGroupTerminationUnconfirmedError(ownerThreadId, THREAD_RUNNING_TERMINATION_BACKSTOP_MS);
+	}
+}
+
 async function isThreadRunning(ownerThreadId, timeoutMs = THREAD_INFO_REQUEST_TIMEOUT_MS) {
 	if (ownerThreadId === threadId || ownerThreadId === 0) return true;
 	if ((await getThreadInfo(timeoutMs)).some((worker) => worker.threadId === ownerThreadId)) return true;
 	// The thread itself is gone, but it may still own process groups whose forced termination is
 	// in flight — wait for that to be confirmed before reporting the owner as reclaimable.
-	await awaitProcessGroupTermination(ownerThreadId);
+	await awaitConfirmedProcessGroupTermination(ownerThreadId);
 	return false;
 }
 
@@ -1102,6 +1384,15 @@ if (isMainThread) {
 	process.on('exit', () => {
 		for (const ownerThreadId of [...processGroupsByThread.keys()]) terminateProcessGroupsForThread(ownerThreadId);
 	});
+}
+
+/**
+ * Whether a thread has already been reported dead. Sync, unlike `isThreadRunning`, because it only
+ * reads the tombstone `notifyThreadExit` records below — callers on the exit path need an answer
+ * without awaiting process-group confirmation.
+ */
+function hasThreadExited(threadId) {
+	return notifiedDeadThreadIds.has(threadId);
 }
 
 function notifyThreadExit(deadThreadId) {
@@ -1211,23 +1502,48 @@ if (isMainThread) {
 	const ignoredPaths = ['node_modules', '.git'];
 	const watchDir = async (dir, beforeRestartCallback) => {
 		if (beforeRestartCallback) beforeRestart = beforeRestartCallback;
-		chokidar
-			.watch(dir, {
+		const watchTarget = resolveWatchTarget(dir);
+		let usingPolling = watchTarget.mustPoll;
+		let liveWatcher;
+		const openWatcher = () => {
+			const opened = (liveWatcher = chokidar.watch(watchTarget.path, {
 				persistent: false,
+				...(usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
 					return ignoredPaths.some((ignoredPath) => path.includes(ignoredPath));
 				},
-			})
-			.on('change', (path) => {
-				changedFiles.add(path);
-				if (queuedRestart) clearTimeout(queuedRestart);
-				queuedRestart = setTimeout(async () => {
-					if (beforeRestart) await beforeRestart();
-					await restartWorkers();
-					console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
-					changedFiles.clear();
-				}, 100);
-			});
+			}));
+			opened
+				// This runs on the thread that owns every worker, and chokidar emits 'error' unguarded for
+				// anything but ENOENT/ENOTDIR.
+				.on('error', (error) => {
+					if (isWatcherExhaustionError(error)) {
+						if (usingPolling || liveWatcher !== opened) return;
+						warnWatcherFallback(dir);
+						usingPolling = true;
+						Promise.resolve()
+							.then(() => opened.close())
+							.catch(() => {})
+							.then(openWatcher)
+							.catch((reopenError) =>
+								console.error(`Could not reopen the ${dir} component-reload watch on polling:`, reopenError)
+							);
+						return;
+					}
+					console.error(`Error watching ${dir} for component reloads:`, error);
+				})
+				.on('change', (path) => {
+					changedFiles.add(path);
+					if (queuedRestart) clearTimeout(queuedRestart);
+					queuedRestart = setTimeout(async () => {
+						if (beforeRestart) await beforeRestart();
+						await restartWorkers();
+						console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
+						changedFiles.clear();
+					}, 100);
+				});
+		};
+		openWatcher();
 	};
 	module.exports.watchDir = watchDir;
 	if (process.env.WATCH_DIR) watchDir(process.env.WATCH_DIR);

@@ -1,23 +1,36 @@
 import chokidar, { FSWatcher } from 'chokidar';
-import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { getConfigFilePath } from './configUtils.ts';
 import { EventEmitter, once } from 'node:events';
 import { parse } from 'yaml';
-import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import {
+	POLLING_FALLBACK_OPTIONS,
+	PartialReadRetry,
+	isPartialReadError,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+	warnWatcherListenerError,
+} from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
+	#watchPath: string;
 	#watcher!: FSWatcher;
 	#config: any;
 	#usingPolling: boolean;
 	#closed: boolean;
 	#openCount: number = 0;
+	#partialRead: PartialReadRetry;
 	ready: Promise<any[]>;
 
 	constructor() {
 		super();
 		this.#configFilePath = getConfigFilePath();
-		this.#usingPolling = false;
+		const watchTarget = resolveWatchTarget(this.#configFilePath);
+		this.#watchPath = watchTarget.path;
+		this.#partialRead = new PartialReadRetry(this.#configFilePath);
+		this.#usingPolling = watchTarget.mustPoll;
 		this.#closed = false;
 		this.ready = once(this, 'ready');
 		this.#openWatcher();
@@ -26,7 +39,7 @@ export class RootConfigWatcher extends EventEmitter {
 	#openWatcher() {
 		this.#openCount++;
 		this.#watcher = chokidar
-			.watch(this.#configFilePath, {
+			.watch(this.#watchPath, {
 				persistent: false,
 				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			})
@@ -60,46 +73,64 @@ export class RootConfigWatcher extends EventEmitter {
 			if (!this.#usingPolling) {
 				warnWatcherFallback(this.#configFilePath);
 				this.#usingPolling = true;
-				// Guard against reopen-after-close: the caller may have invoked
-				// close() while this teardown was in flight. The .catch is required
-				// because `finally` would re-raise a teardown rejection as an
-				// unhandled one.
-				this.#watcher
-					.close()
+				// Start close() from a microtask, not directly here, so a synchronous throw
+				// can't escape this 'error' listener as an uncaught exception.
+				Promise.resolve()
+					.then(() => this.#watcher.close())
 					.catch(() => {
 						// Teardown errors on an already-failed watcher are not actionable.
 					})
-					.finally(() => {
+					.then(() => {
 						if (!this.#closed) this.#openWatcher();
-					});
+					})
+					.catch((error) => console.error(`Could not reopen the ${this.#configFilePath} watch on polling:`, error));
 			}
 			return;
 		}
 		this.emit('error', error);
 	}
 
+	// See the descriptor-lifetime invariant on atomicWriteFile (DESIGN.md).
 	handleChange() {
-		readFile(this.#configFilePath, 'utf-8')
-			.then((data) => {
-				if (!data) return;
+		let config;
+		// Only the read and parse are guarded: a listener that throws must not be mistaken for a
+		// half-written file and replayed.
+		try {
+			config = parse(readFileSync(this.#configFilePath, 'utf-8'));
+		} catch (error) {
+			// A missing file needs no re-read; anything else may be the file being replaced.
+			if (isPartialReadError(error)) this.#scheduleReread(error);
+			return;
+		}
+		// A snapshot that does not parse to an object is the other shape a half-written file
+		// takes: `''`, `'\n'` and a truncated document all yield null, and adopting that would
+		// hand every consumer a config with nothing in it.
+		if (!config || typeof config !== 'object') {
+			this.#scheduleReread();
+			return;
+		}
+		this.#partialRead.settled();
 
-				const config = parse(data);
+		try {
+			if (!this.#config) {
+				this.#config = config;
+				this.emit('ready', this.#config);
+				return;
+			}
+			this.emit('change', (this.#config = config));
+		} catch (error) {
+			warnWatcherListenerError(this.#configFilePath, error);
+		}
+	}
 
-				if (!this.#config) {
-					this.#config = config;
-					this.emit('ready', this.#config);
-					return;
-				}
-
-				this.emit('change', (this.#config = config));
-			})
-			.catch((_error) => {
-				// if yaml parse error ignore?
-			});
+	#scheduleReread(error?: unknown) {
+		if (this.#partialRead.schedule(() => this.handleChange())) return;
+		this.#partialRead.gaveUp(error);
 	}
 
 	close() {
 		this.#closed = true;
+		this.#partialRead.cancel();
 		this.#watcher.close();
 		this.#config = undefined;
 		this.emit('close');

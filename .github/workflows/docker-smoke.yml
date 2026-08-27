@@ -13,6 +13,11 @@ on:
       - package.json
       - package-lock.json
       - build-tools/**
+      - bin/restart.ts
+      - bin/restartExitWatchdog.ts
+      - bin/run.ts
+      - server/threads/manageThreads.js
+      - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
   push:
     branches: [main]
@@ -22,6 +27,11 @@ on:
       - package.json
       - package-lock.json
       - build-tools/**
+      - bin/restart.ts
+      - bin/restartExitWatchdog.ts
+      - bin/run.ts
+      - server/threads/manageThreads.js
+      - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
 
 concurrency:
@@ -132,9 +142,117 @@ jobs:
         if: always()
         run: docker logs harper-smoke 2>&1 || true
 
+      - name: Container uses tini and stops gracefully
+        run: |
+          wait_for_start_count() {
+            expected=$1
+            for i in $(seq 1 180); do
+              count=$(docker logs harper-smoke 2>&1 | grep -cF '[notify]: Harper successfully started.' || true)
+              if [ "$count" -ge "$expected" ]; then return 0; fi
+              if ! docker ps --filter name=harper-smoke --filter status=running -q | grep -q .; then
+                echo "::error::Container exited before Harper completed startup"
+                docker logs harper-smoke
+                return 1
+              fi
+              sleep 1
+            done
+            echo "::error::Harper did not complete startup within ${SECONDS}s"
+            docker logs harper-smoke
+            return 1
+          }
+
+          wait_for_start_count 1
+          test "$(docker exec harper-smoke cat /proc/1/comm)" = "tini"
+          docker exec harper-smoke sh -c '
+            found=
+            for child in $(cat /proc/1/task/1/children); do
+              if tr "\0" " " < "/proc/$child/cmdline" | grep -q harper; then found=1; fi
+            done
+            test "$found" = 1
+          '
+          docker stop --timeout 15 harper-smoke
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
+
+          docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
+            harperfast/harper:smoke-test -c 'printf "1\n" > /home/harperdb/harper/hdb.pid'
+          docker run --rm --volumes-from harper-smoke --entrypoint /bin/sh \
+            harperfast/harper:smoke-test -c 'test "$(cat /home/harperdb/harper/hdb.pid)" = 1'
+          docker start harper-smoke
+          for i in $(seq 1 30); do
+            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:9925/ || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then break; fi
+            sleep 1
+          done
+          test -n "$(docker ps --filter name=harper-smoke --filter status=running -q)"
+          wait_for_start_count 2
+          docker stop --timeout 15 harper-smoke
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-smoke)" = "0"
+
       - name: Teardown (default runtime)
         if: always()
         run: docker rm -f harper-smoke 2>/dev/null || true
+
+      - name: Container self-restart exits within the advertised bound
+        if: steps.build.outcome == 'success' && (success() || failure())
+        run: |
+          docker run -d --name harper-restart-smoke \
+            -e HDB_ADMIN_USERNAME=admin \
+            -e HDB_ADMIN_PASSWORD=password \
+            -e HARPER_EXIT_ON_RESTART=1 \
+            -e 'HARPER_CONFIG={"logging":{"level":"info"}}' \
+            -p 19925:9925 \
+            harperfast/harper:smoke-test
+
+          for i in $(seq 1 180); do
+            if docker logs harper-restart-smoke 2>&1 | grep -qF '[notify]: Harper successfully started.'; then break; fi
+            if ! docker ps --filter name=harper-restart-smoke --filter status=running -q | grep -q .; then
+              echo "::error::Container exited before Harper completed startup"
+              docker logs harper-restart-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          docker logs harper-restart-smoke 2>&1 | grep -F '[notify]: Harper successfully started.'
+          curl -sS --fail-with-body --max-time 5 -u admin:password \
+            -H 'Content-Type: application/json' \
+            -d '{"operation":"restart"}' \
+            http://localhost:19925/ || true
+          for i in $(seq 1 70); do
+            if ! docker ps --filter name=harper-restart-smoke --filter status=running -q | grep -q .; then break; fi
+            sleep 1
+          done
+          test -z "$(docker ps --filter name=harper-restart-smoke --filter status=running -q)"
+          docker logs harper-restart-smoke 2>&1 | grep -E 'Restart exit watchdog armed for [0-9]+ seconds'
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-restart-smoke)" = "0"
+
+      - name: Teardown (restart runtime)
+        if: always()
+        run: docker rm -f harper-restart-smoke 2>/dev/null || true
+
+      - name: Restart watchdog force-kills a wedged Harper child
+        if: steps.build.outcome == 'success' && (success() || failure())
+        run: |
+          docker run -d --name harper-watchdog-smoke \
+            --entrypoint /usr/bin/tini \
+            harperfast/harper:smoke-test \
+            -g -- node -e '
+              const { armRestartExitWatchdog } = require("/home/harperdb/.npm-global/lib/node_modules/harper/dist/bin/restartExitWatchdog.js");
+              armRestartExitWatchdog(1000).then((armed) => {
+                if (!armed) process.exit(2);
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+              });
+            '
+          for i in $(seq 1 10); do
+            if ! docker ps --filter name=harper-watchdog-smoke --filter status=running -q | grep -q .; then break; fi
+            sleep 1
+          done
+          test -z "$(docker ps --filter name=harper-watchdog-smoke --filter status=running -q)"
+          docker logs harper-watchdog-smoke 2>&1 | grep -E 'restart exit watchdog force-killing pid [0-9]+ after 1 seconds'
+          test "$(docker inspect --format '{{.State.ExitCode}}' harper-watchdog-smoke)" = "137"
+
+      - name: Teardown (watchdog fault injection)
+        if: always()
+        run: docker rm -f harper-watchdog-smoke 2>/dev/null || true
 
       # Runs regardless of whether the default-runtime leg above passed -- otherwise a
       # flaky/failed default boot silently skips this leg on the exact runs where a
