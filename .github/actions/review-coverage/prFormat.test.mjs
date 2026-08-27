@@ -12,7 +12,7 @@ const REPO = 'HarperFast/harper';
 const NUMBER = 2338;
 const HEAD = '609896d762efe2c9f529a0f9989ce0a53dd29b40';
 const FILE = 'resources/auditStore.ts';
-const HASH = fileAnchorHash(FILE);
+const HASH = 'db526bfa2603e0ee94ab17a9ea8c2b8bd02e1f626dd6907624cfe8508ad356ba';
 const LINK = `https://github.com/${REPO}/pull/${NUMBER}/changes?w=1#diff-${HASH}R211`;
 const PR_FILES = {
 	version: 1,
@@ -49,10 +49,29 @@ const pr = (over = {}) => ({
 });
 
 test('the remediated #2338 shape passes with a current line anchor', () => {
+	assert.strictEqual(fileAnchorHash(FILE), HASH, "fixture pins GitHub's sha256(path) anchor contract");
 	const result = evaluatePrFormat(pr(), { mode: 'enforce', repo: REPO, number: NUMBER, prFiles: PR_FILES });
 	assert.strictEqual(result.pass, true);
 	assert.strictEqual(result.compliant, true);
 	assert.strictEqual(result.links.lineAnchored.length, 1);
+});
+
+test('ordinary prose and inline examples do not trigger AI-shape fields', () => {
+	const humanBody = [
+		`This lowers algorithmic complexity: fewer branches; the \`Human-Review-Need:\` field is unchanged. [Code](${LINK})`,
+		'',
+		'## Verification',
+		'',
+		'Focused test passed.',
+	].join('\n');
+	const result = evaluatePrFormat(pr({ body: humanBody }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+	assert.strictEqual(result.compliant, true);
 });
 
 test('the motivating same-head link removal fails independently of footer freshness', () => {
@@ -121,11 +140,41 @@ test('fenced examples do not satisfy the line-link requirement', () => {
 	assert.strictEqual(parseBodyAnchors(fenced).length, 0);
 });
 
+test('inline-code and HTML-comment links do not satisfy the line-link requirement', () => {
+	for (const hidden of [`\`${LINK}\``, `<!-- ${LINK} -->`]) {
+		const result = evaluatePrFormat(
+			pr({ body: body({ link: '' }).replace('continuously.', `continuously. ${hidden}`) }),
+			{
+				mode: 'enforce',
+				repo: REPO,
+				number: NUMBER,
+				prFiles: PR_FILES,
+			}
+		);
+		assert.match(result.problems.join('\n'), /no line-anchored PR-diff link/);
+	}
+});
+
+test('an unterminated fence reports its cause', () => {
+	const result = evaluatePrFormat(pr({ body: `${body()}\n\n\`\`\`md\nexample` }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /unterminated fenced code block/);
+});
+
 test('older files URLs and per-commit paths use the same anchor contract', () => {
 	const url = `https://github.com/${REPO}/pull/${NUMBER}/files/abc123?w=1#diff-${HASH}R211-R220`;
 	const result = checkBodyLinks({ body: url, prFiles: PR_FILES, repo: REPO, number: NUMBER });
 	assert.strictEqual(result.ok, true);
 	assert.strictEqual(result.lineAnchored[0].line, 211);
+});
+
+test('partial or non-resolving anchor URLs are not accepted', () => {
+	for (const malformed of [LINK.replace('/changes?', '/changes-bogus?'), `${LINK}evil`])
+		assert.strictEqual(parseBodyAnchors(malformed).length, 0);
 });
 
 test('PR-files normalization implements unified-diff count semantics', () => {
@@ -156,6 +205,9 @@ test('an omitted patch or incomplete file list is explicitly unverifiable', () =
 			.unverifiable,
 		true
 	);
+	const missing = checkBodyLinks({ body: LINK, prFiles: null, repo: REPO, number: NUMBER });
+	assert.strictEqual(missing.unverifiable, true);
+	assert.doesNotMatch(missing.problems.map(({ message }) => message).join('\n'), /does not match a file/);
 });
 
 test('PR-files input is rejected while streaming beyond the byte cap', async () => {
@@ -176,6 +228,17 @@ test('AI fields require the complete ordered body shape', () => {
 	assert.match(result.problems.join('\n'), /For the human reviewer/);
 	assert.match(result.problems.join('\n'), /valid Complexity/);
 	assert.match(result.problems.join('\n'), /pinned Review-Coverage footer \(found 2\)/);
+});
+
+test('AI footers must be pinned to the current head', () => {
+	const result = evaluatePrFormat(pr({ body: body({ head: 'deadbeef1234' }) }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /Review-Coverage footer is not pinned to the current head/);
+	assert.match(result.problems.join('\n'), /Human-Review-Need footer is not pinned to the current head/);
 });
 
 test('footer text cannot satisfy an empty Verification section', () => {

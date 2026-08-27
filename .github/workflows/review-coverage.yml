@@ -1,9 +1,6 @@
 # PR-description checks (report mode: informational, never blocks).
-# Reports cross-model review coverage and validates the format and current-diff links
-# expected for substantive member-authored PRs. `edited` is required because description
-# repairs and review receipts do not move the commit sha. Enforcement and trusted execution
-# are separate rollout decisions; this pull_request workflow intentionally has read-only
-# permissions and preserves the existing coverage job identity.
+# Read-only permissions and report-only mode are load-bearing while PR code executes here;
+# enforcement requires a later trusted-host workflow.
 name: review-coverage
 on:
   pull_request:
@@ -36,13 +33,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           [[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EVENT_HEAD" =~ ^[0-9a-f]{40}$ ]]
           output="$RUNNER_TEMP/pr-files.json"
           gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" |
             node .github/actions/review-coverage/collectPrFiles.mjs "$output"
+          live_head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          [[ "$live_head" == "$EVENT_HEAD" ]]
           echo "path=$output" >> "$GITHUB_OUTPUT"
           echo "ready=true" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/review-coverage

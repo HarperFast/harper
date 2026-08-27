@@ -12,6 +12,7 @@ const NON_MEMBER_ASSOCIATIONS = new Set([
 export function classifyPullRequest(pr) {
 	const login = String(pr?.user?.login ?? '');
 	const association = String(pr?.author_association ?? '');
+	// Missing size fields must not read as 0+0 and silently exempt every PR.
 	const sized = Number.isFinite(pr?.additions) && Number.isFinite(pr?.deletions);
 	const exempt =
 		login.endsWith('[bot]') || pr?.user?.type === 'Bot'

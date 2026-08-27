@@ -1,16 +1,54 @@
 import { createHash } from 'node:crypto';
 
 const ANCHOR_PATTERN =
-	/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/(?:changes|files)[^\s)\]#]*#diff-([0-9a-f]{64})(?:([RL])(\d+))?/g;
+	/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/(?:changes|files)(?:(?:\/[\w.-]+)?(?:\?[^\s)\]#]*)?)#diff-([0-9a-f]{64})(?:([RL])(\d+)(?:-[RL]\d+)?)?(?![\w-])/g;
 
 export function fileAnchorHash(filePath) {
 	return createHash('sha256').update(filePath, 'utf8').digest('hex');
 }
 
-export function stripFencedBlocks(body) {
+function stripInlineCode(body) {
+	let prose = '';
+	for (let index = 0; index < body.length;) {
+		if (body[index] !== '`') {
+			prose += body[index++];
+			continue;
+		}
+		let runEnd = index;
+		while (body[runEnd] === '`') runEnd++;
+		const runLength = runEnd - index;
+		let close = runEnd;
+		let matched = false;
+		while (close < body.length) {
+			if (body[close] !== '`') {
+				close++;
+				continue;
+			}
+			let closeEnd = close;
+			while (body[closeEnd] === '`') closeEnd++;
+			if (closeEnd - close === runLength) {
+				prose += body.slice(index, closeEnd).replace(/[^\n]/g, ' ');
+				index = closeEnd;
+				matched = true;
+				break;
+			}
+			close = closeEnd;
+		}
+		if (!matched) {
+			prose += body.slice(index, runEnd);
+			index = runEnd;
+		}
+	}
+	return prose;
+}
+
+export function inspectBodyText(body) {
 	let fence = null;
 	const prose = [];
-	for (const line of String(body).replace(/\r\n?/g, '\n').split('\n')) {
+	const visible = String(body)
+		.replace(/\r\n?/g, '\n')
+		.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => comment.replace(/[^\n]/g, ' '));
+	for (const line of visible.split('\n')) {
 		let offset = 0;
 		let quoteDepth = 0;
 		while (true) {
@@ -31,7 +69,7 @@ export function stripFencedBlocks(body) {
 				}
 			}
 			if (fence) {
-				const close = content.match(/^[ \t]*(`+|~+)[ \t]*$/);
+				const close = content.match(/^[ \t]{0,3}(`+|~+)[ \t]*$/);
 				if (close && close[1][0] === fence.marker && close[1].length >= fence.length) fence = null;
 				continue;
 			}
@@ -42,14 +80,18 @@ export function stripFencedBlocks(body) {
 			offset += list.length;
 			content = line.slice(offset);
 		}
-		const open = content.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+		const open = content.match(/^[ \t]{0,3}(`{3,}|~{3,})(.*)$/);
 		if (open && (open[1][0] === '~' || !open[2].includes('`'))) {
 			fence = { marker: open[1][0], length: open[1].length, quoteDepth, listIndent: list?.length || 0 };
 			continue;
 		}
 		prose.push(line);
 	}
-	return prose.join('\n');
+	return { prose: stripInlineCode(prose.join('\n')), unterminatedFence: Boolean(fence) };
+}
+
+export function stripFencedBlocks(body) {
+	return inspectBodyText(body).prose;
 }
 
 export function parseBodyAnchors(body) {
@@ -77,13 +119,14 @@ export function checkBodyLinks({ body, prFiles, repo, number }) {
 		])
 	);
 	const problems = [];
-	let unverifiable = !prFiles;
+	const identityAvailable = /^[\w.-]+\/[\w.-]+$/.test(repo) && Number.isInteger(number) && number > 0;
+	let unverifiable = !prFiles || !identityAvailable;
 
 	if (lineAnchored.length === 0)
 		problems.push({ kind: 'no-line-anchor', message: 'description has no line-anchored PR-diff link' });
 	for (const anchor of anchors) {
 		const where = `#diff-${anchor.hash.slice(0, 12)}…${anchor.side ?? ''}${anchor.line ?? ''}`;
-		if (anchor.repo.toLowerCase() !== repo.toLowerCase() || anchor.number !== number) {
+		if (identityAvailable && (anchor.repo.toLowerCase() !== repo.toLowerCase() || anchor.number !== number)) {
 			problems.push({
 				kind: 'foreign-pr',
 				message: `${where} points at ${anchor.repo}#${anchor.number}, not ${repo}#${number}`,
@@ -92,7 +135,7 @@ export function checkBodyLinks({ body, prFiles, repo, number }) {
 		}
 		const file = files.get(anchor.hash);
 		if (!file) {
-			if (prFiles && !prFiles.complete) unverifiable = true;
+			if (!prFiles || !prFiles.complete) unverifiable = true;
 			else problems.push({ kind: 'unknown-file', message: `${where} does not match a file in the current diff` });
 			continue;
 		}
@@ -101,7 +144,7 @@ export function checkBodyLinks({ body, prFiles, repo, number }) {
 			unverifiable = true;
 			continue;
 		}
-		if (!withinAnyRange(file.ranges[anchor.side], anchor.line))
+		if (!withinAnyRange(file.ranges?.[anchor.side] ?? [], anchor.line))
 			problems.push({
 				kind: 'line-not-in-diff',
 				message: `${file.path}${anchor.side}${anchor.line} is not in a current diff hunk`,

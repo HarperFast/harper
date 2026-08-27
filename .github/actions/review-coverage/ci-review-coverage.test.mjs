@@ -100,6 +100,8 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { normalizePrFiles } from './collectPrFiles.mjs';
+
 const SCRIPT = fileURLToPath(new URL('./ci-review-coverage.mjs', import.meta.url));
 const CLEAN_ENV = { ...process.env };
 delete CLEAN_ENV.GITHUB_ENV;
@@ -232,9 +234,46 @@ test('an oversized normalized PR-files artifact is bounded before parsing', () =
 		const report = execute('report');
 		assert.strictEqual(report.status, 0);
 		assert.match(report.stderr, /artifact exceeds 4194304 bytes/);
+		assert.match(report.stdout, /review-coverage \[report\]/, 'artifact failures must not suppress coverage output');
 		const enforce = execute('enforce');
 		assert.strictEqual(enforce.status, 1);
-		assert.match(enforce.stderr, /enforce mode fails closed/);
+		assert.match(enforce.stderr, /PR-files evidence is unavailable/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('the action consumes a produced PR-files artifact end to end', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-artifact-'));
+	const event = path.join(dir, 'event.json');
+	const prFiles = path.join(dir, 'pr-files.json');
+	const hash = 'db526bfa2603e0ee94ab17a9ea8c2b8bd02e1f626dd6907624cfe8508ad356ba';
+	const link = `https://github.com/HarperFast/harper/pull/2338/changes?w=1#diff-${hash}R211`;
+	writeFileSync(
+		event,
+		JSON.stringify({
+			number: 2338,
+			repository: { full_name: 'HarperFast/harper' },
+			pull_request: pr({ body: `Summary with [current code](${link}).\n\n## Verification\n\nFocused test passed.` }),
+		})
+	);
+	writeFileSync(
+		prFiles,
+		JSON.stringify(normalizePrFiles([[{ filename: 'resources/auditStore.ts', patch: '@@ -200,21 +205,62 @@' }]]))
+	);
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: event,
+				INPUT_FORMAT_MODE: 'report',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: prFiles,
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.match(result.stdout, /pr-format \[report\]: compliant/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

@@ -42,11 +42,19 @@ function main(mode, formatMode) {
 	const required = rawRequired === '' ? COVERAGE_REQUIRED : Number(rawRequired);
 	if (!Number.isInteger(required) || required < 0) throw new Error(`invalid required '${rawRequired}'`);
 	const r = evaluateCiCoverage(pr, { mode, required });
+	let prFiles = null;
+	let evidenceProblem = '';
+	try {
+		prFiles = readPrFiles(pr, formatMode);
+	} catch (error) {
+		evidenceProblem = `PR-files evidence is unavailable (${error instanceof Error ? error.message : String(error)})`;
+	}
 	const format = evaluatePrFormat(pr, {
 		mode: formatMode,
 		repo: String(event.repository?.full_name ?? ''),
 		number: Number(event.number ?? pr.number),
-		prFiles: readPrFiles(pr, formatMode),
+		prFiles,
+		evidenceProblem,
 	});
 
 	const lines = [
