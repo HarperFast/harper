@@ -24,9 +24,9 @@ export class RootConfigWatcher extends EventEmitter {
 	#partialRead: PartialReadRetry;
 	ready: Promise<any[]>;
 
-	constructor() {
+	constructor(configFilePath: string = getConfigFilePath()) {
 		super();
-		this.#configFilePath = getConfigFilePath();
+		this.#configFilePath = configFilePath;
 		const watchTarget = resolveWatchTarget(this.#configFilePath);
 		this.#watchPath = watchTarget.path;
 		this.#partialRead = new PartialReadRetry(this.#configFilePath);
