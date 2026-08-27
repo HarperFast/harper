@@ -20,7 +20,7 @@ import {
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 
-import { basename, dirname, extname, join, relative } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative } from 'node:path';
 import {
 	access,
 	chmod,
@@ -911,7 +911,13 @@ async function syncDirectory(dirPath: string): Promise<void> {
 	try {
 		await handle.sync();
 	} catch (error) {
-		logger.trace?.(`Directory sync of ${dirPath} failed: ${errorMessage(error)}`);
+		// Same split as the file path: a platform that will not sync directories is tolerated, a storage
+		// failure is not. Suppressing EIO/ENOSPC here would let a lost directory entry look durable.
+		if (!isUnsupportedSync(error)) {
+			await handle.close().catch(() => {});
+			throw error;
+		}
+		logger.trace?.(`Directory sync of ${dirPath} unsupported: ${errorMessage(error)}`);
 	} finally {
 		// Swallowed: this runs outside any compensation block, so a rejecting close would surface as an
 		// activation failure for something already best-effort.
@@ -1220,7 +1226,13 @@ async function settleInterruptedActivation(
 	const asideRecords = await inProgressAsideRecords(asideStagingDir);
 
 	const rollForward = async () => {
-		if (!liveExists) await rename(candidateDirPath, liveDirPath);
+		if (!liveExists) {
+			await rename(candidateDirPath, liveDirPath);
+			// The same relocation normal activation performs. Without it a crash between the swap and the
+			// journal's removal leaves Windows junctions naming the candidate path, so the component comes
+			// back with unresolvable dependencies.
+			await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
+		}
 		await syncRenameParents(candidateDirPath, liveDirPath);
 		for (const record of asideRecords) {
 			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components
@@ -1496,12 +1508,20 @@ async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: 
 					continue;
 				}
 				const normalized = stripExtendedLengthPrefix(target);
-				if (!normalized.startsWith(builtAtPath)) continue;
-				const repaired = join(liveDirPath, relative(builtAtPath, normalized));
+				// Containment, not a prefix match: `startsWith` classifies `<build>-shared` as inside
+				// `<build>` and would rewrite it to an unrelated live path.
+				const within = relative(builtAtPath, normalized);
+				if (within.startsWith('..') || isAbsolute(within)) continue;
+				const repaired = join(liveDirPath, within);
+				// The replacement is created BEFORE the old link is dropped, and swapped in by rename. A
+				// remove-then-create loses the dependency outright when the create fails — an antivirus or
+				// permission error on Windows would leave it worse than the dangling link it replaced.
+				const stagedLink = `${entryPath}.relink-${process.pid}-${randomUUID()}`;
 				try {
-					await rm(entryPath, { recursive: true, force: true });
-					await symlink(repaired, entryPath, 'junction');
+					await symlink(repaired, stagedLink, 'junction');
+					await rename(stagedLink, entryPath);
 				} catch (error) {
+					await rm(stagedLink, { recursive: true, force: true }).catch(() => {});
 					logger.warn(`Could not re-point ${entryPath} after activation: ${errorMessage(error)}`);
 				}
 			} else if (entry.isDirectory() && (entry.name.startsWith('@') || entry.name === 'node_modules')) {

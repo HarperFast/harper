@@ -290,6 +290,36 @@ describe('activation transaction', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('leaves a sibling-prefixed link alone when re-pointing dependency links', async () => {
+		// `startsWith` would classify `<build>-shared` as inside `<build>` and rewrite it to an unrelated
+		// live path. Containment has to be a path check, not a string prefix.
+		const root = await newRoot('prefix');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		const candidate = candidateApplicationPath(live, 'd1');
+		await writeTree(candidate, 'CANDIDATE\n');
+		// A real directory that merely SHARES a prefix with the candidate path.
+		const sibling = `${candidate}-shared`;
+		await fs.mkdir(sibling, { recursive: true });
+		await fs.writeFile(path.join(sibling, 'index.js'), 'module.exports = 2;\n');
+		await fs.mkdir(path.join(candidate, 'node_modules'), { recursive: true });
+		await fs.symlink(sibling, path.join(candidate, 'node_modules', 'shared'), 'dir');
+
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+		await activateCandidateApplication(app, 'd1');
+
+		assert.strictEqual(
+			await fs.readlink(path.join(live, 'node_modules', 'shared')),
+			sibling,
+			'a link that only shares a prefix is untouched'
+		);
+		// Deliberately not asserting that it resolves: the prefix-sharing directory has to live beside the
+		// candidate to share its prefix at all, so staging cleanup removes it. The property under test is
+		// that the link was not REWRITTEN, which readlink above establishes.
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('refuses to activate when there is no candidate build', async () => {
 		const root = await newRoot('nocand');
 		await writeTree(path.join(root, 'web'), 'LIVE\n');

@@ -161,13 +161,14 @@ export async function loadComponentDirectories(
 	loadedResources?: Resources,
 	readyComponentPromises: ComponentReadyPromises = new WeakMap(),
 	// Settled by boot BEFORE installApplications(), because that installs from the root config and would
-	// otherwise reinstall the previous release over an already-live candidate.
-	interruptedActivationFailures: Map<string, Error> = new Map()
+	// otherwise reinstall the previous release over an already-live candidate. `undefined` on a worker,
+	// which never runs that pass — distinct from an empty map, which would claim nothing is unreconciled.
+	interruptedActivationFailures?: Map<string, Error>
 ) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
-	const failedRecoveries = new Map<string, Error>(interruptedActivationFailures);
+	const failedRecoveries = new Map<string, Error>(interruptedActivationFailures ?? []);
 	try {
 		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
 			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
@@ -382,10 +383,20 @@ let errorReporter;
  * of the process.
  */
 export function forgetLoadedPath(componentDirectory: string): void {
+	let resolved: string | undefined;
 	try {
-		loadedPaths.delete(realpathSync(componentDirectory));
+		resolved = realpathSync(componentDirectory);
 	} catch {
-		// Already gone (the candidate was renamed live or discarded); nothing to forget.
+		// Already renamed live or discarded; fall through and prune by prefix anyway.
+	}
+	if (resolved) loadedPaths.delete(resolved);
+	// Nested `loadComponent()` calls register plugin and dependency realpaths UNDER the candidate, so
+	// deleting only the root leaves those behind — one dead entry per nested load, per deploy, forever.
+	const prefixes = [componentDirectory, resolved].filter(Boolean) as string[];
+	for (const key of loadedPaths.keys()) {
+		if (typeof key === 'string' && prefixes.some((prefix) => key === prefix || key.startsWith(prefix + sep))) {
+			loadedPaths.delete(key);
+		}
 	}
 }
 

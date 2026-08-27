@@ -40,7 +40,10 @@ async function loadRootComponents(isWorkerThread = false) {
 	// component scan. installApplications() installs whatever the root config names, so a candidate left
 	// half-swapped by a crash has to be resolved before that runs, or boot reinstalls over it. Failures are
 	// per component and returned, not thrown: the loader fails those components closed and loads the rest.
-	let interruptedActivationFailures = new Map();
+	// Undefined, not an empty Map: a worker skips this branch entirely, and handing the loader an empty map
+	// would assert "nothing is unreconciled" on a thread that never checked. The loader treats undefined as
+	// "no verdict from boot" instead.
+	let interruptedActivationFailures;
 	try {
 		if (isMainThread && !process.env.HARPER_SAFE_MODE) {
 			interruptedActivationFailures = await recoverInterruptedActivations(
