@@ -61,15 +61,17 @@ describe('Resource.get context passing', function () {
 		};
 
 		// Configure the stub to return a test record
-		sourceGetStub.resolves({
+		const sourceRecord = {
 			id: testId,
 			name: 'Test Record',
 			value: 42,
-		});
+		};
+		sourceGetStub.resolves(sourceRecord);
 
 		// Call Resource.get with context
 		const result = await TestTable.get(testId, testContext);
 		expectedCachedRecords++;
+		assert.strictEqual(result, sourceRecord, 'resolver-free cache fills should not clone the source response');
 
 		// Verify source.get was called
 		assert(sourceGetStub.calledOnce, 'source.get should be called once');
@@ -213,6 +215,7 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
+				{ name: 'computed', computed: true, enumerable: true },
 				// A get() resolves to its caller as soon as the source responds; the resulting
 				// cache write only actually stages afterward, past an async embed-hook step (see
 				// getFromSource - the embed step runs after the caller's promise has resolved).
@@ -222,6 +225,7 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 				{ name: 'vector', type: 'Array', embed: { source: 'name', model: 'unused' } },
 			],
 		});
+		TestTable.setComputedAttribute('computed', (record) => `${record.name} computed`);
 
 		let releaseEmbed;
 		const embedGate = new Promise((resolve) => {
@@ -263,8 +267,9 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 		);
 
 		releaseEmbed();
-		await getPromise;
+		const response = await getPromise;
 		await dropPromise;
+		assert.deepEqual(response.vector, [1, 2, 3], 'the retained response should receive the background embedding');
 		assert.strictEqual(dropResolved, true, 'dropTable() should resolve once the pending write has landed');
 	});
 

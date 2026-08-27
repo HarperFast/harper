@@ -6288,7 +6288,11 @@ export function makeTable(options) {
 						if (needsMutableRecordCopy(responseRecord)) responseRecord = { ...responseRecord };
 						// A plain source object is both projections until this point. Split it before the response
 						// receives the table prototype, whose resolvers must never become visible to durable encoding.
-						if (responseRecord === updatedRecord && responseRecord.constructor === Object)
+						if (
+							responseRecord === updatedRecord &&
+							responseRecord.constructor === Object &&
+							primaryStore.encoder.resolverNames.length > 0
+						)
 							responseRecord = { ...responseRecord };
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
@@ -6509,7 +6513,13 @@ export function makeTable(options) {
 					TableResource.embedAttributes,
 					TableResource.userEmbedders
 				);
-				if (embedBefore) await embedBefore();
+				if (embedBefore) {
+					await embedBefore();
+					if (responseRecord !== updatedRecord && Object.isExtensible(responseRecord))
+						for (const attribute of TableResource.embedAttributes)
+							if (Object.hasOwn(updatedRecord, attribute.name))
+								responseRecord[attribute.name] = updatedRecord[attribute.name];
+				}
 				if (droppingTable) {
 					// Re-check right before staging the write: dropTable() may have started
 					// while we were awaiting the embed step above (harper#1381).
