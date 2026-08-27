@@ -73,7 +73,7 @@ function leaveDurableRecordEncoding() {
 }
 
 function encodeDurably(encoder, encode, record, options?) {
-	if (((globalThis as any)[RESPONSE_ENCODING_DEPTH] ?? 0) > 0) return encode.call(encoder, record, options);
+	if ((encoder[RESPONSE_ENCODING_DEPTH] ?? 0) > 0) return encode.call(encoder, record, options);
 	enterDurableRecordEncoding();
 	try {
 		return encode.call(encoder, record, options);
@@ -83,12 +83,11 @@ function encodeDurably(encoder, encode, record, options?) {
 }
 
 export function encodeRecordForResponse(encoder, record, options?) {
-	const globals = globalThis as any;
-	globals[RESPONSE_ENCODING_DEPTH] = (globals[RESPONSE_ENCODING_DEPTH] ?? 0) + 1;
+	encoder[RESPONSE_ENCODING_DEPTH] = (encoder[RESPONSE_ENCODING_DEPTH] ?? 0) + 1;
 	try {
 		return encoder.encode(record, options);
 	} finally {
-		globals[RESPONSE_ENCODING_DEPTH]--;
+		encoder[RESPONSE_ENCODING_DEPTH]--;
 	}
 }
 
@@ -100,11 +99,6 @@ export function projectRecordForDurableEncoding(record) {
 	} finally {
 		leaveDurableRecordEncoding();
 	}
-}
-
-export function projectRecordForResponseEncoding(record) {
-	const toJSON = record?.toJSON;
-	return typeof toJSON === 'function' ? toJSON.call(record) : record;
 }
 
 export function promoteRecord(encoder, value) {
@@ -1067,12 +1061,11 @@ export function recordUpdater(store, tableId, auditStore) {
 			if (audit) {
 				const username = typeof options?.user === 'string' ? options.user : options?.user?.username;
 				if (auditRecord) {
-					const encodedAuditRecord = type === 'message' ? projectRecordForResponseEncoding(auditRecord) : auditRecord;
 					encodeBlobsWithFilePath(
 						() =>
 							type === 'message'
-								? encodeRecordForResponse(store.encoder, encodedAuditRecord)
-								: store.encoder.encode(encodedAuditRecord),
+								? encodeRecordForResponse(store.encoder, auditRecord)
+								: store.encoder.encode(auditRecord),
 						id,
 						store.rootStore
 					);

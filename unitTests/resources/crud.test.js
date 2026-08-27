@@ -5,12 +5,7 @@ const { table, databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const {
-	clearNextEncoding,
-	encodeRecordForResponse,
-	projectRecordForResponseEncoding,
-	setNextEncoding,
-} = require('#src/resources/RecordEncoder');
+const { clearNextEncoding, encodeRecordForResponse, setNextEncoding } = require('#src/resources/RecordEncoder');
 const { createAuditEntry, readAuditEntry } = require('#src/resources/auditStore');
 const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../waitFor.js');
@@ -324,13 +319,6 @@ describe('CRUD operations with the Resource API', () => {
 			id: 'nested-message-record',
 			name: 'nested message',
 		});
-		const record = Object.assign(Object.create(encoder.structPrototype), {
-			id: 'message-record',
-			name: 'message',
-		});
-		const projected = projectRecordForResponseEncoding(record);
-		assert.equal(projected.computed, 'message computed');
-		assert.equal(Object.hasOwn(projected, 'computed'), true);
 		const messageEnvelope = { record: nestedRecord };
 		assert.equal(Object.hasOwn(messageEnvelope.record, 'computed'), false);
 		const message = readAuditEntry(
