@@ -6242,7 +6242,7 @@ export function makeTable(options) {
 						let toJSON = responseProjectionSource.toJSON;
 						let materializedTargetProjection = false;
 						const sourcePrototype = Object.getPrototypeOf(responseProjectionSource);
-						const usesTargetPrototype =
+						let usesTargetPrototype =
 							sourcePrototype === primaryStore.encoder.structPrototype ||
 							(sourcePrototype && Object.getPrototypeOf(sourcePrototype) === primaryStore.encoder.structPrototype);
 						const usesForeignProjection = typeof toJSON === 'function' && !usesTargetPrototype;
@@ -6259,6 +6259,7 @@ export function makeTable(options) {
 							responseProjectionSource.constructor === Object
 						) {
 							responseProjectionSource = promoteRecord(primaryStore.encoder, cleanSourceRecord);
+							usesTargetPrototype = true;
 							toJSON = responseProjectionSource.toJSON;
 						}
 						if (

@@ -341,6 +341,8 @@ describe('Caching', () => {
 			await RevalidatedTable.invalidate('source-collision');
 			const response = await RevalidatedTable.get('source-collision');
 			assert.equal(response.computed, 'cached computed');
+			assert.equal(Object.hasOwn(response, 'related'), false);
+			assert.equal(response.related.name, 'relationship');
 			const persisted = await waitFor(() => RevalidatedTable.primaryStore.getEntry('source-collision')?.value, {
 				message: 'the cleaned source record must commit to the cache',
 			});
