@@ -204,6 +204,12 @@ describe('CRUD operations with the Resource API', () => {
 				assert(durable, 'a decoded record must survive durable re-encoding');
 				assert.equal(Object.hasOwn(durable, 'computed'), false);
 				assert.equal(durable.related.id, 1);
+
+				const legacyRecord = Object.create(Object.getPrototypeOf(record));
+				Object.assign(legacyRecord, { id: 'legacy-reencode', name: 'trusted', relatedId: 1 });
+				Object.defineProperty(legacyRecord, 'computed', { value: 'forged', enumerable: true });
+				const legacyEncoding = Buffer.from(encoder.encode(legacyRecord));
+				assert.equal(legacyEncoding.includes(Buffer.from('forged')), false);
 			} finally {
 				CRUDTable.setComputedAttribute('computed', (instance) => instance.name + ' computed');
 			}

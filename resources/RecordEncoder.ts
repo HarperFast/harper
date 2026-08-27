@@ -36,7 +36,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
-// Source and built module copies can coexist; share the scope and keep its zero slot stable.
+// Source and built module copies can coexist, so they must share the durable-encoding scope.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
 
 export function isDurableRecordEncoding() {

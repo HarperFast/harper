@@ -591,7 +591,7 @@ export function makeTable(options) {
 		const durableEnumNames = enumNames.filter((name) => !readOnlyResolverNames.has(name));
 		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
 		const toJSON = function () {
-			const durable = isDurableRecordEncoding();
+			const durable = readOnlyResolverNames.size > 0 && isDurableRecordEncoding();
 			const surfacedNames = durable ? durableEnumNames : enumNames;
 			if (isCyclic === undefined) {
 				isCyclic = detectCyclicEnumerable(tableClass);
@@ -657,7 +657,9 @@ export function makeTable(options) {
 				? {
 						configurable: true,
 						get() {
-							return isDurableRecordEncoding() && durableEnumNames.length === 0 ? undefined : toJSON;
+							if (!isDurableRecordEncoding() || durableEnumNames.length > 0) return toJSON;
+							for (const name of readOnlyResolverNames) if (Object.hasOwn(this, name)) return toJSON;
+							return undefined;
 						},
 					}
 				: { configurable: true, value: toJSON }
