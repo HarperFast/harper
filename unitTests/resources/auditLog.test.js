@@ -5,8 +5,12 @@ const auditStoreModule = require('#src/resources/auditStore');
 const { setAuditRetention, readAuditEntry, createAuditEntry, transactionKeyEncoder, removeAuditEntry } =
 	auditStoreModule;
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
+const { mkdtempSync, readdirSync, rmSync, utimesSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { basename, join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
@@ -130,6 +134,94 @@ describe('Audit log', () => {
 		assert.equal(secondLog._currentLogBuffer, undefined, 'another worker should clear its current mmap buffer');
 		firstStore.stopPurgeNotifications();
 		secondStore.stopPurgeNotifications();
+	});
+	it('keeps mapped bytes readable but silently skips unread purged sequences on POSIX', async function () {
+		// Windows cannot unlink a live mapping; POSIX keeps the mapped sequence readable after unlink.
+		if (process.platform === 'win32') return this.skip();
+		const databasePath = mkdtempSync(join(tmpdir(), 'harper-audit-purge-iterator-'));
+		let database;
+		let auditStore;
+		try {
+			database = RocksDatabase.open(databasePath, {
+				transactionLogMaxSize: 256,
+				transactionLogMaxAgeThreshold: 0,
+			});
+			auditStore = new RocksTransactionLogStore(database);
+			const entryPayload = 'x'.repeat(120);
+			const oldEntryCount = 11;
+			for (let index = 0; index < oldEntryCount; index++) {
+				const value = `${index}:${entryPayload}`;
+				await database.transaction(async (transaction) => {
+					await transaction.put(`key-${index}`, value);
+					transaction.useLog('local').addEntry(Buffer.from(value));
+				});
+			}
+			await database.flush();
+			const oldFiles = readdirSync(auditStore.log.path)
+				.filter((file) => file.endsWith('.txnlog'))
+				.sort((left, right) => Number.parseInt(left) - Number.parseInt(right));
+			assert.deepStrictEqual(
+				oldFiles,
+				Array.from({ length: oldEntryCount }, (_, index) => `${index + 1}.txnlog`),
+				'each old entry must occupy its own rotated sequence'
+			);
+			const retainedValue = `${oldEntryCount}:${entryPayload}`;
+			await database.transaction(async (transaction) => {
+				await transaction.put(`key-${oldEntryCount}`, retainedValue);
+				transaction.useLog('local').addEntry(Buffer.from(retainedValue));
+			});
+			await database.flush();
+			assert.equal(
+				auditStore.log.getStats().fileCount,
+				oldEntryCount + 1,
+				'the retained entry must rotate into a newer sequence'
+			);
+			for (const file of oldFiles) {
+				utimesSync(join(auditStore.log.path, file), new Date(0), new Date(0));
+			}
+			const logStats = auditStore.log.getStats();
+			assert.equal(logStats.replayGapBytes, 0, 'every old sequence must be flushed before purge');
+			assert.equal(logStats.purge.retainedUnflushedFiles, 0, 'no old sequence may be protected by an unflushed write');
+			const purgeBefore = Date.now() - 1_000;
+
+			const iterator = auditStore.log.query({ start: 0 });
+			const first = iterator.next();
+			assert.equal(first.done, false, 'the lagging iterator must map the oldest sequence before purge');
+			const mappedEntry = first.value.data;
+
+			const purged = auditStore.purgeLogs({ before: purgeBefore, includeEntryCounts: true });
+			assert.deepStrictEqual(
+				purged.map(({ path }) => basename(path)).sort((left, right) => Number.parseInt(left) - Number.parseInt(right)),
+				oldFiles,
+				'all old sequences, including unread sequence 2, must be purged'
+			);
+			assert.equal(
+				purged.reduce((entries, file) => entries + file.entries, 0),
+				oldEntryCount,
+				'the purge must remove every old entry'
+			);
+			assert.equal(auditStore.log._logBuffers.size, 0, 'purge must invalidate the real transaction-log mmap cache');
+			assert.equal(mappedEntry.toString(), `0:${entryPayload}`, 'the already-mapped sequence remains readable');
+			assert.deepStrictEqual(
+				iterator.next(),
+				{ value: undefined, done: true },
+				'the lagging iterator silently ends when the next sequence has been purged'
+			);
+
+			const freshEntries = Array.from(auditStore.log.query({ start: 0 }), ({ data }) => data.toString());
+			assert.deepStrictEqual(
+				freshEntries,
+				[retainedValue],
+				'a fresh iterator must prove the retained entry still exists after the lagging iterator ended'
+			);
+		} finally {
+			auditStore?.stopPurgeNotifications();
+			try {
+				database?.close();
+			} finally {
+				rmSync(databasePath, { recursive: true, force: true });
+			}
+		}
 	});
 	it('check log after writes and prune', async () => {
 		events = [];
