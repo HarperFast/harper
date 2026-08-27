@@ -26,7 +26,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '20 8 * * *' # 02:20 MDT, last in the serialized harper-bench chain
+    - cron: '20 8 * * *' # third harper-bench slot (sequence map: harper-pro benchmarks/ycsb/runner/README.md)
   workflow_dispatch:
     inputs:
       scale:
