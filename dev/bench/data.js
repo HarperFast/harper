@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787826469403,
+  "lastUpdate": 1787826471843,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -11442,6 +11442,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 52.4,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "30db07ac75e79262aae139508b6d85984a1ac5db",
+          "message": "ci: exclude ready_for_review from the always-on cancelling arm (#2357)\n\nCodex follow-up on #2353: ready_for_review is a non-labeled event, so\nthe ALWAYS_ON arm of the concurrency predicate still placed it in the\nshared cancelling group in always-on mode — a label-opted bot PR's\nready-flip could cancel the labeler's in-flight review and then fail\nauthor-based authorization. The cancelling set now excludes\nready_for_review in BOTH modes; the job gates are unchanged\n(ready-flips run review, in their own run_id group).\n\n\nClaude-Session: https://claude.ai/code/session_01S94XethbGXpAb4DRKMD4kt\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-27T00:11:44Z",
+          "url": "https://github.com/HarperFast/harper/commit/30db07ac75e79262aae139508b6d85984a1ac5db"
+        },
+        "date": 1787826471474,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 11.36,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 10.62,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 14.58,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 13.34,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 18.65,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 12.6,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 25.23,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 11.91,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 15.62,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 43.97,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 121.7,
             "unit": "ms"
           }
         ]
