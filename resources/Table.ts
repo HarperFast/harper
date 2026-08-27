@@ -657,7 +657,8 @@ export function makeTable(options) {
 				? {
 						configurable: true,
 						get() {
-							if (!isDurableRecordEncoding() || durableEnumNames.length > 0) return toJSON;
+							if (!isDurableRecordEncoding()) return enumNames.length > 0 ? toJSON : undefined;
+							if (durableEnumNames.length > 0) return toJSON;
 							for (const name of readOnlyResolverNames) if (Object.hasOwn(this, name)) return toJSON;
 							return undefined;
 						},
@@ -5257,9 +5258,12 @@ export function makeTable(options) {
 			const readOnlyResolverNames = new Set<string>();
 			const collisionMetricPath = databaseName + '.' + tableName;
 			let reportedReadOnlyResolverCollision = false;
-			const noteReadOnlyResolverCollision = () => {
+			const noteReadOnlyResolverCollision = (name: string) => {
 				if (reportedReadOnlyResolverCollision) return;
 				reportedReadOnlyResolverCollision = true;
+				harperLogger.warn?.(
+					`Discarded durable field "${name}" because it collides with a read-only resolver on "${collisionMetricPath}"`
+				);
 				try {
 					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
 				} catch {}
@@ -5275,7 +5279,7 @@ export function makeTable(options) {
 						set(related) {
 							if (typeof attribute.set === 'function') return attribute.set(this, related);
 							if (!Object.isExtensible(this)) throw new ClientError(`${name} is read-only`);
-							noteReadOnlyResolverCollision();
+							noteReadOnlyResolverCollision(name);
 						},
 						configurable: true,
 						enumerable: attribute.enumerable,

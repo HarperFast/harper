@@ -97,7 +97,7 @@ describe('CRUD operations with the Resource API', () => {
 			],
 		});
 		hiddenResolverDefinition.tableClass = HiddenResolverTable;
-		HiddenResolverTable.setComputedAttribute('hidden', (instance) => instance);
+		HiddenResolverTable.setComputedAttribute('hidden', () => null);
 
 		for (let i = 0; i < 5; i++) {
 			CRUDRelatedTable.put({
