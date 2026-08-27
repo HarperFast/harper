@@ -587,6 +587,14 @@ export function makeTable(options) {
 	// The bounded enumeration (own keys + the known enumerable names) replaces the old whole-prototype-chain
 	// `for..in`, which cost O(inherited enumerables) per record. On a cyclically-enumerable table it also
 	// applies the path-scoped cycle guard; acyclic tables keep the cheap raw-value fast path.
+	const storedFieldNames = (record) => {
+		const inheritedNames = record[STORED_FIELD_NAMES];
+		if (!inheritedNames) return Object.keys(record);
+		const ownNames = Object.keys(record);
+		return ownNames.length === 0
+			? inheritedNames
+			: inheritedNames.concat(ownNames.filter((name) => !inheritedNames.includes(name)));
+	};
 	function installEnumerableToJSON(
 		structPrototype: any,
 		tableClass: any,
@@ -596,14 +604,6 @@ export function makeTable(options) {
 		noteSettableResolverCollision: (name: string) => void
 	) {
 		const enumNames = enumerableAttributeNames;
-		const storedFieldNames = (record) => {
-			const inheritedNames = record[STORED_FIELD_NAMES];
-			if (!inheritedNames) return Object.keys(record);
-			const ownNames = Object.keys(record);
-			return ownNames.length === 0
-				? inheritedNames
-				: inheritedNames.concat(ownNames.filter((name) => !inheritedNames.includes(name)));
-		};
 		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
 		const toJSON = function () {
 			if (isCyclic === undefined) {
@@ -5346,6 +5346,7 @@ export function makeTable(options) {
 				}
 			}
 			primaryStore.encoder.setReadOnlyResolverNames(readOnlyResolverNames, resolverNames);
+			primaryStore.clearRecordCache?.();
 			primaryStore.encoder.onReadOnlyResolverCollision = noteReadOnlyResolverCollision;
 			this.enumerableRelationDefs = enumerableRelationDefs;
 			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
@@ -6260,8 +6261,12 @@ export function makeTable(options) {
 							Object.hasOwn(responseProjectionSource, STRUCT_SOURCE) ||
 							typeof toJSON === 'function'
 						) {
-							responseRecord =
-								typeof toJSON === 'function' ? toJSON.call(responseProjectionSource) : responseProjectionSource;
+							if (typeof toJSON === 'function') responseRecord = toJSON.call(responseProjectionSource);
+							else if (responseProjectionSource[STORED_FIELD_NAMES]) {
+								responseRecord = {};
+								for (const key of storedFieldNames(responseProjectionSource))
+									responseRecord[key] = responseProjectionSource[key];
+							} else responseRecord = responseProjectionSource;
 							materializedTargetProjection = usesTargetPrototype && typeof toJSON === 'function';
 						} else responseRecord = responseProjectionSource;
 						// A target-table response projection materializes enumerable resolvers. Restore those as

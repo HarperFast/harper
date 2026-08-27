@@ -5,7 +5,11 @@ const { table, databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { clearNextEncoding, setNextEncoding } = require('#src/resources/RecordEncoder');
+const {
+	clearNextEncoding,
+	projectRecordForResponseEncoding,
+	setNextEncoding,
+} = require('#src/resources/RecordEncoder');
 const { createAuditEntry, readAuditEntry } = require('#src/resources/auditStore');
 const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../waitFor.js');
@@ -185,10 +189,22 @@ describe('CRUD operations with the Resource API', () => {
 	});
 	it('clears a stale resolver setter during schema reload', function () {
 		const hiddenAttribute = HiddenResolverTable.attributes.find((attribute) => attribute.name === 'hidden');
+		const primaryStore = HiddenResolverTable.primaryStore;
+		const clearRecordCache = primaryStore.clearRecordCache;
+		let cacheClears = 0;
+		primaryStore.clearRecordCache = function () {
+			cacheClears++;
+			return clearRecordCache.call(this);
+		};
 		hiddenAttribute.set = () => {};
-		HiddenResolverTable.updatedAttributes();
-		assert.equal(hiddenAttribute.set, null);
-		assert(HiddenResolverTable.primaryStore.encoder.readOnlyResolverNameSet.has('hidden'));
+		try {
+			HiddenResolverTable.updatedAttributes();
+			assert.equal(hiddenAttribute.set, null);
+			assert(HiddenResolverTable.primaryStore.encoder.readOnlyResolverNameSet.has('hidden'));
+			assert.equal(cacheClears, 1);
+		} finally {
+			primaryStore.clearRecordCache = clearRecordCache;
+		}
 	});
 	it('removes typed resolver collisions without materializing lazy stored fields', function () {
 		const encoder = TypedResolverTable.primaryStore.encoder;
@@ -225,12 +241,38 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(Object.hasOwn(reencoded, 'hidden'), false);
 		}
 	});
+	it('materializes a frozen typed source after cleaning a non-enumerable resolver collision', async function () {
+		const encoder = TypedResolverTable.primaryStore.encoder;
+		const readOnlyResolverNames = encoder.readOnlyResolverNames;
+		encoder.setReadOnlyResolverNames([]);
+		let encoded;
+		try {
+			encoded = Buffer.from(
+				encoder.encode({ id: 'typed-frozen-collision', source: 'trusted', hidden: 'forged-hidden' })
+			);
+		} finally {
+			encoder.setReadOnlyResolverNames(readOnlyResolverNames);
+		}
+		const sourceRecord = Object.freeze(encoder.decode(encoded, { noMetadata: true, lazy: true }));
+		TypedResolverTable.sourcedFrom({ get: () => sourceRecord });
+		await TypedResolverTable.invalidate('typed-frozen-collision');
+		const response = await TypedResolverTable.get('typed-frozen-collision');
+		assert.equal(response.id, 'typed-frozen-collision');
+		assert.equal(response.source, 'trusted');
+		assert.equal(response.hidden, null);
+		assert.equal(Object.hasOwn(response, 'hidden'), false);
+	});
 	it('preserves computed index projections on invalidated records', async function () {
 		const context = {};
+		const partialRecord = Object.create(CRUDTable.primaryStore.encoder.structPrototype);
+		Object.defineProperties(partialRecord, {
+			id: { value: 'residency-projection', enumerable: true },
+			computed: { value: 'projected', enumerable: true },
+		});
 		await transaction(context, async () => {
 			const options = { isNotification: true, ensureLoaded: false, async: true };
 			const resource = await CRUDTable.getResource('residency-projection', context, options);
-			resource._writeInvalidate('residency-projection', { id: 'residency-projection', computed: 'projected' }, options);
+			resource._writeInvalidate('residency-projection', partialRecord, options);
 		});
 		const invalidated = CRUDTable.primaryStore.getEntry('residency-projection').value;
 		assert.equal(invalidated.computed, 'projected');
@@ -254,6 +296,27 @@ describe('CRUD operations with the Resource API', () => {
 		).getValue(CRUDTable.primaryStore);
 		assert.equal(patch.name, 'patched');
 		assert.equal(Object.hasOwn(patch, 'computed'), false);
+	});
+	it('preserves response projections in retained message payloads', function () {
+		const encoder = CRUDTable.primaryStore.encoder;
+		const record = Object.assign(Object.create(encoder.structPrototype), { id: 'message-record', name: 'message' });
+		const projected = projectRecordForResponseEncoding(record);
+		assert.equal(projected.computed, 'message computed');
+		assert.equal(Object.hasOwn(projected, 'computed'), true);
+		const message = readAuditEntry(
+			Buffer.from(
+				createAuditEntry({
+					type: 'message',
+					tableId: CRUDTable.tableId,
+					recordId: 'message-record',
+					version: Date.now(),
+					nodeId: 0,
+					encodedRecord: Buffer.from(encoder.encode(projected)),
+				})
+			)
+		).getValue(CRUDTable.primaryStore);
+		assert.equal(message.computed, 'message computed');
+		assert.equal(Object.hasOwn(message, 'computed'), true);
 	});
 	async function waitForAnalyticsMetric(metric, start, path = 'CRUDTable') {
 		return waitFor(

@@ -90,6 +90,11 @@ export function projectRecordForDurableEncoding(record) {
 	}
 }
 
+export function projectRecordForResponseEncoding(record) {
+	const toJSON = record?.toJSON;
+	return typeof toJSON === 'function' ? toJSON.call(record) : record;
+}
+
 export function promoteRecord(encoder, value) {
 	const promoted = new encoder.structPrototype.constructor();
 	const resolverNames = encoder.resolverNames;
@@ -1050,7 +1055,8 @@ export function recordUpdater(store, tableId, auditStore) {
 			if (audit) {
 				const username = typeof options?.user === 'string' ? options.user : options?.user?.username;
 				if (auditRecord) {
-					encodeBlobsWithFilePath(() => store.encoder.encode(auditRecord), id, store.rootStore);
+					const encodedAuditRecord = type === 'message' ? projectRecordForResponseEncoding(auditRecord) : auditRecord;
+					encodeBlobsWithFilePath(() => store.encoder.encode(encodedAuditRecord), id, store.rootStore);
 					if (blobsWereEncoded) {
 						extendedType |= HAS_BLOBS;
 					}

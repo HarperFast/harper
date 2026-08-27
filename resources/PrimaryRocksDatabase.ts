@@ -203,6 +203,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		return super.removeSync(id, options);
 	}
 
+	clearRecordCache(): void {
+		this.#cache?.clear();
+	}
+
 	clearSync(): void {
 		// clearSync wipes every record; the per-instance cache must be dropped
 		// too, otherwise a cached entry would survive the clear and be served as
