@@ -11,7 +11,7 @@ const { waitFor } = require('../waitFor.js');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
-	let CRUDTable, CRUDRelatedTable;
+	let CRUDTable, CRUDRelatedTable, HiddenResolverTable;
 
 	before(async function () {
 		setupTestDBPath();
@@ -81,6 +81,23 @@ describe('CRUD operations with the Resource API', () => {
 		relationship_attribute.definition.tableClass = CRUDRelatedTable;
 		children_of_self_attribute.elements.definition.tableClass = CRUDRelatedTable;
 		parent_of_self_attribute.definition.tableClass = CRUDRelatedTable;
+		const hiddenResolverDefinition = {};
+		HiddenResolverTable = table({
+			table: 'HiddenResolverTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'source' },
+				{
+					name: 'hidden',
+					type: 'HiddenResolverTable',
+					computed: true,
+					definition: hiddenResolverDefinition,
+				},
+			],
+		});
+		hiddenResolverDefinition.tableClass = HiddenResolverTable;
+		HiddenResolverTable.setComputedAttribute('hidden', (instance) => instance);
 
 		for (let i = 0; i < 5; i++) {
 			CRUDRelatedTable.put({
@@ -119,6 +136,16 @@ describe('CRUD operations with the Resource API', () => {
 			CRUDRelatedTable.loadAsInstance = true;
 		});
 		registerTests();
+	});
+	it('filters own keys that collide with non-surfaced read-only resolvers', function () {
+		const encoder = HiddenResolverTable.primaryStore.encoder;
+		assert(encoder.readOnlyResolverNames.has('hidden'));
+		assert(Object.getOwnPropertyDescriptor(encoder.structPrototype, 'toJSON'));
+		const legacyRecord = Object.create(encoder.structPrototype);
+		Object.assign(legacyRecord, { id: 'hidden-legacy', source: 'trusted' });
+		Object.defineProperty(legacyRecord, 'hidden', { value: 'forged-hidden', enumerable: true });
+		const encoded = Buffer.from(encoder.encode(legacyRecord));
+		assert.equal(encoded.includes(Buffer.from('forged-hidden')), false);
 	});
 	async function waitForAnalyticsMetric(metric, start) {
 		return waitFor(

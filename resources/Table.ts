@@ -5299,7 +5299,7 @@ export function makeTable(options) {
 			this.enumerableRelationDefs = enumerableRelationDefs;
 			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
 			// removed all enumerable/computed-scalar attributes, drop the now-unneeded toJSON.
-			if (enumerableAttributeNames.length > 0)
+			if (enumerableAttributeNames.length > 0 || readOnlyResolverNames.size > 0)
 				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed, readOnlyResolverNames);
 			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
 		}
