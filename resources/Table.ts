@@ -6222,8 +6222,16 @@ export function makeTable(options) {
 							}
 						}
 						const sourceRecord = updatedRecord;
-						if (sourceRecord[STORED_FIELD_NAMES] || Object.hasOwn(sourceRecord, STRUCT_SOURCE)) {
-							const toJSON = sourceRecord.toJSON;
+						const toJSON = sourceRecord.toJSON;
+						const sourcePrototype = Object.getPrototypeOf(sourceRecord);
+						const usesTargetPrototype =
+							sourcePrototype === primaryStore.encoder.structPrototype ||
+							(sourcePrototype && Object.getPrototypeOf(sourcePrototype) === primaryStore.encoder.structPrototype);
+						if (
+							sourceRecord[STORED_FIELD_NAMES] ||
+							Object.hasOwn(sourceRecord, STRUCT_SOURCE) ||
+							(typeof toJSON === 'function' && !usesTargetPrototype)
+						) {
 							responseRecord = typeof toJSON === 'function' ? toJSON.call(sourceRecord) : sourceRecord;
 						} else responseRecord = sourceRecord;
 						updatedRecord = projectRecordForDurableEncoding(sourceRecord);
