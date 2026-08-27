@@ -5250,7 +5250,10 @@ export function makeTable(options) {
 			hasSurfacedComputed = false;
 			const readOnlyResolverNames = new Set<string>();
 			const collisionMetricPath = databaseName + '.' + tableName;
+			let reportedReadOnlyResolverCollision = false;
 			const noteReadOnlyResolverCollision = () => {
+				if (reportedReadOnlyResolverCollision) return;
+				reportedReadOnlyResolverCollision = true;
 				try {
 					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
 				} catch {}
@@ -5265,6 +5268,7 @@ export function makeTable(options) {
 						},
 						set(related) {
 							if (typeof attribute.set === 'function') return attribute.set(this, related);
+							if (!Object.isExtensible(this)) throw new ClientError(`${name} is read-only`);
 							noteReadOnlyResolverCollision();
 						},
 						configurable: true,

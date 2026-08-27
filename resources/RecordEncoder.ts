@@ -36,6 +36,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+// Source and built module copies can coexist; share the scope and keep its zero slot stable.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
 
 export function isDurableRecordEncoding() {
@@ -45,17 +46,18 @@ export function isDurableRecordEncoding() {
 function enterDurableRecordEncoding() {
 	const globals = globalThis as any;
 	globals[DURABLE_ENCODING_DEPTH] = (globals[DURABLE_ENCODING_DEPTH] ?? 0) + 1;
-	return () => {
-		if (--globals[DURABLE_ENCODING_DEPTH] === 0) delete globals[DURABLE_ENCODING_DEPTH];
-	};
+}
+
+function leaveDurableRecordEncoding() {
+	(globalThis as any)[DURABLE_ENCODING_DEPTH]--;
 }
 
 function encodeDurably(encoder, encode, record, options?) {
-	const leaveDurableEncoding = enterDurableRecordEncoding();
+	enterDurableRecordEncoding();
 	try {
 		return encode.call(encoder, record, options);
 	} finally {
-		leaveDurableEncoding();
+		leaveDurableRecordEncoding();
 	}
 }
 
@@ -598,9 +600,13 @@ export class RecordEncoder extends StructonEncoder {
 		}
 	}
 	removeReadOnlyResolverFields(value) {
-		if (value == null || typeof value !== 'object' || !this.readOnlyResolverNames?.size) return value;
-		const collisions = [...this.readOnlyResolverNames].filter((name) => Object.hasOwn(value, name));
-		if (collisions.length === 0) return value;
+		if (value == null || typeof value !== 'object' || ArrayBuffer.isView(value) || !this.readOnlyResolverNames?.size)
+			return value;
+		let collisions: string[] | undefined;
+		for (const name of this.readOnlyResolverNames) {
+			if (Object.hasOwn(value, name)) (collisions ??= []).push(name);
+		}
+		if (!collisions) return value;
 		const descriptors = Object.getOwnPropertyDescriptors(value);
 		for (const name of collisions) {
 			delete descriptors[name];

@@ -5,6 +5,7 @@ const { table, databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { setNextEncoding } = require('#src/resources/RecordEncoder');
 const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../waitFor.js');
 
@@ -193,6 +194,20 @@ describe('CRUD operations with the Resource API', () => {
 			assert(durable, 'a decoded record must survive durable re-encoding');
 			assert.equal(Object.hasOwn(durable, 'computed'), false);
 		});
+		it('keeps a no-change instance put clean in the primary store', async function () {
+			if (CRUDTable.loadAsInstance !== true) this.skip();
+			await CRUDTable.put({ id: 'instance-reput', name: 'instance', relatedId: 1 });
+			const instance = await CRUDTable.get('instance-reput');
+			await CRUDTable.put(instance);
+			const persisted = CRUDTable.primaryStore.getEntry('instance-reput').value;
+			assert.equal(Object.hasOwn(persisted, 'computed'), false);
+			assert.equal(persisted.computed, 'instance computed');
+		});
+		it('rejects mutation of a returned read-only computed field', async function () {
+			await CRUDTable.put({ id: 'computed-read-only', name: 'read-only', relatedId: 1 });
+			const record = await CRUDTable.get('computed-read-only');
+			assert.throws(() => (record.computed = 'forged'), /computed.*read.?only/i);
+		});
 		it('discards a forged computed value from an affected-release payload', async function () {
 			const encoder = CRUDTable.primaryStore.encoder;
 			const encoded = Buffer.from(
@@ -214,6 +229,20 @@ describe('CRUD operations with the Resource API', () => {
 				resolvedMatches.some((record) => record.id === 'legacy-computed'),
 				true
 			);
+		});
+		it('returns metadata-prefixed binary decode output as bytes', function () {
+			const encoder = CRUDTable.primaryStore.encoder;
+			setNextEncoding(0, 0);
+			const encoded = Buffer.from(encoder.encode({ id: 'binary', name: 'durable bytes' }));
+			encoder.readOnlyResolverNames.add('length');
+			try {
+				const decoded = encoder.decode(encoded, { valueAsBuffer: true });
+				const bytes = decoded.value ?? decoded;
+				assert(Buffer.isBuffer(bytes));
+				assert(bytes.length > 0);
+			} finally {
+				encoder.readOnlyResolverNames.delete('length');
+			}
 		});
 		it('update', async function () {
 			const context = {};
