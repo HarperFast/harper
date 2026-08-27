@@ -80,6 +80,8 @@ import {
 	PENDING_LOCAL_TIME,
 	RecordObject,
 	isDurableRecordEncoding,
+	projectRecordForDurableEncoding,
+	STORED_FIELD_NAMES,
 	type Entry,
 	type StructureCounts,
 	entryMap,
@@ -590,6 +592,7 @@ export function makeTable(options) {
 		noteSettableResolverCollision: (name: string) => void
 	) {
 		const enumNames = enumerableAttributeNames;
+		const storedFieldNames = (record) => record[STORED_FIELD_NAMES] || Object.keys(record);
 		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
 		const toJSON = function () {
 			if (isCyclic === undefined) {
@@ -608,7 +611,7 @@ export function makeTable(options) {
 				// fast path: bounded copy, values left raw (matches the previous for..in output). `name in json`
 				// treats an own stored key (already copied above) as taking precedence over its getter.
 				const json = {};
-				for (const key of Object.keys(this)) json[key] = this[key];
+				for (const key of storedFieldNames(this)) json[key] = this[key];
 				for (const name of enumNames) if (!(name in json)) json[name] = this[name];
 				return json;
 			}
@@ -640,7 +643,7 @@ export function makeTable(options) {
 					added = true;
 				}
 				const json = {};
-				for (const key of Object.keys(this)) json[key] = resolveStructForJSON(this[key]);
+				for (const key of storedFieldNames(this)) json[key] = resolveStructForJSON(this[key]);
 				for (const name of enumNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
 				return json;
 			} finally {
@@ -650,7 +653,7 @@ export function makeTable(options) {
 		};
 		const durableToJSON = function () {
 			const json = {};
-			for (const key of Object.keys(this)) if (!readOnlyResolverNames.has(key)) json[key] = this[key];
+			for (const key of storedFieldNames(this)) if (!readOnlyResolverNames.has(key)) json[key] = this[key];
 			return json;
 		};
 		Object.defineProperty(
@@ -661,6 +664,7 @@ export function makeTable(options) {
 						configurable: true,
 						get() {
 							if (!isDurableRecordEncoding()) return enumNames.length > 0 ? toJSON : undefined;
+							if (this[STORED_FIELD_NAMES]) return durableToJSON;
 							for (let i = 0; i < resolverNames.length; i++) {
 								const name = resolverNames[i];
 								if (!Object.hasOwn(this, name)) continue;
@@ -5268,23 +5272,27 @@ export function makeTable(options) {
 			let reportedReadOnlyResolverCollision = false;
 			let reportedSettableResolverCollision = false;
 			const noteReadOnlyResolverCollision = (name: string) => {
+				try {
+					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
+				} catch {}
 				if (reportedReadOnlyResolverCollision) return;
 				reportedReadOnlyResolverCollision = true;
 				try {
 					harperLogger.warn?.(
 						`Discarded durable field "${name}" because it collides with a read-only resolver on "${collisionMetricPath}"`
 					);
-					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
 				} catch {}
 			};
 			const noteSettableResolverCollision = (name: string) => {
+				try {
+					recordAction(true, 'settable-resolver-collision', collisionMetricPath);
+				} catch {}
 				if (reportedSettableResolverCollision) return;
 				reportedSettableResolverCollision = true;
 				try {
 					harperLogger.warn?.(
 						`Preserved durable field "${name}" because it collides with a settable resolver on "${collisionMetricPath}"; an older peer or schema may have persisted a relationship snapshot`
 					);
-					recordAction(true, 'settable-resolver-collision', collisionMetricPath);
 				} catch {}
 			};
 			for (const attribute of attributes) {
@@ -5329,7 +5337,7 @@ export function makeTable(options) {
 					this,
 					hasSurfacedComputed,
 					resolverNames,
-					readOnlyResolverNames,
+					primaryStore.encoder.readOnlyResolverNameSet,
 					noteSettableResolverCollision
 				);
 			else if (Object.getOwnPropertyDescriptor(primaryStore.encoder.structPrototype, 'toJSON'))
@@ -6203,7 +6211,7 @@ export function makeTable(options) {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
-						if (typeof updatedRecord.toJSON === 'function') updatedRecord = updatedRecord.toJSON();
+						updatedRecord = projectRecordForDurableEncoding(updatedRecord);
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).

@@ -13,6 +13,7 @@ describe('Caching', () => {
 		IndexedCachingTable,
 		CachingTableStaleWhileRevalidate,
 		SwrQueryTable,
+		RevalidatedTable,
 		Source,
 		sourceRequests = 0,
 		sourceResponses = 0;
@@ -23,6 +24,7 @@ describe('Caching', () => {
 	let timer = 0;
 	let return_value = true;
 	let return_error;
+	let returnNotModified = false;
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
@@ -86,6 +88,37 @@ describe('Caching', () => {
 			},
 		});
 		IndexedCachingTable.sourcedFrom(Source);
+		const relatedDefinition = {};
+		const RevalidatedRelatedTable = table({
+			table: 'RevalidatedRelatedTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		RevalidatedTable = table({
+			table: 'RevalidatedTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'relatedId' },
+				{
+					name: 'related',
+					type: 'RevalidatedRelatedTable',
+					relationship: { from: 'relatedId' },
+					enumerable: true,
+					definition: relatedDefinition,
+				},
+				{ name: 'computed', computed: true, enumerable: true },
+			],
+		});
+		relatedDefinition.tableClass = RevalidatedRelatedTable;
+		RevalidatedTable.setComputedAttribute('computed', (record) => record.name + ' computed');
+		RevalidatedTable.sourcedFrom({
+			get(id) {
+				return returnNotModified ? { status: 304, headers: {} } : { id, name: 'cached', relatedId: 'related' };
+			},
+		});
+		await RevalidatedRelatedTable.put({ id: 'related', name: 'relationship' });
 		let subscription = await CachingTable.subscribe({});
 
 		subscription.on('data', (event) => {
@@ -169,6 +202,27 @@ describe('Caching', () => {
 		assert(result.updatedAt >= start);
 		assert.equal(sourceRequests, 3);
 		assert.equal(target23.loadedFromSource, true);
+	});
+	it('keeps response resolvers out of a 304 cache write-back', async function () {
+		try {
+			returnNotModified = false;
+			RevalidatedTable.setTTLExpiration(0.001);
+			await RevalidatedTable.invalidate('revalidated');
+			const initial = await RevalidatedTable.get('revalidated');
+			assert.equal(initial.computed, 'cached computed');
+			assert.equal(initial.related.id, 'related');
+			await RevalidatedTable.primaryStore.committed;
+
+			returnNotModified = true;
+			await delay(5);
+			await RevalidatedTable.get('revalidated');
+			await RevalidatedTable.primaryStore.committed;
+			const persisted = RevalidatedTable.primaryStore.getEntry('revalidated').value;
+			assert.equal(Object.hasOwn(persisted, 'computed'), false);
+			assert.equal(Object.hasOwn(persisted, 'related'), false);
+		} finally {
+			returnNotModified = false;
+		}
 	});
 
 	it('loadedFromSource is observable on the target with loadAsInstance = false (#1576)', async function () {

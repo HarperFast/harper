@@ -179,6 +179,7 @@ describe('CRUD operations with the Resource API', () => {
 		encoder.setReadOnlyResolverNames([]);
 		let encoded;
 		try {
+			// Encode through the real typed writer so `hidden` is an inherited struct field, not an own-key forgery.
 			encoded = Buffer.from(encoder.encode({ id: 'typed-legacy', source: 'trusted', hidden: 'forged-hidden' }));
 		} finally {
 			encoder.setReadOnlyResolverNames(readOnlyResolverNames);
@@ -191,9 +192,18 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(decoded.id, 'typed-legacy');
 			assert.equal(decoded.source, 'trusted');
 			assert.equal(decoded.hidden, null);
+			const json = JSON.parse(JSON.stringify(decoded));
+			assert.equal(json.id, 'typed-legacy');
+			assert.equal(json.source, 'trusted');
+			assert.equal(Object.hasOwn(json, 'hidden'), true);
+			assert.equal(json.hidden, null);
+			const reencoded = encoder.decode(Buffer.from(encoder.encode(decoded)), { noMetadata: true, lazy: true });
+			assert.equal(reencoded.id, 'typed-legacy');
+			assert.equal(reencoded.source, 'trusted');
+			assert.equal(Object.hasOwn(reencoded, 'hidden'), false);
 		}
 	});
-	async function waitForAnalyticsMetric(metric, start) {
+	async function waitForAnalyticsMetric(metric, start, path = 'CRUDTable') {
 		return waitFor(
 			async () => {
 				if (!databases.system?.hdb_raw_analytics) return undefined;
@@ -202,7 +212,7 @@ describe('CRUD operations with the Resource API', () => {
 				});
 				for await (let { metrics } of analyticsResults) {
 					if (!Array.isArray(metrics)) continue;
-					const found = metrics.find((entry) => entry?.metric === metric && entry?.path === 'CRUDTable');
+					const found = metrics.find((entry) => entry?.metric === metric && entry?.path === path);
 					if (found) return found;
 				}
 			},
@@ -292,6 +302,7 @@ describe('CRUD operations with the Resource API', () => {
 				assert.equal(Object.hasOwn(durable, 'computed'), false);
 				assert.equal(Object.hasOwn(durable, 'related'), false);
 
+				const collisionStart = Date.now();
 				const relationshipSnapshot = Object.assign(Object.create(encoder.structPrototype), {
 					id: 'legacy-relationship',
 					name: 'trusted',
@@ -304,6 +315,7 @@ describe('CRUD operations with the Resource API', () => {
 				const preserved = encoder.decode(Buffer.from(encoder.encode(relationshipSnapshot)), { noMetadata: true });
 				assert.equal(Object.hasOwn(preserved, 'related'), true, 'settable legacy data must not be deleted');
 				assert.equal(preserved.related.id, 99);
+				await waitForAnalyticsMetric('settable-resolver-collision', collisionStart, 'test.CRUDTable');
 
 				const legacyRecord = Object.create(encoder.structPrototype);
 				Object.assign(legacyRecord, { id: 'legacy-reencode', name: 'trusted', relatedId: 1 });

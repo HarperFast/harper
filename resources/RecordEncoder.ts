@@ -37,6 +37,7 @@ import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 const STRUCT_SOURCE = Symbol.for('source');
+export const STORED_FIELD_NAMES = Symbol.for('harper.storedFieldNames');
 // Source and built module copies can coexist, so they must share the durable-encoding scope.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
 
@@ -57,6 +58,16 @@ function encodeDurably(encoder, encode, record, options?) {
 	enterDurableRecordEncoding();
 	try {
 		return encode.call(encoder, record, options);
+	} finally {
+		leaveDurableRecordEncoding();
+	}
+}
+
+export function projectRecordForDurableEncoding(record) {
+	enterDurableRecordEncoding();
+	try {
+		const toJSON = record?.toJSON;
+		return typeof toJSON === 'function' ? toJSON.call(record) : record;
 	} finally {
 		leaveDurableRecordEncoding();
 	}
@@ -573,6 +584,7 @@ export class RecordEncoder extends StructonEncoder {
 					nodeId,
 					additionalAuditRefs,
 					size: end - start,
+					value: undefined,
 				};
 			} else {
 				value = options?.valueAsBuffer
@@ -609,7 +621,8 @@ export class RecordEncoder extends StructonEncoder {
 		// rather than laundering an otherwise valid row into a null result.
 		value = this.removeReadOnlyResolverFields(value);
 		if (metadata) {
-			lastMetadata = { ...metadata, value } as any;
+			metadata.value = value;
+			lastMetadata = metadata as any;
 			if (this.isRocksDB) return lastMetadata;
 		}
 		return value;
@@ -623,6 +636,9 @@ export class RecordEncoder extends StructonEncoder {
 		)
 			return value;
 		const valuePrototype = Object.getPrototypeOf(value);
+		// Structon keeps typed fields as enumerable getters on a per-structure prototype. Replace that
+		// prototype once per dirty shape, retaining lazy getters while exposing the clean stored-name list
+		// to the table projector; mutating structon's shared prototype would poison every decoder using it.
 		if (
 			this.randomAccessStructure &&
 			valuePrototype != null &&
@@ -645,6 +661,9 @@ export class RecordEncoder extends StructonEncoder {
 				if (hasCollision) {
 					delete descriptors.toJSON;
 					cleanPrototype = Object.create(this.structPrototype, descriptors);
+					Object.defineProperty(cleanPrototype, STORED_FIELD_NAMES, {
+						value: Object.keys(descriptors).filter((name) => descriptors[name].enumerable),
+					});
 					this.#cleanTypedResolverPrototypes.set(valuePrototype, cleanPrototype);
 				} else {
 					this.#cleanTypedResolverPrototypes.set(valuePrototype, null);
