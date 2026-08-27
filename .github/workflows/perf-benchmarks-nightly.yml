@@ -26,7 +26,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 11 * * *' # nightly, offset from ycsb-nightly (07:00) and the cluster job
+    - cron: '20 8 * * *' # :20 avoids GitHub's scheduler backlog; slot order in harper-pro benchmarks/ycsb/runner/README.md
   workflow_dispatch:
     inputs:
       scale:
