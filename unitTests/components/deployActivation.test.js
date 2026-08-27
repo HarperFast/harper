@@ -14,6 +14,7 @@ const {
 	activateCandidateApplication,
 	prepareApplication,
 	recoverInterruptedActivations,
+	unsettleableComponentsFromDisk,
 	candidateApplicationPath,
 	DEPLOY_STAGING_DIR,
 	ASIDE_STAGING_DIR,
@@ -265,6 +266,36 @@ describe('interrupted activation recovery', () => {
 
 		assert.deepStrictEqual([...failures.keys()], ['broken'], 'only the affected component is reported');
 		assert.strictEqual(await readLive(root, 'healthy'), 'CANDIDATE\n', 'the healthy sibling still settles');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+describe('read-only verdict for worker boot', () => {
+	it('reports a component whose journal cannot be read', async () => {
+		const root = await newRoot('verdict');
+		await stageState(root, 'web', 'd1', { live: 'LIVE\n', candidate: 'X\n', journal: 'not json' });
+
+		const unsettleable = await unsettleableComponentsFromDisk(root);
+
+		assert.deepStrictEqual([...unsettleable.keys()], ['web'], 'a worker can fail it closed without main');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('stays silent for a healthy in-flight deploy', async () => {
+		// Every deploy has a well-formed journal in flight. Treating that as evidence would fail a component
+		// closed in the middle of its own successful deploy.
+		const root = await newRoot('inflight');
+		await stageState(root, 'web', 'd1', { live: 'LIVE\n', candidate: 'CANDIDATE\n', complete: true, journal: true });
+
+		const unsettleable = await unsettleableComponentsFromDisk(root);
+
+		assert.strictEqual(unsettleable.size, 0);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('stays silent when nothing is staged at all', async () => {
+		const root = await newRoot('nostaging');
+		assert.strictEqual((await unsettleableComponentsFromDisk(root)).size, 0);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });

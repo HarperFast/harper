@@ -55,6 +55,7 @@ import {
 	getEnvBuiltInComponents,
 	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
+	unsettleableComponentsFromDisk,
 } from './Application.ts';
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
@@ -169,6 +170,21 @@ export async function loadComponentDirectories(
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
 	const failedRecoveries = new Map<string, Error>(interruptedActivationFailures ?? []);
+	if (!interruptedActivationFailures) {
+		// No verdict from boot means this is a worker, which never runs the recovery pass. It reads the same
+		// evidence instead: a component whose activation could not be settled must not load here either,
+		// since workers are what actually serve it.
+		try {
+			for (const [component, error] of await unsettleableComponentsFromDisk(CF_ROUTES_DIR)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			harperLogger.warn(
+				'Could not check for unsettled component activations:',
+				errorForLog(error instanceof Error ? error : new Error(String(error)))
+			);
+		}
+	}
 	try {
 		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
 			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);

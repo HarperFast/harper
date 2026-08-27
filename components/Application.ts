@@ -1141,7 +1141,10 @@ async function candidateComponentName(deploymentDirPath: string): Promise<string
 	const named = recorded.trim();
 	if (isJoinableComponentName(named)) return named;
 	const entries = await readdir(deploymentDirPath, { withFileTypes: true }).catch(() => []);
-	const components = entries.filter((entry) => entry.isDirectory());
+	// Symlinks count: a `file:<directory>` candidate is deliberately a link, and activation already accepts
+	// one. Filtering to real directories here left those candidates with no owner, so residue removal took
+	// no lock and could delete a build in flight.
+	const components = entries.filter((entry) => entry.isDirectory() || entry.isSymbolicLink());
 	return components.length === 1 ? components[0].name : undefined;
 }
 
@@ -1191,6 +1194,43 @@ async function settleJournaledActivationsForComponent(
 		if (journal?.component !== componentName) continue;
 		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
 	}
+}
+
+/**
+ * Components that on-disk evidence says were left in a state nobody settled — determined READ-ONLY, so any
+ * thread can reach the same verdict.
+ *
+ * Recovery runs on the main thread only, but the components it could not settle still have to be failed
+ * closed on the workers that actually serve them, and a worker cannot be handed main's verdict: it boots
+ * through its own `loadRootComponents(true)`, potentially before main finished. Recovery deliberately KEEPS
+ * the evidence for anything it could not settle, so a worker can read it instead of being told.
+ *
+ * Only unambiguous evidence counts. A well-formed journal is NOT evidence — every healthy deploy has one
+ * in flight — so this reports a journal that cannot be read at all (corrupt, unknown version, or naming
+ * something other than its own deployment), which no in-flight deploy ever produces.
+ */
+export async function unsettleableComponentsFromDisk(componentsRootDirPath: string): Promise<Map<string, Error>> {
+	const unsettleable = new Map<string, Error>();
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	let deployments;
+	try {
+		deployments = await readdir(stagingRoot, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return unsettleable;
+		throw error;
+	}
+	for (const deployment of deployments) {
+		if (!deployment.isDirectory()) continue;
+		const deploymentDirPath = join(stagingRoot, deployment.name);
+		try {
+			await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
+		} catch (error) {
+			const component = await candidateComponentName(deploymentDirPath);
+			const failure = error instanceof Error ? error : new Error(String(error));
+			if (component && !unsettleable.has(component)) unsettleable.set(component, failure);
+		}
+	}
+	return unsettleable;
 }
 
 export async function recoverInterruptedActivations(componentsRootDirPath: string): Promise<Map<string, Error>> {
@@ -1359,36 +1399,50 @@ function isUnsupportedSync(error: unknown): boolean {
 	return UNSUPPORTED_SYNC_CODES.has((error as NodeJS.ErrnoException)?.code ?? '');
 }
 
+// How many file syncs run at once while flushing a candidate. Serial open/sync/close over a large
+// dependency tree adds seconds to every activation, all of it under the component preparation lock; a small
+// fan-out keeps the ordering guarantee (everything is synced before `.complete` is written) without paying
+// per-file latency one file at a time.
+const CANDIDATE_SYNC_CONCURRENCY = 16;
+
 async function syncTreeContents(rootPath: string): Promise<void> {
 	// Real durability failures propagate: the deploy fails, which is safe because the live tree is
 	// untouched. Platform "cannot fsync this handle" codes do not — treating those as durability failures
 	// fails every deploy on Windows.
 	const entries = await readdir(rootPath, { withFileTypes: true });
+	const syncFile = async (entryPath: string) => {
+		let handle;
+		try {
+			handle = await open(entryPath, 'r');
+		} catch (error) {
+			if (isUnsupportedSync(error)) {
+				logger.trace?.(`Sync of ${entryPath} unavailable: ${errorMessage(error)}`);
+				return;
+			}
+			throw error;
+		}
+		try {
+			await handle.sync();
+		} catch (error) {
+			if (!isUnsupportedSync(error)) throw error;
+			logger.trace?.(`Sync of ${entryPath} unsupported: ${errorMessage(error)}`);
+		} finally {
+			await handle.close().catch(() => {});
+		}
+	};
+	const pending: Promise<void>[] = [];
 	for (const entry of entries) {
 		const entryPath = join(rootPath, entry.name);
 		if (entry.isDirectory()) {
 			await syncTreeContents(entryPath);
 		} else if (entry.isFile()) {
-			let handle;
-			try {
-				handle = await open(entryPath, 'r');
-			} catch (error) {
-				if (isUnsupportedSync(error)) {
-					logger.trace?.(`Sync of ${entryPath} unavailable: ${errorMessage(error)}`);
-					continue;
-				}
-				throw error;
-			}
-			try {
-				await handle.sync();
-			} catch (error) {
-				if (!isUnsupportedSync(error)) throw error;
-				logger.trace?.(`Sync of ${entryPath} unsupported: ${errorMessage(error)}`);
-			} finally {
-				await handle.close().catch(() => {});
+			pending.push(syncFile(entryPath));
+			if (pending.length >= CANDIDATE_SYNC_CONCURRENCY) {
+				await Promise.all(pending.splice(0));
 			}
 		}
 	}
+	await Promise.all(pending);
 	await syncDirectory(rootPath);
 }
 
@@ -1484,12 +1538,11 @@ export async function activateCandidateApplication(application: Application, dep
 		await syncRenameParents(asidePath ?? priorAbsentRecordPath!, liveDirPath);
 	};
 
-	// B2 — the candidate becomes live.
+	// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
+	// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
+	// compensating step there fails its own rollback and reports a failure for a deploy that is live.
 	try {
 		await rename(candidateDirPath, liveDirPath);
-		await syncRenameParents(candidateDirPath, liveDirPath);
-		// The tree moved, so any dependency link that named its build path is now dangling.
-		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 	} catch (error) {
 		await compensate(error, 'move the candidate into place', restoreLive, application);
 		throw error;
@@ -1497,6 +1550,13 @@ export async function activateCandidateApplication(application: Application, dep
 
 	// Past the point of no return: each failure below leaves a state recovery settles forward, so they are
 	// logged, not thrown.
+	try {
+		await syncRenameParents(candidateDirPath, liveDirPath);
+	} catch (error) {
+		application.logger.warn(`Deployed ${application.name} but could not flush the swap to storage:`, error);
+	}
+	// The tree moved, so any dependency link that named its build path is now dangling.
+	await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	let retired = false;
 	try {
@@ -1587,11 +1647,18 @@ async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: 
 					try {
 						await rename(stagedLink, entryPath);
 					} catch (renameError) {
-						// Windows cannot rename over an existing junction, so the old one has to go first —
-						// but only now that the replacement is known to exist and can be moved into place.
+						// Windows cannot rename over an existing junction, so the old one has to go first. If the
+						// second rename then fails for the same reason the first did, the link is restored to its
+						// original target rather than left absent — a dangling link still resolves for anything
+						// that reads it by another route, nothing does not.
 						if (process.platform !== 'win32') throw renameError;
 						await rm(entryPath, { recursive: true, force: true });
-						await rename(stagedLink, entryPath);
+						try {
+							await rename(stagedLink, entryPath);
+						} catch (secondError) {
+							await symlink(normalized, entryPath, 'junction').catch(() => {});
+							throw secondError;
+						}
 					}
 				} catch (error) {
 					await rm(stagedLink, { recursive: true, force: true }).catch(() => {});
