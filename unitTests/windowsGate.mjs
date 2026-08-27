@@ -5,14 +5,17 @@
  *
  * Two things this does that a plain `mocha` invocation cannot.
  *
- * It runs GROUPS in separate processes. Handed the whole scoped set at once, mocha on
- * Windows terminates part-way through with exit code 0 and no epilogue. One process
- * per directory keeps each run small enough to finish.
+ * It runs GROUPS in separate processes, so one suite that hangs or takes its process
+ * down cannot cost the run every group behind it, and each group gets its own
+ * GROUP_TIMEOUT_MS.
  *
- * It requires each group to print a summary line. That early termination is silent —
- * exit 0, no "N passing" — so a bare `mocha` step would report a green gate having
- * executed a fraction of the tests. A group that exits without a summary fails here,
- * as does one that exits non-zero or outruns GROUP_TIMEOUT_MS.
+ * It requires each group to print a summary line. A mocha run can stop advancing with
+ * nothing failed — `timeout: 0` in .mocharc.json means no test ever times out, so the
+ * event loop just drains and the process exits 0 having printed no epilogue. A bare
+ * `mocha` step would report a green gate having executed a fraction of the tests. A
+ * group that exits without a summary fails here, as does one that exits non-zero or
+ * outruns GROUP_TIMEOUT_MS. (unitTests/mocha.init.js now also fails such a run from the
+ * inside; this check is the backstop for a process that never gets that far.)
  *
  * SCOPE. GROUPS covers the part of the unit tree verified green on Windows, not the
  * whole thing: the suites in EXCLUDED fail there for environmental or test-design
@@ -26,7 +29,10 @@
  * without a reason, and do not add one for a suite that merely looks risky, only for
  * one observed to fail. Confirm a fix with `npx mocha <suite>` on Windows, then
  * confirm it again inside its group (several of the entries below pass alone and fail
- * with their neighbours) before deleting its line.
+ * with their neighbours) before deleting its line. Run it under `--reporter dot`, the
+ * reporter this gate uses: unlike `spec`, it writes with process.stdout.write directly
+ * rather than through console.*, so it does not paper over a suite that leaves stdout
+ * broken.
  */
 
 import { spawn } from 'node:child_process';
@@ -58,12 +64,6 @@ const EXCLUDED = [
 	// assertion, so they take their whole group down with them.
 	'unitTests/components/OptionsWatcher.test.js',
 	'unitTests/components/applicationSpawn.test.js',
-
-	// --- Exits 0 having run nothing ------------------------------------------------
-	// Terminates during file load with an EACCES-tagged error and never prints an
-	// epilogue, so mocha reports success having executed zero of its tests. This
-	// suite is why the summary-line check above exists.
-	'unitTests/utility/logging/harper_logger.test.js',
 
 	// --- Windows worker cold start outruns the condition-wait ----------------------
 	// Both tests spawn an `eval: true` Worker that requires

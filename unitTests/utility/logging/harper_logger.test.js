@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
+const { EventEmitter } = require('node:events');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -42,9 +43,47 @@ const LOG_MSGS_TEST = {
 	TRACE: 'trace log',
 };
 
+// Snapshot of a stream's .write plus the 'error' listener installStdioGuard() stashes on it.
+function captureStdio() {
+	return [process.stdout, process.stderr].map((stream) => ({
+		stream,
+		write: stream.write,
+		handler: stream.harperStdioErrorHandler,
+	}));
+}
+
+function restoreStdio(captured) {
+	for (const { stream, write, handler } of captured) {
+		stream.write = write;
+		if (stream.harperStdioErrorHandler) {
+			stream.removeListener('error', stream.harperStdioErrorHandler);
+			delete stream.harperStdioErrorHandler;
+		}
+		if (handler) {
+			stream.harperStdioErrorHandler = handler;
+			stream.on('error', handler);
+		}
+	}
+}
+
+// Loading this module runs initLogSettings(), which ends in stdioLogging(): that replaces the
+// REAL process.stdout/process.stderr .write with a guard closed over this throwaway instance and
+// adds an 'error' listener to both. Leaving it installed routes mocha's own reporter writes
+// through an instance these tests then deliberately break — and the guard is built to be hostile,
+// rethrowing a write error that is not a broken pipe and noop-ing every write after one that is.
+// mocha's `dot` and `tap` reporters write with process.stdout.write directly, so that rethrow
+// escapes mid-run through the runner's callback chain; `timeout: 0` in .mocharc.json then means
+// nothing ever fails the stalled test, the event loop drains, and the process exits 0 having
+// printed no epilogue — indistinguishable from a pass. So put the real streams back before
+// handing the instance to a test. Tests that need the guard install it on a stream of their own.
 function requireUncached(module) {
-	delete require.cache[require.resolve(module)];
-	return rewire(module);
+	const stdio = captureStdio();
+	try {
+		delete require.cache[require.resolve(module)];
+		return rewire(module);
+	} finally {
+		restoreStdio(stdio);
+	}
 }
 
 let captured_stdout = '';
@@ -1704,85 +1743,100 @@ describe('Test harper_logger module', () => {
 
 		describe('the process.stdout/stderr.write() wrapper installed by stdioLogging() (harper#2106)', () => {
 			let harper_logger;
-			let originalStdoutWrite;
-			let originalStderrWrite;
 
-			// Drives stdioLogging() directly via rewire rather than through initLogSettings()'s
-			// real-filesystem config resolution, which made log_to_file/logConsole depend on
-			// whatever boot properties happen to exist on the machine running this.
+			// These tests drive installStdioGuard() against FAKE streams, never the real
+			// process.stdout/process.stderr, and that is load-bearing rather than tidiness.
+			//
+			// The guard is meant to be hostile: it rethrows a write error that is not a broken-pipe
+			// error, and after a broken-pipe one it routes every later write to a noop. Installed on
+			// the real streams and left there for the duration of a test, that lands on mocha's own
+			// reporter. `dot` and `tap` write with process.stdout.write directly, so the rethrow
+			// escapes mid-run through the runner's callback chain; `timeout: 0` in .mocharc.json
+			// then means nothing ever fails the stalled test, the event loop drains, and the process
+			// exits 0 having printed no epilogue and no failure — a silent pass. (`spec` and `min`
+			// survived it only because Node's console.* swallows stream write errors, and they still
+			// lost the reporter lines for the broken-pipe tests to the noop.)
+			//
+			// installStdioGuard() takes the stream as a parameter, so the same code under test runs
+			// with the assertions pointed at a stream mocha is not holding.
+			function makeFakeStream() {
+				const stream = new EventEmitter();
+				// Stands in for the pristine process.std*.write the guard replaces. The guard never
+				// calls it — it calls the module's nativeStdWrite — so make it a tripwire: a write that
+				// reaches it means the guard was not installed, and the tests below would otherwise
+				// pass vacuously.
+				stream.write = function unguardedWrite() {
+					throw new Error('installStdioGuard() did not replace the write on this stream');
+				};
+				return stream;
+			}
+
+			// Drives stdioLogging()'s guard directly via rewire rather than through
+			// initLogSettings()'s real-filesystem config resolution, which made
+			// log_to_file/logConsole depend on whatever boot properties happen to exist on the
+			// machine running this.
 			function setup(logToFile) {
 				harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 				harper_logger.__set__('log_to_file', logToFile);
 				harper_logger.__set__('logConsole', true);
-				harper_logger.__get__('stdioLogging')();
+				// Nothing in these tests should reach the real stdout; if a write escapes the stubs
+				// below, capture it here rather than letting it interleave with mocha's output.
+				harper_logger.__set__('nativeStdWrite', sinon.stub().returns(true));
+				const installStdioGuard = harper_logger.__get__('installStdioGuard');
+				const fakeStdout = makeFakeStream();
+				const fakeStderr = makeFakeStream();
+				installStdioGuard(fakeStdout);
+				installStdioGuard(fakeStderr);
+				return { fakeStdout, fakeStderr };
 			}
-
-			beforeEach(() => {
-				originalStdoutWrite = process.stdout.write;
-				originalStderrWrite = process.stderr.write;
-			});
-
-			afterEach(() => {
-				// stdioLogging() rebinds the REAL process.stdout/stderr .write (and adds an 'error'
-				// listener) to this module instance - undoing both keeps a broken-pipe simulation
-				// from leaking into the rest of this mocha run.
-				process.stdout.write = originalStdoutWrite;
-				process.stderr.write = originalStderrWrite;
-				for (const stream of [process.stdout, process.stderr]) {
-					if (stream.harperStdioErrorHandler) {
-						stream.removeListener('error', stream.harperStdioErrorHandler);
-						delete stream.harperStdioErrorHandler;
-					}
-				}
-			});
 
 			for (const logToFile of [true, false]) {
 				it(`catches a broken-pipe write inline instead of throwing, regardless of logging.file:${logToFile}`, () => {
-					setup(logToFile);
+					const { fakeStdout, fakeStderr } = setup(logToFile);
 					harper_logger.__set__('nativeStdWrite', function () {
 						throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
 					});
 
-					assert.doesNotThrow(() => process.stderr.write('boom\n'));
+					assert.doesNotThrow(() => fakeStderr.write('boom\n'));
 					// the write above disabled stdio itself - a second, independent write is silent too
-					assert.doesNotThrow(() => process.stdout.write('still fine\n'));
+					assert.doesNotThrow(() => fakeStdout.write('still fine\n'));
 
 					const callback = sinon.stub();
-					assert.strictEqual(process.stdout.write('chunk', callback), true);
+					assert.strictEqual(fakeStdout.write('chunk', callback), true);
 					assert.strictEqual(callback.calledOnce, true);
 				});
 			}
 
 			it('does not swallow a write error unrelated to a broken stdio stream', () => {
-				setup(true);
+				const { fakeStderr } = setup(true);
 				harper_logger.__set__('nativeStdWrite', function () {
 					throw Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' });
 				});
 
-				assert.throws(() => process.stderr.write('boom\n'), /boom/);
+				assert.throws(() => fakeStderr.write('boom\n'), /boom/);
 			});
 
 			it('keeps teeing console output to the log file after a broken pipe disables the native writer', () => {
-				setup(true);
+				const { fakeStderr } = setup(true);
 				const writeToLogFileSpy = sinon.stub();
 				harper_logger.__set__('writeToLogFile', writeToLogFileSpy);
 				harper_logger.__set__('nativeStdWrite', function () {
 					throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
 				});
 
-				process.stderr.write('first write, breaks the pipe\n');
-				process.stderr.write('second write, should still reach the file\n');
+				fakeStderr.write('first write, breaks the pipe\n');
+				fakeStderr.write('second write, should still reach the file\n');
 
 				assert.strictEqual(writeToLogFileSpy.callCount, 2);
 				assert.strictEqual(writeToLogFileSpy.secondCall.args[0], 'second write, should still reach the file');
 			});
 
 			// installStdioGuard() stashes its 'error' listener on the stream itself; calling it
-			// directly (rather than process.stderr.emit('error', ...)) avoids altering Node's own
-			// internal stream state for the rest of this mocha run.
+			// directly (rather than fakeStderr.emit('error', ...)) keeps the assertion on the
+			// handler rather than on EventEmitter's unhandled-'error' behaviour.
 			it('catches the ASYNC error event a real closed pipe emits - not just a synchronous write throw', () => {
-				setup(true);
-				const handler = process.stderr.harperStdioErrorHandler;
+				const { fakeStderr } = setup(true);
+				const handler = fakeStderr.harperStdioErrorHandler;
 				assert.strictEqual(typeof handler, 'function');
 
 				assert.doesNotThrow(() => handler(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })));
@@ -1795,10 +1849,29 @@ describe('Test harper_logger module', () => {
 			});
 
 			it('the async error handler rethrows an error unrelated to a broken stdio stream', () => {
-				setup(true);
-				const handler = process.stderr.harperStdioErrorHandler;
+				const { fakeStderr } = setup(true);
+				const handler = fakeStderr.harperStdioErrorHandler;
 
 				assert.throws(() => handler(Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' })), /boom/);
+			});
+
+			// The wiring the tests above deliberately do not exercise on the real streams: that
+			// stdioLogging() guards both of them. Safe to run there because it only installs the
+			// pass-through guard - no write is made to throw or to noop - and it is undone
+			// immediately.
+			it('stdioLogging() installs the guard, and its error listener, on both real process streams', () => {
+				const captured = captureStdio();
+				try {
+					harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+					harper_logger.__get__('stdioLogging')();
+
+					for (const { stream, write } of captured) {
+						assert.notStrictEqual(stream.write, write);
+						assert.strictEqual(typeof stream.harperStdioErrorHandler, 'function');
+					}
+				} finally {
+					restoreStdio(captured);
+				}
 			});
 		});
 	});
