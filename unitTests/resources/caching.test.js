@@ -100,6 +100,7 @@ describe('Caching', () => {
 		RevalidatedTable = table({
 			table: 'RevalidatedTable',
 			database: 'test',
+			randomAccessFields: true,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },

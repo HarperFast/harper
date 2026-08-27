@@ -36,7 +36,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
-const STRUCT_SOURCE = Symbol.for('source');
+export const STRUCT_SOURCE = Symbol.for('source');
 export const STORED_FIELD_NAMES = Symbol.for('harper.storedFieldNames');
 // Source and built module copies can coexist, so they must share the durable-encoding scope.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');

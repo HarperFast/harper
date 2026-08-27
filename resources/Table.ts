@@ -81,6 +81,7 @@ import {
 	RecordObject,
 	isDurableRecordEncoding,
 	projectRecordForDurableEncoding,
+	STRUCT_SOURCE,
 	STORED_FIELD_NAMES,
 	type Entry,
 	type StructureCounts,
@@ -6221,18 +6222,32 @@ export function makeTable(options) {
 							}
 						}
 						const sourceRecord = updatedRecord;
-						if (sourceRecord[STORED_FIELD_NAMES]) {
+						if (sourceRecord[STORED_FIELD_NAMES] || Object.hasOwn(sourceRecord, STRUCT_SOURCE)) {
 							const toJSON = sourceRecord.toJSON;
 							responseRecord = typeof toJSON === 'function' ? toJSON.call(sourceRecord) : sourceRecord;
 						} else responseRecord = sourceRecord;
 						updatedRecord = projectRecordForDurableEncoding(sourceRecord);
 						if (needsMutableRecordCopy(responseRecord)) responseRecord = { ...responseRecord };
+						// A plain source object is both projections until this point. Split it before the response
+						// receives the table prototype, whose resolvers must never become visible to durable encoding.
+						if (responseRecord === updatedRecord && responseRecord.constructor === Object)
+							responseRecord = { ...responseRecord };
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (needsMutableRecordCopy(updatedRecord)) updatedRecord = { ...updatedRecord };
-						if (primaryKey && Object.isExtensible(updatedRecord) && updatedRecord[primaryKey] !== id)
+						if (primaryKey && updatedRecord[primaryKey] !== id) {
+							if (!Object.isExtensible(updatedRecord))
+								throw new TypeError(
+									`Source record for ${tableName} is immutable and cannot receive primary key ${primaryKey}`
+								);
 							updatedRecord[primaryKey] = id;
+						}
+						if (
+							!Object.isExtensible(updatedRecord) &&
+							(updatedTimeProperty || (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null))
+						)
+							throw new TypeError(`Source record for ${tableName} is immutable and cannot receive assigned timestamps`);
 						if (
 							primaryKey &&
 							responseRecord &&
@@ -6318,7 +6333,7 @@ export function makeTable(options) {
 							let auditRecord: any;
 							let omitLocalRecord = false;
 							let residencyId: number;
-							if (updatedTimeProperty && Object.isExtensible(updatedRecord)) {
+							if (updatedTimeProperty) {
 								const updatedTime =
 									updatedTimeProperty.type === 'Date'
 										? new Date(txnTime)
@@ -6329,11 +6344,7 @@ export function makeTable(options) {
 								if (responseRecord !== updatedRecord && Object.isExtensible(responseRecord))
 									responseRecord[updatedTimeProperty.name] = updatedTime;
 							}
-							if (
-								createdTimeProperty &&
-								Object.isExtensible(updatedRecord) &&
-								updatedRecord[createdTimeProperty.name] == null
-							) {
+							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
 								const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
 								if (existingCreatedTime != null) {
 									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
