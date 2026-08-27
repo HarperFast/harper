@@ -125,6 +125,11 @@ const ndjsonHandler = {
 mediaTypes.set('application/x-ndjson', ndjsonHandler);
 mediaTypes.set('application/ndjson', ndjsonHandler);
 
+function serializeSSEData(data: any) {
+	if (typeof data === 'object') return 'data: ' + JSONStringify(data) + '\n';
+	return 'data: ' + String(data).replace(/\r\n|\r|\n/g, '\ndata: ') + '\n';
+}
+
 mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
@@ -141,20 +146,20 @@ mediaTypes.set('text/event-stream', {
 				id: message.timestamp,
 			};
 		}
-		if (message.data || message.event) {
+		// A non-null top-level `data` or truthy `event` is an SSE envelope, even with sibling fields.
+		// `id`/`retry` alone do not open it: `id` is too common a literal-payload field name (e.g. a
+		// database record) to safely treat as an SSE-envelope signal.
+		if (message.data != null || message.event) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';
-			if (message.data) {
-				let data = message.data;
-				if (typeof data === 'object') data = JSONStringify(data);
-				serialized += 'data: ' + data + '\n';
+			if (message.data != null) {
+				serialized += serializeSSEData(message.data);
 			}
-			if (message.id) serialized += 'id: ' + message.id + '\n';
-			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
+			if (message.id != null) serialized += 'id: ' + message.id + '\n';
+			if (message.retry != null) serialized += 'retry: ' + message.retry + '\n';
 			return serialized + '\n';
 		} else {
-			if (typeof message === 'object') return `data: ${JSONStringify(message)}\n\n`;
-			return `data: ${message}\n\n`;
+			return serializeSSEData(message) + '\n';
 		}
 	},
 	compressible: false,

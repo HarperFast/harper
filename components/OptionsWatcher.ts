@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { overlayRootEnvConfig, isRootConfigFilename } from '../config/harperConfigEnvVars.ts';
 
 export interface Config {
@@ -84,6 +85,7 @@ export class CannotSetPropertyError extends Error {
  */
 export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#filePath: string;
+	#watchPath: string;
 	#watcher!: FSWatcher;
 	#scopedConfig?: ConfigValue;
 	#rootConfig?: Config;
@@ -100,12 +102,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
+		const watchTarget = resolveWatchTarget(filePath);
+		this.#watchPath = watchTarget.path;
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
 		this.#isRootConfig = isRootConfig ?? isRootConfigFilename(filePath);
 		this.#logger = logger || loggerWithTag(name);
-		this.#usingPolling = false;
+		this.#usingPolling = watchTarget.mustPoll;
 		this.#closed = false;
 		this.ready = once(this, 'ready');
 		this.#openWatcher();
@@ -114,7 +118,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#openWatcher() {
 		this.#openCount++;
 		this.#watcher = chokidar
-			.watch(this.#filePath, {
+			.watch(this.#watchPath, {
 				persistent: false,
 				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			})
@@ -199,18 +203,17 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			if (!this.#usingPolling) {
 				warnWatcherFallback(this.#filePath);
 				this.#usingPolling = true;
-				// Close the failed native watcher and reopen with polling. Guard
-				// against reopen-after-close: the caller may have invoked close()
-				// while this teardown was in flight. The .catch is required because
-				// `finally` would re-raise a teardown rejection as an unhandled one.
-				this.#watcher
-					.close()
+				// Start close() from a microtask, not directly here, so a synchronous throw
+				// can't escape this 'error' listener as an uncaught exception.
+				Promise.resolve()
+					.then(() => this.#watcher.close())
 					.catch(() => {
 						// Teardown errors on an already-failed watcher are not actionable.
 					})
-					.finally(() => {
+					.then(() => {
 						if (!this.#closed) this.#openWatcher();
-					});
+					})
+					.catch((error) => this.#logger.error?.(`Could not reopen the ${this.#filePath} watch on polling:`, error));
 			}
 			return;
 		}

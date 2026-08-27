@@ -264,15 +264,10 @@ describe('oidc trustPolicyOperations', () => {
 			assert.strictEqual(installed.mock.rows.size, 0, 'expected nothing stored');
 		});
 
-		// Delegating to validateOperations rather than checking OPERATIONS_ENUM locally means an
-		// operation registered in THIS process is accepted. That is the seam, not a promise about
-		// component-registered operations: the registry is process-local, `add_oidc_trust` runs on the
-		// main thread, and `server.registerOperation` runs in a worker whose OPERATION_REGISTERED
-		// announcement carries only name→thread routing, never grantability. So a component's
-		// operation is NOT recognized here in production, and this same-thread test cannot show that
-		// — it is asserting the delegation, not the topology. A policy naming such an operation is
-		// rejected, which fails closed; add_role, alter_role, and impersonation validation share the
-		// gap, so the fix belongs to that bridge rather than to a workaround here.
+		// Asserts the delegation to validateOperations, not the worker→main topology: registering here
+		// puts the mark in this thread's own registry, so a same-thread test cannot distinguish the two.
+		// The cross-thread path a real component takes is covered in
+		// integrationTests/components/registered-operation.test.ts.
 		it('accepts an operation registered in this process', async () => {
 			const dynamicOp = 'test_dynamic_scope_op';
 			opAuth.registerOperationPermission(dynamicOp, { requiresSu: true });

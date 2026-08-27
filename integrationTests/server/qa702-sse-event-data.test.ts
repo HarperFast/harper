@@ -23,17 +23,9 @@
  *
  *     So instead, this suite covers the SIBLING encoder any Harper Resource client actually sees:
  *     contentTypes.ts's `text/event-stream` media-type `serialize()`, invoked via
- *     `resource.connect()`. It has a DIFFERENT, pre-existing falsy-data guard
- *     (`if (message.data) { ...emit data: line... }`) that silently OMITS the `data:` field
- *     entirely for any falsy value (undefined/null/''/0/false) rather than crashing OR emitting
- *     an explicit empty/`null` line the way the fixed writeSSE() does — a KNOWN DEFECT on this code
- *     path (harper#2026: `EventSource` never dispatches a frame with an empty data buffer, so a
- *     legitimate falsy payload like `data: false` is silently never seen by the client), not a
- *     #1863 regression check and not an intended contract. Pinned deliberately so the fix in
- *     harper#2026 shows up here as an expected assertion update, not a surprise regression. Flagged
- *     rather than fixed in THIS PR since changing the encoder is a production-code, cross-encoder
- *     decision (see above), not a test fix. See
- *     integrationTests/qa-scratch/qa702-sse-event-data/resources.js for the full writeup.
+ *     `resource.connect()`. Its falsy-data/id guards are asserted here against absence
+ *     (undefined/null), not truthiness — see integrationTests/qa-scratch/qa702-sse-event-data/
+ *     resources.js for the full writeup.
  *
  * (b) F-133 re-characterization: does a resource.connect() async generator that throws mid-stream
  *     still hang the response? Git archaeology first: commits 06f5fcff8/8930b1ef2 ("Fix SSE hang +
@@ -180,8 +172,7 @@ function consumeSse(urlStr: string, authHeaders: Record<string, string>, timeout
 }
 
 // Groups raw SSE bytes into blank-line-delimited { event, data } records (mirrors the
-// unitTests/server/serverHelpers/progressEmitter.test.js parseSSEBlocks helper). Assumes no
-// record's `data` value contains an embedded newline (true for every case in this suite).
+// unitTests/server/serverHelpers/progressEmitter.test.js parseSSEBlocks helper).
 function parseSseBlocks(raw: string): Array<Record<string, string>> {
 	return raw
 		.split('\n\n')
@@ -194,11 +185,12 @@ function parseSseBlocks(raw: string): Array<Record<string, string>> {
 				const field = line.slice(0, colon);
 				let value = line.slice(colon + 1);
 				if (value.startsWith(' ')) value = value.slice(1);
-				out[field] = value;
+				if (field === 'data' && field in out) out.data += '\n' + value;
+				else out[field] = value;
 			}
 			return out;
 		})
-		.filter((rec) => 'event' in rec || 'data' in rec);
+		.filter((rec) => 'event' in rec || 'data' in rec || 'id' in rec || 'retry' in rec);
 }
 
 function readLogSafe(logPath: string): string {
@@ -277,18 +269,23 @@ suite(
 		//        itself (unreachable from here -- see file header for why, and for the actual #1863
 		//        anchor at unitTests/server/serverHelpers/progressEmitter.test.js) ────────────────────
 		//
-		// `hasData: false` cases exercise this encoder's OWN (pre-existing, different) falsy guard
-		// -- `if (message.data) {...}` -- which OMITS the `data:` field entirely for a falsy value,
-		// rather than crashing (the #1863 bug, on the other encoder) or emitting an explicit
-		// empty/`null` line (writeSSE()'s fixed behavior). That's the actual, current wire contract
-		// on THIS encoder; asserted here, not assumed.
+		// Only undefined/null omit the `data:` field entirely; `''`/`0`/`false` now emit their
+		// (string-coerced) line. Note `''` still won't dispatch on a real EventSource client --
+		// the HTML spec discards an empty data buffer regardless of whether the field was present
+		// or omitted -- but the wire byte-for-byte representation is what's asserted here.
 
 		const cases: Array<{ name: string; path: string; hasData: boolean; expectedData?: string }> = [
 			{ name: 'undefined', path: 'UndefinedPayload', hasData: false },
 			{ name: 'null', path: 'NullPayload', hasData: false },
-			{ name: 'empty string', path: 'EmptyStringPayload', hasData: false },
-			{ name: '0', path: 'ZeroPayload', hasData: false },
-			{ name: 'false', path: 'FalsePayload', hasData: false },
+			{ name: 'empty string', path: 'EmptyStringPayload', hasData: true, expectedData: '' },
+			{ name: '0', path: 'ZeroPayload', hasData: true, expectedData: '0' },
+			{ name: 'false', path: 'FalsePayload', hasData: true, expectedData: 'false' },
+			{
+				name: 'multiline string',
+				path: 'MultilineStringPayload',
+				hasData: true,
+				expectedData: 'first line\nsecond line',
+			},
 			{
 				name: 'plain object (no "data" key)',
 				path: 'PlainObjectPayload',
@@ -345,7 +342,7 @@ suite(
 						strictEqual(
 							'data' in payloadBlock!,
 							false,
-							`expected NO data: field for falsy value ${c.name} -- pinning a KNOWN DEFECT (harper#2026: EventSource never dispatches an empty-data frame, so a client silently never sees a legitimate falsy payload), not an intended contract; got: ${JSON.stringify(payloadBlock)}`
+							`expected NO data: field for ${c.name} -- absence (undefined/null), not falsiness, is what omits the data: line; got: ${JSON.stringify(payloadBlock)}`
 						);
 					}
 
@@ -368,19 +365,56 @@ suite(
 			);
 		}
 
-		// harper#2026 has an `id: 0` half too (contentTypes.ts:152's `if (message.id)` drops the
-		// reconnect cursor `id: 0` by the identical mechanism), otherwise unpinned by the `hasData`
-		// matrix above -- pin it explicitly so #2026's eventual fix updates this assertion too.
-		test('a: event.id = 0 (with real data) -- id: 0 silently omitted, KNOWN DEFECT harper#2026', async () => {
+		test('a: event.id = 0 (with real data) -- id: 0 is emitted', async () => {
 			const r = await consumeSse(`${restBase}/IdZeroPayload/`, authHeaders, 15_000);
 			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
 			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
 			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
 			strictEqual(payloadBlock!.data, 'id-zero-probe', 'data field should be unaffected by the id value');
+			strictEqual(payloadBlock!.id, '0', `expected id: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
+		});
+
+		test('a: event.retry = 0 (with real data) -- retry: 0 is emitted', async () => {
+			const r = await consumeSse(`${restBase}/RetryZeroPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const payloadBlock = parseSseBlocks(r.raw).find((b) => b.event === 'payload');
+			ok(payloadBlock, `expected a 'payload' event block. raw:\n${r.raw}`);
+			strictEqual(payloadBlock!.retry, '0', `expected retry: 0 to be emitted; got: ${JSON.stringify(payloadBlock)}`);
+		});
+
+		test('a: event-less message with data = 0 -- envelope gate must not treat this as absent', async () => {
+			const r = await consumeSse(`${restBase}/ZeroPayloadNoEvent/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
 			strictEqual(
-				'id' in payloadBlock!,
-				false,
-				`expected NO id: field for id=0 -- pinning KNOWN DEFECT harper#2026, not an intended contract; got: ${JSON.stringify(payloadBlock)}`
+				blocks[0].data,
+				'0',
+				`expected a bare "data: 0" line, not the whole message JSON-wrapped; got: ${JSON.stringify(blocks[0])}`
+			);
+		});
+
+		test('a: top-level data key with siblings -- data envelope takes precedence', async () => {
+			const r = await consumeSse(`${restBase}/DataKeyEnvelopePayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
+			deepStrictEqual(
+				blocks[0],
+				{ data: '0' },
+				`expected only the top-level data value, got: ${JSON.stringify(blocks[0])}`
+			);
+		});
+
+		test('a: plain object with an "id" key (no data/event) -- must be JSON-wrapped, not misread as an SSE id', async () => {
+			const r = await consumeSse(`${restBase}/IdKeyPlainObjectPayload/`, authHeaders, 15_000);
+			ok(!r.aborted && r.ended && r.status >= 200 && r.status < 300, `expected a clean SSE response. raw:\n${r.raw}`);
+			const blocks = parseSseBlocks(r.raw);
+			ok(blocks.length >= 1, `expected at least one SSE block. raw:\n${r.raw}`);
+			strictEqual(
+				blocks[0].data,
+				JSON.stringify({ id: 42, name: 'Alice' }),
+				`expected the whole object JSON-wrapped, not "name" dropped; got: ${JSON.stringify(blocks[0])}`
 			);
 		});
 

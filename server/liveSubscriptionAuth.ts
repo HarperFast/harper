@@ -23,8 +23,24 @@ interface LiveSubscription {
 	authExpiresAt?: number;
 	/** Returns true if the principal is still authorized for this subscription. */
 	recheck: () => Promise<boolean>;
-	/** Stop delivery and tear down the subscription. */
-	terminate: () => void;
+	/** Stop delivery and tear down. May be async (e.g. a shared-feed refcount release). */
+	terminate: () => void | Promise<void>;
+}
+
+function errorMessage(error: unknown): string {
+	try {
+		return error instanceof Error ? error.message : String(error);
+	} catch {
+		return '<error message unavailable>';
+	}
+}
+
+function safeLog(log: ((message: string) => void) | undefined, message: string): void {
+	try {
+		log?.(message);
+	} catch {
+		/* a broken logger must not turn a contained failure into a new one */
+	}
 }
 
 const registry = new Set<LiveSubscription>();
@@ -32,9 +48,15 @@ let sweepTimer: any = null;
 let itcListenerInstalled = false;
 let sweeping = false;
 
+const NOOP_HANDLE = { unregister: () => {} };
+
+function triggerSweep(): void {
+	void sweep().catch((error) => safeLog(hdbLogger.error, `liveSubscriptionAuth: sweep failed: ${errorMessage(error)}`));
+}
+
 function ensureStarted(): void {
 	if (!sweepTimer) {
-		sweepTimer = setInterval(() => void sweep(), RECHECK_INTERVAL_MS);
+		sweepTimer = setInterval(triggerSweep, RECHECK_INTERVAL_MS);
 		// don't keep the worker alive solely for the recheck timer
 		sweepTimer.unref?.();
 	}
@@ -44,7 +66,7 @@ function ensureStarted(): void {
 			// user/role cache before invoking listeners, so recheck() observes the new permissions.
 			const handlers = require('./itc/serverHandlers.js');
 			if (handlers?.userHandler?.addListener) {
-				handlers.userHandler.addListener(() => void sweep());
+				handlers.userHandler.addListener(triggerSweep);
 				itcListenerInstalled = true;
 			}
 		} catch (error) {
@@ -61,32 +83,49 @@ function stopIfIdle(): void {
 }
 
 /**
- * Register a live subscription for continuous re-authorization. The returned subscription's normal
- * teardown (end()/close) automatically unregisters it, so callers don't need to.
+ * Register a live subscription for continuous re-authorization.
+ *
+ * Without `revoke`, teardown is end()/close()/emit('close') on `subscription`, and the
+ * subscription's own teardown unregisters the entry so callers need not.
+ *
+ * With `revoke`, that becomes the teardown and `subscription` is never touched — no `end` wrapping,
+ * no 'close' listener — because a feed shared by many subscribers must stay revocable per subscriber,
+ * so the registry can neither own the shared object nor let every registrant mutate it. A `revoke`
+ * caller owns the entry's lifetime: nothing detects a leaked registration, and a forgotten
+ * `unregister()` degrades sweep latency for every other tracked subscriber. It also owns teardown
+ * recovery — the entry is untracked before `revoke` runs and `revoke` is invoked exactly once, so one
+ * that throws, rejects or never settles is logged and never retried. A `recheck` shared across
+ * subscribers must not mutate state shared across them: `registerLiveSubscriptionForContext` in
+ * resources/Resource.ts mutates `context.user`, which is safe only while each context has exactly
+ * one subscriber.
  */
-export function registerLiveSubscription(opts: {
-	subscription: any;
-	username: string;
-	authExpiresAt?: number;
-	recheck: () => Promise<boolean>;
-}): void {
-	const { subscription, username, authExpiresAt, recheck } = opts;
-	if (!subscription || typeof subscription !== 'object' || subscription.closed) return;
+export function registerLiveSubscription(
+	opts: {
+		username: string;
+		authExpiresAt?: number;
+		recheck: () => Promise<boolean>;
+	} & (
+		| { subscription: any; revoke?: undefined }
+		// requiring one of the two modes stops a caller that supplies neither from type-checking
+		// into a silent no-op registration; a revoke-only registrant may own no subscription object
+		| { subscription?: any; revoke: () => void | Promise<void> }
+	)
+): { unregister: () => void } {
+	const { subscription, username, authExpiresAt, recheck, revoke } = opts;
+	if (!revoke && (!subscription || typeof subscription !== 'object' || subscription.closed)) return NOOP_HANDLE;
 
 	const entry: LiveSubscription = {
 		username,
 		authExpiresAt,
 		recheck,
-		terminate: () => {
-			// end() removes the subscription from the broadcast loop and closes its iterable queue.
-			try {
+		terminate:
+			revoke ??
+			(() => {
+				// end() removes the subscription from the broadcast loop and closes its iterable queue.
 				if (subscription.end) subscription.end();
 				else if (subscription.close) subscription.close();
 				else subscription.emit?.('close');
-			} catch {
-				/* ignore */
-			}
-		},
+			}),
 	};
 	registry.add(entry);
 
@@ -94,55 +133,99 @@ export function registerLiveSubscription(opts: {
 		registry.delete(entry);
 		stopIfIdle();
 	};
-	// Both transports ultimately call end() on normal teardown (MQTT unsubscribe/disconnect; SSE close
-	// is wired to end()); wrap it so a closed stream never leaks a registry entry. Also listen for
-	// 'close' to cover any iterable that closes without an end().
-	const originalEnd = typeof subscription.end === 'function' ? subscription.end.bind(subscription) : null;
-	if (originalEnd) {
-		subscription.end = function (...args: any[]) {
-			unregister();
-			return originalEnd(...args);
-		};
+
+	if (!revoke) {
+		// Both transports ultimately call end() on normal teardown (MQTT unsubscribe/disconnect; SSE close
+		// is wired to end()); wrap it so a closed stream never leaks a registry entry. Also listen for
+		// 'close' to cover any iterable that closes without an end(). Skipped when `revoke` is supplied:
+		// the caller owns unregistration, and a subscription shared by many subscribers must not be
+		// mutated once per registrant.
+		const originalEnd = typeof subscription.end === 'function' ? subscription.end.bind(subscription) : null;
+		if (originalEnd) {
+			subscription.end = function (...args: any[]) {
+				unregister();
+				return originalEnd(...args);
+			};
+		}
+		subscription.on?.('close', unregister);
 	}
-	subscription.on?.('close', unregister);
 
 	ensureStarted();
+	return { unregister };
+}
+
+/** Untrack first: a `terminate` that hangs or fails must not wedge the sweep or be re-entered by a later one. */
+function terminateEntry(
+	entry: LiveSubscription,
+	reason: string,
+	notice: ((message: string) => void) | undefined = hdbLogger.info
+): void {
+	registry.delete(entry);
+	safeLog(notice, `liveSubscriptionAuth: revoking subscription for ${entry.username} (${reason})`);
+	const failed = (error: unknown) =>
+		safeLog(
+			hdbLogger.error,
+			`liveSubscriptionAuth: terminate failed for ${entry.username} (${reason}): ${errorMessage(error)}`
+		);
+	try {
+		// an async terminate's rejection would otherwise surface as an unhandled rejection on the timer's stack
+		Promise.resolve(entry.terminate()).catch(failed);
+	} catch (error) {
+		failed(error);
+	}
 }
 
 async function sweep(): Promise<void> {
 	if (sweeping) return; // a slow recheck must not overlap with the next tick/event
 	sweeping = true;
+	// the per-subscriber lines are info, which the shipped default (logging.level: warn) drops; one
+	// aggregate keeps the pass visible without making a mass role change a warn per subscriber
+	const revokedByReason = new Map<string, number>();
+	const countRevocation = (reason: string) => revokedByReason.set(reason, (revokedByReason.get(reason) ?? 0) + 1);
 	try {
-		const now = Date.now();
-		for (const entry of registry) {
+		// snapshot bounds the pass to entries present at its start; the has() guards cover the rest
+		for (const entry of Array.from(registry)) {
+			if (!registry.has(entry)) continue;
 			try {
-				const expired = entry.authExpiresAt != null && now >= entry.authExpiresAt * 1000;
+				const expired = entry.authExpiresAt != null && Date.now() >= entry.authExpiresAt * 1000;
 				const stillAuthorized = expired ? false : await entry.recheck();
-				const revoke = expired || !stillAuthorized;
-				if (revoke) {
-					registry.delete(entry);
-					entry.terminate();
+				if (!registry.has(entry)) continue;
+				if (expired || !stillAuthorized) {
+					const reason = expired ? 'token expired' : 'no longer authorized';
+					terminateEntry(entry, reason);
+					countRevocation(reason);
 				}
 			} catch (error) {
 				// fail closed: if authorization can't be confirmed, revoke
-				registry.delete(entry);
-				try {
-					entry.terminate();
-				} catch {
-					/* ignore */
+				if (registry.has(entry)) {
+					terminateEntry(entry, `recheck error: ${errorMessage(error)}`, hdbLogger.warn);
+					countRevocation('recheck error');
 				}
-				hdbLogger.warn?.(
-					`liveSubscriptionAuth: revoked subscription for ${entry.username} after recheck error: ${(error as Error).message}`
-				);
 			}
 		}
 	} finally {
 		sweeping = false;
 		stopIfIdle();
+		if (revokedByReason.size > 0) {
+			let total = 0;
+			for (const count of revokedByReason.values()) total += count;
+			const breakdown = Array.from(revokedByReason, ([reason, count]) => `${reason}: ${count}`).join(', ');
+			safeLog(
+				hdbLogger.warn,
+				// "revoking", like the per-subscriber line: teardown is dispatched, not awaited, and a
+				// failure surfaces on its own error line
+				`liveSubscriptionAuth: revoking ${total} live subscription${total === 1 ? '' : 's'} (${breakdown})`
+			);
+		}
 	}
 }
 
 /** Test-only: current number of tracked subscriptions. */
 export function _liveSubscriptionCount(): number {
 	return registry.size;
+}
+
+/** Test-only: run a sweep synchronously, bypassing the interval/ITC triggers. */
+export function _sweepNow(): Promise<void> {
+	return sweep();
 }
