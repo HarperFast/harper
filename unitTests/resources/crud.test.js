@@ -188,9 +188,9 @@ describe('CRUD operations with the Resource API', () => {
 		const primaryStore = HiddenResolverTable.primaryStore;
 		const clearRecordCache = primaryStore.clearRecordCache;
 		let cacheClears = 0;
-		primaryStore.clearRecordCache = function () {
+		primaryStore.clearRecordCache = function (...args) {
 			cacheClears++;
-			return clearRecordCache.call(this);
+			return clearRecordCache?.apply(this, args);
 		};
 		hiddenAttribute.set = () => {};
 		try {
@@ -208,9 +208,9 @@ describe('CRUD operations with the Resource API', () => {
 		const primaryStore = HiddenResolverTable.primaryStore;
 		const clearRecordCache = primaryStore.clearRecordCache;
 		let cacheClears = 0;
-		primaryStore.clearRecordCache = function () {
+		primaryStore.clearRecordCache = function (...args) {
 			cacheClears++;
-			return clearRecordCache.call(this);
+			return clearRecordCache?.apply(this, args);
 		};
 		try {
 			HiddenResolverTable.updatedAttributes();
