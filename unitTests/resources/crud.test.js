@@ -5,7 +5,7 @@ const { table, databases } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { setNextEncoding } = require('#src/resources/RecordEncoder');
+const { clearNextEncoding, setNextEncoding } = require('#src/resources/RecordEncoder');
 const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../waitFor.js');
 
@@ -202,6 +202,14 @@ describe('CRUD operations with the Resource API', () => {
 			const persisted = CRUDTable.primaryStore.getEntry('instance-reput').value;
 			assert.equal(Object.hasOwn(persisted, 'computed'), false);
 			assert.equal(persisted.computed, 'instance computed');
+			const entry = CRUDTable.primaryStore.getEntry('instance-reput');
+			const auditRecord = CRUDTable.auditStore.getSync(
+				entry.localTime ?? entry.version,
+				CRUDTable.tableId,
+				'instance-reput'
+			);
+			assert(auditRecord, 'the no-change put must produce an audit entry');
+			assert.equal(Object.hasOwn(auditRecord.getValue(CRUDTable.primaryStore), 'computed'), false);
 		});
 		it('rejects mutation of a returned read-only computed field', async function () {
 			await CRUDTable.put({ id: 'computed-read-only', name: 'read-only', relatedId: 1 });
@@ -232,16 +240,17 @@ describe('CRUD operations with the Resource API', () => {
 		});
 		it('returns metadata-prefixed binary decode output as bytes', function () {
 			const encoder = CRUDTable.primaryStore.encoder;
-			setNextEncoding(0, 0);
-			const encoded = Buffer.from(encoder.encode({ id: 'binary', name: 'durable bytes' }));
-			encoder.readOnlyResolverNames.add('length');
 			try {
+				setNextEncoding(0, 0);
+				const encoded = Buffer.from(encoder.encode({ id: 'binary', name: 'durable bytes' }));
+				encoder.readOnlyResolverNames.add('0');
 				const decoded = encoder.decode(encoded, { valueAsBuffer: true });
 				const bytes = decoded.value ?? decoded;
 				assert(Buffer.isBuffer(bytes));
 				assert(bytes.length > 0);
 			} finally {
-				encoder.readOnlyResolverNames.delete('length');
+				clearNextEncoding();
+				encoder.readOnlyResolverNames.delete('0');
 			}
 		});
 		it('update', async function () {
