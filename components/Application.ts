@@ -977,6 +977,22 @@ function activationJournalPath(componentDirPath: string, deploymentId: string): 
 }
 
 /**
+ * A component name safe to join onto the components root: no separator, no traversal, not dot-prefixed.
+ * Applied to EVERY source of the name — the journal and the sidecar — because validating one and trusting
+ * the other is how a corrupt record reaches an unrelated directory.
+ */
+function isJoinableComponentName(name: unknown): name is string {
+	return (
+		typeof name === 'string' &&
+		name.length > 0 &&
+		name === basename(name) &&
+		name !== '.' &&
+		name !== '..' &&
+		!name.startsWith('.')
+	);
+}
+
+/**
  * Read an activation journal. Absent is `undefined` — no activation was attempted. Anything else THROWS:
  * a truncated or unknown-version journal is an interrupted activation whose intent cannot be read, and
  * both guesses are destructive (publish a rejected release, or discard a good one), so the component is
@@ -1001,8 +1017,15 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 			`Activation journal ${journalPath} has version ${JSON.stringify(parsed?.v)}, expected ${ACTIVATION_JOURNAL_VERSION}`
 		);
 	}
-	if (typeof parsed.component !== 'string' || !parsed.component || typeof parsed.candidateId !== 'string') {
+	if (!isJoinableComponentName(parsed.component) || typeof parsed.candidateId !== 'string') {
 		throw new Error(`Activation journal ${journalPath} does not identify its component and candidate`);
+	}
+	// The journal must describe the directory it sits in. A syntactically valid journal naming someone
+	// else's deployment would otherwise let recovery act on a component from the wrong record.
+	if (parsed.candidateId !== basename(dirname(journalPath))) {
+		throw new Error(
+			`Activation journal ${journalPath} names candidate '${parsed.candidateId}', which is not its own deployment`
+		);
 	}
 	return parsed as ActivationJournal;
 }
@@ -1116,11 +1139,7 @@ async function candidateComponentName(deploymentDirPath: string): Promise<string
 	// live path, which is exactly when an unreadable journal would otherwise be unattributable.
 	const recorded = await readFile(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), 'utf8').catch(() => '');
 	const named = recorded.trim();
-	// Guarded, not trusted: this name is joined onto the components root, so a traversal or separator in it
-	// would let a corrupt sidecar point recovery at an unrelated directory.
-	if (named && named === basename(named) && named !== '.' && named !== '..' && !named.startsWith('.')) {
-		return named;
-	}
+	if (isJoinableComponentName(named)) return named;
 	const entries = await readdir(deploymentDirPath, { withFileTypes: true }).catch(() => []);
 	const components = entries.filter((entry) => entry.isDirectory());
 	return components.length === 1 ? components[0].name : undefined;
@@ -1205,9 +1224,26 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			continue;
 		}
 		if (!journal) {
-			// No activation was ever attempted: build residue, or a candidate abandoned mid-build. The
-			// legacy in-place recovery owns any aside it left, so there is nothing to settle here.
-			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			// No activation was attempted: build residue, or a candidate abandoned mid-build. The legacy
+			// in-place recovery owns any aside it left, so there is nothing to settle.
+			//
+			// Removed UNDER the component's lock, and only after re-checking that no journal appeared in the
+			// meantime. A reload cycle can run this pass while another deploy is mid-build — its candidate
+			// has no journal yet, because the journal is written after build and validation — so an unlocked
+			// delete here removes a live build out from under it.
+			const owner = await candidateComponentName(deploymentDirPath);
+			const removeResidue = async () => {
+				if (await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL)).catch(() => undefined)) return;
+				await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			};
+			if (owner) {
+				await withComponentPreparationLock(join(componentsRootDirPath, owner), removeResidue, {
+					purpose: 'activation-recovery',
+				});
+			} else {
+				// Nothing names an owner, so nothing can be mid-build against it.
+				await removeResidue();
+			}
 			continue;
 		}
 		try {
@@ -1255,13 +1291,12 @@ async function settleInterruptedActivation(
 	const asideRecords = await inProgressAsideRecords(asideStagingDir);
 
 	const rollForward = async () => {
-		if (!liveExists) {
-			await rename(candidateDirPath, liveDirPath);
-			// The same relocation normal activation performs. Without it a crash between the swap and the
-			// journal's removal leaves Windows junctions naming the candidate path, so the component comes
-			// back with unresolvable dependencies.
-			await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
-		}
+		if (!liveExists) await rename(candidateDirPath, liveDirPath);
+		// Unconditional, not only when THIS pass performed the rename: a crash after normal activation
+		// renamed the candidate but before it repaired the links leaves live present with stale targets, and
+		// gating the repair on the rename would skip exactly that case. Idempotent when there is nothing to
+		// re-point.
+		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
 		for (const record of asideRecords) {
 			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components
@@ -1547,8 +1582,17 @@ async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: 
 				// permission error on Windows would leave it worse than the dangling link it replaced.
 				const stagedLink = `${entryPath}.relink-${process.pid}-${randomUUID()}`;
 				try {
+					// Built first, so a failure here costs nothing.
 					await symlink(repaired, stagedLink, 'junction');
-					await rename(stagedLink, entryPath);
+					try {
+						await rename(stagedLink, entryPath);
+					} catch (renameError) {
+						// Windows cannot rename over an existing junction, so the old one has to go first —
+						// but only now that the replacement is known to exist and can be moved into place.
+						if (process.platform !== 'win32') throw renameError;
+						await rm(entryPath, { recursive: true, force: true });
+						await rename(stagedLink, entryPath);
+					}
 				} catch (error) {
 					await rm(stagedLink, { recursive: true, force: true }).catch(() => {});
 					logger.warn(`Could not re-point ${entryPath} after activation: ${errorMessage(error)}`);

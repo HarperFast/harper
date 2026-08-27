@@ -219,6 +219,38 @@ describe('interrupted activation recovery', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('refuses a journal whose component name could escape the components root', async () => {
+		const root = await newRoot('traversal');
+		await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'X\n',
+			journal: JSON.stringify({ v: 1, component: '../../victim', candidateId: 'd1' }),
+		});
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.strictEqual(failures.size, 1, 'reported, not acted on');
+		assert.ok(!failures.has('../../victim'), 'and never keyed by the traversal it claimed');
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('refuses a journal that names a different deployment than the one holding it', async () => {
+		const root = await newRoot('mismatch');
+		await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'X\n',
+			journal: JSON.stringify({ v: 1, component: 'web', candidateId: 'someone-else' }),
+		});
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.strictEqual(failures.size, 1);
+		assert.match(failures.get('web').message, /not its own deployment/);
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('settles a healthy component even when a sibling journal is unreadable', async () => {
 		const root = await newRoot('isolation');
 		await stageState(root, 'broken', 'd1', { live: 'LIVE\n', candidate: 'X\n', journal: 'not json at all' });
