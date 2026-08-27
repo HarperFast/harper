@@ -166,7 +166,7 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 ## Conventions
 
-- A table record's `toJSON` is a response projection, not durable state. Durable encoding filters read-only resolver output, while affected-release payloads are cleaned during decode. Writable relationship resolvers retain their existing patch-release serialization semantics. See HarperFast/harper#2359 and `unitTests/resources/crud.test.js`.
+- A table record's `toJSON` is a response projection, not durable state. Full-record encoding filters read-only resolver output, while affected-release payloads are cleaned during decode. Partial invalidation records are the deliberate exception: their indexed projection is durable lookup state for a non-resident row and is preserved verbatim. Writable relationship resolvers retain their existing patch-release serialization semantics. See HarperFast/harper#2359 and `unitTests/resources/crud.test.js`.
 - **Never** remove `transactional()` from a static method on `Resource` — it owns transaction context lifetime.
 - New `Resource` subclasses should override **instance** methods (`get`, `put`, ...) for behavior; static methods are the protocol entry points and stay generic.
 - **Overriding a static entry point takes over its whole contract.** Assigning `static post`/`put`/`patch` on a subclass shadows the `transactional()`-wrapped static, so none of that wrapper runs — including the `when(data, ...)` that resolves `data` and the `allowCreate`/`allowUpdate` gate. That is by design (it is how `login.ts` implements a deliberately pre-authentication endpoint), and it means an override owns two obligations the wrapper would otherwise have met:

@@ -38,11 +38,28 @@ import * as envMngr from '../utility/environment/environmentManager.js';
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 export const STRUCT_SOURCE = Symbol.for('source');
 export const STORED_FIELD_NAMES = Symbol.for('harper.storedFieldNames');
+export const INVALIDATED = 1;
+export const EVICTED = 8; // 2 is reserved for timestamps
 // Source and built module copies can coexist, so they must share the durable-encoding scope.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
+const PARTIAL_PROJECTION_ENCODING_DEPTH = Symbol.for('harper.partialProjectionEncodeDepth');
 
 export function isDurableRecordEncoding() {
 	return ((globalThis as any)[DURABLE_ENCODING_DEPTH] ?? 0) > 0;
+}
+
+export function isPartialProjectionEncoding() {
+	return ((globalThis as any)[PARTIAL_PROJECTION_ENCODING_DEPTH] ?? 0) > 0;
+}
+
+function encodePartialProjection(encode) {
+	const globals = globalThis as any;
+	globals[PARTIAL_PROJECTION_ENCODING_DEPTH] = (globals[PARTIAL_PROJECTION_ENCODING_DEPTH] ?? 0) + 1;
+	try {
+		return encode();
+	} finally {
+		globals[PARTIAL_PROJECTION_ENCODING_DEPTH]--;
+	}
 }
 
 function enterDurableRecordEncoding() {
@@ -637,7 +654,8 @@ export class RecordEncoder extends StructonEncoder {
 		}
 		// Resolver cleanup is a schema/data invariant, not corruption recovery. Let failures propagate
 		// rather than laundering an otherwise valid row into a null result.
-		if (!options?.skipResolverCleanup) value = this.removeReadOnlyResolverFields(value);
+		if (!options?.skipResolverCleanup && !(metadataFlags & INVALIDATED))
+			value = this.removeReadOnlyResolverFields(value);
 		if (metadata) {
 			metadata.value = value;
 			lastMetadata = metadata as any;
@@ -1019,8 +1037,9 @@ export function recordUpdater(store, tableId, auditStore) {
 			}
 			let result: Promise<void>;
 			if (record !== undefined) {
+				const putRecord = () => (isRocksDB ? store.putSync(id, record, putOptions) : store.put(id, record, putOptions));
 				result = encodeBlobsWithFilePath(
-					() => (isRocksDB ? store.putSync(id, record, putOptions) : store.put(id, record, putOptions)),
+					() => (type === 'invalidate' ? encodePartialProjection(putRecord) : putRecord()),
 					id,
 					store.rootStore
 				);

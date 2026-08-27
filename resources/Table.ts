@@ -79,7 +79,10 @@ import {
 	removeEntry,
 	PENDING_LOCAL_TIME,
 	RecordObject,
+	INVALIDATED,
+	EVICTED,
 	isDurableRecordEncoding,
+	isPartialProjectionEncoding,
 	projectRecordForDurableEncoding,
 	promoteRecord,
 	STRUCT_SOURCE,
@@ -292,8 +295,7 @@ export function frozenRecordView(record: any): any {
 		},
 	});
 }
-export const INVALIDATED = 1;
-export const EVICTED = 8; // note that 2 is reserved for timestamps
+export { INVALIDATED, EVICTED };
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
@@ -665,10 +667,16 @@ export function makeTable(options) {
 			for (const key of storedFieldNames(this)) if (!readOnlyResolverNames.has(key)) json[key] = this[key];
 			return json;
 		};
+		const partialProjectionToJSON = function () {
+			const json = {};
+			for (const key of storedFieldNames(this)) json[key] = this[key];
+			return json;
+		};
 		Object.defineProperty(structPrototype, 'toJSON', {
 			configurable: true,
 			get() {
 				if (!isDurableRecordEncoding()) return enumNames.length > 0 ? toJSON : undefined;
+				if (isPartialProjectionEncoding()) return partialProjectionToJSON;
 				if (this[STORED_FIELD_NAMES]) return durableToJSON;
 				for (let i = 0; i < resolverNames.length; i++) {
 					const name = resolverNames[i];
@@ -6224,29 +6232,47 @@ export function makeTable(options) {
 							}
 						}
 						const sourceRecord = updatedRecord;
-						const cleanSourceRecord = primaryStore.encoder.removeReadOnlyResolverFields(sourceRecord);
 						let responseProjectionSource = sourceRecord;
 						let toJSON = responseProjectionSource.toJSON;
-						if (
-							typeof toJSON !== 'function' &&
-							cleanSourceRecord !== sourceRecord &&
-							sourceRecord.constructor === Object
-						) {
-							responseProjectionSource = promoteRecord(primaryStore.encoder, cleanSourceRecord);
-							toJSON = responseProjectionSource.toJSON;
-						}
 						const sourcePrototype = Object.getPrototypeOf(responseProjectionSource);
 						const usesTargetPrototype =
 							sourcePrototype === primaryStore.encoder.structPrototype ||
 							(sourcePrototype && Object.getPrototypeOf(sourcePrototype) === primaryStore.encoder.structPrototype);
+						const usesForeignProjection = typeof toJSON === 'function' && !usesTargetPrototype;
+						if (usesForeignProjection) {
+							// A source-owned projection may be stateful. Materialize it once so the response and durable
+							// record cannot diverge, then apply the target table's resolver invariant to that result.
+							responseProjectionSource = toJSON.call(responseProjectionSource);
+							toJSON = undefined;
+						}
+						const cleanSourceRecord = primaryStore.encoder.removeReadOnlyResolverFields(responseProjectionSource);
+						if (
+							typeof toJSON !== 'function' &&
+							cleanSourceRecord !== responseProjectionSource &&
+							responseProjectionSource.constructor === Object
+						) {
+							responseProjectionSource = promoteRecord(primaryStore.encoder, cleanSourceRecord);
+							toJSON = responseProjectionSource.toJSON;
+						}
 						if (
 							responseProjectionSource[STORED_FIELD_NAMES] ||
 							Object.hasOwn(responseProjectionSource, STRUCT_SOURCE) ||
-							(typeof toJSON === 'function' && !usesTargetPrototype)
+							typeof toJSON === 'function'
 						) {
-							responseRecord = typeof toJSON === 'function' ? toJSON.call(responseProjectionSource) : responseProjectionSource;
+							responseRecord =
+								typeof toJSON === 'function' ? toJSON.call(responseProjectionSource) : responseProjectionSource;
 						} else responseRecord = responseProjectionSource;
-						updatedRecord = projectRecordForDurableEncoding(cleanSourceRecord);
+						// A target-table response projection materializes enumerable resolvers. Restore those as
+						// inherited accessors before returning it; source-owned snapshots remain untouched.
+						if (usesTargetPrototype)
+							for (let i = 0; i < primaryStore.encoder.resolverNames.length; i++)
+								delete responseRecord[primaryStore.encoder.resolverNames[i]];
+						responseRecord = primaryStore.encoder.removeReadOnlyResolverFields(responseRecord);
+						updatedRecord = usesForeignProjection
+							? cleanSourceRecord
+							: projectRecordForDurableEncoding(cleanSourceRecord);
+						if (Object.hasOwn(updatedRecord, STRUCT_SOURCE))
+							throw new TypeError(`Durable projection for ${tableName} retained lazy struct backing data`);
 						if (needsMutableRecordCopy(responseRecord)) responseRecord = { ...responseRecord };
 						// A plain source object is both projections until this point. Split it before the response
 						// receives the table prototype, whose resolvers must never become visible to durable encoding.

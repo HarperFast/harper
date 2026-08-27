@@ -180,6 +180,7 @@ describe('CRUD operations with the Resource API', () => {
 		const encoder = CRUDRelatedTable.primaryStore.encoder;
 		assert(encoder.readOnlyResolverNameSet.has('relatedToMany'));
 		assert(encoder.readOnlyResolverNameSet.has('childrenOfSelf'));
+		assert.equal(CRUDTable.primaryStore.encoder.readOnlyResolverNameSet.has('related'), false);
 	});
 	it('clears a stale resolver setter during schema reload', function () {
 		const hiddenAttribute = HiddenResolverTable.attributes.find((attribute) => attribute.name === 'hidden');
@@ -214,7 +215,9 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(json.addedAfterDecode, 'retained');
 			assert.equal(Object.hasOwn(json, 'hidden'), true);
 			assert.equal(json.hidden, null);
-			const reencoded = encoder.decode(Buffer.from(encoder.encode(decoded)), { noMetadata: true, lazy: true });
+			const reencodedBytes = Buffer.from(encoder.encode(decoded));
+			assert.equal(reencodedBytes.includes(Buffer.from('forged-hidden')), false);
+			const reencoded = encoder.decode(reencodedBytes, { noMetadata: true, lazy: true });
 			assert.equal(reencoded.id, 'typed-legacy');
 			assert.equal(reencoded.source, 'trusted');
 			assert.equal(reencoded.addedAfterDecode, 'retained');

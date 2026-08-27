@@ -28,6 +28,9 @@ describe('Caching', () => {
 	let returnNotModified = false;
 	let returnFrozen = false;
 	let returnComputedCollision = false;
+	let returnRelationshipCollision = false;
+	let returnStatefulProjection = false;
+	let projectionCalls = 0;
 	let revalidationRequests = 0;
 	async function assertResolvedFieldsAreNotDurable(id, tableClass = RevalidatedTable) {
 		const binary = await waitFor(
@@ -40,7 +43,6 @@ describe('Caching', () => {
 			{ message: 'the stored record must contain its name' }
 		);
 		assert.equal(binary.includes(Buffer.from('cached computed')), false);
-		assert.equal(binary.includes(Buffer.from('relationship')), false);
 	}
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
@@ -140,7 +142,15 @@ describe('Caching', () => {
 					return { status: 304, headers: {} };
 				}
 				const record = { id, name: 'cached', relatedId: 'related' };
+				if (returnStatefulProjection)
+					record.toJSON = () => ({
+						id,
+						name: `projection ${++projectionCalls}`,
+						relatedId: 'related',
+						computed: 'forged computed',
+					});
 				if (returnComputedCollision) record.computed = 'forged computed';
+				if (returnRelationshipCollision) record.related = { id: 'snapshot', name: 'snapshot relationship' };
 				return returnFrozen ? Object.freeze(record) : record;
 			},
 		});
@@ -252,9 +262,60 @@ describe('Caching', () => {
 			assert.strictEqual(entryMap.get(cachedBeforeRevalidation), entryBeforeRevalidation);
 			assert(revalidated.createdAt instanceof Date);
 			assert(revalidated.updatedAt instanceof Date);
+			assert.equal(revalidated.computed, 'cached computed');
+			assert.equal(revalidated.related.id, 'related');
+			assert.equal(Object.hasOwn(revalidated, 'computed'), false);
+			assert.equal(Object.hasOwn(revalidated, 'related'), false);
 			await assertResolvedFieldsAreNotDurable('revalidated');
 		} finally {
 			returnNotModified = false;
+			RevalidatedTable.setTTLExpiration(30);
+		}
+	});
+	it('materializes a stateful source projection once for the response and cache', async function () {
+		try {
+			projectionCalls = 0;
+			returnStatefulProjection = true;
+			await RevalidatedTable.invalidate('stateful-projection');
+			const response = await RevalidatedTable.get('stateful-projection');
+			await RevalidatedTable.primaryStore.committed;
+			const persisted = await waitFor(() => RevalidatedTable.primaryStore.getEntry('stateful-projection')?.value, {
+				message: 'the projected source record must commit to the cache',
+			});
+			assert.equal(projectionCalls, 1);
+			assert.equal(response.name, 'projection 1');
+			assert.equal(persisted.name, 'projection 1');
+			assert.equal(response.computed, 'projection 1 computed');
+			assert.equal(Object.hasOwn(response, 'computed'), false);
+			assert.equal(Object.hasOwn(persisted, 'computed'), false);
+			const binary = Buffer.from(RevalidatedTable.primaryStore.getBinarySync('stateful-projection'));
+			assert.equal(binary.includes(Buffer.from('projection 2')), false);
+			assert.equal(binary.includes(Buffer.from('forged computed')), false);
+		} finally {
+			returnStatefulProjection = false;
+		}
+	});
+	it('preserves the patch-release semantics of a settable relationship collision', async function () {
+		try {
+			returnRelationshipCollision = true;
+			await RevalidatedTable.invalidate('relationship-collision');
+			const response = await RevalidatedTable.get('relationship-collision');
+			assert.equal(response.related.name, 'snapshot relationship');
+			assert.equal(Object.hasOwn(response, 'related'), true);
+			await RevalidatedTable.primaryStore.committed;
+			const persisted = await waitFor(() => RevalidatedTable.primaryStore.getEntry('relationship-collision')?.value, {
+				message: 'the relationship source record must commit to the cache',
+			});
+			assert.equal(persisted.related.name, 'relationship');
+			assert.equal(Object.hasOwn(persisted, 'related'), false);
+			assert.equal(
+				Buffer.from(RevalidatedTable.primaryStore.getBinarySync('relationship-collision')).includes(
+					Buffer.from('snapshot relationship')
+				),
+				true
+			);
+		} finally {
+			returnRelationshipCollision = false;
 		}
 	});
 	it('projects a frozen source response without mutating it', async function () {

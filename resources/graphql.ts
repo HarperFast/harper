@@ -341,7 +341,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 			// we use the outer with statement with attributes as a fallback so any access to an attribute that isn't defined on the record still returns undefined (instead of a ReferenceError)
 			`function computed(attributes) { return function(record) { with(attributes) { with (record) { return ${computedFrom}; } } } } computed;`,
 			{
-				filename: filePath, // specify the file path and line position for better error messages/debugging
+				filename: filePath ?? '<inline-schema>', // specify the file path and line position for better error messages/debugging
 				lineOffset: arg.loc.startToken.line - 1,
 				columnOffset: arg.loc.startToken.column,
 			}
@@ -351,4 +351,4 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 }
 
 // useful for testing
-export const loadGQLSchema = (content) => processGraphQLSchema(content, null, null, new Resources());
+export const loadGQLSchema = (content) => processGraphQLSchema(content, null, '<inline-schema>', new Resources());

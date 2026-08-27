@@ -665,7 +665,11 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 							// the audit value has no on-disk timestamp/metadata prefix (the audit entry carries
 							// its own time), so skip the prefix heuristic — otherwise a classic record whose
 							// structure-id byte is 66 (0x42) is misread as a rocksdb timestamp. See RecordEncoder.decode.
-							() => store.decoder.decode(buffer.subarray(decoder.position, end), { noMetadata: true }),
+							() =>
+								store.decoder.decode(buffer.subarray(decoder.position, end), {
+									noMetadata: true,
+									skipResolverCleanup: Boolean(action & HAS_PARTIAL_RECORD),
+								}),
 							store.rootStore
 						);
 					}
