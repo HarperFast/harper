@@ -213,6 +213,30 @@ test('format mode off never reads a PR-files artifact', () => {
 	}
 });
 
+test('a superseded action run does not read or warn about PR-files evidence', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-superseded-'));
+	const file = path.join(dir, 'event.json');
+	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: file,
+				INPUT_FORMAT_MODE: 'enforce',
+				INPUT_PR_FILES_SUPERSEDED: 'true',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: path.join(dir, 'missing.json'),
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.match(result.stdout, /exempt: superseded by a newer PR head/);
+		assert.doesNotMatch(result.stderr, /PR-files/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test('an oversized normalized PR-files artifact is bounded before parsing', () => {
 	const dir = mkdtempSync(path.join(tmpdir(), 'rc-large-'));
 	const event = path.join(dir, 'event.json');

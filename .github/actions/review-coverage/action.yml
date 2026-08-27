@@ -24,6 +24,9 @@ inputs:
   pr_files_ready:
     description: true only when the PR-files artifact was produced successfully
     default: 'false'
+  pr_files_superseded:
+    description: true when the event head was replaced before collection completed
+    default: 'false'
 runs:
   using: node24
   main: ci-review-coverage.mjs

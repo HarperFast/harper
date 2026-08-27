@@ -39,11 +39,19 @@ jobs:
           [[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$EVENT_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          live_head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [[ "$live_head" != "$EVENT_HEAD" ]]; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           output="$RUNNER_TEMP/pr-files.json"
           gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" |
             node .github/actions/review-coverage/collectPrFiles.mjs "$output"
           live_head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha')
-          [[ "$live_head" == "$EVENT_HEAD" ]]
+          if [[ "$live_head" != "$EVENT_HEAD" ]]; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "path=$output" >> "$GITHUB_OUTPUT"
           echo "ready=true" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/review-coverage
@@ -51,3 +59,4 @@ jobs:
           format_mode: report
           pr_files: ${{ steps.pr-files.outputs.path }}
           pr_files_ready: ${{ steps.pr-files.outputs.ready }}
+          pr_files_superseded: ${{ steps.pr-files.outputs.superseded }}

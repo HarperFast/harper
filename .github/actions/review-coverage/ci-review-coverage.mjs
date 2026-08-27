@@ -22,8 +22,8 @@ function arg(name, fallback = '') {
 	return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-function readPrFiles(pr, formatMode) {
-	if (formatMode === 'off' || classifyPullRequest(pr).exempt) return null;
+function readPrFiles(pr, formatMode, superseded) {
+	if (formatMode === 'off' || superseded || classifyPullRequest(pr).exempt) return null;
 	const ready = arg('pr-files-ready', process.env.INPUT_PR_FILES_READY || '').toLowerCase() === 'true';
 	const file = arg('pr-files', process.env.INPUT_PR_FILES || '');
 	if (!ready || !file) return null;
@@ -42,10 +42,11 @@ function main(mode, formatMode) {
 	const required = rawRequired === '' ? COVERAGE_REQUIRED : Number(rawRequired);
 	if (!Number.isInteger(required) || required < 0) throw new Error(`invalid required '${rawRequired}'`);
 	const r = evaluateCiCoverage(pr, { mode, required });
+	const superseded = arg('pr-files-superseded', process.env.INPUT_PR_FILES_SUPERSEDED || '').toLowerCase() === 'true';
 	let prFiles = null;
 	let evidenceProblem = '';
 	try {
-		prFiles = readPrFiles(pr, formatMode);
+		prFiles = readPrFiles(pr, formatMode, superseded);
 	} catch (error) {
 		evidenceProblem = `PR-files evidence is unavailable (${error instanceof Error ? error.message : String(error)})`;
 	}
@@ -55,6 +56,7 @@ function main(mode, formatMode) {
 		number: Number(event.number ?? pr.number),
 		prFiles,
 		evidenceProblem,
+		superseded,
 	});
 
 	const lines = [

@@ -155,6 +155,23 @@ test('inline-code and HTML-comment links do not satisfy the line-link requiremen
 	}
 });
 
+test('a stray backtick cannot hide later Markdown blocks', () => {
+	const humanBody = [
+		`Refactors the \` operator handling. [Code](${LINK})`,
+		'',
+		'## Verification',
+		'',
+		'Ran `npm run test:unit`.',
+	].join('\n');
+	const result = evaluatePrFormat(pr({ body: humanBody }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+});
+
 test('an unterminated fence reports its cause', () => {
 	const result = evaluatePrFormat(pr({ body: `${body()}\n\n\`\`\`md\nexample` }), {
 		mode: 'enforce',
@@ -165,11 +182,43 @@ test('an unterminated fence reports its cause', () => {
 	assert.match(result.problems.join('\n'), /unterminated fenced code block/);
 });
 
+test('an unterminated HTML comment reports its cause', () => {
+	const result = evaluatePrFormat(pr({ body: `${body()}\n\n<!-- unfinished` }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /unterminated HTML comment/);
+});
+
+test('indented-code links do not satisfy the line-link requirement', () => {
+	const indented = body({ link: '' }).replace('continuously.', `continuously.\n\n    ${LINK}`);
+	const result = evaluatePrFormat(pr({ body: indented }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /no line-anchored PR-diff link/);
+});
+
 test('older files URLs and per-commit paths use the same anchor contract', () => {
 	const url = `https://github.com/${REPO}/pull/${NUMBER}/files/abc123?w=1#diff-${HASH}R211-R220`;
 	const result = checkBodyLinks({ body: url, prFiles: PR_FILES, repo: REPO, number: NUMBER });
 	assert.strictEqual(result.ok, true);
 	assert.strictEqual(result.lineAnchored[0].line, 211);
+});
+
+test('every recognized PR-diff link needs a line anchor', () => {
+	const fileOnly = `https://github.com/${REPO}/pull/${NUMBER}/changes#diff-${HASH}`;
+	const result = evaluatePrFormat(pr({ body: `${body()}\n\nSee also ${fileOnly}.` }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /PR-diff link has no line anchor/);
 });
 
 test('partial or non-resolving anchor URLs are not accepted', () => {
@@ -227,7 +276,21 @@ test('AI fields require the complete ordered body shape', () => {
 	});
 	assert.match(result.problems.join('\n'), /For the human reviewer/);
 	assert.match(result.problems.join('\n'), /valid Complexity/);
-	assert.match(result.problems.join('\n'), /pinned Review-Coverage footer \(found 2\)/);
+	assert.match(result.problems.join('\n'), /pinned Review-Coverage footer \(found 2 field\(s\), 1 valid\)/);
+});
+
+test('AI field recognition is case-consistent', () => {
+	const lower = body()
+		.replace('Complexity:', 'complexity:')
+		.replace('Review-Coverage:', 'review-coverage:')
+		.replace('Human-Review-Need:', 'human-review-need:');
+	const result = evaluatePrFormat(pr({ body: lower }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
 });
 
 test('AI footers must be pinned to the current head', () => {
@@ -254,6 +317,43 @@ test('footer text cannot satisfy an empty Verification section', () => {
 	);
 });
 
+test('HTML-only content cannot satisfy Verification', () => {
+	const broken = body().replace('Focused retention tests passed.', '<br>');
+	assert.match(
+		evaluatePrFormat(pr({ body: broken }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/Verification needs executed evidence/
+	);
+});
+
+test('a lowercase AI field ends an empty Verification section', () => {
+	const broken = body().replace('Focused retention tests passed.\n\nComplexity:', 'complexity:');
+	assert.match(
+		evaluatePrFormat(pr({ body: broken }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/Verification needs executed evidence/
+	);
+});
+
+test('a superseded run is neutral even in enforce mode', () => {
+	const result = evaluatePrFormat(pr({ body: '' }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		superseded: true,
+	});
+	assert.strictEqual(result.pass, true);
+	assert.match(result.exempt, /superseded/);
+});
+
 test('body parsing is bounded at GitHub description size', () => {
 	const result = evaluatePrFormat(pr({ body: `${body()}${'x'.repeat(65_536)}` }), {
 		mode: 'report',
@@ -273,4 +373,6 @@ test('the report workflow keeps the existing check identity and gates PR-files c
 	assert.match(workflow, /continue-on-error: true/);
 	assert.match(workflow, /persist-credentials: false/);
 	assert.match(workflow, /format_mode: report/);
+	assert.strictEqual(workflow.match(/live_head=\$\(gh api/g)?.length, 2, 'head is checked before and after collection');
+	assert.match(workflow, /pr_files_superseded:/);
 });

@@ -18,8 +18,10 @@ function stripInlineCode(body) {
 		while (body[runEnd] === '`') runEnd++;
 		const runLength = runEnd - index;
 		let close = runEnd;
+		const boundary = body.slice(runEnd).search(/\n[ \t]*\n/);
+		const blockEnd = boundary < 0 ? body.length : runEnd + boundary;
 		let matched = false;
-		while (close < body.length) {
+		while (close < blockEnd) {
 			if (body[close] !== '`') {
 				close++;
 				continue;
@@ -42,12 +44,19 @@ function stripInlineCode(body) {
 	return prose;
 }
 
+function stripHtmlComments(body) {
+	let unterminatedComment = false;
+	const prose = body.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => {
+		if (!comment.endsWith('-->')) unterminatedComment = true;
+		return comment.replace(/[^\n]/g, ' ');
+	});
+	return { prose, unterminatedComment };
+}
+
 export function inspectBodyText(body) {
 	let fence = null;
 	const prose = [];
-	const visible = String(body)
-		.replace(/\r\n?/g, '\n')
-		.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => comment.replace(/[^\n]/g, ' '));
+	const visible = String(body).replace(/\r\n?/g, '\n');
 	for (const line of visible.split('\n')) {
 		let offset = 0;
 		let quoteDepth = 0;
@@ -75,6 +84,7 @@ export function inspectBodyText(body) {
 			}
 		}
 		let content = line.slice(offset);
+		if (/^(?: {4}|\t)/.test(content)) continue;
 		const list = content.match(/^[ \t]*(?:[-+*]|\d+[.)])[ \t]+/)?.[0];
 		if (list) {
 			offset += list.length;
@@ -87,7 +97,9 @@ export function inspectBodyText(body) {
 		}
 		prose.push(line);
 	}
-	return { prose: stripInlineCode(prose.join('\n')), unterminatedFence: Boolean(fence) };
+	// Blanking keeps newlines and offsets stable for section-index comparisons in the evaluator.
+	const inspected = stripHtmlComments(stripInlineCode(prose.join('\n')));
+	return { ...inspected, unterminatedFence: Boolean(fence) };
 }
 
 export function stripFencedBlocks(body) {
@@ -139,7 +151,10 @@ export function checkBodyLinks({ body, prFiles, repo, number }) {
 			else problems.push({ kind: 'unknown-file', message: `${where} does not match a file in the current diff` });
 			continue;
 		}
-		if (anchor.line === null) continue;
+		if (anchor.line === null) {
+			problems.push({ kind: 'no-line', message: `${file.path} PR-diff link has no line anchor` });
+			continue;
+		}
 		if (!file.patchAvailable) {
 			unverifiable = true;
 			continue;
