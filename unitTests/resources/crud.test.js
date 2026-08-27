@@ -141,11 +141,26 @@ describe('CRUD operations with the Resource API', () => {
 		const encoder = HiddenResolverTable.primaryStore.encoder;
 		assert(encoder.readOnlyResolverNames.has('hidden'));
 		assert(Object.getOwnPropertyDescriptor(encoder.structPrototype, 'toJSON'));
+		const cleanRecord = Object.assign(Object.create(encoder.structPrototype), {
+			id: 'hidden-clean',
+			source: 'trusted',
+		});
+		assert.equal(cleanRecord.toJSON, undefined);
 		const legacyRecord = Object.create(encoder.structPrototype);
 		Object.assign(legacyRecord, { id: 'hidden-legacy', source: 'trusted' });
 		Object.defineProperty(legacyRecord, 'hidden', { value: 'forged-hidden', enumerable: true });
 		const encoded = Buffer.from(encoder.encode(legacyRecord));
 		assert.equal(encoded.includes(Buffer.from('forged-hidden')), false);
+
+		const hiddenIndex = HiddenResolverTable.attributes.findIndex((attribute) => attribute.name === 'hidden');
+		const [hiddenAttribute] = HiddenResolverTable.attributes.splice(hiddenIndex, 1);
+		try {
+			HiddenResolverTable.updatedAttributes();
+			assert.equal(Object.getOwnPropertyDescriptor(encoder.structPrototype, 'toJSON'), undefined);
+		} finally {
+			HiddenResolverTable.attributes.splice(hiddenIndex, 0, hiddenAttribute);
+			HiddenResolverTable.updatedAttributes();
+		}
 	});
 	async function waitForAnalyticsMetric(metric, start) {
 		return waitFor(

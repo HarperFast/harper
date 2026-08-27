@@ -5261,10 +5261,10 @@ export function makeTable(options) {
 			const noteReadOnlyResolverCollision = (name: string) => {
 				if (reportedReadOnlyResolverCollision) return;
 				reportedReadOnlyResolverCollision = true;
-				harperLogger.warn?.(
-					`Discarded durable field "${name}" because it collides with a read-only resolver on "${collisionMetricPath}"`
-				);
 				try {
+					harperLogger.warn?.(
+						`Discarded durable field "${name}" because it collides with a read-only resolver on "${collisionMetricPath}"`
+					);
 					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
 				} catch {}
 			};
@@ -5305,7 +5305,8 @@ export function makeTable(options) {
 			// removed all enumerable/computed-scalar attributes, drop the now-unneeded toJSON.
 			if (enumerableAttributeNames.length > 0 || readOnlyResolverNames.size > 0)
 				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed, readOnlyResolverNames);
-			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
+			else if (Object.getOwnPropertyDescriptor(primaryStore.encoder.structPrototype, 'toJSON'))
+				delete primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history
 		static setComputedAttribute(attribute_name, resolver) {
