@@ -438,13 +438,11 @@ async function packageComponent(req) {
 }
 
 /**
- * Load the built candidate once to surface load-time errors, then throw the first one. A load-ERROR PROBE,
- * not a safety guarantee: this executes the component's own top-level code with incomplete side-effect
- * isolation. Runs against the candidate directory while the previous version is still serving.
+ * Load the built candidate to surface load-time errors. A load-ERROR PROBE, not a safety guarantee: it runs
+ * the component's own top-level code with incomplete side-effect isolation.
  *
- * Still a no-op on the main thread, exactly as before — and the operations API deploys on the main thread,
- * so operator deploys remain unvalidated. Making validation reachable there is #2315 step 2; this commit
- * only fixes the ORDER, so that where validation does run, a rejected candidate never goes live.
+ * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
+ * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
  */
 // `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
 // concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
@@ -719,14 +717,12 @@ async function deployComponent(req) {
 		if (credentialReferences.length) req.credentials = credentialReferences;
 		else delete req.credentials;
 
-		// The candidate is validated INSIDE preparation, between the build and the swap, so a component
-		// that installs cleanly but throws at load never becomes live. Previously the swap committed
-		// first and this failure was reported over an already-serving broken release.
+		// Validated INSIDE preparation, between build and swap, so a component that installs cleanly but
+		// throws at load never becomes live.
 		//
-		// The phase events keep their existing ORDER for clients — prepare start/done, then load start/done —
-		// but `prepare:done` no longer means the swap has committed; it now means the candidate is built.
-		// A rename or config failure therefore arrives AFTER a client has seen both phases succeed, so the
-		// operation's error is the authority on whether the deploy landed, not the phase stream.
+		// Phase ORDER is unchanged for clients, but `prepare:done` means "candidate built", not "swap
+		// committed" — so a later failure arrives after both phases reported success. The operation's error
+		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
 		await prepareApplication(application, {
 			validateCandidate: async (candidateDirPath) => {

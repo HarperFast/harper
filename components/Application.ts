@@ -617,20 +617,15 @@ function canonicalizeJSON(value: any): any {
  * threads by the preparation lock below.
  */
 /**
- * Either a tarball to extract, or — for `file:<directory>` — an instruction to link that directory. The
- * link case must be a RESULT rather than an action: the resolver used to symlink straight onto the live
- * path and return nothing, which both bypassed the candidate (so a `file:` deploy was published without
- * validation) and left `buildCandidateApplication` destructuring `undefined`.
+ * Either a tarball to extract, or — for `file:<directory>` — an instruction to link that directory. The link
+ * case is a RESULT rather than an action so the caller decides where it lands: a candidate build must link
+ * at the candidate path, or the deploy is published without validation.
  */
 type ResolvedTarball =
 	| { kind: 'tarball'; tarball: Readable; tarballPath?: string; shouldDeleteTarball: boolean }
 	| { kind: 'link'; sourceDirPath: string };
 
-/**
- * Turn a component's `payload` or `package` into a readable tarball stream. Pure input resolution: it
- * touches neither the live tree nor any staging directory, which is what lets both the in-place extraction
- * path and a candidate build share it.
- */
+/** Resolve `payload` or `package` into a tarball stream. Touches neither the live tree nor staging. */
 async function resolveApplicationTarball(application: Application): Promise<ResolvedTarball> {
 	let tarballPath: string | undefined;
 	let tarball: Readable;
@@ -892,22 +887,24 @@ const CANDIDATE_COMPLETE_MARKER = '.complete';
 // Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
 // tree and configuration together — instead of inferring intent from filesystem shape alone.
 const ACTIVATION_JOURNAL = 'activation.json';
+// The component this deployment directory belongs to, as plain text in its own file. Redundant with the
+// journal on purpose: after the swap the candidate has moved to the live path, so a journal that cannot be
+// parsed leaves nothing to infer the component from — and a failure keyed by deployment id fails NOTHING
+// closed, letting the component load over state nobody reconciled.
+const CANDIDATE_COMPONENT_FILE = 'component';
 const ACTIVATION_JOURNAL_VERSION = 1;
 
 /**
- * Best-effort fsync of a directory, so a rename or create has a chance of reaching stable storage.
- * Best-effort by necessity: Node cannot open a directory for fsync on Windows, and some filesystems
- * reject it. The activation protocol is therefore built to never DEPEND on directory-entry durability —
- * roll-forward requires the journal and the candidate and its complete marker to all be observable, so a
- * lost directory update degrades to a roll back rather than to a wrong decision.
+ * Best-effort fsync of a directory. Best-effort by necessity — Node cannot fsync a directory on Windows —
+ * which is why roll-forward requires journal + candidate + complete marker to all be observable: a lost
+ * directory update then degrades to a roll back, never to a wrong decision. See DESIGN.md.
  */
 async function syncDirectory(dirPath: string): Promise<void> {
 	let handle;
 	try {
 		handle = await open(dirPath, 'r');
 	} catch (error) {
-		// Windows cannot open a directory for fsync at all, so this is the expected path there rather than
-		// a fault. Traced, not warned, because the protocol tolerates it by design.
+		// Expected on Windows, not a fault.
 		logger.trace?.(`Directory sync of ${dirPath} unavailable: ${errorMessage(error)}`);
 		return;
 	}
@@ -916,17 +913,15 @@ async function syncDirectory(dirPath: string): Promise<void> {
 	} catch (error) {
 		logger.trace?.(`Directory sync of ${dirPath} failed: ${errorMessage(error)}`);
 	} finally {
-		// Also swallowed: this runs at points that sit OUTSIDE a compensation block, so a rejecting close
-		// would surface as an activation failure (or an unhandled rejection) for something the protocol
-		// already treats as best-effort.
+		// Swallowed: this runs outside any compensation block, so a rejecting close would surface as an
+		// activation failure for something already best-effort.
 		await handle.close().catch((error) => logger.trace?.(`Closing ${dirPath} failed: ${errorMessage(error)}`));
 	}
 }
 
 /**
- * A rename changes an entry in BOTH parents — the removal in the source's and the addition in the
- * destination's — so durability has to be attempted on both. Syncing only the destination can leave the
- * source entry present after power loss, which reads as "candidate still there" and rolls forward twice.
+ * A rename changes an entry in BOTH parents, so both are synced: a surviving source entry reads as
+ * "candidate still there" and would roll an already-completed activation forward twice.
  */
 async function syncRenameParents(fromPath: string, toPath: string): Promise<void> {
 	const parents = new Set([dirname(fromPath), dirname(toPath)]);
@@ -966,6 +961,10 @@ type ActivationJournal = {
 
 function candidateCompleteMarkerPath(componentDirPath: string, deploymentId: string): string {
 	return join(candidateDeploymentDirPath(componentDirPath, deploymentId), CANDIDATE_COMPLETE_MARKER);
+}
+
+function candidateComponentFilePath(componentDirPath: string, deploymentId: string): string {
+	return join(candidateDeploymentDirPath(componentDirPath, deploymentId), CANDIDATE_COMPONENT_FILE);
 }
 
 function activationJournalPath(componentDirPath: string, deploymentId: string): string {
@@ -1108,6 +1107,15 @@ async function ensureExtractionStagingDirectory(asideStagingDir: string): Promis
  */
 /** The single component directory inside a candidate deployment directory, when there is exactly one. */
 async function candidateComponentName(deploymentDirPath: string): Promise<string | undefined> {
+	// The sidecar first: it is the only source that still works once the candidate has been renamed to the
+	// live path, which is exactly when an unreadable journal would otherwise be unattributable.
+	const recorded = await readFile(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), 'utf8').catch(() => '');
+	const named = recorded.trim();
+	// Guarded, not trusted: this name is joined onto the components root, so a traversal or separator in it
+	// would let a corrupt sidecar point recovery at an unrelated directory.
+	if (named && named === basename(named) && named !== '.' && named !== '..' && !named.startsWith('.')) {
+		return named;
+	}
 	const entries = await readdir(deploymentDirPath, { withFileTypes: true }).catch(() => []);
 	const components = entries.filter((entry) => entry.isDirectory());
 	return components.length === 1 ? components[0].name : undefined;
@@ -1262,10 +1270,8 @@ async function settleInterruptedActivation(
 
 /** Mark a candidate build+validation complete. Idempotent, so a retried activation is not a failure. */
 /**
- * fsync every regular file in the candidate tree, then its directories bottom-up. Without this the small
- * control files can survive a power loss while the candidate's contents do not, so recovery rolls forward
- * onto a truncated tree that `.complete` swears is good. Bounded by the candidate's own size and only on
- * the deploy path.
+ * fsync the candidate's contents before `.complete` vouches for them — otherwise the control files can
+ * outlive the tree after a power loss and recovery rolls forward onto a truncated one.
  */
 // Codes that mean "this platform or filesystem will not fsync this handle", as opposed to "the write did
 // not reach storage". Windows raises EPERM fsyncing perfectly healthy files, and network/overlay mounts
@@ -1278,14 +1284,9 @@ function isUnsupportedSync(error: unknown): boolean {
 }
 
 async function syncTreeContents(rootPath: string): Promise<void> {
-	// A REAL durability failure propagates — `.complete` is written only after this returns and is
-	// recovery's roll-forward authority, so an EIO or ENOSPC swallowed here would leave the marker
-	// vouching for a tree that never reached storage. Failing the deploy instead is safe, because the live
-	// tree has not been touched yet.
-	//
-	// But "this platform cannot fsync that handle" is not a durability failure, and treating it as one
-	// failed every deploy on Windows with `EPERM: operation not permitted, fsync`. Those codes are traced
-	// and tolerated, which is the same bargain `syncDirectory` already makes.
+	// Real durability failures propagate: the deploy fails, which is safe because the live tree is
+	// untouched. Platform "cannot fsync this handle" codes do not — treating those as durability failures
+	// fails every deploy on Windows.
 	const entries = await readdir(rootPath, { withFileTypes: true });
 	for (const entry of entries) {
 		const entryPath = join(rootPath, entry.name);
@@ -1315,10 +1316,19 @@ async function syncTreeContents(rootPath: string): Promise<void> {
 	await syncDirectory(rootPath);
 }
 
-async function markCandidateComplete(componentDirPath: string, deploymentId: string): Promise<void> {
+async function markCandidateComplete(
+	componentDirPath: string,
+	deploymentId: string,
+	componentName: string
+): Promise<void> {
 	// Contents first: `.complete` is roll-forward AUTHORITY, so it must not be durable before the tree it
 	// vouches for.
 	await syncTreeContents(candidateApplicationPath(componentDirPath, deploymentId));
+	try {
+		await writeControlFileDurably(candidateComponentFilePath(componentDirPath, deploymentId), componentName);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+	}
 	try {
 		await writeControlFileDurably(candidateCompleteMarkerPath(componentDirPath, deploymentId), '');
 	} catch (error) {
@@ -1351,7 +1361,7 @@ export async function activateCandidateApplication(application: Application, dep
 		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
 	}
 
-	await markCandidateComplete(liveDirPath, deploymentId);
+	await markCandidateComplete(liveDirPath, deploymentId, application.name);
 	const journalPath = activationJournalPath(liveDirPath, deploymentId);
 	try {
 		await writeControlFileDurably(
@@ -1409,8 +1419,8 @@ export async function activateCandidateApplication(application: Application, dep
 		throw error;
 	}
 
-	// B4/B5/B6 — past the point of no return. Each of these failing leaves a state recovery settles
-	// forward on the next start, so they are logged rather than thrown: the deploy has succeeded.
+	// Past the point of no return: each failure below leaves a state recovery settles forward, so they are
+	// logged, not thrown.
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	let retired = false;
 	try {
@@ -1427,9 +1437,8 @@ export async function activateCandidateApplication(application: Application, dep
 	} catch (error) {
 		application.logger.warn(`Deployed ${application.name} but could not retire its rollback record:`, error);
 	}
-	// The journal goes LAST, and only once the rollback record is settled. Removing it while an
-	// `.in-progress-*` record still names the displaced tree would strip the evidence that this activation
-	// completed, and the legacy aside recovery would then restore the OLD tree over the new one at startup.
+	// The journal goes LAST, and only once the rollback record is settled: removing it while an
+	// `.in-progress-*` record still names the displaced tree lets the legacy pass restore the old tree.
 	if (retired) {
 		await rm(journalPath, { force: true }).catch((error) =>
 			application.logger.warn(`Deployed ${application.name} but could not remove its activation journal:`, error)
@@ -1463,16 +1472,10 @@ async function compensate(
 }
 
 /**
- * Re-point dependency links that name the candidate's build path, after the candidate has become live.
- *
- * `npm install` runs in `.deploy-staging/<deploymentId>/<component>`, and for a `file:` dependency it links
- * `node_modules/<dep>` at the dependency directory. On POSIX npm writes a RELATIVE symlink, which keeps
- * working after the rename. On Windows it writes a junction, and junctions are ABSOLUTE — so after the swap
- * they still name the staging path, which no longer exists, and the dependency stops resolving with
- * `Cannot find module`.
- *
- * Rewriting them is preferred over `npm install --install-links` (which copies instead of linking) because
- * that would change dependency semantics for every deploy on every platform to fix one platform.
+ * Re-point dependency links that name the candidate's build path, now that it has become live. npm links a
+ * `file:` dependency relatively on POSIX (survives the rename) but as an ABSOLUTE junction on Windows, which
+ * then names a staging path that no longer exists. Rewriting beats `--install-links`, which would change
+ * dependency semantics on every platform to fix one.
  */
 async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: string): Promise<void> {
 	const modulesPath = join(liveDirPath, 'node_modules');
@@ -1533,8 +1536,7 @@ export async function buildCandidateApplication(application: Application, deploy
 	await ensureSecureStagingDirectory(dirname(deploymentDirPath));
 	await ensureSecureStagingDirectory(deploymentDirPath);
 	try {
-		// A candidate directory left by an earlier attempt on this same id would otherwise be extracted
-		// into rather than replaced.
+		// Replaced, not extracted into: a prior attempt on this id may have left a partial tree.
 		await rm(candidateDirPath, { recursive: true, force: true });
 		const resolved = await resolveApplicationTarball(application);
 		if (resolved.kind === 'link') {
@@ -2110,11 +2112,9 @@ async function rollbackExtractedDirectory(
  * This method may be called from any Harper thread as part of a serialized preparation.
  */
 /**
- * Install a component's dependencies. `buildDirPath` is where the tree being installed lives — the live
- * path today, or a candidate under `.deploy-staging` when the deploy builds off to the side. Passed
- * explicitly rather than by temporarily repointing `application.dirPath`, because that property is read
- * after preparation too and any path that skipped the restore would leave it naming a directory that no
- * longer exists.
+ * Install a component's dependencies into `buildDirPath` — the live path, or a candidate under
+ * `.deploy-staging`. Explicit rather than repointing `application.dirPath`, which is read after preparation
+ * too and would name a vanished directory if any failure path skipped the restore.
  */
 export async function installApplication(application: Application, buildDirPath = application.dirPath) {
 	let packageJSON: any;

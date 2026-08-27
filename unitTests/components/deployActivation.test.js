@@ -36,6 +36,7 @@ async function stageState(root, component, id, state) {
 	await fs.mkdir(deploymentDir, { recursive: true });
 	if (state.candidate) await writeTree(path.join(deploymentDir, component), state.candidate);
 	if (state.complete) await fs.writeFile(path.join(deploymentDir, '.complete'), '');
+	if (state.componentFile !== false) await fs.writeFile(path.join(deploymentDir, 'component'), component);
 	if (state.journal !== undefined) {
 		await fs.writeFile(
 			path.join(deploymentDir, 'activation.json'),
@@ -179,6 +180,40 @@ describe('interrupted activation recovery', () => {
 
 		assert.strictEqual(failures.size, 1);
 		assert.match(failures.get('web').message, /version 99, expected 1/);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('attributes an unreadable journal to its component even after the candidate has moved', async () => {
+		// The post-swap shape: the candidate is now the live tree, so nothing under the deployment directory
+		// names the component. Without the sidecar the failure keys on the deployment id, which fails NOTHING
+		// closed and lets the component load over state nobody reconciled.
+		const root = await newRoot('attribution');
+		await stageState(root, 'web', 'd1', { live: 'CANDIDATE\n', journal: 'truncated{' });
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.deepStrictEqual([...failures.keys()], ['web'], 'keyed by component, not by deployment id');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('falls back to the deployment id when even the component sidecar is gone', async () => {
+		const root = await newRoot('nosidecar');
+		await stageState(root, 'web', 'd1', { live: 'CANDIDATE\n', journal: 'truncated{', componentFile: false });
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.deepStrictEqual([...failures.keys()], ['d1'], 'nothing left to attribute it to, and it still reports');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('ignores a sidecar naming something outside the components root', async () => {
+		const root = await newRoot('badsidecar');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', { live: 'CANDIDATE\n', journal: 'truncated{' });
+		await fs.writeFile(path.join(deploymentDir, 'component'), '../../etc');
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.deepStrictEqual([...failures.keys()], ['d1'], 'a traversal in the sidecar is refused, not joined');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
