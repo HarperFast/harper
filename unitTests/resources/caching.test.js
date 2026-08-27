@@ -221,6 +221,8 @@ describe('Caching', () => {
 			const initial = await RevalidatedTable.get('revalidated');
 			assert.equal(initial.computed, 'cached computed');
 			assert.equal(initial.related.id, 'related');
+			assert.equal(Object.hasOwn(initial, 'computed'), false);
+			assert.equal(Object.hasOwn(initial, 'related'), false);
 			await RevalidatedTable.primaryStore.committed;
 			const cachedBeforeRevalidation = RevalidatedTable.primaryStore.getEntry('revalidated').value;
 			const entryBeforeRevalidation = entryMap.get(cachedBeforeRevalidation);
@@ -252,9 +254,11 @@ describe('Caching', () => {
 			const response = await RevalidatedTable.get('frozen-source');
 			assert.equal(response.computed, 'cached computed');
 			assert.equal(response.related.id, 'related');
+			assert.equal(Object.hasOwn(response, 'computed'), false);
+			assert.equal(Object.hasOwn(response, 'related'), false);
+			await RevalidatedTable.primaryStore.committed;
 			assert(response.createdAt instanceof Date);
 			assert(response.updatedAt instanceof Date);
-			await RevalidatedTable.primaryStore.committed;
 			const persisted = RevalidatedTable.primaryStore.getEntry('frozen-source').value;
 			assert.equal(Object.hasOwn(persisted, 'computed'), false);
 			assert.equal(Object.hasOwn(persisted, 'related'), false);

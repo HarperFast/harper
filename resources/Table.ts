@@ -228,17 +228,17 @@ export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
 }
-// A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
-// records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
-// a Buffer/typed-array (spreading would corrupt the binary into a {0:.., 1:..} object) or a primitive
-// (which reports as frozen and would spread into character/index keys).
-function isFrozenRecordObject(value: any): boolean {
+// A non-extensible record we need to copy before stamping it. Only plain/record objects qualify:
+// never a Buffer/typed-array or an object with internal slots such as Date/Map (spreading those
+// would corrupt the value).
+function needsMutableRecordCopy(value: any): boolean {
 	return (
 		value !== null &&
 		typeof value === 'object' &&
 		!ArrayBuffer.isView(value) &&
 		!(value instanceof ArrayBuffer) &&
-		Object.isFrozen(value)
+		Object.prototype.toString.call(value) === '[object Object]' &&
+		!Object.isExtensible(value)
 	);
 }
 // Freeze a decoded record value for cache integrity, guarding the bare-TypedArray-root case:
@@ -2485,7 +2485,7 @@ export function makeTable(options) {
 							// validate() coerces values and we stamp created/updated times + the primary key
 							// below, so copy-on-mutate when recordUpdate is frozen (e.g. a record decoded during
 							// log replay) instead of writing through the frozen object.
-							if (isFrozenRecordObject(recordUpdate)) recordUpdate = { ...recordUpdate };
+							if (needsMutableRecordCopy(recordUpdate)) recordUpdate = { ...recordUpdate };
 							// Skip schema validation during crash-recovery replay (transaction.isReplay is set
 							// by replayLogs). Records were valid when originally written; post-crash schema
 							// evolution (e.g. newly required fields) must not prevent replaying them
@@ -6221,16 +6221,25 @@ export function makeTable(options) {
 							}
 						}
 						const sourceRecord = updatedRecord;
-						const toJSON = sourceRecord.toJSON;
-						responseRecord = typeof toJSON === 'function' ? toJSON.call(sourceRecord) : sourceRecord;
+						if (sourceRecord[STORED_FIELD_NAMES]) {
+							const toJSON = sourceRecord.toJSON;
+							responseRecord = typeof toJSON === 'function' ? toJSON.call(sourceRecord) : sourceRecord;
+						} else responseRecord = sourceRecord;
 						updatedRecord = projectRecordForDurableEncoding(sourceRecord);
-						if (responseRecord && !Object.isExtensible(responseRecord)) responseRecord = { ...responseRecord };
+						if (needsMutableRecordCopy(responseRecord)) responseRecord = { ...responseRecord };
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
-						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
-						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
-						if (primaryKey && responseRecord[primaryKey] !== id) responseRecord[primaryKey] = id;
+						if (needsMutableRecordCopy(updatedRecord)) updatedRecord = { ...updatedRecord };
+						if (primaryKey && Object.isExtensible(updatedRecord) && updatedRecord[primaryKey] !== id)
+							updatedRecord[primaryKey] = id;
+						if (
+							primaryKey &&
+							responseRecord &&
+							Object.isExtensible(responseRecord) &&
+							responseRecord[primaryKey] !== id
+						)
+							responseRecord[primaryKey] = id;
 					}
 					resolved = true;
 					const resolvedEntry: Entry = {
@@ -6248,7 +6257,7 @@ export function makeTable(options) {
 					// available immediately. The commit callback mirrors generated timestamps when the
 					// response and durable records differ.
 					if (responseRecord) {
-						if (responseRecord.constructor === Object)
+						if (Object.isExtensible(responseRecord) && responseRecord.constructor === Object)
 							Object.setPrototypeOf(responseRecord, primaryStore.encoder.structPrototype);
 						if (!entryMap.has(responseRecord)) entryMap.set(responseRecord, resolvedEntry);
 					}
@@ -6309,7 +6318,7 @@ export function makeTable(options) {
 							let auditRecord: any;
 							let omitLocalRecord = false;
 							let residencyId: number;
-							if (updatedTimeProperty) {
+							if (updatedTimeProperty && Object.isExtensible(updatedRecord)) {
 								const updatedTime =
 									updatedTimeProperty.type === 'Date'
 										? new Date(txnTime)
@@ -6317,9 +6326,14 @@ export function makeTable(options) {
 											? new Date(txnTime).toISOString()
 											: txnTime;
 								updatedRecord[updatedTimeProperty.name] = updatedTime;
-								if (responseRecord !== updatedRecord) responseRecord[updatedTimeProperty.name] = updatedTime;
+								if (responseRecord !== updatedRecord && Object.isExtensible(responseRecord))
+									responseRecord[updatedTimeProperty.name] = updatedTime;
 							}
-							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
+							if (
+								createdTimeProperty &&
+								Object.isExtensible(updatedRecord) &&
+								updatedRecord[createdTimeProperty.name] == null
+							) {
 								const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
 								if (existingCreatedTime != null) {
 									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
@@ -6336,6 +6350,7 @@ export function makeTable(options) {
 							if (
 								createdTimeProperty &&
 								responseRecord !== updatedRecord &&
+								Object.isExtensible(responseRecord) &&
 								updatedRecord[createdTimeProperty.name] != null
 							)
 								responseRecord[createdTimeProperty.name] = updatedRecord[createdTimeProperty.name];
