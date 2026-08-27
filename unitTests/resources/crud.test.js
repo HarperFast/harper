@@ -201,10 +201,30 @@ describe('CRUD operations with the Resource API', () => {
 			HiddenResolverTable.updatedAttributes();
 			assert.equal(hiddenAttribute.set, null);
 			assert(HiddenResolverTable.primaryStore.encoder.readOnlyResolverNameSet.has('hidden'));
-			assert.equal(cacheClears, 1);
+			assert.equal(cacheClears, 0, 'an unchanged resolver contract should retain the record cache');
 		} finally {
 			primaryStore.clearRecordCache = clearRecordCache;
 		}
+	});
+	it('clears the record cache when the resolver contract changes', function () {
+		const hiddenIndex = HiddenResolverTable.attributes.findIndex((attribute) => attribute.name === 'hidden');
+		const [hiddenAttribute] = HiddenResolverTable.attributes.splice(hiddenIndex, 1);
+		const primaryStore = HiddenResolverTable.primaryStore;
+		const clearRecordCache = primaryStore.clearRecordCache;
+		let cacheClears = 0;
+		primaryStore.clearRecordCache = function () {
+			cacheClears++;
+			return clearRecordCache.call(this);
+		};
+		try {
+			HiddenResolverTable.updatedAttributes();
+			assert.equal(cacheClears, 1);
+		} finally {
+			HiddenResolverTable.attributes.splice(hiddenIndex, 0, hiddenAttribute);
+			HiddenResolverTable.updatedAttributes();
+			primaryStore.clearRecordCache = clearRecordCache;
+		}
+		assert.equal(cacheClears, 2);
 	});
 	it('removes typed resolver collisions without materializing lazy stored fields', function () {
 		const encoder = TypedResolverTable.primaryStore.encoder;

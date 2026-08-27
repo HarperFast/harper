@@ -5345,8 +5345,13 @@ export function makeTable(options) {
 					if (attribute.computed && !relationDef) hasSurfacedComputed = true;
 				}
 			}
+			const resolverContractChanged =
+				primaryStore.encoder.resolverNames.length !== resolverNames.length ||
+				primaryStore.encoder.resolverNames.some((name, index) => name !== resolverNames[index]) ||
+				primaryStore.encoder.readOnlyResolverNames.length !== readOnlyResolverNames.size ||
+				primaryStore.encoder.readOnlyResolverNames.some((name) => !readOnlyResolverNames.has(name));
 			primaryStore.encoder.setReadOnlyResolverNames(readOnlyResolverNames, resolverNames);
-			primaryStore.clearRecordCache?.();
+			if (resolverContractChanged) primaryStore.clearRecordCache?.();
 			primaryStore.encoder.onReadOnlyResolverCollision = noteReadOnlyResolverCollision;
 			this.enumerableRelationDefs = enumerableRelationDefs;
 			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
