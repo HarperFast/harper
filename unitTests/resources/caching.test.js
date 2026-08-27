@@ -30,6 +30,7 @@ describe('Caching', () => {
 	let revalidationRequests = 0;
 	function assertResolvedFieldsAreNotDurable(id) {
 		const binary = Buffer.from(RevalidatedTable.primaryStore.getBinarySync(id));
+		assert(binary.includes(Buffer.from('cached')), 'the stored record must contain its name');
 		assert.equal(binary.includes(Buffer.from('cached computed')), false);
 		assert.equal(binary.includes(Buffer.from('relationship')), false);
 	}
