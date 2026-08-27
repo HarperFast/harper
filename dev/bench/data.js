@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787826471843,
+  "lastUpdate": 1787843738625,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -14225,6 +14225,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 482951,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "99169ebca961a405e7837afc703067d9a752299b",
+          "message": "Fix intermittent set_configuration 500s on Windows caused by the config write's rename retry (#2339)\n\n* probe(windows): record which open handles block rename-over-destination\n\nTemporary investigation harness for the set_configuration EPERM failure.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* probe(windows): add native-watcher and chokidar cases to the rename probe\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(windows): read the root config synchronously so its atomic write can land\n\nOn Windows, rename over a destination fails with EPERM while any descriptor is\nopen on it. Harper's root-config watchers read with fsPromises.readFile, whose\nclose runs on the reading thread's event loop, and atomicWriteFile retries the\nrename with a blocking sleep on that same thread - so a read still in flight can\nnever be released and every retry is guaranteed to fail. set_configuration then\nreturns 500 after burning the full retry budget. That is why widening the budget\nin #1714 and #2036 changed nothing but the duration of the failure.\n\nMeasured on the Windows CI runner (Node v24.19.0): a destination held by a single\nNode read descriptor fails the rename, all 13 attempts fail while the loop blocks,\nand the very next attempt after awaiting that read succeeds. Holding the source,\nor watching the file with fs.watch or chokidar, does not block it.\n\nBound the descriptor to a single syscall by reading the root config synchronously\nin RootConfigWatcher and in OptionsWatcher's root-config branch. Application\nconfigs are written in place, never by rename-over, so they keep the non-blocking\nread and its pending-read drain. Also move the temp-file write inside the cleanup\nboundary so a write that fails partway cannot orphan a partial temp, and log the\nattempt count and elapsed time when a rename genuinely cannot be completed.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): address pre-push review findings\n\n- guarantee the burst test's config teardown with try/finally, and add a concurrent\n  burst plus a temp-straggler assertion so the test pins more of the precondition\n- stop the exhausted-retry log from asserting an open handle when the cause may be\n  a genuine permission error\n- trim the added comments to the invariant a reader needs\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): retry a root-config read that observed a half-written file\n\nA synchronous read can catch an in-place writer between its truncate and its\nwrite. chokidar may emit nothing further for that write, so dropping the unusable\nread left the watcher serving stale config indefinitely - measured at 7 missed\nchanges in 40 against 0 for the promise-based read it replaced.\n\nRe-read on a later turn instead, bounded so a genuinely empty or corrupt file\ncannot spin. The read stays synchronous, so the descriptor still never outlives\nthe turn it started in.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): give both watchers one recovery path for an unusable read\n\nRound-2 review findings.\n\nThe root branch of OptionsWatcher routed read and parse failures straight to\n#handleReadError, whose ENOENT arm answers with a remove that restarts the scope,\nwhile RootConfigWatcher retried the same failure on the same file for the same\nchokidar event. On Windows a transient read failure during a replace could\ntherefore leave one component serving pre-change options while the logger's\nwatcher picked the change up. Both now re-read first and fall through to the\nerror path only once the budget is spent; a missing file is excluded, since that\nis unambiguous and already has correct semantics.\n\nApplication configs get the same guard on the async path: they are rewritten in\nplace, so an empty mid-write read was the case the retry exists for, and dropping\nit emitted remove.\n\nAlso: settled() now clears an armed timer so a recovered read cannot replay;\nRootConfigWatcher's try covers only the read and parse, so a listener that throws\nis not mistaken for a half-written file; exhausting the budget is logged rather\nthan silent; and the burst test drops the component key it could never remove.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): keep listener errors on the watcher's error route, not the retry\n\nRound-3 review findings.\n\nApplying parsed config is past the point where an incomplete file explains a\nfailure, so a throw from a change listener took the two paths in opposite and\nboth-wrong directions: it escaped the root watcher into chokidar's callback, and\non the application path it was misread as a partial file and replayed ten times.\nBoth now keep the watcher's established error route, and RootConfigWatcher logs\nrather than swallowing.\n\nAn unusable read is also recognised by value rather than by length: '', a lone\nnewline and a truncated document all parse to null, and adopting that dropped the\nwhole configuration - for a scope, via the remove that restarts it.\n\nAlso: the give-up warning is once per file rather than once per watcher per\nevent, since every root-config scope watches the same file, and the ENOENT\nexclusion says what it means - both watchers already answer a missing file\ndeliberately, so re-reading only delays that.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): judge a root config complete before the env overlay, not after\n\nRound-4 review findings.\n\noverlayRootEnvConfig turns any parse into a non-null object whenever a config env\nvar is set - the norm in containers - so the completeness check ran on the\noverlaid value and passed. An empty or half-written root config was laundered\ninto a valid-looking env-only object and adopted: a scope absent from the env\nconfig got a remove that restarts it, and one present in it had every\nfile-provided key merged away first. The check now runs on the file's own parse.\n\nA file still unusable once the retry budget is spent is taken at face value, so\nemptying a config file reaches remove as it always did rather than being\nclassified incomplete forever.\n\nAlso: the give-up warning names the parse error when there was one, instead of\nreporting a syntax error as an empty read; the retry helper's tests wait on the\ncondition rather than a fixed sleep; and the application-config test awaits the\nread it asserts on, which it previously could race.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): re-arm the give-up warning when a config file recovers\n\nThe per-file throttle that stops one bad root config producing one warning per\nscope never cleared, so a file that was fixed and later broken again failed\nsilently: the path stayed in the suppression set for the life of the process. A\nusable read now clears it, since that is a new incident.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): record a give-up after clearing the gate, not before\n\nsettled() clears the file's warning gate, so warning first and settling second\ndeleted the record immediately and let every other root scope report the same\nfile again - defeating the throttle it was added for.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): report a give-up once per file across every scope watching it\n\nThe warning gate is shared per file, so treating a give-up like a recovery let\neach of the N root-config scopes clear it and report the same file in turn -\nwhich is what the throttle existed to prevent. Give-up and recovery are now\ndistinct operations: only a usable read withdraws the report.\n\nThe throttle also reports whether it warned, so the property is observable in a\ntest rather than only in the log.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): restore the retry budget on give-up so a repair is not missed\n\nA watcher that gave up kept a spent budget, so the write that repairs the file -\nwhich can itself be observed mid-write, the case this retry exists for - had no\nre-read left to recover it, and chokidar may emit nothing further. Each incident\nnow gets its own budget; only the report stays standing, since the file has not\nrecovered until a usable read says so.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): make closing the retry terminal\n\ncancel() left the budget at zero rather than marking the retry closed, and\ngaveUp() now restores the budget - so a give-up after close would re-arm a\nre-read on a watcher that is shutting down. Close is now terminal: nothing\nschedules or reports after it.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): restore the budget on the error-bearing give-up too\n\nThe empty-read path restores the retry budget when it gives up so the write that\nrepairs the file - itself observable mid-write - still has a re-read to catch it.\nThe error-bearing path did not, leaving a scope that hit an unreadable file with\nno way to recover its next partial read. Same give-up on both; the error still\ntakes the scope's error route.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* docs: record the root-config descriptor-lifetime invariant in DESIGN.md\n\nThe rule that no descriptor on harper-config.yaml may outlive a turn is enforced\nonly by prose, so a future fsPromises.readFile of that file silently reintroduces\nharper#2313. Write down the measurement behind it, and the three distinct\noutcomes of the partial-read retry.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): report why a config read failed without quoting the file\n\nA YAML parse error's message includes the offending source lines, and this file\nholds credentials - a truncated write near a password line would have put it in a\nwarn-level log. Report the error kind and its line and column instead, which is\nwhat an operator needs to fix it.\n\nAlso drops a branch of the recovery path that no caller can reach any more.\n\nRefs #2313\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(config): correct and trim comments flagged in pre-push review\n\nisPartialReadError's doc claimed both watchers answer ENOENT deliberately;\nonly OptionsWatcher does, RootConfigWatcher silently returns. Also drop a\nfew comments that restated the code next to them instead of adding\nnon-obvious why.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus <noreply@anthropic.com>",
+          "timestamp": "2026-08-27T15:15:10Z",
+          "url": "https://github.com/HarperFast/harper/commit/99169ebca961a405e7837afc703067d9a752299b"
+        },
+        "date": 1787843736304,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 22804,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 14335,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 14864,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 16289472,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2967,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 322180,
             "unit": "ops"
           }
         ]
