@@ -16,6 +16,7 @@ const { createLogger } = harperLoggerModule;
 const { getHttpOptions, handleApplication, logRequest } = require('#src/server/http');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { waitFor } = require('../../waitFor.js');
+const { pinLogConfig } = require('../../logConfigFixture.js');
 
 const HARPER_LOGGER_MODULE = '#js/utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -146,15 +147,28 @@ function setTestLogConfig(level, config_log_path, to_file, to_stream) {
 
 describe('Test harper_logger module', () => {
 	const sandbox = sinon.createSandbox();
+	let restoreLogConfig;
+
+	// Pin the config instead of inheriting whatever Harper install the machine happens to have.
+	// The module-level log_to_file that initLogSettings() resolves at load gates every file write
+	// in createLogger(), so with no boot properties present the HTTP-logger and global-logger tests
+	// below wait forever for a log file nothing is writing, and initLogSettings()'s own test sees
+	// undefined settings because the ENOENT path returns before it reads any config at all.
+	before(() => {
+		restoreLogConfig = pinLogConfig();
+	});
 
 	after(() => {
 		sandbox.restore();
+		restoreLogConfig?.();
 	});
 
 	describe('Test initLogSettings function', () => {
 		const test_error = new Error('no such file or directory test');
+		const afterThisTest = [];
 
 		afterEach(() => {
+			while (afterThisTest.length) afterThisTest.pop()();
 			sandbox.restore();
 			sandbox.resetHistory();
 		});
@@ -179,6 +193,16 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test that if error code is not ENOENT error is handled correctly', () => {
+			// This asserts the path where there is nothing to fall back to, so ROOTPATH has to be
+			// absent: initLogSettings() deliberately SWALLOWS a failure to read the boot properties
+			// when ROOTPATH names a directory holding a config (which is how pinLogConfig() above
+			// works, and how a developer with ROOTPATH exported would run).
+			const originalRootPath = process.env.ROOTPATH;
+			delete process.env.ROOTPATH;
+			afterThisTest.push(() => {
+				if (originalRootPath !== undefined) process.env.ROOTPATH = originalRootPath;
+			});
+
 			test_error.code = 'EACCES';
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const properties_reader_stub = sandbox.stub().throws(test_error);
@@ -1782,6 +1806,10 @@ describe('Test harper_logger module', () => {
 				// Nothing in these tests should reach the real stdout; if a write escapes the stubs
 				// below, capture it here rather than letting it interleave with mocha's output.
 				harper_logger.__set__('nativeStdWrite', sinon.stub().returns(true));
+				// logConsole above makes the guard tee to writeToLogFile, which is only assigned when
+				// the resolved config gives the logger a path. Stub it so the tee is exercised here on
+				// any machine rather than throwing 'writeToLogFile is not a function'.
+				harper_logger.__set__('writeToLogFile', sinon.stub());
 				const installStdioGuard = harper_logger.__get__('installStdioGuard');
 				const fakeStdout = makeFakeStream();
 				const fakeStderr = makeFakeStream();
