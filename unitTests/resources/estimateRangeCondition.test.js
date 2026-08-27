@@ -148,7 +148,14 @@ describe('estimateCondition range estimates', () => {
 	});
 
 	it('falls back when the estimate shape is unexpected', () => {
-		for (const bad of [42, { count: NaN, confidence: 1 }, { count: 10 }, { count: 10, confidence: 2 }, null]) {
+		for (const bad of [
+			42,
+			{ count: NaN, confidence: 1 },
+			{ count: -1, confidence: 1 },
+			{ count: 10 },
+			{ count: 10, confidence: 2 },
+			null,
+		]) {
 			const table = makeTable({ indexEstimate: bad });
 			const estimated = estimate(table, { attribute: 'attr', comparator: 'between', value: [5, 10] });
 			assert.strictEqual(estimated, 0.1 * ENTRY_COUNT + 1, `shape ${JSON.stringify(bad)} must fall back`);
