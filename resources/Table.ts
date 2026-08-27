@@ -1509,12 +1509,7 @@ export function makeTable(options) {
 						throw new Error(
 							`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
 						);
-					while (!rootStore.tryLock('update-attributes')) {}
-					try {
-						writeTombstone();
-					} finally {
-						rootStore.unlock('update-attributes');
-					}
+					withUpdateAttributesLock(rootStore, `drop table '${databaseName}.${TableResource.tableName}'`, writeTombstone);
 				} else {
 					let tombstoneWrite;
 					rootStore.transactionSync(() => {
