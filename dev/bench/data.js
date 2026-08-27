@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787744644465,
+  "lastUpdate": 1787826469403,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -4841,6 +4841,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1265.82,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Nathan Heskew",
+            "username": "heskew",
+            "email": "heskew@pm.me"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "30db07ac75e79262aae139508b6d85984a1ac5db",
+          "message": "ci: exclude ready_for_review from the always-on cancelling arm (#2357)\n\nCodex follow-up on #2353: ready_for_review is a non-labeled event, so\nthe ALWAYS_ON arm of the concurrency predicate still placed it in the\nshared cancelling group in always-on mode — a label-opted bot PR's\nready-flip could cancel the labeler's in-flight review and then fail\nauthor-based authorization. The cancelling set now excludes\nready_for_review in BOTH modes; the job gates are unchanged\n(ready-flips run review, in their own run_id group).\n\n\nClaude-Session: https://claude.ai/code/session_01S94XethbGXpAb4DRKMD4kt\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-27T00:11:44Z",
+          "url": "https://github.com/HarperFast/harper/commit/30db07ac75e79262aae139508b6d85984a1ac5db"
+        },
+        "date": 1787826468593,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 9244.68,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 12664.68,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 12886.53,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 9322.17,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 6826.97,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 12222.6,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 1584.88,
             "unit": "ops/sec"
           }
         ]
