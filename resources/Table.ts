@@ -79,6 +79,7 @@ import {
 	removeEntry,
 	PENDING_LOCAL_TIME,
 	RecordObject,
+	isDurableRecordEncoding,
 	type Entry,
 	type StructureCounts,
 	entryMap,
@@ -580,69 +581,83 @@ export function makeTable(options) {
 	// The bounded enumeration (own keys + the known enumerable names) replaces the old whole-prototype-chain
 	// `for..in`, which cost O(inherited enumerables) per record. On a cyclically-enumerable table it also
 	// applies the path-scoped cycle guard; acyclic tables keep the cheap raw-value fast path.
-	function installEnumerableToJSON(structPrototype: any, tableClass: any, hasSurfacedComputed: boolean) {
+	function installEnumerableToJSON(
+		structPrototype: any,
+		tableClass: any,
+		hasSurfacedComputed: boolean,
+		hasReadOnlyResolver: boolean
+	) {
 		const enumNames = enumerableAttributeNames;
 		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
-		Object.defineProperty(structPrototype, 'toJSON', {
-			configurable: true,
-			value() {
-				if (isCyclic === undefined) {
-					isCyclic = detectCyclicEnumerable(tableClass);
-					if (isCyclic && getWorkerIndex() === 0)
-						harperLogger.warn?.(
-							`Table "${tableName}" has cyclically-enumerable relationships; cyclic references will be serialized as { ${primaryKey} } reference stubs. Consider removing @enumerable from one side of the cycle.`
-						);
+		const toJSON = function () {
+			if (isCyclic === undefined) {
+				isCyclic = detectCyclicEnumerable(tableClass);
+				if (isCyclic && getWorkerIndex() === 0)
+					harperLogger.warn?.(
+						`Table "${tableName}" has cyclically-enumerable relationships; cyclic references will be serialized as { ${primaryKey} } reference stubs. Consider removing @enumerable from one side of the cycle.`
+					);
+			}
+			// The fast path leaves surfaced values raw for native JSON.stringify to recurse — safe only when
+			// nothing surfaced can be a live entity that cycles. Statically-cyclic tables are excluded, and so
+			// are tables surfacing any non-table @computed: a resolver's runtime return could be a cyclic
+			// struct the static edge graph can't see, whatever its declared type. Those take the guarded path
+			// so the id-keyed guard + resolveStructForJSON catch any runtime cycle.
+			if (structSerializationVisited == null && !isCyclic && !hasSurfacedComputed) {
+				// fast path: bounded copy, values left raw (matches the previous for..in output). `name in json`
+				// treats an own stored key (already copied above) as taking precedence over its getter.
+				const json = {};
+				for (const key of Object.keys(this)) json[key] = this[key];
+				for (const name of enumNames) if (!(name in json)) json[name] = this[name];
+				return json;
+			}
+			// guarded path: track (tableClass, id) on the current serialization path and fully resolve
+			// nested structs so none escape back to native stringify after we unwind. All state setup lives
+			// inside the try so a throw from the primaryKey getter or the id-key normalization can never leak
+			// structSerializationVisited to a non-null Map for the rest of the thread's serializations.
+			const isTop = structSerializationVisited == null;
+			let ids: Set<any> | undefined;
+			let idKey: any;
+			let added = false;
+			try {
+				if (isTop) structSerializationVisited = new Map();
+				const id = this[primaryKey];
+				// Composite/array PKs and object-typed single PKs (Bytes/Uint8Array/Date/object) decode to a
+				// fresh instance each read, so identity-based membership would miss the same logical record;
+				// normalize any non-primitive id to a stable string key. The replacer keeps a BigInt component
+				// from throwing (JSON.stringify can't serialize BigInt natively); a primitive BigInt PK stays
+				// raw (Set membership is by value).
+				idKey =
+					id !== null && typeof id === 'object'
+						? JSON.stringify(id, (_, v) => (typeof v === 'bigint' ? v.toString() : v))
+						: id;
+				if (id != null) {
+					ids = structSerializationVisited!.get(tableClass);
+					if (!ids) structSerializationVisited!.set(tableClass, (ids = new Set()));
+					if (ids.has(idKey)) return { [primaryKey]: id }; // already on the path -> reference stub
+					ids.add(idKey);
+					added = true;
 				}
-				// The fast path leaves surfaced values raw for native JSON.stringify to recurse — safe only when
-				// nothing surfaced can be a live entity that cycles. Statically-cyclic tables are excluded, and so
-				// are tables surfacing any non-table @computed: a resolver's runtime return could be a cyclic
-				// struct the static edge graph can't see, whatever its declared type. Those take the guarded path
-				// so the id-keyed guard + resolveStructForJSON catch any runtime cycle.
-				if (structSerializationVisited == null && !isCyclic && !hasSurfacedComputed) {
-					// fast path: bounded copy, values left raw (matches the previous for..in output). `name in json`
-					// treats an own stored key (already copied above) as taking precedence over its getter.
-					const json = {};
-					for (const key of Object.keys(this)) json[key] = this[key];
-					for (const name of enumNames) if (!(name in json)) json[name] = this[name];
-					return json;
-				}
-				// guarded path: track (tableClass, id) on the current serialization path and fully resolve
-				// nested structs so none escape back to native stringify after we unwind. All state setup lives
-				// inside the try so a throw from the primaryKey getter or the id-key normalization can never leak
-				// structSerializationVisited to a non-null Map for the rest of the thread's serializations.
-				const isTop = structSerializationVisited == null;
-				let ids: Set<any> | undefined;
-				let idKey: any;
-				let added = false;
-				try {
-					if (isTop) structSerializationVisited = new Map();
-					const id = this[primaryKey];
-					// Composite/array PKs and object-typed single PKs (Bytes/Uint8Array/Date/object) decode to a
-					// fresh instance each read, so identity-based membership would miss the same logical record;
-					// normalize any non-primitive id to a stable string key. The replacer keeps a BigInt component
-					// from throwing (JSON.stringify can't serialize BigInt natively); a primitive BigInt PK stays
-					// raw (Set membership is by value).
-					idKey =
-						id !== null && typeof id === 'object'
-							? JSON.stringify(id, (_, v) => (typeof v === 'bigint' ? v.toString() : v))
-							: id;
-					if (id != null) {
-						ids = structSerializationVisited!.get(tableClass);
-						if (!ids) structSerializationVisited!.set(tableClass, (ids = new Set()));
-						if (ids.has(idKey)) return { [primaryKey]: id }; // already on the path -> reference stub
-						ids.add(idKey);
-						added = true;
+				const json = {};
+				for (const key of Object.keys(this)) json[key] = resolveStructForJSON(this[key]);
+				for (const name of enumNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
+				return json;
+			} finally {
+				if (added) ids!.delete(idKey);
+				if (isTop) structSerializationVisited = null;
+			}
+		};
+		Object.defineProperty(
+			structPrototype,
+			'toJSON',
+			hasReadOnlyResolver
+				? {
+						configurable: true,
+						get() {
+							return isDurableRecordEncoding() ? undefined : toJSON;
+						},
 					}
-					const json = {};
-					for (const key of Object.keys(this)) json[key] = resolveStructForJSON(this[key]);
-					for (const name of enumNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
-					return json;
-				} finally {
-					if (added) ids!.delete(idKey);
-					if (isTop) structSerializationVisited = null;
-				}
-			},
-		});
+				: { configurable: true, value: toJSON }
+		);
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
@@ -5233,15 +5248,24 @@ export function makeTable(options) {
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
 			hasSurfacedComputed = false;
+			const readOnlyResolverNames = new Set<string>();
+			const collisionMetricPath = databaseName + '.' + tableName;
+			const noteReadOnlyResolverCollision = () => {
+				try {
+					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
+				} catch {}
+			};
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {
+					if (typeof attribute.set !== 'function') readOnlyResolverNames.add(name);
 					Object.defineProperty(primaryStore.encoder.structPrototype, name, {
 						get() {
 							return attribute.resolve(this, contextStorage.getStore()); // it is only possible to get the context from ALS, we don't have a direct reference to the current context
 						},
 						set(related) {
-							return attribute.set(this, related);
+							if (typeof attribute.set === 'function') return attribute.set(this, related);
+							noteReadOnlyResolverCollision();
 						},
 						configurable: true,
 						enumerable: attribute.enumerable,
@@ -5260,11 +5284,18 @@ export function makeTable(options) {
 					if (attribute.computed && !relationDef) hasSurfacedComputed = true;
 				}
 			}
+			primaryStore.encoder.readOnlyResolverNames = readOnlyResolverNames;
+			primaryStore.encoder.onReadOnlyResolverCollision = noteReadOnlyResolverCollision;
 			this.enumerableRelationDefs = enumerableRelationDefs;
 			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
 			// removed all enumerable/computed-scalar attributes, drop the now-unneeded toJSON.
 			if (enumerableAttributeNames.length > 0)
-				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed);
+				installEnumerableToJSON(
+					primaryStore.encoder.structPrototype,
+					this,
+					hasSurfacedComputed,
+					readOnlyResolverNames.size > 0
+				);
 			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history

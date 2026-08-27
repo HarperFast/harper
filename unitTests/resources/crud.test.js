@@ -182,6 +182,39 @@ describe('CRUD operations with the Resource API', () => {
 				}
 			}
 		});
+		it('keeps computed response fields out of durable re-encoding', async function () {
+			await CRUDTable.put({ id: 'durable-computed', name: 'durable', relatedId: 1 });
+			const record = await CRUDTable.get('durable-computed');
+			const response = JSON.parse(JSON.stringify(record));
+			assert.equal(response.computed, 'durable computed');
+
+			const encoder = CRUDTable.primaryStore.encoder;
+			const durable = encoder.decode(Buffer.from(encoder.encode(record)), { noMetadata: true });
+			assert(durable, 'a decoded record must survive durable re-encoding');
+			assert.equal(Object.hasOwn(durable, 'computed'), false);
+		});
+		it('discards a forged computed value from an affected-release payload', async function () {
+			const encoder = CRUDTable.primaryStore.encoder;
+			const encoded = Buffer.from(
+				encoder.encode({ id: 'legacy-computed', name: 'trusted', computed: 'forged', relatedId: 1 })
+			);
+			const decoded = encoder.decode(encoded, { noMetadata: true });
+			assert(decoded, 'legacy payload must materialize');
+			assert.equal(Object.hasOwn(decoded, 'computed'), false);
+			await CRUDTable.put(decoded);
+			assert.equal((await CRUDTable.get('legacy-computed')).computed, 'trusted computed');
+			const forgedMatches = await CRUDTable.search({
+				conditions: [{ attribute: 'computed', comparator: 'equals', value: 'forged' }],
+			}).asArray;
+			const resolvedMatches = await CRUDTable.search({
+				conditions: [{ attribute: 'computed', comparator: 'equals', value: 'trusted computed' }],
+			}).asArray;
+			assert.equal(forgedMatches.length, 0);
+			assert.equal(
+				resolvedMatches.some((record) => record.id === 'legacy-computed'),
+				true
+			);
+		});
 		it('update', async function () {
 			const context = {};
 			await transaction(context, async () => {

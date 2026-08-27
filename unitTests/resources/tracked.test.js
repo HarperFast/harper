@@ -91,6 +91,33 @@ describe('Tracked Object', () => {
 	});
 });
 
+describe('resolved attribute mutation', () => {
+	it('rejects read-only computed mutation with a ClientError', () => {
+		class ComputedResource extends GenericTrackedObject {}
+		assignTrackedAccessors(ComputedResource, {
+			attributes: [{ name: 'computed', resolve: () => 'resolved' }],
+		});
+		const instance = new ComputedResource({ source: 'value' });
+		assert.throws(() => (instance.computed = 'forged'), /computed.*read.?only/i);
+	});
+
+	it('preserves writable resolved setters', () => {
+		class RelatedResource extends GenericTrackedObject {}
+		assignTrackedAccessors(RelatedResource, {
+			attributes: [
+				{
+					name: 'related',
+					resolve: (object) => object.relatedId,
+					set: (object, value) => (object.relatedId = value),
+				},
+			],
+		});
+		const instance = new RelatedResource({ relatedId: 'before' });
+		instance.related = 'after';
+		assert.equal(instance.related, 'after');
+	});
+});
+
 describe('updateAndFreeze CRDT operations', () => {
 	it('applies a recognized add operation', () => {
 		const result = updateAndFreeze({ count: 5 }, { count: { __op__: 'add', value: 3 } });

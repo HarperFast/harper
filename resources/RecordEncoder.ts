@@ -36,6 +36,28 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
+
+export function isDurableRecordEncoding() {
+	return ((globalThis as any)[DURABLE_ENCODING_DEPTH] ?? 0) > 0;
+}
+
+function enterDurableRecordEncoding() {
+	const globals = globalThis as any;
+	globals[DURABLE_ENCODING_DEPTH] = (globals[DURABLE_ENCODING_DEPTH] ?? 0) + 1;
+	return () => {
+		if (--globals[DURABLE_ENCODING_DEPTH] === 0) delete globals[DURABLE_ENCODING_DEPTH];
+	};
+}
+
+function encodeDurably(encoder, encode, record, options?) {
+	const leaveDurableEncoding = enterDurableRecordEncoding();
+	try {
+		return encode.call(encoder, record, options);
+	} finally {
+		leaveDurableEncoding();
+	}
+}
 
 // Analytics counter incremented whenever a record cannot be decoded because its shared structure is
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
@@ -163,6 +185,8 @@ export class RecordEncoder extends StructonEncoder {
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
+	readOnlyResolverNames?: Set<string>;
+	onReadOnlyResolverCollision?: (name: string) => void;
 	// Self-versioning mode for stores whose writes never stage a timestamp (HNSW/custom-index
 	// object stores). When set, each encode stamps a fresh monotonic version into the 8-byte
 	// metadata prefix so the value carries a version the RocksDB Verification Table can extract —
@@ -215,7 +239,7 @@ export class RecordEncoder extends StructonEncoder {
 				// a versioned write whose encode was skipped). Consuming/clearing them here would strip the
 				// primary record's prefix, and prefixing OUR record (e.g. a __dbis__ `seq` cursor) makes it
 				// undecodable on the non-versioned read path (null → replication wedge).
-				lastValueEncoding = superEncode.call(this, record, options);
+				lastValueEncoding = encodeDurably(this, superEncode, record, options);
 				return lastValueEncoding;
 			}
 			if (this.autoVersion && this.isRocksDB) {
@@ -236,7 +260,7 @@ export class RecordEncoder extends StructonEncoder {
 				// timestampNextEncoding/metadataInNextEncoding globals — those belong to the enclosing
 				// primary-record write whose commit nests this index encode (harper#1307).
 				const valueStart = 12; // 8-byte version + 4-byte metadata word
-				const encoded = superEncode.call(this, record, options | 2048 | valueStart);
+				const encoded = encodeDurably(this, superEncode, record, options | 2048 | valueStart);
 				const position = encoded.start || 0;
 				const dataView =
 					encoded.dataView || (encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
@@ -288,7 +312,7 @@ export class RecordEncoder extends StructonEncoder {
 						additionalAuditRefsNextEncoding = undefined;
 					}
 				}
-				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
+				const encoded = encodeDurably(this, superEncode, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
 				lastValueEncoding = encoded.subarray((encoded.start || 0) + valueStart, encoded.end);
 				let position = encoded.start || 0;
 				const dataView =
@@ -334,7 +358,7 @@ export class RecordEncoder extends StructonEncoder {
 				}
 				return encoded;
 			} else {
-				lastValueEncoding = superEncode.call(this, record, options);
+				lastValueEncoding = encodeDurably(this, superEncode, record, options);
 				return lastValueEncoding;
 			}
 		};
@@ -520,12 +544,14 @@ export class RecordEncoder extends StructonEncoder {
 					}
 				}
 
-				const value = decodeFromDatabase(
-					() =>
-						options?.valueAsBuffer
-							? buffer.subarray(position, end)
-							: super.decode(buffer.subarray(position, end), end - position),
-					this.rootStore
+				const value = this.removeReadOnlyResolverFields(
+					decodeFromDatabase(
+						() =>
+							options?.valueAsBuffer
+								? buffer.subarray(position, end)
+								: super.decode(buffer.subarray(position, end), end - position),
+						this.rootStore
+					)
 				);
 				lastMetadata = {
 					localTime,
@@ -541,7 +567,9 @@ export class RecordEncoder extends StructonEncoder {
 				if (this.isRocksDB) return lastMetadata;
 				return value;
 			} // else a normal entry
-			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
+			return options?.valueAsBuffer
+				? buffer
+				: this.removeReadOnlyResolverFields(decodeFromDatabase(() => super.decode(buffer, options), this.rootStore));
 		} catch (error) {
 			const hexPreview = buffer.slice(0, 40).toString('hex');
 			if (isMissingStructureError(error)) {
@@ -568,6 +596,21 @@ export class RecordEncoder extends StructonEncoder {
 			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
+	}
+	removeReadOnlyResolverFields(value) {
+		if (value == null || typeof value !== 'object' || !this.readOnlyResolverNames?.size) return value;
+		const collisions = [...this.readOnlyResolverNames].filter((name) => Object.hasOwn(value, name));
+		if (collisions.length === 0) return value;
+		const descriptors = Object.getOwnPropertyDescriptors(value);
+		for (const name of collisions) {
+			delete descriptors[name];
+			this.onReadOnlyResolverCollision?.(name);
+		}
+		const cleaned = Object.create(Object.getPrototypeOf(value), descriptors);
+		if (Object.isFrozen(value)) Object.freeze(cleaned);
+		else if (Object.isSealed(value)) Object.seal(cleaned);
+		else if (!Object.isExtensible(value)) Object.preventExtensions(cleaned);
+		return cleaned;
 	}
 }
 function getTimestamp() {

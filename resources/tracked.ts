@@ -45,6 +45,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					return attribute.resolve(this, this.getContext?.());
 				},
 				set(related) {
+					if (typeof attribute.set !== 'function') throw new ClientError(`${name} is read-only`);
 					return attribute.set(this, related);
 				},
 				configurable: true,
