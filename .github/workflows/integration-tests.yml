@@ -242,6 +242,9 @@ jobs:
           HARPER_INTEGRATION_TEST_LOG_DIR: ${{ runner.temp }}/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: ${{ runner.temp }}/harperdb-legacy/node_modules/harperdb
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-diagnostic-cache
+          NPM_CONFIG_LOGLEVEL: silly
+          NPM_CONFIG_TIMING: true
         run: npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
       - name: Upload Harper server logs
@@ -249,7 +252,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: harper-server-logs-windows-shard-${{ matrix.shard }}
-          path: ${{ runner.temp }}/harper-integration-test-logs/
+          path: |
+            ${{ runner.temp }}/harper-integration-test-logs/
+            ${{ runner.temp }}/npm-diagnostic-cache/_logs/
           retention-days: 3
           if-no-files-found: ignore
 
