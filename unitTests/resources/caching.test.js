@@ -226,9 +226,10 @@ describe('Caching', () => {
 			await RevalidatedTable.primaryStore.committed;
 			const persisted = RevalidatedTable.primaryStore.getEntry('revalidated').value;
 			assert.equal(Object.hasOwn(persisted, 'related'), false);
-			const raw = RevalidatedTable.primaryStore.encoder.decode(RevalidatedTable.primaryStore.getBinary('revalidated'), {
-				skipResolverCleanup: true,
-			}).value;
+			const raw = RevalidatedTable.primaryStore.encoder.decode(
+				RevalidatedTable.primaryStore.getBinarySync('revalidated'),
+				{ skipResolverCleanup: true }
+			).value;
 			assert.equal(Object.hasOwn(raw, 'computed'), false);
 		} finally {
 			returnNotModified = false;

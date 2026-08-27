@@ -13,6 +13,8 @@ const { waitFor } = require('../waitFor.js');
 describe('CRUD operations with the Resource API', () => {
 	let settableCollisionMetricAsserted = false;
 	let CRUDTable, CRUDRelatedTable, HiddenResolverTable, TypedResolverTable;
+	const getPrimaryBinary = (store, id) =>
+		typeof store.getBinarySync === 'function' ? store.getBinarySync(id) : store.getBinary(id);
 
 	before(async function () {
 		setupTestDBPath();
@@ -286,9 +288,13 @@ describe('CRUD operations with the Resource API', () => {
 			};
 			try {
 				await CRUDTable.put({ id: 'durable-computed', name: 'durable', relatedId: 1 });
+				const encoder = CRUDTable.primaryStore.encoder;
 				const persisted = CRUDTable.primaryStore.getEntry('durable-computed').value;
-				assert.equal(Object.hasOwn(persisted, 'computed'), false);
 				assert.equal(Object.hasOwn(persisted, 'related'), false);
+				const rawPersisted = encoder.decode(await getPrimaryBinary(CRUDTable.primaryStore, 'durable-computed'), {
+					skipResolverCleanup: true,
+				});
+				assert.equal(Object.hasOwn(rawPersisted.value ?? rawPersisted, 'computed'), false);
 				const record = await CRUDTable.get('durable-computed');
 				const response = JSON.parse(JSON.stringify(record));
 				assert.equal(response.computed, 'durable computed');
@@ -298,7 +304,6 @@ describe('CRUD operations with the Resource API', () => {
 
 				computedResolutions = 0;
 				relationshipResolutions = 0;
-				const encoder = CRUDTable.primaryStore.encoder;
 				const durable = encoder.decode(Buffer.from(encoder.encode(record)), { noMetadata: true });
 				assert.equal(computedResolutions, 0, 'durable encoding must not resolve the computed field');
 				assert.equal(relationshipResolutions, 0, 'durable encoding must not resolve the relationship');
@@ -348,8 +353,12 @@ describe('CRUD operations with the Resource API', () => {
 			const instance = await CRUDTable.get('instance-reput');
 			await CRUDTable.put(instance);
 			const persisted = CRUDTable.primaryStore.getEntry('instance-reput').value;
-			assert.equal(Object.hasOwn(persisted, 'computed'), false);
 			assert.equal(persisted.computed, 'instance computed');
+			const encoder = CRUDTable.primaryStore.encoder;
+			const rawPersisted = encoder.decode(await getPrimaryBinary(CRUDTable.primaryStore, 'instance-reput'), {
+				skipResolverCleanup: true,
+			});
+			assert.equal(Object.hasOwn(rawPersisted.value ?? rawPersisted, 'computed'), false);
 			const entry = CRUDTable.primaryStore.getEntry('instance-reput');
 			const auditRecord = CRUDTable.auditStore.getSync(
 				entry.localTime ?? entry.version,
@@ -357,7 +366,11 @@ describe('CRUD operations with the Resource API', () => {
 				'instance-reput'
 			);
 			assert(auditRecord, 'the no-change put must produce an audit entry');
-			assert.equal(Object.hasOwn(auditRecord.getValue(CRUDTable.primaryStore), 'computed'), false);
+			const rawAuditValue = encoder.decode(auditRecord.getBinaryValue(), {
+				noMetadata: true,
+				skipResolverCleanup: true,
+			});
+			assert.equal(Object.hasOwn(rawAuditValue, 'computed'), false);
 		});
 		it('rejects mutation of a returned read-only computed field', async function () {
 			await CRUDTable.put({ id: 'computed-read-only', name: 'read-only', relatedId: 1 });
