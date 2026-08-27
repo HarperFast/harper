@@ -585,14 +585,13 @@ export function makeTable(options) {
 		structPrototype: any,
 		tableClass: any,
 		hasSurfacedComputed: boolean,
-		readOnlyResolverNames: Set<string>
+		resolverNames: readonly string[],
+		readOnlyResolverNames: Set<string>,
+		noteSettableResolverCollision: (name: string) => void
 	) {
 		const enumNames = enumerableAttributeNames;
-		const durableEnumNames = enumNames.filter((name) => !readOnlyResolverNames.has(name));
 		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
 		const toJSON = function () {
-			const durable = readOnlyResolverNames.size > 0 && isDurableRecordEncoding();
-			const surfacedNames = durable ? durableEnumNames : enumNames;
 			if (isCyclic === undefined) {
 				isCyclic = detectCyclicEnumerable(tableClass);
 				if (isCyclic && getWorkerIndex() === 0)
@@ -609,8 +608,8 @@ export function makeTable(options) {
 				// fast path: bounded copy, values left raw (matches the previous for..in output). `name in json`
 				// treats an own stored key (already copied above) as taking precedence over its getter.
 				const json = {};
-				for (const key of Object.keys(this)) if (!durable || !readOnlyResolverNames.has(key)) json[key] = this[key];
-				for (const name of surfacedNames) if (!(name in json)) json[name] = this[name];
+				for (const key of Object.keys(this)) json[key] = this[key];
+				for (const name of enumNames) if (!(name in json)) json[name] = this[name];
 				return json;
 			}
 			// guarded path: track (tableClass, id) on the current serialization path and fully resolve
@@ -641,25 +640,33 @@ export function makeTable(options) {
 					added = true;
 				}
 				const json = {};
-				for (const key of Object.keys(this))
-					if (!durable || !readOnlyResolverNames.has(key)) json[key] = resolveStructForJSON(this[key]);
-				for (const name of surfacedNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
+				for (const key of Object.keys(this)) json[key] = resolveStructForJSON(this[key]);
+				for (const name of enumNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
 				return json;
 			} finally {
 				if (added) ids!.delete(idKey);
 				if (isTop) structSerializationVisited = null;
 			}
 		};
+		const durableToJSON = function () {
+			const json = {};
+			for (const key of Object.keys(this)) if (!readOnlyResolverNames.has(key)) json[key] = this[key];
+			return json;
+		};
 		Object.defineProperty(
 			structPrototype,
 			'toJSON',
-			readOnlyResolverNames.size > 0
+			resolverNames.length > 0
 				? {
 						configurable: true,
 						get() {
 							if (!isDurableRecordEncoding()) return enumNames.length > 0 ? toJSON : undefined;
-							if (durableEnumNames.length > 0) return toJSON;
-							for (const name of readOnlyResolverNames) if (Object.hasOwn(this, name)) return toJSON;
+							for (let i = 0; i < resolverNames.length; i++) {
+								const name = resolverNames[i];
+								if (!Object.hasOwn(this, name)) continue;
+								if (readOnlyResolverNames.has(name)) return durableToJSON;
+								noteSettableResolverCollision(name);
+							}
 							return undefined;
 						},
 					}
@@ -5255,9 +5262,11 @@ export function makeTable(options) {
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
 			hasSurfacedComputed = false;
+			const resolverNames: string[] = [];
 			const readOnlyResolverNames = new Set<string>();
 			const collisionMetricPath = databaseName + '.' + tableName;
 			let reportedReadOnlyResolverCollision = false;
+			let reportedSettableResolverCollision = false;
 			const noteReadOnlyResolverCollision = (name: string) => {
 				if (reportedReadOnlyResolverCollision) return;
 				reportedReadOnlyResolverCollision = true;
@@ -5268,9 +5277,20 @@ export function makeTable(options) {
 					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
 				} catch {}
 			};
+			const noteSettableResolverCollision = (name: string) => {
+				if (reportedSettableResolverCollision) return;
+				reportedSettableResolverCollision = true;
+				try {
+					harperLogger.warn?.(
+						`Preserved durable field "${name}" because it collides with a settable resolver on "${collisionMetricPath}"; an older peer or schema may have persisted a relationship snapshot`
+					);
+					recordAction(true, 'settable-resolver-collision', collisionMetricPath);
+				} catch {}
+			};
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {
+					resolverNames.push(name);
 					if (typeof attribute.set !== 'function') readOnlyResolverNames.add(name);
 					Object.defineProperty(primaryStore.encoder.structPrototype, name, {
 						get() {
@@ -5298,13 +5318,20 @@ export function makeTable(options) {
 					if (attribute.computed && !relationDef) hasSurfacedComputed = true;
 				}
 			}
-			primaryStore.encoder.readOnlyResolverNames = readOnlyResolverNames;
+			primaryStore.encoder.setReadOnlyResolverNames(readOnlyResolverNames);
 			primaryStore.encoder.onReadOnlyResolverCollision = noteReadOnlyResolverCollision;
 			this.enumerableRelationDefs = enumerableRelationDefs;
 			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
 			// removed all enumerable/computed-scalar attributes, drop the now-unneeded toJSON.
-			if (enumerableAttributeNames.length > 0 || readOnlyResolverNames.size > 0)
-				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed, readOnlyResolverNames);
+			if (enumerableAttributeNames.length > 0 || resolverNames.length > 0)
+				installEnumerableToJSON(
+					primaryStore.encoder.structPrototype,
+					this,
+					hasSurfacedComputed,
+					resolverNames,
+					readOnlyResolverNames,
+					noteSettableResolverCollision
+				);
 			else if (Object.getOwnPropertyDescriptor(primaryStore.encoder.structPrototype, 'toJSON'))
 				delete primaryStore.encoder.structPrototype.toJSON;
 		}

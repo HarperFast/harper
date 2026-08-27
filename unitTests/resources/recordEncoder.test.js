@@ -105,6 +105,15 @@ describe('RecordEncoder struct-mode gating', () => {
 		assert.strictEqual(decoded.type, record.type);
 		assert.strictEqual(decoded.indexed, record.indexed);
 	});
+
+	it('propagates resolver cleanup failures instead of decoding a valid row as null', () => {
+		const enc = makeEncoder(false, sharedStore());
+		const bytes = Buffer.from(enc.encode(record));
+		enc.removeReadOnlyResolverFields = () => {
+			throw new Error('resolver cleanup failed');
+		};
+		assert.throws(() => enc.decode(bytes), /resolver cleanup failed/);
+	});
 });
 
 describe('RecordEncoder missing-structure handling (harper#1163)', () => {

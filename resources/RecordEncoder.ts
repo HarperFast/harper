@@ -36,6 +36,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 
 const StructonEncoder = createStructon(Encoder) as typeof Encoder;
+const STRUCT_SOURCE = Symbol.for('source');
 // Source and built module copies can coexist, so they must share the durable-encoding scope.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
 
@@ -181,14 +182,17 @@ export class RecordEncoder extends StructonEncoder {
 	declare _writeStruct: any;
 	declare typedStructs: any[];
 	declare structures: any[];
+	declare structPrototype: any;
 	declare maxOwnStructures: number;
 	randomAccessStructure = false;
 	structureUpdate?: any;
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
-	readOnlyResolverNames?: Set<string>;
+	readOnlyResolverNames: readonly string[] = [];
+	readOnlyResolverNameSet = new Set<string>();
 	onReadOnlyResolverCollision?: (name: string) => void;
+	#cleanTypedResolverPrototypes = new WeakMap<object, object | null>();
 	// Self-versioning mode for stores whose writes never stage a timestamp (HNSW/custom-index
 	// object stores). When set, each encode stamps a fresh monotonic version into the 8-byte
 	// metadata prefix so the value carries a version the RocksDB Verification Table can extract —
@@ -424,6 +428,11 @@ export class RecordEncoder extends StructonEncoder {
 			}
 		};
 	}
+	setReadOnlyResolverNames(names: Iterable<string>) {
+		this.readOnlyResolverNames = Array.from(names);
+		this.readOnlyResolverNameSet = new Set(this.readOnlyResolverNames);
+		this.#cleanTypedResolverPrototypes = new WeakMap();
+	}
 	/**
 	 * Sizes of this store's record-structure dictionaries. Read from the durable payload, not this
 	 * encoder's arrays: each worker owns an encoder and loads lazily, so a worker that never encoded
@@ -469,6 +478,8 @@ export class RecordEncoder extends StructonEncoder {
 		const end = options > -1 ? options : options?.end || buffer.length;
 		let nextByte = buffer[start];
 		let metadataFlags = 0;
+		let value;
+		let metadata;
 		try {
 			// The metadata/timestamp prefix is detected heuristically by the first byte. For rocksdb a
 			// local-timestamp prefix starts with 66 — but 66 (0x42) is also classic shared-structure
@@ -546,16 +557,14 @@ export class RecordEncoder extends StructonEncoder {
 					}
 				}
 
-				const value = this.removeReadOnlyResolverFields(
-					decodeFromDatabase(
-						() =>
-							options?.valueAsBuffer
-								? buffer.subarray(position, end)
-								: super.decode(buffer.subarray(position, end), end - position),
-						this.rootStore
-					)
+				value = decodeFromDatabase(
+					() =>
+						options?.valueAsBuffer
+							? buffer.subarray(position, end)
+							: super.decode(buffer.subarray(position, end), end - position),
+					this.rootStore
 				);
-				lastMetadata = {
+				metadata = {
 					localTime,
 					version: localTime,
 					[METADATA]: metadataFlags,
@@ -564,14 +573,12 @@ export class RecordEncoder extends StructonEncoder {
 					nodeId,
 					additionalAuditRefs,
 					size: end - start,
-					value,
-				} as any;
-				if (this.isRocksDB) return lastMetadata;
-				return value;
+				};
+			} else {
+				value = options?.valueAsBuffer
+					? buffer
+					: decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 			} // else a normal entry
-			return options?.valueAsBuffer
-				? buffer
-				: this.removeReadOnlyResolverFields(decodeFromDatabase(() => super.decode(buffer, options), this.rootStore));
 		} catch (error) {
 			const hexPreview = buffer.slice(0, 40).toString('hex');
 			if (isMissingStructureError(error)) {
@@ -598,12 +605,57 @@ export class RecordEncoder extends StructonEncoder {
 			harperLogger.error('Error decoding record', error, 'data: ' + hexPreview);
 			return null;
 		}
+		// Resolver cleanup is a schema/data invariant, not corruption recovery. Let failures propagate
+		// rather than laundering an otherwise valid row into a null result.
+		value = this.removeReadOnlyResolverFields(value);
+		if (metadata) {
+			lastMetadata = { ...metadata, value } as any;
+			if (this.isRocksDB) return lastMetadata;
+		}
+		return value;
 	}
 	removeReadOnlyResolverFields(value) {
-		if (value == null || typeof value !== 'object' || ArrayBuffer.isView(value) || !this.readOnlyResolverNames?.size)
+		if (
+			value == null ||
+			typeof value !== 'object' ||
+			ArrayBuffer.isView(value) ||
+			this.readOnlyResolverNames.length === 0
+		)
 			return value;
+		const valuePrototype = Object.getPrototypeOf(value);
+		if (
+			this.randomAccessStructure &&
+			valuePrototype != null &&
+			valuePrototype !== this.structPrototype &&
+			Object.getPrototypeOf(valuePrototype) === this.structPrototype &&
+			Object.hasOwn(value, STRUCT_SOURCE)
+		) {
+			let cleanPrototype = this.#cleanTypedResolverPrototypes.get(valuePrototype);
+			if (cleanPrototype === undefined && !this.#cleanTypedResolverPrototypes.has(valuePrototype)) {
+				const descriptors = Object.getOwnPropertyDescriptors(valuePrototype);
+				let hasCollision = false;
+				for (let i = 0; i < this.readOnlyResolverNames.length; i++) {
+					const name = this.readOnlyResolverNames[i];
+					if (Object.hasOwn(descriptors, name)) {
+						delete descriptors[name];
+						this.onReadOnlyResolverCollision?.(name);
+						hasCollision = true;
+					}
+				}
+				if (hasCollision) {
+					delete descriptors.toJSON;
+					cleanPrototype = Object.create(this.structPrototype, descriptors);
+					this.#cleanTypedResolverPrototypes.set(valuePrototype, cleanPrototype);
+				} else {
+					this.#cleanTypedResolverPrototypes.set(valuePrototype, null);
+				}
+			}
+			if (cleanPrototype) Object.setPrototypeOf(value, cleanPrototype);
+			return value;
+		}
 		let collisions: string[] | undefined;
-		for (const name of this.readOnlyResolverNames) {
+		for (let i = 0; i < this.readOnlyResolverNames.length; i++) {
+			const name = this.readOnlyResolverNames[i];
 			if (Object.hasOwn(value, name)) (collisions ??= []).push(name);
 		}
 		if (!collisions) return value;

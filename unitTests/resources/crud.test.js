@@ -11,7 +11,7 @@ const { waitFor } = require('../waitFor.js');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
-	let CRUDTable, CRUDRelatedTable, HiddenResolverTable;
+	let CRUDTable, CRUDRelatedTable, HiddenResolverTable, TypedResolverTable;
 
 	before(async function () {
 		setupTestDBPath();
@@ -98,6 +98,13 @@ describe('CRUD operations with the Resource API', () => {
 		});
 		hiddenResolverDefinition.tableClass = HiddenResolverTable;
 		HiddenResolverTable.setComputedAttribute('hidden', () => null);
+		TypedResolverTable = table({
+			table: 'TypedResolverTable',
+			database: 'test',
+			randomAccessFields: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'source' }, { name: 'hidden', computed: true }],
+		});
+		TypedResolverTable.setComputedAttribute('hidden', () => null);
 
 		for (let i = 0; i < 5; i++) {
 			CRUDRelatedTable.put({
@@ -139,7 +146,7 @@ describe('CRUD operations with the Resource API', () => {
 	});
 	it('filters own keys that collide with non-surfaced read-only resolvers', function () {
 		const encoder = HiddenResolverTable.primaryStore.encoder;
-		assert(encoder.readOnlyResolverNames.has('hidden'));
+		assert(encoder.readOnlyResolverNameSet.has('hidden'));
 		assert(Object.getOwnPropertyDescriptor(encoder.structPrototype, 'toJSON'));
 		const cleanRecord = Object.assign(Object.create(encoder.structPrototype), {
 			id: 'hidden-clean',
@@ -157,9 +164,33 @@ describe('CRUD operations with the Resource API', () => {
 		try {
 			HiddenResolverTable.updatedAttributes();
 			assert.equal(Object.getOwnPropertyDescriptor(encoder.structPrototype, 'toJSON'), undefined);
+			assert.equal(encoder.readOnlyResolverNames.includes('hidden'), false);
+			assert.equal(encoder.readOnlyResolverNameSet.has('hidden'), false);
 		} finally {
 			HiddenResolverTable.attributes.splice(hiddenIndex, 0, hiddenAttribute);
 			HiddenResolverTable.updatedAttributes();
+			assert.equal(encoder.readOnlyResolverNames.includes('hidden'), true);
+			assert.equal(encoder.readOnlyResolverNameSet.has('hidden'), true);
+		}
+	});
+	it('removes typed resolver collisions without materializing lazy stored fields', function () {
+		const encoder = TypedResolverTable.primaryStore.encoder;
+		const readOnlyResolverNames = encoder.readOnlyResolverNames;
+		encoder.setReadOnlyResolverNames([]);
+		let encoded;
+		try {
+			encoded = Buffer.from(encoder.encode({ id: 'typed-legacy', source: 'trusted', hidden: 'forged-hidden' }));
+		} finally {
+			encoder.setReadOnlyResolverNames(readOnlyResolverNames);
+		}
+		for (let i = 0; i < 2; i++) {
+			const decoded = encoder.decode(encoded, { noMetadata: true, lazy: true });
+			assert.equal(Object.hasOwn(decoded, 'hidden'), false);
+			assert.equal(Object.hasOwn(decoded, 'source'), false, 'stored getters must remain lazy');
+			assert.equal(Object.hasOwn(decoded, Symbol.for('source')), true, 'typed backing bytes must be retained');
+			assert.equal(decoded.id, 'typed-legacy');
+			assert.equal(decoded.source, 'trusted');
+			assert.equal(decoded.hidden, null);
 		}
 	});
 	async function waitForAnalyticsMetric(metric, start) {
@@ -228,24 +259,51 @@ describe('CRUD operations with the Resource API', () => {
 		});
 		it('keeps computed response fields out of durable re-encoding', async function () {
 			let computedResolutions = 0;
+			let relationshipResolutions = 0;
+			const relatedAttribute = CRUDTable.attributes.find((attribute) => attribute.name === 'related');
+			const resolveRelated = relatedAttribute.resolve;
 			CRUDTable.setComputedAttribute('computed', (instance) => {
 				computedResolutions++;
 				return instance.name + ' computed';
 			});
+			relatedAttribute.resolve = function (...args) {
+				relationshipResolutions++;
+				return resolveRelated.apply(this, args);
+			};
 			try {
 				await CRUDTable.put({ id: 'durable-computed', name: 'durable', relatedId: 1 });
+				const persisted = CRUDTable.primaryStore.getEntry('durable-computed').value;
+				assert.equal(Object.hasOwn(persisted, 'computed'), false);
+				assert.equal(Object.hasOwn(persisted, 'related'), false);
 				const record = await CRUDTable.get('durable-computed');
 				const response = JSON.parse(JSON.stringify(record));
 				assert.equal(response.computed, 'durable computed');
+				assert.equal(response.related.id, 1);
 				assert(computedResolutions > 0, 'response serialization must resolve the computed field');
+				assert(relationshipResolutions > 0, 'response serialization must resolve the relationship');
 
 				computedResolutions = 0;
+				relationshipResolutions = 0;
 				const encoder = CRUDTable.primaryStore.encoder;
 				const durable = encoder.decode(Buffer.from(encoder.encode(record)), { noMetadata: true });
 				assert.equal(computedResolutions, 0, 'durable encoding must not resolve the computed field');
+				assert.equal(relationshipResolutions, 0, 'durable encoding must not resolve the relationship');
 				assert(durable, 'a decoded record must survive durable re-encoding');
 				assert.equal(Object.hasOwn(durable, 'computed'), false);
-				assert.equal(durable.related.id, 1);
+				assert.equal(Object.hasOwn(durable, 'related'), false);
+
+				const relationshipSnapshot = Object.assign(Object.create(encoder.structPrototype), {
+					id: 'legacy-relationship',
+					name: 'trusted',
+					relatedId: 1,
+				});
+				Object.defineProperty(relationshipSnapshot, 'related', {
+					value: { id: 99, name: 'legacy snapshot' },
+					enumerable: true,
+				});
+				const preserved = encoder.decode(Buffer.from(encoder.encode(relationshipSnapshot)), { noMetadata: true });
+				assert.equal(Object.hasOwn(preserved, 'related'), true, 'settable legacy data must not be deleted');
+				assert.equal(preserved.related.id, 99);
 
 				const legacyRecord = Object.create(encoder.structPrototype);
 				Object.assign(legacyRecord, { id: 'legacy-reencode', name: 'trusted', relatedId: 1 });
@@ -253,6 +311,7 @@ describe('CRUD operations with the Resource API', () => {
 				const legacyEncoding = Buffer.from(encoder.encode(legacyRecord));
 				assert.equal(legacyEncoding.includes(Buffer.from('forged')), false);
 			} finally {
+				relatedAttribute.resolve = resolveRelated;
 				CRUDTable.setComputedAttribute('computed', (instance) => instance.name + ' computed');
 			}
 		});
@@ -305,14 +364,15 @@ describe('CRUD operations with the Resource API', () => {
 			try {
 				setNextEncoding(0, 0);
 				const encoded = Buffer.from(encoder.encode({ id: 'binary', name: 'durable bytes' }));
-				encoder.readOnlyResolverNames.add('0');
+				const readOnlyResolverNames = encoder.readOnlyResolverNames;
+				encoder.setReadOnlyResolverNames([...readOnlyResolverNames, '0']);
 				const decoded = encoder.decode(encoded, { valueAsBuffer: true });
 				const bytes = decoded.value ?? decoded;
 				assert(Buffer.isBuffer(bytes));
 				assert(bytes.length > 0);
 			} finally {
 				clearNextEncoding();
-				encoder.readOnlyResolverNames.delete('0');
+				encoder.setReadOnlyResolverNames(encoder.readOnlyResolverNames.filter((name) => name !== '0'));
 			}
 		});
 		it('update', async function () {
