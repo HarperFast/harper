@@ -82,6 +82,7 @@ import {
 	type Entry,
 	type StructureCounts,
 	entryMap,
+	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
@@ -535,6 +536,18 @@ export function makeTable(options) {
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
 	let hasSurfacedComputed = false;
 	let runningRecordExpiration: boolean;
+	const reportedResolverCollisions = new Set<string>();
+	// Reached from record materialization, so it can never be the reason a record fails to load: the
+	// name is marked before the log call, and a throwing log sink is swallowed.
+	function reportResolverCollision(name: string) {
+		if (reportedResolverCollisions.has(name)) return;
+		reportedResolverCollisions.add(name);
+		try {
+			logger.warn?.(
+				`Table "${tableName}" has a stored value under "${name}", which is a computed attribute; the stored value is being discarded and the computed value used instead`
+			);
+		} catch {}
+	}
 	const isRocksDB = primaryStore instanceof RocksDatabase;
 	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
 	let idIncrementer: BigInt64ArrayAndMaxSafeId;
@@ -5072,6 +5085,9 @@ export function makeTable(options) {
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this
+				// Also the setter, or a reload that turns a @relationship into a @computed keeps the
+				// relationship's setter and writes a foreign key from a computed assignment.
+				attribute.set = null;
 				const relationship = attribute.relationship;
 				const computed = attribute.computed;
 				// Register the default embedder unless an author override is set. Sits outside
@@ -5233,14 +5249,19 @@ export function makeTable(options) {
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
 			hasSurfacedComputed = false;
+			const resolvedAttributeNames: string[] = [];
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {
+					resolvedAttributeNames.push(name);
 					Object.defineProperty(primaryStore.encoder.structPrototype, name, {
 						get() {
 							return attribute.resolve(this, contextStorage.getStore()); // it is only possible to get the context from ALS, we don't have a direct reference to the current context
 						},
 						set(related) {
+							// A read-only resolver must never be the reason a record fails to materialize — the
+							// same reason the one-to-many branch above installs a no-op.
+							if (!attribute.set) return reportResolverCollision(name);
 							return attribute.set(this, related);
 						},
 						configurable: true,
@@ -5266,6 +5287,12 @@ export function makeTable(options) {
 			if (enumerableAttributeNames.length > 0)
 				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed);
 			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
+			// Undefined rather than an empty set for a table with no resolved attributes: that is the
+			// check which keeps the projection off an unaffected store's write path.
+			primaryStore.encoder.resolvedAttributeNames =
+				resolvedAttributeNames.length > 0 ? new Set(resolvedAttributeNames) : undefined;
+			primaryStore.encoder.resolvedAttributeNamesList = resolvedAttributeNames;
+			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history
 		static setComputedAttribute(attribute_name, resolver) {
@@ -6140,6 +6167,31 @@ export function makeTable(options) {
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
+						// A writable resolver (a relationship) keeps its meaning for source payloads: a source
+						// returning the related object instead of the foreign key gets the key derived, the way
+						// the promotion setter used to. Derivation runs against a probe first — a malformed
+						// value (a scalar, an object without the related primary key) derives undefined, and
+						// applying that would durably wipe the foreign key. The projection then drops the
+						// resolver-owned key itself, so the cache-fill response cannot be the one read
+						// reporting the source's value.
+						const resolvedNames = primaryStore.encoder.resolvedAttributeNamesList;
+						if (resolvedNames) {
+							for (const name of resolvedNames) {
+								if (Object.hasOwn(updatedRecord, name)) {
+									const resolvedAttribute = findAttribute(attributes, name);
+									if (resolvedAttribute?.set && updatedRecord[name] != null) {
+										const probe = {};
+										resolvedAttribute.set(probe, updatedRecord[name]);
+										for (const key in probe) {
+											const derived = probe[key];
+											const usable = Array.isArray(derived) ? derived.every((one) => one != null) : derived != null;
+											if (usable) updatedRecord[key] = derived;
+										}
+									}
+								}
+							}
+						}
+						updatedRecord = storedFieldsOnly(primaryStore.encoder, updatedRecord);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
 					resolved = true;

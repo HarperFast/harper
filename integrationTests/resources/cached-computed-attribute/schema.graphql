@@ -1,0 +1,45 @@
+# Tables for the harper#2359 suite. Expirations are long so a second read is served from storage
+# rather than refetched — the read that has to survive.
+type CachedProduct @table(expiration: 3600) @export {
+	id: ID @primaryKey
+	price: Float
+	discount: Float
+	salePrice: Float @computed(from: "price - (discount || 0)")
+}
+
+# The same computed shape without a cache source: covers re-encoding an existing record (a partial
+# update reads, merges and writes the record back) on a table whose encoder applies the projection.
+#
+# `salePrice` is @indexed here too, which reaches the defect by a second route needing no cache source
+# and no replication: invalidation preserves a partial record holding every indexed attribute's value
+# so the row stays searchable, and for an indexed computed attribute that means storing the computed
+# value.
+type PlainProduct @table @export {
+	id: ID @primaryKey
+	price: Float
+	discount: Float
+	label: String
+	salePrice: Float @computed(from: "price - (discount || 0)") @indexed
+}
+
+# An @enumerable relationship: the same #1484 response projection surfaces it, so an affected release
+# could have stored a value under this name too. Unlike a computed attribute it has a writable setter.
+type Cat @table @export {
+	slug: ID @primaryKey
+	name: String
+}
+type Item @table @export {
+	id: ID @primaryKey
+	label: String
+	catId: ID @indexed
+	cat: Cat @relationship(from: "catId") @enumerable
+}
+
+# A cached table whose @enumerable relationship has a dangling foreign key: the cache-fill record is
+# struct-prototyped, which is the route that reaches the response projection during a durable encode.
+type CachedItem @table(expiration: 3600) @export {
+	id: ID @primaryKey
+	label: String
+	catId: ID @indexed
+	cat: Cat @relationship(from: "catId") @enumerable
+}
