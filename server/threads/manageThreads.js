@@ -520,7 +520,7 @@ async function restartWorkers(
 			maxWorkersDown = maxWorkersDown * workers.length;
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
-		let waitingToFinish = []; // promises for workers we are replacing, spliced as each is replaced
+		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
 		// Every replacement that was started without being awaited first, so this function can still
 		// resolve only once each one is accepting connections.
 		let replacementsStarting = [];
@@ -630,14 +630,13 @@ async function restartWorkers(
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
-			let replacementStarting;
-			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
-				replacementStarting = whenWorkerStarted(worker.startCopy()).then((started) => {
-					onProgress?.();
-					return started;
-				});
-				replacementsStarting.push(replacementStarting);
-			}
+			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown)
+				replacementsStarting.push(
+					whenWorkerStarted(worker.startCopy()).then((started) => {
+						onProgress?.();
+						return started;
+					})
+				);
 
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
@@ -680,22 +679,16 @@ async function restartWorkers(
 					clearTimeout(timeout);
 					onProgress?.();
 					worker.extendTerminateDeadline = undefined;
+					const index = waitingToFinish.indexOf(whenDone);
+					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
 					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
 					resolve();
 				});
 			});
-			// A worker counts as replaced only once its replacement is accepting connections, not merely
-			// once it has exited: where the replacement can't be pre-started it boots after the old worker
-			// is gone, and throttling on the exit alone let the loop take the whole pool down while the
-			// first replacements were still booting.
-			const replaced = (replacementStarting ? Promise.all([whenDone, replacementStarting]) : whenDone).then(() => {
-				const index = waitingToFinish.indexOf(replaced);
-				if (index > -1) waitingToFinish.splice(index, 1);
-			});
-			waitingToFinish.push(replaced);
+			waitingToFinish.push(whenDone);
 			if (waitingToFinish.length >= maxWorkersDown) {
-				// throttle how many workers are down at once to limit load
+				// throttle how many workers are draining/down at once to limit load
 				await Promise.race(waitingToFinish);
 			}
 		}

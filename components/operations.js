@@ -431,7 +431,7 @@ async function packageComponent(req) {
 	return { project, payload };
 }
 
-/** Report a restart outcome that a caller cannot see from `restart_completed` alone. */
+/** Report a restart outcome the operation's own success message cannot convey. */
 function logRestartOutcome(restart, what) {
 	const { RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
 	if (restart.replacementsNotStarted)
@@ -724,9 +724,6 @@ async function deployComponent(req) {
 				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
 			);
 			emit('phase', { phase: 'restart', status: 'done' });
-			// Only the thread that performed the restart can say whether it finished; a handoff leaves the
-			// field off rather than reporting a restart that is proceeding elsewhere as incomplete.
-			if (!restart.handedOff) response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
 			logRestartOutcome(restart, `deploying ${application.name}`);
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
@@ -1256,7 +1253,6 @@ async function dropComponent(req) {
 		const restart = await awaitRestart((onProgress) =>
 			manageThreads.restartWorkers('http', undefined, undefined, onProgress)
 		);
-		if (!restart.handedOff) response.restart_completed = restart.completed && !restart.workersKeptOnOldCode;
 		logRestartOutcome(restart, `dropping ${projectPath}`);
 		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
 	} else response.message = `Successfully dropped: ${projectPath}`;

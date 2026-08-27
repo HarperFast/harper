@@ -154,7 +154,6 @@ suite(
 				response.message?.includes(`Successfully deployed: ${PROJECT}`),
 				`unexpected deploy message: ${response.message}`
 			);
-			strictEqual(response.restart_completed, true, 'the deploy reported that the restart had not completed');
 
 			const failures: string[] = [];
 			for (let round = 0; round < ROUNDS; round++) {
