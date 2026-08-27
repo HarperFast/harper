@@ -6220,13 +6220,17 @@ export function makeTable(options) {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
-						responseRecord = updatedRecord;
-						updatedRecord = projectRecordForDurableEncoding(updatedRecord);
+						const sourceRecord = updatedRecord;
+						const toJSON = sourceRecord.toJSON;
+						responseRecord = typeof toJSON === 'function' ? toJSON.call(sourceRecord) : sourceRecord;
+						updatedRecord = projectRecordForDurableEncoding(sourceRecord);
+						if (responseRecord && !Object.isExtensible(responseRecord)) responseRecord = { ...responseRecord };
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
+						if (primaryKey && responseRecord[primaryKey] !== id) responseRecord[primaryKey] = id;
 					}
 					resolved = true;
 					const resolvedEntry: Entry = {
@@ -6240,15 +6244,13 @@ export function makeTable(options) {
 						nodeId: 0,
 						residencyId: 0,
 					} as any;
-					// Give the plain object the RecordObject prototype so getExpiresAt/getUpdatedTime
-					// are available on the immediately-resolved entry. We mutate the prototype
-					// in-place rather than copying so that the commit callback (which adds
-					// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
-					if (responseRecord && responseRecord.constructor === Object) {
-						Object.setPrototypeOf(responseRecord, primaryStore.encoder.structPrototype);
-						entryMap.set(responseRecord, resolvedEntry);
-					} else if (responseRecord) {
-						entryMap.set(responseRecord, resolvedEntry);
+					// Give an extensible plain response the RecordObject prototype so metadata helpers are
+					// available immediately. The commit callback mirrors generated timestamps when the
+					// response and durable records differ.
+					if (responseRecord) {
+						if (responseRecord.constructor === Object)
+							Object.setPrototypeOf(responseRecord, primaryStore.encoder.structPrototype);
+						if (!entryMap.has(responseRecord)) entryMap.set(responseRecord, resolvedEntry);
 					}
 					resolve(resolvedEntry);
 				} catch (error) {
@@ -6308,26 +6310,35 @@ export function makeTable(options) {
 							let omitLocalRecord = false;
 							let residencyId: number;
 							if (updatedTimeProperty) {
-								updatedRecord[updatedTimeProperty.name] =
+								const updatedTime =
 									updatedTimeProperty.type === 'Date'
 										? new Date(txnTime)
 										: updatedTimeProperty.type === 'String'
 											? new Date(txnTime).toISOString()
 											: txnTime;
+								updatedRecord[updatedTimeProperty.name] = updatedTime;
+								if (responseRecord !== updatedRecord) responseRecord[updatedTimeProperty.name] = updatedTime;
 							}
 							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
 								const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
 								if (existingCreatedTime != null) {
 									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
 								} else {
-									updatedRecord[createdTimeProperty.name] =
+									const createdTime =
 										createdTimeProperty.type === 'Date'
 											? new Date(txnTime)
 											: createdTimeProperty.type === 'String'
 												? new Date(txnTime).toISOString()
 												: txnTime;
+									updatedRecord[createdTimeProperty.name] = createdTime;
 								}
 							}
+							if (
+								createdTimeProperty &&
+								responseRecord !== updatedRecord &&
+								updatedRecord[createdTimeProperty.name] != null
+							)
+								responseRecord[createdTimeProperty.name] = updatedRecord[createdTimeProperty.name];
 							const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
 							if (residency) {
 								if (!residency.includes(server.hostname)) {

@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { entryMap } = require('#src/resources/RecordEncoder');
 const { waitFor } = require('../waitFor.js');
 
 describe('Caching', () => {
@@ -25,6 +26,7 @@ describe('Caching', () => {
 	let return_value = true;
 	let return_error;
 	let returnNotModified = false;
+	let returnFrozen = false;
 	let revalidationRequests = 0;
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
@@ -102,6 +104,8 @@ describe('Caching', () => {
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
 				{ name: 'relatedId' },
+				{ name: 'createdAt', type: 'Date', assignCreatedTime: true },
+				{ name: 'updatedAt', type: 'Date', assignUpdatedTime: true },
 				{
 					name: 'related',
 					type: 'RevalidatedRelatedTable',
@@ -120,7 +124,8 @@ describe('Caching', () => {
 					revalidationRequests++;
 					return { status: 304, headers: {} };
 				}
-				return { id, name: 'cached', relatedId: 'related' };
+				const record = { id, name: 'cached', relatedId: 'related' };
+				return returnFrozen ? Object.freeze(record) : record;
 			},
 		});
 		await RevalidatedRelatedTable.put({ id: 'related', name: 'relationship' });
@@ -217,13 +222,18 @@ describe('Caching', () => {
 			assert.equal(initial.computed, 'cached computed');
 			assert.equal(initial.related.id, 'related');
 			await RevalidatedTable.primaryStore.committed;
+			const cachedBeforeRevalidation = RevalidatedTable.primaryStore.getEntry('revalidated').value;
+			const entryBeforeRevalidation = entryMap.get(cachedBeforeRevalidation);
 
 			returnNotModified = true;
 			await delay(5);
 			const requestsBefore = revalidationRequests;
-			await RevalidatedTable.get('revalidated');
+			const revalidated = await RevalidatedTable.get('revalidated');
 			assert(revalidationRequests > requestsBefore, 'the expired get must revalidate against the source');
 			await RevalidatedTable.primaryStore.committed;
+			assert.strictEqual(entryMap.get(cachedBeforeRevalidation), entryBeforeRevalidation);
+			assert(revalidated.createdAt instanceof Date);
+			assert(revalidated.updatedAt instanceof Date);
 			const persisted = RevalidatedTable.primaryStore.getEntry('revalidated').value;
 			assert.equal(Object.hasOwn(persisted, 'related'), false);
 			const raw = RevalidatedTable.primaryStore.encoder.decode(
@@ -233,6 +243,23 @@ describe('Caching', () => {
 			assert.equal(Object.hasOwn(raw, 'computed'), false);
 		} finally {
 			returnNotModified = false;
+		}
+	});
+	it('projects a frozen source response without mutating it', async function () {
+		try {
+			returnFrozen = true;
+			await RevalidatedTable.invalidate('frozen-source');
+			const response = await RevalidatedTable.get('frozen-source');
+			assert.equal(response.computed, 'cached computed');
+			assert.equal(response.related.id, 'related');
+			assert(response.createdAt instanceof Date);
+			assert(response.updatedAt instanceof Date);
+			await RevalidatedTable.primaryStore.committed;
+			const persisted = RevalidatedTable.primaryStore.getEntry('frozen-source').value;
+			assert.equal(Object.hasOwn(persisted, 'computed'), false);
+			assert.equal(Object.hasOwn(persisted, 'related'), false);
+		} finally {
+			returnFrozen = false;
 		}
 	});
 
