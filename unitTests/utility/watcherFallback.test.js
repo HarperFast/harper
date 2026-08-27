@@ -1,10 +1,14 @@
 const {
+	claimLostNativeWatchError,
+	isLostNativeWatchError,
 	isWatcherExhaustionError,
 	POLLING_FALLBACK_OPTIONS,
 	warnWatcherFallback,
 	_resetForTests,
 } = require('#src/utility/watcherFallback');
 const assert = require('node:assert');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 
 describe('watcherFallback', () => {
 	describe('isWatcherExhaustionError', () => {
@@ -55,6 +59,102 @@ describe('watcherFallback', () => {
 		it('does not throw on repeated invocation', () => {
 			assert.doesNotThrow(() => warnWatcherFallback('/some/path'));
 			assert.doesNotThrow(() => warnWatcherFallback('/some/other/path'));
+		});
+	});
+
+	describe('isLostNativeWatchError', () => {
+		const watchError = (code) => Object.assign(new Error(`${code}: watch`), { code, syscall: 'watch', errno: -4048 });
+
+		it('identifies the Windows EPERM raised when a watched path is deleted', () => {
+			assert.equal(isLostNativeWatchError(watchError('EPERM')), true);
+		});
+
+		it('identifies an ENOENT watch failure', () => {
+			assert.equal(isLostNativeWatchError(watchError('ENOENT')), true);
+		});
+
+		// The guard swallows whatever this claims, process-wide, so the two neighbouring
+		// error shapes it must never claim are worth pinning: an EPERM from a config
+		// rename is a real failure the caller has to see, and exhaustion belongs to the
+		// polling-fallback route above, not here.
+		it('rejects an EPERM from a syscall other than watch', () => {
+			assert.equal(
+				isLostNativeWatchError(Object.assign(new Error('EPERM: rename'), { code: 'EPERM', syscall: 'rename' })),
+				false
+			);
+		});
+
+		it('rejects watcher exhaustion errors', () => {
+			assert.equal(isLostNativeWatchError(watchError('ENOSPC')), false);
+			assert.equal(isLostNativeWatchError(watchError('EMFILE')), false);
+		});
+
+		it('rejects an EPERM with no syscall', () => {
+			assert.equal(isLostNativeWatchError(Object.assign(new Error('boom'), { code: 'EPERM' })), false);
+		});
+
+		it('rejects non-error values', () => {
+			assert.equal(isLostNativeWatchError(null), false);
+			assert.equal(isLostNativeWatchError(undefined), false);
+			assert.equal(isLostNativeWatchError('EPERM'), false);
+		});
+	});
+
+	describe('claimLostNativeWatchError', () => {
+		afterEach(() => {
+			_resetForTests();
+		});
+
+		it('claims a lost watch and marks it handled so the thread-level handler stays quiet', () => {
+			const error = Object.assign(new Error('EPERM: watch'), { code: 'EPERM', syscall: 'watch' });
+			assert.equal(claimLostNativeWatchError(error), true);
+			assert.equal(error.isHandled, true);
+		});
+
+		it('leaves an unrelated error alone', () => {
+			const error = Object.assign(new Error('boom'), { code: 'EACCES' });
+			assert.equal(claimLostNativeWatchError(error), false);
+			assert.equal(error.isHandled, undefined);
+		});
+	});
+
+	// chokidar never attaches an 'error' listener to the underlying Node
+	// FSWatcher when `persistent: false` (which every Harper watcher uses), so an async
+	// watch failure is an uncaughtException rather than something the watcher can route.
+	// These run in a child process because the harness must be the only thing standing
+	// between the error and process death — mocha's own uncaughtException listener would
+	// otherwise absorb it and the test would pass regardless.
+	describe('lost native watch guard', () => {
+		const runHarness = async (mode) => {
+			const harness = spawn(process.execPath, [require.resolve('./fixtures/lostWatchHarness.cjs'), mode], {
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+			let stdout = '';
+			let stderr = '';
+			harness.stdout.on('data', (chunk) => (stdout += chunk));
+			harness.stderr.on('data', (chunk) => (stderr += chunk));
+			const [code] = await once(harness, 'close');
+			return { code, stdout, stderr };
+		};
+
+		it('survives deletion of a watched directory', async function () {
+			this.timeout(30000);
+			const { code, stdout, stderr } = await runHarness('delete-watched-dir');
+			assert.equal(code, 0, `harness exited ${code}: ${stderr}`);
+			assert.match(stdout, /survived lostWatchCount=(\d+)/);
+			if (process.platform === 'win32') {
+				// Only Windows actually raises the error; elsewhere this case is a smoke
+				// test that the guard doesn't disturb ordinary watching.
+				const claimed = Number(stdout.match(/lostWatchCount=(\d+)/)[1]);
+				assert.ok(claimed > 0, 'expected the guard to have claimed at least one lost watch on Windows');
+			}
+		});
+
+		it('leaves an unrelated uncaught exception fatal', async function () {
+			this.timeout(30000);
+			const { code, stderr } = await runHarness('unrelated-throw');
+			assert.equal(code, 1);
+			assert.match(stderr, /unrelated harness failure/);
 		});
 	});
 });

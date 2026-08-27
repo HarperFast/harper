@@ -18,6 +18,9 @@ let sweptSocketsDirectory = false;
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
 		// TODO: Maybe we should try to log the first of each type of error
+		// Same `isHandled` contract as threadServer.js: an error another handler has already
+		// classified (a lost native file watch, for instance) must not be logged again here.
+		if ((error as any).isHandled) return;
 		if ((error as any).code === 'ECONNRESET') return; // that's what network connections do
 		if ((error as any).code === 'EIO') {
 			// that means the terminal is closed

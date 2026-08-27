@@ -5,6 +5,7 @@
 // events. Polling-based watching doesn't consume inotify handles or per-watcher
 // file descriptors, so we fall back to it once and warn — see harper#488.
 
+import chokidar, { type ChokidarOptions, type FSWatcher } from 'chokidar';
 import { loggerWithTag } from './logging/harper_logger.ts';
 
 // One-time process-wide warning so a thundering herd of failing watchers doesn't
@@ -72,6 +73,141 @@ export function warnWatcherFallback(watchedPath: string): void {
 // Test-only hook to reset the one-time warning gate between cases.
 export function _resetForTests(): void {
 	exhaustionWarned = false;
+	lostNativeWatchCount = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Lost native watch (predominantly Windows)
+// ---------------------------------------------------------------------------
+//
+// Every Harper watcher runs chokidar with `persistent: false` so a watcher never
+// holds the event loop open. That option takes chokidar down a code path that
+// never attaches an 'error' listener to the underlying Node `fs.FSWatcher`
+// (chokidar `handler.js`, `setFsWatchListener`):
+//
+//     if (!options.persistent) {
+//         watcher = createFsWatchInstance(path, options, listener, errHandler, rawEmitter);
+//         if (!watcher) return;
+//         return watcher.close.bind(watcher);   // <-- no watcher.on('error', ...)
+//     }
+//
+// `errHandler` is only consulted for a *synchronous* throw out of `fs.watch()`
+// (which is how ENOSPC/EMFILE reach `isWatcherExhaustionError` above). An
+// *asynchronous* watch failure — on Windows, deleting or replacing the watched
+// directory — is delivered by `node:internal/fs/watchers` as
+// `this.emit('error', err)` on an emitter with no listener, so Node turns it
+// into an uncaughtException. The error never reaches chokidar's wrapper, so
+// attaching `.on('error')` to the chokidar `FSWatcher` we hold does not help.
+//
+// chokidar's `persistent: true` branch does attach a listener and swallows this
+// exact error (its node#4337 workaround), which is why only Harper's watchers
+// see it. The upstream fix is one line — `watcher.on('error', errHandler)` in
+// the non-persistent branch — and is still missing as of chokidar 5.0.0.
+//
+// Until then `installLostNativeWatchGuard()` supplies the missing listener at
+// the only place the error is observable: the process. It claims *only* this
+// error shape and leaves every other uncaught exception exactly as Node would
+// have handled it.
+
+// Watch failures that mean "this native watch handle is gone". The watched path
+// has been deleted or replaced; there is nothing to recover and nothing the
+// operator can do, so the error is benign. Kept deliberately narrow — anything
+// matched here is swallowed process-wide.
+const LOST_NATIVE_WATCH_CODES = new Set(['EPERM', 'ENOENT']);
+
+/**
+ * Returns `true` for the asynchronous "the watched path went away" error raised
+ * by Node's `fs.FSWatcher`. On Windows this is
+ * `EPERM: operation not permitted, watch` (errno -4048) and it fires whenever a
+ * watched directory is removed or swapped out — a component redeploy, a test
+ * fixture teardown, an `npm install` that replaces a tree.
+ *
+ * Deliberately distinct from {@link isWatcherExhaustionError}: exhaustion means
+ * the host ran out of watch capacity and polling is a useful degradation; a lost
+ * native watch means the thing being watched no longer exists, and polling would
+ * only burn CPU on a path that isn't there.
+ */
+export function isLostNativeWatchError(error: unknown): boolean {
+	if (typeof error !== 'object' || error === null) return false;
+	const { code, syscall } = error as { code?: unknown; syscall?: unknown };
+	// `syscall === 'watch'` is only ever set by fs watch handles, so the pair is
+	// specific enough to claim without also inspecting the stack (whose frame
+	// text is a Node internal we don't want to depend on).
+	return syscall === 'watch' && typeof code === 'string' && LOST_NATIVE_WATCH_CODES.has(code);
+}
+
+let lostNativeWatchCount = 0;
+
+/**
+ * If `error` is a lost native watch error, mark it handled, log it, and report
+ * that it has been claimed. Exported so the per-watcher error routes can give it
+ * the same benign treatment on the day chokidar does deliver it to the wrapper
+ * (its polling and `persistent: true` branches already would).
+ */
+export function claimLostNativeWatchError(error: unknown): boolean {
+	if (!isLostNativeWatchError(error)) return false;
+	// server/threads/threadServer.js skips errors already marked handled, so the
+	// benign case doesn't also get logged there as a worker-level uncaughtException.
+	(error as { isHandled?: boolean }).isHandled = true;
+	lostNativeWatchCount++;
+	if (lostNativeWatchCount === 1) {
+		fallbackLogger.warn?.(
+			`A file watch handle was lost because the watched path was deleted or replaced ` +
+				`(${(error as { code?: string }).code}, syscall=watch). This is expected on Windows during ` +
+				`component redeploys and is not actionable; the watcher for that path stops reporting changes ` +
+				`and is re-established the next time the path is watched. Further occurrences log at trace.`
+		);
+	} else {
+		fallbackLogger.trace?.(`Lost file watch handle (occurrence ${lostNativeWatchCount}):`, error);
+	}
+	return true;
+}
+
+let lostNativeWatchGuardInstalled = false;
+
+function handleUncaughtException(error: unknown): void {
+	if (claimLostNativeWatchError(error)) return;
+	// Not ours. Node suppresses its default fatal handling as soon as *any*
+	// 'uncaughtException' listener exists, so if this guard is the only listener
+	// its mere presence would turn unrelated crashes into silent hangs. Step out
+	// of the way and let the exception be fatal exactly as it would have been.
+	if (process.listenerCount('uncaughtException') > 1) return;
+	process.removeListener('uncaughtException', handleUncaughtException);
+	// Re-raising on the next tick (rather than throwing from inside the handler)
+	// keeps Node's normal report and exit code 1; a throw from within the handler
+	// exits 7 instead.
+	process.nextTick(() => {
+		throw error;
+	});
+}
+
+/**
+ * Idempotently install the process-level listener that supplies the 'error'
+ * handler chokidar omits for non-persistent watchers. Called by
+ * {@link guardedWatch} so no watcher call site can forget it.
+ */
+export function installLostNativeWatchGuard(): void {
+	if (lostNativeWatchGuardInstalled) return;
+	lostNativeWatchGuardInstalled = true;
+	// prepend, not append: threadServer.js already has an 'uncaughtException'
+	// listener, and the `isHandled` mark above only suppresses its log line if
+	// this guard runs first.
+	process.prependListener('uncaughtException', handleUncaughtException);
+}
+
+/**
+ * `chokidar.watch()` with the lost-native-watch guard installed. Every Harper
+ * chokidar watcher must go through this — a raw `chokidar.watch(..., { persistent: false })`
+ * can take down the thread the first time its path is deleted.
+ */
+export function guardedWatch(paths: string | string[], options?: ChokidarOptions): FSWatcher {
+	installLostNativeWatchGuard();
+	return chokidar.watch(paths, options);
+}
+
+// Test-only: number of lost native watch errors claimed so far.
+export function _lostNativeWatchCountForTests(): number {
+	return lostNativeWatchCount;
 }
 
 /**
