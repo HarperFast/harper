@@ -668,11 +668,14 @@ function hydrateCatalogRelationships(): void {
 	for (const hydration of relationshipsToHydrate) {
 		try {
 			hydrateTableRelationships(hydration);
-		} catch {
+		} catch (error) {
 			const key = `${hydration.databaseName}.${hydration.tableName}:hydrate`;
 			if (!reportedRelationshipErrors.has(key)) {
 				reportedRelationshipErrors.add(key);
-				logger.error(`Unable to hydrate persisted relationships for ${hydration.databaseName}.${hydration.tableName}`);
+				logger.error(
+					`Unable to hydrate persisted relationships for ${hydration.databaseName}.${hydration.tableName}`,
+					error
+				);
 			}
 		}
 	}
