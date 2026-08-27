@@ -13,7 +13,7 @@ name: Large Deploy Payload Test (self-hosted)
 
 on:
   schedule:
-    - cron: '30 9 * * 1' # weekly, Monday — offset from the nightly perf/ycsb jobs
+    - cron: '20 9 * * 1' # 03:20 MDT Monday, after the nightly harper-bench chain
   workflow_dispatch:
     inputs:
       size-mb:

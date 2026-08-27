@@ -26,7 +26,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 11 * * *' # nightly, offset from ycsb-nightly (07:00) and the cluster job
+    - cron: '20 8 * * *' # 02:20 MDT, last in the serialized harper-bench chain
   workflow_dispatch:
     inputs:
       scale:
