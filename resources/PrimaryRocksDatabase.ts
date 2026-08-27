@@ -3,7 +3,7 @@ import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
+import { assignStoredFields, entryMap, METADATA, type Entry } from './RecordEncoder.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -60,7 +60,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			if (entry.value.constructor === Object && this.#enc.structPrototype) {
 				const originalValue = entry.value;
 				entry.value = new this.#enc.structPrototype.constructor();
-				Object.assign(entry.value, originalValue);
+				assignStoredFields(entry.value, originalValue, this.#enc);
 			}
 			if (typeof entry.value === 'object' && entry.value !== null) {
 				entryMap.set(entry.value, entry);
@@ -164,7 +164,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			if (entry.value?.constructor === Object && enc.structPrototype) {
 				const originalValue = entry.value;
 				entry.value = new enc.structPrototype.constructor();
-				for (const key in originalValue) entry.value[key] = originalValue[key];
+				assignStoredFields(entry.value, originalValue, enc);
 			}
 			return entry;
 		});

@@ -6,7 +6,7 @@
  */
 
 import { Encoder } from 'msgpackr';
-import { createStructon } from 'structon';
+import { createStructon, SOURCE_SYMBOL } from 'structon';
 import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
@@ -123,12 +123,83 @@ let timestampNextEncoding = 0,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
+/**
+ * A resolver owns its attribute's name, so no durable form of a record may carry a value under it.
+ * A value gets there either through the response `toJSON` the table installs on the record prototype
+ * (msgpackr consults an instance's toJSON when it encodes one) or as an own key from a source or
+ * peer payload.
+ */
+export function storedFieldsOnly(encoder: any, record: any) {
+	if (record === null || typeof record !== 'object') return record;
+	// Optional: this also runs for a store whose encode hook was grafted onto a foreign encoder
+	// (copyDb's migration target), which carries no table schema.
+	const resolved = encoder?.resolvedAttributeNames;
+	if (resolved === undefined) return record;
+	const resolvedList = encoder.resolvedAttributeNamesList ?? Array.from(resolved);
+	// A typed-struct instance keeps its stored fields as accessors on a structon-generated child
+	// prototype carrying structon's own toJSON, so it never reaches the response projection — and
+	// copying its own keys would encode an empty record.
+	let project =
+		encoder.surfacedToJSON !== undefined &&
+		record.toJSON === encoder.surfacedToJSON &&
+		record[SOURCE_SYMBOL] === undefined;
+	if (!project && typeof record.toJSON === 'function' && record[SOURCE_SYMBOL] === undefined) {
+		// A class instance with its own serialization: the encoder will consult that toJSON, so the
+		// projection has to run on its OUTPUT, or the serialized form smuggles resolver-owned keys past
+		// a check that only saw the instance. A non-object (or self) result is left for the encoder,
+		// which invokes toJSON again — serializers are assumed pure.
+		const json = record.toJSON();
+		if (json !== record && json !== null && typeof json === 'object') record = json;
+	}
+	if (!project) {
+		for (let i = 0; i < resolvedList.length; i++) {
+			if (Object.hasOwn(record, resolvedList[i])) {
+				project = true;
+				break;
+			}
+		}
+	}
+	if (!project) return record;
+	const stored = {};
+	for (const key of Object.keys(record)) {
+		if (resolved.has(key)) continue;
+		// '__proto__' as an own key must stay a data property: plain assignment would run the inherited
+		// setter, dropping the field from the durable write and swapping the temporary's prototype.
+		if (key === '__proto__')
+			Object.defineProperty(stored, key, { value: record[key], enumerable: true, writable: true, configurable: true });
+		else stored[key] = record[key];
+	}
+	return stored;
+}
+
+/**
+ * A resolver-owned name is skipped rather than assigned during record-instance promotion: through a
+ * read-only resolver the assignment throws, and through a writable one (a many-to-one
+ * `@relationship`) it would derive a foreign key from the stale stored value.
+ */
+export function assignStoredFields(target: any, source: any, encoder: any) {
+	const resolved = encoder?.resolvedAttributeNames;
+	if (resolved === undefined) return Object.assign(target, source);
+	for (const key in source) {
+		if (resolved.has(key)) continue;
+		if (key === '__proto__')
+			Object.defineProperty(target, key, { value: source[key], enumerable: true, writable: true, configurable: true });
+		else target[key] = source[key];
+	}
+	return target;
+}
+
 export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
 	structureUpdate?: any;
+	// Set by TableResource.updatedAttributes. Undefined for a store with no resolved attributes, which
+	// is what keeps the projection off that store's writes entirely.
+	resolvedAttributeNames?: Set<string>;
+	resolvedAttributeNamesList?: string[];
+	surfacedToJSON?: () => any;
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
@@ -539,7 +610,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
 					entry.value = new store.encoder.structPrototype.constructor();
-					Object.assign(entry.value, originalValue);
+					assignStoredFields(entry.value, originalValue, store.encoder);
 				}
 				entryMap.set(entry.value, entry); // allow the record to access the entry
 			}
@@ -591,7 +662,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
 					entry.value = new store.encoder.structPrototype.constructor();
-					for (const key in originalValue) entry.value[key] = originalValue[key];
+					assignStoredFields(entry.value, originalValue, store.encoder);
 				}
 			}
 			return entry;
@@ -708,6 +779,10 @@ export function recordUpdater(store, tableId, auditStore) {
 		// harper#1309: reset so a record===undefined call (delete/no-op) cannot carry stale bytes
 		// into the audit encodedRecord or write-size analytics of this call.
 		lastValueEncoding = undefined;
+		// Every durable form of the record — the stored value, the audit entry's encodedRecord and so the
+		// transaction log and replication payload — comes from this record, so projecting it here covers
+		// them all; nested values keep their own toJSON serialization.
+		record = storedFieldsOnly(store.encoder, record);
 		const isRocksDB = store instanceof RocksDatabase;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
@@ -809,6 +884,10 @@ export function recordUpdater(store, tableId, auditStore) {
 			if (audit) {
 				const username = typeof options?.user === 'string' ? options.user : options?.user?.username;
 				if (auditRecord) {
+					// The audit encodedRecord is durable record state too (it is the transaction log and the
+					// replication payload), so it takes the same projection — except for message/publish
+					// entries, whose auditRecord IS the published payload and must reach subscribers verbatim.
+					if (type !== 'message' && type !== 'publish') auditRecord = storedFieldsOnly(store.encoder, auditRecord);
 					encodeBlobsWithFilePath(() => store.encoder.encode(auditRecord), id, store.rootStore);
 					if (blobsWereEncoded) {
 						extendedType |= HAS_BLOBS;
