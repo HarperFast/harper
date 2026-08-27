@@ -1191,7 +1191,8 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 		// a concurrently closing/dropped store must degrade the plan, not fail the query
 		return undefined;
 	}
-	if (!Number.isFinite(count) || count < 0 || !(confidence >= 0 && confidence <= 1)) return undefined;
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return undefined;
 	const heuristic = fraction * estimatedEntryCount(table.primaryStore) + 1;
 	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
 }

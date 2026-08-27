@@ -154,6 +154,8 @@ describe('estimateCondition range estimates', () => {
 			{ count: -1, confidence: 1 },
 			{ count: 10 },
 			{ count: 10, confidence: 2 },
+			{ count: 10, confidence: NaN },
+			{ count: 10, confidence: -0.1 },
 			null,
 		]) {
 			const table = makeTable({ indexEstimate: bad });
