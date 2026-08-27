@@ -176,6 +176,18 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(encoder.readOnlyResolverNameSet.has('hidden'), true);
 		}
 	});
+	it('classifies one-to-many relationship resolvers as read-only', function () {
+		const encoder = CRUDRelatedTable.primaryStore.encoder;
+		assert(encoder.readOnlyResolverNameSet.has('relatedToMany'));
+		assert(encoder.readOnlyResolverNameSet.has('childrenOfSelf'));
+	});
+	it('clears a stale resolver setter during schema reload', function () {
+		const hiddenAttribute = HiddenResolverTable.attributes.find((attribute) => attribute.name === 'hidden');
+		hiddenAttribute.set = () => {};
+		HiddenResolverTable.updatedAttributes();
+		assert.equal(hiddenAttribute.set, null);
+		assert(HiddenResolverTable.primaryStore.encoder.readOnlyResolverNameSet.has('hidden'));
+	});
 	it('removes typed resolver collisions without materializing lazy stored fields', function () {
 		const encoder = TypedResolverTable.primaryStore.encoder;
 		const readOnlyResolverNames = encoder.readOnlyResolverNames;

@@ -351,4 +351,4 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 }
 
 // useful for testing
-export const loadGQLSchema = (content) => processGraphQLSchema(content, null, '<inline-schema>', new Resources());
+export const loadGQLSchema = (content) => processGraphQLSchema(content, null, null, new Resources());

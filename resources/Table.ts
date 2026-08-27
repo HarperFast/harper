@@ -81,6 +81,7 @@ import {
 	RecordObject,
 	isDurableRecordEncoding,
 	projectRecordForDurableEncoding,
+	promoteRecord,
 	STRUCT_SOURCE,
 	STORED_FIELD_NAMES,
 	type Entry,
@@ -5107,6 +5108,7 @@ export function makeTable(options) {
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this
+				attribute.set = null;
 				const relationship = attribute.relationship;
 				const computed = attribute.computed;
 				// Register the default embedder unless an author override is set. Sits outside
@@ -5309,7 +5311,7 @@ export function makeTable(options) {
 				const name = attribute.name;
 				if (attribute.resolve) {
 					resolverNames.push(name);
-					if (typeof attribute.set !== 'function') readOnlyResolverNames.add(name);
+					if (typeof attribute.set !== 'function' || attribute.relationship?.to) readOnlyResolverNames.add(name);
 					Object.defineProperty(primaryStore.encoder.structPrototype, name, {
 						get() {
 							return attribute.resolve(this, contextStorage.getStore()); // it is only possible to get the context from ALS, we don't have a direct reference to the current context
@@ -6222,19 +6224,29 @@ export function makeTable(options) {
 							}
 						}
 						const sourceRecord = updatedRecord;
-						const toJSON = sourceRecord.toJSON;
-						const sourcePrototype = Object.getPrototypeOf(sourceRecord);
+						const cleanSourceRecord = primaryStore.encoder.removeReadOnlyResolverFields(sourceRecord);
+						let responseProjectionSource = sourceRecord;
+						let toJSON = responseProjectionSource.toJSON;
+						if (
+							typeof toJSON !== 'function' &&
+							cleanSourceRecord !== sourceRecord &&
+							sourceRecord.constructor === Object
+						) {
+							responseProjectionSource = promoteRecord(primaryStore.encoder, cleanSourceRecord);
+							toJSON = responseProjectionSource.toJSON;
+						}
+						const sourcePrototype = Object.getPrototypeOf(responseProjectionSource);
 						const usesTargetPrototype =
 							sourcePrototype === primaryStore.encoder.structPrototype ||
 							(sourcePrototype && Object.getPrototypeOf(sourcePrototype) === primaryStore.encoder.structPrototype);
 						if (
-							sourceRecord[STORED_FIELD_NAMES] ||
-							Object.hasOwn(sourceRecord, STRUCT_SOURCE) ||
+							responseProjectionSource[STORED_FIELD_NAMES] ||
+							Object.hasOwn(responseProjectionSource, STRUCT_SOURCE) ||
 							(typeof toJSON === 'function' && !usesTargetPrototype)
 						) {
-							responseRecord = typeof toJSON === 'function' ? toJSON.call(sourceRecord) : sourceRecord;
-						} else responseRecord = sourceRecord;
-						updatedRecord = projectRecordForDurableEncoding(sourceRecord);
+							responseRecord = typeof toJSON === 'function' ? toJSON.call(responseProjectionSource) : responseProjectionSource;
+						} else responseRecord = responseProjectionSource;
+						updatedRecord = projectRecordForDurableEncoding(cleanSourceRecord);
 						if (needsMutableRecordCopy(responseRecord)) responseRecord = { ...responseRecord };
 						// A plain source object is both projections until this point. Split it before the response
 						// receives the table prototype, whose resolvers must never become visible to durable encoding.

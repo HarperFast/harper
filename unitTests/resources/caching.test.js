@@ -27,10 +27,18 @@ describe('Caching', () => {
 	let return_error;
 	let returnNotModified = false;
 	let returnFrozen = false;
+	let returnComputedCollision = false;
 	let revalidationRequests = 0;
-	function assertResolvedFieldsAreNotDurable(id) {
-		const binary = Buffer.from(RevalidatedTable.primaryStore.getBinarySync(id));
-		assert(binary.includes(Buffer.from('cached')), 'the stored record must contain its name');
+	async function assertResolvedFieldsAreNotDurable(id, tableClass = RevalidatedTable) {
+		const binary = await waitFor(
+			() => {
+				const stored = tableClass.primaryStore.getBinarySync(id);
+				if (!stored) return undefined;
+				const bytes = Buffer.from(stored);
+				return bytes.includes(Buffer.from('cached')) ? bytes : undefined;
+			},
+			{ message: 'the stored record must contain its name' }
+		);
 		assert.equal(binary.includes(Buffer.from('cached computed')), false);
 		assert.equal(binary.includes(Buffer.from('relationship')), false);
 	}
@@ -132,6 +140,7 @@ describe('Caching', () => {
 					return { status: 304, headers: {} };
 				}
 				const record = { id, name: 'cached', relatedId: 'related' };
+				if (returnComputedCollision) record.computed = 'forged computed';
 				return returnFrozen ? Object.freeze(record) : record;
 			},
 		});
@@ -243,7 +252,7 @@ describe('Caching', () => {
 			assert.strictEqual(entryMap.get(cachedBeforeRevalidation), entryBeforeRevalidation);
 			assert(revalidated.createdAt instanceof Date);
 			assert(revalidated.updatedAt instanceof Date);
-			assertResolvedFieldsAreNotDurable('revalidated');
+			await assertResolvedFieldsAreNotDurable('revalidated');
 		} finally {
 			returnNotModified = false;
 		}
@@ -260,9 +269,26 @@ describe('Caching', () => {
 			await RevalidatedTable.primaryStore.committed;
 			assert(response.createdAt instanceof Date);
 			assert(response.updatedAt instanceof Date);
-			assertResolvedFieldsAreNotDurable('frozen-source');
+			await assertResolvedFieldsAreNotDurable('frozen-source');
 		} finally {
 			returnFrozen = false;
+		}
+	});
+	it('uses the resolver instead of a source-provided computed collision', async function () {
+		try {
+			returnComputedCollision = true;
+			await RevalidatedTable.invalidate('source-collision');
+			const response = await RevalidatedTable.get('source-collision');
+			assert.equal(response.computed, 'cached computed');
+			const persisted = await waitFor(() => RevalidatedTable.primaryStore.getEntry('source-collision')?.value, {
+				message: 'the cleaned source record must commit to the cache',
+			});
+			assert.equal(persisted.name, 'cached');
+			assert.equal(Object.hasOwn(persisted, 'computed'), false);
+			const binary = Buffer.from(RevalidatedTable.primaryStore.getBinarySync('source-collision'));
+			assert.equal(binary.includes(Buffer.from('forged computed')), false);
+		} finally {
+			returnComputedCollision = false;
 		}
 	});
 

@@ -650,6 +650,7 @@ export class RecordEncoder extends StructonEncoder {
 			this.readOnlyResolverNames.length === 0 ||
 			value == null ||
 			typeof value !== 'object' ||
+			Array.isArray(value) ||
 			ArrayBuffer.isView(value)
 		)
 			return value;

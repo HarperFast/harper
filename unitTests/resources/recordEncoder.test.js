@@ -122,6 +122,14 @@ describe('RecordEncoder struct-mode gating', () => {
 		assert.equal(Object.hasOwn(enc.decode(bytes), 'typed'), false, 'record cleanup precondition');
 		assert.deepStrictEqual(enc.decode(bytes, { skipResolverCleanup: true }).typed, [['stored-structure']]);
 	});
+
+	it('does not treat decoded arrays as table records', () => {
+		const enc = makeEncoder(false, sharedStore());
+		enc.setReadOnlyResolverNames(['length']);
+		const decoded = enc.decode(Buffer.from(enc.encode(['stored-value'])));
+		assert(Array.isArray(decoded));
+		assert.deepStrictEqual(decoded, ['stored-value']);
+	});
 });
 
 describe('RecordEncoder missing-structure handling (harper#1163)', () => {
