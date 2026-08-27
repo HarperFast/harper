@@ -205,7 +205,7 @@ describe('CRUD operations with the Resource API', () => {
 				assert.equal(Object.hasOwn(durable, 'computed'), false);
 				assert.equal(durable.related.id, 1);
 
-				const legacyRecord = Object.create(Object.getPrototypeOf(record));
+				const legacyRecord = Object.create(encoder.structPrototype);
 				Object.assign(legacyRecord, { id: 'legacy-reencode', name: 'trusted', relatedId: 1 });
 				Object.defineProperty(legacyRecord, 'computed', { value: 'forged', enumerable: true });
 				const legacyEncoding = Buffer.from(encoder.encode(legacyRecord));
