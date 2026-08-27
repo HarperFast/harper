@@ -400,6 +400,9 @@ async function catchup(req: CatchupOperationRequest) {
 				case terms.OPERATIONS_ENUM.UPSERT:
 					await insert.upsert(transaction);
 					break;
+				case terms.OPERATIONS_ENUM.PUT:
+					await insert.put(transaction);
+					break;
 				case terms.OPERATIONS_ENUM.DELETE:
 					await delete_.deleteRecord(transaction);
 					break;
@@ -454,6 +457,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.INSERT, new OperationFunctionObject(insert.insert));
 	opFuncMap.set(terms.OPERATIONS_ENUM.UPDATE, new OperationFunctionObject(insert.update));
 	opFuncMap.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
+	opFuncMap.set(terms.OPERATIONS_ENUM.PUT, new OperationFunctionObject(insert.put));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS, new OperationFunctionObject(search.searchByConditions));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(search.searchByHash));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_ID, new OperationFunctionObject(search.searchByHash));

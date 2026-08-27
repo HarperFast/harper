@@ -149,6 +149,13 @@ requiredPermissions.set(
 	write.upsert.name,
 	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.UPSERT)
 );
+// Same grants as `upsert`, and the same as REST `PUT` enforces: creating needs insert, replacing an
+// existing record needs update. A full replace can DROP attributes, which is why the
+// attribute-scoped denial below applies to it.
+requiredPermissions.set(
+	write.put.name,
+	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.PUT)
+);
 requiredPermissions.set(
 	search.searchByConditions.name,
 	new (permission as any)(false, [READ_PERM], terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS)
@@ -855,27 +862,14 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 
 	const recordAttrs = getRecordAttributes(requestJson, op);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
-	// `full_record: true` makes a write a full replace, which REMOVES every attribute the request
-	// omits. `checkAttributePerms` below only sees the attributes the request SUPPLIES, so it cannot
-	// police that: an attribute-scoped role could erase an attribute it has no `update` permission
-	// for simply by leaving it out. REST's `PUT` closes the same gap in `Table.allowUpdate`, by
-	// restoring those attributes from the stored record — which needs the stored record, and this
-	// runs before any record is read. So refuse the combination outright rather than authorize a
-	// write whose removals nobody checked. Roles that scope no attribute are unaffected, which is
-	// every role that hasn't deliberately been given `attribute_permissions` on this table.
-	// Scoped to the two operations the flag actually changes. `verifyPerms` runs for EVERY operation
-	// and `full_record` is an accepted key on the shared insert/update/upsert validator (and unknown
-	// keys pass validation everywhere), so an unscoped test denies an `insert`, a `search_by_*`, or
-	// anything else whose body merely carries the flag — plausible for a client that sets it on every
-	// write. Those operations never reach `Table.patch`, so there is nothing for the check to protect.
-	if (
-		attrPermissions.size > 0 &&
-		requestJson.full_record === true &&
-		(op === write.update.name || op === write.upsert.name)
-	) {
-		return permsResponse.handleUnauthorizedItem(
-			HDB_ERROR_MSGS.FULL_RECORD_WITH_ATTRIBUTE_PERMS(operationSchema, table)
-		);
+	// A `put` replaces the whole record, so it REMOVES every attribute the request omits — and
+	// `checkAttributePerms` below only sees the attributes a request SUPPLIES, so it cannot police
+	// those removals. An attribute-scoped role could otherwise erase an attribute it has no `update`
+	// permission for by leaving it out. REST closes the same gap in `Table.allowUpdate` by restoring
+	// such attributes from the stored record, which needs the stored record; this runs before anything
+	// is read, so it denies instead. Roles that scope no attribute are unaffected.
+	if (attrPermissions.size > 0 && op === write.put.name) {
+		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.PUT_WITH_ATTRIBUTE_PERMS(operationSchema, table));
 	}
 	checkAttributePerms(recordAttrs, attrPermissions, op, table, operationSchema, permsResponse, action);
 
@@ -1129,26 +1123,6 @@ function getRecordAttributes(json, operationName?) {
 			for (const record of json.records) {
 				let keys = Object.keys(record);
 				for (const key of keys) {
-					// `__unset__` is a directive, not an attribute: contribute the attributes it REMOVES
-					// instead of the key itself, so removing one is checked against the same `update`
-					// permission that writing it would be. Without this the removals are invisible to
-					// checkAttributePerms, which only ever sees the attributes a request supplies.
-					//
-					// Only for the operations it does something on. `upsertRecords` strips the directive
-					// for every write, so on an `insert` — which never writes over an existing record —
-					// it removes nothing, and contributing its names would demand `insert` permission on
-					// attributes the request is not touching.
-					if (key === terms.UNSET_ATTRIBUTES) {
-						const unset = record[key];
-						const removes =
-							json.operation === terms.OPERATIONS_ENUM.UPDATE || json.operation === terms.OPERATIONS_ENUM.UPSERT;
-						if (removes && Array.isArray(unset)) {
-							for (const name of unset) {
-								affectedAttributes.add(name);
-							}
-						}
-						continue;
-					}
 					affectedAttributes.add(key);
 				}
 			}

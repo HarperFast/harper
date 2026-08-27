@@ -132,8 +132,8 @@ const OPERATION_AUTH_ERROR_MSGS = {
 	OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
 	OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
 	OP_NOT_IN_OPERATIONS: (op) => `Operation '${op}' is not permitted for this role's operations configuration`,
-	FULL_RECORD_WITH_ATTRIBUTE_PERMS: (schema, table) =>
-		`'full_record' is not permitted for a role with attribute permissions on '${schema}.${table}', because a full replace removes the attributes the request omits and those removals cannot be checked against attribute permissions. Write the record without 'full_record' to merge, or use a REST PUT, which restores attributes the role may not update.`,
+	PUT_WITH_ATTRIBUTE_PERMS: (schema, table) =>
+		`'put' is not permitted for a role with attribute permissions on '${schema}.${table}', because replacing a record removes the attributes the request omits and those removals cannot be checked against attribute permissions. Use 'update' or 'upsert' to merge, or a REST PUT, which restores attributes the role may not update.`,
 	OPERATIONS_MUST_BE_ARRAY: "Permission 'operations' must be an array of operation names or group names",
 	INVALID_OPERATIONS_OP: (op) =>
 		`Invalid operations value '${op}'. Must be a valid operation name or group (e.g. 'read_only').`,

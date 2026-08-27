@@ -15,13 +15,13 @@ import * as globalSchema from '../utility/globalSchema.ts';
 import log from '../utility/logging/harper_logger.ts';
 import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
-import * as terms from '../utility/hdbTerms.ts';
 
 const pGlobalSchema = util.promisify(globalSchema.getTableSchema);
 
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
 const UPSERT_ACTION = 'upserted';
+const PUT_ACTION = 'put';
 
 //IMPORTANT - This validation function is the async version of the code in harperBridge/bridgeUtility/insertUpdateValidate.js
 // make sure any changes below are also made there. This is to resolve a circular dependency.
@@ -90,32 +90,6 @@ export async function validation(writeObject: any) {
 		dups.add(hdbUtils.autoCast(record[hash_attribute]));
 
 		for (let attr in record) {
-			// `__unset__` names attributes to remove and is not one itself, so the key never counts as
-			// an attribute — but the names it removes DO. This list is the bulk-load path's
-			// attribute-permission input: `bulkLoad.validateChunk` hands it to
-			// `verifyBulkLoadAttributePerms`, so a name missing from it is a removal nobody authorized.
-			// The direct operations path gets the same treatment from `getRecordAttributes`
-			// (utility/operation_authorization.ts); without it here, `import_from_s3` with
-			// `action: "update"` could unset an attribute the role has no permission to write while the
-			// equivalent `update` returns 403.
-			//
-			// Contributed for every action, not just update/upsert: requiring the permission is the safe
-			// direction, and `__unset__` is refused outright on an insert anyway (see
-			// ResourceBridge.takeUnsetAttributes).
-			//
-			// The sync twin in harperBridge/bridgeUtility/insertUpdateValidate.js feeds
-			// `Table.addAttributes` instead, so it must skip the key WITHOUT adding the removed names —
-			// registering an attribute in order to delete it would be backwards. The two lists are
-			// deliberately not identical; keep both comments in step.
-			if (attr === terms.UNSET_ATTRIBUTES) {
-				const unset = record[attr];
-				if (Array.isArray(unset)) {
-					for (const name of unset) {
-						if (typeof name === 'string' && name.length > 0) attributes[name] = 1;
-					}
-				}
-				continue;
-			}
 			attributes[attr] = 1;
 		}
 	});
@@ -246,6 +220,42 @@ async function upsertData(upsertObject: any) {
 }
 
 /**
+ * Create-or-replace the records in the putObject parameter: the stored record becomes exactly the
+ * submitted one, so an attribute the request omits is removed. `update`/`upsert` merge instead, and
+ * must keep doing so for v4 compatibility — hence a distinct operation rather than a flag on those.
+ * Equivalent to REST `PUT /Table/id`.
+ * @param putObject - Represents the data that will be written
+ */
+async function putData(putObject: any) {
+	if (putObject.operation !== 'put') {
+		throw handleHDBError(new Error(), 'invalid operation, must be put', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+	}
+
+	let validator = insertValidator(putObject);
+	if (validator) {
+		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	hdbUtils.transformReq(putObject);
+
+	let invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(putObject.schema, putObject.table);
+	if (invalidSchemaTableMsg) {
+		throw handleHDBError(new Error(), invalidSchemaTableMsg, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	let bridgePutResult = await harperBridge.putRecords(putObject);
+
+	return returnObject(
+		PUT_ACTION,
+		bridgePutResult.written_hashes,
+		putObject,
+		[],
+		bridgePutResult.new_attributes,
+		bridgePutResult.txn_time
+	);
+}
+
+/**
  * Constructs return object for insert, update, and upsert.
  * @param action
  * @param written_hashes
@@ -281,6 +291,12 @@ function returnObject(
 		return return_object;
 	}
 
+	if (action === PUT_ACTION) {
+		// `put` never skips: every submitted record is written, created or replaced.
+		return_object.put_hashes = written_hashes;
+		return return_object;
+	}
+
 	return_object.update_hashes = written_hashes;
 	return_object.skipped_hashes = skipped;
 	return return_object;
@@ -290,4 +306,4 @@ export function flush(object: any) {
 	hdbUtils.transformReq(object);
 	return harperBridge.flush(object.schema, object.table);
 }
-export { insertData as insert, updateData as update, upsertData as upsert };
+export { insertData as insert, updateData as update, upsertData as upsert, putData as put };
