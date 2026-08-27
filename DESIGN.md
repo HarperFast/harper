@@ -918,10 +918,11 @@ Node does and what Bun then handles correctly.
 
 `pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
 (`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path only — the error path
-already closes because `pipeline()` destroys the response). Ending the _request's_ socket is the only
-remedy that works on Bun: a `Connection: close` response header, `response.socket.end()` and
-`response.destroy()` were all measured as no-ops there. `socket.end()` is graceful, so it does not
-truncate — 8 MB over plain TCP and 6 MB over TLS to a deliberately slow reader each arrive whole. The
+already closes because `pipeline()` destroys the response with the stream error). Ending the
+_request's_ socket is the only remedy that works after a clean stream end on Bun: a `Connection:
+close` response header, `response.socket.end()` and `response.destroy()` were all measured as no-ops
+there. `socket.end()` is graceful, so it does not truncate — 8 MB over plain TCP and 6 MB over TLS to
+a deliberately slow reader each arrive whole. The
 `Content-Length` check reads `response.hasHeader()`, which Bun populates from the `writeHead(status,
 headers)` fast path this file uses (Node does not, but the branch is Bun-only). A
 keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
