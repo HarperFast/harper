@@ -200,6 +200,7 @@ export class RecordEncoder extends StructonEncoder {
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
+	resolverNames: readonly string[] = [];
 	readOnlyResolverNames: readonly string[] = [];
 	readOnlyResolverNameSet = new Set<string>();
 	onReadOnlyResolverCollision?: (name: string) => void;
@@ -398,7 +399,9 @@ export class RecordEncoder extends StructonEncoder {
 					(txn) => {
 						const sharedStructuresKey = [Symbol.for('structures'), this.name];
 						const existingStructuresBuffer = txn.getBinarySync(sharedStructuresKey);
-						const existingStructures = existingStructuresBuffer ? this.decode(existingStructuresBuffer) : undefined;
+						const existingStructures = existingStructuresBuffer
+							? this.decode(existingStructuresBuffer, { skipResolverCleanup: true })
+							: undefined;
 						if (typeof isCompatible == 'function') {
 							if (!isCompatible(existingStructures)) {
 								return false;
@@ -431,7 +434,7 @@ export class RecordEncoder extends StructonEncoder {
 			if (this.isRocksDB) {
 				const sharedStructuresKey = [Symbol.for('structures'), this.name];
 				const buffer = this.rootStore.getBinarySync(sharedStructuresKey);
-				return buffer ? this.decode(buffer) : undefined;
+				return buffer ? this.decode(buffer, { skipResolverCleanup: true }) : undefined;
 			} else {
 				// msgpackr only defines getStructures when the option was supplied; a store with no
 				// shared-structures mechanism has no durable dictionary to report.
@@ -439,9 +442,11 @@ export class RecordEncoder extends StructonEncoder {
 			}
 		};
 	}
-	setReadOnlyResolverNames(names: Iterable<string>) {
+	setReadOnlyResolverNames(names: Iterable<string>, resolverNames: Iterable<string> = this.resolverNames) {
+		this.resolverNames = Array.from(resolverNames);
 		this.readOnlyResolverNames = Array.from(names);
-		this.readOnlyResolverNameSet = new Set(this.readOnlyResolverNames);
+		this.readOnlyResolverNameSet.clear();
+		for (const name of this.readOnlyResolverNames) this.readOnlyResolverNameSet.add(name);
 		this.#cleanTypedResolverPrototypes = new WeakMap();
 	}
 	/**
@@ -619,7 +624,7 @@ export class RecordEncoder extends StructonEncoder {
 		}
 		// Resolver cleanup is a schema/data invariant, not corruption recovery. Let failures propagate
 		// rather than laundering an otherwise valid row into a null result.
-		value = this.removeReadOnlyResolverFields(value);
+		if (!options?.skipResolverCleanup) value = this.removeReadOnlyResolverFields(value);
 		if (metadata) {
 			metadata.value = value;
 			lastMetadata = metadata as any;
@@ -629,10 +634,10 @@ export class RecordEncoder extends StructonEncoder {
 	}
 	removeReadOnlyResolverFields(value) {
 		if (
+			this.readOnlyResolverNames.length === 0 ||
 			value == null ||
 			typeof value !== 'object' ||
-			ArrayBuffer.isView(value) ||
-			this.readOnlyResolverNames.length === 0
+			ArrayBuffer.isView(value)
 		)
 			return value;
 		const valuePrototype = Object.getPrototypeOf(value);
@@ -669,7 +674,16 @@ export class RecordEncoder extends StructonEncoder {
 					this.#cleanTypedResolverPrototypes.set(valuePrototype, null);
 				}
 			}
-			if (cleanPrototype) Object.setPrototypeOf(value, cleanPrototype);
+			if (cleanPrototype) {
+				if (Object.isExtensible(value)) Object.setPrototypeOf(value, cleanPrototype);
+				else {
+					const cleaned = Object.create(cleanPrototype, Object.getOwnPropertyDescriptors(value));
+					if (Object.isFrozen(value)) Object.freeze(cleaned);
+					else if (Object.isSealed(value)) Object.seal(cleaned);
+					else Object.preventExtensions(cleaned);
+					return cleaned;
+				}
+			}
 			return value;
 		}
 		let collisions: string[] | undefined;

@@ -82,12 +82,22 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		this.decoder = this.#enc;
 	}
 
+	#promoteRecord(value: any) {
+		const promoted = new this.#enc.structPrototype.constructor();
+		for (const name of this.#enc.resolverNames) {
+			if (Object.hasOwn(value, name)) {
+				Object.defineProperties(promoted, Object.getOwnPropertyDescriptors(value));
+				return promoted;
+			}
+		}
+		Object.assign(promoted, value);
+		return promoted;
+	}
+
 	#withEntry(entry: Entry, id: any): Entry {
 		if (entry.value) {
 			if (entry.value.constructor === Object && this.#enc.structPrototype) {
-				const originalValue = entry.value;
-				entry.value = new this.#enc.structPrototype.constructor();
-				Object.assign(entry.value, originalValue);
+				entry.value = this.#promoteRecord(entry.value);
 			}
 			if (typeof entry.value === 'object' && entry.value !== null) {
 				entryMap.set(entry.value, entry);
@@ -189,9 +199,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				Object.assign(entry, entry.value);
 			}
 			if (entry.value?.constructor === Object && enc.structPrototype) {
-				const originalValue = entry.value;
-				entry.value = new enc.structPrototype.constructor();
-				for (const key in originalValue) entry.value[key] = originalValue[key];
+				entry.value = this.#promoteRecord(entry.value);
 			}
 			return entry;
 		});

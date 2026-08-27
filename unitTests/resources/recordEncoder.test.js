@@ -114,6 +114,14 @@ describe('RecordEncoder struct-mode gating', () => {
 		};
 		assert.throws(() => enc.decode(bytes), /resolver cleanup failed/);
 	});
+
+	it('does not scrub schema resolver names from raw structure dictionaries', () => {
+		const enc = makeEncoder(false, sharedStore());
+		const bytes = Buffer.from(enc.encode({ named: [], typed: [['stored-structure']] }));
+		enc.setReadOnlyResolverNames(['typed']);
+		assert.equal(Object.hasOwn(enc.decode(bytes), 'typed'), false, 'record cleanup precondition');
+		assert.deepStrictEqual(enc.decode(bytes, { skipResolverCleanup: true }).typed, [['stored-structure']]);
+	});
 });
 
 describe('RecordEncoder missing-structure handling (harper#1163)', () => {

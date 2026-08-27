@@ -25,6 +25,7 @@ describe('Caching', () => {
 	let return_value = true;
 	let return_error;
 	let returnNotModified = false;
+	let revalidationRequests = 0;
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
@@ -115,7 +116,11 @@ describe('Caching', () => {
 		RevalidatedTable.setComputedAttribute('computed', (record) => record.name + ' computed');
 		RevalidatedTable.sourcedFrom({
 			get(id) {
-				return returnNotModified ? { status: 304, headers: {} } : { id, name: 'cached', relatedId: 'related' };
+				if (returnNotModified) {
+					revalidationRequests++;
+					return { status: 304, headers: {} };
+				}
+				return { id, name: 'cached', relatedId: 'related' };
 			},
 		});
 		await RevalidatedRelatedTable.put({ id: 'related', name: 'relationship' });
@@ -215,7 +220,9 @@ describe('Caching', () => {
 
 			returnNotModified = true;
 			await delay(5);
+			const requestsBefore = revalidationRequests;
 			await RevalidatedTable.get('revalidated');
+			assert(revalidationRequests > requestsBefore, 'the expired get must revalidate against the source');
 			await RevalidatedTable.primaryStore.committed;
 			const persisted = RevalidatedTable.primaryStore.getEntry('revalidated').value;
 			assert.equal(Object.hasOwn(persisted, 'computed'), false);

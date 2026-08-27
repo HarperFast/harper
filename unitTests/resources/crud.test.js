@@ -192,14 +192,17 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(decoded.id, 'typed-legacy');
 			assert.equal(decoded.source, 'trusted');
 			assert.equal(decoded.hidden, null);
+			decoded.addedAfterDecode = 'retained';
 			const json = JSON.parse(JSON.stringify(decoded));
 			assert.equal(json.id, 'typed-legacy');
 			assert.equal(json.source, 'trusted');
+			assert.equal(json.addedAfterDecode, 'retained');
 			assert.equal(Object.hasOwn(json, 'hidden'), true);
 			assert.equal(json.hidden, null);
 			const reencoded = encoder.decode(Buffer.from(encoder.encode(decoded)), { noMetadata: true, lazy: true });
 			assert.equal(reencoded.id, 'typed-legacy');
 			assert.equal(reencoded.source, 'trusted');
+			assert.equal(reencoded.addedAfterDecode, 'retained');
 			assert.equal(Object.hasOwn(reencoded, 'hidden'), false);
 		}
 	});
@@ -315,6 +318,10 @@ describe('CRUD operations with the Resource API', () => {
 				const preserved = encoder.decode(Buffer.from(encoder.encode(relationshipSnapshot)), { noMetadata: true });
 				assert.equal(Object.hasOwn(preserved, 'related'), true, 'settable legacy data must not be deleted');
 				assert.equal(preserved.related.id, 99);
+				CRUDTable.primaryStore.putSync('legacy-relationship', relationshipSnapshot);
+				const promoted = CRUDTable.primaryStore.getEntry('legacy-relationship').value;
+				assert.equal(promoted.relatedId, 1, 'prototype repair must not apply a stale relationship snapshot');
+				assert.equal(Object.hasOwn(promoted, 'related'), true, 'tolerated settable data remains observable');
 				await waitForAnalyticsMetric('settable-resolver-collision', collisionStart, 'test.CRUDTable');
 
 				const legacyRecord = Object.create(encoder.structPrototype);

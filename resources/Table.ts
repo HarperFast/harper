@@ -592,7 +592,14 @@ export function makeTable(options) {
 		noteSettableResolverCollision: (name: string) => void
 	) {
 		const enumNames = enumerableAttributeNames;
-		const storedFieldNames = (record) => record[STORED_FIELD_NAMES] || Object.keys(record);
+		const storedFieldNames = (record) => {
+			const inheritedNames = record[STORED_FIELD_NAMES];
+			if (!inheritedNames) return Object.keys(record);
+			const ownNames = Object.keys(record);
+			return ownNames.length === 0
+				? inheritedNames
+				: inheritedNames.concat(ownNames.filter((name) => !inheritedNames.includes(name)));
+		};
 		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
 		const toJSON = function () {
 			if (isCyclic === undefined) {
@@ -656,26 +663,20 @@ export function makeTable(options) {
 			for (const key of storedFieldNames(this)) if (!readOnlyResolverNames.has(key)) json[key] = this[key];
 			return json;
 		};
-		Object.defineProperty(
-			structPrototype,
-			'toJSON',
-			resolverNames.length > 0
-				? {
-						configurable: true,
-						get() {
-							if (!isDurableRecordEncoding()) return enumNames.length > 0 ? toJSON : undefined;
-							if (this[STORED_FIELD_NAMES]) return durableToJSON;
-							for (let i = 0; i < resolverNames.length; i++) {
-								const name = resolverNames[i];
-								if (!Object.hasOwn(this, name)) continue;
-								if (readOnlyResolverNames.has(name)) return durableToJSON;
-								noteSettableResolverCollision(name);
-							}
-							return undefined;
-						},
-					}
-				: { configurable: true, value: toJSON }
-		);
+		Object.defineProperty(structPrototype, 'toJSON', {
+			configurable: true,
+			get() {
+				if (!isDurableRecordEncoding()) return enumNames.length > 0 ? toJSON : undefined;
+				if (this[STORED_FIELD_NAMES]) return durableToJSON;
+				for (let i = 0; i < resolverNames.length; i++) {
+					const name = resolverNames[i];
+					if (!Object.hasOwn(this, name)) continue;
+					if (readOnlyResolverNames.has(name)) return durableToJSON;
+					noteSettableResolverCollision(name);
+				}
+				return undefined;
+			},
+		});
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
@@ -5326,7 +5327,7 @@ export function makeTable(options) {
 					if (attribute.computed && !relationDef) hasSurfacedComputed = true;
 				}
 			}
-			primaryStore.encoder.setReadOnlyResolverNames(readOnlyResolverNames);
+			primaryStore.encoder.setReadOnlyResolverNames(readOnlyResolverNames, resolverNames);
 			primaryStore.encoder.onReadOnlyResolverCollision = noteReadOnlyResolverCollision;
 			this.enumerableRelationDefs = enumerableRelationDefs;
 			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
