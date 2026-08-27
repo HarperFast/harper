@@ -13,7 +13,7 @@ name: Large Deploy Payload Test (self-hosted)
 
 on:
   schedule:
-    - cron: '20 9 * * 1' # weekly, Monday — last harper-bench slot, after the nightly sequence
+    - cron: '20 9 * * 1' # weekly, Monday; :20 avoids GitHub's scheduler backlog, slot order in the harper-pro runner README
   workflow_dispatch:
     inputs:
       size-mb:
