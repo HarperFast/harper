@@ -5,7 +5,7 @@ import type { Stats } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { Component, FileAndURLPathConfig } from './Component.ts';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { deriveURLPath } from './deriveURLPath.ts';
@@ -15,6 +15,7 @@ import {
 	isWatcherExhaustionError,
 	warnWatcherFallback,
 } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 
 export interface BaseEntry {
 	stats?: Stats;
@@ -536,19 +537,32 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			readFailures: new Map(),
 		};
 
-		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
+		// `ignored` receives absolute paths built from `cwd`, so its bases must come from the same
+		// directory spelling. Event paths are relative to `cwd`, so reads below stay on `this.directory`.
+		const watchTarget = resolveWatchTarget(this.#component.directory);
+		if (watchTarget.mustPoll) this.#usingPolling = true;
+		const watchDirectory = watchTarget.path;
+		const normalizedDirectory = watchDirectory.replace(/\\/g, '/');
+		const normalizedBases = this.#component.patternBases.map((base) => join(watchDirectory, base).replace(/\\/g, '/'));
+
+		// chokidar resolves a relative pattern base against `cwd`, but an absolute one reaches the
+		// native watch as spelled, bypassing the canonicalized `cwd` above.
+		let watchPattern = this.#component.commonPatternBase;
+		if (isAbsolute(watchPattern)) {
+			const patternTarget = resolveWatchTarget(watchPattern);
+			if (patternTarget.mustPoll) this.#usingPolling = true;
+			watchPattern = patternTarget.path;
+		}
 
 		this.#openCount++;
 		const watcher = (this.#watcher = chokidar
-			.watch(this.#component.commonPatternBase, {
-				cwd: this.#component.directory,
+			.watch(watchPattern, {
+				cwd: watchDirectory,
 				persistent: false,
 				followSymlinks: false,
 				...(this.#usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
 					const normalizedPath = path.replace(/\\/g, '/');
-					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
-					const normalizedDirectory = this.#component.directory.replace(/\\/g, '/');
 
 					// Determine the path relative to the component directory. Leading '/' is preserved
 					// (or empty when the path *is* the component directory) so the regex anchors below

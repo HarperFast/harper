@@ -4,9 +4,11 @@ import { getConfigFilePath } from './configUtils.ts';
 import { EventEmitter, once } from 'node:events';
 import { parse } from 'yaml';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
+	#watchPath: string;
 	#watcher!: FSWatcher;
 	#config: any;
 	#usingPolling: boolean;
@@ -17,7 +19,9 @@ export class RootConfigWatcher extends EventEmitter {
 	constructor() {
 		super();
 		this.#configFilePath = getConfigFilePath();
-		this.#usingPolling = false;
+		const watchTarget = resolveWatchTarget(this.#configFilePath);
+		this.#watchPath = watchTarget.path;
+		this.#usingPolling = watchTarget.mustPoll;
 		this.#closed = false;
 		this.ready = once(this, 'ready');
 		this.#openWatcher();
@@ -26,7 +30,7 @@ export class RootConfigWatcher extends EventEmitter {
 	#openWatcher() {
 		this.#openCount++;
 		this.#watcher = chokidar
-			.watch(this.#configFilePath, {
+			.watch(this.#watchPath, {
 				persistent: false,
 				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
 			})
@@ -60,18 +64,17 @@ export class RootConfigWatcher extends EventEmitter {
 			if (!this.#usingPolling) {
 				warnWatcherFallback(this.#configFilePath);
 				this.#usingPolling = true;
-				// Guard against reopen-after-close: the caller may have invoked
-				// close() while this teardown was in flight. The .catch is required
-				// because `finally` would re-raise a teardown rejection as an
-				// unhandled one.
-				this.#watcher
-					.close()
+				// Start close() from a microtask, not directly here, so a synchronous throw
+				// can't escape this 'error' listener as an uncaught exception.
+				Promise.resolve()
+					.then(() => this.#watcher.close())
 					.catch(() => {
 						// Teardown errors on an already-failed watcher are not actionable.
 					})
-					.finally(() => {
+					.then(() => {
 						if (!this.#closed) this.#openWatcher();
-					});
+					})
+					.catch((error) => console.error(`Could not reopen the ${this.#configFilePath} watch on polling:`, error));
 			}
 			return;
 		}

@@ -51,6 +51,7 @@ import { get as envGet, getHdbBasePath } from '../utility/environment/environmen
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 import type { RootDatabase } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 import { getHeapStatistics } from 'node:v8';
@@ -238,6 +239,54 @@ const BLOB_GONE_STATUS = 404;
 // retryable class from the permanent ones without duplicating the status code.
 export const BLOB_UNAVAILABLE_STATUS = 503;
 const BLOB_CORRUPT_STATUS = 500;
+/**
+ * Arm the one-shot watch that wakes an in-progress blob read of `filePath`, or return `undefined`
+ * for a read that has to poll instead. `isLive` decides whether the read still owns a callback's
+ * watcher: a callback from one it has already replaced must not act, or it would close the live
+ * watcher and start a second read at the same position. `onFailure` runs only for a live watcher
+ * that fails after registration — a registration that throws latches `mustPoll` and leaves the
+ * caller in its own no-watcher branch.
+ */
+export function watchInProgressFile(
+	filePath: string,
+	watchTarget: { path: string; mustPoll: boolean },
+	handlers: {
+		isLive: (watcher: FSWatcher) => boolean;
+		onChange: () => void;
+		onFailure: () => void;
+	},
+	watchFile: typeof watch = watch
+): FSWatcher | undefined {
+	if (watchTarget.mustPoll) return undefined;
+	let watcher: FSWatcher;
+	try {
+		watcher = watchFile(watchTarget.path, { persistent: false }, () => {
+			if (handlers.isLive(watcher)) handlers.onChange();
+		});
+	} catch (error) {
+		// fs.watch throws synchronously when the OS watcher pool is exhausted (EMFILE/ENOSPC). Latch
+		// on the stream-scoped target, or the caller's re-poll re-enters here and re-attempts the same
+		// failing registration for the rest of the read.
+		logger.debug?.(`Could not watch ${filePath} for in-progress writes, polling instead:`, error);
+		watchTarget.mustPoll = true;
+		return undefined;
+	}
+	// An FSWatcher that fails after registration emits 'error'; with no listener Node rethrows it out
+	// of the watcher callback.
+	watcher.on('error', (error) => {
+		if (!handlers.isLive(watcher)) return;
+		logger.debug?.(`Watch of ${filePath} failed, polling instead:`, error);
+		watchTarget.mustPoll = true;
+		try {
+			watcher.close();
+		} catch {
+			// A close() that throws here must not skip onFailure — the poll fallback is what recovers
+			// the read, and the exception would otherwise escape this listener uncaught.
+		}
+		handlers.onFailure();
+	});
+	return watcher;
+}
 class BlobReadError extends Error {
 	statusCode: number;
 	code?: string;
@@ -534,6 +583,19 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		let position = 0;
 		let totalContentRead = 0;
 		let watcher: FSWatcher;
+		// Drop the live watcher before closing it, so a callback racing the close cannot pass its
+		// `isLive` check — and so a close() on an already-failed handle cannot abandon the teardown
+		// it was part of. Every site that retires this watcher goes through here.
+		const closeWatcher = () => {
+			const opened = watcher;
+			watcher = null;
+			try {
+				opened?.close();
+			} catch (error) {
+				logger.debug?.(`Could not close the in-progress watch of ${filePath}:`, error);
+			}
+		};
+		let watchTarget: { path: string; mustPoll: boolean };
 		let timer: NodeJS.Timeout;
 		// The start() open-retry timer lives in a different scope/phase than pull()'s `timer`; track it
 		// separately so a cancel() during the file-creation wait clears it instead of leaking an fd (#1457).
@@ -634,7 +696,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 						settled = true;
 						closeFd();
 						clearTimeout(timer);
-						if (watcher) watcher.close();
+						closeWatcher();
 						reject(error);
 						blob.#onError?.forEach((callback) => callback(error));
 					}
@@ -757,10 +819,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											);
 											if (updatedSize === UNKNOWN_SIZE) return false;
 											size = updatedSize;
-											if (watcher) {
-												watcher.close();
-												watcher = null;
-											}
+											closeWatcher();
 											// The header reports a known final size but the bytes at `position` have not arrived.
 											// Re-entering readMore() synchronously here busy-spins the worker at ~100% CPU on a
 											// present-but-truncated blob (header rewritten to a self-consistent smaller size, lock
@@ -782,25 +841,42 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 											return true;
 										};
 										// the file is not finished being written, watch the file for changes to resume reading
-										// set up a watcher to be notified of file changes
-										watcher = watch(filePath, { persistent: false }, () => {
-											if (watcher) {
-												watcher.close();
-												watcher = null;
+										watchTarget ??= resolveWatchTarget(filePath);
+										watcher = watchInProgressFile(filePath, watchTarget, {
+											isLive: (candidate) => watcher === candidate,
+											onChange: () => {
+												closeWatcher();
 												clearTimeout(timer); // clear it
 												readMore(resolve, reject);
-											}
+											},
+											onFailure: () => {
+												watcher = null;
+												clearTimeout(timer);
+												timer = setTimeout(() => readMore(resolve, reject), 20).unref();
+											},
 										});
 										// immediately try to read again in case there was a change before we started watching,
 										// readSync should be fine here, the data should be in memory
 										if (readSync(fd, buffer, 0, buffer.length, position) > 0) {
 											// never mind with the watcher, let's read more data
-											if (watcher) {
-												watcher.close();
-												watcher = null;
-											}
+											closeWatcher();
 											readMore(resolve, reject);
 										} else if (!resumeIfWriterFinished()) {
+											if (!watcher) {
+												// Nothing will wake this read, so poll on the deadline resumeIfWriterFinished uses
+												// rather than sitting out the full read timeout and 503-ing a healthy write.
+												if (Date.now() >= incompleteDeadline) {
+													onError(
+														new BlobReadError(
+															`File read timed out reading from ${filePath}, read ${totalContentRead} bytes, but size is supposed to be ${size} bytes`,
+															BLOB_UNAVAILABLE_STATUS
+														)
+													);
+												} else {
+													timer = setTimeout(() => readMore(resolve, reject), 20).unref();
+												}
+												return;
+											}
 											// set a timer for the watcher too. A write that stalls past the bound returns a
 											// prompt 503 (retryable) instead of holding the connection for the full 60s (#1423).
 											timer = setTimeout(() => {
@@ -890,7 +966,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				closeFd(); // releases the hold, including when cancelled before any open succeeded
 				clearTimeout(timer);
 				clearTimeout(openTimer);
-				if (watcher) watcher.close();
+				closeWatcher();
 			},
 		});
 		function checkIfIsBeingWritten() {
