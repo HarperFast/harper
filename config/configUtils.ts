@@ -146,9 +146,7 @@ export function atomicWriteFile(
 		if (!renamed) {
 			try {
 				fs.unlinkSync(tempPath);
-			} catch {
-				// A cleanup failure must not replace the error that got us here.
-			}
+			} catch {}
 		}
 	}
 }

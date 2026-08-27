@@ -139,9 +139,10 @@ export class PartialReadRetry {
 }
 
 /**
- * ENOENT is excluded not because it cannot be transient, but because both watchers already
- * answer it deliberately (env-only fallback at boot, `remove` afterwards); re-reading would
- * only delay a decision they have already made.
+ * ENOENT is excluded not because it cannot be transient, but because it already has an answer:
+ * `OptionsWatcher` routes it to `remove` (env-only fallback at boot, then removal), and
+ * `RootConfigWatcher` keeps its last config rather than tearing down core features on a file
+ * that may just be mid-replace. Re-reading would only delay a decision already made.
  */
 export function isPartialReadError(error: unknown): boolean {
 	return !(typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT');

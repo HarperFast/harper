@@ -138,8 +138,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.on('ready', this.#handleChange.bind(this));
 	}
 
-	// The root config reads synchronously so its descriptor cannot outlive this turn - see the
-	// invariant on atomicWriteFile.
+	// Root config only: see the descriptor-lifetime invariant on atomicWriteFile (DESIGN.md).
 	#handleChange() {
 		if (this.#isRootConfig) {
 			this.#applyRead(() => readFileSync(this.#filePath, 'utf-8'));

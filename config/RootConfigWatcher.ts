@@ -90,8 +90,7 @@ export class RootConfigWatcher extends EventEmitter {
 		this.emit('error', error);
 	}
 
-	// Reads synchronously so its descriptor cannot outlive this turn - see the invariant on
-	// atomicWriteFile.
+	// See the descriptor-lifetime invariant on atomicWriteFile (DESIGN.md).
 	handleChange() {
 		let config;
 		// Only the read and parse are guarded: a listener that throws must not be mistaken for a
