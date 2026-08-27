@@ -43,7 +43,7 @@ export const EVICTED = 8; // 2 is reserved for timestamps
 // Source and built module copies can coexist, so they must share the durable-encoding scope.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
 const PARTIAL_PROJECTION_ENCODING_DEPTH = Symbol.for('harper.partialProjectionEncodeDepth');
-const RESPONSE_ENCODING_DEPTH = Symbol.for('harper.responseEncodeDepth');
+const RESPONSE_ENCODING_REQUESTS = Symbol.for('harper.responseEncodeRequests');
 
 export function isDurableRecordEncoding() {
 	return ((globalThis as any)[DURABLE_ENCODING_DEPTH] ?? 0) > 0;
@@ -72,8 +72,8 @@ function leaveDurableRecordEncoding() {
 	(globalThis as any)[DURABLE_ENCODING_DEPTH]--;
 }
 
-function encodeDurably(encoder, encode, record, options?) {
-	if ((encoder[RESPONSE_ENCODING_DEPTH] ?? 0) > 0) return encode.call(encoder, record, options);
+function encodeDurably(encoder, encode, record, options?, responseEncoding = false) {
+	if (responseEncoding) return encode.call(encoder, record, options);
 	enterDurableRecordEncoding();
 	try {
 		return encode.call(encoder, record, options);
@@ -83,11 +83,12 @@ function encodeDurably(encoder, encode, record, options?) {
 }
 
 export function encodeRecordForResponse(encoder, record, options?) {
-	encoder[RESPONSE_ENCODING_DEPTH] = (encoder[RESPONSE_ENCODING_DEPTH] ?? 0) + 1;
+	const pendingRequests = encoder[RESPONSE_ENCODING_REQUESTS] ?? 0;
+	encoder[RESPONSE_ENCODING_REQUESTS] = pendingRequests + 1;
 	try {
 		return encoder.encode(record, options);
 	} finally {
-		encoder[RESPONSE_ENCODING_DEPTH]--;
+		encoder[RESPONSE_ENCODING_REQUESTS] = pendingRequests;
 	}
 }
 
@@ -286,6 +287,8 @@ export class RecordEncoder extends StructonEncoder {
 		if (!options.randomAccessStructure) this._writeStruct = () => 0;
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
+			const responseEncoding = (this[RESPONSE_ENCODING_REQUESTS] ?? 0) > 0;
+			if (responseEncoding) this[RESPONSE_ENCODING_REQUESTS]--;
 			// Explicit opt-out only: `this` may be a foreign encoder this hook was grafted onto
 			// (copyDb patches the migration target's plain msgpackr encoder with it), where
 			// useVersions is undefined. Treating undefined as non-versioned silently stripped the
@@ -298,7 +301,7 @@ export class RecordEncoder extends StructonEncoder {
 				// a versioned write whose encode was skipped). Consuming/clearing them here would strip the
 				// primary record's prefix, and prefixing OUR record (e.g. a __dbis__ `seq` cursor) makes it
 				// undecodable on the non-versioned read path (null → replication wedge).
-				lastValueEncoding = encodeDurably(this, superEncode, record, options);
+				lastValueEncoding = encodeDurably(this, superEncode, record, options, responseEncoding);
 				return lastValueEncoding;
 			}
 			if (this.autoVersion && this.isRocksDB) {
@@ -319,7 +322,7 @@ export class RecordEncoder extends StructonEncoder {
 				// timestampNextEncoding/metadataInNextEncoding globals — those belong to the enclosing
 				// primary-record write whose commit nests this index encode (harper#1307).
 				const valueStart = 12; // 8-byte version + 4-byte metadata word
-				const encoded = encodeDurably(this, superEncode, record, options | 2048 | valueStart);
+				const encoded = encodeDurably(this, superEncode, record, options | 2048 | valueStart, responseEncoding);
 				const position = encoded.start || 0;
 				const dataView =
 					encoded.dataView || (encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
@@ -371,7 +374,7 @@ export class RecordEncoder extends StructonEncoder {
 						additionalAuditRefsNextEncoding = undefined;
 					}
 				}
-				const encoded = encodeDurably(this, superEncode, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
+				const encoded = encodeDurably(this, superEncode, record, options | 2048 | valueStart, responseEncoding); // encode with 8 bytes reserved space for txnId
 				lastValueEncoding = encoded.subarray((encoded.start || 0) + valueStart, encoded.end);
 				let position = encoded.start || 0;
 				const dataView =
@@ -417,7 +420,7 @@ export class RecordEncoder extends StructonEncoder {
 				}
 				return encoded;
 			} else {
-				lastValueEncoding = encodeDurably(this, superEncode, record, options);
+				lastValueEncoding = encodeDurably(this, superEncode, record, options, responseEncoding);
 				return lastValueEncoding;
 			}
 		};

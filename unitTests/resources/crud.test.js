@@ -320,7 +320,8 @@ describe('CRUD operations with the Resource API', () => {
 			name: 'nested message',
 		});
 		const messageEnvelope = { record: nestedRecord };
-		assert.equal(Object.hasOwn(messageEnvelope.record, 'computed'), false);
+		assert.equal(Object.hasOwn(nestedRecord, 'computed'), false);
+		const encodedMessage = Buffer.from(encodeRecordForResponse(encoder, messageEnvelope));
 		const message = readAuditEntry(
 			Buffer.from(
 				createAuditEntry({
@@ -329,7 +330,7 @@ describe('CRUD operations with the Resource API', () => {
 					recordId: 'message-record',
 					version: Date.now(),
 					nodeId: 0,
-					encodedRecord: Buffer.from(encodeRecordForResponse(encoder, messageEnvelope)),
+					encodedRecord: encodedMessage,
 				})
 			)
 		).getValue(CRUDTable.primaryStore);
