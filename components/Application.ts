@@ -2465,7 +2465,16 @@ function spawnWithEnv(
 			}
 		});
 
+		childProcess.on('exit', (code) => {
+			logger
+				.loggerWithTag(`${applicationName}:spawn:${command}`)
+				.debug?.(`Diagnostic: direct child exited with code ${code}; awaiting stdio close`);
+		});
+
 		childProcess.on('close', async (code) => {
+			logger
+				.loggerWithTag(`${applicationName}:spawn:${command}`)
+				.debug?.(`Diagnostic: child close received with code ${code}; starting process-tree cleanup`);
 			resolveClose();
 			clearTimeout(timeout);
 			// A successful direct-child exit does not prove the process group is empty: a custom
