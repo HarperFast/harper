@@ -7,7 +7,7 @@
 #   - uses: HarperFast/harper/.github/actions/review-coverage@<full sha> # main
 #
 name: review-coverage
-description: Report (or enforce) cross-model review coverage named in the PR description
+description: Report cross-model coverage and PR-description format
 inputs:
   mode:
     description: report (always green, informational) or enforce (red when under-reported)
@@ -15,6 +15,15 @@ inputs:
   required:
     description: how many distinct cross-model review families the description must name
     default: '2'
+  format_mode:
+    description: off, report (always green), or enforce PR-description format
+    default: off
+  pr_files:
+    description: normalized PR-files API artifact used for current line-link validation
+    default: ''
+  pr_files_ready:
+    description: true only when the PR-files artifact was produced successfully
+    default: 'false'
 runs:
   using: node24
   main: ci-review-coverage.mjs

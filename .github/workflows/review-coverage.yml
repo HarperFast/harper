@@ -1,10 +1,9 @@
-# Cross-model review-coverage check (report mode: informational, never blocks).
-# Parses the PR description with the dispatch human-review gate's own parser and reports
-# how many cross-model reviews it names, plus the Human-Review-Need footer state — so
-# coverage is visible at PR open/edit time, before the fleet's review runs. `edited` is a
-# trigger because reporting coverage is a description edit, which moves no commit sha.
-# Policy: HarperFast/dispatch skills/pr-shepherd/SKILL.md. Flipping to `mode: enforce`
-# is a team policy decision.
+# PR-description checks (report mode: informational, never blocks).
+# Reports cross-model review coverage and validates the format and current-diff links
+# expected for substantive member-authored PRs. `edited` is required because description
+# repairs and review receipts do not move the commit sha. Enforcement and trusted execution
+# are separate rollout decisions; this pull_request workflow intentionally has read-only
+# permissions and preserves the existing coverage job identity.
 name: review-coverage
 on:
   pull_request:
@@ -20,4 +19,34 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/review-coverage
+      - name: Collect current PR file hunks
+        id: pr-files
+        if: >-
+          github.event.pull_request.user.type != 'Bot' &&
+          !endsWith(github.event.pull_request.user.login, '[bot]') &&
+          (github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'OWNER') &&
+          (github.event.pull_request.additions > 2 || github.event.pull_request.deletions > 2 ||
+          (github.event.pull_request.additions == 2 && github.event.pull_request.deletions > 0) ||
+          (github.event.pull_request.deletions == 2 && github.event.pull_request.additions > 0))
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          output="$RUNNER_TEMP/pr-files.json"
+          gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" |
+            node .github/actions/review-coverage/collectPrFiles.mjs "$output"
+          echo "path=$output" >> "$GITHUB_OUTPUT"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/review-coverage
+        with:
+          format_mode: report
+          pr_files: ${{ steps.pr-files.outputs.path }}
+          pr_files_ready: ${{ steps.pr-files.outputs.ready }}

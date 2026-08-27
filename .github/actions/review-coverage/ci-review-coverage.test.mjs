@@ -144,6 +144,12 @@ test('the CLI runs through a symlinked entrypoint', () => {
 		fileURLToPath(new URL('./evaluateCiCoverage.mjs', import.meta.url)),
 		path.join(dir, 'evaluateCiCoverage.mjs')
 	);
+	symlinkSync(
+		fileURLToPath(new URL('./evaluatePrFormat.mjs', import.meta.url)),
+		path.join(dir, 'evaluatePrFormat.mjs')
+	);
+	symlinkSync(fileURLToPath(new URL('./prExemption.mjs', import.meta.url)), path.join(dir, 'prExemption.mjs'));
+	symlinkSync(fileURLToPath(new URL('./prFormatLinks.mjs', import.meta.url)), path.join(dir, 'prFormatLinks.mjs'));
 	symlinkSync(fileURLToPath(new URL('./reviewGate.mjs', import.meta.url)), path.join(dir, 'reviewGate.mjs'));
 	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
 	try {
@@ -178,6 +184,57 @@ test('the JavaScript action uses a pinned runtime and receives action inputs', (
 		});
 		assert.strictEqual(result.status, 1);
 		assert.match(result.stderr, /2 cross-model reviews reported .*policy asks for 3/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('format mode off never reads a PR-files artifact', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-off-'));
+	const file = path.join(dir, 'event.json');
+	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: file,
+				INPUT_FORMAT_MODE: 'off',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: path.join(dir, 'missing.json'),
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.doesNotMatch(result.stderr, /missing\.json/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('an oversized normalized PR-files artifact is bounded before parsing', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-large-'));
+	const event = path.join(dir, 'event.json');
+	const prFiles = path.join(dir, 'pr-files.json');
+	writeFileSync(event, JSON.stringify({ pull_request: pr() }));
+	writeFileSync(prFiles, Buffer.alloc(4 * 1024 * 1024 + 1));
+	try {
+		const execute = (formatMode) =>
+			spawnSync(process.execPath, [SCRIPT], {
+				encoding: 'utf8',
+				env: {
+					...CLEAN_ENV,
+					GITHUB_EVENT_PATH: event,
+					INPUT_FORMAT_MODE: formatMode,
+					INPUT_PR_FILES_READY: 'true',
+					INPUT_PR_FILES: prFiles,
+				},
+			});
+		const report = execute('report');
+		assert.strictEqual(report.status, 0);
+		assert.match(report.stderr, /artifact exceeds 4194304 bytes/);
+		const enforce = execute('enforce');
+		assert.strictEqual(enforce.status, 1);
+		assert.match(enforce.stderr, /enforce mode fails closed/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
