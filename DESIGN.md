@@ -1248,3 +1248,27 @@ absolute paths built from `cwd`, so its bases must be derived from the same spel
 paths are relative to `cwd` and reads stay on the configured `component.directory`. And a watcher
 that degrades to polling stays there for its lifetime, so a caller with no polling story of its own
 (`resources/blob.ts`) needs one — there it polls `readMore` on the existing no-progress deadline.
+
+## No descriptor on the root config may outlive a turn (`config/configUtils.ts`, `config/RootConfigWatcher.ts`, `components/OptionsWatcher.ts`)
+
+`atomicWriteFile` replaces `harper-config.yaml` by rename-over and retries `EPERM`/`EACCES` with a
+synchronous `Atomics.wait`. On Windows a rename over an open destination fails, and a descriptor
+belongs to the process, not the thread — measured on `windows-latest`/Node 24: a single Node read
+descriptor on the destination blocks it, while `fs.watch` and chokidar handles do not.
+
+That makes the retry unable to outlast a holder on the _calling_ thread, because the sleep blocks
+the event loop whose turn would close it: the holder's lifetime becomes exactly the retry budget
+and every attempt fails. This is why widening the budget (#1714, #2036) never fixed the
+`set_configuration` 500s it was aimed at, and why both root-config watchers read with
+`readFileSync`. Any future `fsPromises.readFile` of this file reintroduces harper#2313 — the rule
+is unenforced by anything but this note and the comment on `atomicWriteFile`.
+
+The synchronous read then sees writers mid-write, which promise-based reads mostly skipped. A read
+that is unusable — empty, or parsing to anything but an object — is retried by `PartialReadRetry`
+(`utility/watcherFallback.ts`) rather than adopted, because chokidar may emit nothing further for
+that write. Completeness is judged on the file's own parse, _before_ `overlayRootEnvConfig`, which
+returns a non-null object whenever a config env var is set and would otherwise launder a
+half-written file into a valid-looking env-only config. Its three outcomes are distinct and each
+one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
+restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
+report standing, since it is shared with every other watcher of that file; closing is terminal.

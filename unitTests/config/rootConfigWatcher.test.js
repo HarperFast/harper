@@ -39,9 +39,12 @@ describe('RootConfigWatcher', () => {
 
 		expected.foo = 'baz';
 
+		// Subscribe before writing: the watcher re-reads the root config synchronously, so the
+		// change event can be emitted before this writer's own await resolves.
+		const changed = once(configWatcher, 'change');
 		await writeFile(this.configFilePath, stringify(expected));
 
-		const [updated] = await once(configWatcher, 'change');
+		const [updated] = await changed;
 
 		assert.deepEqual(updated, expected, 'RootConfigWatcher should emit a change event with the updated config');
 

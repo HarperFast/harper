@@ -4,10 +4,17 @@ import { EventEmitter, once } from 'events';
 import yaml from 'yaml';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'util';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { cloneDeep } from 'lodash';
-import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import {
+	POLLING_FALLBACK_OPTIONS,
+	PartialReadRetry,
+	isPartialReadError,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { overlayRootEnvConfig, isRootConfigFilename } from '../config/harperConfigEnvVars.ts';
 
@@ -96,6 +103,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#closed: boolean;
 	#openCount: number = 0;
 	#pendingReads: Set<Promise<void>> = new Set();
+	#partialRead: PartialReadRetry;
 	ready: Promise<any[]>;
 
 	constructor(name: string, filePath: string, logger?: Logger, isRootConfig?: boolean) {
@@ -104,6 +112,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#filePath = filePath;
 		const watchTarget = resolveWatchTarget(filePath);
 		this.#watchPath = watchTarget.path;
+		this.#partialRead = new PartialReadRetry(filePath);
 		// Root-config watchers must see runtime env config (HARPER_SET_CONFIG et al.)
 		// even when it hasn't been flushed to disk yet — see #handleChange (#1618).
 		// Application scopes watch their own config.yaml and are never overlaid.
@@ -129,70 +138,121 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			.on('ready', this.#handleChange.bind(this));
 	}
 
+	// Root config only: see the descriptor-lifetime invariant on atomicWriteFile (DESIGN.md).
 	#handleChange() {
+		if (this.#isRootConfig) {
+			this.#applyRead(() => readFileSync(this.#filePath, 'utf-8'));
+			return;
+		}
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
-			.then((contents) => {
-				let parsed = yaml.parse(contents);
-				// The on-disk root config is not guaranteed to include runtime env config at
-				// boot: the file flush races component loading, so a scope's boot-time reads
-				// (e.g. an `enabled` gate in handleApplication) could observe pre-env values
-				// the componentLoader itself never saw. Ask the config layer to overlay env
-				// config onto EVERY root-config read so scope.options matches the resolved
-				// view (#1618). Non-root scopes and the no-env-vars case are untouched
-				// (overlayRootEnvConfig is a no-op there).
-				if (this.#isRootConfig) parsed = overlayRootEnvConfig(parsed);
-				this.#rootConfig = parsed && typeof parsed === 'object' ? parsed : undefined;
-				// If the extension is in the config file
-				if (this.#rootConfig && this.#name in this.#rootConfig) {
-					// If a config object does not exist
-					if (!this.#scopedConfig) {
-						// set it
-						this.#scopedConfig = this.#rootConfig[this.#name];
-						// and emit a ready event
-						this.emit('ready', this.#scopedConfig);
-					} else {
-						// Otherwise, merge the new config with the old config
-						this.#merge(this.#rootConfig[this.#name], this.#scopedConfig);
-					}
-				} else {
-					// Otherwise, if the extension is not in the config file
-					// This means the plugin was removed from the config file
-					if (this.#scopedConfig) {
-						// and a config exists, remove it
-						this.#scopedConfig = undefined;
-						this.emit('remove');
-					}
-					// Otherwise do nothing - the user may add the config back in later
-				}
-			})
-			.catch((error) => {
-				// If the config file does not exist
-				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-					// A readFile ENOENT here is the install window (file not written yet) or a
-					// transient read race — NOT a real deletion, which chokidar routes to
-					// `#handleUnlink`. Env config is file-independent, so when it provides this
-					// scope the missing file must not discard it (#1618). When it does not, fall
-					// through to the original ENOENT handling with #rootConfig untouched, so a
-					// first boot still emits `ready` (not `remove`, which nothing consumes at
-					// boot → `ready` would hang forever).
-					if (this.#applyEnvOnlyConfig()) return;
-					// And a config already exists, reset it to the default
-					if (this.#rootConfig) {
-						this.#resetConfig();
-						this.emit('remove');
-					} else {
-						// Otherwise, if no config exists, then just set to default and emit ready
-						this.#resetConfig();
-						this.emit('ready');
-					}
-					return;
-				}
-				this.emit('error', error);
-			})
+			.then((contents) => this.#applyRead(() => contents))
+			.catch((error) => this.#recoverOrReport(error))
 			.finally(() => {
 				this.#pendingReads.delete(read);
 			});
 		this.#pendingReads.add(read);
+	}
+
+	#applyRead(read: () => string) {
+		let parsed;
+		try {
+			parsed = yaml.parse(read());
+		} catch (error) {
+			// A read or parse that fails while the file is being replaced is the same event as an
+			// incomplete one, and #handleReadError's ENOENT arm would answer it with a `remove`
+			// that restarts the scope. Re-read first; only an exhausted budget means it is real.
+			this.#recoverOrReport(error);
+			return;
+		}
+		// Tested on the file's own parse, before any env overlay: `''`, `'\n'` and a truncated
+		// document all parse to null, and an env-configured deployment would otherwise overlay
+		// one into a valid-looking object and adopt it. A file that is still unusable once the
+		// budget is spent is taken at face value, so emptying one still reaches `remove`.
+		if (!parsed || typeof parsed !== 'object') {
+			if (this.#partialRead.schedule(() => this.#handleChange())) return;
+			this.#partialRead.gaveUp();
+		} else {
+			this.#partialRead.settled();
+		}
+		try {
+			this.#applyParsed(this.#overlayEnvConfig(parsed));
+		} catch (error) {
+			// Applying is past the point where an incomplete file could explain a failure, so a
+			// listener's throw keeps the error route rather than being retried.
+			this.emit('error', error);
+		}
+	}
+
+	#recoverOrReport(error: unknown) {
+		if (!isPartialReadError(error)) return this.#handleReadError(error);
+		if (this.#partialRead.schedule(() => this.#handleChange())) return;
+		// Same give-up as the unusable-parse case, so the budget is restored for the repair: the
+		// write that fixes the file can itself be read mid-write. The error still takes the
+		// scope's own route.
+		this.#partialRead.gaveUp(error);
+		this.#handleReadError(error);
+	}
+
+	#overlayEnvConfig(parsed: unknown) {
+		// The on-disk root config is not guaranteed to include runtime env config at
+		// boot: the file flush races component loading, so a scope's boot-time reads
+		// (e.g. an `enabled` gate in handleApplication) could observe pre-env values
+		// the componentLoader itself never saw. Ask the config layer to overlay env
+		// config onto EVERY root-config read so scope.options matches the resolved
+		// view (#1618). Non-root scopes and the no-env-vars case are untouched
+		// (overlayRootEnvConfig is a no-op there).
+		return this.#isRootConfig ? overlayRootEnvConfig(parsed) : parsed;
+	}
+
+	#applyParsed(parsed: unknown) {
+		this.#rootConfig = parsed && typeof parsed === 'object' ? (parsed as Config) : undefined;
+		// If the extension is in the config file
+		if (this.#rootConfig && this.#name in this.#rootConfig) {
+			// If a config object does not exist
+			if (!this.#scopedConfig) {
+				// set it
+				this.#scopedConfig = this.#rootConfig[this.#name];
+				// and emit a ready event
+				this.emit('ready', this.#scopedConfig);
+			} else {
+				// Otherwise, merge the new config with the old config
+				this.#merge(this.#rootConfig[this.#name], this.#scopedConfig);
+			}
+		} else {
+			// Otherwise, if the extension is not in the config file
+			// This means the plugin was removed from the config file
+			if (this.#scopedConfig) {
+				// and a config exists, remove it
+				this.#scopedConfig = undefined;
+				this.emit('remove');
+			}
+			// Otherwise do nothing - the user may add the config back in later
+		}
+	}
+
+	#handleReadError(error: unknown) {
+		// If the config file does not exist
+		if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+			// A readFile ENOENT here is the install window (file not written yet) or a
+			// transient read race — NOT a real deletion, which chokidar routes to
+			// `#handleUnlink`. Env config is file-independent, so when it provides this
+			// scope the missing file must not discard it (#1618). When it does not, fall
+			// through to the original ENOENT handling with #rootConfig untouched, so a
+			// first boot still emits `ready` (not `remove`, which nothing consumes at
+			// boot → `ready` would hang forever).
+			if (this.#applyEnvOnlyConfig()) return;
+			// And a config already exists, reset it to the default
+			if (this.#rootConfig) {
+				this.#resetConfig();
+				this.emit('remove');
+			} else {
+				// Otherwise, if no config exists, then just set to default and emit ready
+				this.#resetConfig();
+				this.emit('ready');
+			}
+			return;
+		}
+		this.emit('error', error);
 	}
 
 	#handleError(error: unknown) {
@@ -388,6 +448,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.emit('change', keys, value, this.#scopedConfig);
 	}
 
+	// Test-only: run the change handler directly, since the read's timing relative to its caller
+	// is the behaviour under test and a chokidar event cannot be observed at that granularity.
+	// Resolves once the read has landed, which for the root config has already happened.
+	_handleChangeForTests(): Promise<unknown> {
+		this.#handleChange();
+		return Promise.allSettled([...this.#pendingReads]);
+	}
+
 	// Test-only: simulate the underlying chokidar watcher emitting an error.
 	// Exposed so the polling-fallback path can be exercised without triggering a
 	// real ENOSPC/EMFILE on the host.
@@ -414,6 +482,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	 */
 	close(): Promise<this> {
 		this.#closed = true;
+		this.#partialRead.cancel();
 		const pendingReads = [...this.#pendingReads];
 		const watcherClose = Promise.resolve(this.#watcher.close()).catch(() => {});
 
