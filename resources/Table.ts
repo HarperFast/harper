@@ -6162,6 +6162,7 @@ export function makeTable(options) {
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
 				let updatedRecord;
+				let responseRecord;
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
@@ -6219,6 +6220,7 @@ export function makeTable(options) {
 								if (status !== 200) updatedRecord.status = status;
 							}
 						}
+						responseRecord = updatedRecord;
 						updatedRecord = projectRecordForDurableEncoding(updatedRecord);
 						// updatedRecord may still be a frozen record (e.g. a reused existingRecord); copy-on-mutate
 						// before stamping the primary key and created/updated times below (records are immutable —
@@ -6230,7 +6232,7 @@ export function makeTable(options) {
 					const resolvedEntry: Entry = {
 						key: id,
 						version,
-						value: updatedRecord,
+						value: responseRecord,
 						expiresAt: sourceContext.expiresAt,
 						metadataFlags: 0,
 						size: 0,
@@ -6242,9 +6244,11 @@ export function makeTable(options) {
 					// are available on the immediately-resolved entry. We mutate the prototype
 					// in-place rather than copying so that the commit callback (which adds
 					// createdAt/updatedAt to updatedRecord) is still reflected in the entry value.
-					if (updatedRecord && updatedRecord.constructor === Object) {
-						Object.setPrototypeOf(updatedRecord, primaryStore.encoder.structPrototype);
-						entryMap.set(updatedRecord, resolvedEntry);
+					if (responseRecord && responseRecord.constructor === Object) {
+						Object.setPrototypeOf(responseRecord, primaryStore.encoder.structPrototype);
+						entryMap.set(responseRecord, resolvedEntry);
+					} else if (responseRecord) {
+						entryMap.set(responseRecord, resolvedEntry);
 					}
 					resolve(resolvedEntry);
 				} catch (error) {
