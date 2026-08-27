@@ -166,6 +166,11 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 
 ## Conventions
 
+- A record's `toJSON` is a response projection, not durable state. `recordUpdater` (and the cache-fill
+  and audit paths feeding it) projects records to stored fields via `storedFieldsOnly`, so no durable
+  form carries a resolver-owned (`@computed`/`@relationship`) name; materialization skips such names
+  when promoting a decoded record (`assignStoredFields`), which is what keeps rows written by affected
+  releases readable. See harper#2359 and `integrationTests/resources/cachedComputedAttribute.test.ts`.
 - **Never** remove `transactional()` from a static method on `Resource` — it owns transaction context lifetime.
 - New `Resource` subclasses should override **instance** methods (`get`, `put`, ...) for behavior; static methods are the protocol entry points and stay generic.
 - **Overriding a static entry point takes over its whole contract.** Assigning `static post`/`put`/`patch` on a subclass shadows the `transactional()`-wrapped static, so none of that wrapper runs — including the `when(data, ...)` that resolves `data` and the `allowCreate`/`allowUpdate` gate. That is by design (it is how `login.ts` implements a deliberately pre-authentication endpoint), and it means an override owns two obligations the wrapper would otherwise have met:
