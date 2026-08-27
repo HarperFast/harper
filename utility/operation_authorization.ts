@@ -90,6 +90,8 @@ const BULK_OPS = {
 	CSV_FILE_LOAD: 'csvFileLoad',
 	IMPORT_FROM_S3: 'importFromS3',
 };
+/** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
+const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -679,7 +681,20 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		op = operation;
 	}
 	//we need to use the action value, if present, to ensure the correct permission is checked below
-	let action = requestJson.action;
+	// `action` narrows the required permissions to just that one — `hasPermissions` does it for table
+	// permissions and `checkAttributePerms` for attribute permissions — because a bulk load carries
+	// `action: insert|update|upsert` and only needs the permission for what it will actually do.
+	//
+	// Honoured ONLY for a real bulk-load operation. `action` is an unknown-but-accepted key on the
+	// shared write validator, so taking it from any request let a caller pick which half of an
+	// operation's permissions to be checked against: `{operation:'put', action:'insert'}` from a role
+	// with `insert: true, update: false` replaced an existing record, and `action:'update'` created a
+	// missing one with no insert permission. `upsert` had the same shape before `put` existed.
+	//
+	// Both narrowing sites read this one variable, so gating it here covers both. The bulk path is
+	// unaffected: `verifyBulkLoadAttributePerms` receives the real action from
+	// `bulkLoad.validateChunk`, not from here.
+	let action = isBulkLoadOperation(op) ? requestJson.action : undefined;
 
 	// Resolved through the same helper the handlers use (`transformReq` delegates to it), because
 	// authorization runs BEFORE `transformReq` and any disagreement about the target means the
@@ -1078,7 +1093,7 @@ export function checkAttributePerms(
  */
 /** Whether the operation checks attribute permissions per chunk rather than from this request. */
 function isBulkLoadOperation(operationName): boolean {
-	return Object.values(BULK_OPS).includes(operationName);
+	return BULK_OP_NAMES.has(operationName);
 }
 
 function getRecordAttributes(json, operationName?) {

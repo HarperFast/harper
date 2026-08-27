@@ -392,9 +392,16 @@ const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
 	upsert: 3,
+	// `put` must be persisted, not inferred: the physical write type is also `put` for an `upsert`
+	// that happened to create a record, so the history readers cannot tell the two apart from the
+	// type alone. Without an id here the originating operation decoded as undefined, the readers fell
+	// back to the physical type, and replication catch-up replayed a `put` as an `upsert` — patching
+	// the replica and RETAINING attributes the source had removed.
+	put: 4,
 	1: 'insert',
 	2: 'update',
 	3: 'upsert',
+	4: 'put',
 };
 
 /**

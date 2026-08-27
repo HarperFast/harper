@@ -331,6 +331,104 @@ suite('put: create-or-replace over the operations API', { skip: skipSuite }, () 
 		ok(!('color' in row), `nothing is stored for it; got ${JSON.stringify(row)}`);
 	});
 
+	// `action` narrows the required permissions to just that one, because a bulk load carries
+	// `action: insert|update|upsert` and only needs the permission for what it will do. Taken from any
+	// request, it let a caller pick which half of an operation's permissions to be checked against.
+	// Both directions, since each half is a different bypass.
+	test('a caller-supplied action cannot narrow which table permission is checked', async () => {
+		await insert('Dog', [{ id: 'nar-1', name: 'Penny', color: 'black' }]);
+
+		// insert but NOT update: `action: "insert"` used to let this replace an existing record.
+		const insertOnly = await addScopedRole(
+			'insert_only',
+			{
+				data: {
+					tables: { Dog: { read: true, insert: true, update: false, delete: false, attribute_permissions: [] } },
+				},
+			},
+			'insert_only_user'
+		);
+		const replaced = await asUser(insertOnly, {
+			operation: 'put',
+			database: 'data',
+			table: 'Dog',
+			action: 'insert',
+			records: [{ id: 'nar-1', name: 'Replaced' }],
+		});
+		strictEqual(
+			replaced.status,
+			403,
+			`replacing an existing record needs update permission; got ${replaced.status} ${JSON.stringify(replaced.body)}`
+		);
+		strictEqual((await read('Dog', 'nar-1')).name, 'Penny', 'the denied request must not have replaced anything');
+
+		// update but NOT insert: `action: "update"` used to let this create a missing record.
+		const updateOnly = await addScopedRole(
+			'update_only',
+			{
+				data: {
+					tables: { Dog: { read: true, insert: false, update: true, delete: false, attribute_permissions: [] } },
+				},
+			},
+			'update_only_user'
+		);
+		const created = await asUser(updateOnly, {
+			operation: 'put',
+			database: 'data',
+			table: 'Dog',
+			action: 'update',
+			records: [{ id: 'nar-absent', name: 'Created' }],
+		});
+		strictEqual(
+			created.status,
+			403,
+			`creating a record needs insert permission; got ${created.status} ${JSON.stringify(created.body)}`
+		);
+		ok((await read('Dog', 'nar-absent')) == null, 'the denied request must not have created anything');
+	});
+
+	// Replication catch-up switches on the operation the history reports. `put` has to survive as the
+	// originating operation: the physical write type is `put` for an `upsert` that created a record
+	// too, so the type alone cannot tell them apart, and catch-up replaying a `put` as an `upsert`
+	// would patch the replica and retain attributes the source removed.
+	test('the audit log reports a put as a put, and a legacy physical put as an upsert', async () => {
+		strictEqual(
+			(await ops({ operation: 'create_table', database: 'data', table: 'Audited', primary_key: 'id', audit: true }))
+				.status,
+			200
+		);
+		// An upsert that CREATES writes a physical put with `upsert` as the originating operation.
+		strictEqual(
+			(await ops({ operation: 'upsert', database: 'data', table: 'Audited', records: [{ id: 'a-1', name: 'A' }] }))
+				.status,
+			200
+		);
+		// ...and a put writes a physical put with `put` as the originating operation.
+		strictEqual(
+			(await ops({ operation: 'put', database: 'data', table: 'Audited', records: [{ id: 'a-1', name: 'B' }] })).status,
+			200
+		);
+
+		const audit = await ops({
+			operation: 'read_audit_log',
+			database: 'data',
+			table: 'Audited',
+			search_type: 'hash_value',
+			search_values: ['a-1'],
+		});
+		strictEqual(audit.status, 200, `read_audit_log should 200; got ${audit.status} ${JSON.stringify(audit.body)}`);
+
+		const operations = (audit.body?.['a-1'] ?? []).map((e: any) => e.operation);
+		ok(
+			operations.includes('put'),
+			`the put must be reported as 'put', not normalized away; got ${JSON.stringify(operations)}`
+		);
+		ok(
+			operations.includes('upsert'),
+			`the upsert-that-created must still report 'upsert'; got ${JSON.stringify(operations)}`
+		);
+	});
+
 	test('a caller-supplied action does not skip the attribute-permission check', async () => {
 		await insert('Dog', [{ id: 'act-1', name: 'Penny', breed: 'Mutt', color: 'black' }]);
 		const headers = await addScopedRole(

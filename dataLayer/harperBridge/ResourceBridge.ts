@@ -576,8 +576,7 @@ export class ResourceBridge extends BridgeMethods {
 				// get the history of each record
 				for (const id of readAuditLogObj.search_values) {
 					histories[id] = (await table.getHistoryOfRecord(id)).map((auditRecord) => {
-						let operation = auditRecord.operation ?? auditRecord.type;
-						if (operation === 'put') operation = 'upsert';
+						let operation = normalizeHistoryOperation(auditRecord.operation, auditRecord.type);
 						return {
 							operation,
 							timestamp: auditRecord.version,
@@ -775,8 +774,7 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 	let enqueued;
 	let count = 0;
 	for await (const entry of table.getHistory(start, end)) {
-		let operation = entry.operation ?? entry.type;
-		if (operation === 'put') operation = 'upsert';
+		let operation = normalizeHistoryOperation(entry.operation, entry.type);
 		const { id, version: timestamp, value } = entry;
 		if (enqueued?.timestamp === timestamp) {
 			enqueued.ids.push(id);
@@ -800,4 +798,18 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 		}
 	}
 	if (enqueued) yield enqueued;
+}
+
+/**
+ * Which operation a history entry should report: the originating operation when one was recorded,
+ * otherwise the physical write type.
+ *
+ * A recorded `put` is reported as `put`, so replication catch-up replays it as a replace. Only a
+ * LEGACY physical put — one with no originating operation, written before `put` existed — is still
+ * normalized to `upsert`, which is what produced a physical put back then. Normalizing both would
+ * make catch-up patch the replica and retain attributes the source removed.
+ */
+function normalizeHistoryOperation(originatingOperation, physicalType) {
+	if (originatingOperation !== undefined) return originatingOperation;
+	return physicalType === 'put' ? 'upsert' : physicalType;
 }
