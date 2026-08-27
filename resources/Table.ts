@@ -6234,6 +6234,7 @@ export function makeTable(options) {
 						const sourceRecord = updatedRecord;
 						let responseProjectionSource = sourceRecord;
 						let toJSON = responseProjectionSource.toJSON;
+						let materializedTargetProjection = false;
 						const sourcePrototype = Object.getPrototypeOf(responseProjectionSource);
 						const usesTargetPrototype =
 							sourcePrototype === primaryStore.encoder.structPrototype ||
@@ -6261,10 +6262,11 @@ export function makeTable(options) {
 						) {
 							responseRecord =
 								typeof toJSON === 'function' ? toJSON.call(responseProjectionSource) : responseProjectionSource;
+							materializedTargetProjection = usesTargetPrototype && typeof toJSON === 'function';
 						} else responseRecord = responseProjectionSource;
 						// A target-table response projection materializes enumerable resolvers. Restore those as
 						// inherited accessors before returning it; source-owned snapshots remain untouched.
-						if (usesTargetPrototype)
+						if (materializedTargetProjection)
 							for (let i = 0; i < primaryStore.encoder.resolverNames.length; i++)
 								delete responseRecord[primaryStore.encoder.resolverNames[i]];
 						responseRecord = primaryStore.encoder.removeReadOnlyResolverFields(responseRecord);
@@ -6320,7 +6322,7 @@ export function makeTable(options) {
 					if (responseRecord) {
 						if (Object.isExtensible(responseRecord) && responseRecord.constructor === Object)
 							Object.setPrototypeOf(responseRecord, primaryStore.encoder.structPrototype);
-						if (!entryMap.has(responseRecord)) entryMap.set(responseRecord, resolvedEntry);
+						entryMap.set(responseRecord, resolvedEntry);
 					}
 					resolve(resolvedEntry);
 				} catch (error) {

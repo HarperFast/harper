@@ -6,6 +6,7 @@ const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { clearNextEncoding, setNextEncoding } = require('#src/resources/RecordEncoder');
+const { createAuditEntry, readAuditEntry } = require('#src/resources/auditStore');
 const analytics = require('#src/resources/analytics/write');
 const { waitFor } = require('../waitFor.js');
 
@@ -234,6 +235,25 @@ describe('CRUD operations with the Resource API', () => {
 		const invalidated = CRUDTable.primaryStore.getEntry('residency-projection').value;
 		assert.equal(invalidated.computed, 'projected');
 		assert.equal(Object.hasOwn(invalidated, 'computed'), true);
+	});
+	it('cleans read-only resolver collisions from partial patch payloads', function () {
+		const encoder = CRUDTable.primaryStore.encoder;
+		const encodedRecord = Buffer.from(encoder.encode({ name: 'patched', computed: 'forged computed' }));
+		assert.equal(encodedRecord.includes(Buffer.from('forged computed')), true);
+		const patch = readAuditEntry(
+			Buffer.from(
+				createAuditEntry({
+					type: 'patch',
+					tableId: CRUDTable.tableId,
+					recordId: 'patched-record',
+					version: Date.now(),
+					nodeId: 0,
+					encodedRecord,
+				})
+			)
+		).getValue(CRUDTable.primaryStore);
+		assert.equal(patch.name, 'patched');
+		assert.equal(Object.hasOwn(patch, 'computed'), false);
 	});
 	async function waitForAnalyticsMetric(metric, start, path = 'CRUDTable') {
 		return waitFor(

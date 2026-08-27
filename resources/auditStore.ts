@@ -668,7 +668,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 							() =>
 								store.decoder.decode(buffer.subarray(decoder.position, end), {
 									noMetadata: true,
-									skipResolverCleanup: Boolean(action & HAS_PARTIAL_RECORD),
+									skipResolverCleanup: (action & 0xf) === INVALIDATE,
 								}),
 							store.rootStore
 						);
