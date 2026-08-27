@@ -32,8 +32,11 @@ npm run test:unit:components       # Component/plugin system tests
 npm run test:unit:security         # Security tests
 npm run test:unit:apitests         # API tests (stops running server first)
 npm run test:unit:lmdb             # LMDB storage engine tests
+npm run test:unit:windows          # The Windows CI gate — a scoped slice, see below
 npm run test:integration           # Full integration test suite
 ```
+
+**Windows:** `test:unit:windows` is what the `unit-test-windows` CI job runs, and it covers only the part of the unit tree verified green on Windows. If you touch platform-specific code, run it — the Ubuntu jobs will not catch a Windows-only break. `unitTests/windowsGate.mjs` holds the scope and the list of suites still excluded, each with the reason; shrinking that list is welcome work. Note that mocha handed the whole scoped set in one process on Windows exits 0 part-way through without printing an epilogue, so the gate runs one process per directory and fails any group that reports no summary — do not collapse it back into a single `mocha` call.
 
 Run a single test file directly:
 
