@@ -85,7 +85,7 @@ type StorageInfo = {
 	// The file `blobFileMissingOrIncompleteAsync` last found damaged, for the locked recheck to recognize
 	probedDamage?: { fileSize: number; header: Buffer };
 };
-type BlobFileInfo = { store?: any; fileId?: string };
+type BlobFileInfo = { store?: any; fileId?: string; storageIndex?: number };
 
 function discardStorage(storageInfo: StorageInfo): void {
 	(storageInfo.fileState ??= {}).discarded = true;
@@ -1509,7 +1509,7 @@ function unlinkQueueDb(store: any): any {
  * transaction to join at this point, so durability has to come from the write itself landing
  * before a dying worker can lose it.
  */
-function enqueueBlobUnlink(storageInfo: StorageInfo): boolean {
+function enqueueBlobUnlink(storageInfo: BlobFileInfo): boolean {
 	const queueDb = unlinkQueueDb(storageInfo.store);
 	if (!queueDb) return false;
 	const key = [UNLINK_QUEUE_KEY, storageInfo.fileId];
@@ -1569,8 +1569,7 @@ export function drainBlobUnlinkQueue(rootStore: any): void {
 			if (recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
 				// no path to key the local entry by, and fileIds are only unique per store
 				for (const [path, pending] of pendingReclamation) {
-					const pendingInfo = storageInfoForBlob.get(pending.blob);
-					if (pendingInfo?.fileId === fileId && pendingInfo.store === rootStore) {
+					if (pending.fileInfo.fileId === fileId && pending.fileInfo.store === rootStore) {
 						pendingReclamation.delete(path);
 						break;
 					}
@@ -1739,7 +1738,7 @@ export function deleteBlob(blob: Blob): void {
 	const pending = pendingReclamation.get(filePath) ?? {
 		blobs: [],
 		seenBlobs: new WeakSet<Blob>(),
-		fileInfo: { store: storageInfo?.store, fileId: storageInfo?.fileId },
+		fileInfo: { store: storageInfo?.store, fileId: storageInfo?.fileId, storageIndex: storageInfo?.storageIndex },
 		deadline: 0,
 		enqueuedAt: now,
 		supersededAt: now,
