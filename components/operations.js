@@ -431,13 +431,30 @@ async function packageComponent(req) {
 	return { project, payload };
 }
 
-/**
- * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
- * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
- * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
- * @param req
- * @returns {Promise<string>}
- */
+/** Report a restart outcome the operation's own success message cannot convey. */
+function logRestartOutcome(restart, what) {
+	const { RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+	if (restart.replacementsNotStarted)
+		log.warn(
+			`${restart.replacementsNotStarted} replacement worker thread(s) did not report starting after ${what}; the pool is short until they are restarted`
+		);
+	if (restart.error) log.error(`Restart after ${what} failed`, restart.error);
+	else if (restart.workersKeptOnOldCode)
+		log.warn(
+			`${restart.workersKeptOnOldCode} worker thread(s) could not be replaced after ${what} and are still running the previous code`
+		);
+	else if (restart.declined) log.warn(`No restart was performed after ${what}: the process is already shutting down`);
+	else if (restart.handedOff)
+		log.debug?.(`The restart after ${what} was handed to the main thread, which reports its own completion`);
+	else if (restart.stalled)
+		log.warn(
+			`The restart after ${what} stopped making progress for ${RESTART_IDLE_TIMEOUT_MS}ms; worker threads may still be running the previous code`
+		);
+	else if (!restart.completed)
+		log.warn(
+			`The restart after ${what} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
+		);
+}
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -698,8 +715,16 @@ async function deployComponent(req) {
 		}
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
-			manageThreads.restartWorkers('http');
+			// Workers not yet replaced keep serving the pre-deploy component set, and where the OS lets
+			// replacements share a port they keep accepting connections for the whole rolling restart, so
+			// a caller that reads success as "the component is live" can be served by a worker that has
+			// never heard of it.
+			const { awaitRestart } = require('./awaitRestart.ts');
+			const restart = await awaitRestart((onProgress) =>
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+			);
 			emit('phase', { phase: 'restart', status: 'done' });
+			logRestartOutcome(restart, `deploying ${application.name}`);
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
 			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
@@ -1222,7 +1247,13 @@ async function dropComponent(req) {
 	);
 	const response = await server.replication.replicateOperation(req);
 	if (req.restart === true) {
-		manageThreads.restartWorkers('http');
+		// Same race as a deploy, in the removal direction: until a worker is replaced it still serves the
+		// dropped component's resources, so a caller that reads success as "it is gone" can be wrong.
+		const { awaitRestart } = require('./awaitRestart.ts');
+		const restart = await awaitRestart((onProgress) =>
+			manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+		);
+		logRestartOutcome(restart, `dropping ${projectPath}`);
 		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
 	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;
