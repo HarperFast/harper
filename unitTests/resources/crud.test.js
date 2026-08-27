@@ -224,6 +224,17 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(Object.hasOwn(reencoded, 'hidden'), false);
 		}
 	});
+	it('preserves computed index projections on invalidated records', async function () {
+		const context = {};
+		await transaction(context, async () => {
+			const options = { isNotification: true, ensureLoaded: false, async: true };
+			const resource = await CRUDTable.getResource('residency-projection', context, options);
+			resource._writeInvalidate('residency-projection', { id: 'residency-projection', computed: 'projected' }, options);
+		});
+		const invalidated = CRUDTable.primaryStore.getEntry('residency-projection').value;
+		assert.equal(invalidated.computed, 'projected');
+		assert.equal(Object.hasOwn(invalidated, 'computed'), true);
+	});
 	async function waitForAnalyticsMetric(metric, start, path = 'CRUDTable') {
 		return waitFor(
 			async () => {
