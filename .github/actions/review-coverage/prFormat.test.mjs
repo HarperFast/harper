@@ -172,6 +172,22 @@ test('a stray backtick cannot hide later Markdown blocks', () => {
 	assert.strictEqual(result.pass, true);
 });
 
+test('nested-list and list-continuation links remain visible', () => {
+	for (const evidence of [
+		`- Ran focused tests:\n    - [cleanup loop](${LINK})`,
+		`- Ran focused tests:\n    [cleanup loop](${LINK})`,
+	]) {
+		const humanBody = ['Summary.', '', '## Verification', '', evidence].join('\n');
+		const result = evaluatePrFormat(pr({ body: humanBody }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.strictEqual(result.pass, true, evidence);
+	}
+});
+
 test('an unterminated fence reports its cause', () => {
 	const result = evaluatePrFormat(pr({ body: `${body()}\n\n\`\`\`md\nexample` }), {
 		mode: 'enforce',
@@ -190,6 +206,18 @@ test('an unterminated HTML comment reports its cause', () => {
 		prFiles: PR_FILES,
 	});
 	assert.match(result.problems.join('\n'), /unterminated HTML comment/);
+});
+
+test('comment and fenced-code tokens do not consume one another', () => {
+	for (const suffix of ['<!-- ```suggestion\nold code\n``` -->', '```md\n<!-- unfinished\n```']) {
+		const result = evaluatePrFormat(pr({ body: `${body()}\n\n${suffix}` }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.strictEqual(result.pass, true, suffix);
+	}
 });
 
 test('indented-code links do not satisfy the line-link requirement', () => {
@@ -285,6 +313,16 @@ test('AI field recognition is case-consistent', () => {
 		.replace('Review-Coverage:', 'review-coverage:')
 		.replace('Human-Review-Need:', 'human-review-need:');
 	const result = evaluatePrFormat(pr({ body: lower }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.strictEqual(result.pass, true);
+});
+
+test('ordinary leading whitespace is allowed on Complexity', () => {
+	const result = evaluatePrFormat(pr({ body: body().replace('Complexity:', ' Complexity:') }), {
 		mode: 'enforce',
 		repo: REPO,
 		number: NUMBER,

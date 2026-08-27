@@ -10,6 +10,7 @@
 //   node .github/actions/review-coverage/ci-review-coverage.mjs --event <payload.json> [--mode enforce]
 
 import { appendFileSync, readFileSync, statSync } from 'node:fs';
+import { validateNormalizedPrFiles } from './collectPrFiles.mjs';
 import { evaluateCiCoverage } from './evaluateCiCoverage.mjs';
 import { evaluatePrFormat } from './evaluatePrFormat.mjs';
 import { classifyPullRequest } from './prExemption.mjs';
@@ -29,7 +30,7 @@ function readPrFiles(pr, formatMode, superseded) {
 	if (!ready || !file) return null;
 	const size = statSync(file).size;
 	if (size > MAX_PR_FILES_BYTES) throw new Error(`normalized PR-files artifact exceeds ${MAX_PR_FILES_BYTES} bytes`);
-	return JSON.parse(readFileSync(file, 'utf8'));
+	return validateNormalizedPrFiles(JSON.parse(readFileSync(file, 'utf8')));
 }
 
 function main(mode, formatMode) {

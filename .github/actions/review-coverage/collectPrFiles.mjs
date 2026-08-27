@@ -36,6 +36,28 @@ export function normalizePrFiles(pages) {
 	};
 }
 
+export function validateNormalizedPrFiles(value) {
+	if (value?.version !== 1 || typeof value.complete !== 'boolean' || !Array.isArray(value.files))
+		throw new Error('invalid normalized PR-files artifact');
+	if (value.files.length > MAX_FILES) throw new Error(`normalized PR-files artifact exceeds ${MAX_FILES} files`);
+	for (const file of value.files) {
+		if (
+			typeof file?.path !== 'string' ||
+			typeof file.patchAvailable !== 'boolean' ||
+			!['L', 'R'].every(
+				(side) =>
+					Array.isArray(file.ranges?.[side]) &&
+					file.ranges[side].every(
+						(range) =>
+							Array.isArray(range) && range.length === 2 && range.every((line) => Number.isInteger(line) && line >= 0)
+					)
+			)
+		)
+			throw new Error('invalid normalized PR-files entry');
+	}
+	return value;
+}
+
 function parseRanges(patch) {
 	const ranges = { L: [], R: [] };
 	for (const line of patch.split('\n')) {

@@ -7,29 +7,43 @@ export function fileAnchorHash(filePath) {
 	return createHash('sha256').update(filePath, 'utf8').digest('hex');
 }
 
-function stripInlineCode(body) {
+function stripInlineAndComments(line, commentOpen) {
 	let prose = '';
-	for (let index = 0; index < body.length;) {
-		if (body[index] !== '`') {
-			prose += body[index++];
+	let index = 0;
+	while (index < line.length) {
+		if (commentOpen) {
+			const close = line.indexOf('-->', index);
+			if (close < 0) return { prose: prose + ' '.repeat(line.length - index), commentOpen };
+			prose += ' '.repeat(close + 3 - index);
+			index = close + 3;
+			commentOpen = false;
 			continue;
 		}
-		let runEnd = index;
-		while (body[runEnd] === '`') runEnd++;
-		const runLength = runEnd - index;
+		const comment = line.indexOf('<!--', index);
+		const tick = line.indexOf('`', index);
+		if (comment >= 0 && (tick < 0 || comment < tick)) {
+			prose += line.slice(index, comment);
+			index = comment;
+			commentOpen = true;
+			continue;
+		}
+		if (tick < 0) {
+			prose += line.slice(index);
+			break;
+		}
+		prose += line.slice(index, tick);
+		let runEnd = tick;
+		while (line[runEnd] === '`') runEnd++;
+		const runLength = runEnd - tick;
 		let close = runEnd;
-		const boundary = body.slice(runEnd).search(/\n[ \t]*\n/);
-		const blockEnd = boundary < 0 ? body.length : runEnd + boundary;
 		let matched = false;
-		while (close < blockEnd) {
-			if (body[close] !== '`') {
-				close++;
-				continue;
-			}
+		while (close < line.length) {
+			close = line.indexOf('`', close);
+			if (close < 0) break;
 			let closeEnd = close;
-			while (body[closeEnd] === '`') closeEnd++;
+			while (line[closeEnd] === '`') closeEnd++;
 			if (closeEnd - close === runLength) {
-				prose += body.slice(index, closeEnd).replace(/[^\n]/g, ' ');
+				prose += ' '.repeat(closeEnd - tick);
 				index = closeEnd;
 				matched = true;
 				break;
@@ -37,24 +51,19 @@ function stripInlineCode(body) {
 			close = closeEnd;
 		}
 		if (!matched) {
-			prose += body.slice(index, runEnd);
+			prose += line.slice(tick, runEnd);
 			index = runEnd;
 		}
 	}
-	return prose;
-}
-
-function stripHtmlComments(body) {
-	let unterminatedComment = false;
-	const prose = body.replace(/<!--[\s\S]*?(?:-->|$)/g, (comment) => {
-		if (!comment.endsWith('-->')) unterminatedComment = true;
-		return comment.replace(/[^\n]/g, ' ');
-	});
-	return { prose, unterminatedComment };
+	return { prose, commentOpen };
 }
 
 export function inspectBodyText(body) {
 	let fence = null;
+	let commentOpen = false;
+	let indentedCode = false;
+	let previousBlank = true;
+	let lastNonblankWasList = false;
 	const prose = [];
 	const visible = String(body).replace(/\r\n?/g, '\n');
 	for (const line of visible.split('\n')) {
@@ -83,8 +92,14 @@ export function inspectBodyText(body) {
 				continue;
 			}
 		}
+		if (commentOpen) {
+			const stripped = stripInlineAndComments(line, commentOpen);
+			commentOpen = stripped.commentOpen;
+			prose.push(stripped.prose);
+			previousBlank = stripped.prose.trim() === '';
+			continue;
+		}
 		let content = line.slice(offset);
-		if (/^(?: {4}|\t)/.test(content)) continue;
 		const list = content.match(/^[ \t]*(?:[-+*]|\d+[.)])[ \t]+/)?.[0];
 		if (list) {
 			offset += list.length;
@@ -95,11 +110,27 @@ export function inspectBodyText(body) {
 			fence = { marker: open[1][0], length: open[1].length, quoteDepth, listIndent: list?.length || 0 };
 			continue;
 		}
-		prose.push(line);
+		const blank = content.trim() === '';
+		if (blank) {
+			prose.push('');
+			previousBlank = true;
+			continue;
+		}
+		const indented = /^(?: {4}|\t)/.test(line.slice(offset));
+		if (indentedCode && indented) continue;
+		if (indentedCode) indentedCode = false;
+		if (indented && previousBlank && !lastNonblankWasList && !list) {
+			indentedCode = true;
+			continue;
+		}
+		const stripped = stripInlineAndComments(line, false);
+		commentOpen = stripped.commentOpen;
+		prose.push(stripped.prose);
+		previousBlank = false;
+		lastNonblankWasList = Boolean(list);
 	}
 	// Blanking keeps newlines and offsets stable for section-index comparisons in the evaluator.
-	const inspected = stripHtmlComments(stripInlineCode(prose.join('\n')));
-	return { ...inspected, unterminatedFence: Boolean(fence) };
+	return { prose: prose.join('\n'), unterminatedComment: commentOpen, unterminatedFence: Boolean(fence) };
 }
 
 export function stripFencedBlocks(body) {

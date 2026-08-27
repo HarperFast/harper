@@ -103,6 +103,7 @@ import path from 'node:path';
 import { normalizePrFiles } from './collectPrFiles.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./ci-review-coverage.mjs', import.meta.url));
+const COLLECTOR = fileURLToPath(new URL('./collectPrFiles.mjs', import.meta.url));
 const CLEAN_ENV = { ...process.env };
 delete CLEAN_ENV.GITHUB_ENV;
 delete CLEAN_ENV.GITHUB_OUTPUT;
@@ -150,6 +151,7 @@ test('the CLI runs through a symlinked entrypoint', () => {
 		fileURLToPath(new URL('./evaluatePrFormat.mjs', import.meta.url)),
 		path.join(dir, 'evaluatePrFormat.mjs')
 	);
+	symlinkSync(COLLECTOR, path.join(dir, 'collectPrFiles.mjs'));
 	symlinkSync(fileURLToPath(new URL('./prExemption.mjs', import.meta.url)), path.join(dir, 'prExemption.mjs'));
 	symlinkSync(fileURLToPath(new URL('./prFormatLinks.mjs', import.meta.url)), path.join(dir, 'prFormatLinks.mjs'));
 	symlinkSync(fileURLToPath(new URL('./reviewGate.mjs', import.meta.url)), path.join(dir, 'reviewGate.mjs'));
@@ -298,6 +300,46 @@ test('the action consumes a produced PR-files artifact end to end', () => {
 		});
 		assert.strictEqual(result.status, 0);
 		assert.match(result.stdout, /pr-format \[report\]: compliant/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('the collector CLI writes a normalized stdin artifact', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-collector-'));
+	const output = path.join(dir, 'pr-files.json');
+	try {
+		const result = spawnSync(process.execPath, [COLLECTOR, output], {
+			encoding: 'utf8',
+			input: JSON.stringify([[{ filename: 'new.js', patch: '@@ -0,0 +1,2 @@\n+a\n+b' }]]),
+		});
+		assert.strictEqual(result.status, 0);
+		assert.deepStrictEqual(JSON.parse(readFileSync(output, 'utf8')).files[0].ranges, { L: [], R: [[1, 2]] });
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('a schema-invalid artifact becomes unavailable evidence without hiding coverage', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-schema-'));
+	const event = path.join(dir, 'event.json');
+	const prFiles = path.join(dir, 'pr-files.json');
+	writeFileSync(event, JSON.stringify({ pull_request: pr() }));
+	writeFileSync(prFiles, JSON.stringify({ version: 1, complete: true, files: {} }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: event,
+				INPUT_FORMAT_MODE: 'report',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: prFiles,
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.match(result.stdout, /review-coverage \[report\]/);
+		assert.match(result.stderr, /invalid normalized PR-files artifact/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

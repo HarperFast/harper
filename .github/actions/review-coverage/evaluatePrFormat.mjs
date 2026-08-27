@@ -38,7 +38,7 @@ export function evaluatePrFormat(
 	else {
 		const content = prose
 			.slice(verification[0].index + verification[0][0].length)
-			.split(/^(?:##\s+|Complexity:|\s*<sub>(?:Review-Coverage:|Human-Review-Need:))/im)[0]
+			.split(/^(?:##\s+|[ \t]*Complexity:|[ \t]*<sub>(?:Review-Coverage:|Human-Review-Need:))/im)[0]
 			.replace(/<[^>]+>/g, '')
 			.trim();
 		if (!content) problems.push('## Verification needs executed evidence or a not-observable rationale');
@@ -46,7 +46,7 @@ export function evaluatePrFormat(
 
 	const links = checkBodyLinks({ body, prFiles, repo, number });
 	problems.push(...links.problems.map(({ message }) => message));
-	const aiMarkers = /^(?:Complexity:|\s*(?:<sub>)?(?:Review-Coverage:|Human-Review-Need:))/im.test(prose);
+	const aiMarkers = /^(?:[ \t]*Complexity:|[ \t]*(?:<sub>)?(?:Review-Coverage:|Human-Review-Need:))/im.test(prose);
 	if (aiMarkers) {
 		const reviewer = matches(prose, /^## For the human reviewer\s*$/gim);
 		if (reviewer.length !== 1)
@@ -63,8 +63,8 @@ export function evaluatePrFormat(
 			if (!content)
 				problems.push('## For the human reviewer needs a decision ledger or the no-open-judgment-calls statement');
 		}
-		const complexityFields = matches(prose, /^Complexity:/gim);
-		const complexity = matches(prose, /^Complexity:\s*(easy|medium|complicated)\s*$/gim);
+		const complexityFields = matches(prose, /^[ \t]*Complexity:/gim);
+		const complexity = matches(prose, /^[ \t]*Complexity:\s*(easy|medium|complicated)\s*$/gim);
 		if (complexityFields.length !== 1 || complexity.length !== 1)
 			problems.push(
 				`AI-shaped description needs exactly one valid Complexity field (found ${complexityFields.length})`
