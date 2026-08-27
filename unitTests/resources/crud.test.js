@@ -185,16 +185,28 @@ describe('CRUD operations with the Resource API', () => {
 			}
 		});
 		it('keeps computed response fields out of durable re-encoding', async function () {
-			await CRUDTable.put({ id: 'durable-computed', name: 'durable', relatedId: 1 });
-			const record = await CRUDTable.get('durable-computed');
-			const response = JSON.parse(JSON.stringify(record));
-			assert.equal(response.computed, 'durable computed');
+			let computedResolutions = 0;
+			CRUDTable.setComputedAttribute('computed', (instance) => {
+				computedResolutions++;
+				return instance.name + ' computed';
+			});
+			try {
+				await CRUDTable.put({ id: 'durable-computed', name: 'durable', relatedId: 1 });
+				const record = await CRUDTable.get('durable-computed');
+				const response = JSON.parse(JSON.stringify(record));
+				assert.equal(response.computed, 'durable computed');
+				assert(computedResolutions > 0, 'response serialization must resolve the computed field');
 
-			const encoder = CRUDTable.primaryStore.encoder;
-			const durable = encoder.decode(Buffer.from(encoder.encode(record)), { noMetadata: true });
-			assert(durable, 'a decoded record must survive durable re-encoding');
-			assert.equal(Object.hasOwn(durable, 'computed'), false);
-			assert.equal(durable.related.id, 1);
+				computedResolutions = 0;
+				const encoder = CRUDTable.primaryStore.encoder;
+				const durable = encoder.decode(Buffer.from(encoder.encode(record)), { noMetadata: true });
+				assert.equal(computedResolutions, 0, 'durable encoding must not resolve the computed field');
+				assert(durable, 'a decoded record must survive durable re-encoding');
+				assert.equal(Object.hasOwn(durable, 'computed'), false);
+				assert.equal(durable.related.id, 1);
+			} finally {
+				CRUDTable.setComputedAttribute('computed', (instance) => instance.name + ' computed');
+			}
 		});
 		it('keeps a no-change instance put clean in the primary store', async function () {
 			if (CRUDTable.loadAsInstance !== true) this.skip();
