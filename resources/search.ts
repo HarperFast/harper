@@ -1225,7 +1225,14 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
+			if (condition.negated) {
+				// a negated condition always executes as a full scan (searchByIndex forces
+				// needFullScan), so follow the filter-only convention used by contains/ends_with:
+				// estimate Infinity so its positive-range estimate can never win the driving-condition
+				// ordering. Short-circuit here rather than computing (and discarding) a positive-range
+				// estimate that would cross the native FFI boundary for nothing.
+				condition.estimated_count = Infinity;
+			} else if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
@@ -1301,11 +1308,6 @@ export function estimateCondition(table) {
 						estimateRangeCondition(table, condition, searchType, OPEN_RANGE_ESTIMATE) ??
 						OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			}
-			// a negated condition always executes as a full scan (searchByIndex forces
-			// needFullScan), so follow the filter-only convention used by contains/ends_with:
-			// estimate Infinity so its positive-range estimate can never win the
-			// driving-condition ordering
-			if (condition.negated) condition.estimated_count = Infinity;
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
 		}
