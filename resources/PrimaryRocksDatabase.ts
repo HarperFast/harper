@@ -3,7 +3,7 @@ import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transa
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
+import { entryMap, METADATA, promoteRecord, type Entry } from './RecordEncoder.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -82,22 +82,10 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		this.decoder = this.#enc;
 	}
 
-	#promoteRecord(value: any) {
-		const promoted = new this.#enc.structPrototype.constructor();
-		for (const name of this.#enc.resolverNames) {
-			if (Object.hasOwn(value, name)) {
-				Object.defineProperties(promoted, Object.getOwnPropertyDescriptors(value));
-				return promoted;
-			}
-		}
-		Object.assign(promoted, value);
-		return promoted;
-	}
-
 	#withEntry(entry: Entry, id: any): Entry {
 		if (entry.value) {
 			if (entry.value.constructor === Object && this.#enc.structPrototype) {
-				entry.value = this.#promoteRecord(entry.value);
+				entry.value = promoteRecord(this.#enc, entry.value);
 			}
 			if (typeof entry.value === 'object' && entry.value !== null) {
 				entryMap.set(entry.value, entry);
@@ -199,7 +187,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				Object.assign(entry, entry.value);
 			}
 			if (entry.value?.constructor === Object && enc.structPrototype) {
-				entry.value = this.#promoteRecord(entry.value);
+				entry.value = promoteRecord(enc, entry.value);
 			}
 			return entry;
 		});

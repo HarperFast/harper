@@ -11,6 +11,7 @@ const { waitFor } = require('../waitFor.js');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
+	let settableCollisionMetricAsserted = false;
 	let CRUDTable, CRUDRelatedTable, HiddenResolverTable, TypedResolverTable;
 
 	before(async function () {
@@ -318,11 +319,18 @@ describe('CRUD operations with the Resource API', () => {
 				const preserved = encoder.decode(Buffer.from(encoder.encode(relationshipSnapshot)), { noMetadata: true });
 				assert.equal(Object.hasOwn(preserved, 'related'), true, 'settable legacy data must not be deleted');
 				assert.equal(preserved.related.id, 99);
-				CRUDTable.primaryStore.putSync('legacy-relationship', relationshipSnapshot);
-				const promoted = CRUDTable.primaryStore.getEntry('legacy-relationship').value;
-				assert.equal(promoted.relatedId, 1, 'prototype repair must not apply a stale relationship snapshot');
-				assert.equal(Object.hasOwn(promoted, 'related'), true, 'tolerated settable data remains observable');
-				await waitForAnalyticsMetric('settable-resolver-collision', collisionStart, 'test.CRUDTable');
+				try {
+					CRUDTable.primaryStore.putSync('legacy-relationship', relationshipSnapshot);
+					const promoted = CRUDTable.primaryStore.getEntry('legacy-relationship').value;
+					assert.equal(promoted.relatedId, 1, 'prototype repair must not apply a stale relationship snapshot');
+					assert.equal(Object.hasOwn(promoted, 'related'), true, 'tolerated settable data remains observable');
+				} finally {
+					await CRUDTable.primaryStore.remove('legacy-relationship');
+				}
+				if (!settableCollisionMetricAsserted) {
+					await waitForAnalyticsMetric('settable-resolver-collision', collisionStart, 'test.CRUDTable');
+					settableCollisionMetricAsserted = true;
+				}
 
 				const legacyRecord = Object.create(encoder.structPrototype);
 				Object.assign(legacyRecord, { id: 'legacy-reencode', name: 'trusted', relatedId: 1 });

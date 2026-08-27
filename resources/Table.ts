@@ -5272,10 +5272,15 @@ export function makeTable(options) {
 			const collisionMetricPath = databaseName + '.' + tableName;
 			let reportedReadOnlyResolverCollision = false;
 			let reportedSettableResolverCollision = false;
+			const measuredReadOnlyResolverCollisions = new Set<string>();
+			const measuredSettableResolverCollisions = new Set<string>();
 			const noteReadOnlyResolverCollision = (name: string) => {
-				try {
-					recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
-				} catch {}
+				if (!measuredReadOnlyResolverCollisions.has(name)) {
+					measuredReadOnlyResolverCollisions.add(name);
+					try {
+						recordAction(true, 'readonly-resolver-collision', collisionMetricPath);
+					} catch {}
+				}
 				if (reportedReadOnlyResolverCollision) return;
 				reportedReadOnlyResolverCollision = true;
 				try {
@@ -5285,9 +5290,12 @@ export function makeTable(options) {
 				} catch {}
 			};
 			const noteSettableResolverCollision = (name: string) => {
-				try {
-					recordAction(true, 'settable-resolver-collision', collisionMetricPath);
-				} catch {}
+				if (!measuredSettableResolverCollisions.has(name)) {
+					measuredSettableResolverCollisions.add(name);
+					try {
+						recordAction(true, 'settable-resolver-collision', collisionMetricPath);
+					} catch {}
+				}
 				if (reportedSettableResolverCollision) return;
 				reportedSettableResolverCollision = true;
 				try {
@@ -5307,8 +5315,7 @@ export function makeTable(options) {
 						},
 						set(related) {
 							if (typeof attribute.set === 'function') return attribute.set(this, related);
-							if (!Object.isExtensible(this)) throw new ClientError(`${name} is read-only`);
-							noteReadOnlyResolverCollision(name);
+							throw new ClientError(`${name} is read-only`);
 						},
 						configurable: true,
 						enumerable: attribute.enumerable,

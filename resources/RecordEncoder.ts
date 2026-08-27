@@ -73,6 +73,19 @@ export function projectRecordForDurableEncoding(record) {
 	}
 }
 
+export function promoteRecord(encoder, value) {
+	const promoted = new encoder.structPrototype.constructor();
+	const resolverNames = encoder.resolverNames;
+	for (let i = 0; i < resolverNames.length; i++) {
+		if (Object.hasOwn(value, resolverNames[i])) {
+			Object.defineProperties(promoted, Object.getOwnPropertyDescriptors(value));
+			return promoted;
+		}
+	}
+	Object.assign(promoted, value);
+	return promoted;
+}
+
 // Analytics counter incremented whenever a record cannot be decoded because its shared structure is
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
 // monitoring; the store name is passed as the metric path.
@@ -640,51 +653,52 @@ export class RecordEncoder extends StructonEncoder {
 			ArrayBuffer.isView(value)
 		)
 			return value;
-		const valuePrototype = Object.getPrototypeOf(value);
 		// Structon keeps typed fields as enumerable getters on a per-structure prototype. Replace that
 		// prototype once per dirty shape, retaining lazy getters while exposing the clean stored-name list
 		// to the table projector; mutating structon's shared prototype would poison every decoder using it.
-		if (
-			this.randomAccessStructure &&
-			valuePrototype != null &&
-			valuePrototype !== this.structPrototype &&
-			Object.getPrototypeOf(valuePrototype) === this.structPrototype &&
-			Object.hasOwn(value, STRUCT_SOURCE)
-		) {
-			let cleanPrototype = this.#cleanTypedResolverPrototypes.get(valuePrototype);
-			if (cleanPrototype === undefined && !this.#cleanTypedResolverPrototypes.has(valuePrototype)) {
-				const descriptors = Object.getOwnPropertyDescriptors(valuePrototype);
-				let hasCollision = false;
-				for (let i = 0; i < this.readOnlyResolverNames.length; i++) {
-					const name = this.readOnlyResolverNames[i];
-					if (Object.hasOwn(descriptors, name)) {
-						delete descriptors[name];
-						this.onReadOnlyResolverCollision?.(name);
-						hasCollision = true;
+		if (this.randomAccessStructure) {
+			const valuePrototype = Object.getPrototypeOf(value);
+			if (
+				valuePrototype != null &&
+				valuePrototype !== this.structPrototype &&
+				Object.getPrototypeOf(valuePrototype) === this.structPrototype &&
+				Object.hasOwn(value, STRUCT_SOURCE)
+			) {
+				let cleanPrototype = this.#cleanTypedResolverPrototypes.get(valuePrototype);
+				if (cleanPrototype === undefined && !this.#cleanTypedResolverPrototypes.has(valuePrototype)) {
+					const descriptors = Object.getOwnPropertyDescriptors(valuePrototype);
+					let hasCollision = false;
+					for (let i = 0; i < this.readOnlyResolverNames.length; i++) {
+						const name = this.readOnlyResolverNames[i];
+						if (Object.hasOwn(descriptors, name)) {
+							delete descriptors[name];
+							this.onReadOnlyResolverCollision?.(name);
+							hasCollision = true;
+						}
+					}
+					if (hasCollision) {
+						delete descriptors.toJSON;
+						cleanPrototype = Object.create(this.structPrototype, descriptors);
+						Object.defineProperty(cleanPrototype, STORED_FIELD_NAMES, {
+							value: Object.keys(descriptors).filter((name) => descriptors[name].enumerable),
+						});
+						this.#cleanTypedResolverPrototypes.set(valuePrototype, cleanPrototype);
+					} else {
+						this.#cleanTypedResolverPrototypes.set(valuePrototype, null);
 					}
 				}
-				if (hasCollision) {
-					delete descriptors.toJSON;
-					cleanPrototype = Object.create(this.structPrototype, descriptors);
-					Object.defineProperty(cleanPrototype, STORED_FIELD_NAMES, {
-						value: Object.keys(descriptors).filter((name) => descriptors[name].enumerable),
-					});
-					this.#cleanTypedResolverPrototypes.set(valuePrototype, cleanPrototype);
-				} else {
-					this.#cleanTypedResolverPrototypes.set(valuePrototype, null);
+				if (cleanPrototype) {
+					if (Object.isExtensible(value)) Object.setPrototypeOf(value, cleanPrototype);
+					else {
+						const cleaned = Object.create(cleanPrototype, Object.getOwnPropertyDescriptors(value));
+						if (Object.isFrozen(value)) Object.freeze(cleaned);
+						else if (Object.isSealed(value)) Object.seal(cleaned);
+						else Object.preventExtensions(cleaned);
+						return cleaned;
+					}
 				}
+				return value;
 			}
-			if (cleanPrototype) {
-				if (Object.isExtensible(value)) Object.setPrototypeOf(value, cleanPrototype);
-				else {
-					const cleaned = Object.create(cleanPrototype, Object.getOwnPropertyDescriptors(value));
-					if (Object.isFrozen(value)) Object.freeze(cleaned);
-					else if (Object.isSealed(value)) Object.seal(cleaned);
-					else Object.preventExtensions(cleaned);
-					return cleaned;
-				}
-			}
-			return value;
 		}
 		let collisions: string[] | undefined;
 		for (let i = 0; i < this.readOnlyResolverNames.length; i++) {
@@ -747,8 +761,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (entry.value.constructor === Object) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					Object.assign(entry.value, originalValue);
+					entry.value = promoteRecord(store.encoder, originalValue);
 				}
 				entryMap.set(entry.value, entry); // allow the record to access the entry
 			}
@@ -799,8 +812,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				if (entry.value.constructor === Object) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
-					entry.value = new store.encoder.structPrototype.constructor();
-					for (const key in originalValue) entry.value[key] = originalValue[key];
+					entry.value = promoteRecord(store.encoder, originalValue);
 				}
 			}
 			return entry;

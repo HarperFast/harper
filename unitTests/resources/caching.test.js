@@ -225,8 +225,11 @@ describe('Caching', () => {
 			assert(revalidationRequests > requestsBefore, 'the expired get must revalidate against the source');
 			await RevalidatedTable.primaryStore.committed;
 			const persisted = RevalidatedTable.primaryStore.getEntry('revalidated').value;
-			assert.equal(Object.hasOwn(persisted, 'computed'), false);
 			assert.equal(Object.hasOwn(persisted, 'related'), false);
+			const raw = RevalidatedTable.primaryStore.encoder.decode(RevalidatedTable.primaryStore.getBinary('revalidated'), {
+				skipResolverCleanup: true,
+			}).value;
+			assert.equal(Object.hasOwn(raw, 'computed'), false);
 		} finally {
 			returnNotModified = false;
 		}
