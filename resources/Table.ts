@@ -585,11 +585,14 @@ export function makeTable(options) {
 		structPrototype: any,
 		tableClass: any,
 		hasSurfacedComputed: boolean,
-		hasReadOnlyResolver: boolean
+		readOnlyResolverNames: Set<string>
 	) {
 		const enumNames = enumerableAttributeNames;
+		const durableEnumNames = enumNames.filter((name) => !readOnlyResolverNames.has(name));
 		let isCyclic: boolean | undefined; // lazily resolved on first serialization (once all tables loaded)
 		const toJSON = function () {
+			const durable = isDurableRecordEncoding();
+			const surfacedNames = durable ? durableEnumNames : enumNames;
 			if (isCyclic === undefined) {
 				isCyclic = detectCyclicEnumerable(tableClass);
 				if (isCyclic && getWorkerIndex() === 0)
@@ -606,8 +609,8 @@ export function makeTable(options) {
 				// fast path: bounded copy, values left raw (matches the previous for..in output). `name in json`
 				// treats an own stored key (already copied above) as taking precedence over its getter.
 				const json = {};
-				for (const key of Object.keys(this)) json[key] = this[key];
-				for (const name of enumNames) if (!(name in json)) json[name] = this[name];
+				for (const key of Object.keys(this)) if (!durable || !readOnlyResolverNames.has(key)) json[key] = this[key];
+				for (const name of surfacedNames) if (!(name in json)) json[name] = this[name];
 				return json;
 			}
 			// guarded path: track (tableClass, id) on the current serialization path and fully resolve
@@ -638,8 +641,9 @@ export function makeTable(options) {
 					added = true;
 				}
 				const json = {};
-				for (const key of Object.keys(this)) json[key] = resolveStructForJSON(this[key]);
-				for (const name of enumNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
+				for (const key of Object.keys(this))
+					if (!durable || !readOnlyResolverNames.has(key)) json[key] = resolveStructForJSON(this[key]);
+				for (const name of surfacedNames) if (!(name in json)) json[name] = resolveStructForJSON(this[name]);
 				return json;
 			} finally {
 				if (added) ids!.delete(idKey);
@@ -649,11 +653,11 @@ export function makeTable(options) {
 		Object.defineProperty(
 			structPrototype,
 			'toJSON',
-			hasReadOnlyResolver
+			readOnlyResolverNames.size > 0
 				? {
 						configurable: true,
 						get() {
-							return isDurableRecordEncoding() ? undefined : toJSON;
+							return isDurableRecordEncoding() && durableEnumNames.length === 0 ? undefined : toJSON;
 						},
 					}
 				: { configurable: true, value: toJSON }
@@ -5294,12 +5298,7 @@ export function makeTable(options) {
 			// Re-install each reload so the toJSON closure captures the rebuilt name list; if a reload
 			// removed all enumerable/computed-scalar attributes, drop the now-unneeded toJSON.
 			if (enumerableAttributeNames.length > 0)
-				installEnumerableToJSON(
-					primaryStore.encoder.structPrototype,
-					this,
-					hasSurfacedComputed,
-					readOnlyResolverNames.size > 0
-				);
+				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed, readOnlyResolverNames);
 			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history

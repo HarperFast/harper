@@ -20,6 +20,7 @@ describe('CRUD operations with the Resource API', () => {
 			name: 'related',
 			type: 'CRUDRelatedTable',
 			relationship: { from: 'relatedId' },
+			enumerable: true,
 			definition: {},
 		};
 		analytics.analyticsDelay = 50; // let's make this fast
@@ -193,6 +194,7 @@ describe('CRUD operations with the Resource API', () => {
 			const durable = encoder.decode(Buffer.from(encoder.encode(record)), { noMetadata: true });
 			assert(durable, 'a decoded record must survive durable re-encoding');
 			assert.equal(Object.hasOwn(durable, 'computed'), false);
+			assert.equal(durable.related.id, 1);
 		});
 		it('keeps a no-change instance put clean in the primary store', async function () {
 			if (CRUDTable.loadAsInstance !== true) this.skip();
