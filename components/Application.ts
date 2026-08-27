@@ -904,19 +904,18 @@ async function syncDirectory(dirPath: string): Promise<void> {
 	try {
 		handle = await open(dirPath, 'r');
 	} catch (error) {
-		// Expected on Windows, not a fault.
+		// Same split as `sync` below and as the file path: Windows cannot open a directory for fsync at all,
+		// and a directory removed by cleanup is not a fault either — but an EIO opening it is.
+		if (!isUnsupportedSync(error) && (error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
 		logger.trace?.(`Directory sync of ${dirPath} unavailable: ${errorMessage(error)}`);
 		return;
 	}
 	try {
 		await handle.sync();
 	} catch (error) {
-		// Same split as the file path: a platform that will not sync directories is tolerated, a storage
-		// failure is not. Suppressing EIO/ENOSPC here would let a lost directory entry look durable.
-		if (!isUnsupportedSync(error)) {
-			await handle.close().catch(() => {});
-			throw error;
-		}
+		// A platform that will not sync directories is tolerated, a storage failure is not: suppressing
+		// EIO/ENOSPC here would let a lost directory entry look durable. The `finally` closes the handle.
+		if (!isUnsupportedSync(error)) throw error;
 		logger.trace?.(`Directory sync of ${dirPath} unsupported: ${errorMessage(error)}`);
 	} finally {
 		// Swallowed: this runs outside any compensation block, so a rejecting close would surface as an
@@ -1145,6 +1144,36 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
  * component load over state nobody reconciled.
  *
  */
+/**
+ * Settle journaled activations for ONE component, assuming the caller already holds its preparation lock.
+ *
+ * Exists because the journal-first rule has to hold at every entry point, not just startup. A deploy runs
+ * `recoverOrCleanupStaleExtractionPaths` first, and that pass is journal-blind: it restores any
+ * `.in-progress-*` aside it finds. After an activation whose retirement failed, the aside still names the
+ * DISPLACED tree, so restoring it would put the old version back over the new one — the same inversion the
+ * startup ordering exists to prevent.
+ */
+async function settleJournaledActivationsForComponent(
+	componentsRootDirPath: string,
+	componentName: string
+): Promise<void> {
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	let deployments;
+	try {
+		deployments = await readdir(stagingRoot, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+		throw error;
+	}
+	for (const deployment of deployments) {
+		if (!deployment.isDirectory()) continue;
+		const deploymentDirPath = join(stagingRoot, deployment.name);
+		const journal = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
+		if (journal?.component !== componentName) continue;
+		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
+	}
+}
+
 export async function recoverInterruptedActivations(componentsRootDirPath: string): Promise<Map<string, Error>> {
 	const failures = new Map<string, Error>();
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
@@ -2282,6 +2311,16 @@ export async function installApplication(application: Application, buildDirPath 
 	const npmInstallArgs = application.install?.allowInstallScripts
 		? ['install', '--force']
 		: ['install', '--force', '--ignore-scripts'];
+	// A candidate build is installed at a staging path and then RENAMED to the live path, so nothing npm
+	// writes may depend on the build location. npm links a `file:` dependency relatively on POSIX, which
+	// survives the move — but as an absolute junction on Windows, which does not: the dependency stops
+	// resolving with `Cannot find module` once the tree moves. `--install-links` copies those dependencies
+	// instead of linking them, so there is no path to break.
+	//
+	// win32 only, and only for a candidate build: this changes how `file:` dependencies behave (a copy no
+	// longer reflects later edits to its source), so it is confined to the platform and path that require
+	// it rather than applied to every deploy everywhere.
+	if (process.platform === 'win32' && buildDirPath !== application.dirPath) npmInstallArgs.push('--install-links');
 	const npmOnLine = application.onInstallLine
 		? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!('npm', stream, line)
 		: undefined;
@@ -2528,6 +2567,9 @@ export async function prepareApplication(application: Application, options: Prep
 					if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 					recoveryPending = false;
 				}
+				// BEFORE the legacy pass, which is journal-blind and would restore an aside that a completed
+				// activation left un-retired — putting the displaced version back over the live one.
+				await settleJournaledActivationsForComponent(dirname(application.dirPath), application.name);
 				if (recoveryPending) {
 					await ensureExtractionStagingDirectory(asideStagingDir);
 					await recoverOrCleanupStaleExtractionPaths(application, asideStagingDir);

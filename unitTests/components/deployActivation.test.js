@@ -5,12 +5,14 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { existsSync } = require('node:fs');
 const os = require('node:os');
+const { Readable } = require('node:stream');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const {
 	activateCandidateApplication,
+	prepareApplication,
 	recoverInterruptedActivations,
 	candidateApplicationPath,
 	DEPLOY_STAGING_DIR,
@@ -231,6 +233,38 @@ describe('interrupted activation recovery', () => {
 
 		assert.deepStrictEqual([...failures.keys()], ['broken'], 'only the affected component is reported');
 		assert.strictEqual(await readLive(root, 'healthy'), 'CANDIDATE\n', 'the healthy sibling still settles');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+describe('journal-first on the deploy path', () => {
+	it('does not let the legacy aside pass restore a displaced tree over a live candidate', async () => {
+		// The state a completed activation whose RETIREMENT failed leaves behind: the candidate is live, the
+		// journal is still there, and an `.in-progress-*` aside still names the version it displaced. The
+		// legacy pass is journal-blind and would restore that aside — putting the old version back.
+		const root = await newRoot('journalfirst');
+		await stageState(root, 'web', 'd1', { live: 'CANDIDATE\n', journal: true, aside: 'PREVIOUS\n' });
+		// A payload that fails mid-delivery, so the deploy cannot succeed and replace the live tree — what is
+		// under test is the state the settle leaves BEFORE the build runs. (An empty buffer would extract to
+		// an empty tree and deploy successfully, which is why this uses a throwing stream.)
+		const app = new Application({
+			name: 'web',
+			payload: Readable.from(
+				(async function* () {
+					yield Buffer.from('not a tarball');
+					throw new Error('payload delivery failed');
+				})()
+			),
+		});
+		app.dirPath = path.join(root, 'web');
+
+		await assert.rejects(() => prepareApplication(app));
+
+		assert.strictEqual(
+			await readLive(root, 'web'),
+			'CANDIDATE\n',
+			'the completed activation is settled first, so the displaced version is not restored over it'
+		);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });
