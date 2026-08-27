@@ -10,7 +10,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, registryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
 import { getDatabases, resolveDatabasePath } from '../resources/databases.ts';
-import { getBlobPathsForDatabaseName } from '../resources/blob.ts';
+import {
+	type BlobCaptureDisposition,
+	classifyBlobFileForCapture,
+	createCaptureMarker,
+	getBlobPathsForDatabaseName,
+	isSystemicIoError,
+} from '../resources/blob.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { getBackupDirPath } from '../config/configHelpers.ts';
@@ -677,8 +683,8 @@ function isRocksDbLockError(error: any): boolean {
  *
  * With blobs included (the default; `excludeBlobs` opts out), the database's file-backed blob roots
  * are appended to the same archive under `blobs/<rootIndex>/<relpath>` so a downloaded backup is a
- * complete Harper database. Blob capture is best-effort point-in-time (the archive contains whatever
- * files exist while it streams); a blob deleted mid-stream is skipped.
+ * complete Harper database. Each enumerated blob is classified before capture; one that is incomplete
+ * or vanishes before it can be opened is represented by a PENDING or ERROR marker at the same path.
  */
 export function createBackupStream(
 	rootStore: RocksDatabase,
@@ -808,8 +814,8 @@ function writeWithBackpressure(dest: PassThrough, chunk: Buffer): Promise<void> 
 
 /**
  * Append every blob file under the given blob roots to `pack` as `blobs/<rootIndex>/<relpath>`
- * entries. Size is captured at open time and exactly that many bytes are streamed; a file that
- * vanished before it could be opened (a concurrent blob delete) is skipped.
+ * entries. Complete files are streamed at the size captured on open; files that cannot be captured
+ * whole are represented by markers, and repair temporaries are omitted.
  */
 async function appendBlobEntries(pack: Pack, blobRoots: string[]): Promise<void> {
 	for (let index = 0; index < blobRoots.length; index++) {
@@ -833,20 +839,56 @@ async function appendBlobEntries(pack: Pack, blobRoots: string[]): Promise<void>
 					// tar entry names are always POSIX-separated; relative() yields `\` on Windows, which
 					// would otherwise become literal filename characters when extracted on POSIX
 					const relativePath = relative(root, filePath).split(sep).join('/');
-					await appendBlobFile(pack, filePath, `blobs/${index}/${relativePath}`);
+					await appendBlobEntry(pack, filePath, `blobs/${index}/${relativePath}`);
 				}
 			}
 		}
 	}
 }
 
-/** Add a single file to the pack, streaming exactly the byte count captured at open time. */
-async function appendBlobFile(pack: Pack, filePath: string, name: string): Promise<void> {
+/**
+ * Add one blob to the pack, applying the same capture rule as the managed snapshot
+ * (`classifyBlobFileForCapture`): a blob still being written would otherwise be archived truncated,
+ * so it is packed as a PENDING marker, which also keeps its file id reserved on extraction.
+ */
+async function appendBlobEntry(pack: Pack, filePath: string, name: string): Promise<void> {
+	let disposition: BlobCaptureDisposition;
+	try {
+		disposition = await classifyBlobFileForCapture(filePath);
+	} catch (error) {
+		if (isSystemicIoError(error)) throw error; // unverified, as on the snapshot path
+		// As on the snapshot path: a read failure is not evidence the bytes are bad, so fall back to the
+		// pre-classification behavior rather than downgrading a valid blob to a stub.
+		logger.warn(`Could not verify blob ${filePath} for the backup archive; packing it unverified`, error);
+		disposition = 'capture';
+	}
+	if (disposition === 'skip') return;
+	if (disposition === 'capture') {
+		if (await appendBlobFile(pack, filePath, name)) return;
+		disposition = 'gone';
+	}
+	const marker = createCaptureMarker(
+		disposition,
+		disposition === 'gone'
+			? 'blob was deleted while this archive was being built'
+			: 'blob was not yet complete when this archive was built'
+	);
+	await new Promise<void>((resolvePromise, reject) => {
+		const entry = pack.entry({ name, size: marker.length }, (error) => (error ? reject(error) : resolvePromise()));
+		entry.end(marker);
+	});
+}
+
+/**
+ * Add a single file to the pack, streaming exactly the byte count captured at open time. Returns false
+ * if it vanished first, so the caller can still reserve its id.
+ */
+async function appendBlobFile(pack: Pack, filePath: string, name: string): Promise<boolean> {
 	let handle;
 	try {
 		handle = await open(filePath, 'r');
 	} catch (error: any) {
-		if (error.code === 'ENOENT') return; // deleted mid-walk
+		if (error.code === 'ENOENT') return false;
 		throw error;
 	}
 	try {
@@ -866,6 +908,7 @@ async function appendBlobFile(pack: Pack, filePath: string, name: string): Promi
 	} finally {
 		await handle.close();
 	}
+	return true;
 }
 
 /** Add an in-memory string to the pack as a single tar entry (used for the generated READMEs). */

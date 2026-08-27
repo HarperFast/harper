@@ -51,6 +51,8 @@ The mitigations live in three places:
 - `Table.ts` commit handlers set `write.skipped = true` (and reset to `false` at the top of each invocation) on early-return paths that don't write the record/audit: duplicate-tie, superseded-by-put, no-audit-fullUpdate-loses, and cache-resolve version-changed. The transaction commit success paths (`DatabaseTransaction.commit` and `LMDBTransaction.commit`) walk writes and call `cleanupUnusedBlobs(write.savedBlobs)` for every still-skipped write. Cleanup is deferred (rather than run inline in the commit handler) because the commit handler runs again on optimistic-lock retries, and a retry can flip a previously-skipped write into a successful one (e.g. the existing record gets deleted between attempts so the older replicated update suddenly wins). Inline cleanup would race the deletion's `setTimeout` against the retry that referenced the blob.
 - `LMDBTransaction.abort` and `DatabaseTransaction.abort` walk all writes and run the same cleanup unconditionally (regardless of `skipped`), since nothing was committed. `DatabaseTransaction.commit` adds an explicit reject handler so a `Promise.all` failure on `completions` (e.g. a blob save errored) aborts the underlying transaction instead of leaking it _and_ the blob files.
 
+**A blob instance outlives its file, so deletion tombstones it.** The `fileId` stays set on a `Blob` whose file has been unlinked, and `saveBlob` short-circuits on a set `fileId` — so a caller still holding the instance (the deploy recorder re-puts the same record object across a deploy) would re-encode a reference to a file that is gone. `cleanupUnusedBlobs` marks the blob's shared file state when transaction cleanup decides the file is no longer usable, before an in-flight save settles; slices share that state with their source. Ordinary supersession keeps its retention and re-reference window; reclamation marks every queued instance only after it claims the unlink. `saveBlob` throws on a discarded instance rather than minting a second reference (issue #2062).
+
 When adding a new commit-handler early-return path: reset `write.skipped = false` at the top of the handler if you don't already, then set `write.skipped = true` immediately before the `return`. Decide first whether the audit log will reference the blob (via `auditRecordToStore`) — if it does, leave `skipped` unset. `cleanupOrphans` is the periodic safety net; don't rely on it for transactional correctness.
 
 **Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
@@ -63,7 +65,8 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 - **`hasPendingWrites()` walks the `next` chain.** Writes to a second database live on `transaction.next` (see `txnForContext`), so a transaction that reads database A (head, tracked via its read snapshot, empty `writes`) and writes database B (`next`) is still write-bearing. Without the walk the head looks read-only and the monitor's force-commit path would cascade-commit B. `abortDueToTimeout()` poisons + aborts the whole chain.
 - **Read-only, `sourceApply`, and `isReplay` transactions keep the prior force-commit behavior.** Read-only long transactions (large scans/exports) have no atomicity/index risk and must not have their ongoing reads poisoned. Canonical-source applies (replication peer / external caching source) and crash-recovery replay have no resubscribe/resume path: aborting a write would drop it while the resume cursor advances past it — a permanent divergence (harper-pro#348). `sourceApply` is propagated down the `next` chain in `txnForContext`, so gating on the head suffices. (Replay is additionally synchronous, so the async monitor can't fire mid-replay anyway.)
 
-Known minor: if the monitor aborts a write transaction whose async `commit()` is already in flight (awaiting `before` hooks), the resumed continuation double-decrements `readTxnsUsed` and double-`abort()`s the underlying transaction (swallowed by the existing try/catch). Data is still correctly rolled back and the request errors; the only artifact is an inert negative counter on a dead transaction object.
+- **A transaction parked in its commit phase is spared, not poisoned** (issue #2062). `commit()` sets `committing` around its pre-commit await (the `before`/`beforeIntermediate` completions — in practice a blob's durable file write) and the monitor logs instead of aborting while it is set. The limit polices an _application_ holding a transaction open with an unfinished write set; once `commit()` is entered the write set is sealed and the caller is awaiting the commit, so the time is core's own I/O, and a multi-tens-of-MB deploy payload legitimately outruns the limit. Poisoning there was actively destructive: `abort()` cleared the write set and unlinked the write's pre-saved blobs, and the resumed commit then found nothing to write and resolved as **success** — the caller was told its write landed, and was left holding a blob whose file was gone but whose `fileId` was still set, so its next `put` silently minted a reference to a destroyed file (the deploy-payload case: `Blob file not found` on the peer, unrecoverably). The grace is bounded — `COMMIT_PHASE_GRACE` over-limit ticks, ~10 min at the 30s default, since sparing re-arms `timeout` — because the transaction still pins a read snapshot; a source that stalls rather than finishing falls through to the normal abort. `sourceApply`/`isReplay` are spared without a bound: they may be neither aborted (harper-pro#348) nor force-committed mid-write (that would durably commit a replica record whose blob file is still being written), and their blob sources are bounded by the receive-side idle watchdog instead.
+- **Resuming from that await re-checks that the transaction is still alive.** `timedOut` (monitor poison, including via the `next` chain) throws `transactionOpenTooLongError`; a write set cleared with the handle released — a plain `abort()` in the same window — throws `Transaction was aborted while its commit was waiting on pre-commit work`. Without both, either path resolves as a phantom commit. `LMDBTransaction.commit` carries the same pair around its own `before` phase.
 
 **Extending the budget for one known-long write:** `DatabaseTransaction.timeoutBudget` is a per-transaction RocksDB floor applied whenever the transaction is re-armed (initial reads, writes, and active multi-store-chain propagation); the effective timeout is `Math.max(txnExpiration, timeoutBudget)`. This makes the budget sticky across a write's pre-commit existing-entry read and later writes, while never shortening a larger global `STORAGE_MAXTRANSACTIONOPENTIME`; RocksDB links added for another store inherit the same floor. Reads after a pending write do not re-arm the transaction: that preserves the idle-limit invariant for orphaned write-holding requests. Also, `resources/transaction.ts`'s `transaction(callback)` (no explicit context) joins whatever transaction is already open on the ambient AsyncLocalStorage context rather than guaranteeing a fresh one. `components/deploymentRecorder.ts`'s `withIsolatedTransaction` builds a new context from only the ambient audit/session/cancellation fields, so every recorder write commits independently without inheriting transaction controls. It uses the sticky budget to give `ingestPayload`'s blob-gated writes a size-appropriate limit instead of the generic default, while coalesced progress flushes are drained and suppressed until ingest settles to avoid same-row transaction conflicts. The ingest helper deliberately floors the shared `deployment_timeout` at ten minutes because `0` means “poll once” for peer waits; consequently an ingest can pin its system-database snapshot for that minimum. Known gap (harper#2057): the extension only reaches RocksDB transactions — on `HARPER_STORAGE_ENGINE=lmdb`, `Table.txnForContext()` chains a separate `LMDBTransaction` (`txn.next`) with its own independently-reset timeout that the LMDB engine's monitor tracks instead.
 
@@ -818,24 +821,23 @@ engine-only backup):
 
 - **Managed backups** snapshot the blob roots to `<backupDir>/blobs/<backupId>/<rootIndex>/<relpath>`
   — a full, non-incremental copy per backup, mirroring the binding's `transaction_logs/<id>/` layout.
-  Files are hard-linked when possible (cheap, no extra space on the same filesystem) and copied when
-  the backup root is on a different filesystem; never symlinked. Hard-linking is safe against later
-  mutation because Harper blobs are content-addressed and write-once (each write allocates a new
-  monotonic file id → a new path; updates/deletes unlink the old path), so a snapshot's hard link
-  keeps the exact bytes even after the live blob is deleted, and no in-place overwrite can alter it.
-  The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create leaves no
-  partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot (so a
-  blob added after the backup is dropped and one deleted after it returns); `delete_backup` /
-  `purge_backups` remove the corresponding snapshot directories.
+  Each enumerated entry is classified before capture: complete blobs and existing abort markers are
+  hard-linked when possible (copied across filesystems), `.repair` temporaries are omitted, and an
+  incomplete blob is replaced by a retryable PENDING (`0xfe`) marker. If a classified blob vanishes
+  before capture, a terminal ERROR (`0xff`) marker preserves its file id. A file reclaimed before its
+  parent directory is read is outside the snapshot. This keeps a snapshot inode from changing as a
+  live write finishes, while complete blobs remain safe to hard-link because published blob paths are
+  write-once. The snapshot is built in a `.tmp-<id>` sibling and atomically renamed so a failed create
+  leaves no partial snapshot. `restore_backup` purges each blob root and rewrites it from the snapshot;
+  `delete_backup` / `purge_backups` remove the corresponding snapshot directories.
 - **`get_backup`** appends the blob files to the same tar under `blobs/<rootIndex>/<relpath>`. The
   binding's streaming backup finalizes its tar with exactly a 1024-byte (two-block) end-of-archive
   marker; `createBackupStream` streams the native _plain_ tar while withholding that trailer
   (verifying it is all-zero), appends the blob entries via `tar-stream` (whose `finalize` writes the
   one real trailer), and gzips the combined stream itself when requested — so the binding is always
-  asked for a plain tar and compression happens after the append. No scratch disk. Blob capture is
-  best-effort point-in-time (whatever files exist while it streams; a blob deleted mid-stream is
-  skipped) — Harper does not freeze blob writes for a backup, the same tradeoff the engine makes for
-  the transaction log.
+  asked for a plain tar and compression happens after the append. No scratch disk. The same blob
+  classification rule applies: complete blobs are streamed, incomplete or post-enumeration missing
+  blobs become PENDING/ERROR marker entries, and repair temporaries are omitted.
 
 **Completion manifest (`dataLayer/backupManifest.ts`).** `create_backup` is two-phase: the engine
 backup (`rootStore.backup()`) resolves — and is immediately visible to `list_backups`/`verify_backup`/
@@ -1273,3 +1275,62 @@ An `{}` in the config system is context-dependent, and conflating the contexts i
 Removal therefore prunes: `deleteNestedValue` removes ancestors the deletion emptied, only when it actually deleted an existing leaf, and reports what it pruned. The overlap case — a file-declared empty scope an env layer temporarily populated — is tracked in the state file's `emptyScopeOriginals` (separate from `originalValues` so a marker can never mask or be consumed as a real leaf original at the same path; older state files lacking the field are defaulted). Restore consumes a marker only for a path the prune actually removed, so a scalar overwrite or an absent-leaf no-op can never resurrect a scope over live env-layer content. Note there are two coexisting mechanisms for "file `{}` is user content": `restoreBaseEmptyObjects` on the stateless compose path and the marker pair on the stateful removal path — if you touch one, check the other.
 
 Two durable limitations of the marker mechanism, both with user config-file content as the blast radius: markers can only be recorded at populate time, so a scope an env layer populated _before_ `emptyScopeOriginals` existed (any pre-upgrade boot) has no marker and prunes away on its first post-upgrade vacate; and a corrupt config-state file resets to fresh state — dropping `originalValues` and `emptyScopeOriginals` for every tracked path — after which the next removal prunes those scopes for good; `saveConfigState` writes via temp+rename precisely so a torn write cannot be the trigger, leaving genuine corruption (disk faults, hand edits) as the remaining path.
+
+## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
+
+libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with
+`GetLongPathNameW`, and asserts the expansion still starts with the directory it stored when the
+watch was armed. An 8.3 short directory (`C:\Users\RUNNER~1\...`) never survives that comparison,
+and libuv **aborts the process** rather than failing the watch — there is no JS-observable seam, so
+`isWatcherExhaustionError`/polling recovery never runs (harper#2234).
+
+The trap is that libuv only stores that directory for **file** targets, which reads as a narrow
+surface until you follow chokidar: v4 opens a per-file `fs.watch` for every file it discovers inside
+a watched tree, so one directory watch arms hundreds of file watches.
+
+So `canonicalizeWatchPath` runs on every path before it reaches `fs.watch` (directly or through
+chokidar), and returns `undefined` when it cannot establish the long form; `resolveWatchTarget` turns
+that into `mustPoll`, and polling stats the file instead of arming a native watch. It resolves every
+Windows path rather than only the ones that look short: `GetLongPathNameW`'s documentation is
+explicit that a short name need not contain a tilde, so any spelling test leaves the abort reachable.
+Plain `realpathSync` is not a substitute for the `.native` variant: it resolves symlinks but leaves
+8.3 names intact — which also means Windows watch paths are symlink-resolved, matching what
+`fs.watch` already does elsewhere by following a symlinked file to its target inode. A leaf that does
+not exist yet resolves through its directory, because libuv stores and compares only the parent
+directory of a file target.
+
+New watch sites must go through it. As of this writing the sites are `components/EntryHandler.ts`,
+`components/OptionsWatcher.ts`, `config/RootConfigWatcher.ts`, `security/keys.ts`,
+`server/threads/manageThreads.js`, and `resources/blob.ts`. `fs.watchFile` (`utility/logging/readLog.ts`)
+is stat polling with no fs-event handle and is outside this invariant.
+
+Two consequences worth knowing before adding a caller. `EntryHandler` is the one place where the
+canonical path is load-bearing past the `fs.watch` call: chokidar's `ignored` predicate receives
+absolute paths built from `cwd`, so its bases must be derived from the same spelling, while event
+paths are relative to `cwd` and reads stay on the configured `component.directory`. And a watcher
+that degrades to polling stays there for its lifetime, so a caller with no polling story of its own
+(`resources/blob.ts`) needs one — there it polls `readMore` on the existing no-progress deadline.
+
+## No descriptor on the root config may outlive a turn (`config/configUtils.ts`, `config/RootConfigWatcher.ts`, `components/OptionsWatcher.ts`)
+
+`atomicWriteFile` replaces `harper-config.yaml` by rename-over and retries `EPERM`/`EACCES` with a
+synchronous `Atomics.wait`. On Windows a rename over an open destination fails, and a descriptor
+belongs to the process, not the thread — measured on `windows-latest`/Node 24: a single Node read
+descriptor on the destination blocks it, while `fs.watch` and chokidar handles do not.
+
+That makes the retry unable to outlast a holder on the _calling_ thread, because the sleep blocks
+the event loop whose turn would close it: the holder's lifetime becomes exactly the retry budget
+and every attempt fails. This is why widening the budget (#1714, #2036) never fixed the
+`set_configuration` 500s it was aimed at, and why both root-config watchers read with
+`readFileSync`. Any future `fsPromises.readFile` of this file reintroduces harper#2313 — the rule
+is unenforced by anything but this note and the comment on `atomicWriteFile`.
+
+The synchronous read then sees writers mid-write, which promise-based reads mostly skipped. A read
+that is unusable — empty, or parsing to anything but an object — is retried by `PartialReadRetry`
+(`utility/watcherFallback.ts`) rather than adopted, because chokidar may emit nothing further for
+that write. Completeness is judged on the file's own parse, _before_ `overlayRootEnvConfig`, which
+returns a non-null object whenever a config env var is set and would otherwise launder a
+half-written file into a valid-looking env-only config. Its three outcomes are distinct and each
+one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
+restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
+report standing, since it is shared with every other watcher of that file; closing is terminal.

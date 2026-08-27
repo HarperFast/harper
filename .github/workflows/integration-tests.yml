@@ -25,10 +25,14 @@ on:
 permissions:
   contents: read
 
+# Each shard job bounds its test step below its own job bound: a step timeout FAILS the step, so
+# the `if: failure()` Harper-log upload still runs, while a job timeout CANCELS it and skips the
+# upload.
 jobs:
   generate-node-version-matrix:
     name: Generate Node Version Matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       node-versions: ${{ steps.set-node-versions.outputs.node-versions }}
 
@@ -64,6 +68,7 @@ jobs:
     name: Build Harper (Node.js v${{ matrix.node-version }})
     needs: generate-node-version-matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     strategy:
       fail-fast: false
@@ -106,6 +111,7 @@ jobs:
   run-integration-tests:
     name: Integration Tests ${{matrix.shard}}/6 (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [generate-node-version-matrix, build]
     strategy:
       fail-fast: false
@@ -148,6 +154,7 @@ jobs:
           npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
 
       - name: Run Integration Test Shard ${{ matrix.shard }}
+        timeout-minutes: 15
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
@@ -168,6 +175,7 @@ jobs:
   build-windows:
     name: Build Harper (Windows, Node.js v24)
     runs-on: windows-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -200,6 +208,7 @@ jobs:
   run-integration-tests-windows:
     name: Integration Tests ${{matrix.shard}}/6 (Windows, Node.js v24)
     runs-on: windows-latest
+    timeout-minutes: 30
     needs: [build-windows]
     strategy:
       fail-fast: false
@@ -228,6 +237,7 @@ jobs:
         run: npm install --ignore-scripts --prefix "${{ runner.temp }}/harperdb-legacy" harperdb@4
 
       - name: Run Integration Test Shard ${{ matrix.shard }}
+        timeout-minutes: 20
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: ${{ runner.temp }}/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: ${{ runner.temp }}/harperdb-legacy/node_modules/harperdb
@@ -246,6 +256,7 @@ jobs:
   run-integration-tests-bun:
     name: Integration Tests ${{matrix.shard}}/6 (Bun)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [build]
     strategy:
       fail-fast: false
@@ -276,6 +287,7 @@ jobs:
         run: npm install --ignore-scripts
 
       - name: Run Integration Test Shard ${{ matrix.shard }}
+        timeout-minutes: 15
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_RUNTIME: bun
@@ -295,6 +307,7 @@ jobs:
   run-integration-tests-uws:
     name: Integration Tests ${{matrix.shard}}/6 (uWS HTTP)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: [build]
     strategy:
       fail-fast: false
@@ -334,6 +347,7 @@ jobs:
       # keep running on Node, so this exercises the uWS request/streaming/WS/GraphQL/Fastify-fallback
       # path against the full integration suite.
       - name: Run Integration Test Shard ${{ matrix.shard }}
+        timeout-minutes: 15
         env:
           HARPER_INTEGRATION_TEST_LOG_DIR: /tmp/harper-integration-test-logs
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb

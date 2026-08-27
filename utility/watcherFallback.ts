@@ -10,6 +10,7 @@ import { loggerWithTag } from './logging/harper_logger.ts';
 // One-time process-wide warning so a thundering herd of failing watchers doesn't
 // produce hundreds of identical log lines.
 let exhaustionWarned = false;
+const partialReadWarned = new Set<string>();
 
 const fallbackLogger = loggerWithTag('watcher');
 
@@ -71,4 +72,125 @@ export function warnWatcherFallback(watchedPath: string): void {
 // Test-only hook to reset the one-time warning gate between cases.
 export function _resetForTests(): void {
 	exhaustionWarned = false;
+}
+
+/**
+ * A config file replaced in place (truncate, then write) can be read back empty or
+ * half-written, and chokidar may emit nothing further for that write — so a watcher that
+ * simply drops the unusable read would serve stale config until something else touched the
+ * file. Re-read on a later turn instead, bounded so a genuinely empty or corrupt file cannot
+ * spin. Callers read synchronously, so the descriptor still never outlives a single turn.
+ */
+const PARTIAL_READ_REREAD_DELAY_MS = 20;
+const PARTIAL_READ_MAX_REREADS = 10;
+
+export class PartialReadRetry {
+	#filePath: string;
+	#timer?: ReturnType<typeof setTimeout>;
+	#remaining: number = PARTIAL_READ_MAX_REREADS;
+	#closed = false;
+
+	constructor(filePath: string) {
+		this.#filePath = filePath;
+	}
+
+	/** False once the budget is spent, so the caller can fall back to its own error handling. */
+	schedule(reread: () => void): boolean {
+		if (this.#closed) return false;
+		if (this.#timer) return true;
+		if (this.#remaining <= 0) return false;
+		this.#remaining--;
+		this.#timer = setTimeout(() => {
+			this.#timer = undefined;
+			reread();
+		}, PARTIAL_READ_REREAD_DELAY_MS);
+		this.#timer.unref?.();
+		return true;
+	}
+
+	/** A usable read arrived, so any re-read still armed for the previous one would duplicate it. */
+	settled() {
+		if (this.#timer) clearTimeout(this.#timer);
+		this.#timer = undefined;
+		this.#remaining = PARTIAL_READ_MAX_REREADS;
+		// The file recovered, so the next time it breaks is a new incident and has to be reported
+		// again rather than silenced by the warning it emitted weeks ago.
+		partialReadWarned.delete(this.#filePath);
+	}
+
+	/**
+	 * The budget is spent. Distinct from `settled()` in that the report stands — the file has not
+	 * recovered, and it is shared with every other watcher of it. The budget itself is restored,
+	 * because the next event may be the repair, and that repair can be observed mid-write too.
+	 * Returns whether this give-up was the one reported.
+	 */
+	gaveUp(error?: unknown): boolean {
+		if (this.#closed) return false;
+		this.#remaining = PARTIAL_READ_MAX_REREADS;
+		return warnPartialReadGaveUp(this.#filePath, error);
+	}
+
+	/** Terminal: the watcher is closing, so nothing may re-arm the re-read or report on it. */
+	cancel() {
+		if (this.#timer) clearTimeout(this.#timer);
+		this.#timer = undefined;
+		this.#closed = true;
+	}
+}
+
+/**
+ * ENOENT is excluded not because it cannot be transient, but because it already has an answer:
+ * `OptionsWatcher` routes it to `remove` (env-only fallback at boot, then removal), and
+ * `RootConfigWatcher` keeps its last config rather than tearing down core features on a file
+ * that may just be mid-replace. Re-reading would only delay a decision already made.
+ */
+export function isPartialReadError(error: unknown): boolean {
+	return !(typeof error === 'object' && error !== null && (error as { code?: string }).code === 'ENOENT');
+}
+
+/**
+ * A watcher that exhausts its re-read budget serves stale config from then on, so the give-up
+ * has to be visible — otherwise the only symptom is a config change that silently did nothing.
+ * Warned once per file: every root-config scope watches the same one and would otherwise report
+ * a single bad file once each, on every event.
+ */
+export function warnPartialReadGaveUp(filePath: string, error?: unknown): boolean {
+	if (partialReadWarned.has(filePath)) return false;
+	partialReadWarned.add(filePath);
+	// The cause matters to whoever has to fix it: a file that never parses is a typo to correct,
+	// while one that reads empty is a writer that never finished. Report the kind and position
+	// only — a YAML parse error's message quotes the offending source, and this file holds
+	// credentials.
+	const cause = error ? `: ${describeReadFailure(error)}` : ' that were empty or incomplete';
+	fallbackLogger.warn(`Gave up re-reading ${filePath} after ${PARTIAL_READ_MAX_REREADS} unusable reads${cause}`);
+	return true;
+}
+
+/**
+ * The kind and position of a failed config read, never its content: a YAML parse error's message
+ * quotes the offending source lines, and these files hold credentials.
+ */
+export function describeReadFailure(error: unknown): string {
+	if (typeof error !== 'object' || error === null) return 'unusable';
+	const { name, code, linePos } = error as { name?: string; code?: string; linePos?: { line: number; col: number }[] };
+	const at = linePos?.[0] ? ` at line ${linePos[0].line}, column ${linePos[0].col}` : '';
+	return `${code ?? name ?? 'unusable'}${at}`;
+}
+
+/** Test-only: whether a give-up warning for this file is currently suppressed as a duplicate. */
+export function isPartialReadWarned(filePath: string): boolean {
+	return partialReadWarned.has(filePath);
+}
+
+/** Test-only: forget that this file was reported, so a suite can start from a known state. */
+export function clearPartialReadWarning(filePath: string) {
+	partialReadWarned.delete(filePath);
+}
+
+/**
+ * A listener that throws while applying new config is a bug in that listener, not evidence the
+ * file was half-written — the watcher's own state is already updated, so it keeps going.
+ */
+export function warnWatcherListenerError(filePath: string, error: unknown) {
+	fallbackLogger.warn(`Error applying a configuration change from ${filePath}`, error);
 }
