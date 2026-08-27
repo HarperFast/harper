@@ -7,6 +7,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const {
 	clearNextEncoding,
+	encodeRecordForResponse,
 	projectRecordForResponseEncoding,
 	setNextEncoding,
 } = require('#src/resources/RecordEncoder');
@@ -319,10 +320,19 @@ describe('CRUD operations with the Resource API', () => {
 	});
 	it('preserves response projections in retained message payloads', function () {
 		const encoder = CRUDTable.primaryStore.encoder;
-		const record = Object.assign(Object.create(encoder.structPrototype), { id: 'message-record', name: 'message' });
+		const nestedRecord = Object.assign(Object.create(encoder.structPrototype), {
+			id: 'nested-message-record',
+			name: 'nested message',
+		});
+		const record = Object.assign(Object.create(encoder.structPrototype), {
+			id: 'message-record',
+			name: 'message',
+		});
 		const projected = projectRecordForResponseEncoding(record);
 		assert.equal(projected.computed, 'message computed');
 		assert.equal(Object.hasOwn(projected, 'computed'), true);
+		const messageEnvelope = { record: nestedRecord };
+		assert.equal(Object.hasOwn(messageEnvelope.record, 'computed'), false);
 		const message = readAuditEntry(
 			Buffer.from(
 				createAuditEntry({
@@ -331,12 +341,12 @@ describe('CRUD operations with the Resource API', () => {
 					recordId: 'message-record',
 					version: Date.now(),
 					nodeId: 0,
-					encodedRecord: Buffer.from(encoder.encode(projected)),
+					encodedRecord: Buffer.from(encodeRecordForResponse(encoder, messageEnvelope)),
 				})
 			)
 		).getValue(CRUDTable.primaryStore);
-		assert.equal(message.computed, 'message computed');
-		assert.equal(Object.hasOwn(message, 'computed'), true);
+		assert.equal(message.record.computed, 'nested message computed');
+		assert.equal(Object.hasOwn(message.record, 'computed'), true);
 	});
 	async function waitForAnalyticsMetric(metric, start, path = 'CRUDTable') {
 		return waitFor(

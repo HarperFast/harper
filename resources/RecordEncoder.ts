@@ -43,6 +43,7 @@ export const EVICTED = 8; // 2 is reserved for timestamps
 // Source and built module copies can coexist, so they must share the durable-encoding scope.
 const DURABLE_ENCODING_DEPTH = Symbol.for('harper.durableEncodeDepth');
 const PARTIAL_PROJECTION_ENCODING_DEPTH = Symbol.for('harper.partialProjectionEncodeDepth');
+const RESPONSE_ENCODING_DEPTH = Symbol.for('harper.responseEncodeDepth');
 
 export function isDurableRecordEncoding() {
 	return ((globalThis as any)[DURABLE_ENCODING_DEPTH] ?? 0) > 0;
@@ -72,11 +73,22 @@ function leaveDurableRecordEncoding() {
 }
 
 function encodeDurably(encoder, encode, record, options?) {
+	if (((globalThis as any)[RESPONSE_ENCODING_DEPTH] ?? 0) > 0) return encode.call(encoder, record, options);
 	enterDurableRecordEncoding();
 	try {
 		return encode.call(encoder, record, options);
 	} finally {
 		leaveDurableRecordEncoding();
+	}
+}
+
+export function encodeRecordForResponse(encoder, record, options?) {
+	const globals = globalThis as any;
+	globals[RESPONSE_ENCODING_DEPTH] = (globals[RESPONSE_ENCODING_DEPTH] ?? 0) + 1;
+	try {
+		return encoder.encode(record, options);
+	} finally {
+		globals[RESPONSE_ENCODING_DEPTH]--;
 	}
 }
 
@@ -1056,7 +1068,14 @@ export function recordUpdater(store, tableId, auditStore) {
 				const username = typeof options?.user === 'string' ? options.user : options?.user?.username;
 				if (auditRecord) {
 					const encodedAuditRecord = type === 'message' ? projectRecordForResponseEncoding(auditRecord) : auditRecord;
-					encodeBlobsWithFilePath(() => store.encoder.encode(encodedAuditRecord), id, store.rootStore);
+					encodeBlobsWithFilePath(
+						() =>
+							type === 'message'
+								? encodeRecordForResponse(store.encoder, encodedAuditRecord)
+								: store.encoder.encode(encodedAuditRecord),
+						id,
+						store.rootStore
+					);
 					if (blobsWereEncoded) {
 						extendedType |= HAS_BLOBS;
 					}
