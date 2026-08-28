@@ -90,7 +90,9 @@ export class ComponentStatusRegistry {
 			const live = this.statusMap.get(componentName);
 			if (!live) return undefined;
 			const copy = new ComponentStatus(live.status, live.message, live.error);
-			copy.lastChecked = live.lastChecked;
+			// A new Date, not the live one: `Date` is mutable, so sharing it would let candidate code reach
+			// back into the serving component's status through the copy.
+			copy.lastChecked = new Date(live.lastChecked);
 			sink.set(componentName, copy);
 			return copy;
 		}

@@ -1781,17 +1781,32 @@ const CANDIDATE_SYNC_CONCURRENCY = 16;
 // thousands of directories and a serial depth-first walk after every activation is a real cost.
 const LINK_REPAIR_CONCURRENCY = 8;
 
-async function syncTreeContents(rootPath: string): Promise<void> {
+async function syncTreeContents(rootPath: string, foreignTree = false): Promise<void> {
 	// Real durability failures propagate: the deploy fails, which is safe because the live tree is
 	// untouched. Platform "cannot fsync this handle" codes do not — treating those as durability failures
 	// fails every deploy on Windows.
-	const entries = await readdir(rootPath, { withFileTypes: true });
+	const entries = await readdir(rootPath, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+		// Same reasoning as the per-file tolerance below: a directory inside a foreign tree that this uid
+		// cannot list is not ours to make durable, and failing here fails a deploy over a directory the
+		// deploy never wrote.
+		if (foreignTree && error?.code === 'EACCES') {
+			logger.trace?.(`Sync of ${rootPath} unavailable: ${errorMessage(error)}`);
+			return undefined;
+		}
+		throw error;
+	});
+	if (!entries) return;
 	const syncFile = async (entryPath: string) => {
 		let handle;
 		try {
 			handle = await open(entryPath, 'r');
 		} catch (error) {
-			if (isUnsupportedSync(error)) {
+			// `foreignTree`: a `file:<directory>` candidate is a symlink to a tree this deploy does not own,
+			// so it can hold files the Harper uid cannot open. Those are not ours to make durable and their
+			// EACCES says nothing about whether the install output beside them reached storage — while
+			// failing here would fail an otherwise valid deploy over a file the deploy never touched. The
+			// install output itself is ours, readable, and still fsynced.
+			if (isUnsupportedSync(error) || (foreignTree && (error as NodeJS.ErrnoException)?.code === 'EACCES')) {
 				logger.trace?.(`Sync of ${entryPath} unavailable: ${errorMessage(error)}`);
 				return;
 			}
@@ -1810,7 +1825,7 @@ async function syncTreeContents(rootPath: string): Promise<void> {
 	for (const entry of entries) {
 		const entryPath = join(rootPath, entry.name);
 		if (entry.isDirectory()) {
-			await syncTreeContents(entryPath);
+			await syncTreeContents(entryPath, foreignTree);
 		} else if (entry.isFile()) {
 			pending.push(syncFile(entryPath));
 			if (pending.length >= CANDIDATE_SYNC_CONCURRENCY) {
@@ -1822,7 +1837,7 @@ async function syncTreeContents(rootPath: string): Promise<void> {
 	await syncDirectory(rootPath);
 }
 
-async function markCandidateComplete(
+export async function markCandidateComplete(
 	componentDirPath: string,
 	deploymentId: string,
 	componentName: string
@@ -1830,10 +1845,10 @@ async function markCandidateComplete(
 	// Contents first: `.complete` is roll-forward AUTHORITY, so it must not be durable before the tree it
 	// vouches for.
 	//
-	// Except through a symlink. A `file:<directory>` candidate IS a symlink to a tree this deploy does not
-	// own — walking it fsyncs the developer's source directory, and one file the Harper uid cannot open
-	// raises EACCES, which is a real storage error rather than an unsupported-sync code and so fails an
-	// otherwise valid deploy. There is nothing of ours in that tree to make durable.
+	// A `file:<directory>` candidate IS a symlink to a tree this deploy does not own, but the dependency
+	// install writes THROUGH it — so the tree still has to be walked, or the install output `.complete`
+	// vouches for is never made durable. Only the foreign files alongside it are tolerated: see
+	// `syncTreeContents`.
 	const candidatePath = candidateApplicationPath(componentDirPath, deploymentId);
 	const candidateIsLink = await lstat(candidatePath).then(
 		(stats) => stats.isSymbolicLink(),
@@ -1842,7 +1857,7 @@ async function markCandidateComplete(
 			throw error;
 		}
 	);
-	if (!candidateIsLink) await syncTreeContents(candidatePath);
+	await syncTreeContents(candidatePath, candidateIsLink);
 	try {
 		await writeControlFileDurably(candidateComponentFilePath(componentDirPath, deploymentId), componentName);
 	} catch (error) {

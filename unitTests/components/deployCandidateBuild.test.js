@@ -105,6 +105,38 @@ describe('deploy candidate builds', () => {
 		await fs.rm(componentsRoot, { recursive: true, force: true });
 	});
 
+	it('still fsyncs a file: candidate, tolerating only the foreign files beside it', async function () {
+		if (process.platform === 'win32') return this.skip(); // chmod-based unreadability is a POSIX test
+		this.timeout(20000);
+		const { markCandidateComplete } = require('#src/components/Application');
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-filelink-'));
+		const dirPath = await makeLiveComponent(componentsRoot, 'web', 'LIVE v1\n');
+		// A `file:` candidate is a symlink into a developer's own tree, which can hold a file the Harper uid
+		// cannot open. That file is not ours to make durable — but the install output written THROUGH the
+		// link is, so the tree still has to be walked.
+		const source = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-src-link-'));
+		await fs.writeFile(path.join(source, 'package.json'), '{"name":"web","version":"2.0.0"}\n');
+		await fs.mkdir(path.join(source, 'node_modules'), { recursive: true });
+		await fs.writeFile(path.join(source, 'node_modules', 'installed.js'), 'INSTALL OUTPUT\n');
+		const unreadable = path.join(source, 'private.key');
+		await fs.writeFile(unreadable, 'secret');
+		await fs.chmod(unreadable, 0o000);
+
+		const deploymentDir = path.join(componentsRoot, '.deploy-staging', 'dep-link');
+		await fs.mkdir(deploymentDir, { recursive: true });
+		await fs.symlink(source, path.join(deploymentDir, 'web'), 'dir');
+
+		await markCandidateComplete(dirPath, 'dep-link', 'web');
+
+		assert.ok(
+			existsSync(path.join(deploymentDir, '.complete')),
+			'the deploy is not failed by a file it never wrote and cannot read'
+		);
+		await fs.chmod(unreadable, 0o600);
+		await fs.rm(componentsRoot, { recursive: true, force: true });
+		await fs.rm(source, { recursive: true, force: true });
+	});
+
 	it('leaves no candidate behind and no mark on the live tree when the build fails', async function () {
 		this.timeout(20000);
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-failed-'));
