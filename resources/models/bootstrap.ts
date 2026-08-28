@@ -154,18 +154,36 @@ export function applyModelsConfig(models: ModelsConfig | undefined): Promise<voi
 }
 
 // Interleaved applies could install an older credential last; serialized + coalesced, they cannot.
-let pendingApply: { block: ModelsConfig | undefined; isBoot: boolean } | undefined;
+// Boot and reload coalesce SEPARATELY: merging them either loses boot's overwrite contract or
+// launders a raw watcher block through boot semantics, past reload validation and the missing-key
+// no-op. Boot drains first; the newest reload then refines it under its own rules.
+let pendingBoot: { block: ModelsConfig | undefined } | undefined;
+let pendingReload: { block: ModelsConfig | null | undefined } | undefined;
 let applyChain: Promise<void> | undefined;
 
-function queueModelsApply(block: ModelsConfig | undefined, isBoot: boolean): Promise<void> {
-	pendingApply = { block, isBoot };
+function queueModelsApply(block: ModelsConfig | null | undefined, isBoot: boolean): Promise<void> {
+	if (isBoot) {
+		pendingBoot = { block: block ?? undefined };
+		// A boot supersedes any reload queued before it — draining that older snapshot after the
+		// newer boot would refine it backwards. A reload queued after the boot still refines. The
+		// same applies one layer down: a watcher snapshot OBSERVED before this boot whose settle
+		// timer has not fired yet is also pre-boot content — boot read the same file, so dropping
+		// the timer loses nothing newer.
+		pendingReload = undefined;
+		clearTimeout(pendingSettle);
+		pendingSettle = undefined;
+	} else {
+		pendingReload = { block };
+	}
 	applyChain ??= (async () => {
 		try {
-			while (pendingApply) {
-				const next = pendingApply;
-				pendingApply = undefined;
+			while (pendingBoot || pendingReload) {
+				const isBootTurn = pendingBoot !== undefined;
+				const next = isBootTurn ? pendingBoot! : pendingReload!;
+				if (isBootTurn) pendingBoot = undefined;
+				else pendingReload = undefined;
 				try {
-					await applyModels(next.block, next.isBoot);
+					await applyModels(next.block, isBootTurn);
 				} catch (err) {
 					// Per-entry failures are handled inside applyModels; this catches a failure of the apply
 					// itself. The chain must not reject — the watcher calls fire-and-forget, so a rejection

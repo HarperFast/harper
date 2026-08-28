@@ -411,6 +411,103 @@ describe('models config hot reload (#2344)', () => {
 			assert.strictEqual(candidates[1], getBackend('embedding', 'b'), 'the group now routes to b, not a');
 		});
 
+		it('keeps boot semantics when a reload coalesces over a queued boot', async () => {
+			// While an apply is in flight, a queued bootstrapModels can be overwritten by a watcher
+			// event; the newest block wins, but the boot flag must stick or the re-bootstrap silently
+			// loses its overwrite contract.
+			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
+			const appOwned = { name: 'app-policy-backend', capabilities: () => ({ embed: true }) };
+			let release;
+			let inFlight;
+			globalThis.__helperGate = new Promise((resolve) => (release = resolve));
+			globalThis.__helperGateReached = false;
+			try {
+				setEmbedding('victim', appOwned);
+				inFlight = applyModelsConfig(block({ slow: { backend: helperModule, model: 'm1' } }));
+				await waitFor(() => globalThis.__helperGateReached, { message: 'in-flight apply never started' });
+
+				const boot = bootstrapModels({ models: block({ victim: openaiEntry('sk-boot') }) });
+				const reload = applyModelsConfig(block({ victim: openaiEntry('sk-boot') }));
+
+				release();
+				await Promise.all([inFlight, boot, reload]);
+
+				assert.notEqual(getBackend('embedding', 'victim'), appOwned, 'boot overwrote the occupant');
+			} finally {
+				release();
+				await inFlight?.catch(() => {});
+				delete globalThis.__helperGate;
+				delete globalThis.__helperGateReached;
+			}
+		});
+
+		it('a boot supersedes a reload queued before it, and is refined by one queued after', async () => {
+			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
+			let release;
+			let inFlight;
+			globalThis.__helperGate = new Promise((resolve) => (release = resolve));
+			globalThis.__helperGateReached = false;
+			try {
+				inFlight = applyModelsConfig(block({ slow: { backend: helperModule, model: 'm1' } }));
+				await waitFor(() => globalThis.__helperGateReached, { message: 'in-flight apply never started' });
+
+				// Queued in this order: stale reload, then a NEWER boot. Draining the stale reload after
+				// the boot would resurrect `stale` and refine the newer truth backwards.
+				const staleReload = applyModelsConfig(
+					block({ slow: { backend: helperModule, model: 'm1' }, stale: openaiEntry('sk-stale') })
+				);
+				const boot = bootstrapModels({
+					models: block({ slow: { backend: helperModule, model: 'm1' }, keeper: openaiEntry('sk-boot') }),
+				});
+
+				release();
+				await Promise.all([inFlight, staleReload, boot]);
+
+				assert.ok(getBackend('embedding', 'keeper'), 'the boot applied');
+				assert.equal(getBackend('embedding', 'stale'), undefined, 'the older reload was discarded');
+			} finally {
+				release();
+				await inFlight?.catch(() => {});
+				delete globalThis.__helperGate;
+				delete globalThis.__helperGateReached;
+			}
+		});
+
+		it('a watcher block coalescing over a queued boot is NOT laundered through boot semantics', async () => {
+			// The two lanes must stay separate: boot applies its own block with overwrite authority, and
+			// the newer reload block still faces reload validation and the missing-key no-op — a sticky
+			// flag merging them would let a partial-write prefix tear everything down as "boot".
+			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
+			let release;
+			let inFlight;
+			globalThis.__helperGate = new Promise((resolve) => (release = resolve));
+			globalThis.__helperGateReached = false;
+			try {
+				inFlight = applyModelsConfig(block({ slow: { backend: helperModule, model: 'm1' } }));
+				await waitFor(() => globalThis.__helperGateReached, { message: 'in-flight apply never started' });
+
+				// Boot's block is authoritative for the whole map, so it must carry `slow` itself —
+				// what's under test is the reload lane, not boot's removal semantics.
+				const boot = bootstrapModels({
+					models: block({ keeper: openaiEntry('sk-boot'), slow: { backend: helperModule, model: 'm1' } }),
+				});
+				// A raw watcher snapshot with no models key lands on top of the queued boot.
+				const reload = applyModelsConfig(undefined);
+
+				release();
+				await Promise.all([inFlight, boot, reload]);
+
+				assert.ok(getBackend('embedding', 'keeper'), 'boot applied its own block');
+				// The missing-key snapshot was a no-op, not a boot-authority removal of everything.
+				assert.ok(getBackend('embedding', 'slow'), 'the missing-key reload removed nothing');
+			} finally {
+				release();
+				await inFlight?.catch(() => {});
+				delete globalThis.__helperGate;
+				delete globalThis.__helperGateReached;
+			}
+		});
+
 		it('coalesces rapid applies to the latest block', async () => {
 			const captured = installFetchCapture();
 			try {
