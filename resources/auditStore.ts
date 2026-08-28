@@ -266,11 +266,8 @@ export function openAuditStore(rootStore) {
 						// and do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
-					// Single-loop ownership belongs to the arming sites: onStorageReclamation registers only on
-					// the last worker, as does the store-open arm above. The last-worker conjunct here is a
-					// backstop for a direct caller of the exported scheduleAuditCleanup, since a store-wide
-					// segment purge looping on every worker is duplicated work. Re-arming also has to yield to
-					// an already-pending pass rather than cancel a pressure-shortened one.
+					// both conjuncts are backstops, not the ownership rule — see DESIGN.md: the arming sites
+					// already restrict Rocks to the last worker
 					if (
 						!cleanupStopped &&
 						(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))
@@ -286,9 +283,8 @@ export function openAuditStore(rootStore) {
 	}
 	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
 	/**
-	 * Retires the cleanup loop for good. The in-pass status check declines to re-arm once the root
-	 * store reaches closing/closed, but a pass already on the timer still has to fire to reach it —
-	 * so a close leaves one purge scheduled against a store that is going away.
+	 * Retires the cleanup loop for good. The in-pass status check declines to re-arm on a closing store,
+	 * but a pass already on the timer has to fire to reach it.
 	 */
 	auditStore.stopAuditCleanup = function () {
 		cleanupStopped = true;

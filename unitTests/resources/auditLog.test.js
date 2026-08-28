@@ -160,8 +160,6 @@ describe('Audit log', () => {
 			setAuditRetention(60_000, 10_000);
 		}
 	});
-	// its own store, not the shared fixture: patching global.setTimeout while another store's loop is
-	// live on a real timer lets a stray pass land in `scheduled` and break the per-pass assertions
 	it('holds Rocks cleanup at the retention-derived cadence whatever a pass purges', async function () {
 		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-cadence-'));
 		const rootStore = new RocksDatabase(scratch).open();
@@ -182,7 +180,9 @@ describe('Audit log', () => {
 				},
 			};
 			fakeTimers.add(timer);
-			scheduled.push(timer);
+			// the shared fixture's audit loop is live on a real 10s timer and its re-arm would land here
+			// through the patched global; this test's own delays are 10ms and 100ms
+			if (delay <= 1_000) scheduled.push(timer);
 			return timer;
 		};
 		global.clearTimeout = (timer) => {
@@ -191,7 +191,7 @@ describe('Audit log', () => {
 		setAuditRetention(1_000, 10);
 		try {
 			const store = openAuditStore(rootStore);
-			scheduled.length = 0; // drop the store-open pass
+			scheduled.length = 0;
 			const firstResolution = store.scheduleAuditCleanup(10);
 			assert.equal(scheduled.length, 1);
 			const first = scheduled.shift();
@@ -263,7 +263,6 @@ describe('Audit log', () => {
 				},
 			};
 			fakeTimers.add(timer);
-			// runReclamationHandlers re-arms its own hourly timer through the same global
 			if (delay <= 1_000) scheduled.push(timer);
 			return timer;
 		};
@@ -274,7 +273,7 @@ describe('Audit log', () => {
 		let reclamation;
 		try {
 			openAuditStore(rootStore);
-			scheduled.length = 0; // drop the store-open pass; this test drives the pressure-armed one
+			scheduled.length = 0;
 			// not awaited: the handler resolves only once the pass below runs, and the pass is on a fake timer
 			reclamation = runReclamationHandlers();
 			await new Promise(setImmediate);

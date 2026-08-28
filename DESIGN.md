@@ -257,6 +257,12 @@ of the exported `scheduleAuditCleanup`, because a store-wide segment purge loopi
 duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
 backstop — not the registration — becomes the thing keeping the loop single.
 
+Both re-arm guards are **Rocks-only**, deliberately: the LMDB arm keeps `origin/main`'s unconditional
+re-arm, so it neither yields to an already-pending pass (a pressure-armed 100ms pass can be cancelled
+and replaced by the idle backoff) nor restricts itself to one worker. Those are pre-existing LMDB
+behaviours, not invariants this section establishes — don't read the paragraphs above as
+engine-independent.
+
 Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
 Unlinking a segment a consumer has mapped is safe: the inode outlives the unlink, and the mapping cache
 (`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is never
@@ -264,7 +270,10 @@ purge-eligible — so nothing pins a purged inode and no cross-worker cache inva
 What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
 iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
 (rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than
-log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention.
+log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention —
+tracked as HarperFast/rocksdb-js#805. Continuous retention is what moves it from unreachable-in-steady-state
+to routine: a peer offline longer than `logging.auditRetention` now resumes into a purged prefix and is
+recorded as caught up, and `txnlogReplayGapBytes` observes the gap without escalating on it.
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 

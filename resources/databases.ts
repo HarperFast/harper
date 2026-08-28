@@ -1516,6 +1516,13 @@ export function closeDatabase(databaseName: string): boolean {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
+	}
+	// before any table store closes: an LMDB pass inside removeAuditEntry fires the tombstone
+	// callback against the primary store, which would already be closed underneath it
+	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
+	for (const tableName in dbTables) {
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
 		for (const indexName in table.indices || {}) {
 			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
 		}
@@ -1527,7 +1534,7 @@ export function closeDatabase(databaseName: string): boolean {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
 	for (const rootStore of rootStores) {
-		rootStore.auditStore?.stopAuditCleanup?.();
+		rootStore.auditStore?.stopAuditCleanup?.(); // the definedRoot added after the hoisted pass above
 		removeStorageReclamation(rootStore.path);
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');

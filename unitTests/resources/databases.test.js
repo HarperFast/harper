@@ -437,6 +437,33 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		}
 	});
 
+	it('deregisters the storage-reclamation handler when a database is dropped', async function () {
+		const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+		const queried = [];
+		setAvailableSpaceRatioGetter(async (path) => {
+			queried.push(path);
+			return 1;
+		});
+		try {
+			const DropProbe = table({
+				table: 'DropProbe',
+				database: 'dropprobe',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const rootPath = DropProbe.primaryStore.rootStore.path;
+			await runReclamationHandlers();
+			assert.ok(queried.includes(rootPath), 'opening a database registers a reclamation handler for its root path');
+
+			await dropDatabase('dropprobe');
+			queried.length = 0;
+			await runReclamationHandlers();
+
+			assert.ok(!queried.includes(rootPath), 'dropDatabase must drop the handler pinning the dropped store');
+		} finally {
+			setAvailableSpaceRatioGetter();
+		}
+	});
+
 	it('rejects a store identity that would resolve blob roots outside the blobs directory', function () {
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', '..'), /not a legal database name/);
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'a/b'), /not a legal database name/);
