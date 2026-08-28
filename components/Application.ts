@@ -1217,7 +1217,13 @@ async function candidateComponentName(deploymentDirPath: string): Promise<string
 	// Symlinks count: a `file:<directory>` candidate is deliberately a link, and activation already accepts
 	// one. Filtering to real directories here left those candidates with no owner, so residue removal took
 	// no lock and could delete a build in flight.
-	const components = entries.filter((entry) => entry.isDirectory() || entry.isSymbolicLink());
+	//
+	// Validated, because this infers an owner from a NAME. A directory-shaped control file — a corrupt
+	// `.activation.json` that is a directory — would otherwise be returned as the owning component, which
+	// both licenses a restore against it and is a name no component can have.
+	const components = entries.filter(
+		(entry) => (entry.isDirectory() || entry.isSymbolicLink()) && isJoinableComponentName(entry.name)
+	);
 	return components.length === 1 ? components[0].name : undefined;
 }
 
@@ -1271,7 +1277,9 @@ async function journaledDeploymentForComponent(
 		if (sidecarOwner === componentName) return deploymentDirPath;
 		// A journal nobody can attribute blocks EVERY component. It is a rare, genuinely broken state — an
 		// unparseable journal whose deployment no longer holds a tree to infer from — and the alternative is
-		// letting the restore proceed against a candidate this journal may well have committed.
+		// letting the restore proceed against a candidate this journal may well have committed. There is no
+		// automated way out of it, by construction: nothing on disk says which component it belongs to. The
+		// error the caller raises names the directory an operator has to resolve.
 		if (journalOwner === undefined && sidecarOwner === undefined) return deploymentDirPath;
 	}
 	return undefined;
@@ -1525,14 +1533,16 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			// silently on every boot.
 			const sidecarOwner = await candidateComponentName(deploymentDirPath);
 			if (sidecarOwner !== undefined && sidecarOwner !== journal.component) {
-				await fail(
-					sidecarOwner,
-					new Error(
-						`Deploy staging ${deploymentDirPath} is attributed to two different components: its journal ` +
-							`names '${journal.component}' and its sidecar names '${sidecarOwner}'. Neither can settle ` +
-							`it; remove that directory once you have determined which tree is current.`
-					)
+				const split = new Error(
+					`Deploy staging ${deploymentDirPath} is attributed to two different components: its journal ` +
+						`names '${journal.component}' and its sidecar names '${sidecarOwner}'. Neither can settle ` +
+						`it; remove that directory once you have determined which tree is current.`
 				);
+				// BOTH names, because both are wedged: the union gate blocks a restore for the sidecar's
+				// component, and settlement needs the intersection so it can never clear the journal owner's
+				// either. Failing only one leaves the other loading normally until the day it needs a restore.
+				await fail(sidecarOwner, split);
+				await fail(journal.component, split);
 				continue;
 			}
 			const settling = journal;
@@ -2145,7 +2155,8 @@ async function recoverOrCleanupStaleExtractionPaths(
 			throw new Error(
 				`Refusing to restore ${application.name} from ${recoveryRecord.entry.name}: the interrupted ` +
 					`activation in ${journaled} is not settled, and its journal is the only record of which tree ` +
-					`is current`
+					`is current. If that journal names no component at all it cannot settle itself; remove that ` +
+					`directory once you have determined which tree is current.`
 			);
 		}
 		const recoveryPath = join(asideStagingDir, recoveryRecord.entry.name);

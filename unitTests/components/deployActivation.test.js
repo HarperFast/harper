@@ -636,6 +636,9 @@ describe('activation transaction', () => {
 		const failures = await recoverInterruptedActivations(root);
 
 		assert.match(failures.get('other').message, /attributed to two different components/);
+		// Both names are wedged — the gate blocks the sidecar's component, settlement can never clear the
+		// journal owner's — so failing only one leaves the other loading until the day it needs a restore.
+		assert.match(failures.get('web').message, /attributed to two different components/);
 		assert.ok(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.activation.json')), 'nothing was discarded');
 	});
 
@@ -651,5 +654,21 @@ describe('activation transaction', () => {
 
 		assert.ok(unsettleable.has('web'), "the sibling's own unreadable journal is still reported");
 		assert.ok(unsettleable.has('d1'), 'and the unattributable one is reported under its deployment id');
+	});
+
+	it('does not mistake a directory-shaped control file for the component that owns a deployment', async () => {
+		const root = await newRoot('journal-shaped-dir');
+		// A corrupt journal that is a DIRECTORY: it reads as present, parses to nothing, and the ownership
+		// fallback used to count it as the deployment's single candidate directory — returning a name no
+		// component can have, and passing the gate that authorizes replacing a committed candidate.
+		await stageState(root, 'web', 'd1', { live: 'new', aside: 'old', complete: true });
+		const deploymentDir = path.join(root, DEPLOY_STAGING_DIR, 'd1');
+		await fs.rm(path.join(deploymentDir, '.component'));
+		await fs.rm(path.join(deploymentDir, 'web'), { recursive: true, force: true });
+		await fs.mkdir(path.join(deploymentDir, '.activation.json'));
+
+		await assert.rejects(() => recoverInterruptedComponentExtraction(root, 'web', false));
+
+		assert.strictEqual(await readLive(root, 'web'), 'new', 'the live tree was not replaced');
 	});
 });
