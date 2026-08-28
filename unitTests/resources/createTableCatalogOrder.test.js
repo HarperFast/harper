@@ -190,59 +190,61 @@ describe('create table catalog write order', () => {
 		const worker = new Worker(__dirname + '/createTableCatalogOrder-thread.js', {
 			workerData: { phase, ack, tableName, addPorts: [] },
 		});
-		const scans = {};
-		const failure = new Promise((_, reject) => worker.once('error', reject));
-		const scanned = (type) =>
-			Promise.race([
-				failure,
-				new Promise((resolve) => {
-					if (scans[type]) return resolve(scans[type]);
-					worker.on('message', function onMessage(message) {
-						if (message.type !== type) return;
-						worker.off('message', onMessage);
-						resolve(message);
-					});
-				}),
-			]);
-		worker.on('message', (message) => (scans[message.type] = message));
-		// the other thread holds a class from a dropped generation of the same name when the recreate starts
-		const FirstGeneration = table({
-			table: tableName,
-			database: 'test',
-			schemaDefined: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'old', type: 'String' },
-			],
-		});
-		Atomics.store(phase, 0, 1);
-		Atomics.notify(phase, 0);
-		const firstGeneration = await scanned('first-generation');
-		assert.deepStrictEqual(
-			[...firstGeneration.attributes].sort(),
-			['id', 'old'],
-			'the other thread must hold the first generation'
-		);
-		await FirstGeneration.dropTable();
-		const catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
+		// from here on every exit must terminate the worker, or it stays blocked in Atomics.wait
 		const patched = [];
-		let pausedStatus;
-		for (const method of ['put', 'putSync']) {
-			const original = catalogPrototype[method];
-			if (typeof original !== 'function') continue;
-			catalogPrototype[method] = function (key, ...rest) {
-				const result = original.call(this, key, ...rest);
-				// the first attribute row is on disk: hand the catalog to the other thread and block this one
-				if (key === `${tableName}/name` && pausedStatus === undefined) {
-					Atomics.store(phase, 0, 2);
-					Atomics.notify(phase, 0);
-					pausedStatus = Atomics.wait(ack, 0, 1, 30000);
-				}
-				return result;
-			};
-			patched.push([method, original]);
-		}
+		let catalogPrototype;
 		try {
+			const scans = {};
+			const failure = new Promise((_, reject) => worker.once('error', reject));
+			const scanned = (type) =>
+				Promise.race([
+					failure,
+					new Promise((resolve) => {
+						if (scans[type]) return resolve(scans[type]);
+						worker.on('message', function onMessage(message) {
+							if (message.type !== type) return;
+							worker.off('message', onMessage);
+							resolve(message);
+						});
+					}),
+				]);
+			worker.on('message', (message) => (scans[message.type] = message));
+			// the other thread holds a class from a dropped generation of the same name when the recreate starts
+			const FirstGeneration = table({
+				table: tableName,
+				database: 'test',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'old', type: 'String' },
+				],
+			});
+			Atomics.store(phase, 0, 1);
+			Atomics.notify(phase, 0);
+			const firstGeneration = await scanned('first-generation');
+			assert.deepStrictEqual(
+				[...firstGeneration.attributes].sort(),
+				['id', 'old'],
+				'the other thread must hold the first generation'
+			);
+			await FirstGeneration.dropTable();
+			catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
+			let pausedStatus;
+			for (const method of ['put', 'putSync']) {
+				const original = catalogPrototype[method];
+				if (typeof original !== 'function') continue;
+				catalogPrototype[method] = function (key, ...rest) {
+					const result = original.call(this, key, ...rest);
+					// the first attribute row is on disk: hand the catalog to the other thread and block this one
+					if (key === `${tableName}/name` && pausedStatus === undefined) {
+						Atomics.store(phase, 0, 2);
+						Atomics.notify(phase, 0);
+						pausedStatus = Atomics.wait(ack, 0, 1, 30000);
+					}
+					return result;
+				};
+				patched.push([method, original]);
+			}
 			table({
 				table: tableName,
 				database: 'test',
