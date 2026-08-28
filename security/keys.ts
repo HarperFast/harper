@@ -1328,8 +1328,13 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					const retentionFailures: { cert: any; error: any }[] = [];
 					const retainable = (previous) => {
 						// Without mTLS nothing consulted in the context depends on the CA set (`ca:` is
-						// falsy either way; availableCAs aliases the live map), so skip the rebuild.
-						if (!mtlsOptions || caSetUnchanged(previous)) return previous;
+						// falsy either way; availableCAs aliases the live map), so skip the rebuild — but
+						// refresh the CA bookkeeping, which is mirrored into socket metadata for fronting
+						// proxies.
+						if (!mtlsOptions || caSetUnchanged(previous)) {
+							(previous as any).certificateAuthorities = Array.from(candidateCAs);
+							return previous;
+						}
 						if (rebuiltRetentions.has(previous)) return rebuiltRetentions.get(previous);
 						try {
 							const secureOptions = {

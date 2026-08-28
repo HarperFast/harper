@@ -1285,11 +1285,11 @@ describe('Test keys module', () => {
 				// absolute stability: across several retry cycles (backoff base 1.5s), unthrottled
 				// re-logging would add one line per selector per cycle (dozens), while late first-logs
 				// add at most a couple.
-				await new Promise((resolve) => setTimeout(resolve, 3000));
+				await new Promise((resolve) => setTimeout(resolve, 7000)); // settle + absorb straggler first-logs
 				const logged = corruptErrors();
 				await new Promise((resolve) => setTimeout(resolve, 4000));
 				assert.ok(
-					corruptErrors() - logged <= 2,
+					corruptErrors() - logged <= 1,
 					`an unchanged corrupt-row signature must not re-log (grew ${corruptErrors() - logged} in 4s)`
 				);
 				assert.ok(
