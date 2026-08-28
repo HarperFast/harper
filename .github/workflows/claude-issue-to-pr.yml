@@ -22,11 +22,21 @@ concurrency:
 
 jobs:
   work:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@be549ad08aa6d34b909ea8b542a7ffebdaae1e81 # main 2026-08-25 (#90 cost gates: draft skip, mechanical-diff skip, effort-by-size, debounce; #89 defaults; #88 lenses)
+    # Calling-job permissions ceiling — union of the reusable's
+    # authorize (contents: read) and work (contents/pull-requests/
+    # issues/id-token: write) jobs, so grants don't depend on the
+    # repo's default-workflow-permissions setting (same rationale as
+    # the review callers' blocks).
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-issue-to-pr.yml@765a51b545f1b2b6c1ffe3b3731baa1512e44dac # main 2026-08-28 (#91 job-level post-authorization cancellation; #90 cost gates; #89 defaults; #88 lenses)
     with:
       # Same SHA as the `uses:` ref above. See the comment in
       # claude-mention.yml for why the duplication is unavoidable.
-      ai-review-prompts-ref: be549ad08aa6d34b909ea8b542a7ffebdaae1e81
+      ai-review-prompts-ref: 765a51b545f1b2b6c1ffe3b3731baa1512e44dac
       repo-specific-conventions: |
         ## Harper core notes
 
