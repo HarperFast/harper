@@ -51,7 +51,9 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 					install_command: 'node --version',
 				}),
 			},
-			30_000,
+			// A `restart: true` deploy now returns only once the restart has finished, so this budget covers
+			// the install (~26s of npm on a Windows runner) plus a worker roll, not the install alone.
+			90_000,
 			'deploy_component request'
 		);
 		const deployText = await deployResponse.text();

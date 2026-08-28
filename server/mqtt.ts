@@ -18,6 +18,7 @@ import { loggerWithTag } from '../utility/logging/logger.ts';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.ts';
 import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
+import { registerShutdownDrain } from '../components/shutdownDrain.ts';
 const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
@@ -46,6 +47,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		};
 		// a no-op error handler to prevent unhandled error events from being rethrown
 		(server as any).mqtt.events.on('error', () => {});
+		registerShutdownDisconnect();
 	}
 	const mqttSettings = (server as any).mqtt;
 	function emitEvent(type: string, ...args: any[]) {
@@ -174,6 +176,50 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 		);
 	}
 }
+const SERVER_SHUTTING_DOWN = 0x8b; // MQTT v5 DISCONNECT reason code
+const REASON_STRING_LIMIT = 256; // bytes
+/** Fixed header, message id and reason code, plus the property identifier and its length prefix. */
+const ACK_PACKET_OVERHEAD = 16;
+
+/**
+ * Every live MQTT connection on this worker, so a shutdown can announce itself: a bare socket close
+ * is indistinguishable to the client from a network failure.
+ */
+const liveConnections = new Set<{ protocolVersion: () => number; send: (data: any) => void; close: () => void }>();
+let shutdownDisconnectRegistered = false;
+
+/** v3.1.1 has no server-to-client DISCONNECT, so those connections are only closed. */
+export function disconnectClientsForShutdown() {
+	if (liveConnections.size === 0) return;
+	const disconnectPacket = generate({ cmd: 'disconnect', reasonCode: SERVER_SHUTTING_DOWN } as any, {
+		protocolVersion: 5,
+	});
+	for (const connection of liveConnections) {
+		try {
+			if (connection.protocolVersion() >= 5) connection.send(disconnectPacket);
+		} catch (error) {
+			mqttLog.debug?.('Could not notify MQTT connection of shutdown', error);
+		} finally {
+			try {
+				connection.close();
+			} catch (error) {
+				mqttLog.debug?.('Could not close MQTT connection during shutdown', error);
+			}
+		}
+	}
+	liveConnections.clear();
+}
+
+function registerShutdownDisconnect() {
+	if (shutdownDisconnectRegistered) return;
+	shutdownDisconnectRegistered = true;
+	registerShutdownDrain({
+		// Notifying clients is bounded and synchronous; it must never extend the shutdown deadline.
+		hasWork: () => false,
+		drain: async () => disconnectClientsForShutdown(),
+	});
+}
+
 let addingMetrics,
 	numberOfConnections = 0;
 function onSocket(socket, send, request, user, mqttSettings) {
@@ -197,7 +243,17 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	}
 	let disconnected;
 	numberOfConnections++;
+	const connection = {
+		protocolVersion: () => mqttOptions.protocolVersion,
+		send,
+		close: () => (socket.close ? socket.close() : socket.end()),
+	};
+	liveConnections.add(connection);
 	let session: DurableSubscriptionsSession;
+	// [MQTT-3.1.2-29]: a client that asks for no problem information must not be sent a reason
+	// string on a PUBACK/PUBREC, and [MQTT-3.1.2-24] caps what it will accept at all.
+	let sendProblemInformation = true;
+	let maximumPacketSize: number | undefined;
 	const mqttOptions = { protocolVersion: 4 };
 	const parser = makeParser({ protocolVersion: 5 });
 	function onMessage(data) {
@@ -205,6 +261,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 	}
 	function onClose() {
 		numberOfConnections--;
+		liveConnections.delete(connection);
 		if (!disconnected) {
 			disconnected = true;
 			session?.disconnect?.(false);
@@ -242,6 +299,10 @@ function onSocket(socket, send, request, user, mqttSettings) {
 			switch (command) {
 				case 'connect':
 					mqttOptions.protocolVersion = packet.protocolVersion;
+					// mqtt-packet parses this byte into a boolean, and a client may also send the raw 0.
+					const requestProblemInformation = packet.properties?.requestProblemInformation;
+					sendProblemInformation = requestProblemInformation !== false && requestProblemInformation !== 0;
+					maximumPacketSize = packet.properties?.maximumPacketSize;
 					if (packet.username) {
 						try {
 							user = await server.getUser(packet.username, packet.password.toString(), request);
@@ -459,15 +520,39 @@ function onSocket(socket, send, request, user, mqttSettings) {
 						emitEvent('error', error, socket, packet, session);
 						mqttLog.warn?.(error);
 						if (packet.qos > 0) {
-							generateAndSendPacket(
-								{
-									// Send a publish acknowledgment
-									cmd: responseCmd,
-									messageId: packet.messageId,
-									reasonCode: 0x80, // unspecified error (only MQTT v5 supports error codes)
-								},
-								packet.topic
-							);
+							// A publish to a topic no resource handles is the same miss addSubscription already
+							// answers with a specific code; reporting it as "unspecified error" leaves it
+							// indistinguishable from an internal failure.
+							const publishPacket: any = {
+								// Send a publish acknowledgment
+								cmd: responseCmd,
+								messageId: packet.messageId,
+								reasonCode:
+									mqttOptions.protocolVersion < 5
+										? 0x80 // the only error code in v3.1.1
+										: error?.statusCode === 403
+											? 0x87 // not authorized
+											: error?.statusCode === 404
+												? 0x90 // topic name invalid
+												: 0x80, // unspecified error
+							};
+							// Only errors this layer maps to a code of their own are safe to describe: any other
+							// failure carries an internal message that a client must not be handed. Both limits
+							// are in encoded bytes, so measure and trim the string in bytes too.
+							const describable =
+								mqttOptions.protocolVersion >= 5 &&
+								sendProblemInformation &&
+								error?.message &&
+								(error.statusCode === 403 || error.statusCode === 404);
+							const reasonString = describable
+								? Buffer.from(String(error.message), 'utf8').subarray(0, REASON_STRING_LIMIT).toString('utf8')
+								: undefined;
+							if (
+								reasonString &&
+								(!maximumPacketSize || maximumPacketSize >= Buffer.byteLength(reasonString) + ACK_PACKET_OVERHEAD)
+							)
+								publishPacket.properties = { reasonString };
+							generateAndSendPacket(publishPacket, packet.topic);
 						}
 						break;
 					}
