@@ -185,15 +185,15 @@ suite(
 				await sleep(250);
 			}
 			if (!certInTable) {
-				// The cert file change never reached the main thread's watcher in this environment, so
-				// the cert-before-key ordering cannot be established. That's a file-watch/inotify
-				// limitation of the runner, not a regression — skip the setup rather than fail. (The
-				// unit tests cover the rebuild paths deterministically; this test adds end-to-end
-				// coverage where file watching works.)
-				t.skip(
+				const reason =
 					'cert file change never reached hdb_certificate in this environment (file-watch/inotify ' +
-						'limitation) — cannot establish the cert-before-key ordering this test exercises'
-				);
+					'limitation) — cannot establish the cert-before-key ordering this test exercises';
+				// A runner with broken file-watch delivery cannot set up the ordering — that is an
+				// environment limitation, not a regression, so skip by default. But a skip here retires
+				// the only end-to-end proof of the #2382 retain-last-good behavior, invisibly, on every
+				// run — so a pipeline that owns this regression sets the env gate and fails instead.
+				if (process.env.HARPER_TEST_REQUIRE_FILE_WATCHERS) throw new Error(reason);
+				t.skip(reason);
 				return;
 			}
 
@@ -250,33 +250,37 @@ suite(
 					`arrived (a worker rebuilt for the new cert with the old key and never rebuilt again)`
 			);
 
-			// Settling grace: each worker debounces its rebuild independently. The poll above exits as
-			// soon as ONE worker has converged; sleep so every other worker's debounce has also fired.
-			await sleep(3000);
-
 			// The regression assertion: hammer the port with many fresh handshakes so the kernel
-			// (SO_REUSEPORT) spreads us across every worker. Require that ALL succeed (no worker left on
-			// new-cert + old-key, which fails the handshake) and ALL serve the new serial. Before the
-			// fix, a worker that rebuilt for the new cert before reloading the key stays mismatched —
-			// it never rebuilds again until the next cert-table change — so this fails.
+			// (SO_REUSEPORT) spreads us across every worker, requiring that ALL succeed and ALL serve
+			// the new serial. Each worker debounces its rebuild independently and the poll above exits
+			// as soon as ONE has converged, so retry the whole hammer until a deadline instead of
+			// sleeping a fixed settle period (the #1138 flake class).
 			const ATTEMPTS = 40;
-			const results = await Promise.allSettled(
-				Array.from({ length: ATTEMPTS }, () => servedSerial(ctx.harper.hostname))
-			);
-			const serials = results
-				.filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
-				.map((r) => r.value);
-			ok(
-				serials.length >= 38,
-				`too many handshakes failed: ${ATTEMPTS - serials.length}/${ATTEMPTS} errors — ` +
+			const hammerDeadline = Date.now() + 20_000;
+			let failures = ATTEMPTS;
+			let stale: string[] = [];
+			while (Date.now() < hammerDeadline) {
+				const results = await Promise.allSettled(
+					Array.from({ length: ATTEMPTS }, () => servedSerial(ctx.harper.hostname))
+				);
+				const serials = results
+					.filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
+					.map((r) => r.value);
+				failures = ATTEMPTS - serials.length;
+				stale = serials.filter((s) => s !== newSerial);
+				if (failures === 0 && stale.length === 0) break;
+				await sleep(500);
+			}
+			equal(
+				failures,
+				0,
+				`${failures}/${ATTEMPTS} handshakes still failing at the deadline — ` +
 					`a worker is likely stuck on the new cert paired with the old key`
 			);
-
-			const stale = serials.filter((s) => s !== newSerial);
 			equal(
 				stale.length,
 				0,
-				`${stale.length}/${serials.length} connections did not serve the new serial ${newSerial} ` +
+				`${stale.length} connections did not serve the new serial ${newSerial} ` +
 					`(saw ${[...new Set(stale)].join(', ')}) — cert+key reload did not reach every worker`
 			);
 		});

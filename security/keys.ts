@@ -1080,12 +1080,20 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
 					failureRetryCount = 0;
 					failureLastSummaryAt = Date.now();
+					// A timer armed for the previous signature would run the next pass on its stale
+					// (possibly maxed-out) delay; re-arm fresh for the new failure set.
+					if (failureRetryTimer) {
+						clearTimeout(failureRetryTimer);
+						failureRetryTimer = undefined;
+					}
 					for (const { cert, error } of failures) logger.error?.('Error applying TLS for', cert.name, error);
 				} else {
 					failureRetryCount++;
+					// Stays at error: a stuck rotation must keep an alertable signal — the retained cert
+					// is aging toward its notAfter the whole time.
 					if (Date.now() - failureLastSummaryAt >= TLS_FAILURE_SUMMARY_INTERVAL_MS) {
 						failureLastSummaryAt = Date.now();
-						logger.warn?.(
+						logger.error?.(
 							`TLS rebuild for the '${type}' listener is still failing for [${failures
 								.map(({ cert }) => cert.name)
 								.join(', ')}] after ${failureRetryCount} retries; serving the last good state`
@@ -1100,6 +1108,10 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 				failureSignature = '';
 				failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
 				failureRetryCount = 0;
+				if (failureRetryTimer) {
+					clearTimeout(failureRetryTimer);
+					failureRetryTimer = undefined;
+				}
 			};
 			function updateTLS() {
 				try {
@@ -1187,9 +1199,12 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						try {
 							certParsed = new X509Certificate(certificate);
 						} catch (error) {
-							// One unparseable record shouldn't abort the whole pass before any context is
-							// built — the second loop's per-cert try/catch doesn't cover this loop.
-							logger.error?.('Skipping unparseable certificate record', cert.name, error);
+							// One unparseable record shouldn't abort the whole pass, but it is a pass failure:
+							// routed through the signature throttle and the retry — otherwise a corrupt CA row
+							// logs every pass and clearFailureState claims a clean recovery. Its caCerts entry
+							// can't be retained (the subject is unrecoverable from a PEM that won't parse); the
+							// retry is the heal path.
+							failedThisPass.push({ cert, error });
 							continue;
 						}
 						if (cert.is_authority) {
@@ -1290,11 +1305,21 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						}
 					}
 
-					// Retain-last-good: a record that is still in the table but failed to build keeps
-					// everything it already earned — its live hostname entries AND its default candidacy
-					// (a record can be serving as the default with no hostname entries at all, e.g. a
-					// SAN-less cert). A transient failure must not publish a state worse than the one
-					// being served; deleting the record remains the way to drop its contexts.
+					// Retain-last-good: a record still in the table whose build failed keeps its live
+					// hostname entries and its default candidacy (a SAN-less cert can be serving as the
+					// default with no hostname entries at all); deletion remains the way to drop them.
+					// Exception, fail closed: a context froze its CA material (`ca:` trust list, appended
+					// chain) at its own build time, so when the CA set has changed since, retaining it
+					// would keep honoring trust the operator just revoked — that record's entries drop
+					// and the retry pursues a fresh build instead.
+					const caSetUnchanged = (previous) => {
+						const builtWith = (previous as any).certificateAuthorities;
+						if (!Array.isArray(builtWith)) return candidateCAs.size === 0;
+						return (
+							builtWith.length === candidateCAs.size &&
+							builtWith.every(([subject, pem]) => candidateCAs.get(subject) === pem)
+						);
+					};
 					for (const { cert } of failedThisPass) {
 						const retain = (hostname, previous) => {
 							const previousQuality = (previous as any).quality ?? 0;
@@ -1311,9 +1336,11 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							}
 						};
 						for (const [hostname, previous] of secureContexts) {
-							if ((previous as any).name === cert.name) retain(hostname, previous);
+							if ((previous as any).name === cert.name && caSetUnchanged(previous)) retain(hostname, previous);
 						}
-						if ((defaultContext as any)?.name === cert.name) retain(undefined, defaultContext);
+						if ((defaultContext as any)?.name === cert.name && caSetUnchanged(defaultContext)) {
+							retain(undefined, defaultContext);
+						}
 					}
 					if (liveReload && candidateContexts.size === 0 && !defaultContextSetThisPass) {
 						// The not-loaded-yet guard above only covers the table object being absent, not the
@@ -1346,12 +1373,20 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 								`TLS selector for the '${type}' listener resolved zero certificates; retrying every ${TLS_REBUILD_DEBOUNCE_MS}ms`
 							);
 						}
-						scheduleRebuild();
+						if (failedThisPass.length > 0) {
+							// Surface WHY the pass came up empty and put the retry on the backoff — a boot
+							// whose key file never lands otherwise rescans on a flat debounce forever with
+							// no per-record error detail.
+							reportFailures(failedThisPass);
+							scheduleFailureRetry();
+						} else {
+							scheduleRebuild();
+						}
 						return;
 					}
-					// Publish: reconcile the live maps in place — their identity is load-bearing
-					// (server.secureContexts and every context's availableCAs alias them) — and advance
-					// all default references together so SNI and non-SNI traffic can't diverge.
+					// Publish: reconcile the live maps in place (their identity is aliased by
+					// server.secureContexts and every context's availableCAs) and advance all default
+					// references together so SNI and non-SNI traffic can't diverge.
 					secureContexts.clear();
 					for (const [hostname, context] of candidateContexts) secureContexts.set(hostname, context);
 					caCerts.clear();
@@ -1400,8 +1435,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					settle(defaultContext);
 				} catch (error) {
 					if (readySettled) {
-						// The live state was never touched (candidates are pass-local), so keep serving it
-						// and retry rather than rejecting an already-settled promise into the void.
+						// Live state is untouched (candidates are pass-local): keep serving it and retry.
 						reportFailures([{ cert: { name: `(${type} rebuild pass)` }, error }]);
 						scheduleFailureRetry();
 						return;

@@ -1047,8 +1047,7 @@ describe('Test keys module', () => {
 			const keyName = `${recordName}.pem`;
 			const hostname = `${recordName}.harper.test`;
 			const logCalls = [];
-			// keys.ts logs through a module-local component logger (forComponent('tls').conditional),
-			// not the global — patch the rewired instance's own binding.
+			// keys.ts logs through a module-local component logger, not the global.
 			const tlsLogger = keys.__get__('logger');
 			const originalError = tlsLogger.error;
 			tlsLogger.error = (...args) => {
@@ -1146,6 +1145,107 @@ describe('Test keys module', () => {
 				);
 			} finally {
 				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('retention fails closed when the CA set changed — revoked trust is not preserved', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('castale');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const caName = uniqueName('retain-ca');
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				// Change the CA set and break the record in the same window: the retained context's
+				// frozen trust material no longer matches, so its entries must drop, not carry forward.
+				await databases.system.hdb_certificate.put({
+					name: caName,
+					certificate: keyPairB.cert,
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname) === undefined, {
+					timeout: 8000,
+					message: 'a failed record with a changed CA set must not retain its context',
+				});
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(caName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a corrupt authority row is reported through the throttle, armed for retry, and never claims recovery', async function () {
+			// Recovery may ride a backed-off retry timer when the delete event coalesces into an
+			// already-armed rebuild, and every selector accumulated by this suite retries on its own
+			// schedule — generous timeout, condition-based waits.
+			this.timeout(60000);
+			const recordName = uniqueName('badca');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const corruptName = uniqueName('corrupt-ca');
+			const errorLogs = [];
+			const warnLogs = [];
+			const tlsLogger = keys.__get__('logger');
+			const originalError = tlsLogger.error;
+			const originalWarn = tlsLogger.warn;
+			tlsLogger.error = (...args) => {
+				errorLogs.push(args);
+				return originalError?.apply(tlsLogger, args);
+			};
+			tlsLogger.warn = (...args) => {
+				warnLogs.push(args);
+				return originalWarn?.apply(tlsLogger, args);
+			};
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.size));
+				await databases.system.hdb_certificate.put({
+					name: corruptName,
+					certificate: 'NOT-A-PEM',
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				const corruptErrors = () => errorLogs.filter((args) => args.includes(corruptName)).length;
+				await waitFor(() => corruptErrors() >= 1, {
+					timeout: 8000,
+					message: 'the corrupt authority row was never reported',
+				});
+				// Every live selector in this suite logs the new failure once; wait for that cascade to
+				// settle, then require no growth across further retry cycles (backoff base 1.5s) — an
+				// unchanged signature must not re-log.
+				await new Promise((resolve) => setTimeout(resolve, 3000));
+				const logged = corruptErrors();
+				await new Promise((resolve) => setTimeout(resolve, 4000));
+				assert.strictEqual(corruptErrors(), logged, 'an unchanged corrupt-row signature must not re-log');
+				assert.ok(
+					!warnLogs.some((args) => String(args[0]).includes('recovered')),
+					'a pass that skipped a corrupt row must not claim recovery'
+				);
+				assert.ok(pseudoServer.secureContexts.get(hostname), 'healthy records must keep publishing');
+
+				// Recovery, state-based: the delete-triggered pass runs, publishes, and the corrupt
+				// failure stops being reported. (The 'recovered' log line itself needs a fully clean
+				// pass across every record, which is suite-order-dependent — not asserted here.)
+				const publishesBeforeDelete = publishes.length;
+				await databases.system.hdb_certificate.delete(corruptName);
+				await waitFor(() => publishes.length > publishesBeforeDelete, {
+					timeout: 30000,
+					message: 'no pass published after the corrupt row was removed',
+				});
+				const errorsAfterRecovery = corruptErrors();
+				await new Promise((resolve) => setTimeout(resolve, 2000));
+				assert.strictEqual(corruptErrors(), errorsAfterRecovery, 'a removed corrupt row must stop being reported');
+			} finally {
+				tlsLogger.error = originalError;
+				tlsLogger.warn = originalWarn;
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(corruptName).catch(() => {});
 				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
 			}
 		});
