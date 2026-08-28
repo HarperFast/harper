@@ -607,6 +607,45 @@ describe('models config hot reload (#2344)', () => {
 			});
 		}
 
+		it('a boot discards a watcher snapshot whose settle timer has not fired yet', async function () {
+			this.timeout(10000);
+			// The exact race the debounce guard exists for: content observed BEFORE the boot must not
+			// apply after it. onSnapshotObserved makes the observation moment deterministic.
+			const fixture = mkdtempSync(join(tmpdir(), 'harper.unit-test.models-reload-'));
+			const configFilePath = join(fixture, 'config.yaml');
+			try {
+				writeFileSync(configFilePath, stringify({ models: block({ keeper: openaiEntry('sk-a') }) }));
+				await bootstrapModels({ models: block({ keeper: openaiEntry('sk-a') }) });
+				let observations = 0;
+				assert.equal(
+					startModelsConfigHotReload({
+						configFilePath,
+						debounceMs: 300,
+						onSnapshotObserved: () => observations++,
+					}),
+					true
+				);
+				await waitFor(() => observations >= 1, { message: 'watcher never became ready' });
+				const observedBeforeBoot = observations;
+
+				writeFileSync(
+					configFilePath,
+					stringify({ models: block({ keeper: openaiEntry('sk-a'), stale: openaiEntry('sk-stale') }) })
+				);
+				await waitFor(() => observations > observedBeforeBoot, { message: 'rewrite never observed' });
+
+				// Observed, timer armed, not yet fired: the boot must cancel it.
+				await bootstrapModels({ models: block({ keeper: openaiEntry('sk-boot') }) });
+
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				assert.equal(getBackend('embedding', 'stale'), undefined, 'pre-boot snapshot discarded');
+				assert.ok(getBackend('embedding', 'keeper'), 'boot content stands');
+			} finally {
+				stopModelsConfigHotReload();
+				rmSync(fixture, { recursive: true, force: true });
+			}
+		});
+
 		it('applies a config file rewrite to live requests, with no restart', async function () {
 			this.timeout(10000);
 			const fixture = mkdtempSync(join(tmpdir(), 'harper.unit-test.models-reload-'));

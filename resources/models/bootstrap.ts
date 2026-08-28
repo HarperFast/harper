@@ -396,7 +396,12 @@ let pendingSettle: NodeJS.Timeout | undefined;
  *
  * Returns whether the watch is active.
  */
-export function startModelsConfigHotReload(options?: { configFilePath?: string; debounceMs?: number }): boolean {
+export function startModelsConfigHotReload(options?: {
+	configFilePath?: string;
+	debounceMs?: number;
+	/** Test seam: invoked when a watcher snapshot is observed, before its settle timer is armed. */
+	onSnapshotObserved?: () => void;
+}): boolean {
 	if (modelsConfigWatcher) return true;
 	const pinnedBy = envLayerNamingModels();
 	if (pinnedBy) {
@@ -421,6 +426,7 @@ export function startModelsConfigHotReload(options?: { configFilePath?: string; 
 	const debounceMs = options?.debounceMs ?? 150;
 	const applyFromFile = (config: unknown) => {
 		const models = (config as RootConfig | undefined)?.models;
+		options?.onSnapshotObserved?.();
 		clearTimeout(pendingSettle);
 		pendingSettle = setTimeout(() => {
 			void queueModelsApply(models, false);
