@@ -72,6 +72,29 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
+	 * Capture every status entry in a component's namespace: the component itself and anything scoped under
+	 * it (`web`, `web.api`, …). Nested loads report under those scoped keys, so restoring only the bare name
+	 * leaves a plugin-scoped ERROR behind from a candidate that never went live.
+	 */
+	public snapshotNamespace(componentName: string): ComponentStatusMap {
+		const prefix = `${componentName}.`;
+		const snapshot: ComponentStatusMap = new Map();
+		for (const [key, value] of this.statusMap) {
+			if (key === componentName || key.startsWith(prefix)) snapshot.set(key, value);
+		}
+		return snapshot;
+	}
+
+	/** Restore a namespace captured by `snapshotNamespace`, dropping keys that were not in it. */
+	public restoreNamespace(componentName: string, snapshot: ComponentStatusMap): void {
+		const prefix = `${componentName}.`;
+		for (const key of [...this.statusMap.keys()]) {
+			if ((key === componentName || key.startsWith(prefix)) && !snapshot.has(key)) this.statusMap.delete(key);
+		}
+		for (const [key, value] of snapshot) this.statusMap.set(key, value);
+	}
+
+	/**
 	 * Put one component's status back to a previously captured value, or remove it if there was none.
 	 *
 	 * For deploy pre-flight validation: that load runs the CANDIDATE's code under the real component's name,

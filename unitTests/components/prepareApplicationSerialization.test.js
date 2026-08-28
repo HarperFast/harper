@@ -81,15 +81,9 @@ describe('prepareApplication serialization', () => {
 		await mkdir(join(componentDirPath, 'nested'), { recursive: true });
 		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
 		await writeFile(join(componentDirPath, 'nested', 'old-only.txt'), 'previous bytes\n');
-		// This script used to be able to move the rollback record out from under the deploy, forcing the
-		// restore to fail too and producing an AggregateError. It now has nothing to sabotage: the install
-		// runs in the candidate directory and the live tree has not been moved at all.
-		//
-		// It deliberately does NOT probe for `.deploy-aside`. An earlier version did, and the probe was
-		// unfalsifiable twice over: its `path.resolve` was a level short of the components root (the cwd is
-		// now `.deploy-staging/<id>/shared`), and no aside exists at build time at ANY depth, so
-		// `readdirSync` threw either way. The real assertions are the single-error rejection and the
-		// untouched live tree below.
+		// Nothing for an install script to sabotage: the install runs in the candidate directory and the live
+		// tree has not been moved, so no rollback record exists yet. The assertions are the single-error
+		// rejection (no AggregateError, since there is no restore to also fail) and the untouched live tree.
 		const installScript = `process.exit(2);`;
 		const application = new Application({
 			name: 'shared',

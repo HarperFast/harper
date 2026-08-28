@@ -28,6 +28,27 @@ describe('component status restore after throwaway validation', () => {
 		assert.strictEqual(after.message, 'All components loaded successfully', 'and keeps its original message');
 	});
 
+	it('restores plugin-scoped keys too, not just the bare component name', () => {
+		// Nested loads report under scoped keys. Restoring only `web` left a candidate's plugin-scoped ERROR
+		// behind, so the component reported unhealthy through a plugin that never went live.
+		statusForComponent('ns-probe').healthy('All components loaded successfully');
+		statusForComponent('ns-probe.api').healthy('plugin ready');
+		const before = registry.snapshotNamespace('ns-probe');
+
+		statusForComponent('ns-probe.api').error(new Error('candidate plugin threw'));
+		statusForComponent('ns-probe.newly-added').error(new Error('only the candidate had this'));
+
+		registry.restoreNamespace('ns-probe', before);
+
+		assert.strictEqual(registry.getStatus('ns-probe.api').status, STATUS.HEALTHY, 'the plugin is healthy again');
+		assert.strictEqual(
+			registry.getStatus('ns-probe.newly-added'),
+			undefined,
+			'and a key only the candidate introduced is gone'
+		);
+		assert.strictEqual(registry.getStatus('ns-probe').status, STATUS.HEALTHY);
+	});
+
 	it('removes the entry when there was no status before', () => {
 		assert.strictEqual(registry.getStatus('never-seen'), undefined, 'precondition: unknown component');
 		statusForComponent('never-seen').error(new Error('candidate threw at load'));

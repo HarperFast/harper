@@ -492,7 +492,12 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		// component as broken for as long as it keeps serving. Captured here and restored below.
 		const { internal: statusInternal } = require('./status/index.ts');
 		const componentName = path.basename(candidateDirPath);
-		const priorStatus = statusInternal.componentStatusRegistry.getStatus(componentName);
+		// The whole namespace, not just the bare name: nested loads report under scoped keys like `web.api`,
+		// and restoring only `web` leaves a plugin-scoped ERROR from a candidate that never went live.
+		const priorStatus = statusInternal.componentStatusRegistry.snapshotNamespace(componentName);
+		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed
+		// by module, so forgetting only the candidate's realpath leaves those behind — one set per deploy.
+		const modulesBeforeValidation = componentLoader.snapshotLoadedModules?.() ?? new Set();
 		const validation = runWithDeployValidationGuard(async () => {
 			try {
 				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
@@ -522,11 +527,12 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		try {
 			await validation;
 		} finally {
-			statusInternal.componentStatusRegistry.restoreStatus(componentName, priorStatus);
+			statusInternal.componentStatusRegistry.restoreNamespace(componentName, priorStatus);
 			componentLoader.setErrorReporter(priorErrorReporter);
 			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
 			// one dead entry per deploy for the life of the process.
 			componentLoader.forgetLoadedPath?.(candidateDirPath);
+			componentLoader.forgetModulesLoadedSince?.(modulesBeforeValidation);
 		}
 		emit('phase', { phase: 'load', status: 'done' });
 

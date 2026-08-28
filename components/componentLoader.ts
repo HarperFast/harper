@@ -415,6 +415,24 @@ export function forgetLoadedPath(componentDirectory: string): void {
 	}
 }
 
+/**
+ * The set of modules the loader currently considers loaded. Paired with `forgetModulesLoadedSince` so a
+ * throwaway validation load can release what it registered.
+ *
+ * A snapshot rather than passing a private map: `loadComponent`'s `providedLoadedComponents` REASSIGNS the
+ * module-level registry, so handing it a throwaway map would leave every later load writing into that map.
+ */
+export function snapshotLoadedModules(): Set<any> {
+	return new Set(loadedComponents.keys());
+}
+
+/** Drop modules registered since `before` — the extension modules a candidate load pulled in. */
+export function forgetModulesLoadedSince(before: Set<any>): void {
+	for (const key of [...loadedComponents.keys()]) {
+		if (!before.has(key)) loadedComponents.delete(key);
+	}
+}
+
 /** So a caller that installs a reporter can put the previous one back when it is done with it. */
 export function getErrorReporter() {
 	return errorReporter;

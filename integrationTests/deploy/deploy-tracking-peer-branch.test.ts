@@ -212,11 +212,8 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 		writeFileSync(oldOnlyPath, 'previous bytes\n');
 		truncateSync(seedPayloadBlobPath, 128 * 1024);
 
-		// No longer waits for the previous tree to be moved aside. It used to, because extraction
-		// replaced the live path in place; a payload failure was then a ROLLBACK. The peer now extracts
-		// into a candidate under `.deploy-staging`, so a blob failure never touches the live tree at all
-		// and there is no aside to observe — which is a stronger guarantee than the one this test began
-		// with, and what it asserts below.
+		// A blob failure never touches the live tree: the peer extracts into a candidate, so no aside exists
+		// to observe and there is nothing to roll back.
 		const response = await callOperation(ctx, {
 			operation: 'deploy_component',
 			project: PEER_PROJECT,

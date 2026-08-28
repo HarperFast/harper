@@ -1774,9 +1774,10 @@ async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: 
 					await rm(stagedLink, { recursive: true, force: true }).catch(() => {});
 					logger.warn(`Could not re-point ${entryPath} after activation: ${errorMessage(error)}`);
 				}
-			} else if (entry.isDirectory() && (entry.name.startsWith('@') || entry.name === 'node_modules')) {
-				// Only scoped-package containers and nested module roots are worth descending into; a
-				// package's own source tree cannot hold a link npm created for this install.
+			} else if (entry.isDirectory()) {
+				// Every directory, not just `@scope` containers and nested `node_modules`. A dependency
+				// installed from a path outside the tree can be linked from deeper in, and the earlier filter
+				// walked past those. Bounded by the dependency tree, which activation already traverses.
 				await walk(entryPath);
 			}
 		}
