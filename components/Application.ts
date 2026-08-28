@@ -948,7 +948,10 @@ export async function extractApplication(
 // share that namespace. A component named `activation.json` would put its tree on the journal path, the
 // journal write would take EEXIST as "a retry of this activation", and the swap would proceed with no
 // journal to hold the legacy pass back; one named `unsettled` would make every settle throw on a
-// non-recursive `rm` of a directory. Dotting them makes the collision unrepresentable rather than handled.
+// non-recursive `rm` of a directory. Dotting them removes the class for every name that reaches a deploy
+// through `isJoinableComponentName`. A root-config key is not checked against it, so one literally named
+// `.activation.json` still collides — but only with itself: a dot-prefixed directory is skipped by every
+// component scan, so it fails its own deploy rather than putting another component's tree at risk.
 const CANDIDATE_COMPLETE_MARKER = '.complete';
 // Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
 // tree and configuration together — instead of inferring intent from filesystem shape alone.
