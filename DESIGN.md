@@ -249,9 +249,13 @@ idle. Rocks reclaims whole segments whose eligibility changes only on rotation/f
 signal would only make it rescan the same files — its delay is instead a pure function of the
 pressure-adjusted retention window (a tenth of it, floored at `DEFAULT_AUDIT_CLEANUP_DELAY`).
 
-Rocks re-arms on the last worker only. A reclamation signal arms a pass on whichever worker received
-it, and a store-wide segment purge repeated from every worker is duplicated work — so a
-pressure-triggered pass elsewhere stays one-shot.
+Exactly one Rocks purge loop exists per store, and that is owned by the **arming** sites, not the
+re-arm: `onStorageReclamation` registers its handler only on the last worker (it takes no
+`skipThreadCheck`), and the store-open arm gates on the same index. The last-worker conjunct on the
+re-arm is therefore unreachable through either of those paths; it is a backstop for a direct caller
+of the exported `scheduleAuditCleanup`, because a store-wide segment purge looping on every worker is
+duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
+backstop — not the registration — becomes the thing keeping the loop single.
 
 Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
 Unlinking a segment a consumer has mapped is safe: the inode outlives the unlink, and the mapping cache

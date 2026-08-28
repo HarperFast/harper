@@ -248,8 +248,8 @@ export function openAuditStore(rootStore) {
 					// cleanup loop for the life of the store.
 					resolve();
 					if (isRocksAuditStore) {
-						// Rocks reclaims whole segments and eligibility only changes on rotation/flush, so the
-						// LMDB backoff — which reads a per-entry delete count — would only rescan the same files.
+						// eligibility only changes on rotation/flush, so the LMDB backoff — keyed on a per-entry
+						// delete count — would only rescan the same segments
 						auditCleanupDelay = Math.max(
 							DEFAULT_AUDIT_CLEANUP_DELAY,
 							Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
@@ -266,9 +266,11 @@ export function openAuditStore(rootStore) {
 						// and do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
-					// A reclamation signal arms a pass on whichever worker received it; on Rocks that pass is
-					// one-shot, because a store-wide segment purge repeated from every worker is duplicated
-					// work, and re-arming here would also cancel a pending pressure-shortened pass.
+					// Single-loop ownership belongs to the arming sites: onStorageReclamation registers only on
+					// the last worker, as does the store-open arm above. The last-worker conjunct here is a
+					// backstop for a direct caller of the exported scheduleAuditCleanup, since a store-wide
+					// segment purge looping on every worker is duplicated work. Re-arming also has to yield to
+					// an already-pending pass rather than cancel a pressure-shortened one.
 					if (
 						!cleanupStopped &&
 						(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))

@@ -160,12 +160,11 @@ describe('Audit log', () => {
 			setAuditRetention(60_000, 10_000);
 		}
 	});
+	// its own store, not the shared fixture: patching global.setTimeout while another store's loop is
+	// live on a real timer lets a stray pass land in `scheduled` and break the per-pass assertions
 	it('holds Rocks cleanup at the retention-derived cadence whatever a pass purges', async function () {
-		const store = AuditedTable.auditStore;
-		if (!(store instanceof RocksTransactionLogStore)) this.skip();
-
-		const rootStore = store.rootStore;
-		const originalPurgeLogs = rootStore.purgeLogs;
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-cadence-'));
+		const rootStore = new RocksDatabase(scratch).open();
 		const originalSetTimeout = global.setTimeout;
 		const originalClearTimeout = global.clearTimeout;
 		const scheduled = [];
@@ -191,6 +190,8 @@ describe('Audit log', () => {
 		};
 		setAuditRetention(1_000, 10);
 		try {
+			const store = openAuditStore(rootStore);
+			scheduled.length = 0; // drop the store-open pass
 			const firstResolution = store.scheduleAuditCleanup(10);
 			assert.equal(scheduled.length, 1);
 			const first = scheduled.shift();
@@ -198,7 +199,6 @@ describe('Audit log', () => {
 			await first.callback();
 			await firstResolution;
 
-			// a tenth of the retention window, above the 10ms floor this test configures
 			for (const pass of [1, 2, 3]) {
 				assert.equal(scheduled.length, 1);
 				const next = scheduled.shift();
@@ -207,11 +207,12 @@ describe('Audit log', () => {
 			}
 			assert.equal(purgeCalls, 4, 'every pass should have reached purgeLogs');
 		} finally {
-			rootStore.purgeLogs = originalPurgeLogs;
 			global.setTimeout = originalSetTimeout;
 			global.clearTimeout = originalClearTimeout;
 			setAuditRetention(60_000, 10_000);
-			store.scheduleAuditCleanup();
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
 		}
 	});
 	// stopAuditCleanup() is irreversible, so this runs against its own store rather than the shared fixture
@@ -228,7 +229,6 @@ describe('Audit log', () => {
 			const auditStore = openAuditStore(rootStore);
 			const pending = auditStore.scheduleAuditCleanup(1);
 			auditStore.stopAuditCleanup();
-			// the cancelled pass still has to release the callers waiting on it
 			await pending;
 			const purgeCallsAtStop = purgeCalls;
 			await delay(20);
