@@ -1084,10 +1084,9 @@ function acquirePidFileLock(
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
-		// Read per call, not snapshotted at module load: componentLoader imports this module, so it
-		// can load before the config is resolved, and a snapshot taken then would pin an empty
-		// allowlist (and an undefined base path) for the life of the process. Anything but a
-		// configured list still denies.
+		// componentLoader imports this module, so it can load before the config is resolved; a value
+		// captured out here would pin an empty allowlist, and an undefined base path, for the life of
+		// the process. Anything but a configured list denies.
 		if (!alwaysAllow) {
 			const allowedCommands = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS);
 			if (!Array.isArray(allowedCommands) || !allowedCommands.includes(command.split(' ')[0])) {

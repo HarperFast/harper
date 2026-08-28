@@ -163,8 +163,8 @@ const modes = {
 };
 const run = modes[mode] ?? terminalShutdown;
 run().catch((error) => {
-	// Exit rather than set process.exitCode: a worker the failed mode left running holds the event
-	// loop open forever, and the caller then reports a mocha timeout carrying none of this. stdout
+	// A worker the failed mode left running holds the event loop open forever, so an exit code
+	// alone never applies and the caller reports a mocha timeout carrying none of this. stdout
 	// because the caller captures it into the assertion message; writeSync because process.exit()
 	// drops a queued write to a pipe.
 	writeSync(1, `${error?.stack ?? error}\n`);

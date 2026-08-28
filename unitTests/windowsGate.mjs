@@ -126,20 +126,32 @@ function runGroup(pattern) {
 		child.stderr.on('data', capture);
 
 		let timedOut = false;
-		const timer = setTimeout(() => {
-			timedOut = true;
-			child.kill('SIGKILL');
-		}, GROUP_TIMEOUT_MS);
-
-		child.on('close', (code) => {
+		let settled = false;
+		let timer;
+		const finish = (reason, code) => {
+			if (settled) return;
+			settled = true;
 			clearTimeout(timer);
 			const passing = SUMMARY.exec(output)?.[1];
-			let reason;
-			if (timedOut) reason = `timed out after ${GROUP_TIMEOUT_MS}ms`;
-			else if (passing === undefined) reason = `exited ${code} without reporting a summary`;
-			else if (code !== 0) reason = `exited ${code}`;
+			if (!reason) {
+				if (timedOut) reason = `timed out after ${GROUP_TIMEOUT_MS}ms`;
+				else if (passing === undefined) reason = `exited ${code} without reporting a summary`;
+				else if (code !== 0) reason = `exited ${code}`;
+			}
 			settle({ pattern, seconds: Math.round((Date.now() - startedAt) / 1000), passing, reason });
-		});
+		};
+
+		timer = setTimeout(() => {
+			timedOut = true;
+			child.kill('SIGKILL');
+			// 'close' needs the stdio pipes at EOF, not just the child dead, and a group can leave a
+			// grandchild holding them — a leaked test harness, which SIGKILL on Windows does not reach.
+			// Settling anyway costs this group's tail output; not settling costs the whole gate's table.
+			setTimeout(() => finish('timed out and left a descendant holding its output'), 5000).unref();
+		}, GROUP_TIMEOUT_MS);
+
+		child.on('error', (error) => finish(`could not be spawned: ${error.message}`));
+		child.on('close', (code) => finish(undefined, code));
 	});
 }
 
@@ -158,8 +170,8 @@ for (const { pattern, seconds, passing, reason } of results) {
 const failed = results.filter((result) => result.reason);
 if (failed.length) {
 	console.error(`\n${failed.length} of ${results.length} group(s) failed.`);
-	// Not process.exit(): the group table above is the whole point of the run, and a piped stdout
-	// on Windows can still be draining it. Nothing is left to keep the loop alive here anyway.
+	// The group table above is the point of the run and a piped stdout on Windows may still be
+	// draining it; nothing here holds the event loop open, so the code applies on its own.
 	process.exitCode = 1;
 } else {
 	console.log(
