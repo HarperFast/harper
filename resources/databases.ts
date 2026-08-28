@@ -1177,6 +1177,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
  */
 function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
 	const reclamationPaths = new Set<string>([path]);
+	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
 		if (store?.path) reclamationPaths.add(store.path);
 		try {
@@ -1460,6 +1461,7 @@ export async function dropDatabase(databaseName) {
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
 		if (rootStore) {
+			rootStore.auditStore?.stopAuditCleanup?.();
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
 					rootStore.close();
@@ -1474,6 +1476,7 @@ export async function dropDatabase(databaseName) {
 			// a tableless database resolves its root store here rather than in the loop above, so take
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			rootStore.auditStore?.stopAuditCleanup?.();
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
@@ -1522,6 +1525,7 @@ export function closeDatabase(databaseName: string): boolean {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
 	for (const rootStore of rootStores) {
+		rootStore.auditStore?.stopAuditCleanup?.();
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);

@@ -164,6 +164,7 @@ export function openAuditStore(rootStore) {
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
 	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	let cleanupStopped = false;
 	const isRocksAuditStore = auditStore instanceof RocksTransactionLogStore;
 	onStorageReclamation(rootStore.path, (priority) => {
 		cleanupPriority = priority; // update the priority
@@ -182,7 +183,7 @@ export function openAuditStore(rootStore) {
 	 */
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
 		// Skip audit cleanup/purge in read-only mode
-		if (isReadOnlyMode()) return Promise.resolve();
+		if (cleanupStopped || isReadOnlyMode()) return Promise.resolve();
 
 		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
 		// the pass we are about to cancel has not started, so its callers are handed over to this one
@@ -191,6 +192,7 @@ export function openAuditStore(rootStore) {
 		const resolution = new Promise<void>((resolve) => {
 			pendingCleanupResolve = resolve;
 			pendingCleanup = setTimeout(async () => {
+				pendingCleanup = null; // fired, so stopAuditCleanup() must not clear a stale handle
 				pendingCleanupResolve = null; // started, so a later schedule can no longer cancel this pass
 				// claim the serialization slot before yielding: assigning it after the await lets every
 				// pass released by the same resolution run concurrently over the same range
@@ -198,7 +200,7 @@ export function openAuditStore(rootStore) {
 				lastCleanupResolution = resolution;
 				await previousCleanup;
 				// query for audit entries that are old
-				if (auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
+				if (cleanupStopped || auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
 					// nothing to clean up and nothing to reschedule, but leaving `resolution` pending would
 					// wedge the loop permanently: it is now the resolution every later pass awaits
 					resolve();
@@ -209,9 +211,9 @@ export function openAuditStore(rootStore) {
 				let lastKey: any;
 				try {
 					if (isRocksAuditStore) {
-						deleted = auditStore.rootStore.purgeLogs({
+						auditStore.rootStore.purgeLogs({
 							before: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority),
-						}).length;
+						});
 					} else {
 						for (const auditRecord of auditStore.getRange({
 							start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
@@ -245,25 +247,35 @@ export function openAuditStore(rootStore) {
 					// serialization barrier every later pass awaits, and never settling it wedges the
 					// cleanup loop for the life of the store.
 					resolve();
-					const minimumDelay = isRocksAuditStore
-						? Math.max(1, Math.min(DEFAULT_AUDIT_CLEANUP_DELAY, MAX_CLEANUP_DELAY))
-						: 0;
-					if (deleted === 0) {
+					if (isRocksAuditStore) {
+						// Rocks reclaims whole segments and eligibility only changes on rotation/flush, so the
+						// LMDB backoff — which reads a per-entry delete count — would only rescan the same files.
+						// Pressure shortens the retention cutoff and this cadence together.
+						auditCleanupDelay = Math.max(
+							DEFAULT_AUDIT_CLEANUP_DELAY,
+							Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
+						);
+					} else if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
 						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
 						// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
 						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
 						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
-					} else if (isRocksAuditStore) {
-						auditCleanupDelay = minimumDelay;
 					} else {
 						// if we did delete something, update our updates since timestamp
 						updateLastRemoved(auditStore, lastKey);
 						// and do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
-					if (isRocksAuditStore) auditCleanupDelay = Math.max(auditCleanupDelay, minimumDelay);
-					scheduleAuditCleanup();
+					// A reclamation signal arms a pass on whichever worker received it; on Rocks that pass is
+					// one-shot, because a store-wide segment purge repeated from every worker is duplicated
+					// work, and re-arming here would also cancel a pending pressure-shortened pass.
+					if (
+						!cleanupStopped &&
+						(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))
+					) {
+						scheduleAuditCleanup();
+					}
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
 			}, auditCleanupDelay).unref();
@@ -272,6 +284,18 @@ export function openAuditStore(rootStore) {
 		return resolution;
 	}
 	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
+	/**
+	 * Retires the cleanup loop for good. The in-pass status check declines to re-arm once the root
+	 * store reaches closing/closed, but a pass already on the timer still has to fire to reach it —
+	 * so a close leaves one purge scheduled against a store that is going away.
+	 */
+	auditStore.stopAuditCleanup = function () {
+		cleanupStopped = true;
+		clearTimeout(pendingCleanup);
+		pendingCleanup = null;
+		pendingCleanupResolve?.();
+		pendingCleanupResolve = null;
+	};
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup();
 	}

@@ -156,7 +156,7 @@ describe('Audit log', () => {
 			setAuditRetention(60_000, 10_000);
 		}
 	});
-	it('returns Rocks cleanup to its production cadence after an active purge', async function () {
+	it('holds Rocks cleanup at the retention-derived cadence whatever a pass purges', async function () {
 		const store = AuditedTable.auditStore;
 		if (!(store instanceof RocksTransactionLogStore)) this.skip();
 
@@ -167,7 +167,9 @@ describe('Audit log', () => {
 		const scheduled = [];
 		const fakeTimers = new Set();
 		let purgeCalls = 0;
-		rootStore.purgeLogs = () => (++purgeCalls < 3 ? [] : ['purged.txnlog']);
+		// alternate empty and productive passes: the LMDB backoff would double on the first and halve on
+		// the second, so a shared cadence rule shows up here as a changing delay
+		rootStore.purgeLogs = () => (++purgeCalls % 2 ? [] : ['purged.txnlog']);
 		global.setTimeout = (callback, delay) => {
 			const timer = {
 				callback,
@@ -188,28 +190,53 @@ describe('Audit log', () => {
 			const firstResolution = store.scheduleAuditCleanup(10);
 			assert.equal(scheduled.length, 1);
 			const first = scheduled.shift();
-			assert.equal(first.delay, 10);
+			assert.equal(first.delay, 10, 'an explicit delay still wins for the pass it schedules');
 			await first.callback();
 			await firstResolution;
 
-			assert.equal(scheduled.length, 1);
-			const second = scheduled.shift();
-			assert.equal(second.delay, 20);
-			await second.callback();
-
-			assert.equal(scheduled.length, 1);
-			const third = scheduled.shift();
-			assert.equal(third.delay, 40);
-			await third.callback();
-
-			assert.equal(scheduled.length, 1);
-			assert.equal(scheduled.shift().delay, 10, 'active purge should reset Rocks cleanup backoff');
+			// a tenth of the retention window, above the 10ms floor this test configures
+			for (const pass of [1, 2, 3]) {
+				assert.equal(scheduled.length, 1);
+				const next = scheduled.shift();
+				assert.equal(next.delay, 100, `pass ${pass} should hold the retention-derived cadence`);
+				await next.callback();
+			}
+			assert.equal(purgeCalls, 4, 'every pass should have reached purgeLogs');
 		} finally {
 			rootStore.purgeLogs = originalPurgeLogs;
 			global.setTimeout = originalSetTimeout;
 			global.clearTimeout = originalClearTimeout;
 			setAuditRetention(60_000, 10_000);
 			store.scheduleAuditCleanup();
+		}
+	});
+	// stopAuditCleanup() is irreversible, so this runs against its own store rather than the shared fixture
+	it('stops scheduling Rocks cleanup once the audit store is retired', async function () {
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-stop-'));
+		const rootStore = new RocksDatabase(scratch).open();
+		let purgeCalls = 0;
+		rootStore.purgeLogs = () => {
+			purgeCalls++;
+			return [];
+		};
+		setAuditRetention(100, 1);
+		try {
+			const auditStore = openAuditStore(rootStore);
+			const pending = auditStore.scheduleAuditCleanup(1);
+			auditStore.stopAuditCleanup();
+			// the cancelled pass still has to release the callers waiting on it
+			await pending;
+			const purgeCallsAtStop = purgeCalls;
+			await delay(20);
+			assert.equal(purgeCalls, purgeCallsAtStop, 'a retired cleanup loop kept purging');
+			await auditStore.scheduleAuditCleanup(1);
+			await delay(20);
+			assert.equal(purgeCalls, purgeCallsAtStop, 'a retired cleanup loop accepted a new pass');
+		} finally {
+			setAuditRetention(60_000, 10_000);
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
 		}
 	});
 	it('purges aged, flushed Rocks segments through the Harper retention pass', async function () {

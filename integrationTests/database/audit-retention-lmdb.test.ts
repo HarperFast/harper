@@ -16,9 +16,9 @@
  *     whole mechanism under test: if it ever stops re-arming, audit entries grow without bound
  *     and the only recovery is an explicit operator prune.
  *   - The RocksDB branch now shares the same self-rearming lifecycle but purges whole native
- *     transaction-log segments. This file keeps the LMDB per-entry oracle; Rocks retention uses
- *     separate scheduler and native segment-lifecycle regressions because cached log mappings make
- *     `read_audit_log` an invalid deletion oracle for RocksDB.
+ *     transaction-log segments. This file keeps the LMDB per-entry oracle; Rocks retention is covered
+ *     by `audit-retention-rocks.test.ts`, because cached log mappings make `read_audit_log` an
+ *     invalid deletion oracle for RocksDB.
  *   - `resources/databases.ts:862` — `HARPER_STORAGE_ENGINE` wins over config, which is how the
  *     LMDB arm is selected (same mechanism as `eviction-secondary-index.test.ts`).
  *

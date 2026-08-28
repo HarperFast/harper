@@ -238,11 +238,29 @@ in the primary store until an operator runs `delete_transaction_logs_before` wit
 
 One call to `scheduleAuditCleanup` establishes a retention cadence that ends when the root store closes
 (or immediately in process-wide read-only mode). Storage-engine selection changes the work inside each pass, not whether the timer,
-serialization barrier, error containment, adaptive backoff, and unconditional re-arm exist. LMDB
-removes bounded batches of audit entries; RocksDB asks rocksdb-js to purge conservatively eligible log
-segments before the same time cutoff. Disk-pressure callbacks may accelerate the next pass and shorten
-the effective window, but ordinary retention progress must not depend on pressure. Rocks passes keep a
-production floor on their delay because `purgeLogs()` is synchronous and scans database-wide logs.
+serialization barrier, error containment, and re-arm exist. LMDB removes bounded batches of audit
+entries; RocksDB asks rocksdb-js to purge conservatively eligible log segments before the same time
+cutoff. Disk-pressure callbacks may accelerate the next pass and shorten the effective window, but
+ordinary retention progress must not depend on pressure.
+
+The two engines do not share a cadence rule, because their units of progress differ. LMDB's adaptive
+backoff reads a per-entry delete count: it speeds up while entries are being removed and doubles while
+idle. Rocks reclaims whole segments whose eligibility changes only on rotation/flush, so the same
+signal would only make it rescan the same files — its delay is instead a pure function of the
+pressure-adjusted retention window (a tenth of it, floored at `DEFAULT_AUDIT_CLEANUP_DELAY`).
+
+Rocks re-arms on the last worker only. A reclamation signal arms a pass on whichever worker received
+it, and a store-wide segment purge repeated from every worker is duplicated work — so a
+pressure-triggered pass elsewhere stays one-shot.
+
+Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
+Unlinking a segment a consumer has mapped is safe: the inode outlives the unlink, and the mapping cache
+(`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is never
+purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is required.
+What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
+iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
+(rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than
+log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention.
 
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
