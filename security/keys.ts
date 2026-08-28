@@ -1151,12 +1151,9 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					let candidateHasWildcards = false;
 					let bestQuality = 0;
 					let candidateDefault;
-					// Whether THIS pass produced a default context. The `defaultContext` closure variable
-					// is deliberately never reset (a transient zero-cert pass must keep serving the prior
-					// default while the retry below waits for certs to come back), so it can't be used to
-					// ask "did this pass find anything?" — after the first successful pass it is truthy
-					// forever, which would let a later transient zero-cert rebuild skip the retry and
-					// publish an empty certificates list (the #1998 symptom) on the post-boot path.
+					// Whether THIS pass produced a default. The `defaultContext` closure variable is never
+					// reset (a transient zero-cert pass keeps serving the prior default), so keying the
+					// zero-cert retry off it would republish empty post-boot — the #1998 symptom.
 					let defaultContextSetThisPass = false;
 					const failedThisPass: { cert: any; error: any }[] = [];
 					// Track the actual table instance, not just whether we've ever subscribed: resetDatabases()
@@ -1300,7 +1297,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					// Retain-last-good: a record still in the table whose build failed keeps its live
 					// hostname entries and its default candidacy; deletion remains the way to drop them.
 					// On an mTLS listener whose CA set changed, the retained pair is rebuilt against the
-					// current trust material (never stale trust); if the rebuild fails the entries drop
+					// current trust material — new handshakes never see stale trust (established sessions
+					// and outstanding tickets are unaffected, as on any build); if the rebuild fails the entries drop
 					// unless nothing else is servable (the zero-cert guard below then keeps the old
 					// state). Full contract in DESIGN.md "TLS hot-reload".
 					const caSetUnchanged = (previous) => {
@@ -1368,30 +1366,14 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						if ((defaultContext as any)?.name === cert.name) retain(defaultContext);
 					}
 					if (liveReload && candidateContexts.size === 0 && !defaultContextSetThisPass) {
-						// The not-loaded-yet guard above only covers the table object being absent, not the
-						// table being present but every row failing to apply (e.g. a private key not yet
-						// available on this thread, caught above per-cert). Resolving here would still write
-						// an empty `certificates:` list — the exact customer-visible symptom this PR exists to
-						// fix. Retry on the same debounce instead of publishing that state; a rebuild trigger
-						// (cert-table change or private-key reload, both already wired to scheduleRebuild) is
-						// almost certainly still coming on a normal boot, and this just avoids a window where
-						// we'd otherwise publish empty in the meantime.
-						//
-						// `!defaultContextSetThisPass` because an empty hostname map is not the same as "no TLS
-						// available": a cert whose hostnames resolve to [] (no usable SANs and no CN) builds no
-						// per-hostname entry but still sets a serviceable default context — that listener must
-						// resolve and serve via the default rather than retry forever for hostname entries that
-						// can't exist. It must be the per-pass flag, not the persistent `defaultContext` (see its
-						// declaration note): keying off the closure variable would disarm this retry for every
-						// pass after the first success, reopening the publish-empty window on live rebuilds.
-						//
-						// Gated on liveReload: transient, single-use selectors (getReplicationCert) legitimately
-						// resolve empty — e.g. the bootstrap check `if (!(await getReplicationCert())) { create
-						// one }` in generateCertAuthority's caller depends on an empty resolution meaning "no
-						// cert yet," and must not hang waiting for a cert that this exact call is about to create.
-						//
-						// Latched like the system-db wait above: this retries indefinitely on the debounce, and
-						// an unlatched warn would emit ~57k lines/day from a listener stuck this way.
+						// Every row failed to apply (e.g. keys not yet on this thread). Publishing or
+						// resolving would write an empty `certificates:` list (the #1998 symptom), so keep
+						// live state and retry. `!defaultContextSetThisPass`, not the persistent
+						// `defaultContext`: a cert with no usable hostnames still sets a serviceable
+						// default (must resolve, not retry forever), while the closure variable is truthy
+						// forever after the first success. Gated on liveReload: transient selectors
+						// (getReplicationCert) legitimately resolve empty — bootstrap depends on that
+						// meaning "no cert yet". Warn is latched: unlatched would emit ~57k lines/day.
 						if (server && !server.tlsSelectorWarnedZeroCerts) {
 							server.tlsSelectorWarnedZeroCerts = true;
 							logger.warn?.(

@@ -1278,17 +1278,25 @@ describe('Test keys module', () => {
 					timeout: 8000,
 					message: 'the corrupt authority row was never reported',
 				});
-				// Every live selector in this suite logs the new failure once, and a straggler whose
-				// pre-armed timer fires late can add a first-log at any point — so assert the RATE, not
-				// absolute stability: across several retry cycles (backoff base 1.5s), unthrottled
-				// re-logging would add one line per selector per cycle (dozens), while late first-logs
-				// add at most a couple.
-				await new Promise((resolve) => setTimeout(resolve, 7000)); // settle + absorb straggler first-logs
+				// Publish-anchored throttle assertion: each completed pass of THIS selector fires the
+				// listener, and every other selector's single first-log lands within its own 1.5s
+				// debounce of the put (heal paths clear pending backoff timers, so no stragglers). By
+				// this selector's second completed pass all first-logs are counted; across two further
+				// completed passes an unthrottled implementation re-logs per pass and any growth fails.
+				await waitFor(() => publishes.length >= 2, {
+					timeout: 15000,
+					message: 'the failure retry never completed a second pass',
+				});
 				const logged = corruptErrors();
-				await new Promise((resolve) => setTimeout(resolve, 4000));
-				assert.ok(
-					corruptErrors() - logged <= 1,
-					`an unchanged corrupt-row signature must not re-log (grew ${corruptErrors() - logged} in 4s)`
+				const passesAtBaseline = publishes.length;
+				await waitFor(() => publishes.length >= passesAtBaseline + 2, {
+					timeout: 30000,
+					message: 'retry passes stopped while the corrupt row was still present',
+				});
+				assert.strictEqual(
+					corruptErrors(),
+					logged,
+					'an unchanged corrupt-row signature must not re-log across completed retry passes'
 				);
 				assert.ok(
 					!warnLogs.some((args) => String(args[0]).includes('recovered')),

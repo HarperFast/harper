@@ -628,7 +628,9 @@ candidacy — a record can be serving as the default with no hostname entries at
 mismatch never downgrades serving below last-good (the pre-fix behavior served the self-signed
 default for days). Retention is trust-aware: a context froze its `ca:` list at build time, so when
 the CA set has changed since, the retained pair is rebuilt against the current trust material —
-revoked client-CA trust is never carried forward — and if that rebuild fails the record's entries
+new handshakes never see revoked client-CA trust; established sessions and outstanding session
+tickets are unaffected, exactly as on a fresh build (ticket keys are process-wide and never rotate
+on trust changes) — and if that rebuild fails the record's entries
 drop for that pass, except when nothing else is servable: the zero-certificate guard then retains
 the old state (availability outranks the drop in that corner) while the failure keeps retrying. Deleting the record remains the way to drop its contexts; a corrupt authority
 row is a pass failure like any other (reported through the signature throttle, armed for retry) and
