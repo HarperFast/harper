@@ -1185,7 +1185,11 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							previousSubscription.then((subscription: any) => subscription?.end?.()).catch(() => {});
 						}
 					}
-					for (const cert of databases.system.hdb_certificate.search([])) {
+					// One snapshot drives both loops: separate search() calls own separate read
+					// snapshots, and a write committing between them could publish a renewed leaf
+					// against the previous CA set.
+					const certRecords = Array.from(databases.system.hdb_certificate.search([])) as any[];
+					for (const cert of certRecords) {
 						const certificate = cert.certificate;
 						let certParsed;
 						try {
@@ -1202,7 +1206,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						}
 					}
 
-					for (const cert of databases.system.hdb_certificate.search([])) {
+					for (const cert of certRecords) {
 						try {
 							if (cert.is_authority) {
 								continue;
@@ -1344,17 +1348,23 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						}
 					};
 					for (const { cert } of failedThisPass) {
+						// Ties go to the incumbent: a hostname the retained context already owned, and the
+						// live default when it is the retained record, must not flip to an equal-quality
+						// sibling because of a transient failure. A context retained only for a hostname
+						// still needs strict > to become the default.
 						const retain = (previous, hostname?) => {
 							const retained = retainable(previous);
 							if (!retained) return;
 							const previousQuality = (retained as any).quality ?? 0;
-							if (
-								hostname !== undefined &&
-								previousQuality > ((candidateContexts.get(hostname) as any)?.quality ?? 0)
-							) {
-								candidateContexts.set(hostname, retained);
+							if (hostname !== undefined) {
+								if (previousQuality >= ((candidateContexts.get(hostname) as any)?.quality ?? 0)) {
+									candidateContexts.set(hostname, retained);
+								}
+								if (hostname[0] === '.') candidateHasWildcards = true;
 							}
-							if (previousQuality > bestQuality) {
+							const winsDefault =
+								previous === defaultContext ? previousQuality >= bestQuality : previousQuality > bestQuality;
+							if (winsDefault) {
 								candidateDefault = retained;
 								defaultContextSetThisPass = true;
 								bestQuality = previousQuality;
@@ -1396,7 +1406,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					for (const [hostname, context] of candidateContexts) secureContexts.set(hostname, context);
 					caCerts.clear();
 					for (const [subject, certificate] of candidateCAs) caCerts.set(subject, certificate);
-					if (candidateHasWildcards) hasWildcards = true;
+					hasWildcards = candidateHasWildcards;
 					if (candidateDefault) {
 						(SNICallback as any).defaultContext = defaultContext = candidateDefault;
 						// note that we can not set the secure context on the server here, because this creates an

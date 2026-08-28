@@ -1185,6 +1185,48 @@ describe('Test keys module', () => {
 			}
 		});
 
+		it("an equal-quality sibling cannot take a failed record's hostname or the default on a tie", async function () {
+			this.timeout(20000);
+			const recordA = uniqueName('tie-a');
+			const recordB = uniqueName('tie-b');
+			const keyA = `${recordA}.pem`;
+			const keyB = `${recordB}.pem`;
+			const hostname = `${recordA}.harper.test`;
+			try {
+				// Baseline: A alone owns the hostname and the default.
+				const pseudoServer = await healthySelector(recordA, keyA, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				assert.strictEqual(pseudoServer.defaultContext?.name, recordA);
+
+				// Add B with equal quality claiming the SAME hostname, and break A in the same window.
+				// B builds; retained A must reclaim the hostname it owned and keep the default — ties
+				// go to the incumbent, not to whichever sibling happened to build this pass.
+				keys.getPrivateKeys().set(keyB, keyPairB.key);
+				await putRecord(recordB, keyPairB.cert, keyB, [hostname]);
+				await putRecord(recordA, keyPairB.cert, keyA, [hostname]); // cert B against key A: A now fails
+				await waitFor(
+					() => {
+						const context = pseudoServer.secureContexts.get(hostname);
+						return context && context.name === recordA && pseudoServer.defaultContext?.name === recordA;
+					},
+					{
+						timeout: 8000,
+						message: 'the failed incumbent lost its hostname or the default to an equal-quality sibling',
+					}
+				);
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'the retained incumbent must keep serving its last-good context'
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyA);
+				keys.getPrivateKeys().delete(keyB);
+				await databases.system.hdb_certificate.delete(recordA).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordB).catch(() => {});
+			}
+		});
+
 		it('a retained mTLS context stops trusting a removed client CA', async function () {
 			this.timeout(20000);
 			const recordName = uniqueName('carevoke');
