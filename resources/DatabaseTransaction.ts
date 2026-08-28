@@ -922,8 +922,9 @@ export class DatabaseTransaction implements Transaction {
 		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
 		if (reloadEntry || operation.entry === undefined || reloadsCommitBase) {
 			// a cold read for a kind that keeps its own conflict semantics is the one case that can
-			// still take the vouch fast path; a state-deriving base or a conflict reload cannot
-			const uncachedRead = !!operation.reloadCommitBase || reloadEntry;
+			// still take the vouch fast path; a state-deriving base or a conflict reload cannot —
+			// except during replay, whose cold reads keep the vouch fast path like any other read
+			const uncachedRead = (!!operation.reloadCommitBase && !this.isReplay) || reloadEntry;
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {

@@ -137,7 +137,7 @@ if (
 	VERSION_REUSED > 0x800000
 )
 	throw new Error(
-		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it`
+		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it — requires @harperfast/rocksdb-js >= 2.8.0`
 	);
 function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
 	return existingEntry?.version != null && newVersion <= existingEntry.version;
