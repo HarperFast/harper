@@ -302,8 +302,9 @@ build-time tooling. `readInstalledPackageMetadata()` must use the same automatic
 dev-only npm manifest does not force a restart on every redeploy for lacking a lockfile while an
 explicit non-npm workspace install still does. Absolute local archives are classified before
 package-protocol detection: a Windows drive letter's colon is path syntax, not an npm protocol. File
-type detection remains asynchronous in extraction. Existing Windows directory inputs deliberately
-retain npm's copy/pack behavior rather than becoming live `file:` links.
+type detection remains asynchronous in extraction. Bare absolute Windows directory inputs retain
+npm's copy/pack behavior rather than becoming live links; explicit `file:` and relative directory
+inputs retain their existing symlink behavior.
 
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 

@@ -29,11 +29,15 @@ describe('derivePackageIdentifier', () => {
 			assert.equal(derivePackageIdentifier(identifier), identifier);
 		}
 	});
+});
 
-	it('keeps directory deployment copy-based on Windows and link-based elsewhere', () => {
-		assert.equal(shouldPackLocalDirectory('win32'), true);
-		assert.equal(shouldPackLocalDirectory('linux'), false);
-		assert.equal(shouldPackLocalDirectory('darwin'), false);
+describe('shouldPackLocalDirectory', () => {
+	it('packs only bare absolute directory identifiers on Windows', () => {
+		assert.equal(shouldPackLocalDirectory(String.raw`D:\components\app`, 'win32'), true);
+		assert.equal(shouldPackLocalDirectory(String.raw`\\server\components\app`, 'win32'), true);
+		assert.equal(shouldPackLocalDirectory(String.raw`file:D:\components\app`, 'win32'), false);
+		assert.equal(shouldPackLocalDirectory('./components/app', 'win32'), false);
+		assert.equal(shouldPackLocalDirectory(String.raw`D:\components\app`, 'linux'), false);
 	});
 });
 

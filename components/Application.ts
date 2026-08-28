@@ -689,12 +689,12 @@ export async function extractApplication(
 				const stats = await stat(packagePath);
 
 				if (stats.isDirectory()) {
-					if (!shouldPackLocalDirectory()) {
+					if (!application.packLocalDirectory) {
 						await symlink(packagePath, application.dirPath, 'dir');
 						return;
 					}
-					// Windows directory deployments historically materialize a copy through npm pack rather than
-					// linking the live source tree into Harper's rollback and cleanup paths.
+					// Bare absolute Windows directory inputs historically materialize a copy through npm pack;
+					// explicit file: and relative directories remain live links.
 					packageIdentifierForPack = packagePath;
 					application.logger.debug?.('Packaging local component directory instead of linking it on Windows');
 				} else {
@@ -1729,6 +1729,7 @@ export class Application {
 	name: string;
 	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
+	readonly packLocalDirectory: boolean;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	onInstallLine?: OnInstallLine;
 	dirPath: string;
@@ -1754,6 +1755,7 @@ export class Application {
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
+		this.packLocalDirectory = shouldPackLocalDirectory(packageIdentifier);
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
 		this.onInstallLine = onInstallLine;
@@ -1879,8 +1881,12 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 	return `github:${packageIdentifier}`;
 }
 
-export function shouldPackLocalDirectory(platform = process.platform) {
-	return platform === 'win32';
+export function shouldPackLocalDirectory(packageIdentifier: string | undefined, platform = process.platform) {
+	return (
+		platform === 'win32' &&
+		!!packageIdentifier &&
+		(isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier))
+	);
 }
 
 /**
@@ -2444,6 +2450,7 @@ function spawnWithEnv(
 		if (process.platform === 'win32' && command === 'npm') {
 			command = 'npm.cmd';
 		}
+		const spawnLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}`);
 
 		const childProcess = spawn(command, args, {
 			shell: true,
@@ -2538,13 +2545,10 @@ function spawnWithEnv(
 		});
 
 		childProcess.on('exit', (code, signal) => {
-			logger
-				.loggerWithTag(`${applicationName}:spawn:${command}`)
-				.debug?.(`Direct child exited with code ${code}, signal ${signal}; awaiting stdio close`);
+			spawnLogger.debug?.(`Direct child exited with code ${code}, signal ${signal}; awaiting stdio close`);
 		});
 
 		childProcess.on('close', async (code, signal) => {
-			const spawnLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}`);
 			if (didTimeout) {
 				spawnLogger.debug?.(
 					`Child stdio closed with code ${code}, signal ${signal}; timeout path owns process-tree confirmation`

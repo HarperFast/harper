@@ -35,7 +35,7 @@ async function fetchWithTimeout(
 
 suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		await startHarper(ctx, { config: { logging: { level: 'debug' } } });
 
 		const deployURL = ctx.harper.operationsAPIURL;
 		const deployResponse = await fetchWithTimeout(
@@ -104,9 +104,11 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
 		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
 			/Using local component archive directly without npm pack/,
+			/\[early-hints:spawn:node\]: Direct child exited with code 0/,
 			/\[early-hints\]: Registered resource: \/hints/,
 		]);
 		match(instanceLog, /Using local component archive directly without npm pack/);
+		match(instanceLog, /\[early-hints:spawn:node\]: Direct child exited with code 0/);
 		match(instanceLog, /\[early-hints\]: Registered resource: \/hints/);
 		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
 		doesNotMatch(instanceLog, /\[early-hints:spawn:npm/, 'a local archive must not be repacked by npm');

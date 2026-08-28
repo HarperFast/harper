@@ -16,7 +16,7 @@ import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } fr
 
 suite('Component: risk-query', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		await startHarper(ctx, { config: { logging: { level: 'debug' } } });
 
 		// Deploy risk-query from local fixture
 		const body = await sendOperation(ctx.harper, {
@@ -44,9 +44,11 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
 		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
 			/Using local component archive directly without npm pack/,
+			/Application risk-query has no production package work; skipping install/,
 			/\[risk-query\]: Registered resource: \/risq/,
 		]);
 		match(instanceLog, /Using local component archive directly without npm pack/);
+		match(instanceLog, /Application risk-query has no production package work; skipping install/);
 		match(instanceLog, /\[risk-query\]: Registered resource: \/risq/);
 		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
 		doesNotMatch(instanceLog, /\[risk-query:spawn:/, 'a dependency-free local archive must not start a child process');

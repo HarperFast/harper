@@ -13,5 +13,8 @@ export async function waitForLogMatches(logFile: string, patterns: RegExp[], tim
 		}
 		await delay(200);
 	}
-	return contents;
+	const missingPatterns = patterns.filter((pattern) => !pattern.test(contents)).map(String);
+	throw new Error(
+		`Timed out after ${timeoutMs}ms waiting for ${missingPatterns.join(', ')} in ${logFile} (${Buffer.byteLength(contents)} bytes read)`
+	);
 }
