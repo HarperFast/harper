@@ -32,7 +32,7 @@ The offline path matters for restore. RocksDB is single-writer, so an in-place r
 
 ## Limitations
 
-- **Managed backups require the RocksDB storage engine.** For LMDB databases, use [`get_backup`](./operations.md#get_backup) or [volume snapshots](../cli/commands.md#backing-up-with-volume-snapshots).
+- **Managed backups require the RocksDB storage engine.** For LMDB databases, use [`get_backup`](./operations.md#get_backup) or [volume snapshots](../cli/commands.md#how-backups-work).
 - **Whole-database granularity.** There is no per-table backup or restore. (The one exception: `get_backup` on an LMDB database can stream individual tables, and includes the audit store only with `include_audit`.)
 - **One storage root per database.** A database whose tables use per-table `path` storage configs spans multiple root stores and cannot be backed up with these operations.
 - **Backups live on the node that created them.** The backup repository is a local directory. RocksDB shares files across backup IDs (a backup ID is not a self-contained folder), so disaster-recovery copies must take the entire per-database repository — `<backupPath>/<database>` — not an individual backup, and must do so while no backup operation is running, or from an atomic filesystem snapshot. A live recursive copy can race `create_backup`/`delete_backup`/`purge_backups` and produce an unrestorable copy. Alternatively, use `get_backup` to pull a snapshot from a running server.

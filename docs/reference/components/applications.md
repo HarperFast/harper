@@ -122,14 +122,14 @@ When deploying remotely, the `package` field can be any valid npm dependency val
 
 - **Omit** `package` to package and deploy the current local directory
 - **npm package**: `package="@harperdb/status-check"`
-- **GitHub**: `package="HarperDB/status-check"` or `package="https://github.com/HarperDB/status-check"`
+- **GitHub**: `package="HarperFast/status-check"` or `package="https://github.com/HarperFast/status-check"`
 - **Private repo (SSH)**: `package="git+ssh://git@github.com:HarperDB/secret-app.git"`
 - **Tarball**: `package="https://example.com/application.tar.gz"`
 
 When using git tags, use the `semver` directive for reliable versioning:
 
 ```
-HarperDB/application-template#semver:v1.0.0
+HarperFast/application-template#semver:v1.0.0
 ```
 
 Harper generates a `package.json` from component configurations and uses a form of `npm install` to resolve them. This is why specifying a local file path creates a symlink (changes are picked up between restarts without redeploying).
@@ -337,7 +337,7 @@ Deploys a component using a package reference or a base64-encoded `.tar` payload
 {
 	"operation": "deploy_component",
 	"project": "my-component",
-	"package": "HarperDB/application-template#semver:v1.0.0",
+	"package": "HarperFast/application-template#semver:v1.0.0",
 	"replicated": true,
 	"restart": "rolling"
 }

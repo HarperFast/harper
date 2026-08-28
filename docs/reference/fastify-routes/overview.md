@@ -12,7 +12,7 @@ Fastify routes are discouraged in favor of modern routing with [Custom Resources
 
 Harper provides a build-in plugin for loading [Fastify](https://www.fastify.io/) routes as a way to define custom endpoints for your Harper application. While we generally recommend building your endpoints/APIs with Harper's [REST interface](../rest/overview.md) for better performance and standards compliance, Fastify routes can provide an extensive API for highly customized path handling. Below is a very simple example of a route declaration.
 
-The fastify route handler can be configured in your application's config.yaml (this is the default config if you used the [application template](https://github.com/HarperDB/application-template)):
+The fastify route handler can be configured in your application's config.yaml (this is the default config if you used the [application template](https://github.com/HarperFast/application-template)):
 
 ```yaml
 fastifyRoutes:
