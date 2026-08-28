@@ -381,7 +381,7 @@ Function signature for the `'all'` event handler passed to `scope.handleEntry()`
 
 ## Example: Static File Server Plugin
 
-A simplified form of the built-in `static` plugin demonstrating key Plugin API patterns:
+A simplified form of the built-in `static` plugin demonstrating key Plugin API patterns. For a complete, production example of this API in action, read the plugin's open-source implementation in [`server/static.ts`](https://github.com/HarperFast/harper/blob/main/server/static.ts).
 
 ```js
 export function handleApplication(scope) {

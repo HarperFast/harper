@@ -19,6 +19,8 @@ The `static` built-in plugin serves static files from your Harper application ov
 
 `static` does **not** need to be installed — it is built into Harper and only needs to be declared in your `config.yaml`.
 
+The plugin is open source: its implementation in [`server/static.ts`](https://github.com/HarperFast/harper/blob/main/server/static.ts) is the source of truth for the behavior described on this page.
+
 ## Basic Usage
 
 Configure `static` with the `files` option pointing to the files you want to serve:
