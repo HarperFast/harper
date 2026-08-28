@@ -3,9 +3,8 @@ const { setupTestDBPath } = require('../testUtils');
 const { database, resetDatabases, databaseEventsEmitter } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// phase (main -> here): 0 idle, 1 the first generation of the table exists, 2 its recreate is paused
-// after the first attribute row, 3 the recreate returned. ack (here -> main): the number of scans
-// completed. Absent when mocha's glob loads this file as a test on the main thread.
+// phase (main -> here): 0 idle, 1 first generation exists, 2 recreate paused after its first attribute
+// row, 3 recreate returned. ack (here -> main): scans completed. Absent when mocha loads this file itself.
 const { phase, ack, tableName } = workerData ?? {};
 if (phase) run();
 

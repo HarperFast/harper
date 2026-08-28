@@ -7,9 +7,8 @@ const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const storageReclamation = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// A catalog scan on another worker thread (resetDatabases from any schema-change signal) loads a
-// table only once its primary row exists, so that row must land after every attribute row; otherwise
-// the scan builds - and replication announces to peers - a Table with a partial attribute list.
+// A catalog scan on another worker thread loads a table only once its primary row exists, so that row
+// must land after every attribute row or the scan builds, and replication announces, a partial table.
 describe('create table catalog write order', () => {
 	before(() => {
 		setupTestDBPath();
@@ -147,6 +146,13 @@ describe('create table catalog write order', () => {
 		const primaryRow = Retried.dbisDB.getSync(`${tableName}/`);
 		assert(primaryRow, 'the retry must write the primary row');
 		assert.strictEqual(primaryRow.schemaDefined, true, 'the primary row must carry the schemaDefined declaration');
+		// the failed attempt closed this column family on RocksDB; the retry must have reopened a usable one
+		await Retried.primaryStore.put('retried', { id: 'retried', name: 'after retry' });
+		assert.strictEqual(
+			Retried.primaryStore.get('retried')?.name,
+			'after retry',
+			'the retried primary store must serve traffic'
+		);
 		assert.strictEqual(
 			writes[writes.length - 1],
 			`${tableName}/`,

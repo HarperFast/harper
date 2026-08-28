@@ -120,6 +120,8 @@ type RelationshipHydration = {
 
 let relationshipsToHydrate: RelationshipHydration[] = [];
 const reportedRelationshipErrors = new Set<string>();
+// every schema-change signal rescans on every thread, so an interrupted create is reported once per table
+const reportedIncompleteCatalogs = new Set<string>();
 
 function normalizeRelationships(attributes: any[]): PersistedRelationship[] {
 	const relationships: PersistedRelationship[] = [];
@@ -1076,14 +1078,18 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
-				logger.warn(
-					`Skipping table ${tableName}: its catalog has attribute rows but no primary key row (create in progress or interrupted), attributes: ${JSON.stringify(attributes)}`
-				);
+				const message = `Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`;
+				if (reportedIncompleteCatalogs.has(`${databaseName}.${tableName}`)) logger.debug(message);
+				else {
+					reportedIncompleteCatalogs.add(`${databaseName}.${tableName}`);
+					logger.warn(message);
+				}
 				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
 				definedTables?.delete(tableName);
 				continue;
 			}
 		}
+		reportedIncompleteCatalogs.delete(`${databaseName}.${tableName}`);
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
@@ -2397,7 +2403,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
-				// an unpublished class's map is private, so register early there for the failure path to close
+				// only an unpublished class registers before the descriptor persists (its map is private)
 				if (deferredPrimaryRow) indices[attribute.name] = dbi;
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
@@ -2515,9 +2521,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
-		// The primary row is what makes a table loadable, so it lands after every attribute row: a catalog
-		// scan on another thread (resetDatabases from any schema-change signal) that runs mid-create must
-		// skip this table rather than build - and announce to peers - a Table with a partial attribute list.
+		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
+		// runs mid-create skips the table instead of building (and announcing) a partial one.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
 			setTable(tables, tableName, Table);
@@ -2588,7 +2593,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 		return tableName + '/';
 	}
-	// Nothing else can reach a create that failed before its primary row, so it releases its own side effects.
+	// nothing else can reach a create that failed before its primary row
 	function discardUnpublishedTable() {
 		const discard = (description: string, action: () => unknown) => {
 			try {
@@ -2605,7 +2610,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				if (!attribute.isPrimaryKey && !attribute.relationship) attributesDbi.remove(tableName + '/' + attribute.name);
 			}
 		});
-		// makeTable() itself may be what threw, so the class and its index map may not exist yet
 		if (Table) discard('callbacks', () => Table.cleanup());
 		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
 		// create's write transaction; only RocksDB column-family handles hold native state to release
