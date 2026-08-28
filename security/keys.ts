@@ -1083,7 +1083,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						clearTimeout(failureRetryTimer);
 						failureRetryTimer = undefined;
 					}
-					for (const { cert, error } of failures) logger.error?.('Error applying TLS for', cert.name, error);
+					for (const { cert, error } of failures)
+						logger.error?.('Error applying TLS for', cert.name, `on the '${type}' listener`, error);
 				} else {
 					failureRetryCount++;
 					// Stays at error: a stuck rotation must keep an alertable signal — the retained cert

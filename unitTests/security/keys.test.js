@@ -1304,8 +1304,19 @@ describe('Test keys module', () => {
 				warnLogs.push(args);
 				return originalWarn?.apply(tlsLogger, args);
 			};
+			// A unique listener type makes this selector's failure logs attributable — foreign
+			// suite-accumulated selectors log the same record under their own types.
+			const listenerType = uniqueName('throttle-lens');
 			try {
-				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				keys.getPrivateKeys().set(keyName, keyPairA.key);
+				await putRecord(recordName, keyPairA.cert, keyName, [hostname], [listenerType]);
+				const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+				const selector = keys.createTLSSelector(listenerType, undefined, true);
+				await selector.initialize(pseudoServer);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+					timeout: 6000,
+					message: 'baseline context for the test record never published',
+				});
 				const publishes = [];
 				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.size));
 				await databases.system.hdb_certificate.put({
@@ -1315,30 +1326,25 @@ describe('Test keys module', () => {
 					is_authority: true,
 					is_self_signed: true,
 				});
-				const corruptErrors = () => errorLogs.filter((args) => args.includes(corruptName)).length;
+				const corruptErrors = () =>
+					errorLogs.filter((args) => args.includes(corruptName) && args.some((a) => String(a).includes(listenerType)))
+						.length;
 				await waitFor(() => corruptErrors() >= 1, {
 					timeout: 8000,
 					message: 'the corrupt authority row was never reported',
 				});
-				// Publish-anchored throttle assertion: each completed pass of THIS selector fires the
-				// listener, and every other selector's single first-log lands within its own 1.5s
-				// debounce of the put (heal paths clear pending backoff timers, so no stragglers). By
-				// this selector's second completed pass all first-logs are counted; across two further
-				// completed passes an unthrottled implementation re-logs per pass and any growth fails.
-				await waitFor(() => publishes.length >= 2, {
-					timeout: 15000,
-					message: 'the failure retry never completed a second pass',
-				});
-				const logged = corruptErrors();
-				const passesAtBaseline = publishes.length;
-				await waitFor(() => publishes.length >= passesAtBaseline + 2, {
+				// Throttle invariant: this selector's failure logs are attributable via its unique
+				// listener type, so with a stable signature it must log EXACTLY once no matter how many
+				// foreign selectors also fail on the same record. Three completed passes guarantee an
+				// unthrottled implementation would have re-logged.
+				await waitFor(() => publishes.length >= 3, {
 					timeout: 30000,
-					message: 'retry passes stopped while the corrupt row was still present',
+					message: 'the failure retry never completed further passes',
 				});
 				assert.strictEqual(
 					corruptErrors(),
-					logged,
-					'an unchanged corrupt-row signature must not re-log across completed retry passes'
+					1,
+					'an unchanged corrupt-row signature must log exactly once for this selector'
 				);
 				assert.ok(
 					!warnLogs.some((args) => String(args[0]).includes('recovered')),
