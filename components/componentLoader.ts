@@ -177,9 +177,9 @@ export async function loadComponentDirectories(
 		// since workers are what actually serve it.
 		//
 		// Settlement itself runs here too, not just the read-only check. A worker can be auto-restarted at any
-		// time — including mid-activation — and the journal-blind legacy pass below would then restore a
-		// displaced tree over a candidate that was already renamed live. Main-thread startup sequencing does
-		// not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
+		// time — including mid-activation — and the legacy pass below then has an unsettled journal in front
+		// of it, which it refuses to restore against: the component stalls instead of loading. Main-thread
+		// startup sequencing does not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
 		// the component preparation lock, which is cross-thread and cross-process, and the pass is idempotent.
 		try {
 			for (const [component, error] of await recoverInterruptedActivations(CF_ROUTES_DIR)) {

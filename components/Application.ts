@@ -500,6 +500,17 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const COMPONENT_PREPARATION_WAIT_MARGIN_MS = 30000;
 const COMPONENT_RECOVERY_WAIT_TIMEOUT_MS = 30000;
 const COMPONENT_RECOVERY_TRY_TIMEOUT_MS = 250;
+
+/**
+ * Lock terms for the boot-time activation scan. It runs before every component load on every thread, so it
+ * probes rather than queues: the default is a two-hour wait that RENEWS while the holder is alive, which
+ * would park a respawning worker behind a deploy's `npm install` and load no components at all until it
+ * finished. A held lock means a live deploy, and a live deploy settles its own journal.
+ */
+const RECOVERY_LOCK_WAIT = {
+	timeoutMs: COMPONENT_RECOVERY_TRY_TIMEOUT_MS,
+	renewTimeoutWhileOwnerAlive: false,
+};
 const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
@@ -1184,7 +1195,7 @@ async function candidateComponentName(deploymentDirPath: string): Promise<string
 	// live path, which is exactly when an unreadable journal would otherwise be unattributable.
 	// Only ENOENT is absence. Swallowing every error here reported "unowned", which is a licence to act:
 	// the worker verdict dropped a failure and loaded a component main had failed closed, and a deploy
-	// skipped a journaled activation it owns and handed the component to the journal-blind pass.
+	// skipped a journaled activation it owns and stalled the component in the legacy pass instead.
 	const recorded = await readFile(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), 'utf8').catch(
 		(error: NodeJS.ErrnoException) => {
 			if (error?.code === 'ENOENT') return '';
@@ -1207,9 +1218,9 @@ async function candidateComponentName(deploymentDirPath: string): Promise<string
 /**
  * The deployment directory of an activation journal this component still owns, if any.
  *
- * The journal is the authority for an interrupted activation, and the legacy `.deploy-aside` pass is
- * journal-blind — it would restore the displaced tree over a candidate a completed activation already
- * renamed live. That pass consults this rather than relying on being sequenced after settlement: a worker
+ * The journal is the authority for an interrupted activation. The legacy `.deploy-aside` pass would
+ * otherwise restore the displaced tree over a candidate a completed activation already renamed live, so it
+ * consults this before restoring rather than relying on being sequenced after settlement: a worker
  * auto-restarted mid-activation reaches it with no settlement in front of it, and settlement that FAILS
  * deliberately keeps the journal for the next start while the same boot carries on into the legacy pass.
  */
@@ -1228,17 +1239,32 @@ async function journaledDeploymentForComponent(
 	for (const deployment of deployments) {
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
-		if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
-		// Presence, not parseability: an unreadable journal is precisely the ambiguous case the legacy pass
-		// must not resolve by restoring a tree.
-		const journaled = await lstat(join(deploymentDirPath, ACTIVATION_JOURNAL)).then(
-			() => true,
-			(error) => {
-				if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-				throw error;
-			}
-		);
-		if (journaled) return deploymentDirPath;
+		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
+		// Scoped to ONE deployment, so a single unreadable staging directory cannot block the recovery of
+		// every other component. One that answers neither question below is left to the startup scan, which
+		// reports it by name.
+		try {
+			// Presence, not parseability: an unreadable journal is precisely the ambiguous case the legacy
+			// pass must not resolve by restoring a tree.
+			const journaled = await lstat(journalPath).then(
+				() => true,
+				(error) => {
+					if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+					throw error;
+				}
+			);
+			if (!journaled) continue;
+			// The journal's own name first, because that is what settlement keys on — reading ownership the
+			// other way round let the guard block a component settlement would never touch. The sidecar
+			// covers an unreadable journal, and a component legitimately named `component`, whose candidate
+			// path collides with the sidecar's and makes every sidecar read fail.
+			const owner =
+				(await readActivationJournal(journalPath).catch(() => undefined))?.component ??
+				(await candidateComponentName(deploymentDirPath).catch(() => undefined));
+			if (owner === componentName) return deploymentDirPath;
+		} catch (error) {
+			logger.trace?.(`Could not check ${deploymentDirPath} for an activation journal: ${errorMessage(error)}`);
+		}
 	}
 	return undefined;
 }
@@ -1262,10 +1288,10 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
  * Settle journaled activations for ONE component, assuming the caller already holds its preparation lock.
  *
  * Exists because the journal-first rule has to hold at every entry point, not just startup. A deploy runs
- * `recoverOrCleanupStaleExtractionPaths` first, and that pass is journal-blind: it restores any
- * `.in-progress-*` aside it finds. After an activation whose retirement failed, the aside still names the
- * DISPLACED tree, so restoring it would put the old version back over the new one — the same inversion the
- * startup ordering exists to prevent.
+ * `recoverOrCleanupStaleExtractionPaths` first. After an activation whose retirement failed, the aside
+ * still names the DISPLACED tree, so restoring it would put the old version back over the new one. That
+ * pass refuses to restore against a surviving journal, but refusing is a stalled component; settling first
+ * is what lets the deploy proceed.
  */
 async function settleJournaledActivationsForComponent(
 	componentsRootDirPath: string,
@@ -1355,7 +1381,8 @@ export async function unsettleableComponentsFromDisk(componentsRootDirPath: stri
 }
 
 /**
- * Settle activations a crash interrupted, before anything loads. Runs on the main thread at startup.
+ * Settle activations a crash interrupted, before anything loads. Runs at startup on main and on every
+ * worker — a worker can be respawned mid-activation, long after main's pass.
  *
  * Returns failures keyed by COMPONENT so the caller can fail exactly those closed and still load every
  * healthy sibling — a single unreadable journal must not take down the whole node, and must not let a
@@ -1423,12 +1450,13 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			};
 			// Scoped to THIS deployment, like the journaled branch below. A lock timeout, or an EIO from the
 			// under-lock re-read, used to abort the entire scan: every later deployment went unsettled and
-			// unmarked, and on a worker the caller only warns before running the journal-blind pass anyway.
+			// unmarked, and on a worker the caller only warns before running the legacy pass anyway.
 			try {
 				owner = await candidateComponentName(deploymentDirPath);
 				if (owner) {
 					await withComponentPreparationLock(join(componentsRootDirPath, owner), removeResidue, {
 						purpose: 'activation-recovery',
+						...RECOVERY_LOCK_WAIT,
 						// Without this a ticket left by a CRASHED worker looks live — same pid, same process
 						// instance — so recovery waits out the multi-hour default instead of reclaiming it.
 						isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
@@ -1452,6 +1480,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				() => settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, settling),
 				{
 					purpose: 'activation-recovery',
+					...RECOVERY_LOCK_WAIT,
 					isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
 				}
 			);
@@ -1475,9 +1504,9 @@ async function sweepAsideRecords(
 	asideStagingDir: string
 ): Promise<void> {
 	for (const record of records) {
-		// RETIRING IS CORRECTNESS, not hygiene: the retired marker is what stops the journal-blind legacy
-		// pass treating this record as authoritative and restoring the displaced tree over the candidate that
-		// was just rolled forward. A record left un-retired while the journal is removed re-creates exactly
+		// RETIRING IS CORRECTNESS, not hygiene: the retired marker is what stops the legacy pass treating this
+		// record as authoritative and restoring the displaced tree over the candidate that was just rolled
+		// forward, once the journal that would otherwise hold it back is gone. A record left un-retired while the journal is removed re-creates exactly
 		// the inversion this protocol exists to prevent, so a failure here PROPAGATES — the caller keeps the
 		// journal and the next start retries.
 		const retiredMarkerPath = await retireExtractionAside(record);
@@ -1586,7 +1615,7 @@ async function settleInterruptedActivation(
 	}
 
 	// The same ordering barrier normal activation uses, and for the same reason: the journal is the only
-	// thing that tells the journal-blind legacy pass not to restore an aside. Removing it while an
+	// thing left telling the legacy pass not to restore an aside. Removing it while an
 	// `.in-progress-*` record still names the displaced tree — because the retire or the sweep did not
 	// reach storage — lets that pass put the old version back over the new one at the next start. Flush the
 	// aside directory first, and leave the journal in place if that cannot be confirmed; recovery is
@@ -1609,14 +1638,15 @@ async function settleInterruptedActivation(
 	try {
 		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
 	} catch (error) {
-		// The tree decision is applied, but the marker still says otherwise and every worker reads it. Keep
-		// the journal and let the next start settle again rather than removing the journal and leaving a
-		// correctly activated component marked unsettled with nothing left to re-derive the verdict from.
-		logger.warn(
-			`Settled the interrupted activation of ${journal.component} but could not clear its unsettled marker; ` +
-				`leaving the journal for the next start: ${errorMessage(error)}`
+		// The tree decision is applied, but the marker still says otherwise and every worker reads it and
+		// fails the component closed. Thrown rather than returned so MAIN reaches that same verdict instead
+		// of reporting the component settled — a split where main serves what every worker refuses is worse
+		// than both refusing. The journal survives, so the next start settles again.
+		throw new Error(
+			`Settled the interrupted activation of ${journal.component} but could not clear its unsettled ` +
+				`marker: ${errorMessage(error)}`,
+			{ cause: error }
 		);
-		return;
 	}
 	await rm(journalPath, { force: true }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not remove its activation journal:`, errorForLog(error))
@@ -2022,18 +2052,6 @@ async function recoverOrCleanupStaleExtractionPaths(
 	application: ExtractionContext,
 	asideStagingDir: string
 ): Promise<void> {
-	// A journal outranks anything in the aside directory. Without this the pass restores the tree a completed
-	// activation displaced, back over the candidate it committed — the exact inversion the journal exists to
-	// prevent, and reachable on any thread whose settlement did not run or did not succeed. Enforced HERE,
-	// at the function that actually moves trees, so every entry point is covered by construction rather than
-	// by each caller remembering to settle first.
-	const journaled = await journaledDeploymentForComponent(dirname(application.dirPath), application.name);
-	if (journaled) {
-		throw new Error(
-			`Refusing to recover ${application.name} from its rollback records: the interrupted activation in ` +
-				`${journaled} is not settled, and its journal is the only record of which tree is current`
-		);
-	}
 	const entries = await readdir(asideStagingDir, { withFileTypes: true });
 	const entryNames = new Set(entries.map((entry) => entry.name));
 	const paths = new Set<string>(entries.map((entry) => join(asideStagingDir, entry.name)));
@@ -2055,6 +2073,19 @@ async function recoverOrCleanupStaleExtractionPaths(
 		recoveryRecords.find(({ priorStateAbsent }) => !priorStateAbsent) ??
 		recoveryRecords.find(({ priorStateAbsent }) => priorStateAbsent);
 	if (recoveryRecord) {
+		// A journal outranks the record. Without this the pass restores the tree a completed activation
+		// displaced, back over the candidate it committed — the inversion the journal exists to prevent, and
+		// reachable on any thread whose settlement did not run or did not succeed. Enforced HERE, at the one
+		// place a tree is restored, so every entry point is covered by construction rather than by each
+		// caller remembering to settle first — and so a component with nothing left to restore still loads.
+		const journaled = await journaledDeploymentForComponent(dirname(application.dirPath), application.name);
+		if (journaled) {
+			throw new Error(
+				`Refusing to restore ${application.name} from ${recoveryRecord.entry.name}: the interrupted ` +
+					`activation in ${journaled} is not settled, and its journal is the only record of which tree ` +
+					`is current`
+			);
+		}
 		const recoveryPath = join(asideStagingDir, recoveryRecord.entry.name);
 		// Retire the losing candidates durably; a cleanup that fails must not let a later
 		// pass adopt one of them and restore an older tree over the one recovered here.
@@ -3008,8 +3039,8 @@ export async function prepareApplication(application: Application, options: Prep
 					if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 					recoveryPending = false;
 				}
-				// BEFORE the legacy pass, which is journal-blind and would restore an aside that a completed
-				// activation left un-retired — putting the displaced version back over the live one.
+				// BEFORE the legacy pass. That pass refuses to restore while a journal survives, so skipping
+				// this would not lose data — it would just stall the deploy behind its own unsettled state.
 				await settleJournaledActivationsForComponent(dirname(application.dirPath), application.name);
 				if (recoveryPending) {
 					await ensureExtractionStagingDirectory(asideStagingDir);

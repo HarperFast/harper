@@ -70,30 +70,38 @@ describe('deploy candidate builds', () => {
 	});
 
 	it('closes the git credential socket before any dependency install script can run', async function () {
+		if (process.platform === 'win32') return this.skip(); // the credential server is POSIX-socket only
 		this.timeout(20000);
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-credentials-'));
 		const dirPath = await makeLiveComponent(componentsRoot, 'web', 'LIVE v1\n');
 		const orderFile = path.join(componentsRoot, 'order.log');
-		// An install step is arbitrary code from the registry running as this uid. If the per-deploy
-		// credential socket is still up when it runs, it can ask the helper for the deployer's git token.
+		// An install step is arbitrary code from the registry running as this uid. It records the credential
+		// sockets it can actually reach, so this asserts unreachability rather than merely call ordering.
 		const archive = await makeTarball({
 			'package.json': '{"name":"web","version":"2.0.0"}\n',
-			'install-probe.js': `require('fs').appendFileSync(${JSON.stringify(orderFile)}, 'install\\n');`,
+			'install-probe.js': [
+				`const fs = require('fs'), os = require('os');`,
+				`const live = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('harper-git-cred-'));`,
+				`fs.appendFileSync(${JSON.stringify(orderFile)}, 'install sockets=' + live.length + '\\n');`,
+			].join('\n'),
 		});
-		const app = new Application({ name: 'web', payload: archive, install: { command: 'node install-probe.js' } });
+		const app = new Application({
+			name: 'web',
+			payload: archive,
+			install: { command: 'node install-probe.js' },
+			credentials: [{ host: 'git.example.com', token: 'deployer-pat', username: 'deployer' }],
+		});
 		app.dirPath = dirPath;
-		const realCleanup = app.cleanupGitCredentialSession.bind(app);
-		app.cleanupGitCredentialSession = async () => {
-			await fs.appendFile(orderFile, 'credentials-closed\n');
-			return realCleanup();
-		};
 
 		await app.startGitCredentialSession();
+		const socketsWhileCloning = (await fs.readdir(os.tmpdir())).filter((n) => n.startsWith('harper-git-cred-'));
+		assert.ok(socketsWhileCloning.length > 0, 'a real credential socket exists during extraction');
+
 		await buildCandidateApplication(app, 'dep-cred');
 
 		const order = (await fs.readFile(orderFile, 'utf8')).split('\n').filter(Boolean);
-		assert.ok(order.includes('install'), 'the install step ran, so the ordering below is meaningful');
-		assert.strictEqual(order[0], 'credentials-closed', 'the credential socket is down before the install starts');
+		assert.strictEqual(order.length, 1, 'the install step ran, so the assertion below is not vacuous');
+		assert.strictEqual(order[0], 'install sockets=0', 'no credential socket is reachable from the install');
 		await fs.rm(componentsRoot, { recursive: true, force: true });
 	});
 

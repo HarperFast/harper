@@ -21,6 +21,7 @@ const {
 	ASIDE_STAGING_DIR,
 	Application,
 } = require('#src/components/Application');
+const { withComponentPreparationLock } = require('#src/components/componentPreparationLock');
 
 const IN_PROGRESS = '.in-progress-';
 
@@ -519,7 +520,7 @@ describe('activation transaction', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('refuses the journal-blind legacy recovery while an activation journal is unsettled', async () => {
+	it('refuses to restore a rollback record while an activation journal is unsettled', async () => {
 		const root = await newRoot('legacy-guard');
 		// The state a completed activation leaves when retiring its rollback record failed: the candidate is
 		// already live, and the tree it displaced is still an un-retired `.in-progress-` record. The legacy
@@ -567,5 +568,39 @@ describe('activation transaction', () => {
 			'the committed tree survives in its rollback record'
 		);
 		assert.ok(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', 'web')), 'and so does the validated candidate');
+	});
+
+	it('still recovers a component whose rollback record was already retired', async () => {
+		const root = await newRoot('retired-journal');
+		// Roll-forward retired the record but could not flush the directory, so it keeps the journal on
+		// purpose. There is nothing left to restore, so refusing here would strand a component whose live
+		// tree is already the correctly activated candidate.
+		await stageState(root, 'web', 'd1', { live: 'new', aside: 'old', complete: true, journal: true });
+		await fs.writeFile(path.join(root, ASIDE_STAGING_DIR, 'web', '.retired-1-1-aaa'), '');
+
+		await recoverInterruptedComponentExtraction(root, 'web', false);
+
+		assert.strictEqual(await readLive(root, 'web'), 'new', 'the committed candidate still serves');
+	});
+
+	it('gives up on a component lock a live deploy is holding instead of queueing behind it', async function () {
+		this.timeout(10000);
+		const root = await newRoot('recovery-lock');
+		await stageState(root, 'web', 'd1', { candidate: 'new', complete: true, journal: true });
+
+		let failures;
+		// The scan runs before every component load on every thread. Waiting here — the lock's default is a
+		// two-hour wait that RENEWS while the holder lives — would park a respawning worker behind this
+		// deploy's install and load no components at all until it finished.
+		await withComponentPreparationLock(
+			path.join(root, 'web'),
+			async () => {
+				failures = await recoverInterruptedActivations(root);
+			},
+			{ purpose: 'test-deploy' }
+		);
+
+		assert.ok(failures.get('web'), 'the component is reported as deferred');
+		assert.ok(!existsSync(path.join(root, 'web')), 'and nothing was activated behind the deploy holding the lock');
 	});
 });
