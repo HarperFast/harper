@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 const ANCHOR_PATTERN =
-	/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/(?:changes|files)(?:(?:\/[\w.-]+)?(?:\?[^\s)\]#]*)?)#diff-([0-9a-f]{64})(?:([RL])(\d+)(?:-[RL]\d+)?)?(?![\w-])/g;
+	/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/(?:changes|files)(?:(?:\/[\w.-]+)?(?:\?[^\s)\]#]*)?)#diff-([0-9a-f]{64})(?:([RL])(\d+)(?:-([RL])(\d+))?)?(?![\w-])/g;
 
 export function fileAnchorHash(filePath) {
 	return createHash('sha256').update(filePath, 'utf8').digest('hex');
@@ -145,6 +145,8 @@ export function parseBodyAnchors(body) {
 		hash: match[3],
 		side: match[4] ?? null,
 		line: match[5] ? Number(match[5]) : null,
+		endSide: match[6] ?? null,
+		endLine: match[7] ? Number(match[7]) : null,
 	}));
 }
 
@@ -190,11 +192,15 @@ export function checkBodyLinks({ body, prFiles, repo, number }) {
 			unverifiable = true;
 			continue;
 		}
-		if (!withinAnyRange(file.ranges?.[anchor.side] ?? [], anchor.line))
-			problems.push({
-				kind: 'line-not-in-diff',
-				message: `${file.path}${anchor.side}${anchor.line} is not in a current diff hunk`,
-			});
+		for (const [side, line] of [
+			[anchor.side, anchor.line],
+			[anchor.endSide, anchor.endLine],
+		])
+			if (line !== null && !withinAnyRange(file.ranges?.[side] ?? [], line))
+				problems.push({
+					kind: 'line-not-in-diff',
+					message: `${file.path}${side}${line} is not in a current diff hunk`,
+				});
 	}
 	return { ok: problems.length === 0 && !unverifiable, problems, anchors, lineAnchored, unverifiable };
 }

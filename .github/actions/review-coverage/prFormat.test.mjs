@@ -236,6 +236,17 @@ test('older files URLs and per-commit paths use the same anchor contract', () =>
 	const result = checkBodyLinks({ body: url, prFiles: PR_FILES, repo: REPO, number: NUMBER });
 	assert.strictEqual(result.ok, true);
 	assert.strictEqual(result.lineAnchored[0].line, 211);
+	assert.strictEqual(result.lineAnchored[0].endLine, 220);
+});
+
+test('both endpoints of a range link must remain in current hunks', () => {
+	const staleRange = `${LINK}-R400`;
+	const result = checkBodyLinks({ body: staleRange, prFiles: PR_FILES, repo: REPO, number: NUMBER });
+	assert.strictEqual(result.ok, false);
+	assert.match(
+		result.problems.map(({ message }) => message).join('\n'),
+		/auditStore\.tsR400 is not in a current diff hunk/
+	);
 });
 
 test('every recognized PR-diff link needs a line anchor', () => {
