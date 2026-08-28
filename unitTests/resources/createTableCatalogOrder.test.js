@@ -96,7 +96,6 @@ describe('create table catalog write order', () => {
 			const original = catalogPrototype[method];
 			if (typeof original !== 'function') continue;
 			catalogPrototype[method] = function (key, ...rest) {
-				// the primary store is open but makeTable() has not run when the next table id is claimed
 				if (key === Symbol.for('next-table-id') && failNextTableIdWrite) {
 					failNextTableIdWrite = false;
 					throw new Error('injected table id write failure');

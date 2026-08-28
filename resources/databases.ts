@@ -666,6 +666,8 @@ export function getDatabases(): Databases {
 				}
 			}
 		} else {
+			const removedTables = databases[dbName];
+			for (const tableName in removedTables) removedTables[tableName]?.cleanup?.();
 			delete databases[dbName];
 			if (dbName === 'data') {
 				for (const tableName in tables) {
@@ -1077,7 +1079,6 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
-				// '/' cannot appear in either name, so the key is collision-free
 				const tableKey = `${databaseName}/${tableName}`;
 				if (reportedIncompleteCatalogs.has(tableKey))
 					logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
@@ -2270,7 +2271,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-			// a row already present under a create is aborted state, even for a name the create declares
+			// rows already present under a create are aborted state
 			const staleRow = !attribute || Boolean(deferredPrimaryRow);
 			if (staleRow || removeIndex) {
 				exclusiveLock();

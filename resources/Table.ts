@@ -6604,6 +6604,7 @@ export function makeTable(options) {
 								const rootStore = primaryStore.rootStore;
 								if (rootStore.status !== 'open') {
 									clearTimeout(cleanupTimer);
+									settlePendingCleanup();
 									return;
 								}
 								const MAX_CLEANUP_CONCURRENCY = 50;
