@@ -199,10 +199,35 @@ export class ResourceBridge extends BridgeMethods {
 		return this.upsertRecords(updateObj);
 	}
 
-	async upsertRecords(upsertObj) {
+	/**
+	 * Create-or-replace: the stored record becomes exactly the submitted one, so an attribute the
+	 * request omits is REMOVED rather than kept. `update`/`upsert` merge (`Table.patch`), which is the
+	 * v4-compatible behaviour every existing client depends on and is why this is a separate operation
+	 * rather than a flag on those. Equivalent to REST `PUT /Table/id` — same `Table.put`, so the same
+	 * audit type, replication shape, and retained `__createdtime__`.
+	 */
+	async putRecords(putObj) {
+		return this.upsertRecords(putObj, true);
+	}
+
+	async upsertRecords(upsertObj, fullRecord = false) {
 		const { attributes } = insertUpdateValidate(upsertObj);
 
 		let new_attributes;
+		// `fullRecord` arrives as an ARGUMENT, never as a field on the request. Reading it off
+		// `upsertObj` would let a client send `full_record: true` with an `update` and get a replace —
+		// which makes the operation name stop describing the write, and bypasses the attribute-scoped
+		// `put` denial in `verifyPerms`, since that is keyed on the operation.
+		//
+		// Without it a write over an existing record merges (`Table.patch`), so an attribute the caller
+		// omitted keeps its stored value and `null` stores a null. That merge is the v4-compatible
+		// behaviour `update`/`upsert` must keep; HarperFast/studio#1643 is the removal case it cannot
+		// serve, and `put` is the operation that can.
+		//
+		// A put is also one operation where a client emulating removal needs two: the record is never
+		// absent between them, subscribers see a single write rather than a delete followed by an
+		// insert, and `__createdtime__` survives (`Table._writeUpdate` retains the stored created time
+		// on a full update and only stamps a new one for a new entry).
 		const Table = getDatabases()[upsertObj.schema][upsertObj.table];
 		const context: Context = {
 			user: upsertObj.hdb_user,
@@ -259,9 +284,14 @@ export class ResourceBridge extends BridgeMethods {
 						}
 					}
 				}
+				// Keyed on whether there IS a record to remove from, not on which operation asked. Guarding
+				// the insert flag alone left `upsert` with no primary key reaching the same silent partial
+				// write one branch over: `insertUpdateValidate` requires a hash attribute only for
+				// `update`, so such a record takes the `id == undefined → Table.create` path and stored an
+				// auto-keyed record with the named attributes stripped, returning 200.
 				await (id == undefined
 					? Table.create(record, context)
-					: existingRecord
+					: existingRecord && !fullRecord
 						? Table.patch(record, context)
 						: Table.put(record, context));
 				keys.push(record[Table.primaryKey]);
@@ -546,8 +576,7 @@ export class ResourceBridge extends BridgeMethods {
 				// get the history of each record
 				for (const id of readAuditLogObj.search_values) {
 					histories[id] = (await table.getHistoryOfRecord(id)).map((auditRecord) => {
-						let operation = auditRecord.operation ?? auditRecord.type;
-						if (operation === 'put') operation = 'upsert';
+						let operation = normalizeHistoryOperation(auditRecord.operation, auditRecord.type);
 						return {
 							operation,
 							timestamp: auditRecord.version,
@@ -745,8 +774,7 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 	let enqueued;
 	let count = 0;
 	for await (const entry of table.getHistory(start, end)) {
-		let operation = entry.operation ?? entry.type;
-		if (operation === 'put') operation = 'upsert';
+		let operation = normalizeHistoryOperation(entry.operation, entry.type);
 		const { id, version: timestamp, value } = entry;
 		if (enqueued?.timestamp === timestamp) {
 			enqueued.ids.push(id);
@@ -770,4 +798,18 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 		}
 	}
 	if (enqueued) yield enqueued;
+}
+
+/**
+ * Which operation a history entry should report: the originating operation when one was recorded,
+ * otherwise the physical write type.
+ *
+ * A recorded `put` is reported as `put`, so replication catch-up replays it as a replace. Only a
+ * LEGACY physical put — one with no originating operation, written before `put` existed — is still
+ * normalized to `upsert`, which is what produced a physical put back then. Normalizing both would
+ * make catch-up patch the replica and retain attributes the source removed.
+ */
+function normalizeHistoryOperation(originatingOperation, physicalType) {
+	if (originatingOperation !== undefined) return originatingOperation;
+	return physicalType === 'put' ? 'upsert' : physicalType;
 }

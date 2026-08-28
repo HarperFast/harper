@@ -5,23 +5,26 @@
  * shorthand field mapping, upsert, edge cases, and deletion.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { doesNotMatch, match, strictEqual, ok } from 'node:assert';
+import { access } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForLogMatches } from './waitForLog.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = join(__dirname, '../fixtures/risq-1.0.0.tgz');
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
 suite('Component: risk-query', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		await startHarper(ctx, { config: { logging: { level: 'debug' } } });
 
 		// Deploy risk-query from local fixture
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'risk-query',
-			package: join(__dirname, '../fixtures/risq-1.0.0.tgz'),
+			package: FIXTURE_PATH,
 			restart: true,
 		});
 		strictEqual(body.message, 'Successfully deployed: risk-query, restarting Harper');
@@ -39,6 +42,19 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 			if (Date.now() > deadline) throw new Error('Timed out waiting for risk-query to be ready after deploy');
 			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
+
+		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
+			/Using local component archive directly without npm pack/,
+			/Application risk-query has no production package work; skipping install/,
+			/\[risk-query\]: Registered resource: \/risq/,
+		]);
+		match(instanceLog, /Using local component archive directly without npm pack/);
+		match(instanceLog, /Application risk-query has no production package work; skipping install/);
+		match(instanceLog, /\[risk-query\]: Registered resource: \/risq/);
+		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
+		doesNotMatch(instanceLog, /\[risk-query:spawn:/, 'a dependency-free local archive must not start a child process');
+		await access(FIXTURE_PATH);
 	});
 
 	after(async () => {

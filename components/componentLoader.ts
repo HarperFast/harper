@@ -438,22 +438,27 @@ export const getComponentName = () => compName;
  * every non-root component load and repaired if missing or pointing elsewhere.
  */
 function symlinkHarperModule(componentDirectory: string) {
-	return new Promise<void>((resolve, reject) => {
+	return new Promise<void>((resolve) => {
 		const store = Status.primaryStore;
-		// Create timeout to avoid deadlocks
-		const timeout = setTimeout(() => {
-			store.unlock(componentDirectory);
-			reject(new Error('symlinking harperdb module timed out'));
-		}, 10_000);
-
-		const callback = () => {
+		let timeout: NodeJS.Timeout;
+		const onUnlocked = () => {
 			clearTimeout(timeout);
 			resolve();
 		};
-		const lockAcquired = store.tryLock(componentDirectory, callback);
+		const lockAcquired = store.tryLock(componentDirectory, onUnlocked);
 
 		if (!lockAcquired) {
-			clearTimeout(timeout);
+			// The lock holder performs the fixup; wait for its unlock. The timer bounds the wait if
+			// the holder dies without unlocking, and must stay ref'd: the unlock wake arrives via an
+			// unref'd threadsafe function (see the invariant comment in threadServer.startServers).
+			// Timing out resolves rather than rejects: the fixup is idempotent maintenance, never
+			// worth failing the component load over.
+			timeout = setTimeout(() => {
+				harperLogger.warn(
+					`Timed out waiting for another thread to verify the harper module link in ${componentDirectory}; continuing with the link in its current state`
+				);
+				resolve();
+			}, 10_000);
 		} else {
 			try {
 				// validate node_modules directory exists
@@ -496,6 +501,9 @@ function symlinkHarperModule(componentDirectory: string) {
 		}
 	});
 }
+
+// Direct access keeps lock timing deterministic without exposing a broader component-load seam.
+export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
 /**
  * This function handles the `handleApplication` call for a plugin in a sequential manner.
