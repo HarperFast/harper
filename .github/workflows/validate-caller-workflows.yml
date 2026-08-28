@@ -27,7 +27,6 @@ on:
 
 jobs:
   validate:
-    # Explicit ceiling — the reusable only reads workflow files.
     permissions:
       contents: read
     uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@765a51b545f1b2b6c1ffe3b3731baa1512e44dac # main 2026-08-28 (#91 job-level post-authorization cancellation; #90 cost gates; #89 defaults; #88 lenses)
