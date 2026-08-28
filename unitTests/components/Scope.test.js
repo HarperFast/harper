@@ -476,6 +476,39 @@ describe('Scope', () => {
 		await scope.close();
 	});
 
+	it('reports an async entry handler failure once, through waitForInitialLoads, not as an unhandled rejection', async () => {
+		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
+
+		const scope = new Scope(
+			this.appName,
+			this.pluginName,
+			this.directory,
+			this.configFilePath,
+			new ApplicationScope('test', this.resources, this.server)
+		);
+		await scope.ready;
+
+		const unhandled = [];
+		const collectUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', collectUnhandled);
+		const scopeErrors = [];
+		scope.on('error', (error) => scopeErrors.push(error));
+		try {
+			const failure = new Error('entry handler failed');
+			scope.handleEntry(async () => {
+				throw failure;
+			});
+			await assert.rejects(scope.waitForInitialLoads(), (error) => error === failure);
+			// Node reports a rejection nobody handled at the end of the turn it was rejected in.
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.deepEqual(scopeErrors, [failure], 'the failure is reported to the scope once');
+			assert.deepEqual(unhandled, [], 'the failure must not also escape as an unhandled rejection');
+		} finally {
+			process.off('unhandledRejection', collectUnhandled);
+			await scope.close();
+		}
+	});
+
 	describe('deploy lifecycle integration', () => {
 		// These cases ensure that when a deploy is in flight for the parent
 		// component, file changes from the deploy itself (extract + npm install)

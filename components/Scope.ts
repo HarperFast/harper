@@ -462,17 +462,27 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			entryEventHandler: onEntryEventHandler
 		): onEntryEventHandler => {
 			const pendingOperations = new Set<Promise<void>>();
+			// The first async failure seen before the initial load completes. A rejected operation
+			// cannot stay in pendingOperations as the record of that failure: one that settles before
+			// 'ready' fires would already be gone by the time the load result is computed, letting a
+			// failed load report success and leaving the rejection with nobody to observe it.
+			let initialLoadFailure: unknown;
+			let initialLoadSettled = false;
 
 			const wrapped: onEntryEventHandler = (entry) => {
 				const result = entryEventHandler(entry);
 				if (result instanceof Promise) {
-					const tracked = result
-						.catch((error) => {
+					const tracked: Promise<void> = result.then(
+						() => {
+							pendingOperations.delete(tracked);
+						},
+						(error) => {
+							pendingOperations.delete(tracked);
 							this.#logger.error?.('Error in async entry handler:', error);
 							this.#handleError(error);
-							throw error;
-						})
-						.finally(() => pendingOperations.delete(tracked));
+							if (!initialLoadSettled && initialLoadFailure === undefined) initialLoadFailure = error;
+						}
+					);
 					pendingOperations.add(tracked);
 				}
 			};
@@ -482,12 +492,17 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				if (pendingOperations.size > 0) {
 					await Promise.all(pendingOperations);
 				}
+				initialLoadSettled = true;
+				if (initialLoadFailure !== undefined) throw initialLoadFailure;
 				targetEntryHandler.emit('initialLoadComplete');
 			});
 
-			// Track this promise so the component loader can await it
+			// Track this promise so the component loader can await it. Its rejection is delivered
+			// through waitForInitialLoads(); this bookkeeping chain must settle either way, or the
+			// same failure escapes a second time as an unhandled rejection of the derived promise.
 			this.#pendingInitialLoads.add(initialLoadPromise);
-			initialLoadPromise.finally(() => this.#pendingInitialLoads.delete(initialLoadPromise));
+			const forgetInitialLoad = () => this.#pendingInitialLoads.delete(initialLoadPromise);
+			initialLoadPromise.then(forgetInitialLoad, forgetInitialLoad);
 
 			return wrapped;
 		};
