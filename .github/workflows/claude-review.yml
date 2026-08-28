@@ -20,17 +20,9 @@ on:
     # bot-authored PRs (renovate, dependabot). See ai-review-prompts#38.
     types: [opened, synchronize, reopened, ready_for_review, labeled]
 
-concurrency:
-  # NOTE: this predicate is deliberately NARROWER than the review job's
-  # `if:` — the cancelling set must be a subset of the running set.
-  # ready_for_review runs review (job gate) but never cancel: their
-  # authorization is author-based, so on a bot-authored PR they could
-  # kill a labeler-authorized run and then be rejected themselves.
-  # Ineligible events (per the review job's opt-in gate) get a unique
-  # run_id group so they can never cancel an in-flight eligible review —
-  # workflow-level cancel-in-progress fires before job `if:` is evaluated.
-  group: claude-review-${{ github.event.pull_request.number }}-${{ ((github.event.action == 'labeled' && github.event.label.name == 'claude-review') || (github.event.action != 'labeled' && github.event.action != 'ready_for_review' && vars.CLAUDE_ALWAYS_ON == 'true')) && 'eligible' || github.run_id }}
-  cancel-in-progress: true
+# No concurrency block: cancellation is owned by the reusable's review
+# job (job-level group, engaged only after authorization), so an
+# unauthorized or skipped event can never cancel a legitimate review.
 
 jobs:
   review:
@@ -44,7 +36,7 @@ jobs:
     # opt-in label, so a draft opted in via `claude-review` resumes
     # review when it flips ready even with CLAUDE_ALWAYS_ON unset.
     if: ${{ (github.event.action == 'labeled' && github.event.label.name == 'claude-review') || (github.event.action != 'labeled' && vars.CLAUDE_ALWAYS_ON == 'true') || (github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'claude-review')) }}
-    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@be549ad08aa6d34b909ea8b542a7ffebdaae1e81 # main 2026-08-25 (#90 cost gates: draft skip, mechanical-diff skip, effort-by-size, debounce; #89 defaults; #88 lenses)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_claude-review.yml@765a51b545f1b2b6c1ffe3b3731baa1512e44dac # main 2026-08-28 (#91 job-level post-authorization cancellation; #90 cost gates; #89 defaults; #88 lenses)
     # Caller-side permissions at the calling-job level (NOT workflow-
     # level — that placement caps the reusable's per-job grants below
     # what they need and breaks the workflow at startup; see
@@ -71,7 +63,7 @@ jobs:
       # introspect their own ref (`github.workflow_ref` resolves to the
       # CALLER's ref in `workflow_call` context), and `uses: …@<ref>`
       # is parsed literally so we can't interpolate a variable.
-      ai-review-prompts-ref: be549ad08aa6d34b909ea8b542a7ffebdaae1e81
+      ai-review-prompts-ref: 765a51b545f1b2b6c1ffe3b3731baa1512e44dac
       review-layers: |
         universal
         harper/common
