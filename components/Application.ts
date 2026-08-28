@@ -1866,8 +1866,12 @@ export class Application {
  * during the installation process in order to actually resolve what the user specifies for a
  * component matching some of npm's package resolution rules.
  */
+function isBareAbsolutePackagePath(packageIdentifier: string) {
+	return isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier);
+}
+
 export function derivePackageIdentifier(packageIdentifier: string) {
-	if (isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier)) return `file:${packageIdentifier}`;
+	if (isBareAbsolutePackagePath(packageIdentifier)) return `file:${packageIdentifier}`;
 	if (packageIdentifier.includes(':')) {
 		return packageIdentifier;
 	}
@@ -1882,11 +1886,7 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 }
 
 export function shouldPackLocalDirectory(packageIdentifier: string | undefined, platform = process.platform) {
-	return (
-		platform === 'win32' &&
-		!!packageIdentifier &&
-		(isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier))
-	);
+	return platform === 'win32' && !!packageIdentifier && isBareAbsolutePackagePath(packageIdentifier);
 }
 
 /**

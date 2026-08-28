@@ -6,11 +6,13 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { doesNotMatch, match, strictEqual, ok } from 'node:assert';
+import { access } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { waitForLogMatches } from './waitForLog.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = join(__dirname, '../fixtures/risq-1.0.0.tgz');
 
 import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -22,7 +24,7 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 		const body = await sendOperation(ctx.harper, {
 			operation: 'deploy_component',
 			project: 'risk-query',
-			package: join(__dirname, '../fixtures/risq-1.0.0.tgz'),
+			package: FIXTURE_PATH,
 			restart: true,
 		});
 		strictEqual(body.message, 'Successfully deployed: risk-query, restarting Harper');
@@ -52,6 +54,7 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 		match(instanceLog, /\[risk-query\]: Registered resource: \/risq/);
 		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
 		doesNotMatch(instanceLog, /\[risk-query:spawn:/, 'a dependency-free local archive must not start a child process');
+		await access(FIXTURE_PATH);
 	});
 
 	after(async () => {
