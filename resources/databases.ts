@@ -1074,8 +1074,10 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
+				// table() writes the primary row last, so this is a create still in progress on another
+				// thread, or one that was interrupted (re-running create_table repairs it)
 				logger.warn(
-					`Unable to find a primary key attribute on table ${tableName}, with attributes: ${JSON.stringify(attributes)}`
+					`Skipping table ${tableName}: its catalog has attribute rows but no primary key row (create in progress or interrupted), attributes: ${JSON.stringify(attributes)}`
 				);
 				continue;
 			}
@@ -2000,6 +2002,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
+	let deferredPrimaryRow: any;
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
@@ -2213,8 +2216,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			);
 			Table.schemaVersion = 1;
 			hasChanges = true;
-
-			attributesDbi.put(dbiName, primaryKeyAttribute);
+			deferredPrimaryRow = primaryKeyAttribute;
 		}
 		const indices = Table.indices;
 		if (!attributesDbi) {
@@ -2267,6 +2269,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
+				if (deferredPrimaryRow) continue;
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
 				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
@@ -2507,6 +2510,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		// The primary row is what makes a table loadable, so it lands after every attribute row: a catalog
+		// scan on another thread (resetDatabases from any schema-change signal) that runs mid-create must
+		// skip this table rather than build - and announce to peers - a Table with a partial attribute list.
+		if (deferredPrimaryRow) attributesDbi.put(tableName + '/', deferredPrimaryRow);
 		// a table with no declared primary key has no attribute row to carry relationships, and the
 		// loop above never visits its descriptor
 		if (relationshipDefinitions) {
