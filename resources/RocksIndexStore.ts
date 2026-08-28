@@ -1,5 +1,7 @@
 import {
 	DBI,
+	type CountEstimate,
+	type CountEstimateOptions,
 	type StoreIteratorOptions,
 	type StorePutOptions,
 	type StoreRemoveOptions,
@@ -38,6 +40,24 @@ export class RocksIndexStore extends RocksDatabase {
 		return super.getRange(translatedOptions).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
+	}
+
+	/**
+	 * Estimate the number of index entries in a range. The bounds are bare indexed values, so they get the
+	 * same composite-key rewrite as {@link getRange} — otherwise an inclusive end or exclusive start would
+	 * miss the value's `[value, primaryKey]` bucket, and the estimate would cover a different key range than
+	 * the scan it is meant to describe.
+	 */
+	estimateCount(options?: CountEstimateOptions): CountEstimate {
+		if (!options) return super.estimateCount(options);
+		let { start, end, exclusiveStart, inclusiveEnd, reverse } = options;
+		if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
+			start = [start, MAXIMUM_KEY];
+		}
+		if ((reverse ? !inclusiveEnd : inclusiveEnd) && end !== undefined) {
+			end = [end, MAXIMUM_KEY];
+		}
+		return super.estimateCount({ ...options, start, end });
 	}
 
 	/**

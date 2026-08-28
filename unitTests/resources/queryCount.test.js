@@ -19,11 +19,16 @@ describe('Table.search count (REST pagination total-count)', () => {
 		CountTable = table({
 			table: 'QueryCountTable',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'group', indexed: true }, { name: 'name' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'group', indexed: true },
+				{ name: 'score', indexed: true },
+				{ name: 'name' },
+			],
 		});
 		let last;
 		for (let i = 0; i < TOTAL; i++) {
-			last = CountTable.put({ id: i, group: i < GROUP_A ? 'a' : 'b', name: 'n-' + i });
+			last = CountTable.put({ id: i, group: i < GROUP_A ? 'a' : 'b', score: i, name: 'n-' + i });
 		}
 		await last;
 	});
@@ -117,6 +122,65 @@ describe('Table.search count (REST pagination total-count)', () => {
 		assert.strictEqual(filtered.length, 3);
 		assert.ok(filtered.recordCount > 0);
 		assert.strictEqual(filtered.recordCountExact, false);
+	});
+
+	it('estimated: a range query returns a valid, non-exact total that reflects the range on RocksDB', async function () {
+		// A range comparator gets a statistical range estimate from the storage engine (rocksdb-js
+		// estimateCount) and falls back to a heuristic fraction on LMDB. Either way the count target must
+		// return a valid, non-exact total no smaller than the page.
+		const wide = await CountTable.search({
+			conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: 0 }],
+			limit: 4,
+			count: 'estimated',
+		});
+		assert.strictEqual(wide.length, 4);
+		assert.strictEqual(typeof wide.recordCount, 'number');
+		assert.strictEqual(wide.recordCountExact, false);
+		assert.ok(wide.recordCount >= wide.length, `total ${wide.recordCount} must be >= page length ${wide.length}`);
+
+		// On RocksDB the range estimator makes the total track the actual key range: a narrow tail must
+		// estimate fewer rows than the whole table. The old heuristic was range-blind (a fixed fraction of
+		// the table size), so narrow and wide would tie — this is what proves estimateCount is in play.
+		const { RocksDatabase } = require('@harperfast/rocksdb-js');
+		if (CountTable.primaryStore instanceof RocksDatabase) {
+			const narrow = await CountTable.search({
+				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: 15 }],
+				limit: 4,
+				count: 'estimated',
+			});
+			assert.ok(
+				narrow.recordCount < wide.recordCount,
+				`narrow tail (${narrow.recordCount}) should estimate fewer than the whole table (${wide.recordCount})`
+			);
+		}
+	});
+
+	it('estimated: a secondary-index range estimate ranges over the composite index keyspace', async function () {
+		// A range on an indexed attribute estimates over the index store (RocksIndexStore), whose keys are
+		// [indexedValue, primaryKey]. Its estimateCount must apply the same composite-key rewrite as its
+		// getRange, so the estimate still tracks the range width — a narrow tail below the whole index.
+		const wide = await CountTable.search({
+			conditions: [{ attribute: 'score', comparator: 'greater_than_equal', value: 0 }],
+			limit: 4,
+			count: 'estimated',
+		});
+		assert.strictEqual(wide.length, 4);
+		assert.strictEqual(typeof wide.recordCount, 'number');
+		assert.strictEqual(wide.recordCountExact, false);
+		assert.ok(wide.recordCount >= wide.length, `total ${wide.recordCount} must be >= page length ${wide.length}`);
+
+		const { RocksDatabase } = require('@harperfast/rocksdb-js');
+		if (CountTable.indices?.score instanceof RocksDatabase) {
+			const narrow = await CountTable.search({
+				conditions: [{ attribute: 'score', comparator: 'greater_than_equal', value: 15 }],
+				limit: 4,
+				count: 'estimated',
+			});
+			assert.ok(
+				narrow.recordCount < wide.recordCount,
+				`narrow index tail (${narrow.recordCount}) should estimate fewer than the whole index (${wide.recordCount})`
+			);
+		}
 	});
 
 	it('default (no count): still returns the lazy streaming iterable, not a materialized page', async function () {
