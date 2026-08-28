@@ -3,7 +3,7 @@ import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transa
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
+import { clearNextEncoding, entryMap, METADATA, stageRawPrimaryEncoding, type Entry } from './RecordEncoder.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -177,6 +177,16 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		return when(this.getEntry(id, { ...options, async: true }), (entry: Entry) => entry?.value);
 	}
 
+	put(id: any, value: any, options?: any): any {
+		this.#cache?.delete(id);
+		const staged = stageRawPrimaryEncoding(this.#enc, typeof options === 'number' ? options : options?.version);
+		try {
+			return super.put(id, value, options);
+		} finally {
+			if (staged) clearNextEncoding();
+		}
+	}
+
 	getRange(options?: any): any {
 		const iterable = super.getRange(options);
 		if (options?.valuesForKey) return iterable.map((v: any) => v?.value);
@@ -199,7 +209,12 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 
 	putSync(id: any, value: any, options?: any): any {
 		this.#cache?.delete(id);
-		return super.putSync(id, value, options);
+		const staged = stageRawPrimaryEncoding(this.#enc, typeof options === 'number' ? options : options?.version);
+		try {
+			return super.putSync(id, value, options);
+		} finally {
+			if (staged) clearNextEncoding();
+		}
 	}
 
 	removeSync(id: any, options?: any): any {

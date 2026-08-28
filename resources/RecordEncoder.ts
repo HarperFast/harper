@@ -27,6 +27,7 @@ import {
 	encodeBlobsWithFilePath,
 	findBlobsInObject,
 	getFileId,
+	resetBlobsWereEncoded,
 } from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
@@ -751,6 +752,22 @@ export function setNextEncoding(timestamp: number, metadata: number, expiresAt =
 	expiresAtNextEncoding = expiresAt;
 	nodeIdAtNextEncoding = nodeId;
 	residencyIdAtNextEncoding = residencyId;
+}
+export function stageRawPrimaryEncoding(encoder: any, version?: number) {
+	if (
+		timestampNextEncoding !== 0 ||
+		metadataInNextEncoding >= 0 ||
+		encoder?.isRocksDB !== true ||
+		encoder.useVersions === false ||
+		encoder.autoVersion
+	)
+		return false;
+	setNextEncoding(
+		typeof version === 'number' && version > 0 && Number.isFinite(version) ? version : getNextMonotonicTime(),
+		0
+	);
+	resetBlobsWereEncoded();
+	return true;
 }
 /**
  * Reset the module-level "next encoding" metadata to its no-metadata defaults. These globals are
