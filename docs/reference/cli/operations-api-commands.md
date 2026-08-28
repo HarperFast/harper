@@ -26,7 +26,7 @@ harper <operation> <parameter>=<value>
 
 <!-- Source: Harper CLI source code (SUPPORTED_OPS and OP_ALIASES arrays) -->
 
-The following operations are available through the CLI. Operations that require complex nested parameters or object structures are not supported via CLI and must be executed through the HTTP API.
+The following operations are available through the CLI. Argument values are JSON-parsed, so operations that take nested objects or arrays of objects work from the CLI as well. See [Parameter Formatting](#parameter-formatting) for how to quote them.
 
 ### Complete Operations List
 
@@ -204,7 +204,7 @@ For comprehensive configuration options, see the [Configuration Reference](../co
 **Deploy a component**:
 
 ```bash
-harper deploy_component project=my-cool-app package=https://github.com/HarperDB/application-template
+harper deploy_component project=my-cool-app package=https://github.com/HarperFast/application-template
 ```
 
 **Get all components**:
@@ -282,6 +282,10 @@ For more information on Harper applications and components, see:
 
 ## Parameter Formatting
 
+Every argument is split on the first `=` and the value is parsed as JSON. If the value is not valid JSON, it is passed through unchanged as a string. That single rule covers all of the parameter types below: `database=dev` fails to parse and stays the string `"dev"`, `json=true` parses to the boolean `true`, and `ids='["1","2"]'` parses to an array.
+
+The one exception is `ref` (used by deploy-by-reference), which is always taken as a raw string so that a numeric-looking git tag such as `ref=1.0` is not rewritten into the number `1`.
+
 ### String Parameters
 
 Simple string values can be passed directly:
@@ -300,10 +304,24 @@ harper search_by_id database=dev table=dog ids='["1","2","3"]'
 
 ### Object Parameters
 
-Object parameters are not supported via CLI. For operations requiring complex nested objects, use:
+Objects and arrays of objects are supported. Pass them as single-quoted JSON:
 
-- The [Operations API](../operations-api/overview.md) via HTTP
-- A custom script or tool
+```bash
+harper deploy_component project=my-app package=npm:@my-org/my-app@1.2.3 \
+  credentials='[{"registry":"registry.my-org.com","secret":"deploy.my-app.registry.my-org.com"}]'
+```
+
+`harper deploy setup=true` prints exactly this `credentials='[...]'` form as the command to run after it seals a registry or git token, so an array-of-objects argument is the normal path for private-package deploys rather than an edge case.
+
+Quoting rules:
+
+- Wrap the JSON in **single** quotes. Double quotes let the shell expand `$`, backticks, and history references inside the value; single quotes pass the JSON through intact.
+- The whole `key=value` pair is one shell argument, so no unescaped spaces outside the quotes. Compact JSON with no spaces after `:` and `,` avoids the problem entirely.
+- To embed a literal single quote inside the JSON, end the quoted run, escape it, and reopen: `'{"name":"O'\''Brien"}'`.
+
+:::warning
+Command-line arguments are not private. Anything you type appears in shell history, in process listings (`ps`), and in CI job logs. Prefer a stored secret reference (the `secret` field above) or an environment variable over inlining a plaintext token in an argument.
+:::
 
 ### Boolean Parameters
 
@@ -369,14 +387,13 @@ harper get_components \
 
 ## Limitations
 
-The following operation types are **not supported** via CLI:
+Nested objects and arrays of objects are **not** a limitation; see [Object Parameters](#object-parameters). The real constraints are about what an argument value can carry:
 
-- Operations requiring complex nested JSON structures
-- Operations with array-of-objects parameters
-- File upload operations
-- Streaming operations
+- **Raw binary bodies.** An argument value is text, so an operation whose request body is raw binary has no general CLI form. The two that need one have dedicated handling: `deploy_component` packages and uploads the current directory when `package` is omitted, and `get_backup` streams the snapshot to a file. Any other binary payload has to go over HTTP.
+- **Large payloads.** There is no way to feed an argument value from stdin or a file, and the operating system caps total argument length. Bulk data such as an inline `csv_data_load` is better sent over HTTP.
+- **Secrets on the command line.** Arguments are visible in shell history, `ps` output, and CI logs. Use a stored secret reference or an environment variable instead of an inline token.
 
-For these operations, use the [Operations API](../operations-api/overview.md) directly via HTTP.
+For these cases, use the [Operations API](../operations-api/overview.md) directly via HTTP.
 
 ## See Also
 
