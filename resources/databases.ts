@@ -2512,7 +2512,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// The primary row is what makes a table loadable, so it lands after every attribute row: a catalog
 		// scan on another thread (resetDatabases from any schema-change signal) that runs mid-create must
 		// skip this table rather than build - and announce to peers - a Table with a partial attribute list.
-		// This worker registers the class at the same point.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
 			setTable(tables, tableName, Table);

@@ -214,6 +214,8 @@ describe('create table catalog write order', () => {
 				`a scan during the create must load neither the new table nor the dropped generation, got attributes ${midCreate.attributes}`
 			);
 			assert.strictEqual(midCreate.updateTableEvents, 0, 'a scan during the create must not announce the table');
+			assert.strictEqual(midCreate.attributeRowVisible, true, 'the other thread must have seen the attribute row');
+			assert.strictEqual(midCreate.primaryRowVisible, false, 'the primary row must not exist yet');
 			const afterCreate = await scanned('after-create');
 			assert.deepStrictEqual(
 				[...afterCreate.attributes].sort(),
@@ -221,6 +223,7 @@ describe('create table catalog write order', () => {
 				'the scan after the create must load the complete attribute list'
 			);
 			assert.ok(afterCreate.updateTableEvents >= 1, 'the scan after the create must announce the complete table');
+			assert.strictEqual(afterCreate.primaryRowVisible, true, 'the primary row must exist after the create');
 		} finally {
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 			await worker.terminate();

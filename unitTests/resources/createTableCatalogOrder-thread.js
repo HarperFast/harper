@@ -1,6 +1,6 @@
 const { parentPort, workerData } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
-const { resetDatabases, databaseEventsEmitter } = require('#src/resources/databases');
+const { database, resetDatabases, databaseEventsEmitter } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // phase (main -> here): 0 idle, 1 the first generation of the table exists, 2 its recreate is paused
@@ -22,11 +22,16 @@ function run() {
 	function scan(type) {
 		updateTableEvents = 0;
 		const Table = resetDatabases().test?.[tableName];
+		// what this thread can read from the catalog itself, so "not loaded" is distinguishable from
+		// "the rows were not visible yet"
+		const catalog = database({ database: 'test', table: null }).dbisDb;
 		parentPort.postMessage({
 			type,
 			loaded: Boolean(Table),
 			attributes: Table ? Table.attributes.map((attribute) => attribute.name) : [],
 			updateTableEvents,
+			attributeRowVisible: Boolean(catalog.getSync(`${tableName}/name`)),
+			primaryRowVisible: Boolean(catalog.getSync(`${tableName}/`)),
 		});
 	}
 
