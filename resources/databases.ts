@@ -2202,7 +2202,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
-			// from here on a failure has something to release, whether or not makeTable() completes
 			unpublishedPrimaryStore = primaryStore;
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 			rootStore.databaseName = databaseName;
@@ -2609,7 +2608,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 		return tableName + '/';
 	}
-	// nothing else can reach a create that failed before its primary row
 	function discardUnpublishedTable() {
 		const discard = (description: string, action: () => unknown) => {
 			try {
