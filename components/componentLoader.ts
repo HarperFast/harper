@@ -1019,8 +1019,11 @@ export async function loadComponent(
 							resources,
 							...componentConfig,
 						})) || extensionModule;
+				// Only what THIS load added. A shared extension module — `rest`, `graphql` — can already be
+				// live from an ordinary load, and collecting it would have validation evict it from the
+				// registry during cleanup, so the next reload cycle no longer sees it as loaded.
+				if (!loadedComponents.has(extensionModule)) collectLoadedModules?.add(extensionModule);
 				loadedComponents.set(extensionModule, true);
-				collectLoadedModules?.add(extensionModule);
 
 				if (
 					(extensionModule.handleFile ||

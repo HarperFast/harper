@@ -602,5 +602,27 @@ describe('activation transaction', () => {
 
 		assert.ok(failures.get('web'), 'the component is reported as deferred');
 		assert.ok(!existsSync(path.join(root, 'web')), 'and nothing was activated behind the deploy holding the lock');
+		// A deferral is not a verdict. A marker here would outlive the deploy and have every worker read a
+		// healthy component as unsettleable.
+		assert.ok(
+			!existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', 'unsettled')),
+			'and no unsettled verdict was left on disk for a deploy that is simply still running'
+		);
+	});
+
+	it('refuses to restore when it cannot tell whether a deployment holds this journal', async () => {
+		const root = await newRoot('gate-unreadable');
+		// An un-retired record the legacy pass would restore, plus a deployment that answers neither
+		// question: its journal and its ownership sidecar are both directories, so both reads fail. Treating
+		// that as "no journal for web" is the clobber the gate exists to prevent.
+		await stageState(root, 'web', 'd1', { live: 'new', aside: 'old', complete: true });
+		const deploymentDir = path.join(root, DEPLOY_STAGING_DIR, 'd1');
+		await fs.rm(path.join(deploymentDir, 'component'));
+		await fs.mkdir(path.join(deploymentDir, 'component'));
+		await fs.mkdir(path.join(deploymentDir, 'activation.json'));
+
+		await assert.rejects(() => recoverInterruptedComponentExtraction(root, 'web', false));
+
+		assert.strictEqual(await readLive(root, 'web'), 'new', 'the live tree was not replaced');
 	});
 });

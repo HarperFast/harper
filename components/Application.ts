@@ -1240,31 +1240,28 @@ async function journaledDeploymentForComponent(
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
-		// Scoped to ONE deployment, so a single unreadable staging directory cannot block the recovery of
-		// every other component. One that answers neither question below is left to the startup scan, which
-		// reports it by name.
-		try {
-			// Presence, not parseability: an unreadable journal is precisely the ambiguous case the legacy
-			// pass must not resolve by restoring a tree.
-			const journaled = await lstat(journalPath).then(
-				() => true,
-				(error) => {
-					if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-					throw error;
-				}
-			);
-			if (!journaled) continue;
-			// The journal's own name first, because that is what settlement keys on — reading ownership the
-			// other way round let the guard block a component settlement would never touch. The sidecar
-			// covers an unreadable journal, and a component legitimately named `component`, whose candidate
-			// path collides with the sidecar's and makes every sidecar read fail.
-			const owner =
-				(await readActivationJournal(journalPath).catch(() => undefined))?.component ??
-				(await candidateComponentName(deploymentDirPath).catch(() => undefined));
-			if (owner === componentName) return deploymentDirPath;
-		} catch (error) {
-			logger.trace?.(`Could not check ${deploymentDirPath} for an activation journal: ${errorMessage(error)}`);
-		}
+		// NOTHING is swallowed here. This is the gate that authorizes restoring an old tree over what may be
+		// a committed candidate, so "could not tell" has to fail closed — treating an unreadable deployment
+		// as "no journal for this component" is exactly the clobber the journal exists to prevent. The blast
+		// radius is narrow because the gate is only consulted where a restorable record already exists.
+		//
+		// Presence, not parseability: an unreadable journal is precisely the ambiguous case.
+		const journaled = await lstat(journalPath).then(
+			() => true,
+			(error) => {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+				throw error;
+			}
+		);
+		if (!journaled) continue;
+		// EITHER name blocks, while settlement acts only when both agree. The destructive step takes the
+		// conservative union; the corrective one takes the precise intersection, so a journal whose two
+		// attributions disagree stalls the restore instead of licensing it, and startup recovery — which
+		// keys on the journal — is what clears it. The sidecar also covers a component legitimately named
+		// `component`, whose candidate path collides with the sidecar's and makes every sidecar read fail.
+		const journalOwner = (await readActivationJournal(journalPath).catch(() => undefined))?.component;
+		if (journalOwner === componentName) return deploymentDirPath;
+		if ((await candidateComponentName(deploymentDirPath)) === componentName) return deploymentDirPath;
 	}
 	return undefined;
 }
@@ -1408,10 +1405,16 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			const failure = error instanceof Error ? error : new Error(String(error));
 			if (!failures.has(component)) failures.set(component, failure);
 			logger.error(`Could not settle the interrupted activation of ${component}:`, errorForLog(failure));
-			// Recorded so WORKERS reach the same verdict. An unreadable journal is self-evident, but a
-			// well-formed journal this pass could not settle looks exactly like a deploy in flight, and a
-			// worker would load the component over state nobody reconciled. Best-effort: the alternative to a
-			// missing marker is today's behavior, not a worse one.
+			// A DEFERRAL is not a verdict, and only verdicts go on disk. A held lock means a live deploy, which
+			// settles its own journal; a marker written here would outlive that deploy and have
+			// `unsettleableComponentsFromDisk` read it as an authoritative "cannot be settled", failing a
+			// healthy component closed on every worker. The failure is already recorded above, so this thread
+			// still defers — it just leaves nothing behind.
+			if (failure instanceof ComponentPreparationLockTimeoutError) return;
+			// Everything else IS a verdict, recorded so workers reach the same one. An unreadable journal is
+			// self-evident, but a well-formed journal this pass could not settle looks exactly like a deploy
+			// in flight, and a worker would otherwise load the component over state nobody reconciled.
+			// Best-effort: the alternative to a missing marker is today's behavior, not a worse one.
 			await writeFile(join(deploymentDirPath, UNSETTLED_MARKER), failure.message, { mode: 0o600 }).catch(
 				(markerError) =>
 					logger.warn(`Could not record the unsettled activation of ${component}: ${errorMessage(markerError)}`)
@@ -1644,7 +1647,8 @@ async function settleInterruptedActivation(
 		// than both refusing. The journal survives, so the next start settles again.
 		throw new Error(
 			`Settled the interrupted activation of ${journal.component} but could not clear its unsettled ` +
-				`marker: ${errorMessage(error)}`,
+				`marker at ${join(deploymentDirPath, UNSETTLED_MARKER)}; the component stays failed closed on ` +
+				`every thread until that file can be removed: ${errorMessage(error)}`,
 			{ cause: error }
 		);
 	}
