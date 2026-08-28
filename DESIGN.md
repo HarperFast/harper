@@ -273,9 +273,13 @@ behaviours, not invariants this section establishes — don't read the paragraph
 engine-independent.
 
 Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
-Unlinking a segment a consumer has mapped is safe: the inode outlives the unlink, and the mapping cache
-(`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is never
-purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is required.
+Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
+mapping cache (`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is
+never purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is
+required. Windows does not share that property: deleting a mapped segment raises a sharing violation,
+so the purge throws, is warn-logged, re-arms, and makes no progress for as long as a consumer holds the
+mapping. The continuous cadence therefore turns a Windows retention stall into a steady state rather
+than a one-off, and nothing covers it — the Rocks retention integration test skips win32.
 What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
 iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
 (rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than

@@ -192,7 +192,7 @@ export function openAuditStore(rootStore) {
 		const resolution = new Promise<void>((resolve) => {
 			pendingCleanupResolve = resolve;
 			pendingCleanup = setTimeout(async () => {
-				pendingCleanup = null; // fired, so stopAuditCleanup() must not clear a stale handle
+				pendingCleanup = null;
 				pendingCleanupResolve = null; // started, so a later schedule can no longer cancel this pass
 				// claim the serialization slot before yielding: assigning it after the await lets every
 				// pass released by the same resolution run concurrently over the same range
@@ -220,6 +220,9 @@ export function openAuditStore(rootStore) {
 							snapshot: false,
 							end: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
 						})) {
+							// re-checked per iteration, not just before the pass: this loop suspends on the awaits
+							// below, and a close that lands mid-pass closes the env underneath the resumed cursor
+							if (cleanupStopped) break;
 							try {
 								// awaited so a rejection (not just a synchronous throw) is caught here instead of
 								// escaping as an unhandled rejection once a later iteration's promise replaces this one

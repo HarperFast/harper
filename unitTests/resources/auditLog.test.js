@@ -171,7 +171,11 @@ describe('Audit log', () => {
 		// alternate empty and productive passes: the LMDB backoff would double on the first and halve on
 		// the second, so a shared cadence rule shows up here as a changing delay
 		rootStore.purgeLogs = () => (++purgeCalls % 2 ? [] : ['purged.txnlog']);
-		global.setTimeout = (callback, delay) => {
+		// delays above this test's own (10ms and 100ms) belong to something else in the process — the
+		// shared fixture's 10s audit loop, a replication retry — and get the real timer. Handing those
+		// a stub that never fires killed them silently for the rest of the run.
+		global.setTimeout = (callback, delay, ...args) => {
+			if (delay > 1_000) return originalSetTimeout(callback, delay, ...args);
 			const timer = {
 				callback,
 				delay,
@@ -180,9 +184,7 @@ describe('Audit log', () => {
 				},
 			};
 			fakeTimers.add(timer);
-			// the shared fixture's audit loop is live on a real 10s timer and its re-arm would land here
-			// through the patched global; this test's own delays are 10ms and 100ms
-			if (delay <= 1_000) scheduled.push(timer);
+			scheduled.push(timer);
 			return timer;
 		};
 		global.clearTimeout = (timer) => {
@@ -254,7 +256,8 @@ describe('Audit log', () => {
 		// only the scratch path reports pressure, so no other open store's handler is invoked and
 		// its cleanup timers cannot land in `scheduled`
 		setAvailableSpaceRatioGetter(async (path) => (path === scratch ? 0.2 : 0.8));
-		global.setTimeout = (callback, delay) => {
+		global.setTimeout = (callback, delay, ...args) => {
+			if (delay > 1_000) return originalSetTimeout(callback, delay, ...args);
 			const timer = {
 				callback,
 				delay,
@@ -263,7 +266,7 @@ describe('Audit log', () => {
 				},
 			};
 			fakeTimers.add(timer);
-			if (delay <= 1_000) scheduled.push(timer);
+			scheduled.push(timer);
 			return timer;
 		};
 		global.clearTimeout = (timer) => {

@@ -1748,8 +1748,13 @@ export function closeDatabase(databaseName: string): boolean {
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
 	}
-	// before any table store closes: an LMDB pass inside removeAuditEntry fires the tombstone
-	// callback against the primary store, which would already be closed underneath it
+	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
+	// an open root store, tracked only on the defined-database entry rather than any table — include
+	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	if (definedRoot) rootStores.add(definedRoot);
+	// before any table store closes: an LMDB pass suspended inside removeAuditEntry would otherwise
+	// resume onto a closed primary store
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	for (const tableName in dbTables) {
 		const table: any = dbTables[tableName];
@@ -1759,13 +1764,7 @@ export function closeDatabase(databaseName: string): boolean {
 		}
 		closeStore(table.primaryStore, `table ${tableName}`);
 	}
-	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
-	// an open root store, tracked only on the defined-database entry rather than any table — include
-	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
-	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-	if (definedRoot) rootStores.add(definedRoot);
 	for (const rootStore of rootStores) {
-		rootStore.auditStore?.stopAuditCleanup?.(); // the definedRoot added after the hoisted pass above
 		removeStorageReclamation(rootStore.path);
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
