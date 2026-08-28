@@ -46,6 +46,8 @@ npx mocha unitTests/resources/mytest.js
 
 TypeScript is stripped at runtime via `--conditions=typestrip` (Node.js native type stripping) — no compilation required for development. Use `npm run test:unit:typestrip` to run tests with this mode.
 
+**No ambient Harper install:** a unit test must not depend on one. The Ubuntu `unit-test` job runs `harper install` before its suites; the Windows gate does not, and neither does a clean checkout — so a test that reads whatever config the machine happens to have is green on Ubuntu and red on Windows. Three suites hit exactly this: `harper_logger`/`logRotator` (no config means `logging.file` is off, and `createLogger({ path })` silently writes nothing), `globalIsolation` (`applications.allowedSpawnCommands` is empty, so `spawn('npm')` is rejected as a disallowed command), and `terminalShutdown` (`restartWorkers()` loads the root components, and `loadCertificates()` reads the config _file_, so it rejects with ENOENT). Pin what the suite needs — `unitTests/logConfigFixture.js`, `env.setProperty()`, or a `ROOTPATH` pointed at a config the test writes — instead of reading it off the machine.
+
 **Test timing:** prefer condition-waits over fixed `delay(N)` sleeps. `await delay(N); assert(sideEffectHappened)` races against loaded runners and is the root cause of a class of flakiness (#1138). Use the shared `waitFor(condition, timeout?, interval?)` helper in `unitTests/waitFor.js` to poll until the actual condition holds. Reserve fixed sleeps for genuinely modeling elapsed time (TTL/expiry windows) or asserting a non-event (that something has _not_ happened yet).
 
 ---

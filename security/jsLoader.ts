@@ -928,7 +928,6 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 				return true;
 			},
 		};
-const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
@@ -1084,10 +1083,15 @@ function acquirePidFileLock(
 }
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
-	const basePath = env.getHdbBasePath();
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
-		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
-			throw new Error(`Command ${command} is not allowed`);
+		// Resolved per call, not once at module load: componentLoader imports this module, so it can
+		// be loaded before the config is resolved, and a snapshot taken then pins an empty allowlist
+		// (and an undefined base path) for the life of the process. Absent config still denies.
+		if (!alwaysAllow) {
+			const allowedCommands = new Set<string>(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
+			if (!allowedCommands.has(command.split(' ')[0])) {
+				throw new Error(`Command ${command} is not allowed`);
+			}
 		}
 		const processName = options?.name;
 		if (!processName)
@@ -1097,7 +1101,7 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		const requestedVersion = options?.version;
 
 		// Ensure PID directory exists
-		const pidDir = join(basePath, 'pids');
+		const pidDir = join(env.getHdbBasePath(), 'pids');
 		mkdirSync(pidDir, { recursive: true });
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);
