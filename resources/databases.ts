@@ -659,6 +659,8 @@ export function getDatabases(): Databases {
 			for (const tableName in tables) {
 				if (!definedTables.has(tableName)) {
 					logger.trace(`delete table class ${tableName}`);
+					// the class is unreachable after this, so release the callbacks makeTable() registered for it
+					tables[tableName]?.cleanup?.();
 					delete tables[tableName];
 				}
 			}
@@ -1077,8 +1079,7 @@ function initStores(
 				logger.warn(
 					`Skipping table ${tableName}: its catalog has attribute rows but no primary key row (create in progress or interrupted), attributes: ${JSON.stringify(attributes)}`
 				);
-				// not defined until it loads, so the cleanup pass below drops a class left from a dropped
-				// same-name table instead of serving it (or announcing it) through the recreate
+				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
 				definedTables?.delete(tableName);
 				continue;
 			}
@@ -2582,8 +2583,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 		return tableName + '/';
 	}
-	// A create that failed before its primary row is registered nowhere, so nothing else can release
-	// the stores makeTable() and the attribute loop opened for it or the callbacks makeTable() registered.
+	// Nothing else can reach a create that failed before its primary row, so it releases its own side effects.
 	function discardUnpublishedTable() {
 		const discard = (description: string, action: () => unknown) => {
 			try {
@@ -2595,6 +2595,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				);
 			}
 		};
+		discard('catalog rows', () => {
+			for (const attribute of attributes) {
+				if (!attribute.isPrimaryKey && !attribute.relationship) attributesDbi.remove(tableName + '/' + attribute.name);
+			}
+		});
 		discard('callbacks', () => Table.cleanup());
 		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
 		// create's write transaction; only RocksDB column-family handles hold native state to release

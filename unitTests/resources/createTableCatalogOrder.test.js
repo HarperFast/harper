@@ -4,6 +4,7 @@ const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { database, databases, table } = require('#src/resources/databases');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const storageReclamation = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // A catalog scan on another worker thread (resetDatabases from any schema-change signal) loads a
@@ -85,6 +86,13 @@ describe('create table catalog write order', () => {
 		const writes = [];
 		const patched = [];
 		let failNextTagRow = true;
+		// Table.cleanup() is the only caller of this, so a call is proof the failed create released its callbacks
+		const releasedReclamationHandlers = [];
+		const originalRemoveHandler = storageReclamation.removeStorageReclamationHandler;
+		storageReclamation.removeStorageReclamationHandler = function (path, handler) {
+			releasedReclamationHandlers.push(path);
+			return originalRemoveHandler.call(this, path, handler);
+		};
 		for (const method of ['put', 'putSync']) {
 			const original = catalogPrototype[method];
 			if (typeof original !== 'function') continue;
@@ -104,8 +112,16 @@ describe('create table catalog write order', () => {
 			assert.throws(() => table(definition), /injected catalog write failure/);
 			assert.strictEqual(databases.test[tableName], undefined, 'a failed create must not register the class');
 			assert(!writes.includes(`${tableName}/`), `a failed create must not write the primary row: ${writes}`);
+			assert.strictEqual(releasedReclamationHandlers.length, 1, 'a failed create must release its callbacks');
+			if (Seed.dbisDB.committed) await Seed.dbisDB.committed;
+			assert.strictEqual(
+				Seed.dbisDB.getSync(`${tableName}/name`),
+				undefined,
+				'a failed create must remove the rows it wrote'
+			);
 			Retried = table(definition);
 		} finally {
+			storageReclamation.removeStorageReclamationHandler = originalRemoveHandler;
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 		}
 		assert.strictEqual(databases.test[tableName], Retried, 'the retry must register the class');
@@ -116,7 +132,9 @@ describe('create table catalog write order', () => {
 		);
 		assert(Retried.indices.tag, 'the retry must open the index');
 		if (Retried.dbisDB.committed) await Retried.dbisDB.committed;
-		assert(Retried.dbisDB.getSync(`${tableName}/`), 'the retry must write the primary row');
+		const primaryRow = Retried.dbisDB.getSync(`${tableName}/`);
+		assert(primaryRow, 'the retry must write the primary row');
+		assert.strictEqual(primaryRow.schemaDefined, true, 'the primary row must carry the schemaDefined declaration');
 		assert.strictEqual(
 			writes[writes.length - 1],
 			`${tableName}/`,
