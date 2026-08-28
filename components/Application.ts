@@ -1384,6 +1384,32 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
  * was never validated, so the committed tree in the aside wins. Every branch is idempotent, so a crash
  * during recovery is settled by the next run.
  */
+/**
+ * Retire and sweep the rollback records a settled activation leaves. Every failure is logged, never thrown:
+ * the caller has already applied the tree decision, and any exception from it is read as "could not settle".
+ */
+async function sweepAsideRecords(
+	records: string[],
+	componentName: string,
+	liveDirPath: string,
+	asideStagingDir: string
+): Promise<void> {
+	for (const record of records) {
+		try {
+			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components root
+			// from growing by a component version for every activation a crash interrupted.
+			const retiredMarkerPath = await retireExtractionAside(record);
+			await cleanupExtractionPaths(
+				{ name: componentName, dirPath: liveDirPath, logger },
+				asideStagingDir,
+				new Set([record, retiredMarkerPath])
+			);
+		} catch (error) {
+			logger.warn(`Settled ${componentName} but could not retire ${record}:`, errorForLog(error));
+		}
+	}
+}
+
 async function settleInterruptedActivation(
 	componentsRootDirPath: string,
 	deploymentDirPath: string,
@@ -1415,23 +1441,23 @@ async function settleInterruptedActivation(
 		// re-point.
 		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
-		for (const record of asideRecords) {
-			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components
-			// root from growing by a component version for every activation a crash interrupted.
-			const retiredMarkerPath = await retireExtractionAside(record);
-			await cleanupExtractionPaths(
-				{ name: journal.component, dirPath: liveDirPath, logger },
-				asideStagingDir,
-				new Set([record, retiredMarkerPath])
-			);
-		}
+		// Best-effort, and it matters more here than for typical cleanup: the tree decision has already been
+		// applied on disk, and BOTH callers treat any throw from this function as "could not settle" —
+		// `recoverInterruptedActivations` then writes UNSETTLED_MARKER, which permanently stops workers
+		// loading what is by now a correctly activated, healthy component. A transient EACCES or ENOSPC
+		// retiring an aside must not cost that.
+		await sweepAsideRecords(asideRecords, journal.component, liveDirPath, asideStagingDir);
 	};
 	const rollBack = async (restoreFrom?: string) => {
 		if (restoreFrom) {
 			await rename(restoreFrom, liveDirPath);
 			await syncRenameParents(restoreFrom, liveDirPath);
 		}
-		for (const record of asideRecords) await rm(record, { recursive: true, force: true });
+		for (const record of asideRecords) {
+			await rm(record, { recursive: true, force: true }).catch((error) =>
+				logger.warn(`Rolled ${journal.component} back but could not remove ${record}:`, errorForLog(error))
+			);
+		}
 	};
 
 	if (!liveExists) {
