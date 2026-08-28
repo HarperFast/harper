@@ -354,8 +354,9 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-// The `commonChanged` comparison below, plus the two index flags — an index built without null entries
-// must not be re-registered as null-capable.
+// Restore every field used by `commonChanged`, plus `indexed` and `indexNulls`,
+// from the durable descriptor. In particular, preserve `indexNulls: false` so
+// an index that excludes nulls is not reopened as though it contains them.
 const PEER_REDEFINABLE_FIELDS = [
 	'type',
 	'indexed',
