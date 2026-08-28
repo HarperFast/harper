@@ -1234,25 +1234,35 @@ describe('Disconnect abort', () => {
 		assertChainReleased(context.transaction);
 	});
 
-	// Entry into an explicit in-handler commit() is the point of no return: a later disconnect poisons
+	// Once an explicit in-handler commit() has submitted its native write, a later disconnect poisons
 	// everything that follows but must not tear the started attempt's handle out, so its write can land
 	// after the client is gone.
 	it('lets an explicit commit already in flight reach its outcome, rejecting only later work', async function () {
+		if (isLMDB) this.skip(); // LMDB submission-state parity is covered without gating its global store below
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
-		let releaseCommitGate;
 		await assert.rejects(
 			transaction(context, async (txn) => {
 				await DisconnectResource.put(530, { name: 'commits despite the disconnect' }, context);
-				// Hold the commit at its pre-commit completion barrier, so the disconnect arrives after
-				// commit() has been entered but before it reaches a native outcome.
-				txn.stageCompletion(new Promise((resolve) => (releaseCommitGate = resolve)));
+				const nativeTransaction = txn.transaction;
+				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+				const nativeAbort = nativeTransaction.abort.bind(nativeTransaction);
+				let nativeAborts = 0;
+				let releaseNativeCommit;
+				const nativeGate = new Promise((resolve) => (releaseNativeCommit = resolve));
+				nativeTransaction.commit = () => nativeGate.then(nativeCommit);
+				nativeTransaction.abort = () => {
+					nativeAborts++;
+					return nativeAbort();
+				};
 				const committing = txn.commit();
+				await waitFor(() => txn.commitSubmitted, { message: 'the native submission boundary must be marked' });
 				ac.abort();
 				assert.equal(txn.disconnected, true, 'the disconnect must still poison the transaction');
-				assert.notEqual(txn.open, TRANSACTION_STATE.CLOSED, 'a commit in flight must not be aborted');
-				releaseCommitGate();
+				assert.equal(nativeAborts, 0, 'a submitted native commit must not be aborted');
+				releaseNativeCommit();
 				await committing;
+				assert.equal(nativeAborts, 0, 'settling the native commit must not trigger a late abort');
 				await assert.rejects(
 					DisconnectResource.put(531, { name: 'must reject' }, context),
 					/disconnected/,
@@ -1357,41 +1367,48 @@ describe('Disconnect abort', () => {
 		assert.equal(getReadTransaction(context.transaction), undefined, 'finishing it releases the native handle');
 	});
 
-	// The point-of-no-return spare must not be permanent. commitsInFlight is only decremented when the
-	// attempt settles, so a commit that never settles would otherwise make every later poison — timeout
-	// and disconnect alike — a no-op, and the write intents it holds would never come back. That is
-	// harper#2001's wedge reached from the other side, so the monitor bounds the deferral.
-	it('escalates to a real abort when a poisoned commit never settles', async function () {
+	// Once a native commit has been submitted, its outcome is unknown. Aborting the wrapper cannot prove
+	// the native work was cancelled, and clearing its writes can delete blobs the eventual commit names.
+	// The monitor therefore poisons fresh work but leaves the submitted outcome alone.
+	it('does not destructively abort a submitted commit that outlives the monitor grace', async function () {
+		if (isLMDB) this.skip(); // LMDB submission-state parity is covered without gating its global store below
 		setDisconnectExpiration(50);
 		try {
 			const ac = new AbortController();
 			const context = { signal: ac.signal };
-			await assert.rejects(
-				transaction(context, async (txn) => {
-					await DisconnectResource.put(570, { name: 'never settles' }, context);
-					// An undrained iterator too: the force-abort retains its handle, so the monitor must
-					// stop deferring afterwards and go on to reclaim it.
-					const results = await DisconnectResource.search({}, context);
-					await results[Symbol.asyncIterator]().next();
-					// A pre-commit completion that never resolves — the shape a hung source `before` hook
-					// takes on a caching-table write.
-					txn.stageCompletion(new Promise(() => {}));
-					// On LMDB the write (and the monitor registration) lives one link into the chain.
-					const { txn: writeLink } = getReadTransaction(context.transaction);
-					txn.commit().catch(() => {});
-					ac.abort();
-					assert.equal(txn.disconnected, true, 'the disconnect poisons even though it cannot abort yet');
-					await waitFor(() => writeLink.timedOut === true, {
-						message: 'the monitor must stop deferring and abort a commit that never settles',
-					});
-					await waitFor(() => !getReadTransaction(context.transaction), {
-						message: 'the escalated abort must release the write intents',
-					});
-					throw new Error('handler done');
-				}),
-				/handler done/
+			let committing;
+			let releaseNativeCommit;
+			let nativeAborts = 0;
+			const handled = transaction(context, async (txn) => {
+				await DisconnectResource.put(570, { name: 'eventual outcome' }, context);
+				const nativeTransaction = txn.transaction;
+				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+				const nativeAbort = nativeTransaction.abort.bind(nativeTransaction);
+				const gate = new Promise((resolve) => (releaseNativeCommit = resolve));
+				nativeTransaction.commit = () => gate.then(nativeCommit);
+				nativeTransaction.abort = () => {
+					nativeAborts++;
+					return nativeAbort();
+				};
+				committing = txn.commit();
+				await waitFor(() => txn.commitSubmitted, { message: 'the native submission boundary must be marked' });
+				txn.timeout = 0;
+				ac.abort();
+				assert.equal(txn.disconnected, true, 'the disconnect poisons fresh work while the outcome is unknown');
+				await waitFor(() => txn.timedOut, {
+					message: 'the monitor should poison fresh work after the submitted commit remains stalled',
+				});
+				assert.equal(nativeAborts, 0, 'the monitor must not abort a native outcome it cannot classify');
+				releaseNativeCommit();
+				await committing;
+			});
+			await assert.rejects(handled, /disconnected|open-transaction time/);
+			assert.equal(nativeAborts, 0, 'settlement must not be followed by a destructive late abort');
+			assert.equal(
+				(await DisconnectResource.get(570))?.name,
+				'eventual outcome',
+				'the native outcome must remain durable even after the request was poisoned'
 			);
-			assert.ok((await DisconnectResource.get(570)) == null, 'the wedged write must not commit');
 		} finally {
 			setDisconnectExpiration(30000);
 		}
