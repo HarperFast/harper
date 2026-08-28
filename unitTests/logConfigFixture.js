@@ -17,8 +17,8 @@
  */
 
 const fs = require('fs-extra');
-const os = require('os');
-const path = require('path');
+const os = require('node:os');
+const path = require('node:path');
 const hdbTerms = require('#src/utility/hdbTerms');
 const harperLoggerModule = require('#src/utility/logging/harper_logger');
 
