@@ -5,6 +5,7 @@
  * centralized management of component health status.
  */
 
+import { deployValidationStatusSink } from '../../server/serverHelpers/deployValidationState.ts';
 import { ComponentStatus } from './ComponentStatus.ts';
 import {
 	type ComponentStatusLevel,
@@ -61,6 +62,16 @@ export class ComponentStatusRegistry {
 			);
 		}
 
+		// A deploy's pre-flight validation loads the CANDIDATE's code under the real component's name, so its
+		// writes would land on the live component. They go to the validation's own throwaway map instead —
+		// which is why this cannot simply be reverted afterwards: the live component keeps serving through
+		// that window, and `statusForComponent()` is a public API its own code may call at any time, so
+		// reverting would silently discard a genuine report from it.
+		const sink = deployValidationStatusSink();
+		if (sink) {
+			sink.set(componentName, new ComponentStatus(status, message, error));
+			return;
+		}
 		this.statusMap.set(componentName, new ComponentStatus(status, message, error));
 	}
 
@@ -76,38 +87,6 @@ export class ComponentStatusRegistry {
 	 * it (`web`, `web.api`, …). Nested loads report under those scoped keys, so restoring only the bare name
 	 * leaves a plugin-scoped ERROR behind from a candidate that never went live.
 	 */
-	public snapshotNamespace(componentName: string): ComponentStatusMap {
-		const prefix = `${componentName}.`;
-		const snapshot: ComponentStatusMap = new Map();
-		for (const [key, value] of this.statusMap) {
-			if (key === componentName || key.startsWith(prefix)) snapshot.set(key, value);
-		}
-		return snapshot;
-	}
-
-	/** Restore a namespace captured by `snapshotNamespace`, dropping keys that were not in it. */
-	public restoreNamespace(componentName: string, snapshot: ComponentStatusMap): void {
-		const prefix = `${componentName}.`;
-		for (const key of [...this.statusMap.keys()]) {
-			if ((key === componentName || key.startsWith(prefix)) && !snapshot.has(key)) this.statusMap.delete(key);
-		}
-		for (const [key, value] of snapshot) this.statusMap.set(key, value);
-	}
-
-	/**
-	 * Put one component's status back to a previously captured value, or remove it if there was none.
-	 *
-	 * For deploy pre-flight validation: that load runs the CANDIDATE's code under the real component's name,
-	 * so a candidate that throws marks the live component ERROR. Validation then correctly rejects and the
-	 * previous version keeps serving — but the status would stay ERROR, reporting a healthy component as
-	 * broken. Scoped to the one component rather than suppressing status writes globally, which would also
-	 * drop a genuine failure reported by an interleaving real load.
-	 */
-	public restoreStatus(componentName: string, previous: ComponentStatus | undefined): void {
-		if (previous) this.statusMap.set(componentName, previous);
-		else this.statusMap.delete(componentName);
-	}
-
 	/**
 	 * Get all component statuses
 	 */

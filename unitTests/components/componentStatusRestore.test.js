@@ -6,60 +6,83 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const { internal, statusForComponent, STATUS } = require('#src/components/status/index');
+const { runWithDeployValidationGuard } = require('#src/server/serverHelpers/deployValidationState');
 
 // Deploy pre-flight validation loads the CANDIDATE's code under the real component's name, so a candidate
-// that throws marks the live component ERROR. Validation then rejects and the previous version keeps
-// serving — the status has to go back, or a healthy component reports as broken for as long as it runs.
-describe('component status restore after throwaway validation', () => {
+// that throws would mark the live component ERROR. Its writes are diverted into the guard's throwaway sink
+// rather than written and reverted, because the live component keeps serving through that window.
+describe('component status during throwaway validation', () => {
 	const registry = internal.componentStatusRegistry;
 
-	it('puts a previous status back, message and level intact', () => {
+	it('leaves the live status untouched when a candidate fails to load', async () => {
 		statusForComponent('restore-probe').healthy('All components loaded successfully');
-		const before = registry.getStatus('restore-probe');
 
-		// What a rejected candidate load leaves behind.
-		statusForComponent('restore-probe').error(new Error('candidate threw at load'));
-		assert.strictEqual(registry.getStatus('restore-probe').status, STATUS.ERROR);
-
-		registry.restoreStatus('restore-probe', before);
+		await runWithDeployValidationGuard(async () => {
+			statusForComponent('restore-probe').error('candidate threw at load');
+		});
 
 		const after = registry.getStatus('restore-probe');
-		assert.strictEqual(after.status, STATUS.HEALTHY, 'the live component is healthy again');
+		assert.strictEqual(after.status, STATUS.HEALTHY, 'the live component is still healthy');
 		assert.strictEqual(after.message, 'All components loaded successfully', 'and keeps its original message');
 	});
 
-	it('restores plugin-scoped keys too, not just the bare component name', () => {
-		// Nested loads report under scoped keys. Restoring only `web` left a candidate's plugin-scoped ERROR
-		// behind, so the component reported unhealthy through a plugin that never went live.
+	it('diverts plugin-scoped keys too, not just the bare component name', async () => {
+		// Nested loads report under scoped keys, so a candidate's plugin-scoped ERROR would otherwise make
+		// the component report unhealthy through a plugin that never went live.
 		statusForComponent('ns-probe').healthy('All components loaded successfully');
 		statusForComponent('ns-probe.api').healthy('plugin ready');
-		const before = registry.snapshotNamespace('ns-probe');
 
-		statusForComponent('ns-probe.api').error(new Error('candidate plugin threw'));
-		statusForComponent('ns-probe.newly-added').error(new Error('only the candidate had this'));
+		await runWithDeployValidationGuard(async () => {
+			statusForComponent('ns-probe.api').error('candidate plugin threw');
+			statusForComponent('ns-probe.newly-added').error('only the candidate had this');
+		});
 
-		registry.restoreNamespace('ns-probe', before);
-
-		assert.strictEqual(registry.getStatus('ns-probe.api').status, STATUS.HEALTHY, 'the plugin is healthy again');
+		assert.strictEqual(registry.getStatus('ns-probe.api').status, STATUS.HEALTHY, 'the plugin is still healthy');
 		assert.strictEqual(
 			registry.getStatus('ns-probe.newly-added'),
 			undefined,
-			'and a key only the candidate introduced is gone'
+			'and a key only the candidate introduced never reached the live registry'
 		);
 		assert.strictEqual(registry.getStatus('ns-probe').status, STATUS.HEALTHY);
 	});
 
-	it('removes the entry when there was no status before', () => {
+	it('writes no status at all for a first-ever deploy that fails validation', async () => {
 		assert.strictEqual(registry.getStatus('never-seen'), undefined, 'precondition: unknown component');
-		statusForComponent('never-seen').error(new Error('candidate threw at load'));
-		assert.ok(registry.getStatus('never-seen'), 'the validation load wrote one');
 
-		registry.restoreStatus('never-seen', undefined);
+		await runWithDeployValidationGuard(async () => {
+			statusForComponent('never-seen').error('candidate threw at load');
+		});
 
+		assert.strictEqual(registry.getStatus('never-seen'), undefined, 'nothing is left behind');
+	});
+
+	it('keeps a genuine report the LIVE component makes while a validation is in flight', async () => {
+		// The reason this is a sink rather than a snapshot restored afterwards. `statusForComponent()` is a
+		// public API the live component's own runtime code may call at any time — a health check, a reconnect
+		// handler — and it keeps serving throughout the window. Reverting a snapshot would silently discard
+		// that report, and an edge-triggered reporter would never re-send it.
+		statusForComponent('live-probe').healthy('serving');
+		// Scheduled BEFORE the deploy starts, exactly like a health-check timer or socket callback the live
+		// component installed when it loaded, so it runs in the outer async context rather than the
+		// validation's. Awaited from inside the guard so it definitely fires during the window.
+		const liveReport = new Promise((resolve) => {
+			setImmediate(() => {
+				statusForComponent('live-probe').error('database connection lost');
+				resolve();
+			});
+		});
+
+		await runWithDeployValidationGuard(async () => {
+			statusForComponent('live-probe').error('candidate threw at load');
+			await liveReport;
+		});
+
+		const after = registry.getStatus('live-probe');
+		assert.strictEqual(after.status, STATUS.ERROR, "the live component's own report survived");
 		assert.strictEqual(
-			registry.getStatus('never-seen'),
-			undefined,
-			'a first-ever deploy that fails validation leaves no status behind'
+			after.message,
+			'database connection lost',
+			"and it is the live report that is recorded, not the candidate's"
 		);
 	});
 });

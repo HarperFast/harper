@@ -535,7 +535,6 @@ describe('Test custom functions operations', () => {
 			expect(addConfigStub.calledOnce).to.be.true;
 			expect(addConfigStub.firstCall.args[0]).to.equal('existing-component');
 			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/new-package');
-			expect(prepareApplicationStub.calledOnce).to.be.true;
 
 			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;

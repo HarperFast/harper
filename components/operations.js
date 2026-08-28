@@ -487,14 +487,10 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
 		// registration methods no-op for the duration of the load.
 		const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
-		// The candidate loads under the REAL component's name, so a candidate that throws marks the live
-		// component ERROR — and validation rejecting it would leave that status behind, reporting a healthy
-		// component as broken for as long as it keeps serving. Captured here and restored below.
-		const { internal: statusInternal } = require('./status/index.ts');
+		// The candidate loads under the REAL component's name, so a candidate that throws would mark the live
+		// component ERROR. Its status writes are diverted into the guard's throwaway sink instead — see
+		// `deployValidationState.ts` for why this is context-scoped rather than captured and reverted here.
 		const componentName = path.basename(candidateDirPath);
-		// The whole namespace, not just the bare name: nested loads report under scoped keys like `web.api`,
-		// and restoring only `web` leaves a plugin-scoped ERROR from a candidate that never went live.
-		const priorStatus = statusInternal.componentStatusRegistry.snapshotNamespace(componentName);
 		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed by
 		// module, so forgetting only the candidate's realpath leaves those behind — one set per deploy. Their
 		// identities are collected by the load itself; diffing the global registry instead would delete a live
@@ -530,7 +526,6 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		try {
 			await validation;
 		} finally {
-			statusInternal.componentStatusRegistry.restoreNamespace(componentName, priorStatus);
 			componentLoader.setErrorReporter(priorErrorReporter);
 			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
 			// one dead entry per deploy for the life of the process.
