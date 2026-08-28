@@ -401,6 +401,29 @@ test('an empty fenced block does not satisfy Verification', () => {
 	assert.match(result.problems.join('\n'), /Verification needs executed evidence/);
 });
 
+test('code-only blocks do not satisfy prose sections', () => {
+	const summaryOnlyCode = body().replace(/^Audit retention[^\n]+/, '```text\nstack trace\n```');
+	assert.match(
+		evaluatePrFormat(pr({ body: summaryOnlyCode }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/needs summary prose/
+	);
+	const reviewerOnlyCode = body().replace('No open judgment calls.', '```text\nreview output\n```');
+	assert.match(
+		evaluatePrFormat(pr({ body: reviewerOnlyCode }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		}).problems.join('\n'),
+		/For the human reviewer needs a decision ledger/
+	);
+});
+
 test('a lowercase AI field ends an empty Verification section', () => {
 	const broken = body().replace('Focused retention tests passed.\n\nComplexity:', 'complexity:');
 	assert.match(

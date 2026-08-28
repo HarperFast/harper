@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 const ANCHOR_PATTERN =
 	/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/(?:changes|files)(?:(?:\/[\w.-]+)?(?:\?[^\s)\]#]*)?)#diff-([0-9a-f]{64})(?:([RL])(\d+)(?:-([RL])(\d+))?)?(?![\w-])/g;
+const CODE_MASK = '\ufffc';
 
 export function fileAnchorHash(filePath) {
 	return createHash('sha256').update(filePath, 'utf8').digest('hex');
@@ -59,7 +60,11 @@ function stripInlineAndComments(line, commentOpen) {
 }
 
 function maskCode(line) {
-	return line.replace(/\S/g, 'x');
+	return line.replace(/\S/g, CODE_MASK);
+}
+
+export function stripCodePlaceholders(text) {
+	return text.replaceAll(CODE_MASK, '');
 }
 
 export function inspectBodyText(body) {

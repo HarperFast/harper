@@ -1,5 +1,5 @@
 import { classifyPullRequest } from './prExemption.mjs';
-import { checkBodyLinks, inspectBodyText } from './prFormatLinks.mjs';
+import { checkBodyLinks, inspectBodyText, stripCodePlaceholders } from './prFormatLinks.mjs';
 
 const MAX_BODY_LENGTH = 65_536;
 
@@ -29,7 +29,9 @@ export function evaluatePrFormat(
 	if (inspected.unterminatedFence) problems.push('description has an unterminated fenced code block');
 	if (inspected.unterminatedComment) problems.push('description has an unterminated HTML comment');
 	const firstHeading = prose.search(/^##\s+/m);
-	const summary = (firstHeading < 0 ? prose : prose.slice(0, firstHeading)).replace(/<[^>]+>/g, '').trim();
+	const summary = stripCodePlaceholders(firstHeading < 0 ? prose : prose.slice(0, firstHeading))
+		.replace(/<[^>]+>/g, '')
+		.trim();
 	if (!summary) problems.push('description needs summary prose before its sections');
 
 	const verification = matches(prose, /^## Verification\s*$/gim);
@@ -56,10 +58,9 @@ export function evaluatePrFormat(
 		else if (verification.length === 1 && reviewer[0].index > verification[0].index)
 			problems.push('## For the human reviewer must precede ## Verification');
 		else {
-			const content = prose
-				.slice(reviewer[0].index + reviewer[0][0].length)
-				.split(/^##\s+/m)[0]
-				.trim();
+			const content = stripCodePlaceholders(
+				prose.slice(reviewer[0].index + reviewer[0][0].length).split(/^##\s+/m)[0]
+			).trim();
 			if (!content)
 				problems.push('## For the human reviewer needs a decision ledger or the no-open-judgment-calls statement');
 		}
