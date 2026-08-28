@@ -5509,8 +5509,7 @@ export function makeTable(options) {
 		static cleanup() {
 			disposed = true;
 			clearTimeout(cleanupTimer);
-			for (const resolve of pendingCleanupResolvers) resolve();
-			pendingCleanupResolvers.clear();
+			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
@@ -5540,7 +5539,6 @@ export function makeTable(options) {
 		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
 		if (expiresAtProperty) runRecordExpirationEviction();
 	} catch (error) {
-		// the caller never receives the class, so it cannot release what was registered above
 		TableResource.cleanup();
 		throw error;
 	}
@@ -6559,6 +6557,10 @@ export function makeTable(options) {
 			},
 		};
 	}
+	function settlePendingCleanup() {
+		for (const resolve of pendingCleanupResolvers) resolve();
+		pendingCleanupResolvers.clear();
+	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
 		let runImmediately = false;
 		if (priority) {
@@ -6572,6 +6574,8 @@ export function makeTable(options) {
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
+			// a superseded pass settles now, or the reclamation run awaiting it never continues
+			settlePendingCleanup();
 			if (!cleanupInterval) return;
 			return new Promise<void>((resolve) => {
 				pendingCleanupResolvers.add(resolve);

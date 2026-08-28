@@ -120,7 +120,7 @@ type RelationshipHydration = {
 
 let relationshipsToHydrate: RelationshipHydration[] = [];
 const reportedRelationshipErrors = new Set<string>();
-// every schema-change signal rescans on every thread, so an interrupted create is reported once per table
+// an interrupted create is reported once per table and thread, not on every rescan
 const reportedIncompleteCatalogs = new Set<string>();
 
 function normalizeRelationships(attributes: any[]): PersistedRelationship[] {
