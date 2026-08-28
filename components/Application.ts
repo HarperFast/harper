@@ -644,16 +644,6 @@ function canonicalizeJSON(value: any): any {
 }
 
 /**
- * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
- *
- * Only one of `application.payload` or `application.package` should be specified; otherwise, an error is thrown.
- *
- * Writes the application to the configured components root directory using the `application.name` and overwrites any existing directory.
- *
- * This method may be called from any Harper thread. Same-component calls are serialized across
- * threads by the preparation lock below.
- */
-/**
  * Either a tarball to extract, or — for `file:<directory>` — an instruction to link that directory. The link
  * case is a RESULT rather than an action so the caller decides where it lands: a candidate build must link
  * at the candidate path, or the deploy is published without validation.
@@ -815,6 +805,16 @@ async function extractTarballInto(
 	return undefined;
 }
 
+/**
+ * Extract an application given payload (content of the application) or package (npm-compatible identifier to the application).
+ *
+ * Only one of `application.payload` or `application.package` should be specified; otherwise, an error is thrown.
+ *
+ * Writes the application to the configured components root directory using the `application.name` and overwrites any existing directory.
+ *
+ * This method may be called from any Harper thread. Same-component calls are serialized across
+ * threads by the preparation lock below.
+ */
 export async function extractApplication(
 	application: Application,
 	deferCommit = false
@@ -1178,22 +1178,25 @@ async function ensureExtractionStagingDirectory(asideStagingDir: string): Promis
 	}
 }
 
-/**
- * Build a deploy candidate at `.deploy-staging/<deploymentId>/<component>`, leaving the live tree
- * completely untouched — this is what lets the previous version keep serving through the clone, the
- * extraction and the dependency install.
- *
- * Failure needs no compensation, which is the whole point: nothing about the live component was modified,
- * so the abandoned candidate is simply removed and the error propagates.
- */
 /** The single component directory inside a candidate deployment directory, when there is exactly one. */
 async function candidateComponentName(deploymentDirPath: string): Promise<string | undefined> {
 	// The sidecar first: it is the only source that still works once the candidate has been renamed to the
 	// live path, which is exactly when an unreadable journal would otherwise be unattributable.
-	const recorded = await readFile(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), 'utf8').catch(() => '');
+	// Only ENOENT is absence. Swallowing every error here reported "unowned", which is a licence to act:
+	// the worker verdict dropped a failure and loaded a component main had failed closed, and a deploy
+	// skipped a journaled activation it owns and handed the component to the journal-blind pass.
+	const recorded = await readFile(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), 'utf8').catch(
+		(error: NodeJS.ErrnoException) => {
+			if (error?.code === 'ENOENT') return '';
+			throw error;
+		}
+	);
 	const named = recorded.trim();
 	if (isJoinableComponentName(named)) return named;
-	const entries = await readdir(deploymentDirPath, { withFileTypes: true }).catch(() => []);
+	const entries = await readdir(deploymentDirPath, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return [];
+		throw error;
+	});
 	// Symlinks count: a `file:<directory>` candidate is deliberately a link, and activation already accepts
 	// one. Filtering to real directories here left those candidates with no owner, so residue removal took
 	// no lock and could delete a build in flight.
@@ -1201,9 +1204,53 @@ async function candidateComponentName(deploymentDirPath: string): Promise<string
 	return components.length === 1 ? components[0].name : undefined;
 }
 
+/**
+ * The deployment directory of an activation journal this component still owns, if any.
+ *
+ * The journal is the authority for an interrupted activation, and the legacy `.deploy-aside` pass is
+ * journal-blind — it would restore the displaced tree over a candidate a completed activation already
+ * renamed live. That pass consults this rather than relying on being sequenced after settlement: a worker
+ * auto-restarted mid-activation reaches it with no settlement in front of it, and settlement that FAILS
+ * deliberately keeps the journal for the next start while the same boot carries on into the legacy pass.
+ */
+async function journaledDeploymentForComponent(
+	componentsRootDirPath: string,
+	componentName: string
+): Promise<string | undefined> {
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	let deployments;
+	try {
+		deployments = await readdir(stagingRoot, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+		throw error;
+	}
+	for (const deployment of deployments) {
+		if (!deployment.isDirectory()) continue;
+		const deploymentDirPath = join(stagingRoot, deployment.name);
+		if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
+		// Presence, not parseability: an unreadable journal is precisely the ambiguous case the legacy pass
+		// must not resolve by restoring a tree.
+		const journaled = await lstat(join(deploymentDirPath, ACTIVATION_JOURNAL)).then(
+			() => true,
+			(error) => {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+				throw error;
+			}
+		);
+		if (journaled) return deploymentDirPath;
+	}
+	return undefined;
+}
+
 /** In-progress rollback records in a component's aside directory, newest first. */
 async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]> {
-	const entries = await readdir(asideStagingDir, { withFileTypes: true }).catch(() => []);
+	// ENOENT is "no aside directory yet"; anything else would report "no records" and let roll-forward
+	// remove the journal while the records it should have retired are still there and still authoritative.
+	const entries = await readdir(asideStagingDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return [];
+		throw error;
+	});
 	return entries
 		.filter((entry) => entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX))
 		.map((entry) => join(asideStagingDir, entry.name))
@@ -1211,14 +1258,6 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
 		.reverse();
 }
 
-/**
- * Settle activations a crash interrupted, before anything loads. Runs on the main thread at startup.
- *
- * Returns failures keyed by COMPONENT so the caller can fail exactly those closed and still load every
- * healthy sibling — a single unreadable journal must not take down the whole node, and must not let a
- * component load over state nobody reconciled.
- *
- */
 /**
  * Settle journaled activations for ONE component, assuming the caller already holds its preparation lock.
  *
@@ -1315,6 +1354,14 @@ export async function unsettleableComponentsFromDisk(componentsRootDirPath: stri
 	return unsettleable;
 }
 
+/**
+ * Settle activations a crash interrupted, before anything loads. Runs on the main thread at startup.
+ *
+ * Returns failures keyed by COMPONENT so the caller can fail exactly those closed and still load every
+ * healthy sibling — a single unreadable journal must not take down the whole node, and must not let a
+ * component load over state nobody reconciled.
+ *
+ */
 export async function recoverInterruptedActivations(componentsRootDirPath: string): Promise<Map<string, Error>> {
 	const failures = new Map<string, Error>();
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
@@ -1350,7 +1397,8 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		} catch (error) {
 			// The journal itself is unreadable, so its component has to be inferred from the tree it was
 			// going to activate. A deployment directory holding no component tree leaves only its id.
-			await fail((await candidateComponentName(deploymentDirPath)) ?? deployment.name, error);
+			const attributed = await candidateComponentName(deploymentDirPath).catch(() => undefined);
+			await fail(attributed ?? deployment.name, error);
 			continue;
 		}
 		if (!journal) {
@@ -1361,7 +1409,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			// meantime. A reload cycle can run this pass while another deploy is mid-build — its candidate
 			// has no journal yet, because the journal is written after build and validation — so an unlocked
 			// delete here removes a live build out from under it.
-			const owner = await candidateComponentName(deploymentDirPath);
+			let owner: string | undefined;
 			const removeResidue = async () => {
 				// Re-read UNDER the lock, and do not swallow: the first scan raced a deploy that can publish a
 				// journal before releasing the lock, so a journal found now must be settled rather than deleted.
@@ -1373,19 +1421,27 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				}
 				await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 			};
-			if (owner) {
-				await withComponentPreparationLock(join(componentsRootDirPath, owner), removeResidue, {
-					purpose: 'activation-recovery',
-					// Without this a ticket left by a CRASHED worker looks live — same pid, same process
-					// instance — so recovery waits out the multi-hour default instead of reclaiming it.
-					isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
-				});
-			} else {
-				// NOT removed. `buildCandidateApplication` creates the deployment directory and can then spend
-				// minutes resolving or packing before the candidate tree and its sidecar exist, so "no owner"
-				// includes "a live build that has not got that far yet" — and deleting it races the extraction
-				// and fails a valid deploy. Unowned residue is left for a later pass, once an owner is knowable.
-				logger.trace?.(`Leaving unowned deploy staging ${deploymentDirPath} in place: no component names it`);
+			// Scoped to THIS deployment, like the journaled branch below. A lock timeout, or an EIO from the
+			// under-lock re-read, used to abort the entire scan: every later deployment went unsettled and
+			// unmarked, and on a worker the caller only warns before running the journal-blind pass anyway.
+			try {
+				owner = await candidateComponentName(deploymentDirPath);
+				if (owner) {
+					await withComponentPreparationLock(join(componentsRootDirPath, owner), removeResidue, {
+						purpose: 'activation-recovery',
+						// Without this a ticket left by a CRASHED worker looks live — same pid, same process
+						// instance — so recovery waits out the multi-hour default instead of reclaiming it.
+						isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
+					});
+				} else {
+					// NOT removed. `buildCandidateApplication` creates the deployment directory and can then spend
+					// minutes resolving or packing before the candidate tree and its sidecar exist, so "no owner"
+					// includes "a live build that has not got that far yet" — and deleting it races the extraction
+					// and fails a valid deploy. Unowned residue is left for a later pass, once an owner is knowable.
+					logger.trace?.(`Leaving unowned deploy staging ${deploymentDirPath} in place: no component names it`);
+				}
+			} catch (error) {
+				await fail(owner ?? deployment.name, error);
 			}
 			continue;
 		}
@@ -1408,14 +1464,9 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 }
 
 /**
- * One interrupted activation, under the component preparation lock. Ambiguity exists only while the live
- * path is absent, and there the `complete` marker is the roll-forward authority: without it the candidate
- * was never validated, so the committed tree in the aside wins. Every branch is idempotent, so a crash
- * during recovery is settled by the next run.
- */
-/**
- * Retire and sweep the rollback records a settled activation leaves. Every failure is logged, never thrown:
- * the caller has already applied the tree decision, and any exception from it is read as "could not settle".
+ * Retire and sweep the rollback records a settled activation leaves. Retiring throws — it is what makes a
+ * record non-authoritative, so a caller that removed the journal without it re-creates the inversion the
+ * journal prevents. Sweeping the displaced tree only costs disk, so it is logged.
  */
 async function sweepAsideRecords(
 	records: string[],
@@ -1440,6 +1491,12 @@ async function sweepAsideRecords(
 	}
 }
 
+/**
+ * One interrupted activation, under the component preparation lock. Ambiguity exists only while the live
+ * path is absent, and there the `complete` marker is the roll-forward authority: without it the candidate
+ * was never validated, so the committed tree in the aside wins. Every branch is idempotent, so a crash
+ * during recovery is settled by the next run.
+ */
 async function settleInterruptedActivation(
 	componentsRootDirPath: string,
 	deploymentDirPath: string,
@@ -1471,11 +1528,10 @@ async function settleInterruptedActivation(
 		// re-point.
 		await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 		await syncRenameParents(candidateDirPath, liveDirPath);
-		// Best-effort, and it matters more here than for typical cleanup: the tree decision has already been
-		// applied on disk, and BOTH callers treat any throw from this function as "could not settle" —
-		// `recoverInterruptedActivations` then writes UNSETTLED_MARKER, which permanently stops workers
-		// loading what is by now a correctly activated, healthy component. A transient EACCES or ENOSPC
-		// retiring an aside must not cost that.
+		// Retiring PROPAGATES from here: the retired marker is what stops the legacy pass restoring the tree
+		// this roll-forward just displaced. Failing the component closed and retrying at the next start is
+		// the cheaper mistake — the journal survives, so the verdict is re-derivable. Only the disk sweep
+		// inside is best-effort.
 		await sweepAsideRecords(asideRecords, journal.component, liveDirPath, asideStagingDir);
 	};
 	const rollBack = async (restoreFrom?: string) => {
@@ -1506,7 +1562,23 @@ async function settleInterruptedActivation(
 			await rollBack(restorable);
 		}
 	} else if (candidateExists) {
-		// Never activated, or already rolled back. Either way the live tree stands and the candidate goes.
+		// Live and candidate both present normally means B1 never ran: the swap had not started, so the live
+		// tree stands and the candidate goes.
+		//
+		// Unless a rollback record says B1 DID run. Then the committed tree is the one in the aside, and
+		// whatever sits at the live path was put there afterwards — a previous-version worker recreating its
+		// own directory, the case the extraction path guards with `identifyRollbackPlaceholder`. Rolling back
+		// there deletes the committed tree AND the validated candidate and leaves that stub serving, so this
+		// fails closed instead: both trees stay on disk for an operator to choose between.
+		const displaced = asideRecords.find((record) => !record.endsWith(PRIOR_ABSENT_RECORD_SUFFIX));
+		if (displaced && candidateComplete) {
+			throw new Error(
+				`Cannot settle the interrupted activation of ${journal.component}: its previous tree was moved to ` +
+					`${displaced} and a complete candidate is still staged, but ${liveDirPath} exists again — ` +
+					`something recreated it after the deploy moved it aside, so which tree is current cannot be ` +
+					`determined without losing one of them`
+			);
+		}
 		await rollBack();
 	} else {
 		// The candidate is already live; only the tail of the transaction was lost.
@@ -1534,7 +1606,18 @@ async function settleInterruptedActivation(
 	// An earlier failed recovery may have left an unsettled marker here. Cleared BEFORE the journal and
 	// treated as correctness: main would report this component settled and load it, while every worker read
 	// the stale marker and failed it closed.
-	await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
+	try {
+		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
+	} catch (error) {
+		// The tree decision is applied, but the marker still says otherwise and every worker reads it. Keep
+		// the journal and let the next start settle again rather than removing the journal and leaving a
+		// correctly activated component marked unsettled with nothing left to re-derive the verdict from.
+		logger.warn(
+			`Settled the interrupted activation of ${journal.component} but could not clear its unsettled marker; ` +
+				`leaving the journal for the next start: ${errorMessage(error)}`
+		);
+		return;
+	}
 	await rm(journalPath, { force: true }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not remove its activation journal:`, errorForLog(error))
 	);
@@ -1694,13 +1777,22 @@ export async function activateCandidateApplication(application: Application, dep
 		);
 		await writeFile(priorAbsentRecordPath, '', { flag: 'wx', mode: 0o600 });
 	}
-	await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
-
 	const restoreLive = async () => {
 		if (asidePath) await rename(asidePath, liveDirPath);
 		else if (priorAbsentRecordPath) await rm(priorAbsentRecordPath, { force: true });
 		await syncRenameParents(asidePath ?? priorAbsentRecordPath!, liveDirPath);
 	};
+
+	// Still BEFORE the commit point, so this is compensable — and must be compensated. Letting a storage
+	// failure escape here leaves live already moved aside, and the caller reads an uncompensated throw as an
+	// ordinary build failure and discards the candidate, its `.complete` marker and its journal: the
+	// component ends up with no version at all and nothing saying how to get one back.
+	try {
+		await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
+	} catch (error) {
+		await compensate(error, 'record the displaced component directory', restoreLive, application);
+		throw error;
+	}
 
 	// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
 	// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
@@ -1714,28 +1806,36 @@ export async function activateCandidateApplication(application: Application, dep
 
 	// Past the point of no return: each failure below leaves a state recovery settles forward, so they are
 	// logged, not thrown.
+	let swapDurable = true;
 	try {
 		await syncRenameParents(candidateDirPath, liveDirPath);
 	} catch (error) {
+		// The rename may not have reached storage. Retiring the record and removing the journal WOULD reach
+		// it, and a power loss then leaves no live entry, no rollback record, and nothing saying to roll
+		// forward. Both are skipped so the journal carries the activation to the next start.
+		swapDurable = false;
 		application.logger.warn(`Deployed ${application.name} but could not flush the swap to storage:`, error);
 	}
 	// The tree moved, so any dependency link that named its build path is now dangling.
 	await repairRelocatedDependencyLinks(liveDirPath, candidateDirPath);
 	const settledRecord = asidePath ?? priorAbsentRecordPath!;
 	let retired = false;
-	try {
-		const retiredMarkerPath = await retireExtractionAside(settledRecord);
-		// Retiring only MARKS the displaced tree disposable. Without this sweep the tree every deploy
-		// displaces stays under `.deploy-aside/<component>` forever, so the components root grows by a
-		// whole component version per deploy.
-		await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
-		// Before the journal goes: if the journal's removal persists but the record's does not, startup sees
-		// an in-progress aside with no journal and the legacy pass restores the old tree over the new one.
-		await syncDirectory(asideStagingDir);
-		await syncDirectory(dirname(asideStagingDir));
-		retired = true;
-	} catch (error) {
-		application.logger.warn(`Deployed ${application.name} but could not retire its rollback record:`, error);
+	// Skipped entirely when the swap is not known to be on storage, so the journal below survives.
+	if (swapDurable) {
+		try {
+			const retiredMarkerPath = await retireExtractionAside(settledRecord);
+			// Retiring only MARKS the displaced tree disposable. Without this sweep the tree every deploy
+			// displaces stays under `.deploy-aside/<component>` forever, so the components root grows by a
+			// whole component version per deploy.
+			await cleanupExtractionPaths(application, asideStagingDir, new Set([settledRecord, retiredMarkerPath]));
+			// Before the journal goes: if the journal's removal persists but the record's does not, startup sees
+			// an in-progress aside with no journal and the legacy pass restores the old tree over the new one.
+			await syncDirectory(asideStagingDir);
+			await syncDirectory(dirname(asideStagingDir));
+			retired = true;
+		} catch (error) {
+			application.logger.warn(`Deployed ${application.name} but could not retire its rollback record:`, error);
+		}
 	}
 	// The journal goes LAST, and only once the rollback record is settled: removing it while an
 	// `.in-progress-*` record still names the displaced tree lets the legacy pass restore the old tree.
@@ -1751,10 +1851,6 @@ export async function activateCandidateApplication(application: Application, dep
 }
 
 /**
- * Undo an activation effect, folding a compensation failure into the original error rather than replacing
- * it — the first error is what the operator needs, the second is why the node still needs attention.
- */
-/**
  * Marks a failure where compensation ITSELF failed, so the previous version is not back and the live path
  * may be absent. The candidate, its `.complete` marker and its journal are then the only way back — recovery
  * rolls that state forward — so they must survive, and the caller keys on this to skip discarding them.
@@ -1765,6 +1861,10 @@ function compensationIncomplete(error: unknown): boolean {
 	return Boolean((error as any)?.[COMPENSATION_INCOMPLETE]);
 }
 
+/**
+ * Undo an activation effect, folding a compensation failure into the original error rather than replacing
+ * it — the first error is what the operator needs, the second is why the node still needs attention.
+ */
 async function compensate(
 	error: unknown,
 	what: string,
@@ -1871,6 +1971,14 @@ async function discardCandidate(application: Application, deploymentId: string):
 	await rmdir(dirname(deploymentDirPath)).catch(() => {});
 }
 
+/**
+ * Build a deploy candidate at `.deploy-staging/<deploymentId>/<component>`, leaving the live tree
+ * completely untouched — this is what lets the previous version keep serving through the clone, the
+ * extraction and the dependency install.
+ *
+ * Failure needs no compensation, which is the whole point: nothing about the live component was modified,
+ * so the abandoned candidate is simply removed and the error propagates.
+ */
 export async function buildCandidateApplication(application: Application, deploymentId: string): Promise<string> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
@@ -1897,6 +2005,11 @@ export async function buildCandidateApplication(application: Application, deploy
 				}
 			}
 		}
+		// The credential socket only has to be up for extraction — that is where npm resolves and clones a
+		// git-reference package. Closed BEFORE the install so the dependency tree's own install scripts,
+		// which are arbitrary code from the registry running as this uid, cannot ask the helper for the
+		// deployer's git token. `prepareApplication`'s finally still calls this; it is idempotent.
+		await application.cleanupGitCredentialSession();
 		await installApplication(application, candidateDirPath);
 		return candidateDirPath;
 	} catch (error) {
@@ -1909,6 +2022,18 @@ async function recoverOrCleanupStaleExtractionPaths(
 	application: ExtractionContext,
 	asideStagingDir: string
 ): Promise<void> {
+	// A journal outranks anything in the aside directory. Without this the pass restores the tree a completed
+	// activation displaced, back over the candidate it committed — the exact inversion the journal exists to
+	// prevent, and reachable on any thread whose settlement did not run or did not succeed. Enforced HERE,
+	// at the function that actually moves trees, so every entry point is covered by construction rather than
+	// by each caller remembering to settle first.
+	const journaled = await journaledDeploymentForComponent(dirname(application.dirPath), application.name);
+	if (journaled) {
+		throw new Error(
+			`Refusing to recover ${application.name} from its rollback records: the interrupted activation in ` +
+				`${journaled} is not settled, and its journal is the only record of which tree is current`
+		);
+	}
 	const entries = await readdir(asideStagingDir, { withFileTypes: true });
 	const entryNames = new Set(entries.map((entry) => entry.name));
 	const paths = new Set<string>(entries.map((entry) => join(asideStagingDir, entry.name)));
@@ -2451,21 +2576,17 @@ function automaticInstallArguments(packageManagerName: string, allowInstallScrip
 }
 
 /**
- * Install an application to its relative `application.dirPath` using either a
- * configured `application.install` command, a derived package manager from the
- * application's `package.json#devEngines`, or falling back to the default
- * package manager, `npm`.
- *
- * Returns early when `node_modules` already exists or when the manifest has no automatic install
- * work. An explicitly selected non-npm manager is always allowed to inspect its own workspace
- * configuration, even when the root manifest has no production dependencies.
- *
- * This method may be called from any Harper thread as part of a serialized preparation.
- */
-/**
  * Install a component's dependencies into `buildDirPath` — the live path, or a candidate under
  * `.deploy-staging`. Explicit rather than repointing `application.dirPath`, which is read after preparation
  * too and would name a vanished directory if any failure path skipped the restore.
+ *
+ * Uses a configured `application.install` command, a package manager derived from the application's
+ * `package.json#devEngines`, or the default, `npm`. Returns early when `node_modules` already exists or
+ * when the manifest has no automatic install work. An explicitly selected non-npm manager is always
+ * allowed to inspect its own workspace configuration, even when the root manifest has no production
+ * dependencies.
+ *
+ * May be called from any Harper thread as part of a serialized preparation.
  */
 export async function installApplication(application: Application, buildDirPath = application.dirPath) {
 	let packageJSON: any;
@@ -2910,10 +3031,9 @@ export async function prepareApplication(application: Application, options: Prep
 					await application.writeTransientNpmrc();
 					let candidateDirPath: string;
 					try {
-						// The git credential socket only has to be up for extraction — that is where npm resolves and
-						// clones a git-reference package. Closing it before the install means the credential is
-						// already gone by the time the component's dependency tree (and any install script it is
-						// allowed to run) executes.
+						// Backstop only: the builder closes the session as soon as extraction is done, so the
+						// credential is already gone before any install script runs. This finally covers the paths
+						// that fail before it gets there.
 						await application.startGitCredentialSession();
 						candidateDirPath = await buildCandidateApplication(application, deploymentId);
 					} finally {

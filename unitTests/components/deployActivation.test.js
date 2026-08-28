@@ -14,6 +14,7 @@ const {
 	activateCandidateApplication,
 	prepareApplication,
 	recoverInterruptedActivations,
+	recoverInterruptedComponentExtraction,
 	unsettleableComponentsFromDisk,
 	candidateApplicationPath,
 	DEPLOY_STAGING_DIR,
@@ -285,8 +286,7 @@ describe('read-only verdict for worker boot', () => {
 		// Retiring is CORRECTNESS: the retired marker is what stops the journal-blind legacy pass treating the
 		// record as authoritative. A record left un-retired while the journal is removed would let that pass
 		// restore the displaced tree over the candidate just rolled forward — so this must fail closed and
-		// keep the journal, not report success. (An earlier version of this test asserted the opposite, which
-		// is the behaviour a reviewer correctly rejected.)
+		// keep the journal, not report success.
 		const root = await newRoot('retirefail');
 		const { deploymentDir } = await stageState(root, 'web', 'd1', {
 			candidate: 'CANDIDATE\n',
@@ -351,10 +351,9 @@ describe('read-only verdict for worker boot', () => {
 
 describe('journal-first on the deploy path', () => {
 	it("is not blocked by another component's corrupt journal", async () => {
-		// The most operationally severe of the round-9 fixes: the pre-deploy settle parsed every journal
-		// before checking ownership, so one broken component turned into a deploy outage for its neighbours.
-		// Exercised through the deploy path specifically — the sibling-isolation test above covers only the
-		// startup pass.
+		// The pre-deploy settle must check ownership before parsing: parsing first turns one broken component
+		// into a deploy outage for its neighbours. Exercised through the deploy path specifically — the
+		// sibling-isolation test above covers only the startup pass.
 		const root = await newRoot('siblingblock');
 		await stageState(root, 'broken', 'd-broken', { live: 'BROKEN LIVE\n', candidate: 'X\n', journal: 'truncated{' });
 		await writeTree(path.join(root, 'healthy'), 'HEALTHY v1\n');
@@ -518,5 +517,55 @@ describe('activation transaction', () => {
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(app.isNewComponent, true, 'and it is recognized as a new component');
 		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('refuses the journal-blind legacy recovery while an activation journal is unsettled', async () => {
+		const root = await newRoot('legacy-guard');
+		// The state a completed activation leaves when retiring its rollback record failed: the candidate is
+		// already live, and the tree it displaced is still an un-retired `.in-progress-` record. The legacy
+		// pass reads that record as authoritative and would put the old version back over the new one.
+		await stageState(root, 'web', 'd1', { live: 'new', aside: 'old', complete: true, journal: true });
+
+		await assert.rejects(() => recoverInterruptedComponentExtraction(root, 'web', false), /is not settled/);
+
+		assert.strictEqual(await readLive(root, 'web'), 'new', 'the committed candidate is still live');
+	});
+
+	it('fails one unreadable deployment closed without aborting the rest of the scan', async () => {
+		const root = await newRoot('scan-isolation');
+		// Ownership cannot be read at all: the sidecar is a directory, so the read fails with EISDIR rather
+		// than reporting "unowned". This used to escape the scan and leave every later deployment unsettled.
+		await fs.mkdir(path.join(root, DEPLOY_STAGING_DIR, 'd1', 'component'), { recursive: true });
+		await stageState(root, 'web', 'd2', { candidate: 'new', complete: true, journal: true });
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.ok(failures.has('d1'), 'the deployment that could not be read is reported');
+		assert.strictEqual(await readLive(root, 'web'), 'new', 'its sibling was still settled');
+	});
+
+	it('keeps both trees when the live path reappears after the swap moved it aside', async () => {
+		const root = await newRoot('live-recreated');
+		// A rollback record says the live tree was already moved aside, yet the live path exists again — a
+		// previous-version worker recreating its own directory. Neither tree present is known to be current,
+		// and rolling back would delete the committed one AND the validated candidate.
+		await stageState(root, 'web', 'd1', {
+			candidate: 'new',
+			complete: true,
+			journal: true,
+			aside: 'old',
+			live: 'stub',
+		});
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.match(failures.get('web').message, /exists again/);
+		assert.strictEqual(await readLive(root, 'web'), 'stub', 'nothing was overwritten');
+		assert.strictEqual(
+			await fs.readFile(path.join(root, ASIDE_STAGING_DIR, 'web', `${IN_PROGRESS}1-1-aaa`, 'index.js'), 'utf8'),
+			'old',
+			'the committed tree survives in its rollback record'
+		);
+		assert.ok(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', 'web')), 'and so does the validated candidate');
 	});
 });

@@ -69,6 +69,34 @@ describe('deploy candidate builds', () => {
 		await fs.rm(componentsRoot, { recursive: true, force: true });
 	});
 
+	it('closes the git credential socket before any dependency install script can run', async function () {
+		this.timeout(20000);
+		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-credentials-'));
+		const dirPath = await makeLiveComponent(componentsRoot, 'web', 'LIVE v1\n');
+		const orderFile = path.join(componentsRoot, 'order.log');
+		// An install step is arbitrary code from the registry running as this uid. If the per-deploy
+		// credential socket is still up when it runs, it can ask the helper for the deployer's git token.
+		const archive = await makeTarball({
+			'package.json': '{"name":"web","version":"2.0.0"}\n',
+			'install-probe.js': `require('fs').appendFileSync(${JSON.stringify(orderFile)}, 'install\\n');`,
+		});
+		const app = new Application({ name: 'web', payload: archive, install: { command: 'node install-probe.js' } });
+		app.dirPath = dirPath;
+		const realCleanup = app.cleanupGitCredentialSession.bind(app);
+		app.cleanupGitCredentialSession = async () => {
+			await fs.appendFile(orderFile, 'credentials-closed\n');
+			return realCleanup();
+		};
+
+		await app.startGitCredentialSession();
+		await buildCandidateApplication(app, 'dep-cred');
+
+		const order = (await fs.readFile(orderFile, 'utf8')).split('\n').filter(Boolean);
+		assert.ok(order.includes('install'), 'the install step ran, so the ordering below is meaningful');
+		assert.strictEqual(order[0], 'credentials-closed', 'the credential socket is down before the install starts');
+		await fs.rm(componentsRoot, { recursive: true, force: true });
+	});
+
 	it('leaves no candidate behind and no mark on the live tree when the build fails', async function () {
 		this.timeout(20000);
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-failed-'));
