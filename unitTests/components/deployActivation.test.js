@@ -380,6 +380,31 @@ describe('journal-first on the deploy path', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it("is not blocked by another component's unreadable staging entry", async () => {
+		// Same outage, different cause: ownership that cannot be READ, rather than a journal that cannot be
+		// parsed. This runs on every deploy, so one sibling with a directory-shaped sidecar would otherwise
+		// fail every neighbour's deploy.
+		const root = await newRoot('siblingunreadable');
+		await fs.mkdir(path.join(root, DEPLOY_STAGING_DIR, 'd-broken', '.component'), { recursive: true });
+		await fs.writeFile(path.join(root, DEPLOY_STAGING_DIR, 'd-broken', '.activation.json'), 'truncated{');
+		await writeTree(path.join(root, 'healthy'), 'HEALTHY v1\n');
+
+		const app = new Application({
+			name: 'healthy',
+			payload: Readable.from(
+				(async function* () {
+					yield Buffer.from('not a tarball');
+					throw new Error('payload delivery failed');
+				})()
+			),
+		});
+		app.dirPath = path.join(root, 'healthy');
+
+		await assert.rejects(() => prepareApplication(app), /payload delivery failed/);
+		assert.strictEqual(await readLive(root, 'healthy'), 'HEALTHY v1\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('does not let the legacy aside pass restore a displaced tree over a live candidate', async () => {
 		// The state a completed activation whose RETIREMENT failed leaves behind: the candidate is live, the
 		// journal is still there, and an `.in-progress-*` aside still names the version it displaced. The

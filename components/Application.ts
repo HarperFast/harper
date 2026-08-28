@@ -1331,7 +1331,19 @@ async function settleJournaledActivationsForComponent(
 		// component threw here — blocking the deploy of a healthy component because an unrelated one is
 		// broken. The sidecar names the owner without parsing anything, and a deployment that does not name
 		// this component is none of this deploy's business; startup recovery reports it instead.
-		const owner = await candidateComponentName(deploymentDirPath);
+		//
+		// An ownership read that FAILS is the same situation, and skipping is safe here specifically because
+		// settlement is the corrective half: if that entry does turn out to be this component's, the restore
+		// gate — which takes the union and fails closed on anything it cannot attribute — is what stops the
+		// legacy pass acting on it. Failing the deploy instead lets one unreadable sibling block every
+		// neighbour's deploys, which is the outage this ordering exists to prevent.
+		let owner: string | undefined;
+		try {
+			owner = await candidateComponentName(deploymentDirPath);
+		} catch (error) {
+			logger.trace?.(`Skipping ${deploymentDirPath} while settling ${componentName}: ${errorMessage(error)}`);
+			continue;
+		}
 		if (owner !== componentName) continue;
 		const journal = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
 		if (journal?.component !== componentName) continue;
