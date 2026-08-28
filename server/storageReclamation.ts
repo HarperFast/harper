@@ -129,13 +129,16 @@ export function removeStorageReclamation(path: string): boolean {
 	return reclamationHandlers.delete(path);
 }
 
-/** Drop one handler; a RocksDB column family shares its path with every other family in the database. */
+/**
+ * Drop one handler; a RocksDB column family shares its path with every other family in the database.
+ * The list is replaced rather than spliced so a run iterating it across awaits skips nothing.
+ */
 export function removeStorageReclamationHandler(path: string, handler: (priority: number) => unknown): boolean {
 	const handlers = reclamationHandlers.get(path);
-	const index = handlers?.findIndex((entry) => entry.handler === handler) ?? -1;
-	if (index < 0) return false;
-	handlers.splice(index, 1);
-	if (handlers.length === 0) reclamationHandlers.delete(path);
+	const remaining = handlers?.filter((entry) => entry.handler !== handler);
+	if (!remaining || remaining.length === handlers.length) return false;
+	if (remaining.length === 0) reclamationHandlers.delete(path);
+	else reclamationHandlers.set(path, remaining);
 	return true;
 }
 let reclamationTimer: NodeJS.Timeout;

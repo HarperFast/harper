@@ -71,7 +71,8 @@ describe('create table catalog write order', () => {
 			schemaDefined: true,
 			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
 		});
-		const definition = {
+		// table() annotates the attribute objects it is given, so every attempt gets its own copy
+		const definition = () => ({
 			table: tableName,
 			database: 'test',
 			schemaDefined: true,
@@ -80,7 +81,7 @@ describe('create table catalog write order', () => {
 				{ name: 'name', type: 'String' },
 				{ name: 'tag', type: 'String', indexed: true },
 			],
-		};
+		});
 		const catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
 		const writes = [];
 		const patched = [];
@@ -114,23 +115,36 @@ describe('create table catalog write order', () => {
 		}
 		let Retried;
 		try {
-			assert.throws(() => table(definition), /injected table id write failure/);
+			assert.throws(() => table(definition()), /injected table id write failure/);
 			assert.strictEqual(
 				databases.test[tableName],
 				undefined,
 				'a create that fails before makeTable must not register the class'
 			);
-			assert.throws(() => table(definition), /injected catalog write failure/);
+			assert.strictEqual(releasedReclamationHandlers.length, 0, 'nothing was registered before makeTable');
+			// makeTable() itself throws here, after registering its callbacks
+			assert.throws(() => table({ ...definition(), expiration: -1 }), /Expiration can not be negative/);
+			assert.strictEqual(
+				databases.test[tableName],
+				undefined,
+				'a create that fails inside makeTable must not register the class'
+			);
+			assert.strictEqual(
+				releasedReclamationHandlers.length,
+				1,
+				'a failure inside makeTable must release its callbacks'
+			);
+			assert.throws(() => table(definition()), /injected catalog write failure/);
 			assert.strictEqual(databases.test[tableName], undefined, 'a failed create must not register the class');
 			assert(!writes.includes(`${tableName}/`), `a failed create must not write the primary row: ${writes}`);
-			assert.strictEqual(releasedReclamationHandlers.length, 1, 'a failed create must release its callbacks');
+			assert.strictEqual(releasedReclamationHandlers.length, 2, 'a failed create must release its callbacks');
 			if (Seed.dbisDB.committed) await Seed.dbisDB.committed;
 			assert.strictEqual(
 				Seed.dbisDB.getSync(`${tableName}/name`),
 				undefined,
 				'a failed create must remove the rows it wrote'
 			);
-			Retried = table(definition);
+			Retried = table(definition());
 		} finally {
 			storageReclamation.removeStorageReclamationHandler = originalRemoveHandler;
 			for (const [method, original] of patched) catalogPrototype[method] = original;

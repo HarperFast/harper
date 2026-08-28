@@ -5531,9 +5531,15 @@ export function makeTable(options) {
 		}
 	);
 
-	TableResource.updatedAttributes(); // on creation, update accessors as well
-	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
-	if (expiresAtProperty) runRecordExpirationEviction();
+	try {
+		TableResource.updatedAttributes(); // on creation, update accessors as well
+		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
+		if (expiresAtProperty) runRecordExpirationEviction();
+	} catch (error) {
+		// the caller never receives the class, so it cannot release what was registered above
+		TableResource.cleanup();
+		throw error;
+	}
 	return TableResource;
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
 		let hasChanges;
@@ -6690,7 +6696,7 @@ export function makeTable(options) {
 			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (runningRecordExpiration) return;
+				if (disposed || runningRecordExpiration) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;

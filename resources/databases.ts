@@ -661,7 +661,6 @@ export function getDatabases(): Databases {
 			for (const tableName in tables) {
 				if (!definedTables.has(tableName)) {
 					logger.trace(`delete table class ${tableName}`);
-					// the class is unreachable after this, so release the callbacks makeTable() registered for it
 					tables[tableName]?.cleanup?.();
 					delete tables[tableName];
 				}
@@ -1078,11 +1077,14 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
-				const message = `Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`;
-				if (reportedIncompleteCatalogs.has(`${databaseName}.${tableName}`)) logger.debug(message);
+				const tableKey = `${databaseName}.${tableName}`;
+				if (reportedIncompleteCatalogs.has(tableKey))
+					logger.debug(`Skipping table ${tableKey}: still no primary key row`);
 				else {
-					reportedIncompleteCatalogs.add(`${databaseName}.${tableName}`);
-					logger.warn(message);
+					reportedIncompleteCatalogs.add(tableKey);
+					logger.warn(
+						`Skipping table ${tableKey}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
+					);
 				}
 				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
 				definedTables?.delete(tableName);
@@ -2188,9 +2190,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
-			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 			// from here on a failure has something to release, whether or not makeTable() completes
 			unpublishedPrimaryStore = primaryStore;
+			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 			rootStore.databaseName = databaseName;
 			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
 			logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
@@ -2241,8 +2243,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 		Table.dbisDB = attributesDbi;
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
-		// reconciliation is reserved for local schema authoring - except on a create: rows found under the
-		// lock for a table with no primary row can only be aborted state, never a completed generation.
+		// reconciliation is reserved for local schema authoring; on a create the rows can only be aborted state.
 		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
 		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
 			if (value == null) continue;
@@ -2403,8 +2404,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
-				// only an unpublished class registers before the descriptor persists (its map is private)
-				if (deferredPrimaryRow) indices[attribute.name] = dbi;
+				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
 				// disk; persist the resolved value now — even when nothing else changed — so the format is
