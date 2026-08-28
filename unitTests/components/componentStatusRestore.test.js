@@ -74,6 +74,17 @@ describe('component status during throwaway validation', () => {
 
 		await runWithDeployValidationGuard(async () => {
 			statusForComponent('live-probe').error('candidate threw at load');
+			// THE assertion that discriminates. Checking only the final state below would pass on last-write-
+			// wins alone, since the live write is scheduled to land second either way. `getAllStatuses()`
+			// answers from the live map — `getStatus()` deliberately answers from the sink in here — so this
+			// is what actually observes whether the candidate's write escaped.
+			const liveDuringValidation = registry.getAllStatuses().get('live-probe');
+			assert.strictEqual(
+				liveDuringValidation.status,
+				STATUS.HEALTHY,
+				"the candidate's write never reached the live registry"
+			);
+			assert.strictEqual(liveDuringValidation.message, 'serving');
 			await liveReport;
 		});
 
