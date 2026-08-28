@@ -6,7 +6,8 @@
  * conversion, empty hints handling, and response length limits.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, match } from 'node:assert';
+import { doesNotMatch, strictEqual, ok, match } from 'node:assert';
+import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -100,6 +101,11 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			if (Date.now() > readyDeadline) throw new Error('Timed out waiting for Harper to be ready after restart');
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
+
+		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+		const instanceLog = await readFile(join(logDirectory, 'hdb.log'), 'utf8');
+		match(instanceLog, /\[early-hints\]: Registered resource: \/hints/);
+		doesNotMatch(instanceLog, /\[early-hints:spawn:npm/, 'a local archive must not be repacked by npm');
 	});
 
 	after(async () => {

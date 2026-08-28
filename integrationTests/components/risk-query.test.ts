@@ -5,7 +5,8 @@
  * shorthand field mapping, upsert, edge cases, and deletion.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { doesNotMatch, match, strictEqual, ok } from 'node:assert';
+import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -39,6 +40,11 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 			if (Date.now() > deadline) throw new Error('Timed out waiting for risk-query to be ready after deploy');
 			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
+
+		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+		const instanceLog = await readFile(join(logDirectory, 'hdb.log'), 'utf8');
+		match(instanceLog, /\[risk-query\]: Registered resource: \/risq/);
+		doesNotMatch(instanceLog, /\[risk-query:spawn:/, 'a dependency-free local archive must not start a child process');
 	});
 
 	after(async () => {
