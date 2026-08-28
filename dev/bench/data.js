@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787914058164,
+  "lastUpdate": 1787921312649,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -14411,6 +14411,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 322180,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "635fbd5387386cd4296ec56e25df8d68931da467",
+          "message": "Keep a pre-ready worker's event loop alive through startup (fixes the 'exited with code 0 before reporting ready' CI failure) (#2314)\n\n* test: pre-ready worker survives a load-time await with no ref-holding completion source\n\nReproduces the recurring CI failure \"Worker (index N) exited with code 0 before\nreporting ready\" (harper#2312): a fixture component whose load awaits a completion\ndelivered through an unref'd handle, mounted in both the app-component and\nroot-component startup windows, across 2 workers.\n\nRefs #2312\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01DHrjqmMSGAkaXFGbJPKW5s\n\n* fix(threads): keep a pre-ready worker's event loop alive through startup\n\nA worker that has not yet posted child_started owns no ref'd handle (addPort\nunrefs parentPort; watchers are persistent:false; reporting timers are unref'd),\nso an await inside loadRootComponents whose completion arrives through a\nnon-ref-holding source — rocksdb-js delivers cross-thread lock-release and\nparked-commit-retry wakes via unref'd threadsafe functions — can drain the\nevent loop and exit the worker cleanly (code 0) before the ready handshake,\naborting the whole node's startup.\n\nHold a parentPort ref for the entire pre-ready window (SHUTDOWN still unrefs\nfor graceful exit), and make symlinkHarperModule's lock waiter keep a ref'd\nbounded timer instead of clearing its only ref'd handle — which also bounds a\nforever-wait when the lock holder dies, and removes the winner's stale 10s\ntimer that could unlock a lock it no longer owned.\n\nFixes the top non-Windows Integration Tests failure on main.\n\nRefs #2312, HarperFast/rocksdb-js#797\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01DHrjqmMSGAkaXFGbJPKW5s\n\n* fix(threads): fail fast on a rejected root-component load; harden symlink lock-wait coverage\n\nReview round 1 follow-ups: with the pre-ready ref, a rejected loadRootComponents\nwould park the worker forever instead of failing startup — catch it and\nrealExit(1) (main-as-worker still propagates to its caller). Log when the\nsymlink lock wait times out. Add a unit test proving the lock-wait branch holds\na ref'd timer while parked (red on the previous implementation, which cleared\nit) and that the winner leaves no stale timer.\n\nRefs #2312\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01DHrjqmMSGAkaXFGbJPKW5s\n\n* fix(threads): bound the pre-ready window and sanitize the load-failure log\n\nReview round 2: a hang-shaped startup failure (or a sync throw swallowed by the\nworker's uncaughtException handler) would park a ref-held worker forever, so arm\na generous ready deadline cleared at child_started; log the load failure once\nthrough errorForLog instead of dumping the raw error twice; drop the vacuous\nlog-grep test and dedupe the drain-invariant comments.\n\nRefs #2312\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01DHrjqmMSGAkaXFGbJPKW5s\n\n* test: declare the liveness fixture resource before its top-level await for Bun\n\nBun's loader reads the module namespace while evaluation is suspended at the\ntop-level await, so a class declared after it is still in its TDZ\n(Cannot access 'LivenessProbe' before initialization on the 3/6 Bun shard).\n\nRefs #2312\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01DHrjqmMSGAkaXFGbJPKW5s\n\n* test: guarantee tmpdir cleanup when teardown throws\n\nRefs #2312\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01DHrjqmMSGAkaXFGbJPKW5s\n\n* Address worker startup liveness review feedback\n\nRemove the unvalidated fatal startup deadline, make the lock-wait test detect cleared timers, and add a standalone worker regression for the pre-ready parentPort ref.\n\nRefs #2312\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Harden worker liveness test isolation\n\nRun the fixture from a temporary root config, use the JavaScript source alias under TypeStrip, and assert the mocked component loader executes.\n\nRefs #2312\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-08-28T12:00:33Z",
+          "url": "https://github.com/HarperFast/harper/commit/635fbd5387386cd4296ec56e25df8d68931da467"
+        },
+        "date": 1787921310694,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 21210,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 11624,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 11945,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 28130752,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2571,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 649998,
             "unit": "ops"
           }
         ]
