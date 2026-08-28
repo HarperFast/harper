@@ -1074,11 +1074,12 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
-				// table() writes the primary row last, so this is a create still in progress on another
-				// thread, or one that was interrupted (re-running create_table repairs it)
 				logger.warn(
 					`Skipping table ${tableName}: its catalog has attribute rows but no primary key row (create in progress or interrupted), attributes: ${JSON.stringify(attributes)}`
 				);
+				// not defined until it loads, so the cleanup pass below drops a class left from a dropped
+				// same-name table instead of serving it (or announcing it) through the recreate
+				definedTables?.delete(tableName);
 				continue;
 			}
 		}
@@ -2003,6 +2004,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let deferredPrimaryRow: any;
+	let published = false;
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
@@ -2390,6 +2392,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				// registered as soon as it is open, so a create that fails below can still close it
+				indices[attribute.name] = dbi;
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
 				// disk; persist the resolved value now — even when nothing else changed — so the format is
@@ -2499,7 +2503,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
 				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 				dbi.indexNulls = attribute.indexNulls;
-				indices[attribute.name] = dbi;
 			} else if (changed) {
 				hasChanges = true;
 				exclusiveLock();
@@ -2509,10 +2512,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// The primary row is what makes a table loadable, so it lands after every attribute row: a catalog
 		// scan on another thread (resetDatabases from any schema-change signal) that runs mid-create must
 		// skip this table rather than build - and announce to peers - a Table with a partial attribute list.
-		// This worker registers the class at the same point, so a create that throws leaves no table anywhere.
+		// This worker registers the class at the same point.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
 			setTable(tables, tableName, Table);
+			published = true;
 		}
 		// a table with no declared primary key has no attribute row to carry relationships, and the
 		// loop above never visits its descriptor
@@ -2532,6 +2536,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				}
 			}
 		}
+	} catch (error) {
+		if (deferredPrimaryRow && !published) discardUnpublishedTable();
+		throw error;
 	} finally {
 		releaseLock();
 	}
@@ -2575,6 +2582,27 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			if (attributesDbi.getSync(attributeKey)) return attributeKey;
 		}
 		return tableName + '/';
+	}
+	// A create that failed before its primary row is registered nowhere, so nothing else can release
+	// the stores makeTable() and the attribute loop opened for it or the callbacks makeTable() registered.
+	function discardUnpublishedTable() {
+		const discard = (description: string, action: () => unknown) => {
+			try {
+				action();
+			} catch (discardError) {
+				logger.warn(
+					`Error discarding ${description} of the failed create of ${databaseName}.${tableName}`,
+					discardError
+				);
+			}
+		};
+		discard('callbacks', () => Table.cleanup());
+		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
+		// create's write transaction; only RocksDB column-family handles hold native state to release
+		if (rootStore instanceof RocksDatabase) {
+			for (const indexName in Table.indices) discard(`index ${indexName}`, () => Table.indices[indexName].close());
+			discard('primary store', () => Table.primaryStore.close());
+		}
 	}
 	// Acquire an exclusive lock for attribute updates
 	function exclusiveLock() {

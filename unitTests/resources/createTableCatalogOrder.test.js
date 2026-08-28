@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
-const { database, table } = require('#src/resources/databases');
+const { database, databases, table } = require('#src/resources/databases');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -63,6 +63,67 @@ describe('create table catalog write order', () => {
 		);
 	});
 
+	it('a create that fails before its primary row registers nothing, releases its stores, and can be retried', async () => {
+		const tableName = 'CatalogFailTest';
+		const Seed = table({
+			table: 'CatalogFailSeed',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+		});
+		const definition = {
+			table: tableName,
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'name', type: 'String' },
+				{ name: 'tag', type: 'String', indexed: true },
+			],
+		};
+		const catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
+		const writes = [];
+		const patched = [];
+		let failNextTagRow = true;
+		for (const method of ['put', 'putSync']) {
+			const original = catalogPrototype[method];
+			if (typeof original !== 'function') continue;
+			catalogPrototype[method] = function (key, ...rest) {
+				// the index store for 'tag' is already open when its row is written
+				if (key === `${tableName}/tag` && failNextTagRow) {
+					failNextTagRow = false;
+					throw new Error('injected catalog write failure');
+				}
+				if (typeof key === 'string' && key.startsWith(`${tableName}/`)) writes.push(key);
+				return original.call(this, key, ...rest);
+			};
+			patched.push([method, original]);
+		}
+		let Retried;
+		try {
+			assert.throws(() => table(definition), /injected catalog write failure/);
+			assert.strictEqual(databases.test[tableName], undefined, 'a failed create must not register the class');
+			assert(!writes.includes(`${tableName}/`), `a failed create must not write the primary row: ${writes}`);
+			Retried = table(definition);
+		} finally {
+			for (const [method, original] of patched) catalogPrototype[method] = original;
+		}
+		assert.strictEqual(databases.test[tableName], Retried, 'the retry must register the class');
+		assert.deepStrictEqual(
+			Retried.attributes.map((attribute) => attribute.name).sort(),
+			['id', 'name', 'tag'],
+			'the retry must declare every attribute'
+		);
+		assert(Retried.indices.tag, 'the retry must open the index');
+		if (Retried.dbisDB.committed) await Retried.dbisDB.committed;
+		assert(Retried.dbisDB.getSync(`${tableName}/`), 'the retry must write the primary row');
+		assert.strictEqual(
+			writes[writes.length - 1],
+			`${tableName}/`,
+			`primary row must still be the last write: ${writes}`
+		);
+	});
+
 	it('a catalog scan on another thread skips the table mid-create and loads it complete afterwards', async function () {
 		// LMDB holds an environment-wide write transaction for the create, so another thread's scan blocks
 		// until it commits instead of ever observing the catalog; only RocksDB exposes the row-by-row writes
@@ -94,6 +155,25 @@ describe('create table catalog write order', () => {
 				}),
 			]);
 		worker.on('message', (message) => (scans[message.type] = message));
+		// the other thread holds a class from a dropped generation of the same name when the recreate starts
+		const FirstGeneration = table({
+			table: tableName,
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'old', type: 'String' },
+			],
+		});
+		Atomics.store(phase, 0, 1);
+		Atomics.notify(phase, 0);
+		const firstGeneration = await scanned('first-generation');
+		assert.deepStrictEqual(
+			[...firstGeneration.attributes].sort(),
+			['id', 'old'],
+			'the other thread must hold the first generation'
+		);
+		await FirstGeneration.dropTable();
 		const catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
 		const patched = [];
 		let pausedStatus;
@@ -104,9 +184,9 @@ describe('create table catalog write order', () => {
 				const result = original.call(this, key, ...rest);
 				// the first attribute row is on disk: hand the catalog to the other thread and block this one
 				if (key === `${tableName}/name` && pausedStatus === undefined) {
-					Atomics.store(phase, 0, 1);
+					Atomics.store(phase, 0, 2);
 					Atomics.notify(phase, 0);
-					pausedStatus = Atomics.wait(ack, 0, 0, 30000);
+					pausedStatus = Atomics.wait(ack, 0, 1, 30000);
 				}
 				return result;
 			};
@@ -125,13 +205,13 @@ describe('create table catalog write order', () => {
 			});
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 			assert.strictEqual(pausedStatus, 'ok', `the other thread never finished its mid-create scan (${pausedStatus})`);
-			Atomics.store(phase, 0, 2);
+			Atomics.store(phase, 0, 3);
 			Atomics.notify(phase, 0);
 			const midCreate = await scanned('mid-create');
 			assert.strictEqual(
 				midCreate.loaded,
 				false,
-				`a scan during the create must not load the table, got attributes ${midCreate.attributes}`
+				`a scan during the create must load neither the new table nor the dropped generation, got attributes ${midCreate.attributes}`
 			);
 			assert.strictEqual(midCreate.updateTableEvents, 0, 'a scan during the create must not announce the table');
 			const afterCreate = await scanned('after-create');

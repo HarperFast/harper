@@ -89,7 +89,11 @@ import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
+import {
+	onStorageReclamation,
+	getStorageSpaceStats,
+	removeStorageReclamationHandler,
+} from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
@@ -564,9 +568,10 @@ export function makeTable(options) {
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
-	onStorageReclamation(primaryStore.path, (priority: number) => {
+	const reclamationHandler = (priority: number) => {
 		if (hasSourceGet) return scheduleCleanup(priority);
-	});
+	};
+	onStorageReclamation(primaryStore.path, reclamationHandler);
 
 	class Updatable extends GenericTrackedObject implements RecordObject {
 		declare set: (property: string, value: any) => void;
@@ -5498,6 +5503,7 @@ export function makeTable(options) {
 		}
 		static cleanup() {
 			deleteCallbackHandle?.remove();
+			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();

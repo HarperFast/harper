@@ -128,6 +128,16 @@ export function onStorageReclamation(
 export function removeStorageReclamation(path: string): boolean {
 	return reclamationHandlers.delete(path);
 }
+
+/** Drop one handler; a RocksDB column family shares its path with every other family in the database. */
+export function removeStorageReclamationHandler(path: string, handler: (priority: number) => unknown): boolean {
+	const handlers = reclamationHandlers.get(path);
+	const index = handlers?.findIndex((entry) => entry.handler === handler) ?? -1;
+	if (index < 0) return false;
+	handlers.splice(index, 1);
+	if (handlers.length === 0) reclamationHandlers.delete(path);
+	return true;
+}
 let reclamationTimer: NodeJS.Timeout;
 
 export type StorageSpaceStats = {
