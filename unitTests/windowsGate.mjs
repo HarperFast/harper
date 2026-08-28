@@ -158,8 +158,11 @@ for (const { pattern, seconds, passing, reason } of results) {
 const failed = results.filter((result) => result.reason);
 if (failed.length) {
 	console.error(`\n${failed.length} of ${results.length} group(s) failed.`);
-	process.exit(1);
+	// Not process.exit(): the group table above is the whole point of the run, and a piped stdout
+	// on Windows can still be draining it. Nothing is left to keep the loop alive here anyway.
+	process.exitCode = 1;
+} else {
+	console.log(
+		`\nAll ${results.length} groups passed (${results.reduce((sum, result) => sum + Number(result.passing), 0)} tests).`
+	);
 }
-console.log(
-	`\nAll ${results.length} groups passed (${results.reduce((sum, result) => sum + Number(result.passing), 0)} tests).`
-);

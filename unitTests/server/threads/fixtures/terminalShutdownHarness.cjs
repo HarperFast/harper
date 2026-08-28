@@ -8,11 +8,10 @@ const { waitFor } = require('../../../waitFor.js');
 const { HARPER_CONFIG_FILE } = require('#src/utility/hdbTerms');
 process.env.HARPER_SAFE_MODE = 'true';
 
-// The restart modes below call restartWorkers(), which loads the root components, which reads the
-// config FILE (loadCertificates -> getConfigFromFile) rather than the in-memory config
-// initTestEnvironment() sets up. On a machine with no Harper installed there is no such file and
-// that call rejects with ENOENT, so write one and point ROOTPATH at it — the same lever
-// `harper --ROOTPATH` uses to run without boot properties.
+// restartWorkers() loads the root components, and loadCertificates() reads the config FILE rather
+// than the in-memory config initTestEnvironment() sets up — with no Harper installed there is none
+// and the restart rejects with ENOENT. ROOTPATH is the lever `harper --ROOTPATH` uses to run
+// without boot properties.
 const rootPath = mkdtempSync(join(tmpdir(), 'harper-terminal-shutdown-'));
 writeFileSync(join(rootPath, HARPER_CONFIG_FILE), `rootPath: ${JSON.stringify(rootPath)}\n`);
 process.env.ROOTPATH = rootPath;
@@ -164,10 +163,10 @@ const modes = {
 };
 const run = modes[mode] ?? terminalShutdown;
 run().catch((error) => {
-	// Exit rather than setting process.exitCode: whatever the mode was doing left a worker running,
-	// which holds the event loop open forever, so the harness never exits and its caller reports a
-	// mocha timeout with none of this in it. Report on stdout, which the caller captures and puts in
-	// the assertion message, and writeSync because process.exit() drops a queued write to a pipe.
+	// Exit rather than set process.exitCode: a worker the failed mode left running holds the event
+	// loop open forever, and the caller then reports a mocha timeout carrying none of this. stdout
+	// because the caller captures it into the assertion message; writeSync because process.exit()
+	// drops a queued write to a pipe.
 	writeSync(1, `${error?.stack ?? error}\n`);
 	process.exit(1);
 });

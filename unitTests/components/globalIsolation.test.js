@@ -7,10 +7,9 @@ const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 
-// The value static/defaultConfig.yaml ships, which `harper install` writes into the config file.
-// A machine with no Harper install has no config at all, so without this the allowlist is empty
-// and `spawn('npm')` is rejected as a disallowed command before it can be rejected for having no
-// process name — which is the restriction the spawn test is about.
+// What static/defaultConfig.yaml ships. A machine with no Harper install has no config at all, so
+// without this the allowlist is empty and `spawn('npm')` is rejected as a disallowed command before
+// it can be rejected for having no process name — the restriction the spawn test is about.
 const DEFAULT_ALLOWED_SPAWN_COMMANDS = ['npm', 'node'];
 
 describe('Global Variable Isolation in testJSWithDeps', function () {
