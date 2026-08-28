@@ -224,6 +224,8 @@ type MyTable @table @export(name: "my-table") {
 
 The optional `name` parameter specifies the URL path segment (e.g., `/my-table/`). Without `name`, the type name is used.
 
+`@export` alone does not serve HTTP traffic — REST must also be enabled for the application, either explicitly with `rest: true` in its `config.yaml` or by Harper's built-in default for a component directory that has no configuration file at all. See [REST Overview / Tables and Their Automatic Endpoints](../rest/overview.md#tables-and-their-automatic-endpoints) for the endpoints an exported table produces and the exact conditions.
+
 :::warning `@export` is a routing directive, not an access control
 Omitting `@export` removes the REST/MQTT route for a table (callers get 404), but it does **not** protect the data. The table still exists in the database and remains accessible through the Operations API and SQL, subject to RBAC, to administrators and roles with the required operation and table permissions. For table-level confidentiality, omit the table from a role's grants or set its table-level `read` permission to `false` rather than relying on the absence of an export route. To protect individual fields, configure `attribute_permissions` as a whitelist: list every field the role may read and omit the restricted field (or list it with `read: false`). Also account for the [filter side-channel on exported Resources](../users-and-roles/overview.md#filter-side-channel-for-read-restricted-attributes).
 :::

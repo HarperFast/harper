@@ -35,6 +35,65 @@ rest:
   webSocket: false # disables automatic WebSocket support (enabled by default)
 ```
 
+## Tables and Their Automatic Endpoints
+
+This section describes the **default table Resource** — the endpoints Harper registers automatically for a table, with no handler code of your own. Harper serves that default Resource only when **both** of the following are true:
+
+1. The table is exported in a schema definition with [`@export`](../database/schema.md#export).
+2. REST is enabled for the application — normally `rest: true` in `config.yaml` (see [Configuration](#configuration)); a component directory with **no configuration file at all** gets it from Harper's built-in default instead, as described below.
+
+```graphql
+# schema.graphql
+type Product @table @export {
+	id: Long @primaryKey
+	name: String
+	price: Float
+}
+```
+
+```yaml
+# config.yaml
+graphqlSchema:
+  files: schema.graphql
+rest: true
+```
+
+Neither half is sufficient on its own. Without `@export` Harper registers no default Resource for the table, so it has no REST route and callers get `404`. Without REST enabled the REST handler is never registered for the application, so even an exported table does not respond to HTTP requests.
+
+`@export` is how the **table itself** claims the URL. When a JavaScript subclass of `tables.MyTable` should own that URL instead, omit `@export` from the schema and export the class — the class claims the route and serves whatever it implements, and REST still has to be enabled. Leaving `@export` on the schema while also exporting a same-named subclass produces conflicting endpoints. See [Extending a Table](../resources/overview.md#extending-a-table).
+
+:::note Components with no configuration file
+Enabling REST is normally explicit, with one exception: a component directory that has **no configuration file at all**. Harper falls back to a built-in default for those, and that default enables `rest` and loads `*.graphql` from the component root — so a bare directory containing only a schema file does serve its exported tables without a `config.yaml`.
+
+The fallback is all or nothing. As soon as a configuration file exists it is used verbatim, with no merge against the built-in default, so a `config.yaml` that omits `rest` turns REST off even though the same directory would have had it with no file present. If you add a configuration file, add `rest: true` with it.
+:::
+
+With both in place, the exported name becomes the base path (`Product` above, or the `name` argument of `@export`) and Harper serves the following endpoints on the application HTTP server port (default `9926`). No route definitions, controllers, or handler code are required.
+
+| Endpoint                     | Description                                                                                                                                                             | Details                                |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `GET /Product`               | Describes the resource — table name, database, and declared attributes — plus an href to the record collection. No trailing slash.                                      | [GET](#get)                            |
+| `GET /Product/`              | The record collection. Append query parameters to search, filter, sort, and page.                                                                                       | [GET](#get), [Querying](./querying.md) |
+| `GET /Product/{id}`          | A single record by primary key; `404` when no such record exists.                                                                                                       | [GET](#get)                            |
+| `GET /Product/{id}.property` | A single property of one record. Only properties declared in the schema.                                                                                                | [GET](#get)                            |
+| `POST /Product/`             | Creates a record and responds `201`, with a Harper-assigned primary key when the body does not supply one. Requires the trailing slash — `POST /Product` returns `404`. | [POST](#post)                          |
+| `PUT /Product/{id}`          | Creates or replaces the record at `{id}` (upsert). The stored record matches the body exactly — properties omitted from the body are **removed**.                       | [PUT](#put)                            |
+| `PATCH /Product/{id}`        | Merges the body into the existing record, preserving unspecified properties. The merge is **shallow** — a nested object in the body replaces the stored one wholesale.  | [PATCH](#patch)                        |
+| `DELETE /Product/{id}`       | Deletes the record at `{id}`.                                                                                                                                           | [DELETE](#delete)                      |
+| `DELETE /Product/?query`     | Deletes every record matching the query. With no query parameters, this matches — and deletes — every record in the table.                                              | [DELETE](#delete)                      |
+
+Notes on this surface:
+
+- The trailing slash is significant throughout: `/Product` addresses the resource itself, `/Product/` addresses its collection of records. See [URL Structure](#url-structure).
+- `HEAD` is served exactly as `GET` with the response body omitted. `QUERY` is accepted on the collection path (`QUERY /Product/`) and runs a search taken from the request body rather than the URL.
+- A collection `POST` only generates a primary key when the body omits the table's primary-key property. If the body supplies one, Harper stores the record under that value rather than replacing it, and a `POST` to a key that already exists fails with `409` instead of overwriting.
+- On a successful `POST`, the new record's primary key — supplied or generated — is returned in the `Location` response header. The header carries the bare key value, not a URL, so it is not a link to follow.
+- `PUT` replaces the stored record, with three exceptions that Harper always applies: a [`@createdTime`](../database/schema.md#createdtime) attribute keeps the original record's value, an [`@updatedTime`](../database/schema.md#updatedtime) attribute is re-stamped with the time of the write, and the primary key is forced to match the `{id}` in the URL even if the body carries a different one.
+- Enabling `rest` also registers [WebSocket](./websockets.md) subscriptions on these same resource paths **by default**. Setting `webSocket: false` under `rest` (see [Configuration](#configuration)) suppresses that registration while leaving REST itself serving.
+- [Server-Sent Events](./server-sent-events.md) subscriptions are served on these same paths as well, negotiated per request with `Accept: text/event-stream`. They come with `rest` and are not affected by the `webSocket` option.
+- Every **non-hidden** exported resource is included in the generated [OpenAPI](#openapi) document. A type marked [`@hidden`](../database/schema.md#hidden-type-directive), or a programmatic Resource with [`static hidden = true`](../resources/resource-api.md#static-hidden-boolean), is omitted from it.
+- Custom resource classes exported from an application get the same URL structure and method mapping; they implement the methods themselves rather than inheriting the table behavior above. See [Resource API](../resources/resource-api.md).
+
 ## URL Structure
 
 The REST interface follows a consistent URL structure:
@@ -94,7 +153,7 @@ Creates or replaces the record with primary key `123`.
 
 ### POST
 
-Create a new record without specifying a primary key, or trigger a custom action. Handled by the resource's `post(data)` method. The auto-assigned primary key is returned in the `Location` response header.
+Create a new record, or trigger a custom action. Handled by the resource's `post(data)` method. The new record's primary key is returned in the `Location` response header — the value the body supplied, if it carried the primary-key property, and otherwise a Harper-assigned key.
 
 ```http
 POST /MyTable/
