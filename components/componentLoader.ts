@@ -391,7 +391,6 @@ export const loadedPaths = new Map();
 export const mainThreadInitialized = new Map<string, any>();
 
 let errorReporter;
-/** So a caller that installs a reporter can put the previous one back when it is done with it. */
 /**
  * Forget that a directory was loaded, so a throwaway load does not retain it forever. `loadedPaths` is
  * keyed by realpath and never pruned, and every deploy validates a candidate under a fresh
@@ -416,6 +415,7 @@ export function forgetLoadedPath(componentDirectory: string): void {
 	}
 }
 
+/** So a caller that installs a reporter can put the previous one back when it is done with it. */
 export function getErrorReporter() {
 	return errorReporter;
 }

@@ -1561,13 +1561,14 @@ async function markCandidateComplete(
 }
 
 /**
- * Make a built and validated candidate live, as one compensating transaction over three effects: the live
- * tree moves aside, the candidate takes its place, and the component's root-config entry is published.
+ * Make a built and validated candidate live, as one compensating transaction over two effects: the live tree
+ * moves aside, then the candidate takes its place. Root config is NOT one of them — it is still published
+ * before the build, unchanged, and making it transactional is tracked separately (#2315).
  *
  * The `complete` marker and the activation journal are written and fsynced BEFORE the first rename, so a
- * crash anywhere below is recoverable — see `recoverInterruptedActivation` for the state matrix. Ordering
- * is deliberate: config is published only once the candidate is actually live, because a config entry that
- * outlives the tree it names is what makes a rejected release come back at the next restart.
+ * crash anywhere below is recoverable — see `settleInterruptedActivation` for the state matrix. The second
+ * rename is the COMMIT POINT: nothing after it may compensate, because the live path holds the candidate and
+ * renaming the aside back over it cannot succeed.
  */
 export async function activateCandidateApplication(application: Application, deploymentId: string): Promise<void> {
 	const liveDirPath = application.dirPath;
@@ -1684,6 +1685,17 @@ export async function activateCandidateApplication(application: Application, dep
  * Undo an activation effect, folding a compensation failure into the original error rather than replacing
  * it — the first error is what the operator needs, the second is why the node still needs attention.
  */
+/**
+ * Marks a failure where compensation ITSELF failed, so the previous version is not back and the live path
+ * may be absent. The candidate, its `.complete` marker and its journal are then the only way back — recovery
+ * rolls that state forward — so they must survive, and the caller keys on this to skip discarding them.
+ */
+const COMPENSATION_INCOMPLETE = Symbol('compensationIncomplete');
+
+function compensationIncomplete(error: unknown): boolean {
+	return Boolean((error as any)?.[COMPENSATION_INCOMPLETE]);
+}
+
 async function compensate(
 	error: unknown,
 	what: string,
@@ -1693,11 +1705,15 @@ async function compensate(
 	try {
 		await undo();
 	} catch (undoError) {
-		throw new AggregateError(
+		// Whatever blocked the original operation plausibly blocks its undo too — a rename into a path
+		// something else holds open fails the same way twice.
+		const failure = new AggregateError(
 			[error, undoError],
 			`Failed to ${what} for ${application.name}: ${errorMessage(error)}; ` +
 				`also failed to restore the previous version: ${errorMessage(undoError)}`
 		);
+		(failure as any)[COMPENSATION_INCOMPLETE] = true;
+		throw failure;
 	}
 }
 
@@ -2845,10 +2861,15 @@ export async function prepareApplication(application: Application, options: Prep
 						}
 						await activateCandidateApplication(application, deploymentId);
 					} catch (error) {
-						// The builder's own cleanup only covers a failed BUILD. A rejected validation (or a
-						// compensated activation) would otherwise leave a whole installed dependency tree under
-						// this deployment id, so repeated rejections fill the component volume.
-						await discardCandidate(application, deploymentId);
+						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
+						// activation that was cleanly compensated, would otherwise leave a whole installed
+						// dependency tree under this deployment id — repeated rejections fill the volume.
+						//
+						// NOT when compensation itself failed. There the previous version is not back and the live
+						// path may be absent, and the candidate plus its `.complete` marker and journal are exactly
+						// what recovery needs to roll the validated deploy forward at the next start. Discarding
+						// them there trades a bounded disk cost for a component with no version at all.
+						if (!compensationIncomplete(error)) await discardCandidate(application, deploymentId);
 						throw error;
 					}
 				} finally {
