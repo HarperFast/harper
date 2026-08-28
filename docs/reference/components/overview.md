@@ -136,16 +136,18 @@ Extensions require an `extensionModule` option pointing to the extension source.
 
 ## Known Custom Components
 
+Harper's official components are published under two npm scopes — `@harperfast` for packages already migrated as part of the HarperDB to HarperFast transition, and `@harperdb` for those still on the original scope — so install each one using exactly the name listed below.
+
 ### Applications
 
-- [`@harperdb/status-check`](https://github.com/HarperDB/status-check)
-- [`@harperdb/prometheus-exporter`](https://github.com/HarperDB/prometheus-exporter)
-- [`@harperdb/acl-connect`](https://github.com/HarperDB/acl-connect)
+- [`@harperdb/status-check`](https://github.com/HarperFast/status-check)
+- [`@harperdb/prometheus-exporter`](https://github.com/HarperFast/prometheus-exporter)
+- [`@harperdb/acl-connect`](https://github.com/HarperFast/acl-connect)
 
 ### Plugins
 
 - [`@harperfast/nextjs`](https://github.com/HarperFast/nextjs) — Run a Next.js application on Harper ([docs](./nextjs.md))
-- [`@harperfast/vite-plugin`](https://github.com/HarperFast/vite-plugin) — Develop and serve Vite-built front-ends from Harper, with HMR via `harper run`
+- [`@harperfast/vite`](https://github.com/HarperFast/vite) — Develop and serve Vite-built front-ends from Harper, with HMR via `harper run`
 
 ### Extensions
 
