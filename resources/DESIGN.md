@@ -141,6 +141,20 @@ Tests: `../unitTests/resources/paramRoutes.test.js` (unit) and `../integrationTe
 
 ---
 
+## Persisted relationship catalog
+
+GraphQL `@relationship` attributes are live objects in component workers, but the operations API runs in a separate thread that does not load component schemas. `processGraphQLSchema` therefore records each relationship's target `database.table`, and `table()` persists a normalized, data-only relationship list on the table's primary catalog descriptor. The primary descriptor is deliberate: older Harper versions ignore the unknown field instead of loading a per-attribute row without the runtime table definition and silently returning `null`.
+
+`getDatabases()` waits until the complete table catalog is loaded, then hydrates catalog-owned relationship attributes with a stable target-class snapshot and calls `updatedAttributes()` to rebuild resolvers. The list is authoritative only when the GraphQL authoring path explicitly supplies `schemaRelationshipsDefined`; admin and replication callers that omit it cannot erase component-owned metadata. An empty list removes catalog-owned relationships. Live schema relationships and same-name runtime attributes always win, and `@enumerable` is not persisted, so operations queries traverse relationships only when explicitly selected.
+
+The primary-descriptor update shares the `update-attributes` serialization boundary with `dropTable()`, re-reads the row after locking, and refuses to replace a drop tombstone. Missing or malformed targets are skipped rather than installed without authorization metadata.
+
+Only the GraphQL authoring path persists relationships. `defineTable()` resolves its relation targets through a lazy thunk so forward references and cycles work, and the target class is not resolvable at registration time — so code-first relationships remain worker-only, and the operations API still rejects them as unknown attributes. Tightening the operations API's object/nested `get_attributes` form to reject names it cannot resolve is NOT an option: `Table.transformEntryForSelect` projects undeclared JSON sub-objects through that same form, so `validation/searchValidator.ts` deliberately leaves it unchecked.
+
+Tests: `../unitTests/resources/schemaMigrationFragility.test.js` (catalog round-trip and failure behavior) and `../integrationTests/apiTests/graphql.test.mjs` (operations API in both directions).
+
+---
+
 ## Typed, discoverable resources (code-first schema + request contract)
 
 Design record: the full RFC and its type-level design proofs live in the design PR (**HarperFast/harper#1503**); this section is the retained summary.

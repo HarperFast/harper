@@ -112,6 +112,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 						// @table is the canonical schema-defined declaration; pass the flag explicitly so
 						// the existing-Table re-assert in databases.ts::table() fires on every reload.
 						typeDef.schemaDefined = true;
+						typeDef.schemaRelationshipsDefined = true;
 						if (typeDef.schema) typeDef.database = typeDef.schema;
 						if (!typeDef.table) typeDef.table = typeName;
 						if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';
@@ -308,7 +309,19 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 		}
 	}
 	for (const typeDef of types.values()) {
-		for (const property of typeDef.attributes) connectPropertyType(property);
+		for (const property of typeDef.attributes) {
+			connectPropertyType(property);
+			const relationshipType = property.definition || property.elements?.definition;
+			if (property.relationship && relationshipType?.table) {
+				Object.defineProperty(property, 'relationshipReference', {
+					value: {
+						database: relationshipType.database || 'data',
+						table: relationshipType.table,
+					},
+					configurable: true,
+				});
+			}
+		}
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
