@@ -434,13 +434,12 @@ contentTypes.set('text/xml', {
 
 ### Handler Interface
 
-| Property                    | Type                                      | Description                                                                                                                        |
-| --------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `serialize(data)`           | `(any) => Buffer \| Uint8Array \| string` | Serialize data for a response                                                                                                      |
-| `serializeStream(data)`     | `(any) => ReadableStream`                 | Serialize as a stream (for async iterables or large data)                                                                          |
-| `deserialize(buffer)`       | `(Buffer \| string) => any`               | Deserialize an incoming request body. Used when `deserializeStream` is absent. String for `text/*` types, Buffer for binary types. |
-| `deserializeStream(stream)` | `(ReadableStream) => any`                 | Deserialize an incoming request stream                                                                                             |
-| `q`                         | number (0–1)                              | Quality indicator for content negotiation. Defaults to `1`.                                                                        |
+| Property                | Type                                      | Description                                                                                                                                                                                                                                                            |
+| ----------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serialize(data)`       | `(any) => Buffer \| Uint8Array \| string` | Serialize data for a response                                                                                                                                                                                                                                          |
+| `serializeStream(data)` | `(any) => Readable`                       | Serialize a streaming response body. Called once per response with the whole iterable (not once per chunk), and only when the response body is an iterable or async iterable. Returns a Node.js [`Readable`](https://nodejs.org/api/stream.html#class-streamreadable). |
+| `deserialize(buffer)`   | `(Buffer \| string) => any`               | Deserialize an incoming request body. String for `text/*` types, Buffer for binary types.                                                                                                                                                                              |
+| `q`                     | number (0–1)                              | Quality indicator for content negotiation. Defaults to `1`.                                                                                                                                                                                                            |
 
 ---
 
