@@ -30,8 +30,9 @@ jobs:
     # always-on toggle". CLAUDE_ALWAYS_ON=true (repo/org variable) → auto-
     # review trusted-author PRs; unset → opt-in via the claude-review
     # label. The reusable's authorize job still owns WHO is admitted.
-    # Note: the `claude-review` label name is matched there too —
-    # `_claude-review.yml`'s authorize `if:`, not in this caller.
+    # Note: the `claude-review` label name is deliberately duplicated —
+    # the caller gate names it (below) AND the reusable's authorize
+    # matches it; renaming the label means changing both.
     # `ready_for_review` is admitted when the PR still carries the
     # opt-in label, so a draft opted in via `claude-review` resumes
     # review when it flips ready even with CLAUDE_ALWAYS_ON unset.
