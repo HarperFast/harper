@@ -169,6 +169,15 @@ function closeServers() {
 }
 
 function startServers() {
+	// A worker that has not yet posted child_started owns no ref'd handle: addPort()
+	// (manageThreads) unrefs parentPort, component watchers are persistent:false, and the
+	// reporting timers are unref'd. An await inside loadRootComponents whose completion
+	// arrives through a non-ref-holding source — e.g. rocksdb-js delivers cross-thread
+	// lock-release and parked-commit-retry wakes through unref'd threadsafe functions —
+	// can then drain the event loop, exiting the worker cleanly (code 0) before the ready
+	// handshake and aborting the whole node's startup. Hold a ref for the entire pre-ready
+	// window; the SHUTDOWN path unrefs it for graceful exit as before.
+	parentPort?.ref();
 	const rootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 	if (rootPath) {
 		try {
@@ -179,6 +188,15 @@ function startServers() {
 	}
 	let loaded = require('../loadRootComponents.js')
 		.loadRootComponents(true)
+		.catch((err) => {
+			// With the pre-ready ref above, a rejected load would otherwise leave this worker
+			// parked forever (and main awaiting workersReady) instead of failing startup fast.
+			// Main-as-worker (no parentPort) propagates to its caller's own exit path instead.
+			if (!parentPort) throw err;
+			harperLogger.fatal(`Failed to load root components on worker ${threadId}`, harperLogger.errorForLog(err));
+			realExit(1);
+			return new Promise(() => {});
+		})
 		.then(() => {
 			parentPort
 				?.on('message', (message) => {

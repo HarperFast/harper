@@ -250,6 +250,7 @@ export const OPERATIONS_ENUM = {
 	INSERT: 'insert',
 	UPDATE: 'update',
 	UPSERT: 'upsert',
+	PUT: 'put',
 	SEARCH_BY_CONDITIONS: 'search_by_conditions',
 	SEARCH_BY_HASH: 'search_by_hash',
 	SEARCH_BY_ID: 'search_by_id',

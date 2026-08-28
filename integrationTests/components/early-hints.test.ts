@@ -6,9 +6,10 @@
  * conversion, empty hints handling, and response length limits.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok, match } from 'node:assert';
+import { doesNotMatch, strictEqual, ok, match } from 'node:assert';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForLogMatches } from './waitForLog.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -34,7 +35,7 @@ async function fetchWithTimeout(
 
 suite('Component: early-hints', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		await startHarper(ctx, { config: { logging: { level: 'debug' } } });
 
 		const deployURL = ctx.harper.operationsAPIURL;
 		const deployResponse = await fetchWithTimeout(
@@ -51,8 +52,7 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 					install_command: 'node --version',
 				}),
 			},
-			// A `restart: true` deploy now returns only once the restart has finished, so this budget covers
-			// the install (~26s of npm on a Windows runner) plus a worker roll, not the install alone.
+			// A `restart: true` deploy returns only once the custom install command and worker roll finish.
 			90_000,
 			'deploy_component request'
 		);
@@ -100,6 +100,18 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 			if (Date.now() > readyDeadline) throw new Error('Timed out waiting for Harper to be ready after restart');
 			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
+
+		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
+		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
+			/Using local component archive directly without npm pack/,
+			/\[early-hints:spawn:node\]: Direct child exited with code 0/,
+			/\[early-hints\]: Registered resource: \/hints/,
+		]);
+		match(instanceLog, /Using local component archive directly without npm pack/);
+		match(instanceLog, /\[early-hints:spawn:node\]: Direct child exited with code 0/);
+		match(instanceLog, /\[early-hints\]: Registered resource: \/hints/);
+		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
+		doesNotMatch(instanceLog, /\[early-hints:spawn:npm/, 'a local archive must not be repacked by npm');
 	});
 
 	after(async () => {
