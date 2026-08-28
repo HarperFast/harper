@@ -281,6 +281,24 @@ describe('read-only verdict for worker boot', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('reports a well-formed journal that main recovery could not settle', async () => {
+		// The case a worker cannot infer: the journal parses fine, so it is indistinguishable from a deploy in
+		// flight. Main records the failure so every thread reaches the same verdict.
+		const root = await newRoot('recorded');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', { journal: true });
+
+		const failures = await recoverInterruptedActivations(root);
+		assert.strictEqual(failures.size, 1, 'main could not settle it (neither tree survives)');
+
+		const unsettleable = await unsettleableComponentsFromDisk(root);
+		assert.deepStrictEqual([...unsettleable.keys()], ['web'], 'and a worker sees it too');
+		assert.ok(
+			(await fs.readFile(path.join(deploymentDir, 'unsettled'), 'utf8')).length > 0,
+			'the reason is recorded, not just the fact'
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('stays silent for a healthy in-flight deploy', async () => {
 		// Every deploy has a well-formed journal in flight. Treating that as evidence would fail a component
 		// closed in the middle of its own successful deploy.

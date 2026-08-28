@@ -941,6 +941,10 @@ const ACTIVATION_JOURNAL = 'activation.json';
 // parsed leaves nothing to infer the component from — and a failure keyed by deployment id fails NOTHING
 // closed, letting the component load over state nobody reconciled.
 const CANDIDATE_COMPONENT_FILE = 'component';
+// Written by main-thread recovery when it could not settle an activation whose journal is otherwise
+// well-formed. Workers cannot infer that case: a well-formed journal is indistinguishable from one belonging
+// to a deploy in flight, so without a record they would treat an unsettled component as healthy and load it.
+const UNSETTLED_MARKER = 'unsettled';
 const ACTIVATION_JOURNAL_VERSION = 1;
 
 /**
@@ -1239,6 +1243,12 @@ async function settleJournaledActivationsForComponent(
 	for (const deployment of deployments) {
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
+		// Ownership BEFORE parsing. Reading every journal first meant a truncated journal belonging to another
+		// component threw here — blocking the deploy of a healthy component because an unrelated one is
+		// broken. The sidecar names the owner without parsing anything, and a deployment that does not name
+		// this component is none of this deploy's business; startup recovery reports it instead.
+		const owner = await candidateComponentName(deploymentDirPath);
+		if (owner !== componentName) continue;
 		const journal = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
 		if (journal?.component !== componentName) continue;
 		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
@@ -1271,6 +1281,16 @@ export async function unsettleableComponentsFromDisk(componentsRootDirPath: stri
 	for (const deployment of deployments) {
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
+		// Recorded by main when it failed to settle a well-formed journal. Checked first, because that case
+		// is invisible to a worker otherwise.
+		const recorded = await readFile(join(deploymentDirPath, UNSETTLED_MARKER), 'utf8').catch(() => undefined);
+		if (recorded !== undefined) {
+			const component = await candidateComponentName(deploymentDirPath);
+			if (component && !unsettleable.has(component)) {
+				unsettleable.set(component, new Error(recorded.trim() || `Activation of ${component} could not be settled`));
+			}
+			continue;
+		}
 		try {
 			await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
 		} catch (error) {
@@ -1297,10 +1317,18 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
-		const fail = (component: string, error: unknown) => {
+		const fail = async (component: string, error: unknown) => {
 			const failure = error instanceof Error ? error : new Error(String(error));
 			if (!failures.has(component)) failures.set(component, failure);
 			logger.error(`Could not settle the interrupted activation of ${component}:`, errorForLog(failure));
+			// Recorded so WORKERS reach the same verdict. An unreadable journal is self-evident, but a
+			// well-formed journal this pass could not settle looks exactly like a deploy in flight, and a
+			// worker would load the component over state nobody reconciled. Best-effort: the alternative to a
+			// missing marker is today's behavior, not a worse one.
+			await writeFile(join(deploymentDirPath, UNSETTLED_MARKER), failure.message, { mode: 0o600 }).catch(
+				(markerError) =>
+					logger.warn(`Could not record the unsettled activation of ${component}: ${errorMessage(markerError)}`)
+			);
 		};
 
 		let journal: ActivationJournal | undefined;
@@ -1309,7 +1337,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		} catch (error) {
 			// The journal itself is unreadable, so its component has to be inferred from the tree it was
 			// going to activate. A deployment directory holding no component tree leaves only its id.
-			fail((await candidateComponentName(deploymentDirPath)) ?? deployment.name, error);
+			await fail((await candidateComponentName(deploymentDirPath)) ?? deployment.name, error);
 			continue;
 		}
 		if (!journal) {
@@ -1344,7 +1372,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			);
 		} catch (error) {
 			// The journal named its component, so attribution is exact however the settle failed.
-			fail(journal.component, error);
+			await fail(journal.component, error);
 		}
 	}
 	return failures;
@@ -1429,8 +1457,25 @@ async function settleInterruptedActivation(
 		await rollForward();
 	}
 
+	// The same ordering barrier normal activation uses, and for the same reason: the journal is the only
+	// thing that tells the journal-blind legacy pass not to restore an aside. Removing it while an
+	// `.in-progress-*` record still names the displaced tree — because the retire or the sweep did not
+	// reach storage — lets that pass put the old version back over the new one at the next start. Flush the
+	// aside directory first, and leave the journal in place if that cannot be confirmed; recovery is
+	// idempotent, so the next run settles it again.
+	try {
+		await syncDirectory(asideStagingDir);
+		await syncDirectory(dirname(asideStagingDir));
+	} catch (error) {
+		logger.warn(
+			`Settled the interrupted activation of ${journal.component} but could not flush its rollback record; ` +
+				`leaving the journal for the next start: ${errorMessage(error)}`
+		);
+		return;
+	}
 	await rm(journalPath, { force: true });
 	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+	await rmdir(dirname(deploymentDirPath)).catch(() => {});
 }
 
 /** Mark a candidate build+validation complete. Idempotent, so a retried activation is not a failure. */
