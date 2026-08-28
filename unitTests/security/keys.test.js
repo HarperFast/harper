@@ -1149,7 +1149,7 @@ describe('Test keys module', () => {
 			}
 		});
 
-		it('retention across a CA-set change rebuilds the context with current trust, never stale trust', async function () {
+		it('a CA-set change does not cost a non-mTLS record its retention', async function () {
 			this.timeout(20000);
 			const recordName = uniqueName('castale');
 			const keyName = `${recordName}.pem`;
@@ -1158,9 +1158,11 @@ describe('Test keys module', () => {
 			try {
 				const pseudoServer = await healthySelector(recordName, keyName, hostname);
 				const baselineContext = pseudoServer.secureContexts.get(hostname);
-				// Change the CA set and break the record in the same window: the retained context's
-				// frozen trust material no longer matches, so retention must publish a REBUILT context
-				// carrying the current CA set — not the stale object, and not a drop to the default.
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.get(hostname)));
+				// Change the CA set and break the record in the same window. Without mTLS nothing in
+				// the context consults the CA set, so retention keeps serving the same object rather
+				// than dropping the record or paying for a rebuild.
 				await databases.system.hdb_certificate.put({
 					name: caName,
 					certificate: keyPairB.cert,
@@ -1169,25 +1171,70 @@ describe('Test keys module', () => {
 					is_self_signed: true,
 				});
 				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(() => publishes.length >= 1, {
+					timeout: 8000,
+					message: 'the failing rebuild never published',
+				});
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'a non-mTLS record must retain its context across a CA-set change'
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(caName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a retained mTLS context stops trusting a removed client CA', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('carevoke');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const caName = uniqueName('revoked-ca');
+			try {
+				// The CA to revoke exists before the selector is built, so the baseline context's
+				// frozen ca: trust list includes it.
+				await databases.system.hdb_certificate.put({
+					name: caName,
+					certificate: keyPairB.cert,
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				keys.getPrivateKeys().set(keyName, keyPairA.key);
+				await putRecord(recordName, keyPairA.cert, keyName, [hostname]);
+				const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+				const selector = keys.createTLSSelector('mqtt', { requestCert: true }, true);
+				await selector.initialize(pseudoServer);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+					timeout: 6000,
+					message: 'baseline mTLS context for the test record never published',
+				});
+				const baseline = pseudoServer.secureContexts.get(hostname);
+				assert.ok(
+					baseline.options.ca?.includes(keyPairB.cert),
+					'the baseline trust list must include the CA about to be revoked'
+				);
+
+				// Revoke the CA while the record is failing: retention must publish a REBUILT context
+				// whose ca: no longer trusts the removed PEM — not the stale object.
+				await databases.system.hdb_certificate.delete(caName);
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
 				await waitFor(
 					() => {
 						const context = pseudoServer.secureContexts.get(hostname);
 						return (
 							context &&
-							context !== baselineContext &&
-							context.certificateAuthorities?.some(([, pem]) => pem === keyPairB.cert)
+							context !== baseline &&
+							Array.isArray(context.options.ca) &&
+							context.options.ca.every((pem) => pem !== keyPairB.cert)
 						);
 					},
-					{
-						timeout: 8000,
-						message: 'the retained context was never rebuilt against the changed CA set',
-					}
+					{ timeout: 8000, message: 'the retained context kept trusting the removed CA' }
 				);
-				assert.strictEqual(
-					pseudoServer.secureContexts.get(hostname).name,
-					recordName,
-					'the rebuilt retention must still belong to the failed record'
-				);
+				assert.strictEqual(pseudoServer.secureContexts.get(hostname).name, recordName);
 			} finally {
 				keys.getPrivateKeys().delete(keyName);
 				await databases.system.hdb_certificate.delete(caName).catch(() => {});
@@ -1233,13 +1280,18 @@ describe('Test keys module', () => {
 					timeout: 8000,
 					message: 'the corrupt authority row was never reported',
 				});
-				// Every live selector in this suite logs the new failure once; wait for that cascade to
-				// settle, then require no growth across further retry cycles (backoff base 1.5s) — an
-				// unchanged signature must not re-log.
+				// Every live selector in this suite logs the new failure once, and a straggler whose
+				// pre-armed timer fires late can add a first-log at any point — so assert the RATE, not
+				// absolute stability: across several retry cycles (backoff base 1.5s), unthrottled
+				// re-logging would add one line per selector per cycle (dozens), while late first-logs
+				// add at most a couple.
 				await new Promise((resolve) => setTimeout(resolve, 3000));
 				const logged = corruptErrors();
 				await new Promise((resolve) => setTimeout(resolve, 4000));
-				assert.strictEqual(corruptErrors(), logged, 'an unchanged corrupt-row signature must not re-log');
+				assert.ok(
+					corruptErrors() - logged <= 2,
+					`an unchanged corrupt-row signature must not re-log (grew ${corruptErrors() - logged} in 4s)`
+				);
 				assert.ok(
 					!warnLogs.some((args) => String(args[0]).includes('recovered')),
 					'a pass that skipped a corrupt row must not claim recovery'

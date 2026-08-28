@@ -1045,8 +1045,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 		let subscribedTable = null;
 		let activeSubscription: Promise<any> | null = null;
 		return ((SNICallback as any).ready = new Promise<void>((resolve, reject) => {
-			// Whether `.ready` has settled: a pass-level failure before that must still reject (boot
-			// surfaces it), but after it the only safe response is to keep serving live state and retry.
+			// Pass-level failure before `.ready` settles still rejects (boot surfaces it); after,
+			// the only safe response is to keep serving live state and retry.
 			let readySettled = false;
 			const settle = (value?) => {
 				readySettled = true;
@@ -1308,12 +1308,14 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					// Retain-last-good: a record still in the table whose build failed keeps its live
 					// hostname entries and its default candidacy (a SAN-less cert can be serving as the
 					// default with no hostname entries at all); deletion remains the way to drop them.
-					// A context froze its `ca:` trust list at its own build time, so when the CA set has
-					// changed since, the retained pair (its cert and key are still consistent) is REBUILT
-					// against the current trust material — revoked client-CA trust is never carried
-					// forward, and a CA addition doesn't cost the record its retention. If that rebuild
-					// itself fails, the record's entries drop (fail closed) and the retry pursues a fresh
-					// build.
+					// A context froze its `ca:` trust list at its own build time, so on an mTLS listener
+					// whose CA set has changed since, the retained pair (its cert and key are still
+					// consistent) is REBUILT against the current trust material — revoked client-CA trust
+					// is never carried forward, and a CA addition doesn't cost the record its retention.
+					// If that rebuild itself fails, the record's entries drop for this pass — except when
+					// nothing else is servable, where the zero-certificate guard below retains the old
+					// state: availability outranks the drop in that corner, and the failure stays on the
+					// retry/throttle path until a build or rebuild succeeds.
 					const caSetUnchanged = (previous) => {
 						const builtWith = (previous as any).certificateAuthorities;
 						if (!Array.isArray(builtWith)) return candidateCAs.size === 0;
@@ -1323,8 +1325,11 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						);
 					};
 					const rebuiltRetentions = new Map();
+					const retentionFailures: { cert: any; error: any }[] = [];
 					const retainable = (previous) => {
-						if (caSetUnchanged(previous)) return previous;
+						// Without mTLS nothing consulted in the context depends on the CA set (`ca:` is
+						// falsy either way; availableCAs aliases the live map), so skip the rebuild.
+						if (!mtlsOptions || caSetUnchanged(previous)) return previous;
 						if (rebuiltRetentions.has(previous)) return rebuiltRetentions.get(previous);
 						try {
 							const secureOptions = {
@@ -1341,7 +1346,10 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							rebuiltRetentions.set(previous, rebuilt);
 							return rebuilt;
 						} catch (error) {
-							logger.error?.('Could not rebuild retained TLS context for', (previous as any).name, error);
+							retentionFailures.push({
+								cert: { name: `${(previous as any).name} (retained-context rebuild)` },
+								error,
+							});
 							rebuiltRetentions.set(previous, undefined);
 							return undefined;
 						}
@@ -1403,7 +1411,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							// Surface WHY the pass came up empty and put the retry on the backoff — a boot
 							// whose key file never lands otherwise rescans on a flat debounce forever with
 							// no per-record error detail.
-							reportFailures(failedThisPass);
+							reportFailures(failedThisPass.concat(retentionFailures));
 							scheduleFailureRetry();
 						} else {
 							scheduleRebuild();
@@ -1427,7 +1435,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					}
 
 					if (failedThisPass.length > 0) {
-						reportFailures(failedThisPass);
+						reportFailures(failedThisPass.concat(retentionFailures));
 						scheduleFailureRetry();
 					} else {
 						clearFailureState();

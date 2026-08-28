@@ -629,7 +629,8 @@ mismatch never downgrades serving below last-good (the pre-fix behavior served t
 default for days). Retention is trust-aware: a context froze its `ca:` list at build time, so when
 the CA set has changed since, the retained pair is rebuilt against the current trust material —
 revoked client-CA trust is never carried forward — and if that rebuild fails the record's entries
-drop (fail closed). Deleting the record remains the way to drop its contexts; a corrupt authority
+drop for that pass, except when nothing else is servable: the zero-certificate guard then retains
+the old state (availability outranks the drop in that corner) while the failure keeps retrying. Deleting the record remains the way to drop its contexts; a corrupt authority
 row is a pass failure like any other (reported through the signature throttle, armed for retry) and
 its trust drops until it heals. A failed pass arms a
 self-retry on the shared debounce with a per-signature backoff (1.5s doubling to 5min) and
