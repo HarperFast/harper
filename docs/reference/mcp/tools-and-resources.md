@@ -112,6 +112,149 @@ The MCP transport audits the `tools/call`, but invokes the custom instance metho
 
 A custom method must pass an armed context or target when delegating to a static Resource operation. The MCP-created instance context carries the authenticated user and a one-shot `authorize` flag, so the first call can use `Orders.get(target, this.getContext())`; that flag is consumed by the first static Resource operation. For every later delegated operation, use a fresh `RequestTarget`, set `target.checkPermission = true` so authorization derives from `context.user`, and pass `this.getContext()`. Never accept `checkPermission` from tool arguments or other client input.
 
+### Custom `mcpResources` opt-in
+
+<VersionBadge version="v5.1.18" />
+
+A component author can expose arbitrary content — documentation pages, rendered reports, any `text` or `blob` payload — as MCP resources under author-chosen URIs by declaring a static `mcpResources` array:
+
+```ts
+// Template parameters are client-controlled, so an allowlist decides what
+// content is reachable — see Access control below.
+const PAGES = {
+	'guides/install.md': '# Install\n\nnpm install -g harper',
+	'guides/deploy.md': '# Deploy\n\nharper deploy',
+};
+
+class DocsPages extends Resource {
+	static mcpResources = [
+		{
+			uri: 'docs:///index',
+			name: 'docs index',
+			description: 'List of all documentation pages',
+			mimeType: 'text/markdown',
+			method: 'readIndex',
+		},
+		{
+			uriTemplate: 'docs:///{+path}',
+			name: 'docs page',
+			description: 'A documentation page by path',
+			mimeType: 'text/markdown',
+			method: 'readPage',
+			completions: { path: ['guides/install.md', 'guides/deploy.md'] },
+		},
+	];
+
+	async readIndex() {
+		return {
+			text: Object.keys(PAGES)
+				.map((page) => `- docs:///${page}`)
+				.join('\n'),
+			mimeType: 'text/markdown',
+		};
+	}
+
+	async readPage(params) {
+		const body = PAGES[params.path];
+		if (!body) throw new Error(`no such page: ${params.path}`);
+		return { text: body, mimeType: 'text/markdown' };
+	}
+}
+```
+
+Each entry declares exactly one of `uri` (fixed — listed by `resources/list`) or `uriTemplate` (listed by `resources/templates/list`). Templates use `{name}` to match a single path segment and `{+name}` to match across segments; `resources/read` extracts the parameters and invokes the named instance method on the live class as `(params, context)`:
+
+- `params` — the extracted template parameters as a `{ [name]: string }` map, percent-decoded. A fixed-`uri` entry gets `{}`.
+- `context` — `{ user, profile }`: the MCP session's user (`{ username, role }`, where `role.permission` is the RBAC block) and the profile name, always `'application'` for custom resources.
+
+The method returns a string (text content), `{ text, mimeType? }`, `{ blob, mimeType? }` (base64 binary), or any other object (serialized as JSON).
+
+Notes:
+
+- Reads dispatch on the **live** registry class, so an exported `resources.js` subclass's method (and its access control) always wins — the same rule as custom `mcpTools`.
+- `completions` optionally declares candidate values per template parameter, served by `completion/complete`.
+- Custom URIs must use an author-chosen scheme (`docs:///...` above), and that scheme must be a literal — a template whose scheme position holds a parameter (`{scheme}://...`) is rejected. The reserved schemes — `harper:`, `harper+rest:`, `http:`, `https:` — are rejected at registration so custom entries cannot shadow the built-in surfaces.
+- Invalid entries are skipped with a warning in the server log rather than failing the profile rebuild: a missing `name` or `method`, both or neither of `uri`/`uriTemplate`, a malformed or parameter-less template, a reserved scheme, or a `method` that is not a function on the prototype.
+- A read error from the method surfaces to the client as a sanitized JSON-RPC error; the raw error is written to the server log.
+
+#### Template parameters are client-controlled
+
+A template parameter is whatever the client put in the URI it asked to read, so treat it as untrusted input. `{+name}` matches across `/`, and the captured value is percent-decoded before your method sees it — a read of `docs:///../../secret` calls `readPage({ path: '../../secret' })`. Resolve the parameter through an allowlist (the `PAGES` map above) or validate containment before any filesystem- or URL-backed load; never interpolate it straight into a path.
+
+#### Access control for custom resources
+
+The MCP layer runs **no** authorization check on a custom resource. Entries are listed to every session on the profile — including anonymous, unauthenticated ones where the deployment allows them (the public-docs case this feature targets) — and RBAC is delegated to the Resource, the same as custom `mcpTools`. Enforcement is the read method's responsibility.
+
+For content the method renders itself, gate on `context.user` and throw:
+
+```ts
+class InternalReports extends Resource {
+	static mcpResources = [
+		{
+			uriTemplate: 'reports:///{id}',
+			name: 'internal report',
+			description: 'Rendered internal report',
+			method: 'readReport',
+		},
+	];
+
+	async readReport(params, context) {
+		if (!context.user?.role?.permission?.super_user) throw new Error('not authorized');
+		return { text: renderReport(params.id), mimeType: 'text/markdown' };
+	}
+}
+```
+
+An anonymous session arrives as `{ username: '' }`, not `undefined`, so `if (!context.user)` does **not** reject it. Test the field you actually require — a non-empty `context.user.username`, or the specific `context.user.role.permission` entry.
+
+When the content wraps guarded table data, fetch it through the **exported (routing) Resource** — the subclass whose operation override is the gate REST enforces <VersionBadge version="v5.2.0" />:
+
+```ts
+import { getUser } from 'harper';
+
+// The exported subclass is the routing Resource. Its `get` override is the
+// authorization gate, and routing through this class is the only thing that
+// runs it.
+export class Order extends tables.Order {
+	static async get(target, context) {
+		const order = await super.get(target, context);
+		const user = getUser();
+		if (order && order.customerId !== user?.username) throw new Error('not authorized');
+		return order;
+	}
+}
+
+export class OrderDocs extends Resource {
+	static mcpResources = [
+		{
+			uriTemplate: 'orders:///{+orderId}',
+			name: 'order by id',
+			description: 'Fetch an order by id',
+			mimeType: 'application/json',
+			method: 'readOrder',
+		},
+	];
+
+	async readOrder(params) {
+		const order = await Order.get(params.orderId); // runs Order's get override
+		if (!order) throw new Error(`no such order: ${params.orderId}`);
+		return { text: JSON.stringify(order), mimeType: 'application/json' };
+	}
+}
+```
+
+Put the check in an operation override (`get`, `put`, `delete`) rather than in an `allow*` hook: the `allow*` hooks are deprecated one-time operation gates, and an override receives the complete target and context. See [Authorization](/release-notes/v5-lincoln/5.2#authorization).
+
+`getUser()` reads the authenticated user from the current async request context. From 5.2.0 the MCP layer runs a custom resource's read inside a transaction that carries the calling MCP session user, which is what makes `getUser()` return that user inside the override; an `AccessViolation` raised on the way surfaces to the client as `permission denied` rather than a generic read failure. That ambient transaction is also why the fetch above passes no context of its own — forwarding the resource's own context (`Order.get(target, this.getContext())`) would start an independent transaction and drop the shared snapshot.
+
+:::warning
+Do not fetch guarded rows through the base table class (`tables.Order.get(id)`). The base class does not carry the exported subclass's override, so the gate never runs and a user holding table-level `read` receives rows the same request is denied over REST ([harper#1735](https://github.com/HarperFast/harper/issues/1735)).
+
+On 5.1.x the read does not run inside a user-carrying transaction at all: the `context.user` gate above works, but a delegated guarded fetch has no user to authorize against. Serve guarded content from 5.2.0 or later.
+:::
+
+If a Resource still relies on the deprecated `allow*` hooks, a delegated call arms them with `target.checkPermission = true` on a fresh [`RequestTarget`](/reference/v5/resources/resource-api#requesttarget). Set it to `true` only — never copy a permission object into it, and never take it from client input such as a template parameter.
+
 ### `exportTypes` gating
 
 The MCP surface mirrors the public REST surface. A Resource is filtered out of MCP enumeration entirely when its registration sets `exportTypes.mcp = false`. The `exportTypes` map is supplied to the registration call — `server.resources.set(path, Resource, exportTypes)` — not to `server.http` (which registers HTTP handlers and does not read `exportTypes`), and a `static exportTypes` field on the class is not read either:
@@ -137,13 +280,15 @@ Both profiles serve `resources/list`, `resources/read`, and `resources/templates
 
 The schema URIs honor each user's `permission[db].tables[table]` walk — a user with no `read` or `describe` perm on a table gets a "permission denied" response from `resources/read`.
 
-### `https://` URIs
+### `harper+rest://` URIs
 
-The application profile additionally exposes every exported `Resource` (that passes the `exportTypes.mcp` gate **and** the `hasRestVerbs` check) as an `https://<host>:<port>/<path>` URI. These resolve in-process via `Resources.getMatch(path, 'mcp')` — there is no outbound HTTP request. The body returned by `resources/read` is a small descriptor:
+<VersionBadge type="changed" version="v5.1.18" />
+
+The application profile additionally exposes every exported `Resource` (that passes the `exportTypes.mcp` gate **and** the `hasRestVerbs` check) as a `harper+rest://<host>:<port>/<path>` URI. Earlier releases listed these under `http(s)://`, which the MCP spec reserves for resources a client can fetch directly from the web; legacy `http(s)://` URIs continue to work for `resources/read` and `resources/subscribe`. These resolve in-process via `Resources.getMatch(path, 'mcp')` — there is no outbound HTTP request. The body returned by `resources/read` is a small descriptor:
 
 ```json
 {
-	"uri": "https://node.example.com:9926/Product",
+	"uri": "harper+rest://node.example.com:9926/Product",
 	"path": "Product",
 	"database": "data",
 	"table": "product",
@@ -152,6 +297,10 @@ The application profile additionally exposes every exported `Resource` (that pas
 ```
 
 Per-record reads go through the tools surface, where each Resource's `allow{Read,…}` predicates run. The `resources/read` descriptor itself is a fast, side-effect-free hint — not a capability.
+
+### Custom content URIs
+
+Author-declared `mcpResources` entries (see [Custom `mcpResources` opt-in](#custom-mcpresources-opt-in)) appear alongside the built-in surfaces: fixed URIs in `resources/list`, templates in `resources/templates/list`. A registered custom URI always wins over the discovered surfaces on `resources/read`.
 
 ## `notifications/*/list_changed`
 

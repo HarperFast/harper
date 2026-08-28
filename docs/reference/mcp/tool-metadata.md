@@ -143,9 +143,9 @@ Harper also publishes a small set of synthetic resources via the MCP `resources/
 | `harper://operations`          | operations  | User-filtered operations catalog                      |
 | `harper://openapi`             | application | Full OpenAPI 3.0.3 document                           |
 | `harper://schema/{db}/{table}` | application | Per-table schema, filtered by `attribute_permissions` |
-| `https://{host}/{path}`        | application | Application HTTP Resources, in-process                |
+| `harper+rest://{host}/{path}`  | application | Application HTTP Resources, in-process                |
 
-For `harper://schema/{db}/{table}` and `https://{host}/{path}` entries, the descriptor description prepends `Table.description` / `ResourceClass.description` when present.
+For `harper://schema/{db}/{table}` and `harper+rest://{host}/{path}` entries, the descriptor description prepends `Table.description` / `ResourceClass.description` when present. Application Resources were listed under `https://{host}/{path}` before 5.1.18 <VersionBadge type="changed" version="v5.1.18" />; legacy `http(s)://` URIs are still accepted on `resources/read` and `resources/subscribe`. See [`harper+rest://` URIs](./tools-and-resources.md#harperrest-uris).
 
 ## See also
 

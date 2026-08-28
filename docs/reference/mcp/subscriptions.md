@@ -43,7 +43,7 @@ Send `resources/subscribe` with the resource URI:
 	"jsonrpc": "2.0",
 	"id": 7,
 	"method": "resources/subscribe",
-	"params": { "uri": "https://node.example.com:9926/Product/42" }
+	"params": { "uri": "harper+rest://node.example.com:9926/Product/42" }
 }
 ```
 
@@ -59,7 +59,7 @@ A successful subscribe returns an empty result:
 
 ### Which URIs are subscribable
 
-Only **row-backed application resources** can be subscribed to — the `https://` / `http://` URIs that mirror an exported `Resource` (the same ones `resources/list` advertises on the application profile). The URI's path is matched against the `Resources` registry, and the resource is subscribable only if its class implements `subscribe`. Anything else returns `-32602`:
+Only **row-backed application resources** can be subscribed to — the `harper+rest://` URIs that mirror an exported `Resource` (the same ones `resources/list` advertises on the application profile). The URI's path is matched against the `Resources` registry, and the resource is subscribable only if its class implements `subscribe`. Anything else returns `-32602`:
 
 ```json
 { "error": { "code": -32602, "message": "resource is not subscribable: harper://schema/data/product" } }
@@ -67,14 +67,16 @@ Only **row-backed application resources** can be subscribed to — the `https://
 
 Synthetic `harper://*` metadata URIs (`harper://about`, `harper://openapi`, `harper://schema/...`, `harper://operations`) have no change source and are **not** subscribable. They participate in `notifications/resources/list_changed` only.
 
+`resources/list` advertised these URIs under `http(s)://` before 5.1.18 <VersionBadge type="changed" version="v5.1.18" />. A legacy `http://` or `https://` URI is still accepted by `resources/subscribe` and `resources/unsubscribe`, so a client holding an older listing keeps working; new clients should use the `harper+rest://` form the current listing returns.
+
 ### Record vs. collection URIs
 
 The granularity of a subscription is determined by the path:
 
-| URI form                       | Watches                                                      |
-| ------------------------------ | ------------------------------------------------------------ |
-| `https://host:port/Product/42` | The single record with primary key `42`.                     |
-| `https://host:port/Product`    | The whole `Product` table (any record insert/update/delete). |
+| URI form                             | Watches                                                      |
+| ------------------------------------ | ------------------------------------------------------------ |
+| `harper+rest://host:port/Product/42` | The single record with primary key `42`.                     |
+| `harper+rest://host:port/Product`    | The whole `Product` table (any record insert/update/delete). |
 
 A collection URI (no record key — the form `resources/list` advertises) subscribes to the entire table; a record URI narrows the watch to one primary key.
 
@@ -88,7 +90,7 @@ On each committed change to a subscribed resource, Harper pushes a notification 
 {
 	"jsonrpc": "2.0",
 	"method": "notifications/resources/updated",
-	"params": { "uri": "https://node.example.com:9926/Product/42" }
+	"params": { "uri": "harper+rest://node.example.com:9926/Product/42" }
 }
 ```
 
@@ -103,7 +105,7 @@ Send `resources/unsubscribe` with the same URI:
 	"jsonrpc": "2.0",
 	"id": 8,
 	"method": "resources/unsubscribe",
-	"params": { "uri": "https://node.example.com:9926/Product/42" }
+	"params": { "uri": "harper+rest://node.example.com:9926/Product/42" }
 }
 ```
 
