@@ -77,7 +77,12 @@ function pinLogConfig({ level = 'trace', stdStreams = false, logRoot } = {}) {
 				stream.on('error', handler);
 			}
 		}
-		fs.removeSync(rootPath);
+		// requireUncached() leaves rewired module instances holding their own fd on this tree, closed
+		// only by their own 10s CLOSE_LOG_FD_TIMEOUT, and Windows refuses to remove a tree while a
+		// handle is open under it. Throwing here would fail the `after` hook of a suite that passed.
+		try {
+			fs.removeSync(rootPath);
+		} catch {}
 	};
 }
 
