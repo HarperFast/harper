@@ -1170,6 +1170,23 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(504)) == null, 'a write staged after disconnect must not commit');
 	});
 
+	it('rejects a deferred save that resumes after its holder was disconnected', async function () {
+		if (isLMDB) this.skip(); // LMDB applies deferred instance writes from its holder's own commit path
+		await DisconnectResource.put(509, { name: 'before disconnect' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				const row = await DisconnectResource.getResource({ id: 509 }, context, {});
+				row.update({ name: 'must not land' }, false);
+				ac.abort();
+				await assert.rejects(async () => row.save(), /disconnected/);
+			}),
+			/disconnected/
+		);
+		assert.equal((await DisconnectResource.get(509))?.name, 'before disconnect');
+	});
+
 	// The disconnect abort is gated exactly like the long-transaction monitor gates abortDueToTimeout
 	// (DatabaseTransaction.ts's startMonitoringTxns): only a transaction with a pending write is poisoned.
 	// A read-only transaction's native handle can have live iterators streaming through it (a large
@@ -1544,7 +1561,10 @@ describe('Disconnect abort', () => {
 				const gate = new Promise((resolve) => (releaseNativeCommit = resolve));
 				nativeTransaction.commit = () => gate.then(nativeCommit);
 				const committing = txn.commit({ doneWriting: true });
-				await delay(180); // several monitor ticks while the head's commit is outstanding
+				txn.timeout = 0;
+				await waitFor(() => txn.timeout > 0, {
+					message: 'the monitor should defer the submitted head without releasing its chain',
+				});
 				releaseNativeCommit();
 				await committing;
 			});
@@ -1612,7 +1632,7 @@ describe('Disconnect abort', () => {
 		const ac = new AbortController();
 		const context = { signal: ac.signal };
 		const getPromise = CachingResource.get(701, context);
-		await delay(10); // let the fetch reach the gated source call
+		await waitFor(() => Boolean(releaseSource), { message: 'the source fetch should reach the gated get()' });
 		ac.abort(); // the requesting client disconnects while the source fetch is still in flight
 		await delay(5);
 		releaseSource();

@@ -95,6 +95,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			// nativeCommitAttemptEnded() removes this enrollment once the outcome is known.
 			if (!this.nativeCommitSubmitted) trackedTxns.delete(this as any);
 			this.readTxn = null;
+			this.completeDeferredContextRelease();
 		}
 	}
 
@@ -105,7 +106,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 	}
 
 	addWrite(operation: TransactionWrite): any {
-		if (this.timedOut) throw transactionOpenTooLongError();
+		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
@@ -392,24 +393,27 @@ export class LMDBTransaction extends DatabaseTransaction {
 	 */
 	releaseReadTxn(): void {
 		while (this.readTxn && this.readTxnsUsed > 0) this.doneReadTxn();
+		this.completeDeferredContextRelease();
 	}
 
-	abort(retainReadTransaction = false): void {
-		const hasOpenReadIterator =
-			retainReadTransaction &&
-			this.readTxn &&
-			(this.readTxnsUsed > 1 || (this.baseReadRefConsumed && this.readTxnsUsed > 0));
-		if (hasOpenReadIterator) {
-			if (!this.baseReadRefConsumed) {
-				this.doneReadTxn();
-				this.baseReadRefConsumed = true;
-			}
-		} else {
-			while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
-		}
-		this.open = TRANSACTION_STATE.CLOSED;
-		this.drainCompletions();
+	abort(retainReadTransaction = false, cascade = true): void {
+		const next = cascade ? this.next : undefined;
+		if (cascade && !retainReadTransaction) this.next = null;
 		try {
+			const hasOpenReadIterator =
+				retainReadTransaction &&
+				this.readTxn &&
+				(this.readTxnsUsed > 1 || (this.baseReadRefConsumed && this.readTxnsUsed > 0));
+			if (hasOpenReadIterator) {
+				if (!this.baseReadRefConsumed) {
+					this.doneReadTxn();
+					this.baseReadRefConsumed = true;
+				}
+			} else {
+				while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+			}
+			this.open = TRANSACTION_STATE.CLOSED;
+			this.drainCompletions();
 			// Any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
 			// (retaining any fileId the current on-disk record still references — an aborted write may carry an
 			// already-saved blob shared with the surviving record; see harper-pro#406).
@@ -418,16 +422,18 @@ export class LMDBTransaction extends DatabaseTransaction {
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 			}
 		} finally {
-			this.endScopeOwnership();
-			this.clearWrites();
-			this.releaseContext(!this.timedOut && !this.disconnected);
-			const next = this.next;
-			if (!retainReadTransaction) this.next = null;
-			if (next) {
-				try {
-					next.abort(retainReadTransaction);
-				} catch (error) {
-					harperLogger.debug?.('cleaning up a chained LMDB transaction during abort', error);
+			try {
+				this.open = TRANSACTION_STATE.CLOSED;
+				this.endScopeOwnership();
+				this.clearWrites();
+				this.releaseContext(!this.timedOut && !this.disconnected);
+			} finally {
+				if (next) {
+					try {
+						next.abort(retainReadTransaction);
+					} catch (error) {
+						harperLogger.debug?.('cleaning up a chained LMDB transaction during abort', error);
+					}
 				}
 			}
 		}

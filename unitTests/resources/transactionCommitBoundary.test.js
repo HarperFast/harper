@@ -58,6 +58,34 @@ describe('Transaction native-submit boundary', () => {
 		assert.ok(isReleasedTransaction(context.transaction), 'the failed chain must release its context');
 	});
 
+	for (const [name, Transaction] of [
+		['RocksDB', DatabaseTransaction],
+		['LMDB', LMDBTransaction],
+	]) {
+		it(`still aborts a chained ${name} link when head read cleanup throws`, function () {
+			const expected = new Error(`${name} read cleanup failed`);
+			const head = new Transaction();
+			const child = new Transaction();
+			head.next = child;
+			child.root = head;
+			head.readTxnsUsed = 1;
+			if (name === 'RocksDB') head.transaction = {};
+			else head.readTxn = {};
+			head.doneReadTxn = () => {
+				throw expected;
+			};
+			let childAborts = 0;
+			child.abort = () => childAborts++;
+
+			assert.throws(
+				() => head.abort(true),
+				(error) => error === expected
+			);
+			assert.equal(childAborts, 1, 'the head failure must not strand the child transaction');
+			assert.equal(head.open, TRANSACTION_STATE.CLOSED);
+		});
+	}
+
 	it('does not treat a pre-submit commit method as an unknown native outcome', function () {
 		const transaction = new DatabaseTransaction();
 		transaction.commitsInFlight = 1;
@@ -119,6 +147,61 @@ describe('Transaction native-submit boundary', () => {
 		transaction.commitsInFlight = 0;
 	});
 
+	it('aborts an unsent sibling without aborting an already-submitted link', function () {
+		const root = new DatabaseTransaction();
+		const sibling = new DatabaseTransaction();
+		const submittedWrite = { key: 1 };
+		const unsentWrite = { key: 2 };
+		let submittedAborts = 0;
+		let unsentAborts = 0;
+		root.next = sibling;
+		sibling.root = root;
+		root.writes.push(submittedWrite);
+		sibling.writes.push(unsentWrite);
+		root.transaction = { abort: () => submittedAborts++ };
+		sibling.transaction = { abort: () => unsentAborts++ };
+		root.commitsInFlight = 1;
+		sibling.commitsInFlight = 1;
+		root.commitSubmitted = true;
+		root.nativeCommitSubmitted = true;
+
+		root.abortDueToTimeout();
+
+		assert.equal(submittedAborts, 0, 'unknown submitted work must retain its native outcome');
+		assert.equal(root.writes[0], submittedWrite);
+		assert.equal(unsentAborts, 1, 'the unsent sibling can still release its native handle');
+		assert.equal(sibling.writes.length, 0);
+		assert.equal(sibling.open, TRANSACTION_STATE.CLOSED);
+		assert.equal(root.open, TRANSACTION_STATE.OPEN);
+
+		root.commitsInFlight = 0;
+		sibling.commitsInFlight = 0;
+	});
+
+	it('lets an unsent chain continuation use its commit-phase grace', function () {
+		const root = new DatabaseTransaction();
+		const sibling = new DatabaseTransaction();
+		const unsentWrite = { key: 2 };
+		root.next = sibling;
+		sibling.root = root;
+		sibling.writes.push(unsentWrite);
+		root.commitsInFlight = 1;
+		sibling.commitsInFlight = 1;
+		root.commitSubmitted = true;
+		root.nativeCommitSubmitted = true;
+
+		root.poisonAfterStalledSubmittedCommit();
+
+		assert.equal(root.timedOut, true, 'fresh work on the stalled chain must be poisoned');
+		assert.equal(sibling.timedOut, undefined, 'the already-started unsent continuation keeps its own grace');
+		assert.equal(sibling.postSubmitPoisoned, true, 'unrelated fresh work on the sibling must still reject');
+		assert.equal(sibling.writes[0], unsentWrite);
+		assert.equal(sibling.open, TRANSACTION_STATE.OPEN);
+
+		root.commitsInFlight = 0;
+		sibling.commitsInFlight = 0;
+	});
+
 	it('reclaims a submitted link read snapshot only once', function () {
 		const transaction = new DatabaseTransaction();
 		let iteratorCloses = 0;
@@ -131,6 +214,11 @@ describe('Transaction native-submit boundary', () => {
 		transaction.closeOwnedReadIterators = () => iteratorCloses++;
 		transaction.releaseReadTxn = () => snapshotReleases++;
 
+		assert.equal(deferForCommitInFlight(transaction, undefined, 1000), true);
+		assert.equal(iteratorCloses, 0, 'an active iterator must survive the initial diagnostic grace');
+		assert.equal(snapshotReleases, 0);
+		transaction.deferredPoisonDeadline = -Infinity;
+		transaction.timeout = 0;
 		assert.equal(deferForCommitInFlight(transaction, undefined, 1), true);
 		transaction.timeout = 0;
 		assert.equal(deferForCommitInFlight(transaction, undefined, 1), true);
