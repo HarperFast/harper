@@ -132,6 +132,10 @@ function runGroup(pattern) {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			// A descendant that outlived the group still holds these, and anything it writes from
+			// here on would interleave through later groups and through the summary table.
+			child.stdout.destroy();
+			child.stderr.destroy();
 			const passing = SUMMARY.exec(output)?.[1];
 			if (!reason) {
 				if (timedOut) reason = `timed out after ${GROUP_TIMEOUT_MS}ms`;
