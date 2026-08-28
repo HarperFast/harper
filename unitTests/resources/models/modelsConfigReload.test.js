@@ -596,13 +596,16 @@ describe('models config hot reload (#2344)', () => {
 			assert.equal(startModelsConfigHotReload(), false, 'dotted keys compose into models and pin it');
 		});
 
-		it('stays off when an env layer also defines models, so boot semantics keep ruling', () => {
-			// The compatibility gate: an orchestrator still injecting models through HARPER_SET_CONFIG
-			// keeps today's restart behavior; the file is not authoritative for the block.
-			process.env.HARPER_SET_CONFIG = JSON.stringify({ models: { embedding: {} } });
+		for (const layer of ENV_LAYERS) {
+			it(`stays off when ${layer} also defines models, so boot semantics keep ruling`, () => {
+				// The compatibility gate: an orchestrator still injecting models through an env layer
+				// keeps today's restart behavior; the file is not authoritative for the block. Each
+				// layer is asserted independently — a typo in one name would silently un-gate it.
+				process.env[layer] = JSON.stringify({ models: { embedding: {} } });
 
-			assert.equal(startModelsConfigHotReload(), false);
-		});
+				assert.equal(startModelsConfigHotReload(), false);
+			});
+		}
 
 		it('applies a config file rewrite to live requests, with no restart', async function () {
 			this.timeout(10000);
