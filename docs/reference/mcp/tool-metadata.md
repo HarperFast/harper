@@ -54,15 +54,15 @@ Operations registered outside core (for example, `cluster_status` from harper-pr
 
 For verb tools generated from exported Resources:
 
-| Field                         | Source                                                                                                                                                                                         |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                        | `${verb}_${sanitized-path}` (e.g. `get_Product`, `search_Customer`)                                                                                                                            |
-| `description`                 | Composed: `[ResourceClass.description \n\n] ${verb sentence} ${runtime RBAC note}`                                                                                                             |
-| `inputSchema`                 | Derived per verb from `ResourceClass.attributes` and the caller's `attribute_permissions`. Per-attribute `description` propagates to `inputSchema.properties[*].description`                   |
-| `outputSchema`                | Derived per verb from `ResourceClass.attributes` for `get_*` / `create_*` / `update_*` / `patch_*`. `delete_*` returns `{ deleted: true, <pk> }`. `search_*` deliberately omits `outputSchema` |
-| `annotations.readOnlyHint`    | `true` on `get_*` and `search_*`                                                                                                                                                               |
-| `annotations.destructiveHint` | `true` on `delete_*`                                                                                                                                                                           |
-| `annotations.idempotentHint`  | `true` on `update_*` (PUT semantics); other verbs default off                                                                                                                                  |
+| Field                         | Source                                                                                                                                                                                        |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                        | `${verb}_${sanitized-path}` (e.g. `get_Product`, `search_Customer`)                                                                                                                           |
+| `description`                 | Composed: `[ResourceClass.description \n\n] ${verb sentence} ${runtime RBAC note}`                                                                                                            |
+| `inputSchema`                 | Derived per verb from `ResourceClass.attributes`, once at registration time and identical for every caller. Per-attribute `description` propagates to `inputSchema.properties[*].description` |
+| `outputSchema`                | The full record shape on `get_*`; fixed envelopes on `create_*` (`{ id }`), `update_*` / `patch_*` (`{ ok }`), and `delete_*` (`{ deleted }`). `search_*` deliberately omits `outputSchema`   |
+| `annotations.readOnlyHint`    | `true` on `get_*` and `search_*`                                                                                                                                                              |
+| `annotations.destructiveHint` | `true` on `delete_*`                                                                                                                                                                          |
+| `annotations.idempotentHint`  | `true` on `update_*` (PUT semantics); other verbs default off                                                                                                                                 |
 
 `static description` and `static properties` on the Resource class override the auto-derived values. `static outputSchemas[verb]` overrides per-verb output schemas. `static mcp.annotations[verb]` overrides annotations per verb. `static hidden === true` suppresses the entire Resource from MCP listing.
 

@@ -245,7 +245,7 @@ Access a specific property of a record by appending it with dot syntax to the re
 GET /MyTable/123.propertyName
 ```
 
-This only works for properties declared in the schema. As of v4.5.0, dots in URL paths are no longer interpreted as property access for undeclared properties, allowing URLs to generally include dots without being misinterpreted.
+This only works for declared properties — a table's schema attributes, or a programmatic Resource's [`static properties`](/reference/v5/resources/resource-api#static-properties-recordstring-jsonschemafragment) <VersionBadge type="changed" version="v5.2.0" />. As of v4.5.0, dots in URL paths are no longer interpreted as property access for undeclared properties, allowing URLs to generally include dots without being misinterpreted. The suffixes `.json`, `.cbor`, `.msgpack`, and `.csv` are reserved as content-type selectors and take precedence over a property of the same name.
 
 ## `directURLMapping` Option
 

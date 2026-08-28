@@ -47,7 +47,7 @@ The REST interface follows a consistent URL structure:
 | `/my-resource/record-id/`                    | Trailing slash — the collection of records with the given id prefix                               |
 | `/my-resource/record-id/with/multiple/parts` | Record id with multiple path segments                                                             |
 
-<VersionBadge type="changed" version="v4.5.0" /> — Resources can be defined with nested paths and accessed by exact path without a trailing slash. The `id.property` dot syntax for accessing properties via URL is only applied to properties declared in a schema.
+<VersionBadge type="changed" version="v4.5.0" /> — Resources can be defined with nested paths and accessed by exact path without a trailing slash. The `id.property` dot syntax for accessing properties via URL is only applied to declared properties (see [below](#get)).
 
 ## HTTP Methods
 
@@ -73,7 +73,7 @@ Returns records matching `name=Harper`. See [Querying](./querying.md) for the fu
 GET /MyTable/123.propertyName
 ```
 
-Returns a single property of a record. Only works for properties declared in the schema.
+Returns a single property of a record. Only works for declared properties — a table's schema attributes, or a programmatic Resource's [`static properties`](../resources/resource-api.md#static-properties-recordstring-jsonschemafragment) <VersionBadge type="changed" version="v5.2.0" />. An undeclared name is treated as part of the record id instead. The suffixes `.json`, `.cbor`, `.msgpack`, and `.csv` are reserved as content-type selectors and take precedence, so a property with one of those names is not reachable this way.
 
 #### Conditional Requests and Caching
 

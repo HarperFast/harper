@@ -46,7 +46,7 @@ Wraps Harper's operation catalog (the same set of operations the REST `/operatio
 Walks your application's exported `Resource` classes and generates one MCP tool per implemented REST verb. Mounts on the **application HTTP server** (the same listener that serves your REST endpoints).
 
 - For each exported Resource, Harper emits `get_<name>`, `search_<name>`, `create_<name>`, `update_<name>`, and `delete_<name>` tools when the corresponding verb is implemented on the prototype.
-- Input schemas are derived from `Table.attributes` and narrowed by your role's `attribute_permissions`.
+- Input schemas are derived from `Table.attributes`. They are built once at registration time and are identical for every caller — `attribute_permissions` is enforced when the tool runs, not reflected in the advertised schema. What RBAC filters is the tool _list_: `tools/list` omits a Resource's verb tools unless the caller holds the matching table-level permission.
 - Components can opt non-verb instance methods into the MCP surface by declaring a static `mcpTools` array on the Resource class.
 - A Resource is excluded from the MCP surface when its registration sets `exportTypes.mcp = false`.
 

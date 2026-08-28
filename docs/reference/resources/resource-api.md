@@ -530,7 +530,7 @@ export class ProductInventory extends Resource {
 		'Aggregate inventory analytics computed over the Product catalog. ' +
 		'Read-only; the underlying Product table is the system of record.';
 
-	async get(id) {
+	static async get(target) {
 		/* ... */
 	}
 }
@@ -554,7 +554,7 @@ export class ProductInventory extends Resource {
 		},
 	};
 
-	async get(id) {
+	static async get(target) {
 		/* ... */
 	}
 }
@@ -582,7 +582,19 @@ The author writes against `properties` (the public API). Internal code that need
 
 ### `static outputSchemas?: { [verb: string]: JsonSchemaFragment }`
 
-Per-verb output schema overrides for programmatic Resources whose verb methods return a projection rather than the full record. When omitted, the MCP deriver falls back to `static properties` for the cheap verbs (`get`/`create`/`update`/`patch`) and a synthesized `{deleted: true, <pk>}` envelope for `delete`. `search_*` deliberately has no output schema.
+Per-verb output schema overrides for programmatic Resources whose verb methods return a projection rather than the full record. Only `get_*` derives a record-shaped output schema; the write verbs advertise fixed envelopes that do not vary with the record shape:
+
+| Verb                  | Output schema when no override is supplied                                        |
+| --------------------- | --------------------------------------------------------------------------------- |
+| `get_*`               | The record shape, derived from the Resource's attributes                          |
+| `create_*`            | `{ id }` — the new record's primary key, typed by the primary-key attribute       |
+| `update_*`, `patch_*` | `{ ok }` — a boolean acknowledgement (`Table.put` / `Table.patch` return nothing) |
+| `delete_*`            | `{ deleted }` — a boolean; it does not carry the primary key                      |
+| `search_*`            | None. `search_*` deliberately registers no `outputSchema`                         |
+
+So `static outputSchemas` is the only way to describe what a write verb actually returns. `outputSchemas.search` is not read at all — a `search` entry has no effect on `tools/list`.
+
+A programmatic Resource that declares no attributes gets an empty record schema on `get_*`, because the derivation reads the internal `attributes` Array rather than `static properties` ([harper#1923](https://github.com/HarperFast/harper/issues/1923)). Until that is resolved, describe such a Resource's `get_*` result with `static outputSchemas.get`.
 
 ```typescript
 export class ProductInventory extends Resource {
@@ -603,7 +615,7 @@ export class ProductInventory extends Resource {
 		},
 	};
 
-	async get(id) {
+	static async get(target) {
 		/* returns the projection above */
 	}
 }
@@ -616,7 +628,7 @@ When `true`, the Resource is dropped from MCP tool registration and OpenAPI path
 ```typescript
 export class InternalDiagnostics extends Resource {
 	static hidden = true;
-	async get() {
+	static async get(target) {
 		/* ... */
 	}
 }
