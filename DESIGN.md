@@ -188,6 +188,12 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 **`Object.defineProperty(attribute, 'dbi', ...)` must use `configurable: true`:**
 `attribute.dbi` is defined as a non-enumerable property (to prevent serialization to `attributesDbi`). It is defined with `configurable: true` so it can be re-assigned if the attribute participates in a retry cycle in the same process.
 
+## Cluster-origin table definitions are additive-only (`databases.ts` `table()`)
+
+`table()` distinguishes two kinds of callers by the `origin` field of the definition. Local schema authoring (create_table, `@table`, `defineTable`) is authoritative: its attribute list replaces the live one, and the catalog reconcile removes descriptors (and indexes) for attributes the list no longer declares. A definition with `origin: 'cluster'` — replication's DB_SCHEMA handshake (`ensureTableIfChanged` in harper-pro) or a replicated `define_schema` event (`Table.ts`) — is only ever a _snapshot of a peer's eventually-consistent view_: it can be captured mid-create (only the primary key registered yet) or read from a worker whose thread-local map hasn't absorbed a concurrent local create. Such definitions are applied additively: attributes the local table lacks are added, locally declared attributes are never removed or redefined, catalog descriptors are never reconciled away, and the local `schemaDefined` declaration is never flipped. Before this was enforced, a partial peer snapshot racing a local create_table permanently deleted the just-declared attributes' descriptors — and because the table was `schemaDefined`, the handshake's honor-local guard then refused to ever re-add them from peers, so searches failed with "unknown attribute" forever after (harper-pro nightly `replicationLoad` flake). The deliberate cost of additive-only: attribute _drops_ and _redefinitions_ do not converge through schema gossip — a stale peer can resurrect a locally dropped attribute, and a peer's redefinition of an existing name is discarded. Cluster-wide schema changes converge by applying the schema on every node (component deploy); a versioned schema exchange is the eventual fix. Every discarded peer difference is logged (`Ignoring peer redefinition of ...`), because a silently dropped `indexed` is otherwise indistinguishable from convergence. Where a catalog descriptor already exists, it is the authoritative declaration on this path and the incoming definition is restated from it — in both directions, so a field the descriptor dropped is dropped live too. That is what keeps a caller whose list predates a concurrent `create_attribute` from shadowing it in memory (losing the index registration for the rest of the worker's life) as well as on disk. One exception to "never writes an existing descriptor": an abandoned index build — `indexingFailed`, a foreign `indexingPID`, or a `restartNumber` older than this worker's generation — is still recovered, rebuilding the durable declaration rather than the caller's snapshot. Skipping recovery would leave the index's `isIndexing` flag pinned on with nothing left to clear it, so every query on the attribute would fail with `IndexRebuildingError` for the life of the worker. Regression coverage: `unitTests/resources/clusterSchemaMerge.test.js`.
+
+**Remediating a node damaged before this was enforced.** The fix is forward-only. A node that already lost an attribute's catalog descriptor still has `schemaDefined: true` persisted, so the handshake's honor-local guard refuses to re-add the attribute from any peer and `search_by_value` keeps failing with `unknown attribute`; the recurring `Schema for '<db>.<table>' is defined locally, but attribute '<name>: <type>' from '<node>' does not match local attribute which does not exist` warn is the only detection signal. Local schema authoring is now the only path permitted to write that descriptor back, so remediation is to re-declare the attribute locally on the damaged node — the `create_attribute` operation, or redeploying the component whose `@table` declares it.
+
 ## Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)
 
 The cross-thread subscription path (default `crossThreads`) drives every `Table.subscribe()` consumer. When the database's audit store emits `'committed'`, we walk the audit log via a reusable iterator and dispatch matching records to subscribers. Three properties of this path are easy to break and worth knowing about before changing it:
@@ -1213,3 +1219,62 @@ An `{}` in the config system is context-dependent, and conflating the contexts i
 Removal therefore prunes: `deleteNestedValue` removes ancestors the deletion emptied, only when it actually deleted an existing leaf, and reports what it pruned. The overlap case — a file-declared empty scope an env layer temporarily populated — is tracked in the state file's `emptyScopeOriginals` (separate from `originalValues` so a marker can never mask or be consumed as a real leaf original at the same path; older state files lacking the field are defaulted). Restore consumes a marker only for a path the prune actually removed, so a scalar overwrite or an absent-leaf no-op can never resurrect a scope over live env-layer content. Note there are two coexisting mechanisms for "file `{}` is user content": `restoreBaseEmptyObjects` on the stateless compose path and the marker pair on the stateful removal path — if you touch one, check the other.
 
 Two durable limitations of the marker mechanism, both with user config-file content as the blast radius: markers can only be recorded at populate time, so a scope an env layer populated _before_ `emptyScopeOriginals` existed (any pre-upgrade boot) has no marker and prunes away on its first post-upgrade vacate; and a corrupt config-state file resets to fresh state — dropping `originalValues` and `emptyScopeOriginals` for every tracked path — after which the next removal prunes those scopes for good; `saveConfigState` writes via temp+rename precisely so a torn write cannot be the trigger, leaving genuine corruption (disk faults, hand edits) as the remaining path.
+
+## Every path handed to a native file watch must be canonicalized (`utility/watchPath.ts`)
+
+libuv's Windows fs-event callback rebuilds each event's absolute path, expands it with
+`GetLongPathNameW`, and asserts the expansion still starts with the directory it stored when the
+watch was armed. An 8.3 short directory (`C:\Users\RUNNER~1\...`) never survives that comparison,
+and libuv **aborts the process** rather than failing the watch — there is no JS-observable seam, so
+`isWatcherExhaustionError`/polling recovery never runs (harper#2234).
+
+The trap is that libuv only stores that directory for **file** targets, which reads as a narrow
+surface until you follow chokidar: v4 opens a per-file `fs.watch` for every file it discovers inside
+a watched tree, so one directory watch arms hundreds of file watches.
+
+So `canonicalizeWatchPath` runs on every path before it reaches `fs.watch` (directly or through
+chokidar), and returns `undefined` when it cannot establish the long form; `resolveWatchTarget` turns
+that into `mustPoll`, and polling stats the file instead of arming a native watch. It resolves every
+Windows path rather than only the ones that look short: `GetLongPathNameW`'s documentation is
+explicit that a short name need not contain a tilde, so any spelling test leaves the abort reachable.
+Plain `realpathSync` is not a substitute for the `.native` variant: it resolves symlinks but leaves
+8.3 names intact — which also means Windows watch paths are symlink-resolved, matching what
+`fs.watch` already does elsewhere by following a symlinked file to its target inode. A leaf that does
+not exist yet resolves through its directory, because libuv stores and compares only the parent
+directory of a file target.
+
+New watch sites must go through it. As of this writing the sites are `components/EntryHandler.ts`,
+`components/OptionsWatcher.ts`, `config/RootConfigWatcher.ts`, `security/keys.ts`,
+`server/threads/manageThreads.js`, and `resources/blob.ts`. `fs.watchFile` (`utility/logging/readLog.ts`)
+is stat polling with no fs-event handle and is outside this invariant.
+
+Two consequences worth knowing before adding a caller. `EntryHandler` is the one place where the
+canonical path is load-bearing past the `fs.watch` call: chokidar's `ignored` predicate receives
+absolute paths built from `cwd`, so its bases must be derived from the same spelling, while event
+paths are relative to `cwd` and reads stay on the configured `component.directory`. And a watcher
+that degrades to polling stays there for its lifetime, so a caller with no polling story of its own
+(`resources/blob.ts`) needs one — there it polls `readMore` on the existing no-progress deadline.
+
+## No descriptor on the root config may outlive a turn (`config/configUtils.ts`, `config/RootConfigWatcher.ts`, `components/OptionsWatcher.ts`)
+
+`atomicWriteFile` replaces `harper-config.yaml` by rename-over and retries `EPERM`/`EACCES` with a
+synchronous `Atomics.wait`. On Windows a rename over an open destination fails, and a descriptor
+belongs to the process, not the thread — measured on `windows-latest`/Node 24: a single Node read
+descriptor on the destination blocks it, while `fs.watch` and chokidar handles do not.
+
+That makes the retry unable to outlast a holder on the _calling_ thread, because the sleep blocks
+the event loop whose turn would close it: the holder's lifetime becomes exactly the retry budget
+and every attempt fails. This is why widening the budget (#1714, #2036) never fixed the
+`set_configuration` 500s it was aimed at, and why both root-config watchers read with
+`readFileSync`. Any future `fsPromises.readFile` of this file reintroduces harper#2313 — the rule
+is unenforced by anything but this note and the comment on `atomicWriteFile`.
+
+The synchronous read then sees writers mid-write, which promise-based reads mostly skipped. A read
+that is unusable — empty, or parsing to anything but an object — is retried by `PartialReadRetry`
+(`utility/watcherFallback.ts`) rather than adopted, because chokidar may emit nothing further for
+that write. Completeness is judged on the file's own parse, _before_ `overlayRootEnvConfig`, which
+returns a non-null object whenever a config env var is set and would otherwise launder a
+half-written file into a valid-looking env-only config. Its three outcomes are distinct and each
+one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
+restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
+report standing, since it is shared with every other watcher of that file; closing is terminal.

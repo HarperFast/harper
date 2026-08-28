@@ -6,6 +6,7 @@ const { join } = require('node:path');
 const { writeFileSync, mkdtempSync, rmSync, renameSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
 const { replace, fake, restore, spy } = require('sinon');
+const chokidar = require('chokidar');
 const configUtils = require('#src/config/configUtils');
 const { stringify } = require('yaml');
 
@@ -38,9 +39,12 @@ describe('RootConfigWatcher', () => {
 
 		expected.foo = 'baz';
 
+		// Subscribe before writing: the watcher re-reads the root config synchronously, so the
+		// change event can be emitted before this writer's own await resolves.
+		const changed = once(configWatcher, 'change');
 		await writeFile(this.configFilePath, stringify(expected));
 
-		const [updated] = await once(configWatcher, 'change');
+		const [updated] = await changed;
 
 		assert.deepEqual(updated, expected, 'RootConfigWatcher should emit a change event with the updated config');
 
@@ -144,6 +148,46 @@ describe('RootConfigWatcher', () => {
 			assert.equal(errorSpy.callCount, 0, 'all exhaustion errors should be swallowed');
 
 			configWatcher.close();
+		});
+
+		it('a synchronous throw from close() stays inside the reopen chain', async () => {
+			// The reopen used to be spelled `Promise.resolve(this.#watcher.close())`, whose argument
+			// is evaluated eagerly: a close() that throws synchronously threw out of the 'error'
+			// listener itself, past the chained .catch(), and Node reported it as an uncaught
+			// exception instead of reopening on polling.
+			writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+
+			const realWatch = chokidar.default.watch;
+			const handlers = {};
+			const fakeWatcher = {
+				on(event, handler) {
+					handlers[event] = handler;
+					return fakeWatcher;
+				},
+				close() {
+					throw new Error('close failed synchronously');
+				},
+			};
+			chokidar.default.watch = () => fakeWatcher;
+
+			let configWatcher;
+			try {
+				configWatcher = new RootConfigWatcher();
+
+				assert.doesNotThrow(() =>
+					configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }))
+				);
+				await new Promise((resolve) => setImmediate(resolve));
+
+				assert.equal(configWatcher._usingPollingForTests, true, 'should have flipped to polling');
+				assert.equal(configWatcher._openCountForTests, 2, 'should have reopened after the failed close()');
+			} finally {
+				chokidar.default.watch = realWatch;
+				// The fake watcher's close() always throws; swap it for a real no-op before
+				// teardown so configWatcher.close() (unrelated to this test) doesn't also throw.
+				fakeWatcher.close = () => {};
+				configWatcher?.close();
+			}
 		});
 
 		it('does not reopen watcher if close() is called during recovery', async () => {

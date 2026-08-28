@@ -98,8 +98,72 @@ const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
+const CATALOG_RELATIONSHIP = Symbol('catalog-relationship');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
+
+type RelationshipTarget = { database: string; table: string };
+type PersistedRelationship = {
+	name: string;
+	type: string;
+	elements?: { type: string };
+	relationship: { from?: string; to?: string; filterMissing?: boolean };
+	target: RelationshipTarget;
+};
+
+type RelationshipHydration = {
+	table: any;
+	databaseName: string;
+	tableName: string;
+	definitions: unknown[];
+};
+
+let relationshipsToHydrate: RelationshipHydration[] = [];
+const reportedRelationshipErrors = new Set<string>();
+
+function normalizeRelationships(attributes: any[]): PersistedRelationship[] {
+	const relationships: PersistedRelationship[] = [];
+	for (const attribute of attributes) {
+		const target = attribute.relationshipReference;
+		if (!attribute.relationship || !target) continue;
+		const relationship: PersistedRelationship['relationship'] = {};
+		if (typeof attribute.relationship.from === 'string') relationship.from = attribute.relationship.from;
+		if (typeof attribute.relationship.to === 'string') relationship.to = attribute.relationship.to;
+		// the GraphQL parser hands every directive argument over as a string, and the resolver reads
+		// filterMissing for truthiness, so persist what the resolver would see rather than the literal
+		if (attribute.relationship.filterMissing !== undefined)
+			relationship.filterMissing = Boolean(attribute.relationship.filterMissing);
+		if (!relationship.from && !relationship.to) continue;
+		const definition: PersistedRelationship = {
+			name: attribute.name,
+			type: attribute.type,
+			relationship,
+			target: { database: target.database, table: target.table },
+		};
+		if (attribute.type === 'array') definition.elements = { type: attribute.elements?.type };
+		relationships.push(definition);
+	}
+	return relationships;
+}
+
+function relationshipEquals(left: any, right: any): boolean {
+	return (
+		left?.name === right?.name &&
+		left?.type === right?.type &&
+		left?.elements?.type === right?.elements?.type &&
+		left?.relationship?.from === right?.relationship?.from &&
+		left?.relationship?.to === right?.relationship?.to &&
+		left?.relationship?.filterMissing === right?.relationship?.filterMissing &&
+		left?.target?.database === right?.target?.database &&
+		left?.target?.table === right?.target?.table
+	);
+}
+
+function relationshipListsEqual(left: any, right: PersistedRelationship[]): boolean {
+	if (!Array.isArray(left) || left.length !== right.length) return false;
+	for (let index = 0; index < right.length; index++) if (!relationshipEquals(left[index], right[index])) return false;
+	return true;
+}
 /**
  * The RocksDB block/blob codec for every column family this process opens (`storage.rocks.compression`),
  * or `undefined` to leave rocksdb-js on its own default (lz4 wherever the native build has it).
@@ -354,6 +418,32 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
+// Restore every field used by `commonChanged`, plus `indexed` and `indexNulls`,
+// from the durable descriptor. In particular, preserve `indexNulls: false` so
+// an index that excludes nulls is not reopened as though it contains them.
+const PEER_REDEFINABLE_FIELDS = [
+	'type',
+	'indexed',
+	'indexNulls',
+	'nullable',
+	'enumerable',
+	'version',
+	'elements',
+	'properties',
+	'embed',
+];
+// `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
+// discard warn would blame the peer for a field it did not write.
+const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
+
+// A cluster-origin caller's list can predate a declaration another thread has already committed, so on
+// that path the descriptor — not the caller — decides what the attribute is, in both directions.
+function applyDurableDeclaration(attribute: any, descriptor: any) {
+	for (const field of PEER_REDEFINABLE_FIELDS) {
+		if (field in descriptor) attribute[field] = descriptor[field];
+		else delete attribute[field];
+	}
+}
 // How many times the schema load will try to finish a tombstoned drop before
 // giving up for the rest of this process's lifetime. A drop that fails once
 // almost always fails identically forever - the usual cause is a RocksDB
@@ -435,6 +525,7 @@ export function getDatabases(): Databases {
 	loadedDatabases = true;
 
 	definedDatabases = new Map();
+	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
 	let databasePath = hdbBasePath && join(hdbBasePath, DATABASES_DIR_NAME);
 	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
@@ -584,6 +675,7 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
+	hydrateCatalogRelationships();
 	if (envGet(CONFIG_PARAMS.ANALYTICS_REPLICATE) === false) {
 		if (!NON_REPLICATING_SYSTEM_TABLES.includes('hdb_analytics')) NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
 	} else {
@@ -599,6 +691,135 @@ export function getDatabases(): Databases {
 		}
 	}
 	return databases;
+}
+
+function hydrateCatalogRelationships(): void {
+	for (const hydration of relationshipsToHydrate) {
+		try {
+			hydrateTableRelationships(hydration);
+		} catch (error) {
+			const key = `${hydration.databaseName}.${hydration.tableName}:hydrate`;
+			if (!reportedRelationshipErrors.has(key)) {
+				reportedRelationshipErrors.add(key);
+				logger.error(
+					`Unable to hydrate persisted relationships for ${hydration.databaseName}.${hydration.tableName}`,
+					error
+				);
+			}
+		}
+	}
+}
+
+function hydrateTableRelationships({ table, databaseName, tableName, definitions }: RelationshipHydration): void {
+	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
+	for (let index = 0; index < definitions.length; index++) {
+		const definition = definitions[index] as PersistedRelationship;
+		// Keyed by name rather than list position, so a reordered list cannot inherit the previous
+		// occupant's reported state and swallow a different relationship's failure — and by reason, so
+		// hydrating one entry does not clear the report of a same-named invalid duplicate.
+		const errorKey = `${databaseName}.${tableName}:${(definition as any)?.name || `#${index}`}`;
+		if (!validRelationshipDefinition(definition, definitions, index)) {
+			reportRelationshipError(
+				`${errorKey}:invalid`,
+				`Ignoring invalid persisted relationship ${databaseName}.${tableName}[${index}]`
+			);
+			continue;
+		}
+		// a live schema attribute of the same name owns the name; the catalog copy is only a stand-in
+		// for threads that never loaded the schema
+		if (table.attributes.some((attribute) => attribute.name === definition.name && !attribute[CATALOG_RELATIONSHIP]))
+			continue;
+		const targetTable = databases[definition.target.database]?.[definition.target.table];
+		if (!targetTable || !relationshipFieldsExist(table, targetTable, definition)) {
+			reportRelationshipError(
+				`${errorKey}:unavailable`,
+				`Unable to hydrate persisted relationship ${databaseName}.${tableName}.${definition.name}: target or foreign key is unavailable`
+			);
+			continue;
+		}
+		reportedRelationshipErrors.delete(`${errorKey}:unavailable`);
+		hydratable.push({ definition, targetTable });
+	}
+
+	const installed = table.attributes.filter((attribute) => attribute[CATALOG_RELATIONSHIP]);
+	if (
+		installed.length === hydratable.length &&
+		hydratable.every(
+			({ definition, targetTable }, index) =>
+				relationshipEquals(installed[index], definition) &&
+				(installed[index].definition || installed[index].elements?.definition)?.tableClass === targetTable
+		)
+	)
+		return;
+
+	const attributes = table.attributes.filter((attribute) => !attribute[CATALOG_RELATIONSHIP]);
+	for (const { definition, targetTable } of hydratable)
+		attributes.push(createCatalogRelationship(definition, targetTable));
+	table.attributes.splice(0, table.attributes.length, ...attributes);
+	table.schemaVersion++;
+	table.updatedAttributes();
+	databaseEventsEmitter.emit('updateTable', table);
+}
+
+function validRelationshipDefinition(definition: any, definitions: unknown[], index: number): boolean {
+	if (!definition || typeof definition !== 'object') return false;
+	const validName = (value: any) => typeof value === 'string' && value.length > 0 && !/[`/]/.test(value);
+	if (!validName(definition.name) || !validName(definition.type)) return false;
+	if (!validName(definition.target?.database) || !validName(definition.target?.table)) return false;
+	if (!definition.relationship || typeof definition.relationship !== 'object') return false;
+	const { from, to, filterMissing } = definition.relationship;
+	if (from !== undefined && !validName(from)) return false;
+	if (to !== undefined && !validName(to)) return false;
+	if (!from && !to) return false;
+	if (filterMissing !== undefined && typeof filterMissing !== 'boolean') return false;
+	if (definition.type === 'array' ? !validName(definition.elements?.type) : definition.elements !== undefined)
+		return false;
+	for (let earlier = 0; earlier < index; earlier++)
+		if ((definitions[earlier] as any)?.name === definition.name) return false;
+	return true;
+}
+
+function relationshipFieldsExist(sourceTable: any, targetTable: any, definition: PersistedRelationship): boolean {
+	if (
+		definition.relationship.from &&
+		!sourceTable.attributes.some((attribute) => attribute.name === definition.relationship.from)
+	)
+		return false;
+	if (
+		definition.relationship.to &&
+		!targetTable.attributes.some((attribute) => attribute.name === definition.relationship.to)
+	)
+		return false;
+	return true;
+}
+
+function createCatalogRelationship(definition: PersistedRelationship, targetTable: any): any {
+	const attribute: any = {
+		name: definition.name,
+		attribute: definition.name,
+		type: definition.type,
+		relationship: { ...definition.relationship },
+		target: { ...definition.target },
+	};
+	const targetDefinition = {
+		tableClass: targetTable,
+		type: targetTable.tableName,
+		attributes: targetTable.attributes,
+	};
+	if (definition.elements) {
+		attribute.elements = { type: definition.elements.type };
+		Object.defineProperty(attribute.elements, 'definition', { value: targetDefinition, configurable: true });
+	} else {
+		Object.defineProperty(attribute, 'definition', { value: targetDefinition, configurable: true });
+	}
+	Object.defineProperty(attribute, CATALOG_RELATIONSHIP, { value: true });
+	return attribute;
+}
+
+function reportRelationshipError(key: string, message: string): void {
+	if (reportedRelationshipErrors.has(key)) return;
+	reportedRelationshipErrors.add(key);
+	logger.error(message);
 }
 
 /**
@@ -1033,6 +1254,15 @@ function initStores(
 			table.schemaVersion = 1;
 			if (!destination) databaseEventsEmitter.emit('updateTable', table);
 		}
+		if (Array.isArray(primaryAttribute.relationships)) {
+			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
+		} else if (primaryAttribute.relationships !== undefined) {
+			reportRelationshipError(
+				`${databaseName}.${tableName}:list`,
+				`Ignoring invalid persisted relationship list for ${databaseName}.${tableName}`
+			);
+			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: [] });
+		}
 	}
 	return rootStore;
 }
@@ -1266,6 +1496,7 @@ interface TableDefinition {
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
+	schemaRelationshipsDefined?: boolean;
 	origin?: string;
 	description?: string;
 	properties?: Record<string, any>;
@@ -1761,6 +1992,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		randomAccessFields,
 		trackDeletes,
 		schemaDefined,
+		schemaRelationshipsDefined,
 		origin,
 		description,
 		properties,
@@ -1793,6 +2025,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
+	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
 	for (const attribute of attributes) {
@@ -1804,6 +2037,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
 	let hasChanges;
+	let refreshRelationshipAttributes = false;
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
@@ -1843,12 +2077,41 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
+			if (origin === 'cluster') {
+				const merged = Table.attributes.slice();
+				for (const attribute of attributes) {
+					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
+					if (!existing) {
+						merged.push(attribute);
+						continue;
+					}
+					// Nodes that apply the same peer definitions in a different order keep different index sets, and
+					// this warn is the only signal of it. An absent field and an explicit falsy one declare the same
+					// thing, so neither direction of that pair is a difference.
+					const discarded = PEER_DECLARABLE_FIELDS.filter(
+						(field) =>
+							(attribute[field] || existing[field]) &&
+							JSON.stringify(attribute[field]) !== JSON.stringify(existing[field])
+					);
+					if (discarded.length > 0)
+						logger.warn(
+							`Ignoring peer redefinition of ${databaseName}.${tableName}.${attribute.name} (${discarded
+								.map(
+									(field) =>
+										`${field}: local ${JSON.stringify(existing[field])}, peer ${JSON.stringify(attribute[field])}`
+								)
+								.join('; ')}); the local schema is authoritative`
+						);
+				}
+				attributes = merged;
+			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
 			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
 			// callers that omit the flag (cluster schema-replication, data loader) don't flip a
-			// dynamic table to true via the default at the top of table().
-			if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
+			// dynamic table to true via the default at the top of table(), and on origin so a
+			// peer-derived definition never overrides the local declaration.
+			if (schemaDefinedExplicit && origin !== 'cluster') Table.schemaDefined = schemaDefined;
 			// Refresh class-level schema metadata to track docstring/directive changes across reloads.
 			Table.description = description;
 			Table.properties = properties;
@@ -1862,6 +2125,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
+			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
 			// can't change compression after the fact (except threshold), so save only when we create the table
 			primaryKeyAttribute.compression = getDefaultCompression();
 			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
@@ -2003,7 +2268,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
-		for (const { key, value } of attributesDbi.getRange({ start: true })) {
+		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
+		// reconciliation is reserved for local schema authoring.
+		const reconcileRemovals = origin !== 'cluster';
+		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
@@ -2028,10 +2296,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
-			if (attribute.relationship || attribute.computed) {
-				hasChanges = true; // need to update the table so the computed properties are translated to property resolvers
-				if (attribute.relationship) continue;
+			if (attribute.relationship) {
+				refreshRelationshipAttributes = true;
+				continue;
 			}
+			if (attribute.computed) hasChanges = true;
 			let dbiKey = tableName + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
@@ -2040,19 +2309,25 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
-				// but other workers' next disk-load re-reads the stale value.
+				// but other workers' next disk-load re-reads the stale value. The whole settings update is
+				// gated off for cluster-origin callers: their values come from this worker's (possibly
+				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
 				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
-					schemaDefinedMismatch ||
-					(audit !== undefined && audit !== Table.audit) ||
-					(sealed !== undefined && sealed !== Table.sealed) ||
-					(replicate !== undefined && replicate !== Table.replicate) ||
-					(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-					(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-					attribute.type !== attributeDescriptor.type
+					origin !== 'cluster' &&
+					(schemaDefinedMismatch ||
+						(audit !== undefined && audit !== Table.audit) ||
+						(sealed !== undefined && sealed !== Table.sealed) ||
+						(replicate !== undefined && replicate !== Table.replicate) ||
+						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
+						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+						attribute.type !== attributeDescriptor.type)
 				) {
-					const updatedPrimaryAttribute = { ...attributeDescriptor };
+					exclusiveLock();
+					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
+					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
+					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing();
 						updatedPrimaryAttribute.audit = audit;
@@ -2064,15 +2339,53 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
 					hasChanges = true; // send out notification of the change
-					exclusiveLock();
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
 				continue;
 			}
 
-			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
+
+			if (origin === 'cluster' && attributeDescriptor) {
+				// An existing descriptor is a local declaration this caller may not have seen yet, so it wins
+				// over the incoming definition and is never written back from it.
+				applyDurableDeclaration(attribute, attributeDescriptor);
+				const abandonedIndexBuild =
+					attribute.indexed &&
+					(attributeDescriptor.indexingFailed ||
+						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
+						attributeDescriptor.restartNumber < (workerData?.restartNumber ?? manageThreads.restartNumber));
+				if (abandonedIndexBuild) {
+					// Recovery is the exception to skipping the handling below, because without it `isIndexing`
+					// stays pinned on with nothing left to clear it and every query on the attribute fails with
+					// IndexRebuildingError for the life of the worker. It persists the attribute (here and again
+					// from runIndexing), so restate the declaration from a descriptor read under the lock.
+					exclusiveLock();
+					applyDurableDeclaration(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
+				} else {
+					if (attribute.indexed) {
+						const dbi = openIndex(dbiKey, rootStore, attribute);
+						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
+						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
+						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
+						if (attribute.indexFormat != null && attributeDescriptor.indexFormat == null) {
+							exclusiveLock();
+							const durableDescriptor = attributesDbi.getSync(dbiKey);
+							if (durableDescriptor && durableDescriptor.indexFormat == null) {
+								hasChanges = true;
+								attributesDbi.put(dbiKey, { ...durableDescriptor, indexFormat: attribute.indexFormat });
+							}
+						}
+						if (attributeDescriptor.indexingPID) dbi.isIndexing = true;
+						dbi.indexNulls = attribute.indexNulls;
+						indices[attribute.name] = dbi;
+					}
+					continue;
+				}
+			}
+
+			// note that non-indexed attributes do not need a dbi
 			// Some index options affect only search, not the stored structure (e.g. HNSW's
 			// efConstructionSearch). Changing those should persist the new metadata but NOT trigger a
 			// reindex. A custom index declares such keys via a static `searchOnlyOptions`.
@@ -2232,10 +2545,28 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		// a table with no declared primary key has no attribute row to carry relationships, and the
+		// loop above never visits its descriptor
+		if (relationshipDefinitions) {
+			const relationshipsKey = primaryDescriptorKey();
+			if (!relationshipListsEqual(attributesDbi.getSync(relationshipsKey)?.relationships, relationshipDefinitions)) {
+				exclusiveLock();
+				const currentPrimaryAttribute = attributesDbi.getSync(relationshipsKey);
+				// a missing row means a concurrent drop completed; writing one back would resurrect the table
+				if (
+					currentPrimaryAttribute &&
+					!tableIsDropping(currentPrimaryAttribute, relationshipsKey) &&
+					!relationshipListsEqual(currentPrimaryAttribute.relationships, relationshipDefinitions)
+				) {
+					attributesDbi.put(relationshipsKey, { ...currentPrimaryAttribute, relationships: relationshipDefinitions });
+					hasChanges = true;
+				}
+			}
+		}
 	} finally {
 		releaseLock();
 	}
-	if (hasChanges) {
+	if (hasChanges || refreshRelationshipAttributes) {
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}
@@ -2248,7 +2579,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		);
 
 	Table.origin = origin;
-	if (hasChanges) {
+	if (hasChanges || refreshRelationshipAttributes) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
 	if (expiration || eviction || scanInterval)
@@ -2260,6 +2591,22 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;
+	// dropTable() tombstones the bare table row, which is not the row a legacy catalog keeps the
+	// table's settings in, so a drop in flight has to be checked on both.
+	function tableIsDropping(descriptor: any, descriptorKey: string) {
+		if (descriptor?.dropping) return true;
+		return descriptorKey !== tableName + '/' && attributesDbi.getSync(tableName + '/')?.dropping;
+	}
+	// The catalog row initStores() reads a table's settings from: the primary key's own row when it
+	// has one, and the bare table row otherwise.
+	function primaryDescriptorKey() {
+		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name;
+		if (declaredPrimaryKey) {
+			const attributeKey = tableName + '/' + declaredPrimaryKey;
+			if (attributesDbi.getSync(attributeKey)) return attributeKey;
+		}
+		return tableName + '/';
+	}
 	// Acquire an exclusive lock for attribute updates
 	function exclusiveLock() {
 		if (releaseExclusiveLock) return;
