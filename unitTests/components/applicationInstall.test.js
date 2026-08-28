@@ -8,7 +8,12 @@ const { join } = require('node:path');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { Application, installApplication, packageHasProductionInstallWork } = require('#src/components/Application');
+const {
+	Application,
+	installApplication,
+	packageHasAutomaticInstallWork,
+	packageHasProductionInstallWork,
+} = require('#src/components/Application');
 
 async function createApplication(root, name, packageJSON, install) {
 	const directory = join(root, name);
@@ -59,6 +64,11 @@ describe('automatic application installation', () => {
 		]) {
 			assert.equal(packageHasProductionInstallWork(manifest), false, JSON.stringify(manifest));
 		}
+		assert.equal(
+			packageHasAutomaticInstallWork({ devEngines: { packageManager: { name: 'pnpm' } } }),
+			true,
+			'an explicit non-npm manager may discover production work outside the root manifest'
+		);
 	});
 
 	it('skips automatic installation when only development dependencies are declared', async function () {
@@ -105,11 +115,11 @@ describe('automatic application installation', () => {
 		]);
 	});
 
-	it('preserves non-npm package-manager arguments', async function () {
+	it('preserves an explicit non-npm workspace install when the root manifest has no production work', async function () {
 		const application = await createApplication(this.root, 'declared-pnpm', {
-			dependencies: { runtime: '1.0.0' },
 			devEngines: { packageManager: { name: 'pnpm' } },
 		});
+		await writeFile(join(application.dirPath, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
 		const capturePath = await configureInstallCapture(application, this.root, 'declared-pnpm');
 
 		await installApplication(application);

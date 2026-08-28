@@ -116,6 +116,19 @@ describe('installed application runtime metadata', () => {
 		assert.equal(installedRuntimeChanged(previous, current, false), true);
 	});
 
+	it('requires lock evidence when an explicit non-npm manager may discover external workspace work', async function () {
+		const manifest = '{"name":"app","devEngines":{"packageManager":{"name":"pnpm"}}}\n';
+		await Promise.all([
+			fs.writeFile(path.join(this.previous, 'package.json'), manifest),
+			fs.writeFile(path.join(this.current, 'package.json'), manifest),
+		]);
+		const previous = await readInstalledPackageMetadata(this.previous);
+		const current = await readInstalledPackageMetadata(this.current);
+
+		assert.equal(previous.hasInstallableDependencies, true);
+		assert.equal(installedRuntimeChanged(previous, current, false), true);
+	});
+
 	it('canonicalizes __proto__ as data without mutating the accumulator prototype', async function () {
 		await fs.writeFile(
 			path.join(this.current, 'package.json'),

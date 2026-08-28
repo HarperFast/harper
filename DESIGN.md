@@ -293,15 +293,17 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
-Automatic component installation is production-only. `installApplication()` skips the package-manager
-child entirely when the root manifest declares no production dependencies, non-empty workspaces, or
-enabled install lifecycle; npm invocations use `--omit=dev --no-audit --no-fund`. A configured
-`install_command` remains the explicit escape hatch for build-time tooling, and
-`readInstalledPackageMetadata()` must use the same production-work predicate so a dev-only manifest
-does not force a restart on every redeploy for lacking a lockfile. Absolute local archives are
-classified before package-protocol detection: a Windows drive letter's colon is path syntax, not an
-npm protocol. Existing Windows directory inputs deliberately retain npm's copy/pack behavior rather
-than becoming live `file:` links.
+Automatic npm component installation is production-only and uses `--omit=dev --no-audit --no-fund`.
+`installApplication()` skips the package-manager child entirely when the root manifest declares no
+production dependencies, non-empty workspaces, or enabled install lifecycle. An explicitly selected
+non-npm manager still runs so it can discover workspace configuration outside `package.json`, and it
+retains its own install defaults. A configured `install_command` remains the explicit escape hatch for
+build-time tooling. `readInstalledPackageMetadata()` must use the same automatic-work predicate so a
+dev-only npm manifest does not force a restart on every redeploy for lacking a lockfile while an
+explicit non-npm workspace install still does. Absolute local archives are classified before
+package-protocol detection: a Windows drive letter's colon is path syntax, not an npm protocol. File
+type detection remains asynchronous in extraction. Existing Windows directory inputs deliberately
+retain npm's copy/pack behavior rather than becoming live `file:` links.
 
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 

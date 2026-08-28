@@ -7,9 +7,9 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { doesNotMatch, strictEqual, ok, match } from 'node:assert';
-import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForLogMatches } from './waitForLog.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -52,8 +52,7 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 					install_command: 'node --version',
 				}),
 			},
-			// A `restart: true` deploy now returns only once the restart has finished, so this budget covers
-			// the install (~26s of npm on a Windows runner) plus a worker roll, not the install alone.
+			// A `restart: true` deploy returns only once the custom install command and worker roll finish.
 			90_000,
 			'deploy_component request'
 		);
@@ -103,8 +102,13 @@ suite('Component: early-hints', (ctx: ContextWithHarper) => {
 		}
 
 		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
-		const instanceLog = await readFile(join(logDirectory, 'hdb.log'), 'utf8');
+		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
+			/Using local component archive directly without npm pack/,
+			/\[early-hints\]: Registered resource: \/hints/,
+		]);
+		match(instanceLog, /Using local component archive directly without npm pack/);
 		match(instanceLog, /\[early-hints\]: Registered resource: \/hints/);
+		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
 		doesNotMatch(instanceLog, /\[early-hints:spawn:npm/, 'a local archive must not be repacked by npm');
 	});
 
