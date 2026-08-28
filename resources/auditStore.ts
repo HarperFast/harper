@@ -215,28 +215,39 @@ export function openAuditStore(rootStore) {
 							before: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority),
 						});
 					} else {
-						for (const auditRecord of auditStore.getRange({
-							start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
-							snapshot: false,
-							end: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
-						})) {
-							// re-checked per iteration, not just before the pass: this loop suspends on the awaits
-							// below, and a close that lands mid-pass closes the env underneath the resumed cursor
-							if (cleanupStopped) break;
-							try {
-								// awaited so a rejection (not just a synchronous throw) is caught here instead of
-								// escaping as an unhandled rejection once a later iteration's promise replaces this one
-								await removeAuditEntry(auditStore, auditRecord);
-							} catch (error) {
-								harperLogger.warn('Error removing audit entry', error);
+						// Driven explicitly rather than with for-of: this loop suspends on the awaits below, and a
+						// close landing mid-pass closes the env under it. for-of calls next() before the body, so a
+						// check inside the body advances the cursor first — the guard has to precede every next().
+						const entries = auditStore
+							.getRange({
+								start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
+								snapshot: false,
+								end: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+							})
+							[Symbol.iterator]();
+						try {
+							while (!cleanupStopped) {
+								const entry = entries.next();
+								if (entry.done) break;
+								const auditRecord = entry.value;
+								try {
+									// awaited so a rejection (not just a synchronous throw) is caught here instead of
+									// escaping as an unhandled rejection once a later iteration's promise replaces this one
+									await removeAuditEntry(auditStore, auditRecord);
+								} catch (error) {
+									harperLogger.warn('Error removing audit entry', error);
+								}
+								lastKey = auditRecord.key;
+								await new Promise(setImmediate);
+								if (++deleted >= MAX_DELETES_PER_CLEANUP) {
+									// limit the amount we cleanup per event turn so we don't use too much memory/CPU
+									auditCleanupDelay = 10; // and keep trying very soon
+									break;
+								}
 							}
-							lastKey = auditRecord.key;
-							await new Promise(setImmediate);
-							if (++deleted >= MAX_DELETES_PER_CLEANUP) {
-								// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-								auditCleanupDelay = 10; // and keep trying very soon
-								break;
-							}
+						} finally {
+							// for-of released the underlying cursor on break; an explicit loop owes that itself
+							entries.return?.();
 						}
 					}
 				} catch (error) {
@@ -264,8 +275,9 @@ export function openAuditStore(rootStore) {
 						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
 						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
 					} else {
-						// if we did delete something, update our updates since timestamp
-						updateLastRemoved(auditStore, lastKey);
+						// skipped when the store was retired mid-pass: this writes to the audit store, which
+						// closeDatabase has already closed by the time a stopped pass reaches here
+						if (!cleanupStopped) updateLastRemoved(auditStore, lastKey);
 						// and do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
