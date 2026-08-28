@@ -207,7 +207,10 @@ export function storedFieldsOnly(encoder: any, record: any) {
 export function assignStoredFields(target: any, source: any, encoder: any) {
 	const resolved = encoder?.resolvedAttributeNames;
 	if (resolved === undefined) return Object.assign(target, source);
-	for (const key in source) {
+	// Own keys, matching the Object.assign fallback above and storedFieldsOnly: a decoded plain
+	// object has no inherited enumerables of its own, so walking the chain could only ever pick up
+	// somebody else's (a polluted Object.prototype included).
+	for (const key of Object.keys(source)) {
 		if (resolved.has(key)) continue;
 		if (key === '__proto__')
 			Object.defineProperty(target, key, { value: source[key], enumerable: true, writable: true, configurable: true });
