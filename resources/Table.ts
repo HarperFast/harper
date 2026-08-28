@@ -89,7 +89,7 @@ import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
+import { onStorageReclamation, removeStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
@@ -1654,6 +1654,8 @@ export function makeTable(options) {
 				}
 			} else {
 				// legacy table per database
+				primaryStore.auditStore?.stopAuditCleanup?.();
+				removeStorageReclamation(primaryStore.path);
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);
 			}
