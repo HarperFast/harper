@@ -1308,10 +1308,12 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					// Retain-last-good: a record still in the table whose build failed keeps its live
 					// hostname entries and its default candidacy (a SAN-less cert can be serving as the
 					// default with no hostname entries at all); deletion remains the way to drop them.
-					// Exception, fail closed: a context froze its CA material (`ca:` trust list, appended
-					// chain) at its own build time, so when the CA set has changed since, retaining it
-					// would keep honoring trust the operator just revoked — that record's entries drop
-					// and the retry pursues a fresh build instead.
+					// A context froze its `ca:` trust list at its own build time, so when the CA set has
+					// changed since, the retained pair (its cert and key are still consistent) is REBUILT
+					// against the current trust material — revoked client-CA trust is never carried
+					// forward, and a CA addition doesn't cost the record its retention. If that rebuild
+					// itself fails, the record's entries drop (fail closed) and the retry pursues a fresh
+					// build.
 					const caSetUnchanged = (previous) => {
 						const builtWith = (previous as any).certificateAuthorities;
 						if (!Array.isArray(builtWith)) return candidateCAs.size === 0;
@@ -1320,27 +1322,51 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							builtWith.every(([subject, pem]) => candidateCAs.get(subject) === pem)
 						);
 					};
+					const rebuiltRetentions = new Map();
+					const retainable = (previous) => {
+						if (caSetUnchanged(previous)) return previous;
+						if (rebuiltRetentions.has(previous)) return rebuiltRetentions.get(previous);
+						try {
+							const secureOptions = {
+								...(previous as any).options,
+								availableCAs: caCerts,
+								ca: mtlsOptions && Array.from(candidateCAs.values()),
+							};
+							const rebuilt = tls.createSecureContext(secureOptions);
+							(rebuilt as any).name = (previous as any).name;
+							(rebuilt as any).options = secureOptions;
+							(rebuilt as any).quality = (previous as any).quality;
+							(rebuilt as any).certificateAuthorities = Array.from(candidateCAs);
+							(rebuilt as any).certStart = (previous as any).certStart;
+							rebuiltRetentions.set(previous, rebuilt);
+							return rebuilt;
+						} catch (error) {
+							logger.error?.('Could not rebuild retained TLS context for', (previous as any).name, error);
+							rebuiltRetentions.set(previous, undefined);
+							return undefined;
+						}
+					};
 					for (const { cert } of failedThisPass) {
-						const retain = (hostname, previous) => {
-							const previousQuality = (previous as any).quality ?? 0;
+						const retain = (previous, hostname?) => {
+							const retained = retainable(previous);
+							if (!retained) return;
+							const previousQuality = (retained as any).quality ?? 0;
 							if (
 								hostname !== undefined &&
 								previousQuality > ((candidateContexts.get(hostname) as any)?.quality ?? 0)
 							) {
-								candidateContexts.set(hostname, previous);
+								candidateContexts.set(hostname, retained);
 							}
 							if (previousQuality > bestQuality) {
-								candidateDefault = previous;
+								candidateDefault = retained;
 								defaultContextSetThisPass = true;
 								bestQuality = previousQuality;
 							}
 						};
 						for (const [hostname, previous] of secureContexts) {
-							if ((previous as any).name === cert.name && caSetUnchanged(previous)) retain(hostname, previous);
+							if ((previous as any).name === cert.name) retain(previous, hostname);
 						}
-						if ((defaultContext as any)?.name === cert.name && caSetUnchanged(defaultContext)) {
-							retain(undefined, defaultContext);
-						}
+						if ((defaultContext as any)?.name === cert.name) retain(defaultContext);
 					}
 					if (liveReload && candidateContexts.size === 0 && !defaultContextSetThisPass) {
 						// The not-loaded-yet guard above only covers the table object being absent, not the

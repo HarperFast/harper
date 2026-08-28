@@ -623,10 +623,15 @@ hostname→context map, CA map, and default candidate — into pass-local candid
 live maps in place only after the pass completes (their identity is load-bearing:
 `server.secureContexts` and each context's `availableCAs` alias them). A record that is still in the
 table but fails to build (`ERR_OSSL_X509_KEY_VALUES_MISMATCH` when the table's cert outruns the
-on-disk key, a missing key on this thread) keeps every live entry it owns *and* its default
+on-disk key, a missing key on this thread) keeps every live entry it owns _and_ its default
 candidacy — a record can be serving as the default with no hostname entries at all — so a transient
 mismatch never downgrades serving below last-good (the pre-fix behavior served the self-signed
-default for days). Deleting the record remains the way to drop its contexts. A failed pass arms a
+default for days). Retention is trust-aware: a context froze its `ca:` list at build time, so when
+the CA set has changed since, the retained pair is rebuilt against the current trust material —
+revoked client-CA trust is never carried forward — and if that rebuild fails the record's entries
+drop (fail closed). Deleting the record remains the way to drop its contexts; a corrupt authority
+row is a pass failure like any other (reported through the signature throttle, armed for retry) and
+its trust drops until it heals. A failed pass arms a
 self-retry on the shared debounce with a per-signature backoff (1.5s doubling to 5min) and
 signature-throttled logging; external triggers (table subscription, key reload) stay at the plain
 debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll dedupe, but rolls

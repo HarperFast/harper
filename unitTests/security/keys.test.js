@@ -1149,7 +1149,7 @@ describe('Test keys module', () => {
 			}
 		});
 
-		it('retention fails closed when the CA set changed — revoked trust is not preserved', async function () {
+		it('retention across a CA-set change rebuilds the context with current trust, never stale trust', async function () {
 			this.timeout(20000);
 			const recordName = uniqueName('castale');
 			const keyName = `${recordName}.pem`;
@@ -1157,8 +1157,10 @@ describe('Test keys module', () => {
 			const caName = uniqueName('retain-ca');
 			try {
 				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
 				// Change the CA set and break the record in the same window: the retained context's
-				// frozen trust material no longer matches, so its entries must drop, not carry forward.
+				// frozen trust material no longer matches, so retention must publish a REBUILT context
+				// carrying the current CA set — not the stale object, and not a drop to the default.
 				await databases.system.hdb_certificate.put({
 					name: caName,
 					certificate: keyPairB.cert,
@@ -1167,10 +1169,25 @@ describe('Test keys module', () => {
 					is_self_signed: true,
 				});
 				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
-				await waitFor(() => pseudoServer.secureContexts.get(hostname) === undefined, {
-					timeout: 8000,
-					message: 'a failed record with a changed CA set must not retain its context',
-				});
+				await waitFor(
+					() => {
+						const context = pseudoServer.secureContexts.get(hostname);
+						return (
+							context &&
+							context !== baselineContext &&
+							context.certificateAuthorities?.some(([, pem]) => pem === keyPairB.cert)
+						);
+					},
+					{
+						timeout: 8000,
+						message: 'the retained context was never rebuilt against the changed CA set',
+					}
+				);
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname).name,
+					recordName,
+					'the rebuilt retention must still belong to the failed record'
+				);
 			} finally {
 				keys.getPrivateKeys().delete(keyName);
 				await databases.system.hdb_certificate.delete(caName).catch(() => {});

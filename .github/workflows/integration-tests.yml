@@ -160,6 +160,9 @@ jobs:
           HARPER_LEGACY_VERSION_PATH: /tmp/harperdb-legacy/node_modules/harperdb
           HARPER_LEGACY_51_PATH: /tmp/harper-legacy-51/node_modules/harper/dist/bin/harper.js
           HARPER_INTEGRATION_TEST_INSTALL_SCRIPT: dist/bin/harper.js
+          # Linux runners have working inotify, so the file-watch-dependent TLS regression
+          # tests (cert-key-reload) must run rather than skip — this pipeline owns #2382.
+          HARPER_TEST_REQUIRE_FILE_WATCHERS: '1'
         run: |
           npm run test:integration:all -- --shard=${{ matrix.shard }}/6
 
