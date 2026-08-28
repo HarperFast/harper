@@ -292,14 +292,28 @@ name never exists with partial contents; the candidate's own contents are fsynce
 written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
 installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
 
-The journal is consulted **first**. Its absence means no staged activation was in flight, so the legacy
-in-place extraction recovery applies unchanged — a crash in that path also leaves an in-progress aside
-with the live tree present, and retiring it there would keep a half-written tree instead of restoring
-the good one.
+The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
+refuses to restore a rollback record while an unsettled journal names that component. Ordering settlement
+ahead of it is not enough, because a worker can be respawned mid-activation with no settlement in front of
+it, and settlement that _fails_ deliberately keeps the journal while the same boot carries on. The refusal
+is scoped to the branch that actually restores a tree — a record that was already retired has nothing to
+restore, so that component still loads. Where no journal names the component, the legacy pass applies
+unchanged: a crash in that path also leaves an in-progress aside with the live tree present, and retiring
+it there would keep a half-written tree instead of restoring the good one.
 
-Ambiguity exists only while the live path is absent, and there `.complete` is the roll-forward authority:
+Settlement runs on **every thread**, not only main, for the same reason. It is safe anywhere because each
+deployment is settled under the cross-process component preparation lock and the pass is idempotent. It
+_probes_ for that lock — a 250 ms try, no renewal, matching the legacy boot probe — rather than queueing:
+it runs before every component load on every thread, so waiting behind a live deploy's `npm install` would
+load no components at all until that install finished. A held lock means a live deploy, and a live deploy
+settles its own journal.
+
+Ambiguity exists mainly while the live path is absent, and there `.complete` is the roll-forward authority:
 without it the candidate was never validated, so the committed tree in the aside wins. Live-present with a
-candidate is pre-swap (or already rolled back) — discard the candidate.
+candidate is normally pre-swap (or already rolled back) — discard the candidate — **unless a rollback
+record shows the live tree had already been moved aside**. Then whatever is at the live path was recreated
+afterwards by something else, and settling either way would destroy both the committed tree and the
+validated candidate, so that component fails closed with both still on disk.
 Live-present without a candidate is a lost tail — finish forward; never revert a completed activation.
 Neither a live tree nor a rollback record is unrecoverable, so that component fails closed rather than
 guessing. Every branch is idempotent, so a crash _during_ recovery is settled by the next run, and
@@ -310,7 +324,12 @@ never depends on it. Roll-forward requires the journal, the candidate and `.comp
 observable, which means a lost directory update degrades to a roll back rather than to a wrong decision.
 
 Retiring the rollback record only marks the displaced tree disposable; both the activation path and
-recovery then sweep it, or the components root would grow by a whole component version per deploy.
+recovery then sweep it, or the components root would grow by a whole component version per deploy. The
+retire is **correctness, not hygiene** — that marker is what stops the legacy pass treating the record as
+authoritative once the journal is gone — so a failure to retire propagates and the component fails closed
+with its journal intact. Only the sweep itself is best-effort, because it costs disk rather than a wrong
+decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
+and the journal removal: the journal is what would carry the activation forward after a power loss.
 
 Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
 briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
