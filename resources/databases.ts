@@ -2186,34 +2186,30 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
-			Table = setTable(
-				tables,
+			Table = makeTable({
+				primaryStore,
+				auditStore,
+				audit,
+				sealed,
+				splitSegments,
+				replicate,
+				trackDeletes,
+				expirationMS: expiration && expiration * 1000,
+				evictionMS: eviction && eviction * 1000,
+				primaryKey,
 				tableName,
-				makeTable({
-					primaryStore,
-					auditStore,
-					audit,
-					sealed,
-					splitSegments,
-					replicate,
-					trackDeletes,
-					expirationMS: expiration && expiration * 1000,
-					evictionMS: eviction && eviction * 1000,
-					primaryKey,
-					tableName,
-					tableId: primaryStore.tableId,
-					databasePath: databaseName,
-					databaseName,
-					indices: {},
-					attributes,
-					schemaDefined,
-					dbisDB: attributesDbi,
-					description,
-					properties,
-					hidden,
-					cacheControl,
-				})
-			);
+				tableId: primaryStore.tableId,
+				databasePath: databaseName,
+				databaseName,
+				indices: {},
+				attributes,
+				schemaDefined,
+				dbisDB: attributesDbi,
+				description,
+				properties,
+				hidden,
+				cacheControl,
+			});
 			Table.schemaVersion = 1;
 			hasChanges = true;
 			deferredPrimaryRow = primaryKeyAttribute;
@@ -2513,7 +2509,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// The primary row is what makes a table loadable, so it lands after every attribute row: a catalog
 		// scan on another thread (resetDatabases from any schema-change signal) that runs mid-create must
 		// skip this table rather than build - and announce to peers - a Table with a partial attribute list.
-		if (deferredPrimaryRow) attributesDbi.put(tableName + '/', deferredPrimaryRow);
+		// This worker registers the class at the same point, so a create that throws leaves no table anywhere.
+		if (deferredPrimaryRow) {
+			attributesDbi.put(tableName + '/', deferredPrimaryRow);
+			setTable(tables, tableName, Table);
+		}
 		// a table with no declared primary key has no attribute row to carry relationships, and the
 		// loop above never visits its descriptor
 		if (relationshipDefinitions) {
