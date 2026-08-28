@@ -90,6 +90,32 @@ describe('installed application runtime metadata', () => {
 		assert.equal(installedRuntimeChanged(previous, current, true), true, 'custom scripts make the install opaque');
 	});
 
+	it('does not require lock evidence for development-only dependencies omitted from production installs', async function () {
+		const manifest = '{"name":"app","devDependencies":{"build-tool":"1"}}\n';
+		await Promise.all([
+			fs.writeFile(path.join(this.previous, 'package.json'), manifest),
+			fs.writeFile(path.join(this.current, 'package.json'), manifest),
+		]);
+		const previous = await readInstalledPackageMetadata(this.previous);
+		const current = await readInstalledPackageMetadata(this.current);
+
+		assert.equal(previous.hasInstallableDependencies, false);
+		assert.equal(installedRuntimeChanged(previous, current, false), false);
+	});
+
+	it('requires lock evidence for workspace production installs', async function () {
+		const manifest = '{"name":"app","workspaces":{"packages":["packages/*"]}}\n';
+		await Promise.all([
+			fs.writeFile(path.join(this.previous, 'package.json'), manifest),
+			fs.writeFile(path.join(this.current, 'package.json'), manifest),
+		]);
+		const previous = await readInstalledPackageMetadata(this.previous);
+		const current = await readInstalledPackageMetadata(this.current);
+
+		assert.equal(previous.hasInstallableDependencies, true);
+		assert.equal(installedRuntimeChanged(previous, current, false), true);
+	});
+
 	it('canonicalizes __proto__ as data without mutating the accumulator prototype', async function () {
 		await fs.writeFile(
 			path.join(this.current, 'package.json'),
@@ -100,6 +126,6 @@ describe('installed application runtime metadata', () => {
 		const canonicalPackage = JSON.parse(metadata.files.get('package.json').toString());
 		assert.equal(Object.hasOwn(canonicalPackage, '__proto__'), true);
 		assert.deepEqual(canonicalPackage.__proto__, { polluted: true });
-		assert.equal(metadata.hasInstallableDependencies, false);
+		assert.equal(metadata.hasInstallableDependencies, true);
 	});
 });

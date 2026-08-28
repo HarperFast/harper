@@ -20,7 +20,7 @@ import {
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, win32 } from 'node:path';
 import {
 	access,
 	chmod,
@@ -495,6 +495,17 @@ const COMPONENT_RECOVERY_TRY_TIMEOUT_MS = 250;
 const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
+const PRODUCTION_DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const;
+const INSTALL_LIFECYCLE_SCRIPTS = new Set([
+	'preinstall',
+	'install',
+	'postinstall',
+	'prepublish',
+	'preprepare',
+	'prepare',
+	'postprepare',
+	'dependencies',
+]);
 
 type ExtractionTransaction = {
 	commit(): Promise<void>;
@@ -522,6 +533,33 @@ type InstalledPackageMetadata = {
 	hasLockfile: boolean;
 	hasInstallableDependencies: boolean;
 };
+
+function dependencyFieldHasWork(packageJSON: any, field: string): boolean {
+	if (!packageJSON || typeof packageJSON !== 'object' || !Object.hasOwn(packageJSON, field)) return false;
+	const value = packageJSON[field];
+	return !value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 0;
+}
+
+export function packageHasProductionInstallWork(packageJSON: any): boolean {
+	if (packageJSON === undefined) return false;
+	if (!packageJSON || typeof packageJSON !== 'object' || Array.isArray(packageJSON)) return true;
+	if (PRODUCTION_DEPENDENCY_FIELDS.some((field) => dependencyFieldHasWork(packageJSON, field))) return true;
+	if (!Object.hasOwn(packageJSON, 'workspaces')) return false;
+	const workspaces = packageJSON.workspaces;
+	if (Array.isArray(workspaces)) return workspaces.length > 0;
+	if (!workspaces || typeof workspaces !== 'object' || !Object.hasOwn(workspaces, 'packages')) return true;
+	return !Array.isArray(workspaces.packages) || workspaces.packages.length > 0;
+}
+
+function packageHasAllowedInstallLifecycleWork(packageJSON: any): boolean {
+	if (!packageJSON || typeof packageJSON !== 'object' || !Object.hasOwn(packageJSON, 'scripts')) return false;
+	const scripts = packageJSON.scripts;
+	if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) return true;
+	return [...INSTALL_LIFECYCLE_SCRIPTS].some((name) => {
+		if (!Object.hasOwn(scripts, name)) return false;
+		return typeof scripts[name] !== 'string' || scripts[name].trim().length > 0;
+	});
+}
 
 export async function readInstalledPackageMetadata(directory: string): Promise<InstalledPackageMetadata> {
 	const files = new Map<string, Buffer>();
@@ -553,17 +591,7 @@ export async function readInstalledPackageMetadata(directory: string): Promise<I
 		files,
 		readable,
 		hasLockfile: PACKAGE_LOCK_FILES.some((filename) => files.has(filename)),
-		hasInstallableDependencies: ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].some(
-			(field) => {
-				const dependencies = packageJSON?.[field];
-				return (
-					typeof dependencies === 'object' &&
-					dependencies !== null &&
-					!Array.isArray(dependencies) &&
-					Object.keys(dependencies).length > 0
-				);
-			}
-		),
+		hasInstallableDependencies: packageHasProductionInstallWork(packageJSON),
 	};
 }
 
@@ -1450,6 +1478,14 @@ async function rollbackExtractedDirectory(
 	await cleanupExtractionPaths(application, asideStagingDir, transactionPaths);
 }
 
+function automaticInstallArguments(packageManagerName: string, allowInstallScripts: boolean, force = false): string[] {
+	const args = ['install'];
+	if (force) args.push('--force');
+	if (packageManagerName === 'npm') args.push('--omit=dev', '--no-audit', '--no-fund');
+	if (!allowInstallScripts) args.push('--ignore-scripts');
+	return args;
+}
+
 /**
  * Install an application to its relative `application.dirPath` using either a
  * configured `application.install` command, a derived package manager from the
@@ -1516,6 +1552,20 @@ export async function installApplication(application: Application) {
 		);
 	}
 
+	const allowInstallScripts = !!application.install?.allowInstallScripts;
+	if (dependencyFieldHasWork(packageJSON, 'devDependencies')) {
+		application.logger.warn(
+			`Application ${application.name} declares devDependencies, which automatic production installation omits; use install_command when deployment requires them`
+		);
+	}
+	if (
+		!packageHasProductionInstallWork(packageJSON) &&
+		!(allowInstallScripts && packageHasAllowedInstallLifecycleWork(packageJSON))
+	) {
+		application.logger.info(`Application ${application.name} has no production package work; skipping install`);
+		return;
+	}
+
 	// Next, try package.json devEngines field
 	const { packageManager } = packageJSON.devEngines || {};
 
@@ -1554,7 +1604,7 @@ export async function installApplication(application: Application) {
 		const { stdout, stderr, code } = await nonInteractiveSpawn(
 			application.name,
 			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
-			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
+			automaticInstallArguments(packageManager.name, allowInstallScripts),
 			application.dirPath,
 			application.install?.timeout,
 			pmOnLine,
@@ -1603,9 +1653,7 @@ export async function installApplication(application: Application) {
 	}
 
 	// Finally, default to running `npm install`
-	const npmInstallArgs = application.install?.allowInstallScripts
-		? ['install', '--force']
-		: ['install', '--force', '--ignore-scripts'];
+	const npmInstallArgs = automaticInstallArguments('npm', allowInstallScripts, true);
 	const npmOnLine = application.onInstallLine
 		? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!('npm', stream, line)
 		: undefined;
@@ -1798,6 +1846,14 @@ export class Application {
  * component matching some of npm's package resolution rules.
  */
 export function derivePackageIdentifier(packageIdentifier: string) {
+	if (isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier)) {
+		if (process.platform !== 'win32') return `file:${packageIdentifier}`;
+		try {
+			if (lstatSync(packageIdentifier).isFile()) return `file:${packageIdentifier}`;
+		} catch {
+			return `file:${packageIdentifier}`;
+		}
+	}
 	if (packageIdentifier.includes(':')) {
 		return packageIdentifier;
 	}
@@ -2465,16 +2521,16 @@ function spawnWithEnv(
 			}
 		});
 
-		childProcess.on('exit', (code) => {
+		childProcess.on('exit', (code, signal) => {
 			logger
 				.loggerWithTag(`${applicationName}:spawn:${command}`)
-				.debug?.(`Diagnostic: direct child exited with code ${code}; awaiting stdio close`);
+				.debug?.(`Direct child exited with code ${code}, signal ${signal}; awaiting stdio close`);
 		});
 
-		childProcess.on('close', async (code) => {
+		childProcess.on('close', async (code, signal) => {
 			logger
 				.loggerWithTag(`${applicationName}:spawn:${command}`)
-				.debug?.(`Diagnostic: child close received with code ${code}; starting process-tree cleanup`);
+				.debug?.(`Child stdio closed with code ${code}, signal ${signal}; confirming process-tree termination`);
 			resolveClose();
 			clearTimeout(timeout);
 			// A successful direct-child exit does not prove the process group is empty: a custom
@@ -2506,7 +2562,9 @@ function spawnWithEnv(
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
-			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug?.(`Process exited with code ${code}`);
+			logger
+				.loggerWithTag(`${applicationName}:spawn:${command}`)
+				.debug?.(`Process tree termination confirmed after command close with code ${code}`);
 			if (didTimeout || didSettle) return;
 			didSettle = true;
 			resolve({

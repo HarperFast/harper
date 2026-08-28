@@ -1,11 +1,48 @@
 'use strict';
 
 const assert = require('node:assert');
+const { mkdtempSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { isSSHAuthFailure, assertApplicationConfig, parseGitReference } = require('#src/components/Application');
+const {
+	isSSHAuthFailure,
+	assertApplicationConfig,
+	derivePackageIdentifier,
+	parseGitReference,
+} = require('#src/components/Application');
+
+describe('derivePackageIdentifier', () => {
+	it('classifies Windows drive and UNC archive paths as local files on every host', () => {
+		for (const packagePath of [
+			String.raw`D:\a\harper\fixture.tgz`,
+			String.raw`\\server\components\fixture.tgz`,
+			String.raw`D:\component fixtures\fixture & one.tgz`,
+		]) {
+			assert.equal(derivePackageIdentifier(packagePath), `file:${packagePath}`);
+		}
+	});
+
+	it('preserves explicit package protocols', () => {
+		for (const identifier of ['npm:@scope/component', 'github:owner/component', 'https://example.com/component.tgz']) {
+			assert.equal(derivePackageIdentifier(identifier), identifier);
+		}
+	});
+
+	if (process.platform === 'win32') {
+		it('preserves the existing npm-pack copy path for Windows directories', () => {
+			const directory = mkdtempSync(join(tmpdir(), 'derive-component-directory-'));
+			try {
+				assert.equal(derivePackageIdentifier(directory), directory);
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
+});
 
 describe('isSSHAuthFailure', () => {
 	it('returns true for "Could not read from remote repository"', () => {
