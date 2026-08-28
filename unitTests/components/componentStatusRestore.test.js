@@ -85,4 +85,24 @@ describe('component status during throwaway validation', () => {
 			"and it is the live report that is recorded, not the candidate's"
 		);
 	});
+
+	it('shows a candidate its own writes, never the live object', async () => {
+		statusForComponent('read-probe').healthy('serving');
+
+		await runWithDeployValidationGuard(async () => {
+			statusForComponent('read-probe').warning('candidate is degraded');
+			assert.strictEqual(
+				registry.getStatus('read-probe').status,
+				STATUS.WARNING,
+				'the candidate reads back what it just wrote, not the live value'
+			);
+			// The returned object is mutable, so handing back the live one would let candidate code edit the
+			// serving component's status in place and bypass the diversion entirely.
+			registry.getStatus('read-probe').markHealthy('mutated in place by candidate code');
+		});
+
+		const after = registry.getStatus('read-probe');
+		assert.strictEqual(after.status, STATUS.HEALTHY);
+		assert.strictEqual(after.message, 'serving', 'the live status was never mutated');
+	});
 });

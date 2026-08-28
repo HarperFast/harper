@@ -696,4 +696,42 @@ describe('activation transaction', () => {
 
 		assert.strictEqual(await readLive(root, 'web'), 'new', 'the live tree was not replaced');
 	});
+
+	it('keeps both trees when the live path reappears even if the candidate never completed', async () => {
+		const root = await newRoot('recreated-incomplete');
+		// Same shape as the completed-candidate case, minus `.complete`. Rolling back deletes every aside
+		// record, and with a record present that tree is the last COMMITTED one — so discarding it destroys
+		// the only surviving copy of the previous release whether or not the candidate was ever validated.
+		await stageState(root, 'web', 'd1', { candidate: 'new', journal: true, aside: 'old', live: 'stub' });
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.match(failures.get('web').message, /exists again/);
+		assert.strictEqual(
+			await fs.readFile(path.join(root, ASIDE_STAGING_DIR, 'web', `${IN_PROGRESS}1-1-aaa`, 'index.js'), 'utf8'),
+			'old',
+			'the last committed tree survives'
+		);
+		assert.strictEqual(await readLive(root, 'web'), 'stub');
+	});
+
+	it('treats a retired rollback record as settled, not as a displaced tree', async () => {
+		const root = await newRoot('retired-not-displaced');
+		// A previous deploy retired its record but its best-effort sweep did not remove the tree. That record
+		// is settled — counting it as displaced turns an ordinary pre-swap state into the "exists again"
+		// ambiguity and fails a healthy component closed with an operator-only way out.
+		await stageState(root, 'web', 'd1', {
+			candidate: 'new',
+			complete: true,
+			journal: true,
+			aside: 'old',
+			live: 'current',
+		});
+		await fs.writeFile(path.join(root, ASIDE_STAGING_DIR, 'web', '.retired-1-1-aaa'), '');
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.strictEqual(failures.size, 0, 'the component settled rather than failing closed');
+		assert.strictEqual(await readLive(root, 'web'), 'current', 'and the live tree still stands');
+	});
 });

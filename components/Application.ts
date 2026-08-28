@@ -1296,8 +1296,17 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
 		if (error?.code === 'ENOENT') return [];
 		throw error;
 	});
+	// Retired records excluded, the same rule `recoverOrCleanupStaleExtractionPaths` applies. A record whose
+	// retire succeeded but whose best-effort sweep did not is settled, not displaced — counting it would let
+	// an ordinary pre-swap state look like the "live path recreated" ambiguity and fail a healthy component
+	// closed with an operator-only exit.
+	const entryNames = new Set(entries.map((entry) => entry.name));
 	return entries
-		.filter((entry) => entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX))
+		.filter(
+			(entry) =>
+				entry.name.startsWith(IN_PROGRESS_ASIDE_PREFIX) &&
+				!entryNames.has(`${RETIRED_ASIDE_PREFIX}${entry.name.slice(IN_PROGRESS_ASIDE_PREFIX.length)}`)
+		)
 		.map((entry) => join(asideStagingDir, entry.name))
 		.sort()
 		.reverse();
@@ -1685,13 +1694,17 @@ async function settleInterruptedActivation(
 		// own directory, the case the extraction path guards with `identifyRollbackPlaceholder`. Rolling back
 		// there deletes the committed tree AND the validated candidate and leaves that stub serving, so this
 		// fails closed instead: both trees stay on disk for an operator to choose between.
+		// NOT conditioned on the candidate being complete. `rollBack()` below removes every aside record, and
+		// with a record present that tree is the last committed one — so deleting it destroys the only
+		// surviving copy of the previous release whether or not the candidate was ever validated. What
+		// `.complete` decides is which tree we would prefer, not whether discarding the other is safe.
 		const displaced = asideRecords.find((record) => !record.endsWith(PRIOR_ABSENT_RECORD_SUFFIX));
-		if (displaced && candidateComplete) {
+		if (displaced) {
 			throw new Error(
 				`Cannot settle the interrupted activation of ${journal.component}: its previous tree was moved to ` +
-					`${displaced} and a complete candidate is still staged, but ${liveDirPath} exists again — ` +
-					`something recreated it after the deploy moved it aside, so which tree is current cannot be ` +
-					`determined without losing one of them`
+					`${displaced}, but ${liveDirPath} exists again — something recreated it after the deploy moved ` +
+					`it aside, so which tree is current cannot be determined without losing one of them. Remove ` +
+					`whichever of the two is not the release you want once you have determined which that is.`
 			);
 		}
 		await rollBack();
@@ -1816,7 +1829,20 @@ async function markCandidateComplete(
 ): Promise<void> {
 	// Contents first: `.complete` is roll-forward AUTHORITY, so it must not be durable before the tree it
 	// vouches for.
-	await syncTreeContents(candidateApplicationPath(componentDirPath, deploymentId));
+	//
+	// Except through a symlink. A `file:<directory>` candidate IS a symlink to a tree this deploy does not
+	// own — walking it fsyncs the developer's source directory, and one file the Harper uid cannot open
+	// raises EACCES, which is a real storage error rather than an unsupported-sync code and so fails an
+	// otherwise valid deploy. There is nothing of ours in that tree to make durable.
+	const candidatePath = candidateApplicationPath(componentDirPath, deploymentId);
+	const candidateIsLink = await lstat(candidatePath).then(
+		(stats) => stats.isSymbolicLink(),
+		(error) => {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+			throw error;
+		}
+	);
+	if (!candidateIsLink) await syncTreeContents(candidatePath);
 	try {
 		await writeControlFileDurably(candidateComponentFilePath(componentDirPath, deploymentId), componentName);
 	} catch (error) {

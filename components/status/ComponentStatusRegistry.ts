@@ -79,14 +79,24 @@ export class ComponentStatusRegistry {
 	 * Get the current status of a component
 	 */
 	public getStatus(componentName: string): ComponentStatus | undefined {
+		// Inside a validation the candidate reads its OWN writes, and never the live object: the returned
+		// `ComponentStatus` is mutable, so handing back the live one would let candidate code edit the
+		// serving component's status in place and bypass the diversion entirely. A component the candidate
+		// has not written yet is copied into the sink on first read for the same reason.
+		const sink = deployValidationStatusSink();
+		if (sink) {
+			const diverted = sink.get(componentName);
+			if (diverted) return diverted;
+			const live = this.statusMap.get(componentName);
+			if (!live) return undefined;
+			const copy = new ComponentStatus(live.status, live.message, live.error);
+			copy.lastChecked = live.lastChecked;
+			sink.set(componentName, copy);
+			return copy;
+		}
 		return this.statusMap.get(componentName);
 	}
 
-	/**
-	 * Capture every status entry in a component's namespace: the component itself and anything scoped under
-	 * it (`web`, `web.api`, …). Nested loads report under those scoped keys, so restoring only the bare name
-	 * leaves a plugin-scoped ERROR behind from a candidate that never went live.
-	 */
 	/**
 	 * Get all component statuses
 	 */
