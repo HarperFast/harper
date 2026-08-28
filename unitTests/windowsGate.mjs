@@ -122,8 +122,10 @@ function runGroup(pattern) {
 			output += chunk;
 			process.stdout.write(chunk);
 		};
-		child.stdout.on('data', capture);
-		child.stderr.on('data', capture);
+		// Optional: a spawn that fails on fd exhaustion can return before its stdio is wired, and
+		// throwing here would take the gate down in place of the 'error' listener below.
+		child.stdout?.on('data', capture);
+		child.stderr?.on('data', capture);
 
 		let timedOut = false;
 		let settled = false;
@@ -134,8 +136,8 @@ function runGroup(pattern) {
 			clearTimeout(timer);
 			// A descendant that outlived the group still holds these, and anything it writes from
 			// here on would interleave through later groups and through the summary table.
-			child.stdout.destroy();
-			child.stderr.destroy();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
 			const passing = SUMMARY.exec(output)?.[1];
 			if (!reason) {
 				if (timedOut) reason = `timed out after ${GROUP_TIMEOUT_MS}ms`;

@@ -15,7 +15,14 @@ process.env.HARPER_SAFE_MODE = 'true';
 const rootPath = mkdtempSync(join(tmpdir(), 'harper-terminal-shutdown-'));
 writeFileSync(join(rootPath, HARPER_CONFIG_FILE), `rootPath: ${JSON.stringify(rootPath)}\n`);
 process.env.ROOTPATH = rootPath;
-process.on('exit', () => rmSync(rootPath, { force: true, recursive: true }));
+process.on('exit', () => {
+	// Throwing here would exit the harness non-zero with an irrelevant stack, and the caller reads
+	// any non-zero exit as the mode failing. Windows refuses to remove a tree while anything still
+	// holds a handle under it, and the logger closes its fd on a timer.
+	try {
+		rmSync(rootPath, { force: true, recursive: true });
+	} catch {}
+});
 
 require('#src/utility/environment/environmentManager').initTestEnvironment();
 const manageThreads = require('#js/server/threads/manageThreads');
