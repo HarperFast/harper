@@ -1077,13 +1077,14 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
-				const tableKey = `${databaseName}.${tableName}`;
+				// '/' cannot appear in either name, so the key is collision-free
+				const tableKey = `${databaseName}/${tableName}`;
 				if (reportedIncompleteCatalogs.has(tableKey))
-					logger.debug(`Skipping table ${tableKey}: still no primary key row`);
+					logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
 				else {
 					reportedIncompleteCatalogs.add(tableKey);
 					logger.warn(
-						`Skipping table ${tableKey}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
+						`Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
 					);
 				}
 				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
@@ -1091,7 +1092,7 @@ function initStores(
 				continue;
 			}
 		}
-		reportedIncompleteCatalogs.delete(`${databaseName}.${tableName}`);
+		if (reportedIncompleteCatalogs.size) reportedIncompleteCatalogs.delete(`${databaseName}/${tableName}`);
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
@@ -1913,23 +1914,34 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 			cache: isCustomObjectIndex,
 		} as any) as any;
 		(dbi as any).rootStore = rootStore;
-		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
-		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
-		// Verification-Table cache can't track them. A versioned index initialises its encoder as a
-		// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
-		// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
-		// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
-		// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
-		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
-			armVersionedIndexEncoder(dbi, rootStore);
+		try {
+			// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
+			// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
+			// Verification-Table cache can't track them. A versioned index initialises its encoder as a
+			// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
+			// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
+			// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
+			// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
+			if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
+				armVersionedIndexEncoder(dbi, rootStore);
+			}
+			installCustomIndex(dbi);
+		} catch (error) {
+			// the handle is not yet owned by any table, so nobody else can close it
+			try {
+				dbi.close();
+			} catch {}
+			throw error;
 		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
+		installCustomIndex(dbi);
 	}
-	if (attribute.indexed.type) {
+	function installCustomIndex(indexStore: any) {
+		if (!attribute.indexed.type) return;
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
 		if (CustomIndex) {
-			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
+			indexStore.customIndex = new CustomIndex(indexStore, attribute.indexed);
 		} else {
 			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
@@ -2245,7 +2257,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
 		// reconciliation is reserved for local schema authoring; on a create the rows can only be aborted state.
 		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
-		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
+		for (const { key, value } of reconcileRemovals
+			? attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })
+			: []) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
@@ -2257,10 +2271,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-			if (!attribute || removeIndex) {
+			// a row already present under a create is aborted state, even for a name the create declares
+			const staleRow = !attribute || Boolean(deferredPrimaryRow);
+			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
-				if (!attribute) attributesDbi.remove(key);
+				if (staleRow) attributesDbi.remove(key);
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);

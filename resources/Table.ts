@@ -521,6 +521,8 @@ export function makeTable(options) {
 	let lastCleanupInterval: number;
 	let cleanupTimer: NodeJS.Timeout;
 	let recordExpirationInterval: NodeJS.Timeout;
+	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
+	const pendingCleanupResolvers = new Set<() => void>();
 	let disposed = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
@@ -5507,6 +5509,8 @@ export function makeTable(options) {
 		static cleanup() {
 			disposed = true;
 			clearTimeout(cleanupTimer);
+			for (const resolve of pendingCleanupResolvers) resolve();
+			pendingCleanupResolvers.clear();
 			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
@@ -6569,7 +6573,8 @@ export function makeTable(options) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) return;
-			return new Promise((resolve) => {
+			return new Promise<void>((resolve) => {
+				pendingCleanupResolvers.add(resolve);
 				const startOfYear = new Date();
 				startOfYear.setMonth(0);
 				startOfYear.setDate(1);
@@ -6674,6 +6679,7 @@ export function makeTable(options) {
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
+								pendingCleanupResolvers.delete(resolve);
 								resolve(undefined);
 								cleanupPriority = 0; // reset the priority
 							})),

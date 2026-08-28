@@ -163,7 +163,7 @@ describe('create table catalog write order', () => {
 		// the failed attempt closed this column family on RocksDB; the retry must have reopened a usable one
 		await Retried.primaryStore.put('retried', { id: 'retried', name: 'after retry' });
 		assert.strictEqual(
-			Retried.primaryStore.get('retried')?.name,
+			(await Retried.primaryStore.get('retried'))?.name,
 			'after retry',
 			'the retried primary store must serve traffic'
 		);
