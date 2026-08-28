@@ -285,7 +285,14 @@ The ordering is the design. Two things used to be wrong in a way each other hid:
 
 ### Recovering an interrupted activation
 
-An `activation.json` journal is written beside the candidate — with a `.complete` marker recording that
+Every control file is dot-prefixed — `.activation.json`, `.component`, `.complete`, `.unsettled` — because
+a deployment directory holds the candidate tree under the _component's_ own name beside them, and
+`isJoinableComponentName` rejects a leading dot. An undotted control file shares that namespace: a component
+named `activation.json` would put its tree on the journal path and activate with no journal at all, and one
+named `unsettled` would make every settle throw. Dotting makes the collision unrepresentable rather than
+handled.
+
+An `.activation.json` journal is written beside the candidate — with a `.complete` marker recording that
 build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()` can
 settle a crash at any boundary. Both go to a temp name, are fsynced, then linked into place, so the final
 name never exists with partial contents; the candidate's own contents are fsynced before `.complete` is

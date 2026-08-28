@@ -41,10 +41,10 @@ async function stageState(root, component, id, state) {
 	await fs.mkdir(deploymentDir, { recursive: true });
 	if (state.candidate) await writeTree(path.join(deploymentDir, component), state.candidate);
 	if (state.complete) await fs.writeFile(path.join(deploymentDir, '.complete'), '');
-	if (state.componentFile !== false) await fs.writeFile(path.join(deploymentDir, 'component'), component);
+	if (state.componentFile !== false) await fs.writeFile(path.join(deploymentDir, '.component'), component);
 	if (state.journal !== undefined) {
 		await fs.writeFile(
-			path.join(deploymentDir, 'activation.json'),
+			path.join(deploymentDir, '.activation.json'),
 			typeof state.journal === 'string' ? state.journal : JSON.stringify({ v: 1, component, candidateId: id })
 		);
 	}
@@ -214,7 +214,7 @@ describe('interrupted activation recovery', () => {
 	it('ignores a sidecar naming something outside the components root', async () => {
 		const root = await newRoot('badsidecar');
 		const { deploymentDir } = await stageState(root, 'web', 'd1', { live: 'CANDIDATE\n', journal: 'truncated{' });
-		await fs.writeFile(path.join(deploymentDir, 'component'), '../../etc');
+		await fs.writeFile(path.join(deploymentDir, '.component'), '../../etc');
 
 		const failures = await recoverInterruptedActivations(root);
 
@@ -307,7 +307,7 @@ describe('read-only verdict for worker boot', () => {
 
 		assert.strictEqual(failures.size, 1, 'the component is failed closed rather than reported settled');
 		assert.ok(
-			existsSync(path.join(deploymentDir, 'activation.json')),
+			existsSync(path.join(deploymentDir, '.activation.json')),
 			'and the journal survives, so the next start retries instead of letting the legacy pass win'
 		);
 		await fs.rm(root, { recursive: true, force: true });
@@ -325,7 +325,7 @@ describe('read-only verdict for worker boot', () => {
 		const unsettleable = await unsettleableComponentsFromDisk(root);
 		assert.deepStrictEqual([...unsettleable.keys()], ['web'], 'and a worker sees it too');
 		assert.ok(
-			(await fs.readFile(path.join(deploymentDir, 'unsettled'), 'utf8')).length > 0,
+			(await fs.readFile(path.join(deploymentDir, '.unsettled'), 'utf8')).length > 0,
 			'the reason is recorded, not just the fact'
 		);
 		await fs.rm(root, { recursive: true, force: true });
@@ -536,7 +536,7 @@ describe('activation transaction', () => {
 		const root = await newRoot('scan-isolation');
 		// Ownership cannot be read at all: the sidecar is a directory, so the read fails with EISDIR rather
 		// than reporting "unowned". This used to escape the scan and leave every later deployment unsettled.
-		await fs.mkdir(path.join(root, DEPLOY_STAGING_DIR, 'd1', 'component'), { recursive: true });
+		await fs.mkdir(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.component'), { recursive: true });
 		await stageState(root, 'web', 'd2', { candidate: 'new', complete: true, journal: true });
 
 		const failures = await recoverInterruptedActivations(root);
@@ -605,7 +605,7 @@ describe('activation transaction', () => {
 		// A deferral is not a verdict. A marker here would outlive the deploy and have every worker read a
 		// healthy component as unsettleable.
 		assert.ok(
-			!existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', 'unsettled')),
+			!existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.unsettled')),
 			'and no unsettled verdict was left on disk for a deploy that is simply still running'
 		);
 	});
@@ -617,12 +617,39 @@ describe('activation transaction', () => {
 		// that as "no journal for web" is the clobber the gate exists to prevent.
 		await stageState(root, 'web', 'd1', { live: 'new', aside: 'old', complete: true });
 		const deploymentDir = path.join(root, DEPLOY_STAGING_DIR, 'd1');
-		await fs.rm(path.join(deploymentDir, 'component'));
-		await fs.mkdir(path.join(deploymentDir, 'component'));
-		await fs.mkdir(path.join(deploymentDir, 'activation.json'));
+		await fs.rm(path.join(deploymentDir, '.component'));
+		await fs.mkdir(path.join(deploymentDir, '.component'));
+		await fs.mkdir(path.join(deploymentDir, '.activation.json'));
 
 		await assert.rejects(() => recoverInterruptedComponentExtraction(root, 'web', false));
 
 		assert.strictEqual(await readLive(root, 'web'), 'new', 'the live tree was not replaced');
+	});
+
+	it('reports a deployment its journal and sidecar attribute to different components', async () => {
+		const root = await newRoot('attribution-split');
+		// The gate blocks the sidecar's component (restoring is destructive, so it takes the union) while
+		// settlement keys the journal, so neither name's deploy could ever clear this on its own.
+		await stageState(root, 'web', 'd1', { candidate: 'new', complete: true, journal: true });
+		await fs.writeFile(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.component'), 'other');
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.match(failures.get('other').message, /attributed to two different components/);
+		assert.ok(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.activation.json')), 'nothing was discarded');
+	});
+
+	it('keeps reading the other deployments when one cannot be attributed at all', async () => {
+		const root = await newRoot('verdict-isolation');
+		// A directory-shaped sidecar makes every ownership read throw. That used to escape the whole
+		// read-only pass, and its caller only warns — so no component was failed closed from marker evidence.
+		await fs.mkdir(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.component'), { recursive: true });
+		await fs.writeFile(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.unsettled'), 'unreadable owner');
+		await stageState(root, 'web', 'd2', { candidate: 'new', journal: 'truncated{' });
+
+		const unsettleable = await unsettleableComponentsFromDisk(root);
+
+		assert.ok(unsettleable.has('web'), "the sibling's own unreadable journal is still reported");
+		assert.ok(unsettleable.has('d1'), 'and the unattributable one is reported under its deployment id');
 	});
 });

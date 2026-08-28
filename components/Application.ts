@@ -943,19 +943,25 @@ export async function extractApplication(
 
 // Written into a candidate's deployment directory once its build and its validation have BOTH succeeded.
 // Roll-forward authority: recovery may activate an interrupted candidate only if this is present.
+// Every control file is dot-prefixed, and `isJoinableComponentName` rejects a leading dot: a deployment
+// directory holds the candidate tree under the COMPONENT'S name beside these, so an undotted name would
+// share that namespace. A component named `activation.json` would put its tree on the journal path, the
+// journal write would take EEXIST as "a retry of this activation", and the swap would proceed with no
+// journal to hold the legacy pass back; one named `unsettled` would make every settle throw on a
+// non-recursive `rm` of a directory. Dotting them makes the collision unrepresentable rather than handled.
 const CANDIDATE_COMPLETE_MARKER = '.complete';
 // Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
 // tree and configuration together — instead of inferring intent from filesystem shape alone.
-const ACTIVATION_JOURNAL = 'activation.json';
+const ACTIVATION_JOURNAL = '.activation.json';
 // The component this deployment directory belongs to, as plain text in its own file. Redundant with the
 // journal on purpose: after the swap the candidate has moved to the live path, so a journal that cannot be
 // parsed leaves nothing to infer the component from — and a failure keyed by deployment id fails NOTHING
 // closed, letting the component load over state nobody reconciled.
-const CANDIDATE_COMPONENT_FILE = 'component';
+const CANDIDATE_COMPONENT_FILE = '.component';
 // Written by main-thread recovery when it could not settle an activation whose journal is otherwise
 // well-formed. Workers cannot infer that case: a well-formed journal is indistinguishable from one belonging
 // to a deploy in flight, so without a record they would treat an unsettled component as healthy and load it.
-const UNSETTLED_MARKER = 'unsettled';
+const UNSETTLED_MARKER = '.unsettled';
 const ACTIVATION_JOURNAL_VERSION = 1;
 
 /**
@@ -1261,7 +1267,12 @@ async function journaledDeploymentForComponent(
 		// `component`, whose candidate path collides with the sidecar's and makes every sidecar read fail.
 		const journalOwner = (await readActivationJournal(journalPath).catch(() => undefined))?.component;
 		if (journalOwner === componentName) return deploymentDirPath;
-		if ((await candidateComponentName(deploymentDirPath)) === componentName) return deploymentDirPath;
+		const sidecarOwner = await candidateComponentName(deploymentDirPath);
+		if (sidecarOwner === componentName) return deploymentDirPath;
+		// A journal nobody can attribute blocks EVERY component. It is a rare, genuinely broken state — an
+		// unparseable journal whose deployment no longer holds a tree to infer from — and the alternative is
+		// letting the restore proceed against a candidate this journal may well have committed.
+		if (journalOwner === undefined && sidecarOwner === undefined) return deploymentDirPath;
 	}
 	return undefined;
 }
@@ -1343,38 +1354,68 @@ export async function unsettleableComponentsFromDisk(componentsRootDirPath: stri
 	for (const deployment of deployments) {
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
-		// Recorded by main when it failed to settle a well-formed journal. Checked first, because that case
-		// is invisible to a worker otherwise.
-		// Only ENOENT is absence. A marker that exists but cannot be read (EIO, EACCES) must not be taken as
-		// "no verdict" — that classifies the well-formed journal beside it as a healthy in-flight deploy and
-		// lets the worker load a component main failed closed.
-		let recorded: string | undefined;
+		// Per deployment. `candidateComponentName` propagates every non-ENOENT error now, and this pass runs
+		// where the CALLER only warns — so one unreadable deployment escaping here would drop the verdict for
+		// every other component and let each of them load with no evidence checked at all.
 		try {
-			recorded = await readFile(join(deploymentDirPath, UNSETTLED_MARKER), 'utf8');
+			await verdictFor(deploymentDirPath, deployment.name, unsettleable);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-				const component = await candidateComponentName(deploymentDirPath);
-				const failure = error instanceof Error ? error : new Error(String(error));
-				if (component && !unsettleable.has(component)) unsettleable.set(component, failure);
-				continue;
-			}
-		}
-		if (recorded !== undefined) {
-			const component = await candidateComponentName(deploymentDirPath);
-			if (component && !unsettleable.has(component)) {
-				unsettleable.set(component, new Error(recorded.trim() || `Activation of ${component} could not be settled`));
-			}
-			continue;
-		}
-		try {
-			await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
-		} catch (error) {
-			const component = await candidateComponentName(deploymentDirPath);
 			const failure = error instanceof Error ? error : new Error(String(error));
-			if (component && !unsettleable.has(component)) unsettleable.set(component, failure);
+			if (!unsettleable.has(deployment.name)) unsettleable.set(deployment.name, failure);
 		}
 	}
 	return unsettleable;
+}
+
+/** One deployment's read-only verdict. Throws rather than guessing; the caller scopes that to this entry. */
+async function verdictFor(
+	deploymentDirPath: string,
+	deploymentName: string,
+	unsettleable: Map<string, Error>
+): Promise<void> {
+	// Recorded by main when it failed to settle a well-formed journal. Checked first, because that case is
+	// invisible to a worker otherwise.
+	//
+	// Only ENOENT is absence. A marker that exists but cannot be read (EIO, EACCES) must not be taken as
+	// "no verdict" — that classifies the well-formed journal beside it as a healthy in-flight deploy and
+	// lets the worker load a component main failed closed.
+	let recorded: string | undefined;
+	try {
+		recorded = await readFile(join(deploymentDirPath, UNSETTLED_MARKER), 'utf8');
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+			const failure = error instanceof Error ? error : new Error(String(error));
+			return record(unsettleable, await attribute(deploymentDirPath, deploymentName), failure);
+		}
+	}
+	if (recorded !== undefined) {
+		const component = await attribute(deploymentDirPath, deploymentName);
+		return record(
+			unsettleable,
+			component,
+			new Error(recorded.trim() || `Activation of ${component} could not be settled`)
+		);
+	}
+	try {
+		await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
+	} catch (error) {
+		const failure = error instanceof Error ? error : new Error(String(error));
+		record(unsettleable, await attribute(deploymentDirPath, deploymentName), failure);
+	}
+}
+
+/**
+ * Who a deployment's evidence belongs to. Falls back to the deployment id when nothing names it: a verdict
+ * attributed to nothing is a verdict nobody acts on, and the id is at least something an operator can find
+ * on disk. A read that FAILS is not "nothing names it" — that propagates, and the caller records it against
+ * the id, so an unreadable deployment is reported rather than dropped.
+ */
+async function attribute(deploymentDirPath: string, deploymentName: string): Promise<string> {
+	return (await candidateComponentName(deploymentDirPath)) ?? deploymentName;
+}
+
+function record(unsettleable: Map<string, Error>, component: string, failure: Error): void {
+	if (!unsettleable.has(component)) unsettleable.set(component, failure);
 }
 
 /**
@@ -1477,6 +1518,23 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			continue;
 		}
 		try {
+			// Disagreeing attributions are the one case with no automated way out: the restore gate blocks the
+			// SIDECAR's component (it takes the union, because restoring is destructive) while settlement
+			// keys the journal, so neither name's deploy could ever clear it. Reported as unsettleable
+			// against the sidecar's name, which is the component actually stalled, instead of stalling it
+			// silently on every boot.
+			const sidecarOwner = await candidateComponentName(deploymentDirPath);
+			if (sidecarOwner !== undefined && sidecarOwner !== journal.component) {
+				await fail(
+					sidecarOwner,
+					new Error(
+						`Deploy staging ${deploymentDirPath} is attributed to two different components: its journal ` +
+							`names '${journal.component}' and its sidecar names '${sidecarOwner}'. Neither can settle ` +
+							`it; remove that directory once you have determined which tree is current.`
+					)
+				);
+				continue;
+			}
 			const settling = journal;
 			await withComponentPreparationLock(
 				join(componentsRootDirPath, settling.component),
