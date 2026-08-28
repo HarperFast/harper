@@ -1805,7 +1805,12 @@ async function syncTreeContents(rootPath: string, foreignTree = false): Promise<
 			// so it can hold files the Harper uid cannot open. Those are not ours to make durable and their
 			// EACCES says nothing about whether the install output beside them reached storage — while
 			// failing here would fail an otherwise valid deploy over a file the deploy never touched. The
-			// install output itself is ours, readable, and still fsynced.
+			// install output itself is written as this uid, so it is readable and still fsynced.
+			//
+			// The limit of that: this cannot tell a developer's unreadable source file from an install
+			// script that deliberately made its OWN output unreadable, so `.complete` could certify output
+			// that was never synced. Only for a `file:` candidate, and only for a script that chmods its
+			// own artifacts away from the uid that has to run them.
 			if (isUnsupportedSync(error) || (foreignTree && (error as NodeJS.ErrnoException)?.code === 'EACCES')) {
 				logger.trace?.(`Sync of ${entryPath} unavailable: ${errorMessage(error)}`);
 				return;

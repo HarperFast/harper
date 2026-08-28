@@ -283,7 +283,10 @@ describe('read-only verdict for worker boot', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('keeps the journal and fails closed when a rollback record cannot be retired', async () => {
+	it('keeps the journal and fails closed when a rollback record cannot be retired', async function () {
+		// chmod does not stop root writing, and it is a no-op on Windows — in either case the retire would
+		// SUCCEED and this would assert nothing.
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
 		// Retiring is CORRECTNESS: the retired marker is what stops the journal-blind legacy pass treating the
 		// record as authoritative. A record left un-retired while the journal is removed would let that pass
 		// restore the displaced tree over the candidate just rolled forward — so this must fail closed and

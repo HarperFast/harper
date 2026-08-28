@@ -106,7 +106,8 @@ describe('deploy candidate builds', () => {
 	});
 
 	it('still fsyncs a file: candidate, tolerating only the foreign files beside it', async function () {
-		if (process.platform === 'win32') return this.skip(); // chmod-based unreadability is a POSIX test
+		// chmod cannot make a file unreadable to root, so as root this would assert nothing at all.
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
 		this.timeout(20000);
 		const { markCandidateComplete } = require('#src/components/Application');
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-filelink-'));
