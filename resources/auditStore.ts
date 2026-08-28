@@ -154,6 +154,7 @@ export function openAuditStore(rootStore) {
 		return {
 			remove() {
 				delete deleteCallbacks[tableId];
+				if (auditStore.tableStores[tableId] === table) delete auditStore.tableStores[tableId];
 			},
 		};
 	};

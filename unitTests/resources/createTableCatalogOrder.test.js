@@ -85,6 +85,7 @@ describe('create table catalog write order', () => {
 		const catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
 		const writes = [];
 		const patched = [];
+		let failNextTableIdWrite = true;
 		let failNextTagRow = true;
 		// Table.cleanup() is the only caller of this, so a call is proof the failed create released its callbacks
 		const releasedReclamationHandlers = [];
@@ -97,6 +98,11 @@ describe('create table catalog write order', () => {
 			const original = catalogPrototype[method];
 			if (typeof original !== 'function') continue;
 			catalogPrototype[method] = function (key, ...rest) {
+				// the primary store is open but makeTable() has not run when the next table id is claimed
+				if (key === Symbol.for('next-table-id') && failNextTableIdWrite) {
+					failNextTableIdWrite = false;
+					throw new Error('injected table id write failure');
+				}
 				// the index store for 'tag' is already open when its row is written
 				if (key === `${tableName}/tag` && failNextTagRow) {
 					failNextTagRow = false;
@@ -109,6 +115,12 @@ describe('create table catalog write order', () => {
 		}
 		let Retried;
 		try {
+			assert.throws(() => table(definition), /injected table id write failure/);
+			assert.strictEqual(
+				databases.test[tableName],
+				undefined,
+				'a create that fails before makeTable must not register the class'
+			);
 			assert.throws(() => table(definition), /injected catalog write failure/);
 			assert.strictEqual(databases.test[tableName], undefined, 'a failed create must not register the class');
 			assert(!writes.includes(`${tableName}/`), `a failed create must not write the primary row: ${writes}`);

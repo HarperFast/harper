@@ -2005,6 +2005,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let deferredPrimaryRow: any;
+	let unpublishedPrimaryStore: any;
 	let published = false;
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
@@ -2182,6 +2183,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
+			// from here on a failure has something to release, whether or not makeTable() completes
+			unpublishedPrimaryStore = primaryStore;
 			rootStore.databaseName = databaseName;
 			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
 			logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
@@ -2232,8 +2235,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 		Table.dbisDB = attributesDbi;
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
-		// reconciliation is reserved for local schema authoring.
-		const reconcileRemovals = origin !== 'cluster';
+		// reconciliation is reserved for local schema authoring - except on a create: rows found under the
+		// lock for a table with no primary row can only be aborted state, never a completed generation.
+		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
 		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
@@ -2393,8 +2397,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
-				// registered as soon as it is open, so a create that fails below can still close it
-				indices[attribute.name] = dbi;
+				// an unpublished class's map is private, so register early there for the failure path to close
+				if (deferredPrimaryRow) indices[attribute.name] = dbi;
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
 				// disk; persist the resolved value now — even when nothing else changed — so the format is
@@ -2504,6 +2508,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
 				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 				dbi.indexNulls = attribute.indexNulls;
+				indices[attribute.name] = dbi;
 			} else if (changed) {
 				hasChanges = true;
 				exclusiveLock();
@@ -2537,7 +2542,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 		}
 	} catch (error) {
-		if (deferredPrimaryRow && !published) discardUnpublishedTable();
+		if (unpublishedPrimaryStore && !published) discardUnpublishedTable();
 		throw error;
 	} finally {
 		releaseLock();
@@ -2600,12 +2605,14 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				if (!attribute.isPrimaryKey && !attribute.relationship) attributesDbi.remove(tableName + '/' + attribute.name);
 			}
 		});
-		discard('callbacks', () => Table.cleanup());
+		// makeTable() itself may be what threw, so the class and its index map may not exist yet
+		if (Table) discard('callbacks', () => Table.cleanup());
 		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
 		// create's write transaction; only RocksDB column-family handles hold native state to release
 		if (rootStore instanceof RocksDatabase) {
-			for (const indexName in Table.indices) discard(`index ${indexName}`, () => Table.indices[indexName].close());
-			discard('primary store', () => Table.primaryStore.close());
+			for (const indexName in Table?.indices ?? {})
+				discard(`index ${indexName}`, () => Table.indices[indexName].close());
+			discard('primary store', () => unpublishedPrimaryStore.close());
 		}
 	}
 	// Acquire an exclusive lock for attribute updates
