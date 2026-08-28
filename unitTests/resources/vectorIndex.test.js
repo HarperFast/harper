@@ -936,6 +936,10 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;
 	const N = 600;
+	// Empirically chosen and bound to this corpus: seeds differ in whether the entry point decides
+	// the result, and seed 1 does not — it passes the comparison below with the descent deleted. When
+	// N or the vector layout changes, re-pick against the negative control at the end of the test.
+	const SEED = 2;
 
 	before(async () => {
 		setupTestDBPath();
@@ -948,11 +952,27 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
 			],
 		});
-		for (let i = 0; i < N; i++) {
-			const a = (i / N) * Math.PI * 2;
-			const b = ((i * 7) % N) / N;
-			await T.put(i, { vector: [Math.cos(a), Math.sin(a), b, (i % 11) / 11] });
+		// HNSW level assignment draws from Math.random, and greedy descent loses recall on a minority
+		// of the graphs that produces. The draw count is a tripwire on anything else drawing from the
+		// pinned stream and reshaping the graph.
+		const realRandom = Math.random;
+		let state = SEED;
+		let draws = 0;
+		Math.random = () => {
+			draws++;
+			state = (state * 1664525 + 1013904223) >>> 0;
+			return state / 4294967296;
+		};
+		try {
+			for (let i = 0; i < N; i++) {
+				const a = (i / N) * Math.PI * 2;
+				const b = ((i * 7) % N) / N;
+				await T.put(i, { vector: [Math.cos(a), Math.sin(a), b, (i % 11) / 11] });
+			}
+		} finally {
+			Math.random = realRandom;
 		}
+		assert.strictEqual(draws, N, 'the pinned stream must serve one level draw per node and nothing else');
 	});
 
 	after(() => {
@@ -973,17 +993,28 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 		];
 
 		const greedy = [];
-		for (const target of targets) {
-			greedy.push(
-				(
-					await fromAsync(
-						T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], limit: 10 })
+		const routingEfs = new Set();
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			if (level > 0) routingEfs.add(ef);
+			return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		};
+		try {
+			for (const target of targets) {
+				greedy.push(
+					(
+						await fromAsync(
+							T.search({ sort: { attribute: 'vector', target, distance: 'cosine' }, select: ['id'], limit: 10 })
+						)
 					)
-				)
-					.map((r) => r.id)
-					.join(',')
-			);
+						.map((r) => r.id)
+						.join(',')
+				);
+			}
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
 		}
+		// The comparison below holds either way if production stops passing ROUTING_EF here.
+		assert.deepStrictEqual([...routingEfs], [1], 'the layers above 0 must route at ROUTING_EF');
 
 		// Every layer at the ef layer 0 actually resolves to — what search() passed down before greedy
 		// descent. Read it from a real query rather than efConstructionSearch, which is only the
@@ -1008,6 +1039,32 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 					.join(',');
 				assert.strictEqual(greedy[i], full, `greedy descent changed the result set for target ${i}`);
 			}
+		} finally {
+			customIndex.searchLayer = originalSearchLayer;
+		}
+
+		// On many graphs layer 0 alone reaches the true neighbours from wherever it starts, and there
+		// everything above passes with the descent deleted outright.
+		customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+			return level > 0 ? [] : originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+		};
+		try {
+			let differs = false;
+			for (let i = 0; i < targets.length && !differs; i++) {
+				const undescended = (
+					await fromAsync(
+						T.search({
+							sort: { attribute: 'vector', target: targets[i], distance: 'cosine' },
+							select: ['id'],
+							limit: 10,
+						})
+					)
+				)
+					.map((r) => r.id)
+					.join(',');
+				differs = undescended !== greedy[i];
+			}
+			assert(differs, 'this graph routes to the same results without the descent, so the test proves nothing');
 		} finally {
 			customIndex.searchLayer = originalSearchLayer;
 		}
