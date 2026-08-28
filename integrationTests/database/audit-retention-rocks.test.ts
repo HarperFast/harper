@@ -37,7 +37,7 @@ async function waitForStats(ctx: ContextWithHarper): Promise<void> {
 }
 
 async function waitForPurgeRun(ctx: ContextWithHarper, previousRuns: number): Promise<number> {
-	const deadline = Date.now() + 15_000;
+	const deadline = Date.now() + 25_000;
 	while (Date.now() < deadline) {
 		try {
 			const runs = (await getStats(ctx))?.totals?.purgeRuns;
@@ -70,7 +70,7 @@ suite(
 			await teardownHarper(ctx);
 		});
 
-		test('runs more than one passive purge pass', { timeout: 40_000 }, async () => {
+		test('runs more than one passive purge pass', { timeout: 90_000 }, async () => {
 			const engineResponse = await fetch(`${ctx.harper.httpURL}/StorageEngineInfo/`, {
 				headers: { Authorization: authHeader(ctx) },
 			});

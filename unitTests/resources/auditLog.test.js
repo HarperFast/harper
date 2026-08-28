@@ -11,7 +11,11 @@ const {
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
-const { removeStorageReclamation } = require('#src/server/storageReclamation');
+const {
+	removeStorageReclamation,
+	runReclamationHandlers,
+	setAvailableSpaceRatioGetter,
+} = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
@@ -233,6 +237,61 @@ describe('Audit log', () => {
 			await delay(20);
 			assert.equal(purgeCalls, purgeCallsAtStop, 'a retired cleanup loop accepted a new pass');
 		} finally {
+			setAuditRetention(60_000, 10_000);
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	});
+	it('shortens the Rocks cadence while disk pressure is reported', async function () {
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-pressure-'));
+		const rootStore = new RocksDatabase(scratch).open();
+		const originalSetTimeout = global.setTimeout;
+		const originalClearTimeout = global.clearTimeout;
+		const fakeTimers = new Set();
+		const scheduled = [];
+		rootStore.purgeLogs = () => [];
+		// only the scratch path reports pressure, so no other open store's handler is invoked and
+		// its cleanup timers cannot land in `scheduled`
+		setAvailableSpaceRatioGetter(async (path) => (path === scratch ? 0.2 : 0.8));
+		global.setTimeout = (callback, delay) => {
+			const timer = {
+				callback,
+				delay,
+				unref() {
+					return timer;
+				},
+			};
+			fakeTimers.add(timer);
+			// runReclamationHandlers re-arms its own hourly timer through the same global
+			if (delay <= 1_000) scheduled.push(timer);
+			return timer;
+		};
+		global.clearTimeout = (timer) => {
+			if (!fakeTimers.has(timer)) originalClearTimeout(timer);
+		};
+		setAuditRetention(1_000, 10);
+		let reclamation;
+		try {
+			openAuditStore(rootStore);
+			scheduled.length = 0; // drop the store-open pass; this test drives the pressure-armed one
+			// not awaited: the handler resolves only once the pass below runs, and the pass is on a fake timer
+			reclamation = runReclamationHandlers();
+			await new Promise(setImmediate);
+
+			assert.equal(scheduled.length, 1, 'a pressure signal should arm a cleanup pass');
+			const pressuredPass = scheduled.shift();
+			assert.equal(pressuredPass.delay, 100, 'the reclamation handler arms its pass at a fixed 100ms');
+			await pressuredPass.callback();
+
+			assert.equal(scheduled.length, 1);
+			// priority 0.4/0.2 = 2, so the window is retention/(1+4) and the cadence a tenth of that
+			assert.equal(scheduled.shift().delay, 20, 'pressure should shorten the cadence, not just the cutoff');
+		} finally {
+			global.setTimeout = originalSetTimeout;
+			global.clearTimeout = originalClearTimeout;
+			await reclamation;
+			setAvailableSpaceRatioGetter();
 			setAuditRetention(60_000, 10_000);
 			removeStorageReclamation(scratch);
 			if (rootStore.status !== 'closed') rootStore.close();

@@ -1462,6 +1462,7 @@ export async function dropDatabase(databaseName) {
 
 		if (rootStore) {
 			rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
 					rootStore.close();
@@ -1477,6 +1478,7 @@ export async function dropDatabase(databaseName) {
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 			rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
@@ -1526,6 +1528,7 @@ export function closeDatabase(databaseName: string): boolean {
 	if (definedRoot) rootStores.add(definedRoot);
 	for (const rootStore of rootStores) {
 		rootStore.auditStore?.stopAuditCleanup?.();
+		removeStorageReclamation(rootStore.path);
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);

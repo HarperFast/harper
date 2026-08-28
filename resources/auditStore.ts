@@ -250,7 +250,6 @@ export function openAuditStore(rootStore) {
 					if (isRocksAuditStore) {
 						// Rocks reclaims whole segments and eligibility only changes on rotation/flush, so the
 						// LMDB backoff — which reads a per-entry delete count — would only rescan the same files.
-						// Pressure shortens the retention cutoff and this cadence together.
 						auditCleanupDelay = Math.max(
 							DEFAULT_AUDIT_CLEANUP_DELAY,
 							Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)

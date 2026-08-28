@@ -409,6 +409,34 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		}
 	});
 
+	it('deregisters the storage-reclamation handler when an ordinary database is closed', async function () {
+		const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+		const { closeDatabase } = require('#src/resources/databases');
+		const queried = [];
+		setAvailableSpaceRatioGetter(async (path) => {
+			queried.push(path);
+			return 1; // no pressure, so no handler runs and only the path registry is observed
+		});
+		try {
+			const ReclaimProbe = table({
+				table: 'ReclaimProbe',
+				database: 'reclaimprobe',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const rootPath = ReclaimProbe.primaryStore.rootStore.path;
+			await runReclamationHandlers();
+			assert.ok(queried.includes(rootPath), 'opening a database registers a reclamation handler for its root path');
+
+			closeDatabase('reclaimprobe');
+			queried.length = 0;
+			await runReclamationHandlers();
+
+			assert.ok(!queried.includes(rootPath), 'closeDatabase must drop the handler pinning the closed store');
+		} finally {
+			setAvailableSpaceRatioGetter();
+		}
+	});
+
 	it('rejects a store identity that would resolve blob roots outside the blobs directory', function () {
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', '..'), /not a legal database name/);
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'a/b'), /not a legal database name/);
