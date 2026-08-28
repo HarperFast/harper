@@ -829,15 +829,35 @@ export function httpRequest(options: any, data: any): Promise<http.IncomingMessa
 }
 
 /**
+ * Which database an operation request targets: `database` wins over the legacy `schema`, and a
+ * request that names neither targets the default database.
+ *
+ * The single source of truth for that question. Authorization has to answer it identically to the
+ * handlers — it runs first, and if the two disagree then the permissions checked are not the
+ * permissions for the write that happens. Two divergences between this and the copy that used to
+ * live in `verifyPerms` (`schema ?? database`) were each exploitable on their own: nullish
+ * coalescing let a falsy-but-present `database: 0` through where this defaults, and the reversed
+ * precedence let a request authorize against `schema` while the handler wrote `database`.
+ *
+ * Deliberately falsy rather than nullish: a `database` of `0` or `''` is not a database, and
+ * `Joi.number()` is an accepted type for the field, so `0` reaches here validated.
+ */
+export function resolveTargetDatabase(req: any): string {
+	return req.database || req.schema || terms.DEFAULT_DATABASE_NAME;
+}
+
+/**
  * Will set default schema/database or set database to schema
  * @param req
  */
 export function transformReq(req: any) {
-	if (!req.schema && !req.database) {
-		req.schema = terms.DEFAULT_DATABASE_NAME;
-		return;
-	}
-	if (req.database) req.schema = req.database;
+	const database = resolveTargetDatabase(req);
+	// Only write when it would change something. The previous implementation left `req.schema` alone
+	// whenever it was already the resolved value, and an unconditional assignment is not equivalent:
+	// re-assigning an identical value still throws on a frozen or sealed object under strict mode,
+	// which every module here is. Nothing is known to pass one, but a write that cannot change the
+	// outcome is not worth the failure mode.
+	if (req.schema !== database) req.schema = database;
 }
 
 export function convertToMS(interval: any) {
