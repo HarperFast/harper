@@ -487,6 +487,12 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
 		// registration methods no-op for the duration of the load.
 		const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
+		// The candidate loads under the REAL component's name, so a candidate that throws marks the live
+		// component ERROR — and validation rejecting it would leave that status behind, reporting a healthy
+		// component as broken for as long as it keeps serving. Captured here and restored below.
+		const { internal: statusInternal } = require('./status/index.ts');
+		const componentName = path.basename(candidateDirPath);
+		const priorStatus = statusInternal.componentStatusRegistry.getStatus(componentName);
 		const validation = runWithDeployValidationGuard(async () => {
 			try {
 				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
@@ -494,8 +500,19 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 				});
 			} finally {
 				const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
-				for (const result of closeResults) {
-					if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
+				const failedCloses = closeResults.filter((result) => result.status === 'rejected');
+				for (const result of failedCloses) {
+					log.warn('Failed to close a deploy-validation Scope', result.reason);
+				}
+				// A rejected close is a REJECTED VALIDATION, not a warning. `Scope.close()` stops at the
+				// throwing listener, so its remaining internal listener removal and subscription-hold release
+				// never run and the throwaway scope stays partially live — one leak per deploy, on the worker
+				// that serves the component.
+				if (failedCloses.length) {
+					throw new AggregateError(
+						failedCloses.map((result) => result.reason),
+						`Could not tear down deploy validation for ${componentName}: ${failedCloses.length} scope(s) failed to close`
+					);
 				}
 			}
 		});
@@ -505,6 +522,7 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		try {
 			await validation;
 		} finally {
+			statusInternal.componentStatusRegistry.restoreStatus(componentName, priorStatus);
 			componentLoader.setErrorReporter(priorErrorReporter);
 			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
 			// one dead entry per deploy for the life of the process.

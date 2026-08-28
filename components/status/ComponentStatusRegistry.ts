@@ -72,6 +72,20 @@ export class ComponentStatusRegistry {
 	}
 
 	/**
+	 * Put one component's status back to a previously captured value, or remove it if there was none.
+	 *
+	 * For deploy pre-flight validation: that load runs the CANDIDATE's code under the real component's name,
+	 * so a candidate that throws marks the live component ERROR. Validation then correctly rejects and the
+	 * previous version keeps serving — but the status would stay ERROR, reporting a healthy component as
+	 * broken. Scoped to the one component rather than suppressing status writes globally, which would also
+	 * drop a genuine failure reported by an interleaving real load.
+	 */
+	public restoreStatus(componentName: string, previous: ComponentStatus | undefined): void {
+		if (previous) this.statusMap.set(componentName, previous);
+		else this.statusMap.delete(componentName);
+	}
+
+	/**
 	 * Get all component statuses
 	 */
 	public getAllStatuses(): ComponentStatusMap {
