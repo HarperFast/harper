@@ -1,0 +1,5 @@
+
+# This defines the configuration of this application. Each defines a (sub) component that is loaded and
+# used for this application. These components can provide specific functionality and define how different
+# files in your app are loaded.
+extensionModule: ./extension.js

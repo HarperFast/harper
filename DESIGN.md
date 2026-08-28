@@ -618,6 +618,22 @@ its coalescing must stay a superset-safe no-op for the single-swap #586 case. Re
 `integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
 (it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
 
+**Publication is transactional (#2382).** `updateTLS` builds the entire replacement state —
+hostname→context map, CA map, and default candidate — into pass-local candidates and reconciles the
+live maps in place only after the pass completes (their identity is load-bearing:
+`server.secureContexts` and each context's `availableCAs` alias them). A record that is still in the
+table but fails to build (`ERR_OSSL_X509_KEY_VALUES_MISMATCH` when the table's cert outruns the
+on-disk key, a missing key on this thread) keeps every live entry it owns *and* its default
+candidacy — a record can be serving as the default with no hostname entries at all — so a transient
+mismatch never downgrades serving below last-good (the pre-fix behavior served the self-signed
+default for days). Deleting the record remains the way to drop its contexts. A failed pass arms a
+self-retry on the shared debounce with a per-signature backoff (1.5s doubling to 5min) and
+signature-throttled logging; external triggers (table subscription, key reload) stay at the plain
+debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll dedupe, but rolls
+the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
+rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
+periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever

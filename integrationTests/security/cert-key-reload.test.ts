@@ -14,14 +14,16 @@
  *
  * The race: a worker can receive the new cert (table subscription -> updateTLS) and
  * build a secure context BEFORE it has reloaded the matching new key, pairing the
- * new cert with the OLD key. Because getPrivateKeyByName reads the in-thread map
- * first, that context stays mismatched — every handshake against that worker fails —
- * until the next cert-table change. The fix makes a private-key reload (via chokidar
- * OR the periodic poll) trigger a local TLS context rebuild, so the worker converges
- * on the new cert + new key on its own.
+ * new cert with the OLD key. Two behaviors this test pins (#586 + #2382):
  *
- * The bug signature is per-worker: a stuck worker fails handshakes (cert/key
- * mismatch) rather than serving a stale serial, so it only surfaces with >= 2 HTTP
+ *   1. Retain-last-good: while the table holds the new cert but the matching key has
+ *      not arrived, every worker must KEEP serving the old, still-consistent pair —
+ *      a mismatched rebuild must not drop the hostname to the self-signed default or
+ *      fail handshakes (#2382: that downgrade served the wrong cert for days).
+ *   2. Convergence: once the key arrives (via chokidar OR the periodic poll), each
+ *      worker rebuilds locally and converges on the new cert + new key (#586).
+ *
+ * The convergence signature is per-worker, so it only surfaces with >= 2 HTTP
  * workers each terminating TLS.
  *
  * Reproduction:
@@ -157,29 +159,23 @@ suite(
 			const certBPem = await makeServerCertPem(keyPairB, 3002);
 			const NUDGE_MS = 5_000;
 
-			// Force the worst-case interleaving the fix targets: the new CERT reaches the workers
+			// Force the worst-case interleaving the fixes target: the new CERT reaches the table
 			// BEFORE the matching new key. We write only the cert first (still signed by key B, so it
-			// does NOT match the key A still on disk). The main thread writes it into hdb_certificate,
-			// each worker's subscription fires updateTLS, and the worker rebuilds its context pairing
-			// the new cert with the OLD key — a mismatch. We wait until that disruption is observable
-			// (the worker can no longer cleanly serve 3001: either the handshake fails on the mismatch,
-			// or the context is dropped and a different default cert is served) before touching the key.
+			// does NOT match the key A still on disk). The main thread's file watcher writes it into
+			// hdb_certificate; that arrival is confirmed through the operations API — an internal
+			// observable — because the serving behavior must NOT change (that's the point of #2382's
+			// retain-last-good: the mismatched rebuild keeps the old pair).
 			//
 			// In a real rotation the two files change near-simultaneously and the ordering is a race;
 			// here we pin the losing order so the regression is deterministic rather than timing-luck.
 			await writeFile(certPath, certBPem);
 
 			const certDeadline = Date.now() + 30_000;
-			let certPropagatedWithStaleKey = false;
+			let certInTable = false;
 			let lastNudge = Date.now();
 			while (Date.now() < certDeadline) {
-				try {
-					if (parseInt(await servedSerial(ctx.harper.hostname), 16) !== 3001) {
-						certPropagatedWithStaleKey = true; // serving a fallback default — the old cert context is gone
-						break;
-					}
-				} catch {
-					certPropagatedWithStaleKey = true; // handshake now fails — new cert built against the old key
+				if (await tableHasSerial(ctx, 3002)) {
+					certInTable = true;
 					break;
 				}
 				if (Date.now() - lastNudge > NUDGE_MS) {
@@ -188,22 +184,41 @@ suite(
 				}
 				await sleep(250);
 			}
-			if (!certPropagatedWithStaleKey) {
-				// The cert file change never reached the workers in this environment, so we can't set up
-				// the cert-before-key ordering. That's a file-watch/inotify limitation of the runner, not
-				// a regression in the fix — skip rather than fail. (The unit tests cover the rebuild
-				// trigger deterministically; this test adds end-to-end coverage where watching works.)
+			if (!certInTable) {
+				// The cert file change never reached the main thread's watcher in this environment, so
+				// the cert-before-key ordering cannot be established. That's a file-watch/inotify
+				// limitation of the runner, not a regression — skip the setup rather than fail. (The
+				// unit tests cover the rebuild paths deterministically; this test adds end-to-end
+				// coverage where file watching works.)
 				t.skip(
-					'cert file change was not picked up by the watcher in this environment (file-watch/inotify ' +
+					'cert file change never reached hdb_certificate in this environment (file-watch/inotify ' +
 						'limitation) — cannot establish the cert-before-key ordering this test exercises'
 				);
 				return;
 			}
 
-			// Now deliver the matching key. Each worker reloads key B into its in-thread map. WITHOUT
-			// the fix that is a dead end: the map updates but nothing rebuilds the TLS context, so the
-			// worker stays on the mismatched/dropped context until the next cert-table change. WITH the
-			// fix, the key reload triggers a debounced rebuild and the worker converges on cert+key B.
+			// Retain-last-good (#2382, unconditional once the ordering is established): the table now
+			// holds cert 3002 while every worker still has key A. Rebuilds are firing and failing for
+			// this record; through 2+ debounce windows every handshake must still SUCCEED and still
+			// serve 3001 — never a failure, never the self-signed default. Before the fix, the failed
+			// rebuild dropped the hostname's context and this loop observed exactly that.
+			const retainDeadline = Date.now() + 6_000;
+			while (Date.now() < retainDeadline) {
+				const serial = await servedSerial(ctx.harper.hostname).catch((error) => {
+					throw new Error(
+						`handshake failed while the renewed cert had no matching key — last-good was not retained: ${error}`
+					);
+				});
+				equal(
+					parseInt(serial, 16),
+					3001,
+					'a worker stopped serving the last-good cert while the renewed cert had no matching key'
+				);
+				await sleep(250);
+			}
+
+			// Now deliver the matching key. Each worker reloads key B into its in-thread map, and the
+			// key-reload rebuild (plus the failure retry) converges the worker on cert+key B (#586).
 			await writeFile(keyPath, keyPairB.privateKeyPem);
 
 			// Wait for convergence on at least one connection: a SUCCESSFUL handshake serving the new
@@ -267,6 +282,33 @@ suite(
 		});
 	}
 );
+
+/** Whether hdb_certificate holds a server cert with this serial, via the operations API. */
+async function tableHasSerial(ctx: ContextWithHarper, serialNumber: number): Promise<boolean> {
+	try {
+		const res = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: {
+				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				operation: 'search_by_value',
+				schema: 'system',
+				table: 'hdb_certificate',
+				search_attribute: 'name',
+				search_value: '*',
+				get_attributes: ['name', 'details'],
+			}),
+		});
+		const certs = (await res.json()) as { details?: { serial_number?: string } }[];
+		return (
+			Array.isArray(certs) && certs.some((cert) => parseInt(cert.details?.serial_number ?? '', 16) === serialNumber)
+		);
+	} catch {
+		return false;
+	}
+}
 
 /** Observed live HTTP worker count via the operations API (best-effort, returns 0 on failure). */
 async function observedWorkerCount(ctx: ContextWithHarper): Promise<number> {
