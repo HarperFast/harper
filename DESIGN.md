@@ -293,6 +293,16 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
+Automatic component installation is production-only. `installApplication()` skips the package-manager
+child entirely when the root manifest declares no production dependencies, non-empty workspaces, or
+enabled install lifecycle; npm invocations use `--omit=dev --no-audit --no-fund`. A configured
+`install_command` remains the explicit escape hatch for build-time tooling, and
+`readInstalledPackageMetadata()` must use the same production-work predicate so a dev-only manifest
+does not force a restart on every redeploy for lacking a lockfile. Absolute local archives are
+classified before package-protocol detection: a Windows drive letter's colon is path syntax, not an
+npm protocol. Existing Windows directory inputs deliberately retain npm's copy/pack behavior rather
+than becoming live `file:` links.
+
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
 `readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:
