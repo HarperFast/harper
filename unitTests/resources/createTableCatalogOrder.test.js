@@ -133,12 +133,14 @@ describe('create table catalog write order', () => {
 				false,
 				`a scan during the create must not load the table, got attributes ${midCreate.attributes}`
 			);
+			assert.strictEqual(midCreate.updateTableEvents, 0, 'a scan during the create must not announce the table');
 			const afterCreate = await scanned('after-create');
 			assert.deepStrictEqual(
 				[...afterCreate.attributes].sort(),
 				['id', 'name', 'tag'],
 				'the scan after the create must load the complete attribute list'
 			);
+			assert.ok(afterCreate.updateTableEvents >= 1, 'the scan after the create must announce the complete table');
 		} finally {
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 			await worker.terminate();

@@ -1,6 +1,6 @@
 const { parentPort, workerData } = require('worker_threads');
 const { setupTestDBPath } = require('../testUtils');
-const { resetDatabases } = require('#src/resources/databases');
+const { resetDatabases, databaseEventsEmitter } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // phase (main -> here): 0 idle, 1 the create is paused after its first attribute row, 2 the create
@@ -13,12 +13,20 @@ function run() {
 	setupTestDBPath();
 	setMainIsWorker(true);
 
+	// updateTable is what replication turns into a DB_SCHEMA announcement to peers
+	let updateTableEvents = 0;
+	databaseEventsEmitter.on('updateTable', (Table) => {
+		if (Table.tableName === tableName) updateTableEvents++;
+	});
+
 	function scan(type) {
+		updateTableEvents = 0;
 		const Table = resetDatabases().test?.[tableName];
 		parentPort.postMessage({
 			type,
 			loaded: Boolean(Table),
 			attributes: Table ? Table.attributes.map((attribute) => attribute.name) : [],
+			updateTableEvents,
 		});
 	}
 
