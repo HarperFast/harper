@@ -58,6 +58,10 @@ function stripInlineAndComments(line, commentOpen) {
 	return { prose, commentOpen };
 }
 
+function maskCode(line) {
+	return line.replace(/\S/g, 'x');
+}
+
 export function inspectBodyText(body) {
 	let fence = null;
 	let commentOpen = false;
@@ -88,7 +92,10 @@ export function inspectBodyText(body) {
 			}
 			if (fence) {
 				const close = content.match(/^[ \t]{0,3}(`+|~+)[ \t]*$/);
-				if (close && close[1][0] === fence.marker && close[1].length >= fence.length) fence = null;
+				if (close && close[1][0] === fence.marker && close[1].length >= fence.length) {
+					fence = null;
+					prose.push(' '.repeat(line.length));
+				} else prose.push(maskCode(line));
 				continue;
 			}
 		}
@@ -108,6 +115,7 @@ export function inspectBodyText(body) {
 		const open = content.match(/^[ \t]{0,3}(`{3,}|~{3,})(.*)$/);
 		if (open && (open[1][0] === '~' || !open[2].includes('`'))) {
 			fence = { marker: open[1][0], length: open[1].length, quoteDepth, listIndent: list?.length || 0 };
+			prose.push(' '.repeat(line.length));
 			continue;
 		}
 		const blank = content.trim() === '';
@@ -117,10 +125,14 @@ export function inspectBodyText(body) {
 			continue;
 		}
 		const indented = /^(?: {4}|\t)/.test(line.slice(offset));
-		if (indentedCode && indented) continue;
+		if (indentedCode && indented) {
+			prose.push(maskCode(line));
+			continue;
+		}
 		if (indentedCode) indentedCode = false;
 		if (indented && previousBlank && !lastNonblankWasList && !list) {
 			indentedCode = true;
+			prose.push(maskCode(line));
 			continue;
 		}
 		const stripped = stripInlineAndComments(line, false);
@@ -184,7 +196,7 @@ export function checkBodyLinks({ body, prFiles, repo, number }) {
 			else problems.push({ kind: 'unknown-file', message: `${where} does not match a file in the current diff` });
 			continue;
 		}
-		if (anchor.line === null) {
+		if (anchor.line == null) {
 			problems.push({ kind: 'no-line', message: `${file.path} PR-diff link has no line anchor` });
 			continue;
 		}
@@ -196,7 +208,7 @@ export function checkBodyLinks({ body, prFiles, repo, number }) {
 			[anchor.side, anchor.line],
 			[anchor.endSide, anchor.endLine],
 		])
-			if (line !== null && !withinAnyRange(file.ranges?.[side] ?? [], line))
+			if (line != null && !withinAnyRange(file.ranges?.[side] ?? [], line))
 				problems.push({
 					kind: 'line-not-in-diff',
 					message: `${file.path}${side}${line} is not in a current diff hunk`,

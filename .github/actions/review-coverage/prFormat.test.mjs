@@ -379,6 +379,28 @@ test('HTML-only content cannot satisfy Verification', () => {
 	);
 });
 
+test('visible fenced or indented code can satisfy Verification without exposing Markdown tokens', () => {
+	for (const evidence of ['```text\n80 passing\n```', '    80 passing']) {
+		const result = evaluatePrFormat(pr({ body: body().replace('Focused retention tests passed.', evidence) }), {
+			mode: 'enforce',
+			repo: REPO,
+			number: NUMBER,
+			prFiles: PR_FILES,
+		});
+		assert.strictEqual(result.pass, true, evidence);
+	}
+});
+
+test('an empty fenced block does not satisfy Verification', () => {
+	const result = evaluatePrFormat(pr({ body: body().replace('Focused retention tests passed.', '```text\n```') }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.match(result.problems.join('\n'), /Verification needs executed evidence/);
+});
+
 test('a lowercase AI field ends an empty Verification section', () => {
 	const broken = body().replace('Focused retention tests passed.\n\nComplexity:', 'complexity:');
 	assert.match(
