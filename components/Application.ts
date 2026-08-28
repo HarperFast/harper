@@ -551,6 +551,15 @@ export function packageHasProductionInstallWork(packageJSON: any): boolean {
 	return !Array.isArray(workspaces.packages) || workspaces.packages.length > 0;
 }
 
+function packageHasExplicitNonNpmManager(packageJSON: any): boolean {
+	const packageManager = packageJSON?.devEngines?.packageManager;
+	return !!packageManager && packageManager.name !== 'npm';
+}
+
+export function packageHasAutomaticInstallWork(packageJSON: any): boolean {
+	return packageHasProductionInstallWork(packageJSON) || packageHasExplicitNonNpmManager(packageJSON);
+}
+
 function packageHasAllowedInstallLifecycleWork(packageJSON: any): boolean {
 	if (!packageJSON || typeof packageJSON !== 'object' || !Object.hasOwn(packageJSON, 'scripts')) return false;
 	const scripts = packageJSON.scripts;
@@ -591,7 +600,7 @@ export async function readInstalledPackageMetadata(directory: string): Promise<I
 		files,
 		readable,
 		hasLockfile: PACKAGE_LOCK_FILES.some((filename) => files.has(filename)),
-		hasInstallableDependencies: packageHasProductionInstallWork(packageJSON),
+		hasInstallableDependencies: packageHasAutomaticInstallWork(packageJSON),
 	};
 }
 
@@ -669,6 +678,8 @@ export async function extractApplication(
 	} else {
 		// Given a package, there are a a couple options
 		const parentDirPath = dirname(application.dirPath);
+		let packageIdentifierForPack = application.packageIdentifier;
+		let packageNeedsPacking = true;
 
 		// If the package identifier is a file path we need to check if its a tarball or a directory
 		if (application.packageIdentifier.startsWith('file:')) {
@@ -678,22 +689,28 @@ export async function extractApplication(
 				const stats = await stat(packagePath);
 
 				if (stats.isDirectory()) {
-					// If its a directory, symlink
-					await symlink(packagePath, application.dirPath, 'dir');
-					// And return early since we're done; no extraction needed
-					return;
-				}
+					if (!shouldPackLocalDirectory()) {
+						await symlink(packagePath, application.dirPath, 'dir');
+						return;
+					}
+					// Windows directory deployments historically materialize a copy through npm pack rather than
+					// linking the live source tree into Harper's rollback and cleanup paths.
+					packageIdentifierForPack = packagePath;
+					application.logger.debug?.('Packaging local component directory instead of linking it on Windows');
+				} else {
+					if (!stats.isFile()) {
+						throw new Error(`File path specified in package identifier is not a file or directory: ${packagePath}`);
+					}
 
-				if (!stats.isFile()) {
-					throw new Error(`File path specified in package identifier is not a file or directory: ${packagePath}`);
+					// If its a file, we assume it can be unzipped and extracted.
+					// We are using maybe-gunzip to handle both gzipped and non-gzipped tarballs
+					// And then we are happy to let the `tar-fs` library handle the extraction.
+					// Maybe worth adding some detection or at least some error handling if that step below fails.
+					tarballPath = packagePath;
+					tarball = createReadStream(tarballPath);
+					packageNeedsPacking = false;
+					application.logger.debug?.('Using local component archive directly without npm pack');
 				}
-
-				// If its a file, we assume it can be unzipped and extracted.
-				// We are using maybe-gunzip to handle both gzipped and non-gzipped tarballs
-				// And then we are happy to let the `tar-fs` library handle the extraction.
-				// Maybe worth adding some detection or at least some error handling if that step below fails.
-				tarballPath = packagePath;
-				tarball = createReadStream(tarballPath);
 			} catch (err) {
 				if (err.code === 'ENOENT') {
 					throw new Error(`File path specified in package identifier does not exist: ${packagePath}`);
@@ -701,7 +718,8 @@ export async function extractApplication(
 					throw err;
 				}
 			}
-		} else {
+		}
+		if (packageNeedsPacking) {
 			// `npm pack --json` writes a JSON array describing the packed tarball(s). This is also the
 			// spawn that clones a git-reference package, so it is the only one given the git credential
 			// environment.
@@ -723,22 +741,22 @@ export async function extractApplication(
 			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
 			// recognized git-reference identifier, clone and pack it ourselves with scripts stripped
 			// instead, sidestepping that npm code path entirely.
-			const gitRef = allowScripts ? null : parseGitReference(application.packageIdentifier);
+			const gitRef = allowScripts ? null : parseGitReference(packageIdentifierForPack);
 
-			if (!allowScripts && !gitRef && looksLikeGitReference(application.packageIdentifier)) {
+			if (!allowScripts && !gitRef && looksLikeGitReference(packageIdentifierForPack)) {
 				// Recognized as git, but a form the reclone-and-strip-scripts path above can't safely
 				// handle (a `#path:` committish, or a hosted shorthand other than a plain `owner/repo`) —
 				// fail loudly rather than silently falling through to the unreliable `npm pack
 				// --ignore-scripts` below.
 				throw new Error(
-					`Cannot deploy git-reference package '${application.packageIdentifier}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
+					`Cannot deploy git-reference package '${packageIdentifierForPack}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
 				);
 			}
 
 			if (gitRef) {
 				tarballPath = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
 			} else {
-				const packArgs = ['pack', '--json', application.packageIdentifier];
+				const packArgs = ['pack', '--json', packageIdentifierForPack];
 				if (!allowScripts) {
 					packArgs.push('--ignore-scripts');
 				} else if (application.gitCredentialEnv) {
@@ -1492,7 +1510,9 @@ function automaticInstallArguments(packageManagerName: string, allowInstallScrip
  * application's `package.json#devEngines`, or falling back to the default
  * package manager, `npm`.
  *
- * Will return early if `node_modules` already exists within the `application.dirPath`
+ * Returns early when `node_modules` already exists or when the manifest has no automatic install
+ * work. An explicitly selected non-npm manager is always allowed to inspect its own workspace
+ * configuration, even when the root manifest has no production dependencies.
  *
  * This method may be called from any Harper thread as part of a serialized preparation.
  */
@@ -1553,13 +1573,14 @@ export async function installApplication(application: Application) {
 	}
 
 	const allowInstallScripts = !!application.install?.allowInstallScripts;
+	const { packageManager } = packageJSON.devEngines || {};
 	if (dependencyFieldHasWork(packageJSON, 'devDependencies')) {
 		application.logger.warn(
-			`Application ${application.name} declares devDependencies, which automatic production installation omits; use install_command when deployment requires them`
+			`Application ${application.name} declares devDependencies; automatic npm installation omits them, while explicitly selected non-npm package managers retain their own install defaults. Use install_command when deployment requires custom behavior`
 		);
 	}
 	if (
-		!packageHasProductionInstallWork(packageJSON) &&
+		!packageHasAutomaticInstallWork(packageJSON) &&
 		!(allowInstallScripts && packageHasAllowedInstallLifecycleWork(packageJSON))
 	) {
 		application.logger.info(`Application ${application.name} has no production package work; skipping install`);
@@ -1567,8 +1588,6 @@ export async function installApplication(application: Application) {
 	}
 
 	// Next, try package.json devEngines field
-	const { packageManager } = packageJSON.devEngines || {};
-
 	// Custom package manager specified
 	if (packageManager) {
 		// On any given system we want to leverage the `name` to match the package manager executable
@@ -1846,14 +1865,7 @@ export class Application {
  * component matching some of npm's package resolution rules.
  */
 export function derivePackageIdentifier(packageIdentifier: string) {
-	if (isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier)) {
-		if (process.platform !== 'win32') return `file:${packageIdentifier}`;
-		try {
-			if (lstatSync(packageIdentifier).isFile()) return `file:${packageIdentifier}`;
-		} catch {
-			return `file:${packageIdentifier}`;
-		}
-	}
+	if (isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier)) return `file:${packageIdentifier}`;
 	if (packageIdentifier.includes(':')) {
 		return packageIdentifier;
 	}
@@ -1865,6 +1877,10 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 	}
 
 	return `github:${packageIdentifier}`;
+}
+
+export function shouldPackLocalDirectory(platform = process.platform) {
+	return platform === 'win32';
 }
 
 /**
@@ -2528,9 +2544,18 @@ function spawnWithEnv(
 		});
 
 		childProcess.on('close', async (code, signal) => {
-			logger
-				.loggerWithTag(`${applicationName}:spawn:${command}`)
-				.debug?.(`Child stdio closed with code ${code}, signal ${signal}; confirming process-tree termination`);
+			const spawnLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}`);
+			if (didTimeout) {
+				spawnLogger.debug?.(
+					`Child stdio closed with code ${code}, signal ${signal}; timeout path owns process-tree confirmation`
+				);
+			} else if (trackedProcessId) {
+				spawnLogger.debug?.(
+					`Child stdio closed with code ${code}, signal ${signal}; confirming process-tree termination`
+				);
+			} else {
+				spawnLogger.debug?.(`Child stdio closed with code ${code}, signal ${signal}; no process tree was tracked`);
+			}
 			resolveClose();
 			clearTimeout(timeout);
 			// A successful direct-child exit does not prove the process group is empty: a custom
@@ -2551,6 +2576,7 @@ function spawnWithEnv(
 					}
 					return;
 				}
+				spawnLogger.debug?.(`Process tree termination confirmed after command close with code ${code}`);
 				untrackProcessGroup();
 			}
 			// When didTimeout is true, the timeout path's own terminateProcessTree(...).then(...) owns
@@ -2562,9 +2588,6 @@ function spawnWithEnv(
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
-			logger
-				.loggerWithTag(`${applicationName}:spawn:${command}`)
-				.debug?.(`Process tree termination confirmed after command close with code ${code}`);
 			if (didTimeout || didSettle) return;
 			didSettle = true;
 			resolve({

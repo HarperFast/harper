@@ -1,9 +1,6 @@
 'use strict';
 
 const assert = require('node:assert');
-const { mkdtempSync, rmSync } = require('node:fs');
-const { tmpdir } = require('node:os');
-const { join } = require('node:path');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -13,6 +10,7 @@ const {
 	assertApplicationConfig,
 	derivePackageIdentifier,
 	parseGitReference,
+	shouldPackLocalDirectory,
 } = require('#src/components/Application');
 
 describe('derivePackageIdentifier', () => {
@@ -32,16 +30,11 @@ describe('derivePackageIdentifier', () => {
 		}
 	});
 
-	if (process.platform === 'win32') {
-		it('preserves the existing npm-pack copy path for Windows directories', () => {
-			const directory = mkdtempSync(join(tmpdir(), 'derive-component-directory-'));
-			try {
-				assert.equal(derivePackageIdentifier(directory), directory);
-			} finally {
-				rmSync(directory, { recursive: true, force: true });
-			}
-		});
-	}
+	it('keeps directory deployment copy-based on Windows and link-based elsewhere', () => {
+		assert.equal(shouldPackLocalDirectory('win32'), true);
+		assert.equal(shouldPackLocalDirectory('linux'), false);
+		assert.equal(shouldPackLocalDirectory('darwin'), false);
+	});
 });
 
 describe('isSSHAuthFailure', () => {

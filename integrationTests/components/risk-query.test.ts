@@ -6,9 +6,9 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { doesNotMatch, match, strictEqual, ok } from 'node:assert';
-import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForLogMatches } from './waitForLog.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -42,8 +42,13 @@ suite('Component: risk-query', (ctx: ContextWithHarper) => {
 		}
 
 		const logDirectory = ctx.harper.logDir ?? join(ctx.harper.dataRootDir, 'log');
-		const instanceLog = await readFile(join(logDirectory, 'hdb.log'), 'utf8');
+		const instanceLog = await waitForLogMatches(join(logDirectory, 'hdb.log'), [
+			/Using local component archive directly without npm pack/,
+			/\[risk-query\]: Registered resource: \/risq/,
+		]);
+		match(instanceLog, /Using local component archive directly without npm pack/);
 		match(instanceLog, /\[risk-query\]: Registered resource: \/risq/);
+		doesNotMatch(instanceLog, /Maximum log buffer rate reached/, 'negative spawn assertion requires complete logs');
 		doesNotMatch(instanceLog, /\[risk-query:spawn:/, 'a dependency-free local archive must not start a child process');
 	});
 
