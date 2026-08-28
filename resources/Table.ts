@@ -6562,6 +6562,8 @@ export function makeTable(options) {
 		pendingCleanupResolvers.clear();
 	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
+		// a reclamation run may still hold this class's handler after cleanup(); a promise here would never settle
+		if (disposed) return;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority

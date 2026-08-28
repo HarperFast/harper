@@ -7,8 +7,6 @@ const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const storageReclamation = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
-// A catalog scan on another worker thread loads a table only once its primary row exists, so that row
-// must land after every attribute row or the scan builds, and replication announces, a partial table.
 describe('create table catalog write order', () => {
 	before(() => {
 		setupTestDBPath();
@@ -122,7 +120,6 @@ describe('create table catalog write order', () => {
 				'a create that fails before makeTable must not register the class'
 			);
 			assert.strictEqual(releasedReclamationHandlers.length, 0, 'nothing was registered before makeTable');
-			// makeTable() itself throws here, after registering its callbacks
 			assert.throws(() => table({ ...definition(), expiration: -1 }), /Expiration can not be negative/);
 			assert.strictEqual(
 				databases.test[tableName],
@@ -160,13 +157,17 @@ describe('create table catalog write order', () => {
 		const primaryRow = Retried.dbisDB.getSync(`${tableName}/`);
 		assert(primaryRow, 'the retry must write the primary row');
 		assert.strictEqual(primaryRow.schemaDefined, true, 'the primary row must carry the schemaDefined declaration');
-		// the failed attempt closed this column family on RocksDB; the retry must have reopened a usable one
-		await Retried.primaryStore.put('retried', { id: 'retried', name: 'after retry' });
+		// the failed attempt closed the primary and index column families on RocksDB; the retry's must serve traffic
+		await Retried.put({ id: 'retried', name: 'after retry', tag: 'reopened' });
 		assert.strictEqual(
-			(await Retried.primaryStore.get('retried'))?.name,
+			(await Retried.get('retried'))?.name,
 			'after retry',
-			'the retried primary store must serve traffic'
+			'the retried primary store must serve reads'
 		);
+		const byTag = [];
+		for await (const record of Retried.search({ conditions: [{ attribute: 'tag', value: 'reopened' }] }))
+			byTag.push(record.id);
+		assert.deepStrictEqual(byTag, ['retried'], 'the retried index must serve searches');
 		assert.strictEqual(
 			writes[writes.length - 1],
 			`${tableName}/`,
