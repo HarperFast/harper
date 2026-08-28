@@ -2,6 +2,7 @@ import searchValidator from '../../validation/searchValidator.ts';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
 import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
+import { normalizeHistoryOperation } from './bridgeUtility/normalizeHistoryOperation.ts';
 import SearchObject from '../SearchObject.ts';
 import {
 	OPERATIONS_ENUM,
@@ -798,18 +799,4 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 		}
 	}
 	if (enqueued) yield enqueued;
-}
-
-/**
- * Which operation a history entry should report: the originating operation when one was recorded,
- * otherwise the physical write type.
- *
- * A recorded `put` is reported as `put`, so replication catch-up replays it as a replace. Only a
- * LEGACY physical put — one with no originating operation, written before `put` existed — is still
- * normalized to `upsert`, which is what produced a physical put back then. Normalizing both would
- * make catch-up patch the replica and retain attributes the source removed.
- */
-function normalizeHistoryOperation(originatingOperation, physicalType) {
-	if (originatingOperation !== undefined) return originatingOperation;
-	return physicalType === 'put' ? 'upsert' : physicalType;
 }

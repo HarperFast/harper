@@ -133,6 +133,12 @@ When `HAS_ORIGINATING_OPERATION` flag is set, indicates the SQL operation that c
 | 1     | insert    |
 | 2     | update    |
 | 3     | upsert    |
+| 4     | put       |
+
+`put` is persisted rather than inferred from the physical entry type: an `upsert` that happens to
+create a record also writes a physical `put`, so the two are indistinguishable without this id.
+Entries written before `put` was assigned an id have no originating operation and fall back to the
+physical type, which is why the history readers normalize a bare physical `put` to `upsert`.
 
 ### Record Value
 

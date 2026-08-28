@@ -391,7 +391,12 @@ suite('put: create-or-replace over the operations API', { skip: skipSuite }, () 
 	// originating operation: the physical write type is `put` for an `upsert` that created a record
 	// too, so the type alone cannot tell them apart, and catch-up replaying a `put` as an `upsert`
 	// would patch the replica and retain attributes the source removed.
-	test('the audit log reports a put as a put, and a legacy physical put as an upsert', async () => {
+	//
+	// Both writes here RECORD an originating operation, so this covers the recorded path only. The
+	// legacy fallback — a physical put with no originating operation, normalized to `upsert` — cannot
+	// be produced through the API any more and is covered directly in
+	// unitTests/dataLayer/normalizeHistoryOperation.test.js.
+	test('the audit log distinguishes a put from an upsert that created a record', async () => {
 		strictEqual(
 			(await ops({ operation: 'create_table', database: 'data', table: 'Audited', primary_key: 'id', audit: true }))
 				.status,
