@@ -979,11 +979,9 @@ describe('Test keys module', () => {
 	});
 
 	describe('updateTLS transactional publication — retain-last-good on record failure (#2382)', () => {
-		// A cert renewal whose table write misses the rebuild debounce used to pair the old table
-		// cert with the new key, throw KEY_VALUES_MISMATCH, and — because the pass cleared the
-		// shared context map first and skipped the failed record — drop the record's hostnames to
-		// the self-signed default for days (harper#2382). These tests pin the replacement contract:
-		// a pass never publishes a state worse than the one being served.
+		// These tests pin harper#2382's replacement contract: a rebuild pass never publishes a
+		// state worse than the one being served (clear-first used to drop a mismatched record's
+		// hostnames to the self-signed default for days).
 		let databases;
 		let liveTLSRebuilders;
 		let rebuildersSnapshot;

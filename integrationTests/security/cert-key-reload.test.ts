@@ -197,11 +197,9 @@ suite(
 				return;
 			}
 
-			// Retain-last-good (#2382, unconditional once the ordering is established): the table now
-			// holds cert 3002 while every worker still has key A. Rebuilds are firing and failing for
-			// this record; through 2+ debounce windows every handshake must still SUCCEED and still
-			// serve 3001 — never a failure, never the self-signed default. Before the fix, the failed
-			// rebuild dropped the hostname's context and this loop observed exactly that.
+			// Retain-last-good (#2382): the table holds cert 3002, every worker still has key A —
+			// through 2+ debounce windows every handshake must still succeed AND serve 3001, never
+			// the self-signed default (which is exactly what the pre-fix clear-first served here).
 			const retainDeadline = Date.now() + 6_000;
 			while (Date.now() < retainDeadline) {
 				const serial = await servedSerial(ctx.harper.hostname).catch((error) => {

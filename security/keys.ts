@@ -151,9 +151,8 @@ const privateKeys = new Map();
 // subscription and the private-key hot-reload trigger so both coalesce on the same cadence.
 const TLS_REBUILD_DEBOUNCE_MS = 1500;
 
-// Cap for the self-retry backoff after a rebuild pass with per-record failures. A permanently
-// bad record (e.g. a mismatched cert/key pair that nothing rewrites) must not cost every
-// selector on every thread a full table scan + X509 parse every debounce interval, forever.
+// Self-retry backoff cap: a permanently bad record must not cost every selector on every
+// thread a table scan + X509 parse per debounce interval, forever.
 const TLS_FAILURE_RETRY_MAX_DELAY_MS = 300_000;
 // While a failure signature is unchanged, repeat occurrences log a summary at most this often.
 const TLS_FAILURE_SUMMARY_INTERVAL_MS = 3_600_000;
@@ -350,10 +349,8 @@ const certificateWatchPollers = new Map<string, () => void>();
 function loadAndWatch(path, loadCert, type) {
 	let lastModified;
 	const loadFile = (path, stats?) => {
-		// The mtime is latched before the callback for chokidar/poll dedupe, but it must end up
-		// representing the last *successfully applied* file, not the last attempted one — otherwise a
-		// failed apply (bad read, or a rejected async table write) is deduplicated forever and the
-		// periodic poll can never heal it (#2382). Rollbacks are equality-guarded so an old failure
+		// The latch dedupes chokidar/poll but must mean "last successfully APPLIED", or a failed
+		// apply is deduplicated forever (#2382). Rollbacks are equality-guarded so an old failure
 		// can't unlatch a newer successful reload.
 		const previousModified = lastModified;
 		let modified;
@@ -1146,11 +1143,9 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						scheduleRebuild();
 						return;
 					}
-					// Transactional publication: the whole replacement state is built off to the side and
-					// the live maps are reconciled only after the pass completes, so a failure of any
-					// shape — one record or the whole pass — leaves the currently-served state intact
-					// (#2382: clear-first turned a transient cert/key mismatch into serving the
-					// self-signed default for days).
+					// Transactional publication (#2382): build the whole replacement state off to the
+					// side and reconcile the live maps only after the pass completes, so a failure of
+					// any shape leaves the currently-served state intact.
 					const candidateContexts = new Map();
 					const candidateCAs = new Map();
 					let candidateHasWildcards = false;
@@ -1199,11 +1194,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						try {
 							certParsed = new X509Certificate(certificate);
 						} catch (error) {
-							// One unparseable record shouldn't abort the whole pass, but it is a pass failure:
-							// routed through the signature throttle and the retry — otherwise a corrupt CA row
-							// logs every pass and clearFailureState claims a clean recovery. Its caCerts entry
-							// can't be retained (the subject is unrecoverable from a PEM that won't parse); the
-							// retry is the heal path.
+							// A pass failure like any other (throttle + retry). Its caCerts entry can't be
+							// retained — the subject is unrecoverable from a PEM that won't parse.
 							failedThisPass.push({ cert, error });
 							continue;
 						}
@@ -1306,16 +1298,11 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					}
 
 					// Retain-last-good: a record still in the table whose build failed keeps its live
-					// hostname entries and its default candidacy (a SAN-less cert can be serving as the
-					// default with no hostname entries at all); deletion remains the way to drop them.
-					// A context froze its `ca:` trust list at its own build time, so on an mTLS listener
-					// whose CA set has changed since, the retained pair (its cert and key are still
-					// consistent) is REBUILT against the current trust material — revoked client-CA trust
-					// is never carried forward, and a CA addition doesn't cost the record its retention.
-					// If that rebuild itself fails, the record's entries drop for this pass — except when
-					// nothing else is servable, where the zero-certificate guard below retains the old
-					// state: availability outranks the drop in that corner, and the failure stays on the
-					// retry/throttle path until a build or rebuild succeeds.
+					// hostname entries and its default candidacy; deletion remains the way to drop them.
+					// On an mTLS listener whose CA set changed, the retained pair is rebuilt against the
+					// current trust material (never stale trust); if the rebuild fails the entries drop
+					// unless nothing else is servable (the zero-cert guard below then keeps the old
+					// state). Full contract in DESIGN.md "TLS hot-reload".
 					const caSetUnchanged = (previous) => {
 						const builtWith = (previous as any).certificateAuthorities;
 						if (!Array.isArray(builtWith)) return candidateCAs.size === 0;
@@ -1327,10 +1314,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					const rebuiltRetentions = new Map();
 					const retentionFailures: { cert: any; error: any }[] = [];
 					const retainable = (previous) => {
-						// Without mTLS nothing consulted in the context depends on the CA set (`ca:` is
-						// falsy either way; availableCAs aliases the live map), so skip the rebuild — but
-						// refresh the CA bookkeeping, which is mirrored into socket metadata for fronting
-						// proxies.
+						// Without mTLS nothing consulted depends on the CA set — skip the rebuild, but
+						// refresh the CA bookkeeping mirrored into socket metadata for fronting proxies.
 						if (!mtlsOptions || caSetUnchanged(previous)) {
 							(previous as any).certificateAuthorities = Array.from(candidateCAs);
 							return previous;
@@ -1339,6 +1324,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						try {
 							const secureOptions = {
 								...(previous as any).options,
+								ticketKeys: getTicketKeys(),
 								availableCAs: caCerts,
 								ca: mtlsOptions && Array.from(candidateCAs.values()),
 							};
@@ -1413,9 +1399,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							);
 						}
 						if (failedThisPass.length > 0) {
-							// Surface WHY the pass came up empty and put the retry on the backoff — a boot
-							// whose key file never lands otherwise rescans on a flat debounce forever with
-							// no per-record error detail.
+							// Surface WHY the pass came up empty and put the retry on the backoff.
 							reportFailures(failedThisPass.concat(retentionFailures));
 							scheduleFailureRetry();
 						} else {
