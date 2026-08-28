@@ -319,6 +319,36 @@ describe('read-only verdict for worker boot', () => {
 });
 
 describe('journal-first on the deploy path', () => {
+	it("is not blocked by another component's corrupt journal", async () => {
+		// The most operationally severe of the round-9 fixes: the pre-deploy settle parsed every journal
+		// before checking ownership, so one broken component turned into a deploy outage for its neighbours.
+		// Exercised through the deploy path specifically — the sibling-isolation test above covers only the
+		// startup pass.
+		const root = await newRoot('siblingblock');
+		await stageState(root, 'broken', 'd-broken', { live: 'BROKEN LIVE\n', candidate: 'X\n', journal: 'truncated{' });
+		await writeTree(path.join(root, 'healthy'), 'HEALTHY v1\n');
+
+		const app = new Application({
+			name: 'healthy',
+			payload: Readable.from(
+				(async function* () {
+					yield Buffer.from('not a tarball');
+					throw new Error('payload delivery failed');
+				})()
+			),
+		});
+		app.dirPath = path.join(root, 'healthy');
+
+		// The deploy still fails on its own payload — but with ITS error, not the sibling's journal parse.
+		await assert.rejects(() => prepareApplication(app), /payload delivery failed/);
+		assert.strictEqual(
+			await readLive(root, 'healthy'),
+			'HEALTHY v1\n',
+			"and the healthy component is untouched by the neighbour's corrupt journal"
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('does not let the legacy aside pass restore a displaced tree over a live candidate', async () => {
 		// The state a completed activation whose RETIREMENT failed leaves behind: the candidate is live, the
 		// journal is still there, and an `.in-progress-*` aside still names the version it displaced. The

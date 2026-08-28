@@ -1473,8 +1473,14 @@ async function settleInterruptedActivation(
 		);
 		return;
 	}
-	await rm(journalPath, { force: true });
-	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+	// Best-effort, matching the activation path: the activation is settled by this point, so a transient
+	// EBUSY removing staging must not throw out of the recovery pass and take the other components with it.
+	await rm(journalPath, { force: true }).catch((error) =>
+		logger.warn(`Settled ${journal.component} but could not remove its activation journal:`, errorForLog(error))
+	);
+	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+		logger.warn(`Settled ${journal.component} but could not clean up its staging directory:`, errorForLog(error))
+	);
 	await rmdir(dirname(deploymentDirPath)).catch(() => {});
 }
 
