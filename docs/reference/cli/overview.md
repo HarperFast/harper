@@ -95,21 +95,22 @@ kill -0 $(cat /path/to/hdb/hdb.pid)  # Check if process is running
 
 ## System Management Commands
 
-| Command                            | Description                                                  | Available Since |
-| ---------------------------------- | ------------------------------------------------------------ | --------------- |
-| `harper`                           | Run Harper in foreground mode (default behavior)             | v4.1.0          |
-| `harper run <path/to/app>`         | Run Harper application from any directory                    | v4.2.0          |
-| `harper dev <path/to/app>`         | Run Harper in dev mode with auto-restart and console logging | v4.2.0          |
-| `harper restart`                   | Restart Harper                                               | v4.1.0          |
-| `harper start`                     | Start Harper in background (daemon mode)                     | v4.1.0          |
-| `harper stop`                      | Stop a running Harper instance                               | v4.1.0          |
-| `harper login`                     | Log in to a Harper instance                                  | v5.0.0          |
-| `harper logout`                    | Log out of a Harper instance                                 | v5.0.0          |
-| `harper status`                    | Display Harper and clustering status                         | v4.1.0          |
-| `harper version`                   | Show installed Harper version                                | v4.1.0          |
-| `harper renew-certs`               | Renew Harper-generated self-signed certificates              | v4.1.0          |
-| `harper copy-db <source> <target>` | Copy a database with compaction                              | v4.1.0          |
-| `harper help`                      | Display all available CLI commands                           | v4.1.0          |
+| Command                            | Description                                                     | Available Since |
+| ---------------------------------- | --------------------------------------------------------------- | --------------- |
+| `harper`                           | Run Harper in foreground mode (default behavior)                | v4.1.0          |
+| `harper run <path/to/app>`         | Run Harper application from any directory                       | v4.2.0          |
+| `harper dev <path/to/app>`         | Run Harper in dev mode with auto-restart and console logging    | v4.2.0          |
+| `harper deploy`                    | Package and deploy the current directory or a package reference | v4.3.0          |
+| `harper restart`                   | Restart Harper                                                  | v4.1.0          |
+| `harper start`                     | Start Harper in background (daemon mode)                        | v4.1.0          |
+| `harper stop`                      | Stop a running Harper instance                                  | v4.1.0          |
+| `harper login`                     | Log in to a Harper instance                                     | v5.0.0          |
+| `harper logout`                    | Log out of a Harper instance                                    | v5.0.0          |
+| `harper status`                    | Display Harper and clustering status                            | v4.1.0          |
+| `harper version`                   | Show installed Harper version                                   | v4.1.0          |
+| `harper renew-certs`               | Renew Harper-generated self-signed certificates                 | v4.1.0          |
+| `harper copy-db <source> <target>` | Copy a database with compaction                                 | v4.1.0          |
+| `harper help`                      | Display all available CLI commands                              | v4.1.0          |
 
 See [CLI Commands](./commands.md) for detailed documentation on each command.
 

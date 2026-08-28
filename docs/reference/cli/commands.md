@@ -92,6 +92,121 @@ harper dev /path/to/app
 - Uses a single thread for simpler debugging
 - Auto-restart on file changes
 
+### `harper deploy`
+
+<VersionBadge version="v4.3.0" />
+
+Package and deploy a Harper component (application). With no `package`, `harper deploy` packages the current working directory into a tarball and deploys it; with `package=<reference>` it deploys from an npm, GitHub, or tarball reference instead of packaging local files. It deploys to the local Harper instance by default, or to a remote instance with `target=<url>`.
+
+`deploy` is an alias for the `deploy_component` operation, available through the CLI since v4.3.0. Deploying from a package reference was added in v4.4.18.
+
+`harper deploy` is a shorthand for the [`deploy_component`](../operations-api/operations.md#deploy_component) operation run against the current directory. See that operation for the full server-side behavior (deployment records, credentials, replication semantics); this page covers CLI-specific usage.
+
+**Deploy the current directory to the local instance**:
+
+```bash
+harper deploy
+```
+
+The project name defaults to the current directory's name. Override it with `project=<name>`.
+
+**Deploy a package reference**:
+
+```bash
+harper deploy package=HarperDB/application-template
+```
+
+**Deploy to a remote instance and restart it afterward**:
+
+```bash
+harper deploy target=https://server.com:9925 restart=true
+```
+
+Remote deploys authenticate the same way as any other remote CLI operation (stored login token, `auth_username`/`auth_password` or the legacy `username`/`password`, or environment variables). See [Remote Operations](./overview.md#remote-operations).
+
+#### Live progress
+
+<VersionBadge type="changed" version="v5.1.0" />
+
+Deploys stream live progress: an upload progress bar followed by real-time install output, as the deploy advances through its phases (prepare → load → replicate → restart). Against Harper servers older than 5.1, the CLI automatically falls back to a non-streaming deploy without live progress.
+
+Every deploy is recorded in the `system.hdb_deployment` table and the response includes a `deployment_id` you can use to query the deployment record. See [Deployment Operations](../operations-api/operations.md#deployment-operations).
+
+#### Parameters
+
+All parameters are passed as `key=value` arguments. Every parameter is optional.
+
+- `project=<name>` - Component project name. Defaults to the current directory's name for a directory deploy, or is derived from the package for a package deploy.
+- `package=<reference>` - An npm, GitHub, or tarball reference to deploy instead of the current directory (e.g. `HarperDB/app#semver:v1.0.0`).
+- `target=<url>` - Remote Harper instance to deploy to. Omit to deploy to the local instance. A bare host defaults to `https://<host>:9925`.
+- `restart=true` or `restart=rolling` - Restart Harper after deploying. Use `rolling` for a staggered, zero-downtime restart across a cluster.
+- `replicated=true` - Replicate the deploy to cluster peers.
+- `install_command=<command>` - Override the install command run for the component.
+- `install_timeout=<ms>` - Maximum time, in milliseconds, to allow the install to run.
+- `install_allow_scripts=true` - Allow npm pre/post-install scripts to run (disabled by default).
+- `deployment_timeout=<ms>` - How long, in milliseconds, a peer waits to receive the replicated payload before failing (default: `120000`). (Added in: v5.1.4)
+- `ignore_replication_errors=true` - Treat a peer that fails to receive the deploy as non-fatal instead of failing the whole operation. (Added in: v5.1.4)
+- `force=true` - Allow deploying over a protected core component name.
+- `urlPath=<path>` - HTTP path the component is mounted at (e.g. `/api/v2`). Requires `package`.
+- `host=<hostname>` - Virtual hostname the component is served on (e.g. `api.example.com`). Requires `package`. (Added in: v5.2.0)
+- `credentials='<json>'` - JSON array of credential objects for installing from a private npm registry or git repository. See [Private deploy sources](#private-deploy-sources). (Added in: v5.2.0)
+- `json=true` - Print output as JSON instead of the default YAML.
+
+**Packaging options** (directory deploy only):
+
+- `skip_node_modules=false` - Include the `node_modules` directory in the packaged tarball. Excluded by default.
+- `skip_symlinks=true` - Exclude symlinks from the packaged tarball. Included by default; broken (dangling) symlinks are always skipped with a warning.
+
+**Deploy-by-reference options** (see [Deploy by reference](#deploy-by-reference)):
+
+- `by_ref=true` - Deploy the current project from its GitHub `origin` remote as a pinned commit (`git+https`) instead of uploading a packaged tarball. (Added in: v5.2.3)
+- `ref=<committish>` - The branch, tag, or commit to deploy. Resolved to an immutable commit SHA so every cluster node deploys the same commit. Defaults to the current `HEAD`; implies `by_ref`. (Added in: v5.2.3)
+- `credential=true` - Attach the sealed credential reference so the cluster can clone a private repository. Provision it first with `harper deploy setup=true`. (Added in: v5.2.3)
+- `setup=true` - Provision (seal) a durable encrypted credential for a private deploy source instead of deploying. Interactive. (Added in: v5.2.3)
+
+#### Deploy by reference
+
+<VersionBadge version="v5.2.3" />
+
+Instead of packaging and uploading the working directory, `harper deploy by_ref=true` deploys a pinned git commit by reference: it resolves the project's GitHub `origin` remote and commit (from the local checkout or the GitHub Actions environment) and hands the cluster a `git+https://github.com/<owner>/<repo>.git#<sha>` package to clone. The commit is pinned to an immutable SHA so every cluster node deploys the same code.
+
+```bash
+# Deploy the current HEAD by reference
+harper deploy by_ref=true
+
+# Deploy a specific branch, tag, or commit
+harper deploy by_ref=true ref=v1.2.3
+```
+
+The commit must be pushed to the remote before deploying, so the cluster can clone it; the CLI warns if the working tree is dirty or the commit is not on any remote branch. Only GitHub `origin` remotes are supported.
+
+#### Private deploy sources
+
+<VersionBadge version="v5.2.3" />
+
+Installing a component from a private npm registry or a private git repository requires the `deploy_component` operation's [`credentials`](../operations-api/operations.md#deploy-credentials-credentials) field, an array of credential objects. Rather than passing a raw token on the command line (where it is exposed in shell history, process listings, and CI logs), provision a sealed credential once with `harper deploy setup=true`:
+
+```bash
+harper deploy setup=true
+```
+
+This interactive flow prompts for the provider (a private GitHub repository or a private npm registry), encrypts a token you supply (from `gh auth token`, `npm token create`, or a pasted PAT) on your machine using the cluster's public key, and stores only the ciphertext. It then prints a `credentials='[...]'` reference — containing the sealed secret's name, not the token — to use in your deploy.
+
+- **Private git repository** - After `setup=true`, deploy by reference with `credential=true`, which attaches the sealed credential reference for the clone automatically:
+
+  ```bash
+  harper deploy by_ref=true credential=true
+  ```
+
+- **Private npm registry** - After `setup=true`, pass the printed `credentials` reference on your deploy. CLI argument values are parsed as JSON, so a shell-quoted array works:
+
+  ```bash
+  harper deploy package=npm:@my-org/my-app@1.2.3 \
+    credentials='[{"registry":"registry.my-org.com","secret":"deploy.my-app.registry.my-org.com"}]'
+  ```
+
+See [`deploy_component` credentials](../operations-api/operations.md#deploy-credentials-credentials) for the full credential-entry shape, including passing a literal `token` instead of a sealed `secret` reference.
+
 ### `harper restart`
 
 Available since: v4.1.0
