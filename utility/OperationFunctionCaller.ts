@@ -34,7 +34,8 @@ export async function callOperationFunctionAsAwait(
 		if (
 			functionInput.operation === terms.OPERATIONS_ENUM.INSERT ||
 			functionInput.operation === terms.OPERATIONS_ENUM.UPDATE ||
-			functionInput.operation === terms.OPERATIONS_ENUM.UPSERT
+			functionInput.operation === terms.OPERATIONS_ENUM.UPSERT ||
+			functionInput.operation === terms.OPERATIONS_ENUM.PUT
 		) {
 			delete result.new_attributes;
 			delete result.txn_time;

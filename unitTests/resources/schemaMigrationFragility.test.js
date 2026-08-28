@@ -26,6 +26,8 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases, getDatabases } = require('#src/resources/databases');
+const { loadGQLSchema } = require('#src/resources/graphql');
+const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const fs = require('fs-extra');
 const path = require('node:path');
@@ -495,6 +497,398 @@ describe('schema-migration fragility: non-indexed attributes missing from table.
 		assert.ok(
 			attrNames.includes('related'),
 			`relationship attribute "related" should survive resetDatabases() but was dropped — got: ${attrNames}`
+		);
+	});
+});
+
+describe('schema relationship catalog round-trip', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 'relationshipCatalogRoundTrip';
+	const testRoot = path.resolve(__dirname, '../envDir/relationshipCatalogRoundTrip');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+	let host;
+	let location;
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+
+		resetDatabases();
+		await loadGQLSchema(`
+			type RelationshipLocation @table(database: "${DB}") {
+				id: ID @primaryKey
+				cloudProvider: String @indexed
+				hosts: [RelationshipHost] @relationship(to: "locationId")
+			}
+			type RelationshipHost @table(database: "${DB}") {
+				id: ID @primaryKey
+				locationId: ID @indexed
+				locationIds: [ID] @indexed
+				location: RelationshipLocation @relationship(from: "locationId") @enumerable
+				locations: [RelationshipLocation] @relationship(from: "locationIds", filterMissing: true)
+			}
+		`);
+		host = getDatabases()[DB].RelationshipHost;
+		location = getDatabases()[DB].RelationshipLocation;
+		await location.put({ id: 'loc-1', cloudProvider: 'linode' });
+		await host.put({ id: 'host-1', locationId: 'loc-1' });
+		await host.dbisDB.committed;
+	});
+
+	after(async () => {
+		await fs.remove(testRoot);
+	});
+
+	it('persists normalized relationship definitions on the primary catalog descriptor', () => {
+		const hostRelationships = host.dbisDB.getSync('RelationshipHost/').relationships;
+		const locationRelationships = location.dbisDB.getSync('RelationshipLocation/').relationships;
+		assert.deepStrictEqual(hostRelationships, [
+			{
+				name: 'location',
+				type: 'RelationshipLocation',
+				relationship: { from: 'locationId' },
+				target: { database: DB, table: 'RelationshipLocation' },
+			},
+			{
+				name: 'locations',
+				type: 'array',
+				elements: { type: 'RelationshipLocation' },
+				relationship: { from: 'locationIds', filterMissing: true },
+				target: { database: DB, table: 'RelationshipLocation' },
+			},
+		]);
+		assert.deepStrictEqual(locationRelationships, [
+			{
+				name: 'hosts',
+				type: 'array',
+				elements: { type: 'RelationshipHost' },
+				relationship: { to: 'locationId' },
+				target: { database: DB, table: 'RelationshipHost' },
+			},
+		]);
+	});
+
+	it('rebuilds forward and reverse resolvers from catalog-only state', async () => {
+		host.attributes.splice(
+			host.attributes.findIndex((attribute) => attribute.name === 'location'),
+			1
+		);
+		location.attributes.splice(
+			location.attributes.findIndex((attribute) => attribute.name === 'hosts'),
+			1
+		);
+		host.updatedAttributes();
+		location.updatedAttributes();
+
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		location = getDatabases()[DB].RelationshipLocation;
+
+		const hydratedLocation = host.attributes.find((attribute) => attribute.name === 'location');
+		const hydratedHosts = location.attributes.find((attribute) => attribute.name === 'hosts');
+		assert.ok(hydratedLocation?.definition?.tableClass === location);
+		assert.ok(hydratedHosts?.elements?.definition?.tableClass === host);
+		assert.strictEqual(hydratedLocation.enumerable, undefined, 'operations catalog reads must remain explicit-select');
+
+		const hostResults = [];
+		for await (const record of host.search({
+			conditions: [{ attribute: 'id', value: 'host-1' }],
+			select: ['id', { name: 'location', select: ['cloudProvider'] }],
+		}))
+			hostResults.push(record);
+		assert.strictEqual(hostResults[0].location.cloudProvider, 'linode');
+
+		const locationResults = [];
+		for await (const record of location.search({
+			conditions: [{ attribute: 'id', value: 'loc-1' }],
+			select: ['id', { name: 'hosts', select: ['id'] }],
+		}))
+			locationResults.push(record);
+		assert.deepStrictEqual(
+			locationResults[0].hosts.map((record) => record.id),
+			['host-1']
+		);
+	});
+
+	it('leaves hydrated attributes untouched when nothing about the catalog changed', () => {
+		const hydrated = host.attributes.find((attribute) => attribute.name === 'location');
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		assert.strictEqual(
+			host.attributes.find((attribute) => attribute.name === 'location'),
+			hydrated
+		);
+	});
+
+	it('applies related-table permissions to a hydrated resolver', async () => {
+		const target = new RequestTarget('?id=host-1&select(id,location{cloudProvider})');
+		target.checkPermission = true;
+		const user = {
+			role: {
+				permission: {
+					[DB]: {
+						tables: {
+							RelationshipHost: { read: true, attribute_permissions: [] },
+							RelationshipLocation: { read: false, attribute_permissions: [] },
+						},
+					},
+				},
+			},
+		};
+		const results = [];
+		for await (const record of host.search(target, { user, authorize: true })) results.push(record);
+		assert.strictEqual(results[0].location, undefined);
+	});
+
+	it('does not let a non-authoring attribute update erase relationship definitions', async () => {
+		await host.addAttributes([{ name: 'notes' }]);
+		await host.dbisDB.committed;
+		assert.strictEqual(host.dbisDB.getSync('RelationshipHost/').relationships.length, 2);
+		// the in-memory attribute has to survive too: add_attribute rewrites Table.attributes
+		assert.ok(host.attributes.find((attribute) => attribute.name === 'location')?.resolve);
+	});
+
+	it('does not overwrite a drop tombstone while reconciling relationships', async () => {
+		const original = host.dbisDB.getSync('RelationshipHost/');
+		await host.dbisDB.put('RelationshipHost/', { ...original, dropping: true, relationships: [] });
+		table({
+			table: 'RelationshipHost',
+			database: DB,
+			schemaDefined: true,
+			schemaRelationshipsDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'locationId', type: 'ID', indexed: {} },
+				{
+					name: 'location',
+					type: 'RelationshipLocation',
+					relationship: { from: 'locationId' },
+					relationshipReference: { database: DB, table: 'RelationshipLocation' },
+					definition: { tableClass: location },
+				},
+				{ name: 'notes', type: 'String' },
+			],
+		});
+		const tombstone = host.dbisDB.getSync('RelationshipHost/');
+		assert.strictEqual(tombstone.dropping, true);
+		assert.deepStrictEqual(tombstone.relationships, []);
+		await host.dbisDB.put('RelationshipHost/', original);
+		host.attributes.splice(
+			host.attributes.findIndex((attribute) => attribute.name === 'location'),
+			1
+		);
+		host.updatedAttributes();
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		location = getDatabases()[DB].RelationshipLocation;
+	});
+
+	it('ignores a persisted relationship whose target table is unavailable', async () => {
+		const original = host.dbisDB.getSync('RelationshipHost/');
+		const missingTarget = {
+			...original,
+			relationships: original.relationships.map((relationship) => ({
+				...relationship,
+				target: { database: DB, table: 'MissingRelationshipTarget' },
+			})),
+		};
+		await host.dbisDB.put('RelationshipHost/', missingTarget);
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		assert.ok(!host.attributes.some((attribute) => attribute.name === 'location'));
+
+		await host.dbisDB.put('RelationshipHost/', original);
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		location = getDatabases()[DB].RelationshipLocation;
+		assert.ok(host.attributes.find((attribute) => attribute.name === 'location')?.definition?.tableClass === location);
+	});
+
+	it('re-points a hydrated resolver at a recreated target table', async () => {
+		const firstTarget = location;
+		await location.dropTable();
+		resetDatabases();
+		table({
+			table: 'RelationshipLocation',
+			database: DB,
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'cloudProvider', indexed: true },
+			],
+		});
+		resetDatabases();
+		host = getDatabases()[DB].RelationshipHost;
+		location = getDatabases()[DB].RelationshipLocation;
+		assert.notStrictEqual(location, firstTarget, 'the drop must have produced a new table class');
+		assert.strictEqual(
+			host.attributes.find((attribute) => attribute.name === 'location')?.definition?.tableClass,
+			location
+		);
+		await location.put({ id: 'loc-1', cloudProvider: 'linode' });
+	});
+
+	it('authoritatively removes relationship definitions when the GraphQL schema drops them', async () => {
+		await loadGQLSchema(`
+			type RelationshipLocation @table(database: "${DB}") {
+				id: ID @primaryKey
+				cloudProvider: String @indexed
+			}
+			type RelationshipHost @table(database: "${DB}") {
+				id: ID @primaryKey
+				locationId: ID @indexed
+				notes: String
+			}
+		`);
+		await host.dbisDB.committed;
+		assert.deepStrictEqual(host.dbisDB.getSync('RelationshipHost/').relationships, []);
+		assert.deepStrictEqual(location.dbisDB.getSync('RelationshipLocation/').relationships, []);
+		resetDatabases();
+		assert.ok(!getDatabases()[DB].RelationshipHost.attributes.some((attribute) => attribute.name === 'location'));
+		assert.ok(!getDatabases()[DB].RelationshipLocation.attributes.some((attribute) => attribute.name === 'hosts'));
+	});
+});
+
+describe('schema relationship catalog on a legacy named primary descriptor', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 'relationshipCatalogLegacyDescriptor';
+	const testRoot = path.resolve(__dirname, '../envDir/relationshipCatalogLegacyDescriptor');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+	let source;
+	let target;
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+		resetDatabases();
+		await loadGQLSchema(`
+			type LegacySource @table(database: "${DB}") {
+				id: ID @primaryKey
+				targetId: ID @indexed
+				target: LegacyTarget @relationship(from: "targetId")
+			}
+			type LegacyTarget @table(database: "${DB}") {
+				id: ID @primaryKey
+				label: String
+			}
+		`);
+		source = getDatabases()[DB].LegacySource;
+		target = getDatabases()[DB].LegacyTarget;
+		await source.dbisDB.committed;
+	});
+
+	after(async () => {
+		await fs.remove(testRoot);
+	});
+
+	it('refuses a drop whose tombstone could not be durable without leaving one behind', async () => {
+		const dbisDB = source.dbisDB;
+		const originalPut = dbisDB.put;
+		dbisDB.put = async (...args) => originalPut.apply(dbisDB, args);
+		try {
+			await assert.rejects(() => source.dropTable(), /tombstone cannot be made durable/);
+		} finally {
+			dbisDB.put = originalPut;
+		}
+		// the refusal has to happen before the write: a tombstone left behind would make the next load
+		// complete a drop the caller was told did not happen
+		assert.strictEqual(dbisDB.getSync('LegacySource/').dropping, undefined);
+		assert.ok(getDatabases()[DB].LegacySource);
+	});
+
+	// pre-5.x catalogs keep a table's settings on the primary key's own row, but dropTable() always
+	// tombstones the bare row, so a drop in flight is only visible there
+	it('refuses to update a named descriptor while the bare table row carries a drop tombstone', async () => {
+		const original = source.dbisDB.getSync('LegacySource/');
+		await source.dbisDB.put('LegacySource/id', { ...original, attribute: 'id', relationships: [] });
+		await source.dbisDB.put('LegacySource/', { ...original, dropping: true });
+		table({
+			table: 'LegacySource',
+			database: DB,
+			schemaDefined: true,
+			schemaRelationshipsDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'targetId', type: 'ID', indexed: {} },
+				{
+					name: 'target',
+					type: 'LegacyTarget',
+					relationship: { from: 'targetId' },
+					relationshipReference: { database: DB, table: 'LegacyTarget' },
+					definition: { tableClass: target },
+				},
+			],
+		});
+		assert.deepStrictEqual(source.dbisDB.getSync('LegacySource/id').relationships, []);
+	});
+});
+
+describe('schema relationship catalog on a table with no declared primary key', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+	const DB = 'relationshipCatalogNoPrimaryKey';
+	const testRoot = path.resolve(__dirname, '../envDir/relationshipCatalogNoPrimaryKey');
+	const dbDir = path.join(testRoot, terms.DATABASES_DIR_NAME);
+
+	const schema = (relationship) => `
+		type NoPrimaryKeySource @table(database: "${DB}") {
+			created: Float @createdTime
+			targetId: ID @indexed
+			${relationship}
+		}
+		type NoPrimaryKeyTarget @table(database: "${DB}") {
+			id: ID @primaryKey
+			label: String
+		}
+	`;
+
+	before(async () => {
+		setMainIsWorker(true);
+		await fs.remove(testRoot);
+		await fs.mkdirp(dbDir);
+		env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, testRoot);
+		env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, dbDir);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {});
+		resetDatabases();
+		await loadGQLSchema(schema('target: NoPrimaryKeyTarget @relationship(from: "targetId")'));
+		await getDatabases()[DB].NoPrimaryKeySource.dbisDB.committed;
+	});
+
+	after(async () => {
+		await fs.remove(testRoot);
+	});
+
+	it('persists the relationship list even though no attribute row carries it', () => {
+		const source = getDatabases()[DB].NoPrimaryKeySource;
+		assert.strictEqual(source.primaryKey, undefined);
+		assert.deepStrictEqual(
+			source.dbisDB.getSync('NoPrimaryKeySource/').relationships.map((relationship) => relationship.name),
+			['target']
+		);
+	});
+
+	it('updates the persisted list when a later reload changes the schema', async () => {
+		await loadGQLSchema(schema(''));
+		const source = getDatabases()[DB].NoPrimaryKeySource;
+		await source.dbisDB.committed;
+		assert.deepStrictEqual(source.dbisDB.getSync('NoPrimaryKeySource/').relationships, []);
+		resetDatabases();
+		assert.ok(
+			!getDatabases()[DB].NoPrimaryKeySource.attributes.some((attribute) => attribute.name === 'target'),
+			'a dropped relationship must not survive on the catalog'
 		);
 	});
 });

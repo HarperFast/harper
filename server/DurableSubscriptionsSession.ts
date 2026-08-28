@@ -468,10 +468,15 @@ async function publishMessage(message: any, data: any, context: any) {
 	message = { ...message, data, async: true };
 	context.authorize = true;
 	const entry = resources.getMatch(topic, 'mqtt');
-	if (!entry)
-		throw new Error(
+	if (!entry) {
+		// Typed like addSubscription's identical miss, so a protocol layer can map it to a specific
+		// code rather than a generic failure.
+		const notFoundError: any = new Error(
 			`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
 		);
+		notFoundError.statusCode = 404;
+		throw notFoundError;
+	}
 	message.url = entry.relativeURL;
 	const target = new RequestTarget(entry.relativeURL);
 	if (entry.params) Object.assign(target, entry.params); // bind parameterised path segments (e.g. :id, *rest)

@@ -5,6 +5,12 @@ import { copyFile, link, mkdir, readdir, rename, rm, unlink, writeFile } from 'n
 import { dirname, join, relative } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import {
+	type BlobCaptureDisposition,
+	classifyBlobFileForCapture,
+	createCaptureMarker,
+	isSystemicIoError,
+} from '../resources/blob.ts';
 
 /**
  * Managed-backup snapshotting of a database's file-backed blobs.
@@ -21,17 +27,17 @@ import logger from '../utility/logging/harper_logger.ts';
  * possible (cheap, no extra space on the same filesystem) and copied otherwise (never symlinked, so
  * a snapshot is a standalone set of files that survives independent of the live blob).
  *
- * Consistency is best-effort and point-in-time-ish, matching how the engine treats the transaction
- * log: the walk captures whatever files exist at snapshot time. A blob deleted mid-walk is skipped;
- * a blob being written mid-walk is captured as-is (a hard link shares the inode, so it reflects the
- * writer's final bytes; a cross-filesystem copy captures the bytes present at copy time). Harper
- * does not freeze blob writes for the duration of a backup.
+ * Harper does not freeze blob writes for a backup, and a blob is written in place at its final path,
+ * so the walk can meet one that is still growing. Hard-linking that inode would put bytes in the
+ * snapshot that keep changing after it was taken. Every entry returned by the walk is therefore
+ * classified (`captureBlobFile`): a complete blob is linked, and one that becomes unavailable or is
+ * not yet complete is replaced by a marker rather than dropped. This closes the classify-to-capture
+ * race and keeps that file id reserved; a file reclaimed before its parent directory is read remains
+ * outside the snapshot.
  *
- * Hard-linking is safe against later mutation because Harper blobs are content-addressed and
- * write-once: each write allocates a fresh monotonic file id (a new path), and an update or delete
- * unlinks the old path rather than rewriting it in place — so a snapshot's hard link keeps the exact
- * bytes alive even after the live blob is deleted, and no in-place overwrite can retroactively alter
- * a snapshot.
+ * Past that gate, hard-linking is safe against later mutation: each write takes a fresh monotonic
+ * file id, and an update, delete, or in-place repair replaces or unlinks the path rather than
+ * rewriting the inode.
  */
 
 /** Directory holding all blob snapshots for a backup repository. */
@@ -46,17 +52,16 @@ export function blobSnapshotDir(backupDir: string, backupId: number): string {
 
 /**
  * Hard-link `src` to `dest`, falling back to a copy when the two are on different filesystems (or
- * the filesystem does not support additional hard links). Never creates a symlink. A source that
- * vanished mid-walk (a concurrent blob delete) is skipped rather than failing the whole snapshot.
+ * the filesystem does not support additional hard links). Never creates a symlink. Returns false
+ * when the source vanishes so the caller can substitute a marker for it.
  */
-async function linkOrCopy(src: string, dest: string): Promise<void> {
+async function linkOrCopy(src: string, dest: string): Promise<boolean> {
 	await mkdir(dirname(dest), { recursive: true });
 	try {
 		await link(src, dest);
 	} catch (error: any) {
 		if (error.code === 'ENOENT') {
-			// src disappeared (concurrent delete) — nothing to snapshot
-			if (!existsSync(src)) return;
+			if (!existsSync(src)) return false; // vanished since it was classified
 			throw error;
 		}
 		if (
@@ -66,24 +71,72 @@ async function linkOrCopy(src: string, dest: string): Promise<void> {
 			error.code === 'ENOTSUP' ||
 			error.code === 'EOPNOTSUPP'
 		) {
-			await copyFile(src, dest);
-			return;
+			try {
+				await copyFile(src, dest);
+			} catch (copyError: any) {
+				if (copyError.code === 'ENOENT') return false;
+				throw copyError;
+			}
+			return true;
 		}
 		if (error.code === 'EEXIST') {
 			await unlink(dest);
-			await linkOrCopy(src, dest);
-			return;
+			return linkOrCopy(src, dest);
 		}
 		throw error;
 	}
+	return true;
+}
+
+/**
+ * Put one blob file into the snapshot, returning how the entry was captured.
+ */
+async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobCaptureDisposition> {
+	let disposition: BlobCaptureDisposition;
+	try {
+		disposition = await classifyBlobFileForCapture(srcPath);
+	} catch (error) {
+		// This rethrow is unverified: only the membership of SYSTEMIC_IO_ERRORS is tested, because
+		// reaching it needs a real host-level fault no test here can produce.
+		if (isSystemicIoError(error)) throw error;
+		// Fall back to what this walk did before it classified anything. `link()` needs no read permission
+		// on the source, so a blob this failed to *read* may still be perfectly capturable; substituting
+		// here would turn an unreadable-but-valid root into a backup of nothing but stubs.
+		logger.warn(`Could not verify blob ${srcPath} for snapshot; capturing it unverified`, error);
+		disposition = 'capture';
+	}
+	if (disposition === 'skip') return disposition;
+	if (disposition === 'capture') {
+		if (await linkOrCopy(srcPath, destPath)) return disposition;
+		disposition = 'gone';
+	}
+	await mkdir(dirname(destPath), { recursive: true });
+	await writeFile(
+		destPath,
+		createCaptureMarker(
+			disposition,
+			disposition === 'gone'
+				? 'blob was deleted while this backup was being taken'
+				: 'blob was not yet complete when this backup was taken'
+		)
+	);
+	return disposition;
 }
 
 /**
  * Recursively copy every file under `srcRoot` into `destRoot` (hard-link-else-copy), preserving the
  * relative directory structure. Missing `srcRoot` is a no-op (a database with no blobs yet).
+ *
+ * `classify` belongs to the snapshot direction only; restore must replace exactly what the snapshot
+ * holds.
  */
-async function copyTree(srcRoot: string, destRoot: string): Promise<void> {
-	if (!existsSync(srcRoot)) return;
+async function copyTree(
+	srcRoot: string,
+	destRoot: string,
+	classify = false
+): Promise<{ substituted: number; captured: number }> {
+	const counts = { substituted: 0, captured: 0 };
+	if (!existsSync(srcRoot)) return counts;
 	const stack: string[] = [srcRoot];
 	while (stack.length > 0) {
 		const dir = stack.pop() as string;
@@ -99,11 +152,19 @@ async function copyTree(srcRoot: string, destRoot: string): Promise<void> {
 			if (entry.isDirectory()) {
 				stack.push(srcPath);
 			} else if (entry.isFile()) {
-				await linkOrCopy(srcPath, join(destRoot, relative(srcRoot, srcPath)));
+				const destPath = join(destRoot, relative(srcRoot, srcPath));
+				if (classify) {
+					const disposition = await captureBlobFile(srcPath, destPath);
+					if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
+					else if (disposition === 'capture') counts.captured++;
+				} else {
+					await linkOrCopy(srcPath, destPath);
+				}
 			}
 			// symlinks/other node types in a blob root are not expected and are intentionally skipped
 		}
 	}
+	return counts;
 }
 
 /**
@@ -118,8 +179,18 @@ export async function snapshotBlobs(backupDir: string, backupId: number, blobRoo
 	await rm(tempDir, { recursive: true, force: true });
 	await mkdir(tempDir, { recursive: true });
 	try {
+		let substituted = 0;
+		let captured = 0;
 		for (let index = 0; index < blobRoots.length; index++) {
-			await copyTree(blobRoots[index], join(tempDir, String(index)));
+			const counts = await copyTree(blobRoots[index], join(tempDir, String(index)), true);
+			substituted += counts.substituted;
+			captured += counts.captured;
+		}
+		if (substituted > 0) {
+			logger.warn(
+				`Blob snapshot for backup ${backupId} substituted ${substituted} of ${substituted + captured} blob ` +
+					`file(s) with PENDING or ERROR markers because they were not capturable whole.`
+			);
 		}
 		await rm(finalDir, { recursive: true, force: true });
 		await rename(tempDir, finalDir);
@@ -175,8 +246,10 @@ ${rootMapping}
   4096 entries per directory). E.g. a blob with id \`0x12345678\` lives at \`12/345/678\`; a short id
   like \`0xc1a\` lives at \`0/0/c1a\`.
 
-Files are hard links to the live blobs when the backup is on the same filesystem, and copies
-otherwise.
+Complete blobs are hard links to the live blobs when the backup is on the same filesystem, and
+copies otherwise. A blob that was not capturable whole is stored as a marker instead: header type
+\`0xfe\` is retryable (PENDING), while \`0xff\` is terminal (ERROR). The marker preserves the file id
+but does not contain the original blob bytes.
 `;
 }
 

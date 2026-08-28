@@ -89,6 +89,17 @@ calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts 
 `shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
 and it force-terminates the remaining worker set rather than waiting for application drain hooks.
 
+A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
+`SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a
+component deploy is not live pool-wide until `restartWorkers()` resolves. For the overlapping types
+(HTTP) it waits for each replacement to report `CHILD_STARTED` — including the ones that can only be
+started after their predecessor releases its exclusive ports (Windows/macOS/Bun) — and reports how
+many workers it left on the old code because a replacement never came up, versus how many
+replacements never started after their predecessor was already gone. Other thread types start their
+replacement without being awaited. Each wait is bounded by a per-worker startup backstop, so
+resolution means "the restart finished", not "every worker is new". A caller that treats its own success as
+"the component is live" must await it (see `deployComponent` in `components/operations.js`).
+
 > Workers receive `workerData.noServerStart = true` — never start the server inside a worker.
 >
 > `threadServer.listenOnDomainSocket()` skips a listener only when its path exceeds the platform's
@@ -168,6 +179,16 @@ through `operationAuthorizationState.ts`'s async context. When an operation regi
 must run on a worker, `registeredOperations.ts` carries that state in the same-process ITC envelope,
 separately from the structured-cloned body. Never attach trusted dispatch state to an operation
 payload.
+
+`server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
+registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
+during registration exists only in the worker that registered. The bridge carries two such facts
+today: name→thread routing (for execution forwarding) and `grantable` (so `validateOperations` on
+main will accept the name in a role's `operations` allowlist, for add_role/alter_role, impersonation,
+and OIDC trust policies). Adding a third main-thread consumer of a worker-registered fact means
+extending that message, not reading a registry that main never populated. Grantability is safe to
+mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
+`chooseOperation`.
 
 ## Resource ↔ HTTP boundary
 
