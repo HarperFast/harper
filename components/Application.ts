@@ -1283,7 +1283,20 @@ export async function unsettleableComponentsFromDisk(componentsRootDirPath: stri
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		// Recorded by main when it failed to settle a well-formed journal. Checked first, because that case
 		// is invisible to a worker otherwise.
-		const recorded = await readFile(join(deploymentDirPath, UNSETTLED_MARKER), 'utf8').catch(() => undefined);
+		// Only ENOENT is absence. A marker that exists but cannot be read (EIO, EACCES) must not be taken as
+		// "no verdict" — that classifies the well-formed journal beside it as a healthy in-flight deploy and
+		// lets the worker load a component main failed closed.
+		let recorded: string | undefined;
+		try {
+			recorded = await readFile(join(deploymentDirPath, UNSETTLED_MARKER), 'utf8');
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+				const component = await candidateComponentName(deploymentDirPath);
+				const failure = error instanceof Error ? error : new Error(String(error));
+				if (component && !unsettleable.has(component)) unsettleable.set(component, failure);
+				continue;
+			}
+		}
 		if (recorded !== undefined) {
 			const component = await candidateComponentName(deploymentDirPath);
 			if (component && !unsettleable.has(component)) {
@@ -1350,16 +1363,29 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			// delete here removes a live build out from under it.
 			const owner = await candidateComponentName(deploymentDirPath);
 			const removeResidue = async () => {
-				if (await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL)).catch(() => undefined)) return;
+				// Re-read UNDER the lock, and do not swallow: the first scan raced a deploy that can publish a
+				// journal before releasing the lock, so a journal found now must be settled rather than deleted.
+				// Treating a read error as "no journal" would delete the evidence instead.
+				const appeared = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
+				if (appeared) {
+					await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared);
+					return;
+				}
 				await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 			};
 			if (owner) {
 				await withComponentPreparationLock(join(componentsRootDirPath, owner), removeResidue, {
 					purpose: 'activation-recovery',
+					// Without this a ticket left by a CRASHED worker looks live — same pid, same process
+					// instance — so recovery waits out the multi-hour default instead of reclaiming it.
+					isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
 				});
 			} else {
-				// Nothing names an owner, so nothing can be mid-build against it.
-				await removeResidue();
+				// NOT removed. `buildCandidateApplication` creates the deployment directory and can then spend
+				// minutes resolving or packing before the candidate tree and its sidecar exist, so "no owner"
+				// includes "a live build that has not got that far yet" — and deleting it races the extraction
+				// and fails a valid deploy. Unowned residue is left for a later pass, once an owner is knowable.
+				logger.trace?.(`Leaving unowned deploy staging ${deploymentDirPath} in place: no component names it`);
 			}
 			continue;
 		}
@@ -1368,7 +1394,10 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			await withComponentPreparationLock(
 				join(componentsRootDirPath, settling.component),
 				() => settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, settling),
-				{ purpose: 'activation-recovery' }
+				{
+					purpose: 'activation-recovery',
+					isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
+				}
 			);
 		} catch (error) {
 			// The journal named its component, so attribution is exact however the settle failed.
@@ -1395,18 +1424,19 @@ async function sweepAsideRecords(
 	asideStagingDir: string
 ): Promise<void> {
 	for (const record of records) {
-		try {
-			// Retiring only marks the displaced tree disposable; sweeping it is what keeps the components root
-			// from growing by a component version for every activation a crash interrupted.
-			const retiredMarkerPath = await retireExtractionAside(record);
-			await cleanupExtractionPaths(
-				{ name: componentName, dirPath: liveDirPath, logger },
-				asideStagingDir,
-				new Set([record, retiredMarkerPath])
-			);
-		} catch (error) {
-			logger.warn(`Settled ${componentName} but could not retire ${record}:`, errorForLog(error));
-		}
+		// RETIRING IS CORRECTNESS, not hygiene: the retired marker is what stops the journal-blind legacy
+		// pass treating this record as authoritative and restoring the displaced tree over the candidate that
+		// was just rolled forward. A record left un-retired while the journal is removed re-creates exactly
+		// the inversion this protocol exists to prevent, so a failure here PROPAGATES — the caller keeps the
+		// journal and the next start retries.
+		const retiredMarkerPath = await retireExtractionAside(record);
+		// Sweeping the displaced tree is hygiene: it bounds disk, and a failure costs space rather than
+		// correctness, so it is logged. The retired marker above already makes the record non-authoritative.
+		await cleanupExtractionPaths(
+			{ name: componentName, dirPath: liveDirPath, logger },
+			asideStagingDir,
+			new Set([record, retiredMarkerPath])
+		).catch((error) => logger.warn(`Settled ${componentName} but could not sweep ${record}:`, errorForLog(error)));
 	}
 }
 
@@ -1501,6 +1531,10 @@ async function settleInterruptedActivation(
 	}
 	// Best-effort, matching the activation path: the activation is settled by this point, so a transient
 	// EBUSY removing staging must not throw out of the recovery pass and take the other components with it.
+	// An earlier failed recovery may have left an unsettled marker here. Cleared BEFORE the journal and
+	// treated as correctness: main would report this component settled and load it, while every worker read
+	// the stale marker and failed it closed.
+	await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
 	await rm(journalPath, { force: true }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not remove its activation journal:`, errorForLog(error))
 	);
@@ -1530,6 +1564,9 @@ function isUnsupportedSync(error: unknown): boolean {
 // fan-out keeps the ordering guarantee (everything is synced before `.complete` is written) without paying
 // per-file latency one file at a time.
 const CANDIDATE_SYNC_CONCURRENCY = 16;
+// Directories walked at once when re-pointing dependency links after a swap; a pnpm or monorepo tree is
+// thousands of directories and a serial depth-first walk after every activation is a real cost.
+const LINK_REPAIR_CONCURRENCY = 8;
 
 async function syncTreeContents(rootPath: string): Promise<void> {
 	// Real durability failures propagate: the deploy fails, which is safe because the live tree is
@@ -1756,7 +1793,45 @@ async function compensate(
  * dependency semantics on every platform to fix one.
  */
 async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: string): Promise<void> {
-	const modulesPath = join(liveDirPath, 'node_modules');
+	const relinkOne = async (entryPath: string) => {
+		let target: string;
+		try {
+			target = await readlink(entryPath);
+		} catch {
+			return;
+		}
+		const normalized = stripExtendedLengthPrefix(target);
+		// Containment, not a prefix match: `startsWith` classifies `<build>-shared` as inside `<build>` and
+		// would rewrite it to an unrelated live path.
+		const within = relative(builtAtPath, normalized);
+		if (within.startsWith('..') || isAbsolute(within)) return;
+		const repaired = join(liveDirPath, within);
+		// The replacement is created BEFORE the old link is dropped, and swapped in by rename. A
+		// remove-then-create loses the dependency outright when the create fails.
+		const stagedLink = `${entryPath}.relink-${process.pid}-${randomUUID()}`;
+		try {
+			await symlink(repaired, stagedLink, 'junction');
+			try {
+				await rename(stagedLink, entryPath);
+			} catch (renameError) {
+				// Windows cannot rename over an existing junction, so the old one has to go first — and if the
+				// second rename then fails the same way, the original target is put back rather than leaving
+				// nothing behind.
+				if (process.platform !== 'win32') throw renameError;
+				await rm(entryPath, { recursive: true, force: true });
+				try {
+					await rename(stagedLink, entryPath);
+				} catch (secondError) {
+					await symlink(normalized, entryPath, 'junction').catch(() => {});
+					throw secondError;
+				}
+			}
+		} catch (error) {
+			await rm(stagedLink, { recursive: true, force: true }).catch(() => {});
+			logger.warn(`Could not re-point ${entryPath} after activation: ${errorMessage(error)}`);
+		}
+	};
+
 	const walk = async (dirPath: string): Promise<void> => {
 		let entries;
 		try {
@@ -1764,57 +1839,20 @@ async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: 
 		} catch {
 			return;
 		}
+		// Every directory, not just `@scope` containers and nested `node_modules`: a dependency installed from
+		// outside the tree can be linked from deeper in. Walked with bounded concurrency rather than serially,
+		// because a pnpm or monorepo tree is thousands of directories and this runs after every activation.
+		const directories: string[] = [];
 		for (const entry of entries) {
 			const entryPath = join(dirPath, entry.name);
-			if (entry.isSymbolicLink()) {
-				let target: string;
-				try {
-					target = await readlink(entryPath);
-				} catch {
-					continue;
-				}
-				const normalized = stripExtendedLengthPrefix(target);
-				// Containment, not a prefix match: `startsWith` classifies `<build>-shared` as inside
-				// `<build>` and would rewrite it to an unrelated live path.
-				const within = relative(builtAtPath, normalized);
-				if (within.startsWith('..') || isAbsolute(within)) continue;
-				const repaired = join(liveDirPath, within);
-				// The replacement is created BEFORE the old link is dropped, and swapped in by rename. A
-				// remove-then-create loses the dependency outright when the create fails — an antivirus or
-				// permission error on Windows would leave it worse than the dangling link it replaced.
-				const stagedLink = `${entryPath}.relink-${process.pid}-${randomUUID()}`;
-				try {
-					// Built first, so a failure here costs nothing.
-					await symlink(repaired, stagedLink, 'junction');
-					try {
-						await rename(stagedLink, entryPath);
-					} catch (renameError) {
-						// Windows cannot rename over an existing junction, so the old one has to go first. If the
-						// second rename then fails for the same reason the first did, the link is restored to its
-						// original target rather than left absent — a dangling link still resolves for anything
-						// that reads it by another route, nothing does not.
-						if (process.platform !== 'win32') throw renameError;
-						await rm(entryPath, { recursive: true, force: true });
-						try {
-							await rename(stagedLink, entryPath);
-						} catch (secondError) {
-							await symlink(normalized, entryPath, 'junction').catch(() => {});
-							throw secondError;
-						}
-					}
-				} catch (error) {
-					await rm(stagedLink, { recursive: true, force: true }).catch(() => {});
-					logger.warn(`Could not re-point ${entryPath} after activation: ${errorMessage(error)}`);
-				}
-			} else if (entry.isDirectory()) {
-				// Every directory, not just `@scope` containers and nested `node_modules`. A dependency
-				// installed from a path outside the tree can be linked from deeper in, and the earlier filter
-				// walked past those. Bounded by the dependency tree, which activation already traverses.
-				await walk(entryPath);
-			}
+			if (entry.isSymbolicLink()) await relinkOne(entryPath);
+			else if (entry.isDirectory()) directories.push(entryPath);
+		}
+		for (let index = 0; index < directories.length; index += LINK_REPAIR_CONCURRENCY) {
+			await Promise.all(directories.slice(index, index + LINK_REPAIR_CONCURRENCY).map(walk));
 		}
 	};
-	await walk(modulesPath);
+	await walk(join(liveDirPath, 'node_modules'));
 }
 
 /** Windows junction targets come back with an extended-length `\\?\` prefix that plain paths never have. */

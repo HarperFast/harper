@@ -53,6 +53,7 @@ import { materializeGlobalSecrets, processComponentEnv } from './componentSecret
 import { PluginModule } from './PluginModule.ts';
 import {
 	getEnvBuiltInComponents,
+	recoverInterruptedActivations,
 	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
 	unsettleableComponentsFromDisk,
@@ -174,6 +175,23 @@ export async function loadComponentDirectories(
 		// No verdict from boot means this is a worker, which never runs the recovery pass. It reads the same
 		// evidence instead: a component whose activation could not be settled must not load here either,
 		// since workers are what actually serve it.
+		//
+		// Settlement itself runs here too, not just the read-only check. A worker can be auto-restarted at any
+		// time — including mid-activation — and the journal-blind legacy pass below would then restore a
+		// displaced tree over a candidate that was already renamed live. Main-thread startup sequencing does
+		// not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
+		// the component preparation lock, which is cross-thread and cross-process, and the pass is idempotent.
+		try {
+			for (const [component, error] of await recoverInterruptedActivations(CF_ROUTES_DIR)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			harperLogger.warn(
+				'Could not settle interrupted component activations on this thread:',
+				errorForLog(error instanceof Error ? error : new Error(String(error)))
+			);
+		}
+		// Plus anything a previous pass recorded as unsettleable, which settlement above leaves in place.
 		try {
 			for (const [component, error] of await unsettleableComponentsFromDisk(CF_ROUTES_DIR)) {
 				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
@@ -416,21 +434,15 @@ export function forgetLoadedPath(componentDirectory: string): void {
 }
 
 /**
- * The set of modules the loader currently considers loaded. Paired with `forgetModulesLoadedSince` so a
- * throwaway validation load can release what it registered.
+ * Release exactly the modules a throwaway validation load registered, as collected by that load's
+ * `collectLoadedModules` set.
  *
- * A snapshot rather than passing a private map: `loadComponent`'s `providedLoadedComponents` REASSIGNS the
- * module-level registry, so handing it a throwaway map would leave every later load writing into that map.
+ * Exactly those, not a before/after diff of the global registry: validations are serialized with each other
+ * but not with ordinary loads, so a deferred real load for another component can register between the two
+ * snapshots — and a diff would then delete that live module.
  */
-export function snapshotLoadedModules(): Set<any> {
-	return new Set(loadedComponents.keys());
-}
-
-/** Drop modules registered since `before` — the extension modules a candidate load pulled in. */
-export function forgetModulesLoadedSince(before: Set<any>): void {
-	for (const key of [...loadedComponents.keys()]) {
-		if (!before.has(key)) loadedComponents.delete(key);
-	}
+export function forgetLoadedModules(modules: Iterable<any>): void {
+	for (const module of modules) loadedComponents.delete(module);
 }
 
 /** So a caller that installs a reporter can put the previous one back when it is done with it. */

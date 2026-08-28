@@ -281,36 +281,33 @@ describe('read-only verdict for worker boot', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('does not mark a correctly settled component unsettled because cleanup failed', async () => {
-		// The tree decision is applied before the records are swept, and any throw from the settle is read as
-		// "could not settle" — which writes the unsettled marker and permanently stops workers loading a
-		// component that is by then healthy. A file where the aside DIRECTORY is expected makes the sweep's
-		// retire fail, standing in for a transient EACCES/ENOSPC.
-		const root = await newRoot('cleanupfail');
-		await stageState(root, 'web', 'd1', {
+	it('keeps the journal and fails closed when a rollback record cannot be retired', async () => {
+		// Retiring is CORRECTNESS: the retired marker is what stops the journal-blind legacy pass treating the
+		// record as authoritative. A record left un-retired while the journal is removed would let that pass
+		// restore the displaced tree over the candidate just rolled forward — so this must fail closed and
+		// keep the journal, not report success. (An earlier version of this test asserted the opposite, which
+		// is the behaviour a reviewer correctly rejected.)
+		const root = await newRoot('retirefail');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
 			candidate: 'CANDIDATE\n',
 			complete: true,
 			journal: true,
 			aside: 'PREVIOUS\n',
 		});
-		const asideRecord = path.join(root, ASIDE_STAGING_DIR, 'web', '.in-progress-1-1-aaa');
-		await fs.rm(asideRecord, { recursive: true, force: true });
-		await fs.writeFile(asideRecord, 'not a directory\n');
-		await fs.chmod(path.join(root, ASIDE_STAGING_DIR, 'web'), 0o500);
+		const asideDir = path.join(root, ASIDE_STAGING_DIR, 'web');
+		await fs.chmod(asideDir, 0o500);
 
 		let failures;
 		try {
 			failures = await recoverInterruptedActivations(root);
 		} finally {
-			await fs.chmod(path.join(root, ASIDE_STAGING_DIR, 'web'), 0o700);
+			await fs.chmod(asideDir, 0o700);
 		}
 
-		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the activation still rolled forward');
-		assert.strictEqual(failures.size, 0, 'and a cleanup failure is not reported as unsettleable');
-		assert.strictEqual(
-			(await unsettleableComponentsFromDisk(root)).size,
-			0,
-			'so no marker blocks a worker from loading a healthy component'
+		assert.strictEqual(failures.size, 1, 'the component is failed closed rather than reported settled');
+		assert.ok(
+			existsSync(path.join(deploymentDir, 'activation.json')),
+			'and the journal survives, so the next start retries instead of letting the legacy pass win'
 		);
 		await fs.rm(root, { recursive: true, force: true });
 	});

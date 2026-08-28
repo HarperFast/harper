@@ -495,13 +495,16 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 		// The whole namespace, not just the bare name: nested loads report under scoped keys like `web.api`,
 		// and restoring only `web` leaves a plugin-scoped ERROR from a candidate that never went live.
 		const priorStatus = statusInternal.componentStatusRegistry.snapshotNamespace(componentName);
-		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed
-		// by module, so forgetting only the candidate's realpath leaves those behind — one set per deploy.
-		const modulesBeforeValidation = componentLoader.snapshotLoadedModules?.() ?? new Set();
+		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed by
+		// module, so forgetting only the candidate's realpath leaves those behind — one set per deploy. Their
+		// identities are collected by the load itself; diffing the global registry instead would delete a live
+		// module registered by an interleaving real load, since validations serialize only with each other.
+		const validationModules = new Set();
 		const validation = runWithDeployValidationGuard(async () => {
 			try {
 				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
 					collectScopes: validationScopes,
+					collectLoadedModules: validationModules,
 				});
 			} finally {
 				const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
@@ -532,7 +535,7 @@ async function validateComponentLoadsExclusive(candidateDirPath, emit) {
 			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
 			// one dead entry per deploy for the life of the process.
 			componentLoader.forgetLoadedPath?.(candidateDirPath);
-			componentLoader.forgetModulesLoadedSince?.(modulesBeforeValidation);
+			componentLoader.forgetLoadedModules?.(validationModules);
 		}
 		emit('phase', { phase: 'load', status: 'done' });
 
