@@ -15,7 +15,7 @@ import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
@@ -133,6 +133,7 @@ type MaybePromise<T> = T | Promise<T>;
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
+const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
@@ -485,6 +486,7 @@ export function makeTable(options) {
 	if (!properties) properties = projectAttributesToProperties(attributes);
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
+	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
@@ -6045,6 +6047,11 @@ export function makeTable(options) {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
+		const existingRecord = existingEntry?.value;
+		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+		const sourceTimestamp =
+			inheritedTimestamp ||
+			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
 		let whenResolved, timer;
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -6083,10 +6090,8 @@ export function makeTable(options) {
 		// lock acquired — this request will actually load from source
 		setLoadedFromSource(target, true);
 
-		const existingRecord = existingEntry?.value;
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
-		// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
-		// want a timestamp later than the current transaction
+		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
 		// we create a new context for the source, we want to determine the timestamp and don't want to
 		// attribute this to the current user
 		const sourceContext = {
@@ -6122,13 +6127,37 @@ export function makeTable(options) {
 			// before the drain's fail-closed timeout below.
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
-				let updatedRecord;
+				let updatedRecord, assignCreatedTime, sourceVersion;
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
 					invalidated = metadataFlags & INVALIDATED;
-					let version = sourceContext.lastModified || (invalidated && existingVersion);
-					hasChanges = invalidated || version > existingVersion || !existingRecord;
+					const reportedVersion = sourceContext.lastModified;
+					const validReportedVersion =
+						typeof reportedVersion === 'number' &&
+						Number.isFinite(reportedVersion) &&
+						reportedVersion > 0 &&
+						reportedVersion <= MAX_DATE_TIMESTAMP;
+					if (validReportedVersion) {
+						// A record version is also this node's ordering token (precedesExistingVersion), so a
+						// source-reported version ahead of local time would make every subsequent local write look
+						// out-of-order and be discarded until wall-clock caught up — freezing the row. Honor what
+						// the source reports, but never beyond now.
+						const versionCeiling = Math.max(sourceTimestamp, Date.now());
+						sourceVersion = Math.min(reportedVersion, versionCeiling);
+						if (sourceVersion !== reportedVersion) {
+							logger.trace?.(
+								`Capping future source version for ${tableName} id ${id}: ${reportedVersion} -> ${sourceVersion}`
+							);
+							if (!warnedFutureSourceVersion) {
+								warnedFutureSourceVersion = true;
+								logger.warn?.(
+									`The source for ${tableName} reported a lastModified ahead of local time (${new Date(reportedVersion).toISOString()}) for id ${id}; capping cached record versions at local time`
+								);
+							}
+						}
+					} else sourceVersion = sourceTimestamp;
+					hasChanges = invalidated || (validReportedVersion && reportedVersion > existingVersion) || !existingRecord;
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
 					if (responseHeaders)
@@ -6142,7 +6171,7 @@ export function makeTable(options) {
 							if (status === 304) {
 								// revalidation of our current cached record
 								updatedRecord = existingRecord;
-								version = existingVersion;
+								sourceVersion = existingVersion;
 							} else if (!CACHEABLE_STATUS_CODES.has(status)) {
 								// non-cacheable status - propagate to client without caching
 								throw new ServerError(updatedRecord.body || 'Error from source', status);
@@ -6212,10 +6241,15 @@ export function makeTable(options) {
 						updatedRecord = storedFieldsOnly(primaryStore.encoder, updatedRecord);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
+					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;
 					resolved = true;
+					const resolvedVersion =
+						isRocksDB && updatedRecord && existingVersion != null
+							? Math.max(sourceVersion, existingVersion)
+							: sourceVersion;
 					const resolvedEntry: Entry = {
 						key: id,
-						version,
+						version: resolvedVersion,
 						value: updatedRecord,
 						expiresAt: sourceContext.expiresAt,
 						metadataFlags: 0,
@@ -6272,16 +6306,32 @@ export function makeTable(options) {
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
-					entry: existingEntry,
+					entry: undefined,
 					nodeName: 'source',
-					commit: (txnTime, existingEntry, _retry, transaction: any) => {
+					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
-						if (existingEntry?.version !== existingVersion) {
-							// don't do anything if the version has changed
+						const racedVersion = existingEntry?.version;
+						// A first fill may replace a record that raced it only when its candidate version strictly
+						// orders after that record. The comparison has to be replica-independent, so a tie leaves the
+						// raced record in place: precedesExistingVersion() would break the tie with *this* node's
+						// name, and a fill from a shared source has no node identity of its own, so two replicas
+						// resolving the same tie could keep different values at the same version.
+						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
+						if (
+							racedVersion !== existingVersion &&
+							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
+							(existingVersion != null || !updatedRecord || !replacesRacedRecord)
+						) {
+							logger.trace?.(
+								`Discarding resolved record from source with id: ${id}, source version: ${sourceVersion}, current version: ${racedVersion}`
+							);
 							sourceWrite.skipped = true;
 							return;
 						}
-						updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
+						const currentRecord = existingEntry?.value;
+						const recordVersion =
+							isRocksDB && racedVersion != null ? Math.max(sourceVersion, racedVersion) : sourceVersion;
+						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
 						if (updatedRecord) {
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
@@ -6292,22 +6342,22 @@ export function makeTable(options) {
 							if (updatedTimeProperty) {
 								updatedRecord[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
-										? new Date(txnTime)
+										? new Date(recordVersion)
 										: updatedTimeProperty.type === 'String'
-											? new Date(txnTime).toISOString()
-											: txnTime;
+											? new Date(recordVersion).toISOString()
+											: recordVersion;
 							}
-							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
-								const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
+							if (assignCreatedTime) {
+								const existingCreatedTime = currentRecord?.[createdTimeProperty.name];
 								if (existingCreatedTime != null) {
 									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
 								} else {
 									updatedRecord[createdTimeProperty.name] =
 										createdTimeProperty.type === 'Date'
-											? new Date(txnTime)
+											? new Date(recordVersion)
 											: createdTimeProperty.type === 'String'
-												? new Date(txnTime).toISOString()
-												: txnTime;
+												? new Date(recordVersion).toISOString()
+												: recordVersion;
 								}
 							}
 							const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
@@ -6339,14 +6389,14 @@ export function makeTable(options) {
 								residencyId = getResidencyId(residency);
 							}
 							logger.trace?.(
-								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
+								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
 							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 							updateRecord(
 								id,
 								updatedRecord,
 								existingEntry,
-								txnTime,
+								recordVersion,
 								omitLocalRecord ? INVALIDATED : 0,
 								(audit && (hasChanges || omitLocalRecord)) || null,
 								{
@@ -6364,14 +6414,14 @@ export function makeTable(options) {
 							if (sourceContext.expiresAt) scheduleCleanup();
 						} else if (existingEntry) {
 							logger.trace?.(
-								`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
+								`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
 							if (audit || trackDeletes) {
 								updateRecord(
 									id,
 									null,
 									existingEntry,
-									txnTime,
+									recordVersion,
 									0,
 									(audit && hasChanges) || null,
 									{ user: (sourceContext as any)?.user, transaction, tableToTrack: tableName },
