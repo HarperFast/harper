@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1787994350058,
+  "lastUpdate": 1787994353782,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17189,6 +17189,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 4452.6,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "id": "ad9854bed9feea6f0f9d514637c849c0125bd41f",
+          "message": "test(components): bind archive routing invariants\n\nShare the bare-absolute-path predicate between identifier derivation and Windows directory materialization, and assert that direct deployment leaves the source archive intact.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-08-28T04:51:25Z",
+          "url": "https://github.com/HarperFast/harper/commit/ad9854bed9feea6f0f9d514637c849c0125bd41f"
+        },
+        "date": 1787994352624,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 6508.99,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 6508.99,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 466.3,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1526.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1910.3,
             "unit": "ms"
           }
         ]
