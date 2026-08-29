@@ -6,6 +6,8 @@ const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const {
 	blobSnapshotDir,
+	blobsReadmeContent,
+	copyBlobRootsByIndex,
 	snapshotBlobs,
 	restoreBlobSnapshot,
 	deleteBlobSnapshot,
@@ -189,7 +191,7 @@ describe('blobBackup', function () {
 			await snapshotBlobs(backupDir, 7, [rootA]);
 			assert.ok(existsSync(blobSnapshotDir(backupDir, 7)));
 			// no leftover temp directory
-			assert.ok(!existsSync(join(backupDir, 'blobs', '.tmp-7')));
+			assert.ok(!existsSync(blobSnapshotDir(backupDir, 7) + '.tmp'));
 		});
 
 		it('handles a database with no blobs yet (missing roots) without error', async function () {
@@ -221,6 +223,44 @@ describe('blobBackup', function () {
 				assert.strictEqual(isSystemicIoError(Object.assign(new Error(code), { code })), true);
 			}
 			assert.strictEqual(isSystemicIoError(Object.assign(new Error('permission denied'), { code: 'EACCES' })), false);
+		});
+	});
+
+	// copy-db copies blob roots through the same primitive, into a standalone directory beside the
+	// database copy rather than a backup repository (harper#2048).
+	describe('copyBlobRootsByIndex', function () {
+		it('copies every root into its index directory and replaces a previous copy', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			writeBlob(rootB, '005/006/007', 'gamma');
+			const destination = join(tempDir, 'copy.mdb-blobs');
+
+			await copyBlobRootsByIndex(destination, [rootA, rootB]);
+			assert.strictEqual(blobBody(join(destination, '0', '001/002/003')), 'alpha');
+			assert.strictEqual(blobBody(join(destination, '1', '005/006/007')), 'gamma');
+			assert.ok(!existsSync(destination + '.tmp'), 'the staging directory is renamed into place, not left behind');
+
+			rmSync(join(rootA, '001/002/003'));
+			writeBlob(rootA, '001/002/009', 'delta');
+			await copyBlobRootsByIndex(destination, [rootA, rootB]);
+			assert.ok(!existsSync(join(destination, '0', '001/002/003')), 'a stale file from the previous copy is gone');
+			assert.strictEqual(blobBody(join(destination, '0', '001/002/009')), 'delta');
+		});
+	});
+
+	describe('blobsReadmeContent', function () {
+		it('documents the copy layout without a backup-id level and maps every root index', function () {
+			const readme = blobsReadmeContent([rootA, rootB], { variant: 'copy' });
+			assert.match(readme, /<rootIndex>\/<shard1>\/<shard2>\/<fileId>/);
+			assert.doesNotMatch(readme, /<backupId>/, 'a copy has no backup id');
+			assert.match(readme, /copy-db/);
+			assert.ok(readme.includes(`0 -> ${rootA}`));
+			assert.ok(readme.includes(`1 -> ${rootB}`));
+		});
+
+		it('keeps the managed and archive variants distinguishable', function () {
+			assert.match(blobsReadmeContent([rootA]), /<backupId>\/<rootIndex>/);
+			assert.match(blobsReadmeContent([rootA], { variant: 'archive' }), /get_backup/);
+			assert.doesNotMatch(blobsReadmeContent([rootA], { variant: 'archive' }), /<backupId>/);
 		});
 	});
 

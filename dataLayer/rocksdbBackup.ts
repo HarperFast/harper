@@ -754,7 +754,7 @@ async function streamBackupWithBlobs(
 		await appendBlobEntries(pack, blobRoots);
 		// generate the same self-documenting READMEs a managed backup writes to disk, on the fly
 		await addTextEntry(pack, 'README.md', streamedBackupReadme(databaseName));
-		await addTextEntry(pack, 'blobs/README.md', blobsReadmeContent(blobRoots, { archive: true }));
+		await addTextEntry(pack, 'blobs/README.md', blobsReadmeContent(blobRoots, { variant: 'archive' }));
 		pack.finalize();
 		await packed;
 		await consumed;
