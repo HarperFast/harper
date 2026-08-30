@@ -164,19 +164,20 @@ async function restJson(
 	path: string,
 	init: RequestInit = {},
 	timeoutMs = 120_000
-): Promise<{ status: number; body: any }> {
+): Promise<{ status: number; body: any; text: string }> {
 	const res = await fetch(`${ctx.harper.httpURL}${path}`, {
 		...init,
 		headers: { Authorization: authHeader(ctx), ...init.headers },
 		signal: AbortSignal.timeout(timeoutMs),
 	});
+	const text = await res.text();
 	let body: any = null;
 	try {
-		body = await res.json();
+		body = JSON.parse(text);
 	} catch {
 		body = null;
 	}
-	return { status: res.status, body };
+	return { status: res.status, body, text };
 }
 
 // Ready means the probe answers 200. A 404 is the fixture still loading; anything else (500 from a
@@ -201,23 +202,28 @@ async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
 	throw new Error(`QA-816: Probe route never answered 200 within 90s; last=${last}`);
 }
 
+// A job record can be briefly unreadable right after the ack, so a non-200 or malformed tick is a
+// reason to poll again rather than to fail; only the deadline is fatal, and it reports the last tick.
 async function pollJob(ctx: ContextWithHarper, jobId: string, timeoutMs = 120_000): Promise<any> {
 	const deadline = Date.now() + timeoutMs;
-	let last: any;
+	let last = 'no response';
 	while (Date.now() < deadline) {
 		const r = await rawOp(ctx, { operation: 'get_job', id: jobId });
-		strictEqual(r.status, 200, `get_job(${jobId}) failed with ${r.status}: ${r.text.slice(0, 300)}`);
-		last = Array.isArray(r.body) ? r.body[0] : r.body;
-		ok(last && typeof last === 'object', `get_job(${jobId}) returned a malformed record: ${r.text.slice(0, 300)}`);
-		if (last.status === 'COMPLETE' || last.status === 'ERROR') return last;
+		const record = Array.isArray(r.body) ? r.body[0] : r.body;
+		if (r.status === 200 && record && typeof record === 'object') {
+			if (record.status === 'COMPLETE' || record.status === 'ERROR') return record;
+			last = `status=${record.status}`;
+		} else {
+			last = `HTTP ${r.status}: ${r.text.slice(0, 300)}`;
+		}
 		await sleep(500);
 	}
-	throw new Error(`QA-816: job ${jobId} did not settle within ${timeoutMs}ms; last=${JSON.stringify(last)}`);
+	throw new Error(`QA-816: job ${jobId} did not settle within ${timeoutMs}ms; last=${last}`);
 }
 
 async function topology(ctx: ContextWithHarper): Promise<Topology> {
 	const r = await restJson(ctx, '/LogTopology/');
-	strictEqual(r.status, 200, `/LogTopology/ expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+	strictEqual(r.status, 200, `/LogTopology/ expected 200, got ${r.status}: ${r.text.slice(0, 300)}`);
 	return r.body as Topology;
 }
 
@@ -229,8 +235,8 @@ function logOf(topo: Topology, database: string, table: string): LogInfo {
 
 async function flushDatabase(ctx: ContextWithHarper, database: string): Promise<void> {
 	const r = await restJson(ctx, `/Flush/?database=${database}`, { method: 'POST' });
-	strictEqual(r.status, 200, `/Flush/ ${database} expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
-	strictEqual(r.body?.flushed, true, `/Flush/ ${database} must actually flush, got ${JSON.stringify(r.body)}`);
+	strictEqual(r.status, 200, `/Flush/ ${database} expected 200, got ${r.status}: ${r.text.slice(0, 300)}`);
+	strictEqual(r.body?.flushed, true, `/Flush/ ${database} must actually flush, got ${r.text.slice(0, 300)}`);
 }
 
 /**
@@ -365,10 +371,7 @@ function assertRowSetMatches(label: string, surface: string, expected: SeededRow
 async function restCollection(ctx: ContextWithHarper, table: string, bucket: string): Promise<any[]> {
 	const r = await restJson(ctx, `/${table}/?bucket=${bucket}`);
 	strictEqual(r.status, 200, `REST /${table}/?bucket=${bucket} expected 200, got ${r.status}`);
-	ok(
-		Array.isArray(r.body),
-		`REST /${table}/?bucket=${bucket} must return an array, got ${JSON.stringify(r.body)?.slice(0, 200)}`
-	);
+	ok(Array.isArray(r.body), `REST /${table}/?bucket=${bucket} must return an array, got ${r.text.slice(0, 300)}`);
 	return r.body;
 }
 
@@ -401,11 +404,7 @@ async function fullScan(
 	mode: 'count' | 'records'
 ): Promise<{ totalCount: number; records: any[] }> {
 	const r = await restJson(ctx, `/FullScan/?database=${database}&table=${table}&mode=${mode}`);
-	strictEqual(
-		r.status,
-		200,
-		`/FullScan/ ${database}.${table} expected 200, got ${r.status}: ${JSON.stringify(r.body)?.slice(0, 200)}`
-	);
+	strictEqual(r.status, 200, `/FullScan/ ${database}.${table} expected 200, got ${r.status}: ${r.text.slice(0, 300)}`);
 	return r.body;
 }
 
@@ -449,7 +448,11 @@ suite(
 
 			for (const id of LEDGER_SAMPLE_IDS) {
 				const r = await restJson(ctx, `/Ledger/${id}`);
-				strictEqual(r.status, 200, `[${label}] REST GET /Ledger/${id} expected 200, got ${r.status}`);
+				strictEqual(
+					r.status,
+					200,
+					`[${label}] REST GET /Ledger/${id} expected 200, got ${r.status}: ${r.text.slice(0, 300)}`
+				);
 				deepStrictEqual(
 					{ id: r.body?.id, bucket: r.body?.bucket, seq: r.body?.seq, payload: r.body?.payload },
 					LEDGER_ROWS.find((row) => row.id === id),
