@@ -74,6 +74,7 @@ export function warnWatcherFallback(watchedPath: string): void {
 export function _resetForTests(): void {
 	exhaustionWarned = false;
 	lostNativeWatchCount = 0;
+	lostNativeWatchWarnThreshold = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,34 +110,41 @@ export function _resetForTests(): void {
 // error shape and leaves every other uncaught exception exactly as Node would
 // have handled it.
 
-// Watch failures that mean "this native watch handle is gone". The watched path
-// has been deleted or replaced; there is nothing to recover and nothing the
-// operator can do, so the error is benign. Kept deliberately narrow — anything
-// matched here is swallowed process-wide.
-const LOST_NATIVE_WATCH_CODES = new Set(['EPERM', 'ENOENT']);
-
 /**
  * Returns `true` for the asynchronous "the watched path went away" error raised
- * by Node's `fs.FSWatcher`. On Windows this is
- * `EPERM: operation not permitted, watch` (errno -4048) and it fires whenever a
- * watched directory is removed or swapped out — a component redeploy, a test
- * fixture teardown, an `npm install` that replaces a tree.
+ * by Node's `fs.FSWatcher`: `EPERM: operation not permitted, watch` (errno
+ * -4048), which fires on Windows whenever a watched directory is removed or
+ * swapped out — a component redeploy, a test fixture teardown, an `npm install`
+ * that replaces a tree.
  *
  * Deliberately distinct from {@link isWatcherExhaustionError}: exhaustion means
  * the host ran out of watch capacity and polling is a useful degradation; a lost
  * native watch means the thing being watched no longer exists, and polling would
  * only burn CPU on a path that isn't there.
+ *
+ * The three conditions are all load-bearing, because whatever this claims is
+ * swallowed process-wide:
+ *
+ *   - `syscall === 'watch'` is only ever set by fs watch handles.
+ *   - `EPERM` only. An async `ENOENT` from a watch handle has never been
+ *     observed, whereas a *synchronous* one is the ordinary "watch a path that
+ *     isn't there" misconfiguration, which must stay fatal.
+ *   - no `path`. This is what separates the async failure from a synchronous
+ *     `fs.watch()` throw: Node populates `path` on the thrown error but leaves
+ *     it absent on the one delivered to the handle's 'error' event (which
+ *     carries `filename: null` and nothing else locating it). Without this a
+ *     raw `fs.watch(missingPath)` escaping into an uncaughtException would be
+ *     mistaken for a benign lost watch and silently swallowed.
  */
 export function isLostNativeWatchError(error: unknown): boolean {
 	if (typeof error !== 'object' || error === null) return false;
-	const { code, syscall } = error as { code?: unknown; syscall?: unknown };
-	// `syscall === 'watch'` is only ever set by fs watch handles, so the pair is
-	// specific enough to claim without also inspecting the stack (whose frame
-	// text is a Node internal we don't want to depend on).
-	return syscall === 'watch' && typeof code === 'string' && LOST_NATIVE_WATCH_CODES.has(code);
+	const { code, syscall, path } = error as { code?: unknown; syscall?: unknown; path?: unknown };
+	return syscall === 'watch' && code === 'EPERM' && path == null;
 }
 
 let lostNativeWatchCount = 0;
+// Warn on occurrence 1, then 10, 100, … — see claimLostNativeWatchError().
+let lostNativeWatchWarnThreshold = 1;
 
 /**
  * If `error` is a lost native watch error, mark it handled, log it, and report
@@ -150,15 +158,24 @@ export function claimLostNativeWatchError(error: unknown): boolean {
 	// benign case doesn't also get logged there as a worker-level uncaughtException.
 	(error as { isHandled?: boolean }).isHandled = true;
 	lostNativeWatchCount++;
-	if (lostNativeWatchCount === 1) {
+	fallbackLogger.trace?.(`Lost native file watch handle (occurrence ${lostNativeWatchCount}):`, error);
+	// Never go fully silent. Node gives this error no path, so it cannot be attributed to the
+	// watcher that raised it — ours or a dependency's — and a subsystem that has quietly stopped
+	// being watched is exactly what an operator needs to see. The default log level is `warn`, so
+	// trace alone would make every occurrence after the first invisible. Warn on the first and
+	// then at each decade, which keeps a delete storm (one error per directory in a removed tree)
+	// bounded without ever suppressing the signal outright.
+	if (lostNativeWatchCount >= lostNativeWatchWarnThreshold) {
+		lostNativeWatchWarnThreshold *= 10;
 		fallbackLogger.warn?.(
-			`A file watch handle was lost because the watched path was deleted or replaced ` +
-				`(${(error as { code?: string }).code}, syscall=watch). This is expected on Windows during ` +
-				`component redeploys and is not actionable; the watcher for that path stops reporting changes ` +
-				`and is re-established the next time the path is watched. Further occurrences log at trace.`
+			`A native file watch handle failed asynchronously (EPERM, syscall=watch) and was suppressed to ` +
+				`keep the thread alive; occurrence ${lostNativeWatchCount}. Node reports no path for this error, ` +
+				`so it cannot be attributed to a specific watcher — whatever was watching that path has stopped ` +
+				`reporting changes until it is re-established. On Windows this is usually a watched directory ` +
+				`being deleted or replaced (a component redeploy, a package install, a test teardown). If file ` +
+				`changes stop being picked up somewhere, this is why. Subsequent occurrences log at trace, with ` +
+				`a warning at each tenfold increase.`
 		);
-	} else {
-		fallbackLogger.trace?.(`Lost file watch handle (occurrence ${lostNativeWatchCount}):`, error);
 	}
 	return true;
 }

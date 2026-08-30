@@ -24,6 +24,16 @@ fs.writeFileSync(path.join(watched, 'resources', 'index.js'), '// fixture\n');
 const watcher = guardedWatch('.', { cwd: watched, persistent: false, followSymlinks: false });
 
 watcher.on('ready', () => {
+	if (mode === 'sync-watch-failure') {
+		// A synchronous fs.watch() throw shares the guard's syscall ('watch') but carries a `path`,
+		// which is what keeps an ordinary "watching a path that isn't there" misconfiguration fatal
+		// instead of being mistaken for a benign lost watch and swallowed.
+		setTimeout(() => {
+			fs.watch(path.join(root, 'no-such-directory'), { persistent: false }, () => {});
+		}, 10);
+		return;
+	}
+
 	if (mode === 'unrelated-throw') {
 		// The guard is installed now. An unrelated uncaught exception must still be
 		// fatal — a guard that swallows everything turns crashes into silent hangs.

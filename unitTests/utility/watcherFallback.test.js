@@ -63,14 +63,30 @@ describe('watcherFallback', () => {
 	});
 
 	describe('isLostNativeWatchError', () => {
-		const watchError = (code) => Object.assign(new Error(`${code}: watch`), { code, syscall: 'watch', errno: -4048 });
+		// The async shape Node delivers to the watch handle's 'error' event: no `path`, and a
+		// `filename` that is null.
+		const watchError = (code) =>
+			Object.assign(new Error(`${code}: watch`), { code, syscall: 'watch', errno: -4048, filename: null });
 
 		it('identifies the Windows EPERM raised when a watched path is deleted', () => {
 			assert.equal(isLostNativeWatchError(watchError('EPERM')), true);
 		});
 
-		it('identifies an ENOENT watch failure', () => {
-			assert.equal(isLostNativeWatchError(watchError('ENOENT')), true);
+		// Whatever this claims is swallowed process-wide, so the shapes it must NOT claim matter
+		// as much as the one it must. A synchronous fs.watch() throw carries a `path`; an async
+		// ENOENT from a watch handle has never been observed, while a synchronous one is the
+		// ordinary "watch a path that isn't there" misconfiguration and has to stay fatal.
+		it('rejects a synchronous fs.watch throw, which carries a path', () => {
+			assert.equal(
+				isLostNativeWatchError(
+					Object.assign(new Error('EPERM: watch'), { code: 'EPERM', syscall: 'watch', path: '/some/dir' })
+				),
+				false
+			);
+		});
+
+		it('rejects an ENOENT watch failure', () => {
+			assert.equal(isLostNativeWatchError(watchError('ENOENT')), false);
 		});
 
 		// The guard swallows whatever this claims, process-wide, so the two neighbouring
@@ -155,6 +171,16 @@ describe('watcherFallback', () => {
 			const { code, stderr } = await runHarness('unrelated-throw');
 			assert.equal(code, 1);
 			assert.match(stderr, /unrelated harness failure/);
+		});
+
+		// The guard sees every uncaught exception in the process, so the bound that keeps it from
+		// masking real failures is the error shape. A misconfigured raw fs.watch() shares its
+		// syscall and would be swallowed if the shape check were any looser.
+		it('leaves a synchronous fs.watch failure on a missing path fatal', async function () {
+			this.timeout(30000);
+			const { code, stderr } = await runHarness('sync-watch-failure');
+			assert.equal(code, 1);
+			assert.match(stderr, /ENOENT/);
 		});
 	});
 });
