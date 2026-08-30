@@ -693,6 +693,26 @@ export function getDatabases(): Databases {
 	return databases;
 }
 
+/**
+ * Hydrate one branch's relationships, resolving each target against the application's own branches
+ * first and only then against the real databases: a target the application also branched must be its
+ * branch's table, and a target it did not branch is legitimately the shared one.
+ */
+export function hydrateBranchRelationships(branch: BranchDatabase, branches: Map<string, BranchDatabase>): void {
+	const resolveTarget: ResolveRelationshipTarget = (target) =>
+		branches.get(target.database)?.tables?.[target.table] ?? databases[target.database]?.[target.table];
+	for (const hydration of branch.pendingRelationships.splice(0)) {
+		try {
+			hydrateTableRelationships(hydration, resolveTarget);
+		} catch (error) {
+			logger.error(
+				`Unable to hydrate persisted relationships for branch table ${hydration.databaseName}.${hydration.tableName}`,
+				error
+			);
+		}
+	}
+}
+
 function hydrateCatalogRelationships(): void {
 	for (const hydration of relationshipsToHydrate) {
 		try {
@@ -710,7 +730,14 @@ function hydrateCatalogRelationships(): void {
 	}
 }
 
-function hydrateTableRelationships({ table, databaseName, tableName, definitions }: RelationshipHydration): void {
+type ResolveRelationshipTarget = (target: RelationshipTarget) => any;
+
+const resolveTargetGlobally: ResolveRelationshipTarget = (target) => databases[target.database]?.[target.table];
+
+function hydrateTableRelationships(
+	{ table, databaseName, tableName, definitions }: RelationshipHydration,
+	resolveTarget: ResolveRelationshipTarget = resolveTargetGlobally
+): void {
 	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
 	for (let index = 0; index < definitions.length; index++) {
 		const definition = definitions[index] as PersistedRelationship;
@@ -729,7 +756,7 @@ function hydrateTableRelationships({ table, databaseName, tableName, definitions
 		// for threads that never loaded the schema
 		if (table.attributes.some((attribute) => attribute.name === definition.name && !attribute[CATALOG_RELATIONSHIP]))
 			continue;
-		const targetTable = databases[definition.target.database]?.[definition.target.table];
+		const targetTable = resolveTarget(definition.target);
 		if (!targetTable || !relationshipFieldsExist(table, targetTable, definition)) {
 			reportRelationshipError(
 				`${errorKey}:unavailable`,
@@ -1303,6 +1330,13 @@ export function resolveBranchPath(baseName: string, appName: string): string {
 export interface BranchDatabase {
 	tables: Tables;
 	rootStore: RootDatabaseKind;
+	/**
+	 * Relationships this branch's tables declared, still un-hydrated. They cannot be resolved at open
+	 * time: a branch's definitions name the BASE database (its tables carry the base's logical names),
+	 * so resolving them through the global map would point the application's relationship reads at the
+	 * base. `hydrateBranchRelationships` finishes the job once the whole branch set is known.
+	 */
+	pendingRelationships: RelationshipHydration[];
 	close(): void;
 }
 
@@ -1401,6 +1435,10 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// initStores opens a table's column families well before `setTable` publishes it into `tables`,
 	// so the graph is not a complete record of what a failed open must release
 	const openedStores: any[] = [];
+	// The boot-time hydration pass has already run by the time a branch opens, so anything this open
+	// queues would never be drained. It is handed to the caller instead, which is the only place that
+	// knows the application's other branches and can therefore resolve targets without leaking to base.
+	const queuedRelationshipsAt = relationshipsToHydrate.length;
 	let rootStore: RootDatabaseKind;
 	// claim the path before the open, not after: readRocksMetaDb registers the store in
 	// `rocksdbDatabaseEnvs` partway through, so anything re-entering `database()` during initStores
@@ -1421,6 +1459,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
+		pendingRelationships: relationshipsToHydrate.splice(queuedRelationshipsAt),
 		close() {
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
 			// branch frees its path, so a stale handle would otherwise tear down its successor

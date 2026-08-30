@@ -433,3 +433,54 @@ describe('defineTable through a branched application (harper#643)', () => {
 		assert.strictEqual(scopedBindings({}).defineTable, real, 'no wrapper for the common case');
 	});
 });
+
+describeUnlessLmdb('relationships inside a branch (harper#643)', () => {
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({
+			table: 'RelTarget',
+			database: 'relbase',
+			schemaDefined: true,
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }, { name: 'label' }],
+		});
+		const target = databases.relbase.RelTarget;
+		table({
+			table: 'RelHost',
+			database: 'relbase',
+			schemaDefined: true,
+			schemaRelationshipsDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'targetId', type: 'ID', indexed: {} },
+				{
+					name: 'target',
+					type: 'RelTarget',
+					relationship: { from: 'targetId' },
+					relationshipReference: { database: 'relbase', table: 'RelTarget' },
+					definition: { tableClass: target },
+				},
+			],
+		});
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	it('resolves a relationship against the branch, never against the base', async function () {
+		this.timeout(30000);
+		const { prepareBranches } = require('#src/resources/branchDatabase');
+		const branch = (await prepareBranches('relApp', ['relbase'], 'vm-current-context')).get('relbase');
+
+		const attribute = branch.tables.RelHost.attributes.find((a) => a.name === 'target');
+		assert.ok(attribute, 'the branch table must carry the relationship attribute at all');
+
+		// A branch's persisted relationship names the BASE database, because a branch's tables
+		// deliberately carry the base's logical names. Resolving it through the global map would point
+		// a branched application's relationship reads at the base's rows — isolation gone, silently.
+		const targetClass = (attribute.definition || attribute.elements?.definition)?.tableClass;
+		assert.strictEqual(targetClass, branch.tables.RelTarget, 'must resolve to the branch’s own target');
+		assert.notStrictEqual(targetClass, databases.relbase.RelTarget, 'and never to the base’s');
+	});
+});

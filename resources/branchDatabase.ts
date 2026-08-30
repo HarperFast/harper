@@ -10,6 +10,7 @@ import {
 	database,
 	databases,
 	getDatabases,
+	hydrateBranchRelationships,
 	openBranchDatabase,
 	resolveBranchPath,
 } from './databases.ts';
@@ -281,6 +282,9 @@ export async function prepareBranches(
 			branches.set(baseName, await getOrCreateBranch(baseName, appName));
 			if (isNew) opened.push(branchPath);
 		}
+		// Only now: a relationship whose target this application also branched has to resolve to that
+		// branch, and the whole set has to exist before any of them can resolve that way.
+		for (const branch of branches.values()) hydrateBranchRelationships(branch, branches);
 	} catch (error) {
 		// A partially branched application is worse than one that failed to load: some of its names
 		// would resolve to a branch and the rest to the base. Only this application's handles go, and
