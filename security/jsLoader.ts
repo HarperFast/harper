@@ -973,7 +973,13 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 				return true;
 			},
 		};
-const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
+// Resolved per call rather than at module load: this module is imported from the component loader,
+// which can be pulled in before the config has been read (and unit tests seed config after import),
+// and a list captured then would be empty for the life of the process.
+function isAllowedCommand(command: string): boolean {
+	const allowed = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS);
+	return Array.isArray(allowed) && allowed.includes(command);
+}
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
@@ -1131,7 +1137,7 @@ function acquirePidFileLock(
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
 	const basePath = env.getHdbBasePath();
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
-		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
+		if (!alwaysAllow && !isAllowedCommand(command.split(' ')[0])) {
 			throw new Error(`Command ${command} is not allowed`);
 		}
 		const processName = options?.name;

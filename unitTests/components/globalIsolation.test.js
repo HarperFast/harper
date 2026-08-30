@@ -4,11 +4,27 @@ const { loadComponent, loadedPaths } = require('#src/components/componentLoader'
 const { PACKAGE_ROOT } = require('#src/utility/packageUtils');
 const fs = require('node:fs');
 const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 
 describe('Global Variable Isolation in testJSWithDeps', function () {
 	let mockResources;
 	let pidsDir;
+	let originalAllowedSpawnCommands;
+
+	before(function () {
+		// The spawn allowlist normally comes from the config file of an installed Harper. A clean
+		// machine (CI) has no ~/.harperdb/hdb_boot_properties.file, so env.get() returns undefined and
+		// every command — including the `npm` the process-spawn fixture uses to reach the "name is
+		// required" check — is rejected as disallowed instead. Pin the list so these tests assert on a
+		// fixture rather than on whatever the host machine happens to have installed.
+		originalAllowedSpawnCommands = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS);
+		env.setProperty(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS, ['npm', 'node']);
+	});
+
+	after(function () {
+		env.setProperty(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS, originalAllowedSpawnCommands);
+	});
 
 	beforeEach(function () {
 		// Create mock resources
