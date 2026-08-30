@@ -37,6 +37,32 @@ const DEFAULT_DATA_VERSION_NUM = '2.9.9';
 // This value should change as supported versions change.
 const MINIMUM_SUPPORTED_VERSION_NUM = '3.0.0';
 
+export class VersionStampNotRecordedError extends Error {
+	statusCode: number;
+	constructor(message: string) {
+		super(message);
+		this.name = 'VersionStampNotRecordedError';
+		this.statusCode = 500;
+	}
+}
+
+/**
+ * An insert whose key already exists is reported as skipped rather than as a failure, so a resolved
+ * insert is not by itself evidence that the version was recorded. Boot reads this record to decide
+ * whether the upgrade directives still need to run, so anything short of a confirmed insert of the
+ * expected id has to fail closed.
+ */
+export function assertVersionRecorded(insertResult: any, expectedId: number, newVersionString: string) {
+	const insertedHashes = insertResult?.inserted_hashes;
+	if (Array.isArray(insertedHashes) && insertedHashes.length === 1 && insertedHashes[0] === expectedId) return;
+
+	throw new VersionStampNotRecordedError(
+		`Could not record data version ${newVersionString} in '${hdbTerms.SYSTEM_SCHEMA_NAME}.${hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME}': ` +
+			`the insert of ${HDB_INFO_SEARCH_ATTRIBUTE} ${expectedId} reported inserted ${JSON.stringify(insertedHashes ?? null)} ` +
+			`and skipped ${JSON.stringify(insertResult?.skipped_hashes ?? null)}`
+	);
+}
+
 /**
  * * Insert a row into hdbInfo with the initial version data at install.
  *
@@ -91,7 +117,9 @@ export async function insertHdbUpgradeInfo(newVersionString: string) {
 	);
 
 	await pSetSchemaDataToGlobal();
-	return insert.insert(insertObject);
+	const insertResult = await insert.insert(insertObject);
+	assertVersionRecorded(insertResult, newId, newVersionString);
+	return insertResult;
 }
 
 /**
