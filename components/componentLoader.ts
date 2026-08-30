@@ -135,6 +135,23 @@ function rootConfigMount(appName: string): ScopeMount | undefined {
 }
 
 /**
+ * The databases an operator declared that `appName` should get a private fork of, from the root
+ * config — the same place `host`/`urlPath` are declared, and for the same reason. Which databases an
+ * application forks is a deployment decision, not something the application checks in: the operator
+ * deploying it onto a cluster is who knows whether it should run against its own copy.
+ *
+ * ```yaml
+ * my-app:
+ *   host: api.example.com
+ *   branchedDatabases: [data]
+ * ```
+ */
+function rootConfigBranchedDatabases(appName: string): unknown {
+	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return undefined;
+	return (getConfigObj()?.[appName] as any)?.branchedDatabases;
+}
+
+/**
  * Resolves the mount for `appName`, or reports the failure and returns `undefined` if the
  * configured `host`/`urlPath` is invalid. The caller must skip loading the application in that
  * case rather than loading it anyway: an invalid mount is a request to CONSTRAIN where the app is
@@ -211,6 +228,7 @@ export async function loadComponentDirectories(
 						autoReload: false,
 						appName,
 						mount: mountResult.mount,
+						branchedDatabases: rootConfigBranchedDatabases(appName),
 						collectLoadedModules: loadedModules,
 					});
 					await readyComponentModules(loadedModules, readyComponentPromises);
@@ -260,6 +278,7 @@ export async function loadComponentDirectories(
 						autoReload: false,
 						appName,
 						mount: mountResult.mount,
+						branchedDatabases: rootConfigBranchedDatabases(appName),
 					})
 				).catch((error) => {
 					const loadError = error instanceof Error ? error : new Error(String(error));
@@ -288,6 +307,7 @@ export async function loadComponentDirectories(
 						autoReload: Boolean(process.env.DEV_MODE),
 						appName: hdbAppFolder,
 						mount: mountResult.mount,
+						branchedDatabases: rootConfigBranchedDatabases(basename(hdbAppFolder)),
 					})
 				)
 			);
@@ -559,6 +579,8 @@ export interface LoadComponentOptions {
 	autoReload?: boolean;
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
+	/** Databases this application forks, from its root-config entry (see `rootConfigBranchedDatabases`). */
+	branchedDatabases?: unknown;
 	// When provided, every Scope created during this load is added to this set instead of being
 	// auto-closed on worker shutdown. The caller then owns closing them. Used by transient loads
 	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
@@ -620,13 +642,31 @@ export async function loadComponent(
 		// Before any of the application's modules are imported: a branch has to exist by the time its
 		// code first reaches `databases`, and a declared branch that cannot be created must fail this
 		// application's load rather than let it run against the base it asked not to share.
+		// Declaring it in the application's own config.yaml is refused rather than ignored: it is a
+		// deployment decision and lives in the root config, and an application that believed it had a
+		// private fork while silently sharing the base is the one outcome this feature exists to stop.
 		if (!isRoot && config?.branchedDatabases !== undefined) {
+			const misplaced =
+				`Application '${options.appName ?? basename(componentDirectory)}' declares branchedDatabases in its own ` +
+				`config; it belongs in the root config entry for the application, alongside host and urlPath`;
+			// Logged as well as thrown: a component load that rejects this way surfaces downstream only as
+			// the application's routes and operations being absent, which says nothing about the cause.
+			harperLogger.error?.(misplaced);
+			throw new Error(misplaced);
+		}
+		// Only on the application's own load: nested components share its scope and its branches, and
+		// re-preparing per component would key a second branch off the same application name.
+		if (!isRoot && !options.applicationScope && options.branchedDatabases !== undefined) {
 			// The loader's own application identity, not the directory's basename: a branch path is
 			// keyed by this, and two components can share a basename (a nested one and a top-level one)
 			// while being different applications that must not share a fork each believes is private.
 			const branchAppName = options.appName ?? basename(componentDirectory);
-			assertBranchedDatabases(branchAppName, config.branchedDatabases);
-			applicationScope.branches = await prepareBranches(branchAppName, config.branchedDatabases, applicationScope.mode);
+			assertBranchedDatabases(branchAppName, options.branchedDatabases);
+			applicationScope.branches = await prepareBranches(
+				branchAppName,
+				options.branchedDatabases as string[],
+				applicationScope.mode
+			);
 		}
 
 		// For non-root components with empty/null config (e.g., comment-only YAML),

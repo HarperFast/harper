@@ -1,5 +1,2 @@
-branchedDatabases:
-  - data
-
 jsResource:
   files: resources.js

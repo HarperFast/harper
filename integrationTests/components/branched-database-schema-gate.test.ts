@@ -26,13 +26,17 @@ import {
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/branched-database-gated');
 
+// Which databases an application forks is a deployment decision, so it is declared on the
+// application's root-config entry, next to host/urlPath — not in its own config.yaml.
+const BRANCHED = { config: { 'branched-database-gated': { branchedDatabases: ['data'] } } };
+
 suite('a branched application declaring a table in the base', (ctx: ContextWithHarper) => {
 	before(async () => {
 		const dataRootDir = await mkdtemp(
 			join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 		);
 		ctx.harper = { dataRootDir } as any;
-		await startHarper(ctx);
+		await startHarper(ctx, BRANCHED);
 		await sendOperation(ctx.harper, { operation: 'create_database', database: 'data' });
 		await sendOperation(ctx.harper, {
 			operation: 'create_table',
@@ -45,7 +49,7 @@ suite('a branched application declaring a table in the base', (ctx: ContextWithH
 			recursive: true,
 			dereference: true,
 		});
-		await startHarper(ctx);
+		await startHarper(ctx, BRANCHED);
 	});
 
 	after(async () => {

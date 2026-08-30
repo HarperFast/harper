@@ -63,9 +63,13 @@ interface ApplicationConfig {
 	// the credential from the store rather than needing it re-supplied.
 	credentials?: CredentialReference[];
 	/**
-	 * Databases this application gets a private fork of (harper#642). The fork is durable — it lives
-	 * at a path derived from the application and database names, is adopted again on restart, and is
-	 * invisible to other applications.
+	 * Databases this application gets a private fork of (harper#642), declared HERE — on the
+	 * application's root-config entry, alongside `host` and `urlPath` — because which databases an
+	 * application forks is a deployment decision, not something the application checks in. Declaring
+	 * it in the application's own config.yaml is refused rather than ignored.
+	 *
+	 * The fork is durable: it lives at a path derived from the application and database names, is
+	 * adopted again on restart, and is invisible to other applications.
 	 *
 	 * The application must reach its data through `import { databases } from 'harper'`. The bare
 	 * `databases`/`tables` globals are shared process-wide by the default `vm-current-context` loader

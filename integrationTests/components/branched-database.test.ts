@@ -31,6 +31,10 @@ import {
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/branched-database');
 
+// Which databases an application forks is a deployment decision, so it is declared on the
+// application's root-config entry, next to host/urlPath — not in its own config.yaml.
+const BRANCHED = { config: { 'branched-database': { branchedDatabases: ['data'] } } };
+
 suite('an application with a branched database', (ctx: ContextWithHarper) => {
 	before(async () => {
 		// Phase 1 — no application yet, because one that declares a branch of a database that does not
@@ -39,7 +43,7 @@ suite('an application with a branched database', (ctx: ContextWithHarper) => {
 			join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 		);
 		ctx.harper = { dataRootDir } as any;
-		await startHarper(ctx);
+		await startHarper(ctx, BRANCHED);
 		await sendOperation(ctx.harper, { operation: 'create_database', database: 'data' });
 		await sendOperation(ctx.harper, {
 			operation: 'create_table',
@@ -61,7 +65,7 @@ suite('an application with a branched database', (ctx: ContextWithHarper) => {
 			recursive: true,
 			dereference: true,
 		});
-		await startHarper(ctx);
+		await startHarper(ctx, BRANCHED);
 	});
 
 	after(async () => {
@@ -124,7 +128,7 @@ suite('an application with a branched database', (ctx: ContextWithHarper) => {
 		});
 
 		await killHarper(ctx);
-		await startHarper(ctx);
+		await startHarper(ctx, BRANCHED);
 
 		const after = await sendOperation(ctx.harper, { operation: 'branch_probe', id: 'survives-restart' });
 		strictEqual(after.found, true, 'a restart must not discard the branch');
