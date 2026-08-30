@@ -38,13 +38,6 @@ function logStats(auditStore) {
 	};
 }
 
-export class Probe extends Resource {
-	static loadAsInstance = false;
-	async get() {
-		return { ok: true };
-	}
-}
-
 // GET /LogTopology/ -> per-table engine guess plus the identity of the native transaction log
 // each table writes its audit entries to. Identity is reported as an index into a list of
 // distinct objects seen, so the test can assert "these two tables share one log" and "these two

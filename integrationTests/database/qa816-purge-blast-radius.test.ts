@@ -60,15 +60,9 @@ import {
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa816-purge-blast-radius');
 const PURGED_DB = 'qa816a';
 const CONTROL_DB = 'qa816b';
-// Windows is skipped because the subject operation takes the process down there, not because the
-// suite is slow or flaky. On `Integration Tests 5/6 (Windows, Node.js v24)` of this file's first CI
-// run, tests 0-2 passed, the purge job started (`[job/2] Starting job`), and ~1.4s later the same
-// instance logged `Starting Harper...` / `Harper was not properly shutdown, replaying transaction
-// logs` — Harper died mid-purge and came back, so tests 3 and 4 hit ECONNREFUSED while the later
-// restart arms passed against the recovered instance. Deleting a memory-mapped `.txnlog` file is
-// exactly what Windows refuses, which puts this in rocksdb-js#808's family. Needs triage as a
-// product defect; unskip once that is settled, and do NOT "fix" it by tolerating the restart —
-// tolerating it is what would hide the bug this file exists to catch.
+// Windows is skipped on harper#2401 — the subject operation takes the process down there, which
+// this suite's first CI run is the evidence for. Remove the skip when that issue closes, and do NOT
+// instead make the suite tolerate the restart: tolerating it is what would hide the defect.
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const LEDGER_COUNT = 500;
@@ -189,15 +183,17 @@ async function restJson(
 	return { status: res.status, body, text };
 }
 
-// Ready means the probe answers 200. A 404 is the fixture still loading; anything else (500 from a
-// half-started server, 401 before auth is up) would otherwise read as "ready" and surface later as
-// an opaque failure in whichever operation ran next.
+// Readiness is probed through `/LogTopology/` rather than a bare liveness route because that
+// endpoint resolves all five fixture tables out of `databases`: an HTTP server that answers before
+// the databases are open would otherwise pass, and flake the first real read instead. Only 200
+// counts — a 404 is the component still loading, and a 500 or 401 from a half-started server would
+// read as ready and resurface later as an opaque failure.
 async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
 	const deadline = Date.now() + 90_000;
 	let last = 'no response';
 	while (Date.now() < deadline) {
 		try {
-			const res = await fetch(`${ctx.harper.httpURL}/Probe/`, {
+			const res = await fetch(`${ctx.harper.httpURL}/LogTopology/`, {
 				headers: { Authorization: authHeader(ctx) },
 				signal: AbortSignal.timeout(5_000),
 			});
@@ -208,7 +204,7 @@ async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
 		}
 		await sleep(250);
 	}
-	throw new Error(`QA-816: Probe route never answered 200 within 90s; last=${last}`);
+	throw new Error(`QA-816: /LogTopology/ never answered 200 within 90s; last=${last}`);
 }
 
 // A job record can be briefly unreadable right after the ack, so a non-200 or malformed tick is a
@@ -217,13 +213,17 @@ async function pollJob(ctx: ContextWithHarper, jobId: string, timeoutMs = 120_00
 	const deadline = Date.now() + timeoutMs;
 	let last = 'no response';
 	while (Date.now() < deadline) {
-		const r = await rawOp(ctx, { operation: 'get_job', id: jobId });
-		const record = Array.isArray(r.body) ? r.body[0] : r.body;
-		if (r.status === 200 && record && typeof record === 'object') {
-			if (record.status === 'COMPLETE' || record.status === 'ERROR') return record;
-			last = `status=${record.status}`;
-		} else {
-			last = `HTTP ${r.status}: ${r.text.slice(0, 300)}`;
+		try {
+			const r = await rawOp(ctx, { operation: 'get_job', id: jobId });
+			const record = Array.isArray(r.body) ? r.body[0] : r.body;
+			if (r.status === 200 && record && typeof record === 'object') {
+				if (record.status === 'COMPLETE' || record.status === 'ERROR') return record;
+				last = `status=${record.status}`;
+			} else {
+				last = `HTTP ${r.status}: ${r.text.slice(0, 300)}`;
+			}
+		} catch (error) {
+			last = String((error as Error)?.message ?? error);
 		}
 		await sleep(500);
 	}
@@ -380,7 +380,7 @@ function assertRowSetMatches(label: string, surface: string, expected: SeededRow
 
 async function restCollection(ctx: ContextWithHarper, table: string, bucket: string): Promise<any[]> {
 	const r = await restJson(ctx, `/${table}/?bucket=${bucket}`);
-	strictEqual(r.status, 200, `REST /${table}/?bucket=${bucket} expected 200, got ${r.status}`);
+	strictEqual(r.status, 200, `REST /${table}/?bucket=${bucket} expected 200, got ${r.status}: ${r.text.slice(0, 300)}`);
 	ok(Array.isArray(r.body), `REST /${table}/?bucket=${bucket} must return an array, got ${r.text.slice(0, 300)}`);
 	return r.body;
 }
