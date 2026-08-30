@@ -18,10 +18,12 @@
  * client surfaces. Those surfaces cannot see half of the damage: `search_by_value` joins each
  * index entry back through its primary record and silently drops the ones whose record is gone,
  * so a dangling entry is invisible to every query API. The oracle here is a second, independent,
- * read-only `@harperfast/rocksdb-js` handle on the on-disk column families, decoding the
+ * read-only `@harperfast/rocksdb-js` handle on the secondary-index column families, decoding the
  * composite `[indexedValue, primaryKey]` index keys itself (the wire format written by
- * resources/RocksIndexStore.ts), with no Harper code in the read path. It also covers the
- * monitor-fired abort (Arm A) alongside #1869's request-thrown abort (Arm B).
+ * resources/RocksIndexStore.ts) rather than asking Harper what they mean. Primary-record liveness
+ * is a direct point lookup by primary key, which no index mediates — `hasLiveRecord()` says why
+ * the raw primary column family cannot answer it. It also covers the monitor-fired abort (Arm A)
+ * alongside #1869's request-thrown abort (Arm B).
  *
  * A RocksDB `readOnly: true` open is a point-in-time snapshot of the SSTs as of that open, not a
  * live view like LMDB's shared mmap, and Harper opens table/index column families with
@@ -36,7 +38,7 @@
  *   npm run test:integration -- "integrationTests/database/delete-index-atomicity-rocksdb.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual, notStrictEqual } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -55,7 +57,6 @@ const MAX_TXN_OPEN_MS = 1000;
 // on elapsed wall-clock.
 const HOLD_MS = 15_000;
 const LOG_FILES = ['hdb.log', 'stdout.log', 'stderr.log'];
-const OVER_TIME_ABORTED = /Transaction was open too long and has been aborted/i;
 const skipSuite = process.platform === 'win32';
 
 suite(
@@ -211,7 +212,12 @@ suite(
 		 */
 		async function hasLiveRecord(table: string, id: string): Promise<boolean> {
 			const res = await getJSON(`/${table}/${encodeURIComponent(id)}`);
-			return res.status === 200;
+			if (res.status === 200) return true;
+			if (res.status === 404) return false;
+			// Anything else is the oracle failing, not an answer. Treating it as "absent" would let a
+			// 500 from the just-poisoned thread fabricate a phantom and fail the arm with a message
+			// claiming the index is orphaned.
+			throw new Error(`liveness probe for ${table}/${id} returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
 		}
 		/**
 		 * {category, id} pairs read straight out of the on-disk secondary-index column family.
@@ -294,7 +300,7 @@ suite(
 		// handler — a different path into the same commit branch than #1869's own test covers.
 		for (const table of ['ItemF', 'ItemT']) {
 			test(
-				`Arm A (${table}): monitor-fired abort mid remove/insert/update leaves base and index in agreement`,
+				`Arm A (${table}): monitor-fired abort mid remove/insert/update rolls the delete back`,
 				{ timeout: HOLD_MS + 60_000 },
 				async () => {
 					const removeId = `${table}-rm-base`;
@@ -330,10 +336,15 @@ suite(
 
 					// The monitor's decision is asynchronous to the request returning, so wait for the
 					// evidence itself rather than for a fixed settling delay.
+					// The line names the table and the route it was started from, so the match is evidence
+					// about THIS request rather than about any transaction that outran the 1 s limit.
+					const aborted = new RegExp(
+						`Transaction was open too long and has been aborted[^\\n]*from table: ${table}/ path: /SlowMixedHold/`
+					);
 					const logDeadline = Date.now() + 15_000;
-					while (!sawLogSince(mark, OVER_TIME_ABORTED) && Date.now() < logDeadline) await sleep(250);
+					while (!sawLogSince(mark, aborted) && Date.now() < logDeadline) await sleep(250);
 					ok(
-						sawLogSince(mark, OVER_TIME_ABORTED),
+						sawLogSince(mark, aborted),
 						`the over-time monitor must have aborted this request's transaction; status=${res.status} body=${body.slice(0, 400)}`
 					);
 
@@ -357,6 +368,14 @@ suite(
 							` removeId-still-live=${await hasLiveRecord(table, removeId)}`
 					);
 
+					// The headline post-condition: the aborted delete must have rolled back, so the row it
+					// targeted is still there and still indexed. `phantoms` alone would stay empty if the
+					// row and its index entry both vanished.
+					ok(await hasLiveRecord(table, removeId), `Arm A (${table}): ${removeId} must survive the aborted delete`);
+					ok(
+						indexEntries.some((e) => e.key === 'ARMA-DEL' && e.id === removeId),
+						`Arm A (${table}): ${removeId}'s index entry must survive the aborted delete`
+					);
 					strictEqual(
 						phantoms.length,
 						0,
@@ -374,7 +393,7 @@ suite(
 		// Arm B: #1854's original trigger — a delete followed by a thrown error — observed at the
 		// storage layer, where the phantom the query surfaces cannot show is visible.
 		for (const table of ['ItemF', 'ItemT']) {
-			test(`Arm B (${table}): request-thrown abort after a delete leaves base and index in agreement`, async () => {
+			test(`Arm B (${table}): request-thrown abort after a delete rolls it back`, async () => {
 				const id = `${table}-abort-1`;
 				await seed(table, [{ id, category: 'ARMB' }]);
 
@@ -388,7 +407,7 @@ suite(
 				);
 
 				const res = await postJSON('/DeleteThenAbort/', { table, id });
-				notStrictEqual(res.status, 200, 'DeleteThenAbort handler should surface its deliberate throw as a non-200');
+				ok(res.status >= 400, `DeleteThenAbort must surface its deliberate throw as an error; got ${res.status}`);
 
 				await refreshOracle();
 				const primaryHasId = await hasLiveRecord(table, id);
@@ -398,6 +417,10 @@ suite(
 					`\n[#1854 Arm B ${table}] status=${res.status} primaryHasId=${primaryHasId} indexHasEntry=${indexHasEntry}`
 				);
 
+				// Agreement alone would also be satisfied by both vanishing, which is not what an aborted
+				// delete is allowed to do: the row and its index entry must both still be there.
+				ok(primaryHasId, `Arm B (${table}): ${id} must survive the aborted delete (the removal must roll back)`);
+				ok(indexHasEntry, `Arm B (${table}): ${id}'s index entry must survive the aborted delete`);
 				strictEqual(
 					indexHasEntry,
 					primaryHasId,
