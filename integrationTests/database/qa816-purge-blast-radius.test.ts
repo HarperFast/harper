@@ -116,6 +116,15 @@ function protectedRows(prefix: string, bucket: string, count: number): SeededRow
 const LEDGER_ROWS = protectedRows('ledger', 'LEDGER', LEDGER_COUNT);
 const QUIET_ROWS = protectedRows('quiet', 'QUIET', QUIET_COUNT);
 const REMOTE_ROWS = protectedRows('remote', 'REMOTE', REMOTE_COUNT);
+const PROTECTED_TABLES = [
+	{ database: PURGED_DB, table: 'Ledger', bucket: 'LEDGER', rows: LEDGER_ROWS },
+	{ database: PURGED_DB, table: 'QuietLedger', bucket: 'QUIET', rows: QUIET_ROWS },
+	{ database: CONTROL_DB, table: 'RemoteLedger', bucket: 'REMOTE', rows: REMOTE_ROWS },
+];
+const CHURN_TABLES = [
+	{ database: PURGED_DB, table: 'Churn' },
+	{ database: CONTROL_DB, table: 'RemoteChurn' },
+];
 const LEDGER_SAMPLE_IDS = Array.from(
 	{ length: LEDGER_SAMPLE_COUNT },
 	(_, i) => LEDGER_ROWS[Math.floor((i * LEDGER_COUNT) / LEDGER_SAMPLE_COUNT)].id
@@ -411,8 +420,7 @@ suite(
 			logging: { auditLog: true, console: true, level: 'error' },
 			storage: { engine: 'rocksdb' },
 		};
-		let churnRows = 0;
-		let remoteChurnRows = 0;
+		const churnCounts = new Map<string, number>();
 		let cutoffTimestamp = Number.NaN;
 		let armed = false;
 		let quietAuditBefore = 0;
@@ -422,79 +430,49 @@ suite(
 			ok(armed, 'PRECONDITION: the seed/arm phase must complete before the purge, read, or restart probes run');
 		}
 
-		/**
-		 * The headline check. Every protected primary row in BOTH databases, value-exact, on three
-		 * independent read surfaces plus a point-read sample — and the churn tables' rows counted, so a
-		 * purge that ate primary data in bulk cannot hide behind the protected tables.
-		 */
 		async function assertPrimaryIntact(label: string): Promise<void> {
-			assertRowSetMatches(label, 'REST collection', LEDGER_ROWS, await restCollection(ctx, 'Ledger', 'LEDGER'));
-			assertRowSetMatches(
-				label,
-				'search_by_value',
-				LEDGER_ROWS,
-				await searchByBucket(ctx, PURGED_DB, 'Ledger', 'LEDGER')
-			);
-			const ledgerScan = await fullScan(ctx, PURGED_DB, 'Ledger', 'records');
-			assertRowSetMatches(label, 'full primary-store scan', LEDGER_ROWS, ledgerScan.records);
-			strictEqual(
-				ledgerScan.totalCount,
-				LEDGER_COUNT,
-				`[${label}] full scan of ${PURGED_DB}.Ledger must total ${LEDGER_COUNT}`
-			);
+			for (const { database, table, bucket, rows } of PROTECTED_TABLES) {
+				assertRowSetMatches(label, `REST collection ${table}`, rows, await restCollection(ctx, table, bucket));
+				assertRowSetMatches(
+					label,
+					`search_by_value ${table}`,
+					rows,
+					await searchByBucket(ctx, database, table, bucket)
+				);
+				const scan = await fullScan(ctx, database, table, 'records');
+				assertRowSetMatches(label, `full primary-store scan ${table}`, rows, scan.records);
+				strictEqual(
+					scan.totalCount,
+					rows.length,
+					`[${label}] full scan of ${database}.${table} must total ${rows.length}`
+				);
+			}
 
 			for (const id of LEDGER_SAMPLE_IDS) {
 				const r = await restJson(ctx, `/Ledger/${id}`);
 				strictEqual(r.status, 200, `[${label}] REST GET /Ledger/${id} expected 200, got ${r.status}`);
-				const expected = LEDGER_ROWS.find((row) => row.id === id);
 				deepStrictEqual(
 					{ id: r.body?.id, bucket: r.body?.bucket, seq: r.body?.seq, payload: r.body?.payload },
-					expected,
+					LEDGER_ROWS.find((row) => row.id === id),
 					`[${label}] REST GET /Ledger/${id} returned a modified row`
 				);
 			}
 
-			assertRowSetMatches(label, 'REST collection', QUIET_ROWS, await restCollection(ctx, 'QuietLedger', 'QUIET'));
-			assertRowSetMatches(
-				label,
-				'search_by_value',
-				QUIET_ROWS,
-				await searchByBucket(ctx, PURGED_DB, 'QuietLedger', 'QUIET')
-			);
-			assertRowSetMatches(
-				label,
-				'full primary-store scan',
-				QUIET_ROWS,
-				(await fullScan(ctx, PURGED_DB, 'QuietLedger', 'records')).records
-			);
-
-			assertRowSetMatches(label, 'REST collection', REMOTE_ROWS, await restCollection(ctx, 'RemoteLedger', 'REMOTE'));
-			assertRowSetMatches(
-				label,
-				'search_by_value',
-				REMOTE_ROWS,
-				await searchByBucket(ctx, CONTROL_DB, 'RemoteLedger', 'REMOTE')
-			);
-			assertRowSetMatches(
-				label,
-				'full primary-store scan',
-				REMOTE_ROWS,
-				(await fullScan(ctx, CONTROL_DB, 'RemoteLedger', 'records')).records
-			);
-
-			strictEqual(
-				(await fullScan(ctx, PURGED_DB, 'Churn', 'count')).totalCount,
-				churnRows,
-				`[${label}] ${PURGED_DB}.Churn must still hold all ${churnRows} churn rows`
-			);
-			strictEqual(
-				(await fullScan(ctx, CONTROL_DB, 'RemoteChurn', 'count')).totalCount,
-				remoteChurnRows,
-				`[${label}] ${CONTROL_DB}.RemoteChurn must still hold all ${remoteChurnRows} churn rows`
-			);
+			// The churn tables carry the bulk of the purged database's bytes, so counting them is what
+			// stops a purge that ate primary data wholesale from hiding behind the small protected sets.
+			for (const { database, table } of CHURN_TABLES) {
+				const expected = churnCounts.get(table) ?? -1;
+				strictEqual(
+					(await fullScan(ctx, database, table, 'count')).totalCount,
+					expected,
+					`[${label}] ${database}.${table} must still hold all ${expected} churn rows`
+				);
+			}
 			findings.push(
-				`[${label}] primary intact: Ledger ${LEDGER_COUNT}/${LEDGER_COUNT}, QuietLedger ${QUIET_COUNT}/${QUIET_COUNT}, ` +
-					`RemoteLedger ${REMOTE_COUNT}/${REMOTE_COUNT}, Churn ${churnRows}, RemoteChurn ${remoteChurnRows}`
+				`[${label}] primary intact: ` +
+					PROTECTED_TABLES.map(({ table, rows }) => `${table} ${rows.length}/${rows.length}`).join(', ') +
+					', ' +
+					CHURN_TABLES.map(({ table }) => `${table} ${churnCounts.get(table)}`).join(', ')
 			);
 		}
 
@@ -554,9 +532,22 @@ suite(
 			'1. seed the protected rows and prove their audit history is there to lose',
 			{ timeout: 300_000 },
 			async () => {
-				await insertRows(ctx, PURGED_DB, 'Ledger', LEDGER_ROWS);
-				await insertRows(ctx, PURGED_DB, 'QuietLedger', QUIET_ROWS);
-				await insertRows(ctx, CONTROL_DB, 'RemoteLedger', REMOTE_ROWS);
+				for (const { database, table, rows } of PROTECTED_TABLES) {
+					await insertRows(ctx, database, table, rows);
+				}
+
+				// Every protected row must land in one un-rotated log file, so the rotation the next test
+				// forces seals ALL of them into a single purge-eligible file. That is what lets test 5
+				// assert the purged database's audit history reaches exactly zero rather than merely
+				// shrinking, which a partial purge would also satisfy.
+				for (const { database, table } of PROTECTED_TABLES) {
+					const log = logOf(await topology(ctx), database, table);
+					strictEqual(
+						log.rotations,
+						0,
+						`ORACLE ARMING: seeding ${database}.${table} must not rotate its log, got rotations=${log.rotations}`
+					);
+				}
 
 				quietAuditBefore = (
 					await idsWithInsertAudit(
@@ -602,10 +593,12 @@ suite(
 			'2. arm both logs: churn each database past a rotation, flush, then take the cutoff',
 			{ timeout: 900_000 },
 			async () => {
-				const purgedChurn = await churnUntilRotation(ctx, PURGED_DB, 'Churn');
-				churnRows = purgedChurn.rows;
-				const controlChurn = await churnUntilRotation(ctx, CONTROL_DB, 'RemoteChurn');
-				remoteChurnRows = controlChurn.rows;
+				const batches: string[] = [];
+				for (const { database, table } of CHURN_TABLES) {
+					const churn = await churnUntilRotation(ctx, database, table);
+					churnCounts.set(table, churn.rows);
+					batches.push(`${database}.${table} ${churn.rows} rows / ${churn.batches} batches`);
+				}
 
 				for (const [database, table] of [
 					[PURGED_DB, 'Ledger'],
@@ -621,10 +614,7 @@ suite(
 				cutoffTimestamp = Date.now();
 				await sleep(250);
 				armed = true;
-				findings.push(
-					`2. churn: ${PURGED_DB}.Churn ${churnRows} rows / ${purgedChurn.batches} batches, ` +
-						`${CONTROL_DB}.RemoteChurn ${remoteChurnRows} rows / ${controlChurn.batches} batches; cutoff=${cutoffTimestamp}`
-				);
+				findings.push(`2. churn: ${batches.join(', ')}; cutoff=${cutoffTimestamp}`);
 			}
 		);
 
@@ -712,9 +702,10 @@ suite(
 					REMOTE_COUNT,
 					`BLAST-RADIUS INVARIANT: a ${PURGED_DB}-scoped purge must not remove any ${CONTROL_DB} audit entry, got ${remoteAfter}/${REMOTE_COUNT}`
 				);
-				ok(
-					ledgerAfter < ledgerAuditBefore,
-					`NON-VACUOUS PRECONDITION: the purge must have removed audit history from ${PURGED_DB}, but the Ledger sample still holds ${ledgerAfter}/${ledgerAuditBefore} pre-cutoff entries`
+				strictEqual(
+					ledgerAfter,
+					0,
+					`NON-VACUOUS PRECONDITION: the purge must have removed every pre-cutoff Ledger audit entry (all ${LEDGER_COUNT} rows were seeded into one un-rotated, later-sealed log file), but the sample still holds ${ledgerAfter}/${ledgerAuditBefore}`
 				);
 			}
 		);
