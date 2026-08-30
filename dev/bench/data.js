@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788074499849,
+  "lastUpdate": 1788074503181,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -11844,6 +11844,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 184.11,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "e16d9616ad41c58092d6bb92b223adb0593f3798",
+          "message": "Fix copy-db producing a silently corrupt, non-restorable database copy (#2098)\n\n* Expose a reusable blob-root copy primitive and a copy README variant\n\ncopy-db needs the same per-root, hard-link-else-copy, staged-then-renamed\nblob copy that managed backups do, but into a standalone directory beside a\ndatabase copy rather than a backup repository.\n\nExtract that core from snapshotBlobs as copyBlobRootsByIndex(destDir, roots)\nand add a third blobsReadmeContent variant ('copy') so all blob-layout\ndocumentation stays in one place. snapshotBlobs now stages at\n<snapshotDir>.tmp instead of blobs/.tmp-<id>; both are same-filesystem\nsiblings, so the rename stays atomic.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Stop copy-db from producing a silently corrupt, non-restorable copy\n\ncopyDb()/copyDbi() — behind the `copy-db` CLI verb and storage.compactOnStart\n— degraded the copy five independent ways and still logged \"copied N entries\"\nand exited 0.\n\n1. A `value.length < 14` test treated the primary DBI's shared-structures\n   dictionary as a delete tombstone whenever it was small (short attribute\n   names), so every record in the copy decoded as null. Symbol-keyed entries\n   are no longer classified at all, a tombstone is now identified by decoding\n   with the table's own record decoder (a length can distinguish neither a\n   dictionary nor a small record from a tombstone, and a real delete carrying\n   node-id metadata runs to 17 bytes anyway), and a primary DBI's copy now\n   fails loudly if its dictionary did not land.\n\n   `decode` returning null is not enough on its own — it also returns null for\n   a record whose shared structure is missing on this node — so the classifier\n   requires the metadata-bearing decode only a real tombstone produces and\n   keeps anything it cannot prove.\n\n2. `getKeys()` + one `getEntry()` per key yielded a single entry per unique\n   key, collapsing every dupSort secondary index to one entry per value. Both\n   primary and index DBIs are now walked with one `getRange` pass, which\n   yields every duplicate (and drops the second lookup per key).\n\n3. The blob store was never copied. Blob files live outside the environment\n   and are addressed by database *name*, so the copy was unreadable anywhere\n   but its origin. `blobs` is now a required argument, since both answers are\n   silently destructive when wrong: `'copy'` copies each root to\n   <target>-blobs/<rootIndex>/ with a README documenting the restore mapping,\n   `'preserve-source-roots'` leaves them in place and is only sound when the\n   copy replaces the source in place — which compactOnStart now enforces by\n   skipping any database whose tables span more than one environment.\n\n4. The audit store was copied into the *source* environment (`rootStore`, not\n   `targetEnv`) through a fresh handle the write-guard never covered, and the\n   call was not awaited. In practice every entry failed to re-encode and was\n   swallowed, so the copy got no audit log at all. Both handles are now opened\n   on the correct environment, raw, and the copy is awaited.\n\n5. Every recognised tombstone was dropped regardless of age. The runtime only\n   removes one past `auditRetention`; dropping a live tombstone loses the\n   delete, letting a peer that missed it resurrect the record. The copy now\n   uses the same retention cutoff, fixed once per copy.\n\nSilent-success paths that made all of the above exit 0 now fail: a per-record\ncopy error, an exhausted resume, an unresumable key type, and a pre-existing\ntarget (which was opened and merged into) all throw, the retry bound drops\nfrom 10 million to 1000, a partial copy is removed, and compactOnStart treats\na failed backup as fatal instead of overwriting the only good copy.\n\nThe regression tests never ran: the suite gated on a config value that is\nunset under mocha, so it skipped in both engine runs. Fixed, which also\nsurfaced two pre-existing failures. The 85%-compaction assertions were\nmeasuring the audit log being dropped, and are replaced with\ncopy-not-larger-than-source plus record-readability checks.\n\nFixes #2048\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Address cross-model review: rollback, resume, cleanup and validation edges\n\n- compactOnStart rolled back every database it had *started*, using a fixed\n  backup path per database. A retained backup from an earlier run could\n  therefore be moved over a database whose compaction failed before taking its\n  own backup, replacing healthy data with a stale snapshot. Rollback now only\n  restores a backup this run created.\n\n- copyDbi's resume advanced the cursor on an iteration error (a string key\n  bumped to `<prefix>z`), skipping every key in between and then reporting\n  success — the same silent degradation this change exists to remove. It now\n  retries from the last key read, and a key it cannot get past fails the copy.\n\n- A record whose put fails now stops that DBI immediately instead of logging\n  once per remaining record.\n\n- Failure cleanup removed `<target>-blobs` even in preserve-source-roots mode,\n  where the copy never created it; a pre-existing blob companion is now\n  rejected up front and only removed when this call wrote it.\n\n- Source writes are no longer no-op'd before the validation throws, so a caller\n  that catches a rejected copy keeps working stores.\n\n- Adds the end-to-end proof the suite was missing: restore the copy plus its\n  blob directory under a different database name and read the attachment back\n  byte-exact.\n\nComment volume pruned to the invariants the code cannot state.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Match house test style: plain assert, no sinon, setAuditRetention\n\nAGENTS.md forbids `node:assert/strict` and new sinon usage in tests. The\nsandbox only stubbed `updateConfigValue`, which this suite never reaches (it\ndrives copyDb, not compactOnStart), so sinon goes entirely; retention now moves\nthrough its setter rather than the exported binding.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Address copy-db review feedback\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Protect compaction target databases\n\nRefuse compact-on-start when its staging path is occupied by the registered <database>-copy environment, preventing an untracked deletion of user data.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Fail closed on occupied compaction targets\n\nTreat any existing staging path as operator-owned or recoverable state instead of deleting it, including restore-blocked and failed-to-load databases.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Fix segment-unaware blob-root containment check, warn on missing configured blob roots\n\nisWithin() used a raw startsWith('..') check on the relative path, so a real child\ndirectory whose name happens to start with those two characters (e.g. a copy target\nliterally named `..copy.mdb`) was misclassified as outside the source blob root. That\nlet copyDb() place a copy's blob destination inside the very blob root it walks,\nletting the walker discover its own output and recurse. Compare only the first path\nsegment instead.\n\nAlso warn (rather than silently proceed) when a configured blob root does not exist at\ncopy time, since that's ambiguous between \"never had blobs\" and \"an unmounted/missing\nroot\", and the latter would otherwise produce a copy quietly missing blobs.\n\nFound by the pre-push review CLI (codex) while rebasing PR #2098 onto main.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* Widen blob-root containment check to every path a failure removes; clarify compaction skip message\n\nThe overlap guard only checked the final blob destination against each blob root, but a\nfailed copy also removes targetDatabasePath, its -lock sibling, and the blob staging\ndirectory's .tmp sibling — any of those landing inside a live blob root is just as\ndestructive as the final destination doing so. Check all of them up front.\n\nAlso note in the occupied-compaction-target skip message that this run already disabled\nstorage.compactOnStart, since the prior wording only said to remove the leftover file and\nretry, which silently never re-runs without also re-enabling the flag.\n\nFound by the pre-push review CLI (harper-domain adjudication) while rebasing PR #2098.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-08-29T18:42:47Z",
+          "url": "https://github.com/HarperFast/harper/commit/e16d9616ad41c58092d6bb92b223adb0593f3798"
+        },
+        "date": 1788074502185,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.06,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 13.51,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 17.52,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 17.34,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 21.84,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 16.27,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 31.81,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 14.63,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.61,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 54.59,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 134.05,
             "unit": "ms"
           }
         ]
