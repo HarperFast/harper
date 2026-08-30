@@ -5,7 +5,7 @@
 // events. Polling-based watching doesn't consume inotify handles or per-watcher
 // file descriptors, so we fall back to it once and warn — see harper#488.
 
-import { watch as chokidarWatch, type ChokidarOptions, type FSWatcher } from 'chokidar';
+import chokidar, { type ChokidarOptions, type FSWatcher } from 'chokidar';
 import { loggerWithTag } from './logging/harper_logger.ts';
 
 // One-time process-wide warning so a thundering herd of failing watchers doesn't
@@ -231,7 +231,10 @@ export function installLostNativeWatchGuard(): void {
  */
 export function guardedWatch(paths: string | string[], options?: ChokidarOptions): FSWatcher {
 	installLostNativeWatchGuard();
-	return chokidarWatch(paths, options);
+	// Deliberately a property access on the default export rather than a named `watch` import:
+	// unitTests/server/threads/watchDirFallback.test.js drives the reopen-on-exhaustion chain by
+	// swapping `chokidar.default.watch`, and a named import binds past that seam.
+	return chokidar.watch(paths, options);
 }
 
 // Test-only: number of lost native watch errors claimed so far.
