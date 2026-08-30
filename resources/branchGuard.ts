@@ -11,12 +11,15 @@ import { DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
  */
 export function assertTableTargetNotBranched(
 	branches: Map<string, unknown> | undefined,
-	databaseName: string | undefined,
+	databaseName: string | undefined | null,
 	tableName: string,
 	how: string
 ): void {
 	if (!branches?.size) return;
-	const target = databaseName ?? DEFAULT_DATABASE_NAME;
+	// Falsy, not nullish: `table()` resolves every falsy name to the default database, so a guard that
+	// only defaulted null and undefined would let `database: ''` past the fence and then land in the
+	// base as `data`.
+	const target = databaseName || DEFAULT_DATABASE_NAME;
 	if (!branches.has(target)) return;
 	const error: any = new Error(
 		`Cannot declare table '${tableName}' in branched database '${target}' through ${how}: it would be created ` +

@@ -365,6 +365,19 @@ describe('declaring a table from a branched application (harper#643)', () => {
 		}
 	});
 
+	it('defaults every falsy database name the way table() does', function () {
+		// `table()` resolves any falsy name to the default database (`if (!databaseName)`), so a guard
+		// that only defaulted nullish names would let `database: ''` past the fence and then land in
+		// the base as `data`.
+		for (const falsy of ['', null, undefined]) {
+			assert.throws(
+				() => assertTableTargetNotBranched(new Map([['data', {}]]), falsy, 'T', 'defineTable'),
+				/branched database 'data'/,
+				`${JSON.stringify(falsy)} must resolve to the default database`
+			);
+		}
+	});
+
 	it('defaults an unnamed database to the default one', function () {
 		// `@table` and defineTable both omit `database` to mean `data`, so a branch of `data` has to
 		// catch the omitted case or the most common declaration of all slips through.
