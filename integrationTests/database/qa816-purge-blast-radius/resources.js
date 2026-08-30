@@ -25,6 +25,7 @@ function logStats(auditStore) {
 	const log = auditStore && auditStore.log;
 	if (!log || typeof log.getStats !== 'function') return null;
 	const stats = log.getStats();
+	if (!stats) return null;
 	return {
 		path: stats.path,
 		fileCount: stats.fileCount,
@@ -87,7 +88,7 @@ export class Flush extends Resource {
 		if (!tableNames) throw new Error(`QA-816: unknown database ${databaseName}`);
 		for (const tableName of tableNames) {
 			const table = tableFor(databaseName, tableName);
-			if (typeof table.primaryStore.flush !== 'function')
+			if (typeof table.primaryStore?.flush !== 'function')
 				throw new Error(`QA-816: ${databaseName}.${tableName} primaryStore.flush() unavailable (not RocksDB?)`);
 			await table.primaryStore.flush();
 		}
