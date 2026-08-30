@@ -63,8 +63,9 @@ interface ApplicationConfig {
 	// the credential from the store rather than needing it re-supplied.
 	credentials?: CredentialReference[];
 	/**
-	 * Databases this application gets a private, ephemeral fork of (harper#642). The branch lives for
-	 * the process and is invisible to other applications and to replication.
+	 * Databases this application gets a private fork of (harper#642). The fork is durable — it lives
+	 * at a path derived from the application and database names, is adopted again on restart, and is
+	 * invisible to other applications.
 	 *
 	 * The application must reach its data through `import { databases } from 'harper'`. The bare
 	 * `databases`/`tables` globals are shared process-wide by the default `vm-current-context` loader

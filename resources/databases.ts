@@ -1280,21 +1280,23 @@ function initStores(
 export const BRANCH_ROOT_DIR = '`branches`';
 
 /**
- * Where one branch of `baseName` lives for this process instance. App and database are separate path
- * segments: joining them (`<app>__<db>`) is not injective — `(a__b, c)` and `(a, b__c)` collide — so
- * two declarations could otherwise open the same directory.
+ * Where the branch of `baseName` belonging to `appName` lives. Derived only from those two names, so
+ * every node in a cluster resolves the same application's branch to the same place — the identity an
+ * application's data needs if it is to be addressed, and eventually replicated, cluster-wide.
+ *
+ * App and database are separate path segments: joining them (`<app>__<db>`) is not injective —
+ * `(a__b, c)` and `(a, b__c)` collide — so two declarations could otherwise open one directory.
  */
-export function resolveBranchPath(baseName: string, appName: string, instanceId: string): string {
+export function resolveBranchPath(baseName: string, appName: string): string {
 	for (const [label, segment] of [
 		['application', appName],
 		['database', baseName],
-		['instance', instanceId],
 	]) {
 		if (!segment || segment.includes('/') || segment.includes('\\') || segment === '.' || segment === '..') {
 			throw new Error(`Invalid ${label} name for a branch path: ${JSON.stringify(segment)}`);
 		}
 	}
-	return join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR, instanceId, appName, baseName);
+	return join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR, appName, baseName);
 }
 
 /** A branch's private table graph plus the handle needed to tear it down. */

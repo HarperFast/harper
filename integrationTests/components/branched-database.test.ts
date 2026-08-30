@@ -105,8 +105,39 @@ suite('an application with a branched database', (ctx: ContextWithHarper) => {
 		strictEqual(result.found, false, 'a branch does not track the base after it is taken');
 	});
 
-	test('the branch lives under the reserved root', () => {
-		const branchRoot = resolve(ctx.harper!.dataRootDir, 'database', '`branches`');
-		ok(existsSync(branchRoot), `expected a branch root at ${branchRoot}`);
+	test('lives at a path derived only from the application and database names', () => {
+		// Deterministic on purpose: every node in a cluster resolves the same application's branch to
+		// the same place, which is what lets the branch be addressed -- and eventually replicated --
+		// cluster-wide. Nothing process-local (a pid, a run id) may appear in it.
+		const branchPath = resolve(ctx.harper!.dataRootDir, 'database', '`branches`', 'branched-database', 'data');
+		ok(existsSync(branchPath), `expected the branch at ${branchPath}`);
+	});
+
+	test("keeps the application's own data across a restart", async () => {
+		// A branch is durable, not scratch: the second start adopts the directory the first one made
+		// rather than re-checkpointing over it, so what the application wrote is still its own.
+		await sendOperation(ctx.harper, {
+			operation: 'branch_probe',
+			action: 'put',
+			id: 'survives-restart',
+			note: 'written before the restart',
+		});
+
+		await killHarper(ctx);
+		await startHarper(ctx);
+
+		const after = await sendOperation(ctx.harper, { operation: 'branch_probe', id: 'survives-restart' });
+		strictEqual(after.found, true, 'a restart must not discard the branch');
+		strictEqual(after.note, 'written before the restart');
+
+		// And it is still a branch, not the base: the restart must not have quietly reattached it.
+		const inBase = await sendOperation(ctx.harper, {
+			operation: 'search_by_id',
+			database: 'data',
+			table: 'Branched',
+			ids: ['survives-restart'],
+			get_attributes: ['id'],
+		});
+		strictEqual(inBase.length, 0, 'and the base still must not see it');
 	});
 });

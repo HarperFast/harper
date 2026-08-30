@@ -1,25 +1,26 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, rename, rm, rmdir } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
-import { COMPONENT_PREPARATION_PROCESS_INSTANCE_ID } from '../components/componentPreparationLock.ts';
+import { mkdir, rename, rm, rmdir } from 'node:fs/promises';
+import { dirname, relative } from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import {
-	BRANCH_ROOT_DIR,
 	type BranchDatabase,
 	database,
 	databases,
 	getDatabases,
 	openBranchDatabase,
 	resolveBranchPath,
-	resolveDatabaseStorageRoot,
 } from './databases.ts';
 
 /**
- * Ephemeral per-process forks of a database, for running several variants of an application against
+ * Private per-application forks of a database, for running several variants of an application against
  * isolated copies of the same data (harper#642).
+ *
+ * A fork is durable and its location is derived only from the application and database names, so it
+ * survives restarts and every node in a cluster names it identically — the identity the data needs
+ * to be addressed, and eventually replicated, cluster-wide.
  *
  * Every worker thread loads the same applications, so all of them ask for the same branch at once.
  * Only one may take the checkpoint — a second `createCheckpoint` against a populated directory fails,
@@ -107,12 +108,8 @@ async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: nu
  * Get this process's branch of `baseName` for `appName`, creating it on first call. Concurrent
  * callers across worker threads all receive the same branch.
  */
-export async function getOrCreateBranch(
-	baseName: string,
-	appName: string,
-	instanceId: string = COMPONENT_PREPARATION_PROCESS_INSTANCE_ID
-): Promise<BranchDatabase> {
-	const branchPath = resolveBranchPath(baseName, appName, instanceId);
+export async function getOrCreateBranch(baseName: string, appName: string): Promise<BranchDatabase> {
+	const branchPath = resolveBranchPath(baseName, appName);
 	let pending = branchesByPath.get(branchPath);
 	if (!pending) {
 		pending = openOrCreate(baseName, appName, branchPath);
@@ -144,7 +141,11 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 		if (previous === READY) break;
 		if (previous === UNCLAIMED) {
 			try {
-				await materializeBranch(baseName, branchPath);
+				// Adopt rather than recreate. The branch outlives the process that first made it, so on
+				// every restart after the first the directory is already here — and `materializeBranch`
+				// only ever publishes by renaming a finished checkpoint into place, so a directory that
+				// exists is always a complete one, never a half-copy to be distrusted.
+				if (!existsSync(branchPath)) await materializeBranch(baseName, branchPath);
 				Atomics.store(claimState, 0, READY);
 			} catch (error) {
 				// Release rather than record the failure. A claim that stays un-releasable turns one
@@ -164,12 +165,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 	return { branch: openBranchDatabase(branchPath, baseName, branchStoreName(appName, baseName)), claimState };
 }
 
-/**
- * Remove the now-empty `<instance>/<app>` directories a branch leaves behind. Without this every
- * process instance leaves a permanent empty directory under the branch root, and `sweepStaleBranches`
- * reports each one forever as another instance's — noise that grows without bound and drowns the
- * case the warning exists for.
- */
+/** Remove the now-empty `<app>` directory a removed branch leaves behind. */
 async function pruneEmptyParents(root: string, branchPath: string): Promise<void> {
 	let dir = dirname(branchPath);
 	// Stop at the branch root itself: it is shared, and `relative` going outside it means we walked past.
@@ -184,7 +180,7 @@ async function pruneEmptyParents(root: string, branchPath: string): Promise<void
 }
 
 function branchRootOf(branchPath: string): string {
-	return dirname(dirname(dirname(branchPath)));
+	return dirname(dirname(branchPath));
 }
 
 /**
@@ -199,7 +195,11 @@ async function closeBranchAt(branchPath: string): Promise<void> {
 	opened?.branch.close();
 }
 
-/** Release the handle and delete the directory. Only safe once nothing is using it: teardown. */
+/**
+ * Release the handle and delete the directory. A branch is durable, so nothing calls this on
+ * shutdown; it is how an application's data is discarded deliberately — undeploying it, or a test
+ * cleaning up — and it is only safe once nothing else is using the directory.
+ */
 async function removeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
@@ -215,49 +215,12 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	await pruneEmptyParents(branchRootOf(branchPath), branchPath);
 }
 
-/** Close and delete every branch this process opened. Branches do not outlive the process. */
+/**
+ * Discard every branch this process has open, storage included. Deliberate removal only: a branch is
+ * durable and is meant to survive restarts, so no shutdown path calls this.
+ */
 export async function removeBranches(): Promise<void> {
 	for (const branchPath of [...branchesByPath.keys()]) await removeBranchAt(branchPath);
-}
-
-/**
- * Remove branch directories left by earlier runs. Only this process instance's own directory is
- * touched: another live Harper on the same storage root has its own instance directory, and a UUID
- * proves identity rather than liveness, so anything else is left alone and reported instead.
- */
-export async function sweepStaleBranches(
-	baseName: string,
-	instanceId: string = COMPONENT_PREPARATION_PROCESS_INSTANCE_ID
-): Promise<string[]> {
-	const root = join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR);
-	if (!existsSync(root)) return [];
-	const retained: string[] = [];
-	for (const entry of await readdir(root, { withFileTypes: true })) {
-		if (!entry.isDirectory()) continue;
-		if (entry.name !== instanceId) {
-			// An empty directory holds no branch — a crashed process's leftovers, not a live instance.
-			// Reporting it would be the same unbounded noise `pruneEmptyParents` exists to prevent.
-			if (
-				await rmdir(join(root, entry.name)).then(
-					() => true,
-					() => false
-				)
-			)
-				continue;
-			retained.push(entry.name);
-			continue;
-		}
-		await rm(join(root, entry.name), { recursive: true, force: true }).catch((error) =>
-			logger.warn?.(`Could not sweep branch directory ${join(root, entry.name)}`, error)
-		);
-	}
-	if (retained.length) {
-		logger.warn?.(
-			`Left ${retained.length} branch director(ies) under ${root} belonging to other process instances; ` +
-				`they are removed by the instance that owns them, or by hand if that process is gone`
-		);
-	}
-	return retained;
 }
 
 /**
@@ -313,7 +276,7 @@ export async function prepareBranches(
 	const opened: string[] = [];
 	try {
 		for (const baseName of branchedDatabases) {
-			const branchPath = resolveBranchPath(baseName, appName, COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
+			const branchPath = resolveBranchPath(baseName, appName);
 			const isNew = !branchesByPath.has(branchPath);
 			branches.set(baseName, await getOrCreateBranch(baseName, appName));
 			if (isNew) opened.push(branchPath);

@@ -1,10 +1,9 @@
 require('../testUtils');
 const assert = require('assert');
 const { existsSync } = require('node:fs');
-const { join } = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { table, databases, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
-const { getOrCreateBranch, removeBranches, sweepStaleBranches } = require('#src/resources/branchDatabase');
+const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -31,11 +30,11 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	});
 
 	it('creates a branch that serves the base rows and lives under the reserved root', async function () {
-		const branch = await getOrCreateBranch('lifebase', 'appA', 'inst1');
+		const branch = await getOrCreateBranch('lifebase', 'appA');
 
 		const row = await branch.tables.LifecycleSource.get('a');
 		assert.strictEqual(row?.note, 'base');
-		const expected = resolveBranchPath('lifebase', 'appA', 'inst1');
+		const expected = resolveBranchPath('lifebase', 'appA');
 		assert.ok(existsSync(expected), `expected the branch at ${expected}`);
 		assert.ok(expected.includes(BRANCH_ROOT_DIR), 'branches belong under the reserved root');
 	});
@@ -43,17 +42,17 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	it('gives concurrent callers the same branch rather than racing two checkpoints', async function () {
 		// Every worker thread loads the same applications, so this is the ordinary case, not an edge one.
 		const [first, second, third] = await Promise.all([
-			getOrCreateBranch('lifebase', 'appA', 'inst1'),
-			getOrCreateBranch('lifebase', 'appA', 'inst1'),
-			getOrCreateBranch('lifebase', 'appA', 'inst1'),
+			getOrCreateBranch('lifebase', 'appA'),
+			getOrCreateBranch('lifebase', 'appA'),
+			getOrCreateBranch('lifebase', 'appA'),
 		]);
 		assert.strictEqual(first, second);
 		assert.strictEqual(second, third);
 	});
 
 	it('keeps two applications on separate branches', async function () {
-		const a = await getOrCreateBranch('lifebase', 'appA', 'inst1');
-		const b = await getOrCreateBranch('lifebase', 'appB', 'inst1');
+		const a = await getOrCreateBranch('lifebase', 'appA');
+		const b = await getOrCreateBranch('lifebase', 'appB');
 
 		await a.tables.LifecycleSource.put({ id: 'only-a', note: 'from A' });
 
@@ -66,7 +65,7 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	});
 
 	it('leaves the base untouched and unaware', async function () {
-		const branch = await getOrCreateBranch('lifebase', 'appA', 'inst1');
+		const branch = await getOrCreateBranch('lifebase', 'appA');
 		await branch.tables.LifecycleSource.put({ id: 'a', note: 'changed in branch' });
 
 		const base = await databases.lifebase.LifecycleSource.get('a');
@@ -74,35 +73,16 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	});
 
 	it('removes its directories on teardown', async function () {
-		await getOrCreateBranch('lifebase', 'appA', 'inst1');
-		const path = resolveBranchPath('lifebase', 'appA', 'inst1');
+		await getOrCreateBranch('lifebase', 'appA');
+		const path = resolveBranchPath('lifebase', 'appA');
 		assert.ok(existsSync(path));
 
 		await removeBranches();
 		assert.strictEqual(existsSync(path), false, 'a branch does not outlive the process');
 	});
 
-	it('sweeps only its own instance directory and reports the rest', async function () {
-		await getOrCreateBranch('lifebase', 'appA', 'other-instance');
-		const otherPath = resolveBranchPath('lifebase', 'appA', 'other-instance');
-		assert.ok(existsSync(otherPath));
-		// Drop the in-process handles so the sweep is acting on directories alone, the way a fresh
-		// process would see them.
-		await removeBranches();
-		await getOrCreateBranch('lifebase', 'appA', 'other-instance');
-
-		const retained = await sweepStaleBranches('lifebase', 'inst-not-used');
-
-		assert.deepStrictEqual(
-			retained,
-			['other-instance'],
-			"a UUID proves identity, not liveness, so another instance's directory is reported not deleted"
-		);
-		assert.ok(existsSync(otherPath), 'and left in place');
-	});
-
 	it('refuses DDL through a branch, leaving the base schema intact', async function () {
-		const branch = await getOrCreateBranch('lifebase', 'appA', 'inst1');
+		const branch = await getOrCreateBranch('lifebase', 'appA');
 		const baseTableClass = databases.lifebase.LifecycleSource;
 
 		// A branch's Table classes carry the BASE's logical database name so app code resolves
@@ -127,8 +107,8 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	});
 
 	it('rejects a path segment that would escape the reserved root', function () {
-		assert.throws(() => resolveBranchPath('lifebase', '..', 'inst1'), /Invalid application name/);
-		assert.throws(() => resolveBranchPath('lifebase', 'appA', 'a/b'), /Invalid instance name/);
+		assert.throws(() => resolveBranchPath('lifebase', '..'), /Invalid application name/);
+		assert.throws(() => resolveBranchPath('a/b', 'appA'), /Invalid database name/);
 	});
 });
 
@@ -240,7 +220,7 @@ describe('scoped databases binding (harper#643)', () => {
 	});
 
 	itUnlessLmdb('resolves a branched name to the branch and leaves the rest alone', async function () {
-		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
+		const branch = await getOrCreateBranch('bindbase', 'bindApp');
 		const bindings = scopedBindings({ branches: new Map([['bindbase', branch]]) });
 
 		assert.strictEqual(bindings.databases.bindbase, branch.tables);
@@ -254,7 +234,7 @@ describe('scoped databases binding (harper#643)', () => {
 	itUnlessLmdb('keeps `databases.system` reachable and non-enumerable', async function () {
 		// It is defined non-enumerable on the real map, so building the view by copying enumerable
 		// properties would drop it and a branched application would lose the system database entirely.
-		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
+		const branch = await getOrCreateBranch('bindbase', 'bindApp');
 		const bindings = scopedBindings({ branches: new Map([['bindbase', branch]]) });
 
 		assert.ok(bindings.databases.system, 'system must still be reachable');
@@ -268,7 +248,7 @@ describe('scoped databases binding (harper#643)', () => {
 	itUnlessLmdb('keeps showing databases created after the application loaded', async function () {
 		// `databases` gains entries at runtime, which is exactly what ensureTable/@table do. A view
 		// snapshotted at load would leave a branched application unable to see them.
-		const branch = await getOrCreateBranch('bindbase', 'bindApp', 'inst1');
+		const branch = await getOrCreateBranch('bindbase', 'bindApp');
 		const bindings = scopedBindings({ branches: new Map([['bindbase', branch]]) });
 		assert.strictEqual(bindings.databases.bindlater, undefined);
 
@@ -280,11 +260,30 @@ describe('scoped databases binding (harper#643)', () => {
 });
 
 describeUnlessLmdb('branch rollback is scoped to the failing application (harper#643)', () => {
-	const { mkdirSync, writeFileSync } = require('node:fs');
-	let COMPONENT_PREPARATION_PROCESS_INSTANCE_ID, prepareBranches;
+	const { mkdirSync, writeFileSync, rmSync } = require('node:fs');
+	const { dirname } = require('node:path');
+	let prepareBranches;
+
+	// An occupied branch directory no longer injects a fault: a directory that is already there is a
+	// branch to be adopted. These put a FILE where a directory has to be instead.
+
+	/** Fail while materializing — nothing can be written under the application's directory. */
+	function failMaterialization(baseName, appName) {
+		const parent = dirname(resolveBranchPath(baseName, appName));
+		mkdirSync(dirname(parent), { recursive: true });
+		writeFileSync(parent, 'not a directory');
+		return parent;
+	}
+
+	/** Fail while opening — the branch path itself is adopted, then turns out not to be a database. */
+	function failBranchOpen(baseName, appName) {
+		const path = resolveBranchPath(baseName, appName);
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, 'not a database');
+		return path;
+	}
 
 	before(function () {
-		({ COMPONENT_PREPARATION_PROCESS_INSTANCE_ID } = require('#src/components/componentPreparationLock'));
 		({ prepareBranches } = require('#src/resources/branchDatabase'));
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -306,9 +305,7 @@ describeUnlessLmdb('branch rollback is scoped to the failing application (harper
 		const branch = first.get('rollbase1');
 		await branch.tables.Roll.put({ id: 'live', note: 'x' });
 
-		const blocked = resolveBranchPath('rollbase2', 'reuseApp', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
-		mkdirSync(blocked, { recursive: true });
-		writeFileSync(join(blocked, 'occupied'), 'x');
+		failBranchOpen('rollbase2', 'reuseApp');
 		await assert.rejects(() => prepareBranches('reuseApp', ['rollbase1', 'rollbase2'], undefined));
 
 		assert.ok(
@@ -319,17 +316,14 @@ describeUnlessLmdb('branch rollback is scoped to the failing application (harper
 
 	it('lets a branch be created again after a transient failure', async function () {
 		this.timeout(30000);
-		const { rmSync } = require('node:fs');
-		const blocked = resolveBranchPath('rollbase2', 'retryApp', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
-		mkdirSync(blocked, { recursive: true });
-		writeFileSync(join(blocked, 'occupied'), 'x');
+		const blocked = failMaterialization('rollbase2', 'retryApp');
 
 		await assert.rejects(() => getOrCreateBranch('rollbase2', 'retryApp'));
 
 		// The claim word lives in a buffer the base store shares for the life of the process, so a
 		// claim that is not released turns one full disk or lost rename into a branch that can never
 		// be created again -- component reload and redeploy included.
-		rmSync(blocked, { recursive: true, force: true });
+		rmSync(blocked, { force: true });
 		const branch = await getOrCreateBranch('rollbase2', 'retryApp');
 		assert.ok(branch.tables.Roll, 'the retry must actually create the branch');
 	});
@@ -339,12 +333,8 @@ describeUnlessLmdb('branch rollback is scoped to the failing application (harper
 		const survivor = await getOrCreateBranch('rollbase1', 'loadedFirst');
 		await survivor.tables.Roll.put({ id: 'kept', note: 'x' });
 
-		// Applications load one after another. Make the second declared database of a *later*
-		// application fail to materialize: an occupied branch path makes the rename into place fail,
-		// which is the same shape as a checkpoint that cannot complete.
-		const blocked = resolveBranchPath('rollbase2', 'loadedSecond', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID);
-		mkdirSync(blocked, { recursive: true });
-		writeFileSync(join(blocked, 'occupied'), 'x');
+		// Applications load one after another; make the second declared database of a *later* one fail.
+		failBranchOpen('rollbase2', 'loadedSecond');
 
 		await assert.rejects(() => prepareBranches('loadedSecond', ['rollbase1', 'rollbase2'], undefined));
 
@@ -356,7 +346,7 @@ describeUnlessLmdb('branch rollback is scoped to the failing application (harper
 		// storage must outlive a single thread's failed load: deleting it here would pull RocksDB
 		// files out from under a thread that loaded the same application successfully.
 		assert.ok(
-			existsSync(resolveBranchPath('rollbase1', 'loadedSecond', COMPONENT_PREPARATION_PROCESS_INSTANCE_ID)),
+			existsSync(resolveBranchPath('rollbase1', 'loadedSecond')),
 			'a failed load releases its handles but must not delete storage other threads may hold'
 		);
 	});
@@ -410,7 +400,7 @@ describe('defineTable through a branched application (harper#643)', () => {
 		// defineTable registers in the process-wide catalog, so without this the table would appear in
 		// the base -- replicated and visible to every other application -- while this application's
 		// own reads and writes went to its branch. Landing it in the branch is harper#2264.
-		const branch = await getOrCreateBranch('defbase', 'defApp', 'inst1');
+		const branch = await getOrCreateBranch('defbase', 'defApp');
 		const { defineTable } = scopedBindings({ branches: new Map([['defbase', branch]]) });
 
 		assert.throws(() => defineTable('Defined', { id: 'string' }, { database: 'defbase' }), /branched database/);
@@ -418,7 +408,7 @@ describe('defineTable through a branched application (harper#643)', () => {
 	});
 
 	itUnlessLmdb('still defines into databases the application did not branch', async function () {
-		const branch = await getOrCreateBranch('defbase', 'defApp', 'inst1');
+		const branch = await getOrCreateBranch('defbase', 'defApp');
 		const { defineTable } = scopedBindings({ branches: new Map([['defbase', branch]]) });
 
 		defineTable('Unbranched', { id: 'string' }, { database: 'otherbase' });
