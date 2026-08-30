@@ -5,7 +5,7 @@
 // events. Polling-based watching doesn't consume inotify handles or per-watcher
 // file descriptors, so we fall back to it once and warn — see harper#488.
 
-import chokidar, { type ChokidarOptions, type FSWatcher } from 'chokidar';
+import { watch as chokidarWatch, type ChokidarOptions, type FSWatcher } from 'chokidar';
 import { loggerWithTag } from './logging/harper_logger.ts';
 
 // One-time process-wide warning so a thundering herd of failing watchers doesn't
@@ -75,6 +75,10 @@ export function _resetForTests(): void {
 	exhaustionWarned = false;
 	lostNativeWatchCount = 0;
 	lostNativeWatchWarnThreshold = 1;
+	// Also drop the process listener, so a case that installed the guard can't leave one
+	// attached to the test runner's process for every case that follows.
+	process.removeListener('uncaughtException', handleUncaughtException);
+	lostNativeWatchGuardInstalled = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,9 +158,13 @@ let lostNativeWatchWarnThreshold = 1;
  */
 export function claimLostNativeWatchError(error: unknown): boolean {
 	if (!isLostNativeWatchError(error)) return false;
-	// server/threads/threadServer.js skips errors already marked handled, so the
-	// benign case doesn't also get logged there as a worker-level uncaughtException.
-	(error as { isHandled?: boolean }).isHandled = true;
+	const claimed = error as { isHandled?: boolean };
+	// Already claimed. Counting the same instance twice would inflate the tally and trip the
+	// decade warning early, so report it as claimed and stop.
+	if (claimed.isHandled) return true;
+	// server/threads/threadServer.js and server/threads/socketRouter.ts skip errors already
+	// marked handled, so the benign case doesn't also get logged there as an uncaughtException.
+	claimed.isHandled = true;
 	lostNativeWatchCount++;
 	fallbackLogger.trace?.(`Lost native file watch handle (occurrence ${lostNativeWatchCount}):`, error);
 	// Never go fully silent. Node gives this error no path, so it cannot be attributed to the
@@ -190,6 +198,10 @@ function handleUncaughtException(error: unknown): void {
 	// of the way and let the exception be fatal exactly as it would have been.
 	if (process.listenerCount('uncaughtException') > 1) return;
 	process.removeListener('uncaughtException', handleUncaughtException);
+	// Stepping aside is meant to be terminal, but say so in the state rather than assuming it:
+	// clearing the flag means a process that somehow survives re-arms on its next guardedWatch()
+	// instead of running unguarded for the rest of its life.
+	lostNativeWatchGuardInstalled = false;
 	// Re-raising on the next tick (rather than throwing from inside the handler)
 	// keeps Node's normal report and exit code 1; a throw from within the handler
 	// exits 7 instead.
@@ -219,7 +231,7 @@ export function installLostNativeWatchGuard(): void {
  */
 export function guardedWatch(paths: string | string[], options?: ChokidarOptions): FSWatcher {
 	installLostNativeWatchGuard();
-	return chokidar.watch(paths, options);
+	return chokidarWatch(paths, options);
 }
 
 // Test-only: number of lost native watch errors claimed so far.

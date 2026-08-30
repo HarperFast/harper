@@ -9,9 +9,35 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { guardedWatch, _lostNativeWatchCountForTests } = require('#src/utility/watcherFallback');
+const {
+	claimLostNativeWatchError,
+	guardedWatch,
+	_lostNativeWatchCountForTests,
+} = require('#src/utility/watcherFallback');
 
 const mode = process.argv[2];
+
+if (mode === 'warn-threshold') {
+	// No watcher needed: claim a run of synthetic lost-watch errors and let the caller count the
+	// warnings that reach the log. Warn is the default level, so this is the visible cadence.
+	for (let i = 0; i < 12; i++) {
+		claimLostNativeWatchError(
+			Object.assign(new Error('EPERM: watch'), { code: 'EPERM', syscall: 'watch', filename: null })
+		);
+	}
+	process.stdout.write(`claimed=${_lostNativeWatchCountForTests()}\n`);
+	process.exit(0);
+}
+
+if (mode === 'prepend-ordering') {
+	// Stands in for the handlers in server/threads/threadServer.js and socketRouter.ts, which are
+	// registered at module load — before any watcher exists. They skip errors already marked
+	// handled, which only works if the guard's listener runs ahead of them.
+	process.on('uncaughtException', (error) => {
+		process.stdout.write(`thread-handler saw isHandled=${error.isHandled}\n`);
+		process.exit(0);
+	});
+}
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-lost-watch-'));
 const watched = path.join(root, 'component');
@@ -24,6 +50,15 @@ fs.writeFileSync(path.join(watched, 'resources', 'index.js'), '// fixture\n');
 const watcher = guardedWatch('.', { cwd: watched, persistent: false, followSymlinks: false });
 
 watcher.on('ready', () => {
+	if (mode === 'prepend-ordering') {
+		fs.rmSync(watched, { recursive: true, force: true });
+		setTimeout(() => {
+			process.stdout.write('thread-handler never ran\n');
+			process.exit(3);
+		}, 1500);
+		return;
+	}
+
 	if (mode === 'sync-watch-failure') {
 		// A synchronous fs.watch() throw shares the guard's syscall ('watch') but carries a `path`,
 		// which is what keeps an ordinary "watching a path that isn't there" misconfiguration fatal

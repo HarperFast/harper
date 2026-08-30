@@ -173,6 +173,27 @@ describe('watcherFallback', () => {
 			assert.match(stderr, /unrelated harness failure/);
 		});
 
+		// The `isHandled` marker only suppresses the thread-level handlers if the guard's listener
+		// runs before theirs — which is why it is prepended, not appended. Node calls every
+		// uncaughtException listener regardless, so ordering is the whole mechanism.
+		it('runs ahead of a thread-level handler registered before the first watcher', async function () {
+			this.timeout(30000);
+			const { code, stdout, stderr } = await runHarness('prepend-ordering');
+			if (process.platform !== 'win32') return this.skip(); // only Windows raises the error
+			assert.equal(code, 0, `harness exited ${code}: ${stderr}`);
+			assert.match(stdout, /thread-handler saw isHandled=true/);
+		});
+
+		it('warns on the first occurrence and at each tenfold increase', async function () {
+			this.timeout(30000);
+			const { code, stdout, stderr } = await runHarness('warn-threshold');
+			assert.equal(code, 0, `harness exited ${code}: ${stderr}`);
+			assert.match(stdout, /claimed=12/);
+			// 12 claims => warnings at occurrence 1 and 10, and no others.
+			const warnings = `${stdout}${stderr}`.match(/failed asynchronously/g) ?? [];
+			assert.equal(warnings.length, 2, `expected 2 warnings across 12 claims, got ${warnings.length}`);
+		});
+
 		// The guard sees every uncaught exception in the process, so the bound that keeps it from
 		// masking real failures is the error shape. A misconfigured raw fs.watch() shares its
 		// syscall and would be swallowed if the shape check were any looser.
