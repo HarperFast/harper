@@ -134,6 +134,7 @@ suite(
 		});
 
 		test('a further boot with a current stamp does not re-run the upgrade', async () => {
+			ok(recordsAfterUpgradeBoot, 'this case reads the state the preceding upgrade-boot case leaves behind');
 			await restartAndWait();
 
 			strictEqual(

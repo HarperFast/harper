@@ -47,10 +47,9 @@ export class VersionStampNotRecordedError extends Error {
 }
 
 /**
- * An insert whose key already exists is reported as skipped rather than as a failure, so a resolved
- * insert is not by itself evidence that the version was recorded. Ids are compared as strings: the
- * guard is against a write that did not happen, and a boot must not be refused over a hash the
- * storage layer handed back in a different numeric type.
+ * `insert.insert` reports a key that already exists as skipped, not as a failure, so a resolved
+ * insert is not evidence that the version was recorded. Ids compare as strings: the guard is
+ * against a write that did not happen, not against a hash returned in a different type.
  */
 export function assertVersionRecorded(insertResult: any, expectedId: number, newVersionString: string) {
 	const insertedHashes = insertResult?.inserted_hashes;

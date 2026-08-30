@@ -1,13 +1,9 @@
-// Fixture for upgrade-version-stamp.test.ts (harper#2158).
-//
 // The ops API denies writes to the `system` database (403), so the suite cannot stale
-// `system.hdb_info` the way it needs to in order to make the next boot look like an in-place
-// upgrade. A component resource runs in-process against the table directly, which is the same
-// access the upgrade path itself has.
+// `system.hdb_info` through it to make the next boot look like an in-place upgrade. A component
+// resource reaches the table in-process, which is the access the upgrade path itself has.
 //
-//   GET  /VersionStamps/        — every hdb_info row, oldest info_id first.
-//   POST /VersionStamps/ {info_id, version}
-//                               — write one hdb_info row with a chosen version.
+//   GET  /VersionStamps/                    — every hdb_info row, oldest info_id first.
+//   POST /VersionStamps/ {info_id, version} — write one hdb_info row with a chosen version.
 
 function infoTable() {
 	return databases['system']['hdb_info'];

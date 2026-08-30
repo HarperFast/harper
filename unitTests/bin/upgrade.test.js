@@ -89,8 +89,6 @@ describe('Test upgrade.js', () => {
 			processDirectives_stub.resolves();
 		});
 
-		// The inverse of the assertion it replaced: a swallowed stamp failure let boot report success
-		// on a stale data version.
 		it('Should rethrow an exception from insertHdbUpgradeInfo so boot fails rather than continuing unstamped', async () => {
 			insertHdbUpgradeInfo_stub.throws(test_error);
 
