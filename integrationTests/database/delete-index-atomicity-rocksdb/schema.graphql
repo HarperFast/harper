@@ -1,14 +1,8 @@
-# Regression anchor for #1854 (fixed by PR #1869) — an aborted delete on an audit:false
-# @indexed table must not leave the secondary index pointing at a primary key that is gone.
-#
-# ItemF: audit:false — reaches Table.ts _writeDelete()'s non-audit commit branch, where
-#   removeEntry(primaryStore, existingEntry) is the only write in the branch that has to be
-#   told about the ambient transaction. Before #1869 it was not, so on RocksDB the base-row
-#   removal committed standalone and survived an abort while updateIndices() — which is
-#   transaction-scoped — rolled back, leaving the index entry dangling.
-# ItemT: audit:true — control arm. That branch removes the record through updateRecord(),
-#   which has always threaded {transaction}, so it must stay consistent either way; a red
-#   ItemT arm means the divergence is not the one this anchor is pinning.
+# ItemF (audit:false) reaches Table.ts _writeDelete()'s non-audit commit branch, where the
+# base-row removal is the one write that has to be told about the ambient transaction; before
+# #1869 it was not. ItemT (audit:true) removes through updateRecord(), which has always threaded
+# {transaction}, and is the control: a red ItemT arm means the divergence is not the one this
+# anchor pins.
 type ItemF @table(audit: false) @export {
 	id: ID! @primaryKey
 	category: String @indexed

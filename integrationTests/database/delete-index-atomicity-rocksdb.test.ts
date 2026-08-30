@@ -15,12 +15,11 @@
  * removes through `updateRecord()`, which has always threaded `{transaction}`.
  *
  * `integrationTests/resources/audit-false-delete-rollback.test.ts` pins the same fix through the
- * client surfaces. This file pins it at the storage layer instead, because the client surfaces
- * cannot see half of the damage: `search_by_value` joins each index entry back through its
- * primary record and silently drops the ones whose record is gone, so a dangling entry is
- * invisible to every query API. The oracle here is a second, independent, read-only
- * `@harperfast/rocksdb-js` handle on the on-disk column families, decoding the composite
- * `[indexedValue, primaryKey]` index keys itself (the wire format written by
+ * client surfaces. Those surfaces cannot see half of the damage: `search_by_value` joins each
+ * index entry back through its primary record and silently drops the ones whose record is gone,
+ * so a dangling entry is invisible to every query API. The oracle here is a second, independent,
+ * read-only `@harperfast/rocksdb-js` handle on the on-disk column families, decoding the
+ * composite `[indexedValue, primaryKey]` index keys itself (the wire format written by
  * resources/RocksIndexStore.ts), with no Harper code in the read path. It also covers the
  * monitor-fired abort (Arm A) alongside #1869's request-thrown abort (Arm B).
  *
@@ -30,7 +29,8 @@
  * write can still sit only in the writer's memtable. An oracle that skips either step reports a
  * clean run from flush timing rather than from real consistency, so `refreshOracle()` flushes
  * through the fixture and reopens every handle before each raw read, and the 'oracle proof'
- * tests below demonstrate — rather than assert — that it detects a phantom the join cannot.
+ * tests below demonstrate — rather than assert — that it detects a phantom the join cannot, on
+ * both tables.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/delete-index-atomicity-rocksdb.test.ts"
@@ -51,9 +51,11 @@ const MAX_TXN_OPEN_MS = 1000;
 // The monitor ticks once per `storage.maxTransactionOpenTime` and decays a transaction's budget
 // by one interval per tick (resources/DatabaseTransaction.ts startMonitoringTxns), so the abort
 // lands within ~2-3 ticks. This hold is an order of magnitude past that, purely as slack for a
-// loaded runner; the arm asserts on the log line the monitor actually emitted, never on elapsed
-// wall-clock.
+// loaded runner; the arm asserts on the log line the monitor emitted for its own request, never
+// on elapsed wall-clock.
 const HOLD_MS = 15_000;
+const LOG_FILES = ['hdb.log', 'stdout.log', 'stderr.log'];
+const OVER_TIME_ABORTED = /Transaction was open too long and has been aborted/i;
 const skipSuite = process.platform === 'win32';
 
 suite(
@@ -80,8 +82,11 @@ suite(
 			procOutput += ctx.harper.startupOutput?.stdout ?? '';
 			procOutput += ctx.harper.startupOutput?.stderr ?? '';
 			const proc = ctx.harper.process;
-			proc?.stdout?.on('data', (d: Buffer) => (procOutput += d.toString()));
-			proc?.stderr?.on('data', (d: Buffer) => (procOutput += d.toString()));
+			// setEncoding keeps a multi-byte sequence split across chunk boundaries intact.
+			proc?.stdout?.setEncoding('utf8');
+			proc?.stderr?.setEncoding('utf8');
+			proc?.stdout?.on('data', (d: string) => (procOutput += d));
+			proc?.stderr?.on('data', (d: string) => (procOutput += d));
 
 			// Workers register routes asynchronously; poll the probe route rather than restarting the
 			// http workers, which races against a pre-installed fixture.
@@ -101,11 +106,13 @@ suite(
 			}
 			ok(ready, 'Probe route should become available before the suite runs');
 
-			// The audit flag is what selects the branch each arm targets, so a schema drift that
-			// flipped it would turn this anchor green for the wrong reason.
+			// `audit || trackDeletes` is what selects the branch each arm targets (resources/Table.ts),
+			// and `trackDeletes` can be turned on implicitly by adding a subscribed source, so a drift
+			// in either would retire this anchor while leaving it green.
 			const itemF = await (await getJSON('/TableInfo/?table=ItemF')).json();
 			const itemT = await (await getJSON('/TableInfo/?table=ItemT')).json();
 			strictEqual(itemF.audit, false, 'ItemF must be audit:false to reach the branch this anchor pins');
+			ok(!itemF.trackDeletes, 'ItemF must not track deletes, which would route it through updateRecord() instead');
 			strictEqual(itemT.audit, true, 'ItemT must be audit:true to serve as the control arm');
 
 			// The RocksDB root store for a database is a directory (not a single file as on LMDB) at
@@ -139,21 +146,34 @@ suite(
 			return fetch(`${httpURL}${path}`, { headers: { Authorization: client.headers.Authorization } });
 		}
 
-		function sawLog(pattern: RegExp): boolean {
-			let logText = procOutput;
+		function logSources(): Map<string, string> {
+			const sources = new Map<string, string>([['<stdio>', procOutput]]);
 			if (ctx.harper.logDir) {
-				for (const name of ['hdb.log', 'stdout.log', 'stderr.log']) {
+				for (const name of LOG_FILES) {
 					const p = join(ctx.harper.logDir, name);
-					if (existsSync(p)) {
-						try {
-							logText += readFileSync(p, 'utf8');
-						} catch {
-							/* ignore */
-						}
+					if (!existsSync(p)) continue;
+					try {
+						sources.set(p, readFileSync(p, 'utf8'));
+					} catch {
+						/* ignore */
 					}
 				}
 			}
-			return pattern.test(logText);
+			return sources;
+		}
+		/**
+		 * With `maxTransactionOpenTime` pinned to a second, any Harper-internal transaction that
+		 * outlives it — during startup, or in an earlier arm — emits the same over-time line, after
+		 * which an unscoped search matches forever and every later arm's monitor proof is vacuous.
+		 * Each arm therefore marks the logs immediately before its own request and matches only what
+		 * was appended after that point.
+		 */
+		function markLogs(): Map<string, number> {
+			return new Map([...logSources()].map(([name, text]) => [name, text.length]));
+		}
+		function sawLogSince(mark: Map<string, number>, pattern: RegExp): boolean {
+			for (const [name, text] of logSources()) if (pattern.test(text.slice(mark.get(name) ?? 0))) return true;
+			return false;
 		}
 
 		/**
@@ -177,9 +197,19 @@ suite(
 			if (!dbiCache.has(name)) dbiCache.set(name, RocksDatabase.open(rootPath, { name, readOnly: true }));
 			return dbiCache.get(name)!;
 		}
-		/** Primary keys present in the on-disk primary store, read without consulting any index. */
-		function rawPrimaryKeys(table: string): Set<string> {
-			return new Set([...openDbi(`${table}/`).getKeys()].map(String));
+		/**
+		 * Whether a live record exists under this primary key, via a direct point lookup that no
+		 * index mediates. The raw primary column family cannot answer this: an audited delete routes
+		 * through `updateRecord(id, null, ...)` (resources/Table.ts) and `RecordEncoder.ts` only skips
+		 * the write when the record is `undefined`, so `null` is stored as a tombstone under the same
+		 * key until cleanup runs — measured here, where ItemT's key survives a committed delete. The
+		 * encoded value's payload offset is variable (version, then a 2- or 4-byte metadata word, then
+		 * optional expiration/residency/node-id fields), so reading liveness out of the raw bytes would
+		 * be a guess. The index side, which is where the query surfaces are blind, stays raw.
+		 */
+		async function hasLiveRecord(table: string, id: string): Promise<boolean> {
+			const res = await getJSON(`/${table}/${encodeURIComponent(id)}`);
+			return res.status === 200;
 		}
 		/**
 		 * {category, id} pairs read straight out of the on-disk secondary-index column family.
@@ -193,78 +223,95 @@ suite(
 				id: String(e.key[1]),
 			}));
 		}
-		/** Index entries whose id has no primary record — the dangling entries #1854 produced. */
-		function findPhantoms(table: string, attribute: string): Array<{ key: string; id: string }> {
-			const primaryKeys = rawPrimaryKeys(table);
-			return rawIndexEntries(table, attribute).filter((e) => !primaryKeys.has(e.id));
+		/** Index entries whose id has no live record — the dangling entries #1854 produced. */
+		async function findPhantoms(table: string, attribute: string): Promise<Array<{ key: string; id: string }>> {
+			const entries = rawIndexEntries(table, attribute);
+			const live = new Map<string, boolean>();
+			for (const e of entries) if (!live.has(e.id)) live.set(e.id, await hasLiveRecord(table, e.id));
+			return entries.filter((e) => !live.get(e.id));
 		}
 
-		test('oracle proof: sees a seeded index entry, and sees it vanish on a normal delete', async () => {
-			await postJSON('/Seed/', { table: 'ItemF', ids: [{ id: 'proof-1', category: 'PROOF' }] });
-			await refreshOracle();
-			let entries = rawIndexEntries('ItemF', 'category').filter((e) => e.key === 'PROOF');
-			let keys = rawPrimaryKeys('ItemF');
-			strictEqual(entries.length, 1, 'oracle should see exactly 1 raw index entry for PROOF after seed');
-			strictEqual(entries[0].id, 'proof-1', 'raw index entry should point at proof-1');
-			ok(keys.has('proof-1'), 'oracle should see proof-1 in the raw primary store after seed');
+		async function seed(table: string, ids: Array<{ id: string; category: string }>): Promise<void> {
+			const res = await postJSON('/Seed/', { table, ids });
+			strictEqual(res.status, 200, `seeding ${table} must succeed, or every assertion below is vacuous`);
+		}
 
-			const res = await postJSON('/DeleteOne/', { table: 'ItemF', id: 'proof-1' });
-			strictEqual(res.status, 200, 'ordinary delete should succeed');
+		// Run against both tables: an audit:true control arm whose oracle has never been shown to
+		// work on that table cannot be trusted to go red.
+		for (const table of ['ItemF', 'ItemT']) {
+			test(`oracle proof (${table}): sees a seeded index entry, and sees it vanish on a normal delete`, async () => {
+				await seed(table, [{ id: 'proof-1', category: 'PROOF' }]);
+				await refreshOracle();
+				let entries = rawIndexEntries(table, 'category').filter((e) => e.key === 'PROOF');
+				strictEqual(entries.length, 1, 'oracle should see exactly 1 raw index entry for PROOF after seed');
+				strictEqual(entries[0].id, 'proof-1', 'raw index entry should point at proof-1');
+				ok(await hasLiveRecord(table, 'proof-1'), 'proof-1 should be a live record after seed');
 
-			await refreshOracle();
-			entries = rawIndexEntries('ItemF', 'category').filter((e) => e.key === 'PROOF');
-			keys = rawPrimaryKeys('ItemF');
-			strictEqual(entries.length, 0, 'oracle should see the PROOF index entry vanish after a normal delete');
-			ok(!keys.has('proof-1'), 'oracle should see proof-1 vanish from the raw primary store after a normal delete');
-		});
+				const res = await postJSON('/DeleteOne/', { table, id: 'proof-1' });
+				strictEqual(res.status, 200, 'ordinary delete should succeed');
 
-		test('oracle proof: detects an injected phantom that the join-based query surface cannot', async () => {
-			const res = await postJSON('/InjectPhantom/', { table: 'ItemF', category: 'GHOST', id: 'ghost-1' });
-			strictEqual(res.status, 200, 'InjectPhantom control should succeed (ghost-1 must not already exist)');
+				await refreshOracle();
+				entries = rawIndexEntries(table, 'category').filter((e) => e.key === 'PROOF');
+				strictEqual(entries.length, 0, 'oracle should see the PROOF index entry vanish after a normal delete');
+				ok(!(await hasLiveRecord(table, 'proof-1')), 'proof-1 should no longer be a live record after a normal delete');
+			});
 
-			await refreshOracle();
-			ok(!rawPrimaryKeys('ItemF').has('ghost-1'), 'ghost-1 should never appear in the raw primary store');
+			test(`oracle proof (${table}): detects an injected phantom that the join-based query surface cannot`, async () => {
+				const res = await postJSON('/InjectPhantom/', { table, category: 'GHOST', id: 'ghost-1' });
+				strictEqual(res.status, 200, 'InjectPhantom control should succeed (ghost-1 must not already exist)');
 
-			const phantoms = findPhantoms('ItemF', 'category');
-			ok(
-				phantoms.some((p) => p.id === 'ghost-1' && p.key === 'GHOST'),
-				`oracle should detect the injected phantom (GHOST -> ghost-1); phantoms seen: ${JSON.stringify(phantoms)}`
-			);
+				await refreshOracle();
+				ok(!(await hasLiveRecord(table, 'ghost-1')), 'ghost-1 should never have been written as a record');
 
-			const blind = await (await getJSON('/BlindSearch/?table=ItemF&category=GHOST')).json();
-			strictEqual(
-				blind.hits.length,
-				0,
-				'the join-through-primary query surface must see 0 hits for the same phantom, which is why the arms below read raw storage'
-			);
+				const phantoms = await findPhantoms(table, 'category');
+				ok(
+					phantoms.some((p) => p.id === 'ghost-1' && p.key === 'GHOST'),
+					`oracle should detect the injected phantom (GHOST -> ghost-1); phantoms seen: ${JSON.stringify(phantoms)}`
+				);
 
-			// Remove the deliberate artifact so the table-wide scans in Arm A/B cannot report it as a
-			// genuine phantom (or have a genuine one masked by it).
-			const cleanup = await postJSON('/RemoveIndexEntry/', { table: 'ItemF', category: 'GHOST', id: 'ghost-1' });
-			strictEqual(cleanup.status, 200, 'positive-control cleanup should succeed');
-			await refreshOracle();
-			ok(
-				findPhantoms('ItemF', 'category').every((p) => p.id !== 'ghost-1'),
-				'ghost-1 phantom should be gone after cleanup'
-			);
-		});
+				const blind = await (await getJSON(`/BlindSearch/?table=${table}&category=GHOST`)).json();
+				strictEqual(
+					blind.hits.length,
+					0,
+					'the join-through-primary query surface must see 0 hits for the same phantom, which is why the arms below read raw storage'
+				);
+
+				// Remove the deliberate artifact so the table-wide scans in Arm A/B cannot report it as
+				// a genuine phantom (or have a genuine one masked by it).
+				const cleanup = await postJSON('/RemoveIndexEntry/', { table, category: 'GHOST', id: 'ghost-1' });
+				strictEqual(cleanup.status, 200, 'positive-control cleanup should succeed');
+				await refreshOracle();
+				ok(
+					(await findPhantoms(table, 'category')).every((p) => p.id !== 'ghost-1'),
+					'ghost-1 phantom should be gone after cleanup'
+				);
+			});
+		}
 
 		// Arm A: the abort is fired by the long-transaction monitor mid-transaction, not by the
 		// handler — a different path into the same commit branch than #1869's own test covers.
 		for (const table of ['ItemF', 'ItemT']) {
 			test(
-				`Arm A (${table}): monitor-fired abort mid insert/update/remove leaves base and index in agreement`,
+				`Arm A (${table}): monitor-fired abort mid remove/insert/update leaves base and index in agreement`,
 				{ timeout: HOLD_MS + 60_000 },
 				async () => {
-					await postJSON('/Seed/', {
-						table,
-						ids: [
-							{ id: '__seed__-0', category: '__seed__' },
-							{ id: `${table}-upd-base`, category: 'ARMA-OLD' },
-							{ id: `${table}-rm-base`, category: 'ARMA-DEL' },
-						],
-					});
+					const removeId = `${table}-rm-base`;
+					await seed(table, [
+						{ id: '__seed__-0', category: '__seed__' },
+						{ id: `${table}-upd-base`, category: 'ARMA-OLD' },
+						{ id: removeId, category: 'ARMA-DEL' },
+					]);
 
+					// Without a live, indexed row to delete there is no removeEntry() call and the arm
+					// cannot exercise the branch #1869 fixed, whatever it asserts afterwards.
+					await refreshOracle();
+					ok(await hasLiveRecord(table, removeId), `${removeId} must exist before the held transaction deletes it`);
+					ok(
+						rawIndexEntries(table, 'category').some((e) => e.key === 'ARMA-DEL' && e.id === removeId),
+						`${removeId} must be indexed before the held transaction deletes it`
+					);
+
+					const mark = markLogs();
 					const res = await postJSON('/SlowMixedHold/', {
 						table,
 						insertIds: [
@@ -273,43 +320,39 @@ suite(
 						],
 						updateId: `${table}-upd-base`,
 						updateCategory: 'ARMA-UPDATED',
-						removeId: `${table}-rm-base`,
+						removeId,
 						markerId: `${table}-marker`,
 						holdMs: HOLD_MS,
 					});
-					const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+					const body = await res.text();
 
 					// The monitor's decision is asynchronous to the request returning, so wait for the
 					// evidence itself rather than for a fixed settling delay.
-					const overTime = /Transaction was open too long and has been (aborted|committed)/i;
 					const logDeadline = Date.now() + 15_000;
-					while (!sawLog(overTime) && Date.now() < logDeadline) await sleep(100);
-					const abortedLine = sawLog(/Transaction was open too long and has been aborted/i);
-					const committedLine = sawLog(/Transaction was open too long and has been committed/i);
+					while (!sawLogSince(mark, OVER_TIME_ABORTED) && Date.now() < logDeadline) await sleep(100);
 					ok(
-						abortedLine || committedLine,
-						`the over-time monitor must actually have fired for ${table}; status=${res.status} body=${JSON.stringify(body)}`
+						sawLogSince(mark, OVER_TIME_ABORTED),
+						`the over-time monitor must have aborted this request's transaction; status=${res.status} body=${body.slice(0, 400)}`
 					);
 
 					await refreshOracle();
-					const phantoms = findPhantoms(table, 'category');
-					const primaryKeys = rawPrimaryKeys(table);
+					const phantoms = await findPhantoms(table, 'category');
 					const indexEntries = rawIndexEntries(table, 'category');
 					// The other direction: any row that survived in the primary store must still be
-					// reachable through the index. Both the updated and the pre-image category are listed
-					// because whether the update landed depends on which side of the abort it fell on, and
-					// either outcome is consistent as long as some index entry exists for the surviving row.
+					// reachable through the index. Whether the update landed depends on which side of the
+					// abort it fell on, and either outcome is consistent as long as some index entry
+					// exists for the surviving row.
 					const missing: string[] = [];
 					for (const id of [`${table}-upd-base`, `${table}-ins-1`, `${table}-ins-2`]) {
-						if (!primaryKeys.has(id)) continue;
+						if (!(await hasLiveRecord(table, id))) continue;
 						if (!indexEntries.some((ie) => ie.id === id)) missing.push(`${id} present in primary but not indexed`);
 					}
 
 					console.log(
-						`\n[#1854 Arm A ${table}] status=${res.status} aborted=${abortedLine} committed=${committedLine}\n` +
+						`\n[#1854 Arm A ${table}] status=${res.status}\n` +
 							`  phantoms=${phantoms.length}${phantoms.length ? ' ' + JSON.stringify(phantoms) : ''}` +
 							` missing=${missing.length}${missing.length ? ' ' + JSON.stringify(missing) : ''}` +
-							` removeId-still-in-primary=${primaryKeys.has(`${table}-rm-base`)}`
+							` removeId-still-live=${await hasLiveRecord(table, removeId)}`
 					);
 
 					strictEqual(
@@ -331,13 +374,22 @@ suite(
 		for (const table of ['ItemF', 'ItemT']) {
 			test(`Arm B (${table}): request-thrown abort after a delete leaves base and index in agreement`, async () => {
 				const id = `${table}-abort-1`;
-				await postJSON('/Seed/', { table, ids: [{ id, category: 'ARMB' }] });
+				await seed(table, [{ id, category: 'ARMB' }]);
+
+				// Both halves of the post-condition are equalities, so a seed that silently did nothing
+				// would satisfy them with `false === false`.
+				await refreshOracle();
+				ok(await hasLiveRecord(table, id), `${id} must exist before the aborted delete`);
+				ok(
+					rawIndexEntries(table, 'category').some((e) => e.key === 'ARMB' && e.id === id),
+					`${id} must be indexed before the aborted delete`
+				);
 
 				const res = await postJSON('/DeleteThenAbort/', { table, id });
 				notStrictEqual(res.status, 200, 'DeleteThenAbort handler should surface its deliberate throw as a non-200');
 
 				await refreshOracle();
-				const primaryHasId = rawPrimaryKeys(table).has(id);
+				const primaryHasId = await hasLiveRecord(table, id);
 				const indexHasEntry = rawIndexEntries(table, 'category').some((e) => e.key === 'ARMB' && e.id === id);
 
 				console.log(
