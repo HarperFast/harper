@@ -1,6 +1,5 @@
 /**
- * QA-816 — permanent anchor for the transaction-log purge blast radius (promoted from dispatch QA
- * finding qa-wave-2026072616).
+ * QA-816 — permanent anchor for the transaction-log purge blast radius.
  *
  * `delete_transaction_logs_before` on RocksDB deletes whole native transaction-log files, and a
  * RocksDB transaction log is per-DATABASE, not per-table: `RocksTransactionLogStore` is
@@ -12,7 +11,7 @@
  * 30/30 — and (b) confined to audit history: 500/500 primary rows survived every read surface
  * across two clean restarts of the purged instance.
  *
- * THE INVARIANT PINNED HERE is (b): a purge may destroy audit history, and only audit history.
+ * The invariant pinned here is (b): a purge may destroy audit history, and only audit history.
  * Every primary record in the purged database survives the purge and every subsequent restart,
  * value-exact on every read surface, and no database other than the purged one loses audit
  * entries. Any future purge change that escalates from audit loss to primary-data loss goes red.
@@ -23,7 +22,7 @@
  * purge granularity would legitimately remove, so it is reported in the findings block and not
  * asserted; only that sibling's PRIMARY rows are asserted intact.
  *
- * ARMING. A purge that deletes nothing would make every survival assertion vacuously true, and a
+ * Arming: a purge that deletes nothing would make every survival assertion vacuously true, and a
  * control database whose entries merely sit in an unsealed active file would "survive" a purge
  * that leaked across databases. So BOTH databases are churned until their shared log rotates and
  * both are flushed before the cutoff is taken: the native purge only deletes log files entirely
@@ -32,7 +31,7 @@
  * is deliberately NOT the arming signal — it counts eligibility under the 3-day retention policy
  * and is 0 for freshly written files regardless of the explicit cutoff the operation passes.
  *
- * PROOF BOUNDARY. Two clean restarts prove persisted reopen/replay behavior. This file does not
+ * Proof boundary: two clean restarts prove persisted reopen/replay behavior. This file does not
  * prove anything about a crash during the purge, writes racing the cutoff, replication, or LMDB.
  * LMDB is excluded by construction: it keeps a log per table, and a database-scoped purge there is
  * a no-op (the purge loop only handles RocksDB tables), so an LMDB arm would assert survival after
@@ -168,7 +167,7 @@ async function restJson(
 ): Promise<{ status: number; body: any }> {
 	const res = await fetch(`${ctx.harper.httpURL}${path}`, {
 		...init,
-		headers: { Authorization: authHeader(ctx), ...(init.headers ?? {}) },
+		headers: { Authorization: authHeader(ctx), ...init.headers },
 		signal: AbortSignal.timeout(timeoutMs),
 	});
 	let body: any = null;
