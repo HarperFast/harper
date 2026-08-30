@@ -89,26 +89,28 @@ describe('Test upgrade.js', () => {
 			processDirectives_stub.resolves();
 		});
 
-		// Reversed in harper#2158: this used to pin "log and continue", which let boot report success
-		// with a stale data version and re-run the directives on every subsequent boot.
+		// This assertion is the inverse of the one it replaced: a swallowed stamp failure is what let
+		// boot report success on a stale data version (harper#2158).
 		it('Should rethrow an exception from insertHdbUpgradeInfo so boot fails rather than continuing unstamped', async () => {
 			insertHdbUpgradeInfo_stub.throws(test_error);
 
 			let test_result;
 
 			try {
-				await runUpgrade_rw(TEST_UPGRADE_OBJ);
-			} catch (e) {
-				test_result = e;
+				try {
+					await runUpgrade_rw(TEST_UPGRADE_OBJ);
+				} catch (e) {
+					test_result = e;
+				}
+
+				expect(test_result).to.equal(test_error);
+				expect(printToLogAndConsole_stub.calledOnce).to.be.true;
+				expect(printToLogAndConsole_stub.args[0][0]).to.contain('could not be recorded');
+				expect(processDirectives_stub.calledOnce).to.be.true;
+				expect(insertHdbUpgradeInfo_stub.called).to.be.true;
+			} finally {
+				insertHdbUpgradeInfo_stub.resolves();
 			}
-
-			expect(test_result).to.equal(test_error);
-			expect(printToLogAndConsole_stub.calledOnce).to.be.true;
-			expect(printToLogAndConsole_stub.args[0][0]).to.contain('could not be recorded');
-			expect(processDirectives_stub.calledOnce).to.be.true;
-			expect(insertHdbUpgradeInfo_stub.called).to.be.true;
-
-			insertHdbUpgradeInfo_stub.resolves();
 		});
 	});
 

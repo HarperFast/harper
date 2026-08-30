@@ -93,13 +93,13 @@ suite(
 			const deadline = Date.now() + 60_000;
 			while (Date.now() < deadline) {
 				try {
-					if ((await request('GET')).status !== 404) return;
+					if ((await request('GET')).status === 200) return;
 				} catch {
 					/* not up yet */
 				}
 				await sleep(250);
 			}
-			throw new Error('/VersionStamps/ still 404 after 60s');
+			throw new Error('/VersionStamps/ never returned 200 within 60s of the restart');
 		}
 
 		before(async () => {

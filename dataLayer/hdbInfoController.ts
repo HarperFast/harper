@@ -48,9 +48,7 @@ export class VersionStampNotRecordedError extends Error {
 
 /**
  * An insert whose key already exists is reported as skipped rather than as a failure, so a resolved
- * insert is not by itself evidence that the version was recorded. Boot reads this record to decide
- * whether the upgrade directives still need to run, so anything short of a confirmed insert of the
- * expected id has to fail closed.
+ * insert is not by itself evidence that the version was recorded.
  */
 export function assertVersionRecorded(insertResult: any, expectedId: number, newVersionString: string) {
 	const insertedHashes = insertResult?.inserted_hashes;

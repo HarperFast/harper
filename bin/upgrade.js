@@ -111,7 +111,7 @@ async function runUpgrade(upgradeObj) {
 	}
 
 	// The stamp is the only thing stopping these directives from running again on the next boot,
-	// against data they have already migrated, so a boot that cannot record it must not continue.
+	// against data they have already migrated.
 	try {
 		await hdbInfoController.insertHdbUpgradeInfo(upgradeObj[UPGRADE_VERSION]);
 	} catch (err) {
