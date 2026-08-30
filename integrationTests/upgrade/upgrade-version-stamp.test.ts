@@ -37,7 +37,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'upgrade-version-stamp');
 const PACKAGE_VERSION = JSON.parse(readFileSync(resolve(import.meta.dirname, '../../package.json'), 'utf8'))
-	.version as string;
+	?.version as string;
 
 // Older than the 5.2.0 directive, so a boot over it takes bin/upgrade.js's runUpgrade path (the one
 // that stamps) rather than the no-directives-needed path in hdbInfoController.getVersionUpdateInfo.

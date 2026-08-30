@@ -68,6 +68,13 @@ describe('Test upgrade.js', () => {
 			expect(insertHdbUpgradeInfo_stub.args[0][0]).to.deep.equal(TEST_CURR_VERS);
 		});
 
+		it('Should fall back to the package version when the upgrade object carries none', async () => {
+			await runUpgrade_rw(new UpgradeObject(TEST_DATA_VERS, undefined));
+
+			expect(insertHdbUpgradeInfo_stub.calledOnce).to.be.true;
+			expect(insertHdbUpgradeInfo_stub.args[0][0]).to.equal(TEST_CURR_VERS);
+		});
+
 		it('Should catch and throw exception from runUpgradeDirectives', async () => {
 			processDirectives_stub.throws(test_error);
 
