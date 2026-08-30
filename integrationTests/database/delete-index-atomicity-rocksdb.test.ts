@@ -64,7 +64,7 @@ suite(
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
 		let httpURL: string;
-		let procOutput = '';
+		const procChunks: string[] = [];
 		let rootPath: string;
 		const dbiCache = new Map<string, RocksDatabase>();
 
@@ -79,14 +79,14 @@ suite(
 			client = createApiClient(ctx.harper);
 			httpURL = ctx.harper.httpURL;
 
-			procOutput += ctx.harper.startupOutput?.stdout ?? '';
-			procOutput += ctx.harper.startupOutput?.stderr ?? '';
+			procChunks.push(ctx.harper.startupOutput?.stdout ?? '', ctx.harper.startupOutput?.stderr ?? '');
 			const proc = ctx.harper.process;
-			// setEncoding keeps a multi-byte sequence split across chunk boundaries intact.
+			// setEncoding keeps a multi-byte sequence split across chunk boundaries intact; collecting
+			// chunks instead of concatenating keeps a chatty run from being quadratic.
 			proc?.stdout?.setEncoding('utf8');
 			proc?.stderr?.setEncoding('utf8');
-			proc?.stdout?.on('data', (d: string) => (procOutput += d));
-			proc?.stderr?.on('data', (d: string) => (procOutput += d));
+			proc?.stdout?.on('data', (d: string) => procChunks.push(d));
+			proc?.stderr?.on('data', (d: string) => procChunks.push(d));
 
 			// Workers register routes asynchronously; poll the probe route rather than restarting the
 			// http workers, which races against a pre-installed fixture.
@@ -94,8 +94,10 @@ suite(
 			let ready = false;
 			while (Date.now() < routeDeadline) {
 				try {
+					// Strictly 200: a worker that crashed on a fixture error answers 500, and treating that
+					// as ready turns a startup failure into opaque failures in the arms below.
 					const probe = await fetch(`${httpURL}/Probe/`, { headers: { Authorization: client.headers.Authorization } });
-					if (probe.status !== 404) {
+					if (probe.status === 200) {
 						ready = true;
 						break;
 					}
@@ -147,7 +149,7 @@ suite(
 		}
 
 		function logSources(): Map<string, string> {
-			const sources = new Map<string, string>([['<stdio>', procOutput]]);
+			const sources = new Map<string, string>([['<stdio>', procChunks.join('')]]);
 			if (ctx.harper.logDir) {
 				for (const name of LOG_FILES) {
 					const p = join(ctx.harper.logDir, name);
@@ -329,7 +331,7 @@ suite(
 					// The monitor's decision is asynchronous to the request returning, so wait for the
 					// evidence itself rather than for a fixed settling delay.
 					const logDeadline = Date.now() + 15_000;
-					while (!sawLogSince(mark, OVER_TIME_ABORTED) && Date.now() < logDeadline) await sleep(100);
+					while (!sawLogSince(mark, OVER_TIME_ABORTED) && Date.now() < logDeadline) await sleep(250);
 					ok(
 						sawLogSince(mark, OVER_TIME_ABORTED),
 						`the over-time monitor must have aborted this request's transaction; status=${res.status} body=${body.slice(0, 400)}`

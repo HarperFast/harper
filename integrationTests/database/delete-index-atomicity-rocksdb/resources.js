@@ -147,11 +147,11 @@ export class SlowMixedHold extends Resource {
 		// Holding an open iterator over a pre-seeded bucket is what registers a read txn with the
 		// long-transaction monitor; without it the monitor never supervises this transaction.
 		const iter = t.search({ conditions: [{ attribute: 'category', value: '__seed__' }] })[Symbol.asyncIterator]();
-		await iter.next();
 
 		const applied = { removed: false, inserted: [], updated: false };
 		let writeError = null;
 		try {
+			await iter.next();
 			// The remove goes first: it is the write whose transaction threading #1854 was about, so
 			// no earlier write may fail and skip it, leaving the arm asserting on a workload that
 			// never reached removeEntry().
@@ -182,6 +182,11 @@ export class SlowMixedHold extends Resource {
 					writeError = `update ${updateId}: ${String((e && e.message) || e)}`;
 				}
 			}
+			// Fail fast and loudly rather than holding: a workload that never reached the writes still
+			// trips the monitor, and the arm would then find no phantoms and pass without having
+			// exercised the delete at all.
+			if (writeError) throw new Error(`SlowMixedHold: workload write failed before the hold: ${writeError}`);
+
 			await sleep(holdMs);
 			let markerError = null;
 			if (markerId) {
