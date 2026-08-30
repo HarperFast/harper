@@ -36,6 +36,10 @@ describe('hdb_info version stamp verification', () => {
 		assert.throws(() => assertVersionRecorded(undefined, NEW_ID, NEW_VERSION), isStampError);
 	});
 
+	it('accepts an expected info_id the storage layer handed back as a string', () => {
+		assertVersionRecorded({ inserted_hashes: [String(NEW_ID)], skipped_hashes: [] }, NEW_ID, NEW_VERSION);
+	});
+
 	it('rejects an insert that recorded a different info_id than the one derived for this upgrade', () => {
 		assert.throws(
 			() => assertVersionRecorded({ inserted_hashes: [NEW_ID + 1], skipped_hashes: [] }, NEW_ID, NEW_VERSION),

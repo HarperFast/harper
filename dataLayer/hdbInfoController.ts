@@ -48,11 +48,19 @@ export class VersionStampNotRecordedError extends Error {
 
 /**
  * An insert whose key already exists is reported as skipped rather than as a failure, so a resolved
- * insert is not by itself evidence that the version was recorded.
+ * insert is not by itself evidence that the version was recorded. Ids are compared as strings: the
+ * guard is against a write that did not happen, and a boot must not be refused over a hash the
+ * storage layer handed back in a different numeric type.
  */
 export function assertVersionRecorded(insertResult: any, expectedId: number, newVersionString: string) {
 	const insertedHashes = insertResult?.inserted_hashes;
-	if (Array.isArray(insertedHashes) && insertedHashes.length === 1 && insertedHashes[0] === expectedId) return;
+	if (
+		Array.isArray(insertedHashes) &&
+		insertedHashes.length === 1 &&
+		String(insertedHashes[0]) === String(expectedId)
+	) {
+		return;
+	}
 
 	throw new VersionStampNotRecordedError(
 		`Could not record data version ${newVersionString} in '${hdbTerms.SYSTEM_SCHEMA_NAME}.${hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME}': ` +

@@ -8,8 +8,8 @@
  * boot path:
  *
  *   1. a boot records the running version as the latest `data_version_num`;
- *   2. a boot over a deliberately staled `data_version_num` re-runs the directives AND advances the
- *      stamp to the running version;
+ *   2. a boot over a deliberately staled `data_version_num` advances the stamp to the running
+ *      version (the directives run on that boot, but their execution is not itself asserted here);
  *   3. a further boot, with the stamp already current, adds no new record — i.e. the upgrade does
  *      not re-run, which is the observable the issue reported as broken.
  *

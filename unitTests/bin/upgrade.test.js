@@ -89,8 +89,8 @@ describe('Test upgrade.js', () => {
 			processDirectives_stub.resolves();
 		});
 
-		// This assertion is the inverse of the one it replaced: a swallowed stamp failure is what let
-		// boot report success on a stale data version (harper#2158).
+		// The inverse of the assertion it replaced: a swallowed stamp failure let boot report success
+		// on a stale data version.
 		it('Should rethrow an exception from insertHdbUpgradeInfo so boot fails rather than continuing unstamped', async () => {
 			insertHdbUpgradeInfo_stub.throws(test_error);
 
