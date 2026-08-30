@@ -166,26 +166,31 @@ async function restJson(
 	try {
 		body = await res.json();
 	} catch {
-		/* non-JSON / empty */
+		body = null;
 	}
 	return { status: res.status, body };
 }
 
+// Ready means the probe answers 200. A 404 is the fixture still loading; anything else (500 from a
+// half-started server, 401 before auth is up) would otherwise read as "ready" and surface later as
+// an opaque failure in whichever operation ran next.
 async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
 	const deadline = Date.now() + 90_000;
+	let last = 'no response';
 	while (Date.now() < deadline) {
 		try {
 			const res = await fetch(`${ctx.harper.httpURL}/Probe/`, {
 				headers: { Authorization: authHeader(ctx) },
 				signal: AbortSignal.timeout(5_000),
 			});
-			if (res.status !== 404) return;
-		} catch {
-			/* not ready */
+			if (res.status === 200) return;
+			last = `HTTP ${res.status}`;
+		} catch (error) {
+			last = String((error as Error)?.message ?? error);
 		}
 		await sleep(250);
 	}
-	throw new Error('QA-816: Probe route never became ready within 90s');
+	throw new Error(`QA-816: Probe route never answered 200 within 90s; last=${last}`);
 }
 
 async function pollJob(ctx: ContextWithHarper, jobId: string, timeoutMs = 120_000): Promise<any> {
@@ -286,12 +291,19 @@ async function churnUntilRotation(
 		const after = logOf(await topology(ctx), database, table);
 		if (after.rotations > before.rotations) return { rows, batches: batch + 1, bytes: rows * CHURN_PAYLOAD.length };
 	}
+	// Rotation is observed asynchronously, so exhausting the write budget is not yet a failure —
+	// give the already-written bytes a bounded window to show up as a rotation before calling it one.
+	const deadline = Date.now() + 60_000;
+	while (Date.now() < deadline) {
+		await sleep(250);
+		const after = logOf(await topology(ctx), database, table);
+		if (after.rotations > before.rotations) return { rows, batches: batchCap, bytes: rows * CHURN_PAYLOAD.length };
+	}
 	throw new Error(
 		`QA-816: ${database} transaction log never rotated after ${rows} churn rows (${(rows * CHURN_PAYLOAD.length) / 1024 / 1024}MiB, maxFileSize=${maxFileSize})`
 	);
 }
 
-/** Ids whose audit history still holds an insert entry (optionally, one older than `before`). */
 async function idsWithInsertAudit(
 	ctx: ContextWithHarper,
 	database: string,
@@ -445,6 +457,12 @@ suite(
 			assertRowSetMatches(label, 'REST collection', QUIET_ROWS, await restCollection(ctx, 'QuietLedger', 'QUIET'));
 			assertRowSetMatches(
 				label,
+				'search_by_value',
+				QUIET_ROWS,
+				await searchByBucket(ctx, PURGED_DB, 'QuietLedger', 'QUIET')
+			);
+			assertRowSetMatches(
+				label,
 				'full primary-store scan',
 				QUIET_ROWS,
 				(await fullScan(ctx, PURGED_DB, 'QuietLedger', 'records')).records
@@ -500,8 +518,13 @@ suite(
 				strictEqual(entry.engineGuess, 'rocksdb', `PRECONDITION: ${key} must be on RocksDB, got ${entry.engineGuess}`);
 			}
 
-			const purged = [topo[`${PURGED_DB}.Ledger`], topo[`${PURGED_DB}.QuietLedger`], topo[`${PURGED_DB}.Churn`]];
-			const control = [topo[`${CONTROL_DB}.RemoteLedger`], topo[`${CONTROL_DB}.RemoteChurn`]];
+			const lookup = (database: string, table: string): TableTopology => {
+				const entry = topo[`${database}.${table}`];
+				ok(entry, `PRECONDITION: ${database}.${table} is missing from the topology: ${Object.keys(topo).join(', ')}`);
+				return entry;
+			};
+			const purged = [lookup(PURGED_DB, 'Ledger'), lookup(PURGED_DB, 'QuietLedger'), lookup(PURGED_DB, 'Churn')];
+			const control = [lookup(CONTROL_DB, 'RemoteLedger'), lookup(CONTROL_DB, 'RemoteChurn')];
 			for (const group of [purged, control]) {
 				for (const entry of group.slice(1)) {
 					strictEqual(

@@ -102,9 +102,8 @@ export class Flush extends Resource {
 	}
 }
 
-// GET /FullScan/?database=&table=&mode=count|records -> index-independent primary-store scan.
-// `records` returns every row; `count` returns only the total, for the churn tables whose rows are
-// large and whose survival is asserted by count.
+// GET /FullScan/?database=&table=&mode=count|records -> index-independent primary-store scan, so a
+// defect confined to a secondary index cannot hide from the survival check.
 export class FullScan extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
