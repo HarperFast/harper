@@ -224,6 +224,7 @@ async function pollJob(ctx: ContextWithHarper, jobId: string, timeoutMs = 120_00
 async function topology(ctx: ContextWithHarper): Promise<Topology> {
 	const r = await restJson(ctx, '/LogTopology/');
 	strictEqual(r.status, 200, `/LogTopology/ expected 200, got ${r.status}: ${r.text.slice(0, 300)}`);
+	ok(r.body && typeof r.body === 'object', `/LogTopology/ must return an object, got ${r.text.slice(0, 300)}`);
 	return r.body as Topology;
 }
 
@@ -405,6 +406,10 @@ async function fullScan(
 ): Promise<{ totalCount: number; records: any[] }> {
 	const r = await restJson(ctx, `/FullScan/?database=${database}&table=${table}&mode=${mode}`);
 	strictEqual(r.status, 200, `/FullScan/ ${database}.${table} expected 200, got ${r.status}: ${r.text.slice(0, 300)}`);
+	ok(
+		typeof r.body?.totalCount === 'number' && Array.isArray(r.body.records),
+		`/FullScan/ ${database}.${table} must return {totalCount, records}, got ${r.text.slice(0, 300)}`
+	);
 	return r.body;
 }
 
