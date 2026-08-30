@@ -93,6 +93,7 @@ suite(
 			// http workers, which races against a pre-installed fixture.
 			const routeDeadline = Date.now() + 120_000;
 			let ready = false;
+			let lastProbeError = 'no response yet';
 			while (Date.now() < routeDeadline) {
 				try {
 					// Strictly 200: a worker that crashed on a fixture error answers 500, and treating that
@@ -102,12 +103,13 @@ suite(
 						ready = true;
 						break;
 					}
-				} catch {
-					/* not ready yet */
+					lastProbeError = `status ${probe.status}`;
+				} catch (error) {
+					lastProbeError = String((error as Error)?.message ?? error);
 				}
 				await sleep(250);
 			}
-			ok(ready, 'Probe route should become available before the suite runs');
+			ok(ready, `Probe route should become available before the suite runs; last probe: ${lastProbeError}`);
 
 			// `audit || trackDeletes` is what selects the branch each arm targets (resources/Table.ts),
 			// and `trackDeletes` can be turned on implicitly by adding a subscribed source, so a drift
@@ -179,11 +181,7 @@ suite(
 			return false;
 		}
 
-		/**
-		 * Must precede every raw read: flush the memtables through the fixture so committed writes
-		 * are on disk, then drop every cached handle so the next open is a fresh snapshot rather
-		 * than the stale point-in-time view the previous open captured.
-		 */
+		/** Must precede every raw read; see the file header for why both halves are required. */
 		async function refreshOracle(): Promise<void> {
 			const res = await postJSON('/Flush/', {});
 			strictEqual(res.status, 200, 'flush control should succeed');
@@ -310,8 +308,7 @@ suite(
 						{ id: removeId, category: 'ARMA-DEL' },
 					]);
 
-					// Without a live, indexed row to delete there is no removeEntry() call and the arm
-					// cannot exercise the branch #1869 fixed, whatever it asserts afterwards.
+					// Without a live, indexed row to delete there is no removeEntry() call at all.
 					await refreshOracle();
 					ok(await hasLiveRecord(table, removeId), `${removeId} must exist before the held transaction deletes it`);
 					ok(
@@ -333,6 +330,14 @@ suite(
 						holdMs: HOLD_MS,
 					});
 					const body = await res.text();
+					// End-to-end proof that the transaction was really poisoned rather than merely logged
+					// about: the request fails with the over-time error. A monitor that logged the abort
+					// but left the handle usable would let the marker write and the commit succeed, and
+					// this request would return 200.
+					ok(
+						res.status >= 400 && /exceeding the maximum open-transaction time/.test(body),
+						`the held transaction must have been aborted, so its request must fail with the over-time error; got ${res.status} body=${body.slice(0, 400)}`
+					);
 
 					// The monitor's decision is asynchronous to the request returning, so wait for the
 					// evidence itself rather than for a fixed settling delay.
@@ -351,10 +356,8 @@ suite(
 					await refreshOracle();
 					const phantoms = await findPhantoms(table, 'category');
 					const indexEntries = rawIndexEntries(table, 'category');
-					// The other direction: any row that survived in the primary store must still be
-					// reachable through the index. Whether the update landed depends on which side of the
-					// abort it fell on, and either outcome is consistent as long as some index entry
-					// exists for the surviving row.
+					// Whether the update landed depends on which side of the abort it fell on, so the check
+					// is only that a surviving row is reachable through the index at all.
 					const missing: string[] = [];
 					for (const id of [`${table}-upd-base`, `${table}-ins-1`, `${table}-ins-2`]) {
 						if (!(await hasLiveRecord(table, id))) continue;
@@ -368,9 +371,8 @@ suite(
 							` removeId-still-live=${await hasLiveRecord(table, removeId)}`
 					);
 
-					// The headline post-condition: the aborted delete must have rolled back, so the row it
-					// targeted is still there and still indexed. `phantoms` alone would stay empty if the
-					// row and its index entry both vanished.
+					// `phantoms` alone would stay empty if the row and its index entry both vanished, which
+					// is not something an aborted delete is allowed to do.
 					ok(await hasLiveRecord(table, removeId), `Arm A (${table}): ${removeId} must survive the aborted delete`);
 					ok(
 						indexEntries.some((e) => e.key === 'ARMA-DEL' && e.id === removeId),
@@ -407,7 +409,13 @@ suite(
 				);
 
 				const res = await postJSON('/DeleteThenAbort/', { table, id });
-				ok(res.status >= 400, `DeleteThenAbort must surface its deliberate throw as an error; got ${res.status}`);
+				// Not just any error: the handler's own throw, so a 404 from a mis-registered route cannot
+				// stand in for the abort this arm depends on.
+				const abortBody = await res.text();
+				ok(
+					res.status >= 400 && abortBody.includes(`deliberate abort after delete (table=${table} id=${id})`),
+					`DeleteThenAbort must surface its own deliberate throw; got ${res.status} body=${abortBody.slice(0, 400)}`
+				);
 
 				await refreshOracle();
 				const primaryHasId = await hasLiveRecord(table, id);
@@ -417,8 +425,6 @@ suite(
 					`\n[#1854 Arm B ${table}] status=${res.status} primaryHasId=${primaryHasId} indexHasEntry=${indexHasEntry}`
 				);
 
-				// Agreement alone would also be satisfied by both vanishing, which is not what an aborted
-				// delete is allowed to do: the row and its index entry must both still be there.
 				ok(primaryHasId, `Arm B (${table}): ${id} must survive the aborted delete (the removal must roll back)`);
 				ok(indexHasEntry, `Arm B (${table}): ${id}'s index entry must survive the aborted delete`);
 				strictEqual(

@@ -206,7 +206,13 @@ export class SlowMixedHold extends Resource {
 				elapsedMs: Date.now() - t0,
 			};
 		} finally {
-			await iter.return?.();
+			// The monitor may already have torn the transaction down, in which case closing the
+			// iterator throws; letting that escape would replace the response with an unrelated error.
+			try {
+				await iter.return?.();
+			} catch {
+				/* transaction already gone */
+			}
 		}
 	}
 }
