@@ -56,4 +56,22 @@ describe('Table.search count on vector/HNSW-sorted queries (approximate totals)'
 		assert.strictEqual(small.recordCountExact, false);
 		assert.strictEqual(large.recordCountExact, false);
 	});
+
+	it('exact: a vector threshold filter (lt/le, no sort) is also reported unavailable', async function () {
+		// An HNSW `lt`/`le` threshold query drives the same bounded, minResults-widened traversal as a
+		// vector sort — no `sort` clause needed — so it must be treated as approximate too.
+		const thresholdSearch = (limit) =>
+			VectorCount.search({
+				conditions: [{ attribute: 'vector', comparator: 'lt', value: 0.5, target: TARGET, distance: 'cosine' }],
+				select: ['id', '$distance'],
+				limit,
+				count: 'exact',
+			});
+		const small = await thresholdSearch(5);
+		const large = await thresholdSearch(40);
+		assert.strictEqual(small.recordCount, null, `small total ${small.recordCount} must be unavailable`);
+		assert.strictEqual(large.recordCount, null, `large total ${large.recordCount} must be unavailable`);
+		assert.strictEqual(small.recordCountExact, false);
+		assert.strictEqual(large.recordCountExact, false);
+	});
 });

@@ -3745,16 +3745,23 @@ export function makeTable(options) {
 				const wantExact = target.count === 'exact';
 				const pageEnd = offset + pageLimit;
 				const countStart = performance.now();
-				// A vector/HNSW-driven result set — sorted by a custom index, or shaped by a vector filter —
-				// is a bounded, approximate candidate set whose size is chosen from `minResults` (offset +
-				// limit), so `scanned` tracks the requested page size, not the true match count. It is not an
-				// authoritative total: the same query at limit(5) vs limit(200) would otherwise advertise two
-				// different `count=exact` totals. Report the total as unavailable instead (mirroring how the
-				// estimated branch below already bails to null for a vector/row filter).
-				let approximateResultSet = typeof target.vectorFilter === 'function';
-				for (let order = sort; !approximateResultSet && order; order = order.next) {
-					if (typeof order.attribute === 'string' && indices[order.attribute]?.customIndex) approximateResultSet = true;
-				}
+				// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
+				// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
+				// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
+				// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
+				// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
+				// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
+				// filter. Report the total as unavailable for those rather than advertising it as count=exact
+				// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
+				// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
+				const touchesCustomIndex = (conds: any[]): boolean =>
+					conds.some((c: any) => {
+						if (!c) return false;
+						if (c.conditions) return touchesCustomIndex(c.conditions);
+						const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
+						return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+					});
+				const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
 				return (async () => {
 					const page: any = [];
 					let scanned = 0;
