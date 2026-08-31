@@ -698,16 +698,14 @@ async function restartWorkers(
 					resolve();
 				});
 			});
-			// A worker counts as replaced once its replacement is accepting connections, not merely once it
-			// has exited. Where the replacement cannot be pre-started it boots only after the old worker is
-			// gone, so throttling on the exit alone let the loop take the whole pool down while the first
-			// replacements were still booting.
-			// This promise is held unawaited between throttle points, so it must not be able to reject.
+			// A worker counts as replaced only once its replacement is accepting connections, not merely
+			// once it has exited. This promise is held unawaited between throttle points, so it must not
+			// be able to reject.
 			const replaced = (replacementStarting ? Promise.all([whenDone, replacementStarting]) : whenDone)
 				.catch((error) => harperLogger.warn('Error waiting for a worker to be replaced', error))
 				.then(() => {
-					const index = waitingToFinish.indexOf(replaced);
-					if (index > -1) waitingToFinish.splice(index, 1);
+					const at = waitingToFinish.indexOf(replaced);
+					if (at > -1) waitingToFinish.splice(at, 1);
 				});
 			waitingToFinish.push(replaced);
 			if (waitingToFinish.length >= maxWorkersDown) {
@@ -720,7 +718,11 @@ async function restartWorkers(
 			if (replacementsFailedToStart >= maxWorkersDown) {
 				const untouched = restarting
 					.slice(index + 1)
-					.filter((other) => (!name || other.name === name) && !other.wasShutdown).length;
+					// a worker that exited on its own mid-restart is spliced out of `workers` and
+					// auto-restarted onto the new code (see the exit handler above); it is not still on
+					// the previous code even though this loop never got to it.
+					.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other))
+					.length;
 				harperLogger.error(
 					`${replacementsFailedToStart} replacement worker thread(s) did not start; stopping this restart with ${untouched} worker(s) still on the previous code`
 				);
