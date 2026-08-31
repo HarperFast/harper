@@ -116,4 +116,27 @@ describe('component status during throwaway validation', () => {
 		assert.strictEqual(after.status, STATUS.HEALTHY);
 		assert.strictEqual(after.message, 'serving', 'the live status was never mutated');
 	});
+
+	it('hands a validation a detached error it cannot mutate back into the live status', async () => {
+		const cause = new Error('socket closed');
+		const live = new Error('database connection lost');
+		live.cause = cause;
+		live.code = 'ECONNRESET';
+		statusForComponent('error-probe').error('database connection lost', live);
+
+		await runWithDeployValidationGuard(async () => {
+			const seen = registry.getStatus('error-probe').error;
+			assert.notStrictEqual(seen, live, 'the live Error object itself is never handed out');
+			assert.strictEqual(seen.message, 'database connection lost', 'but it reads the same');
+			assert.strictEqual(seen.code, 'ECONNRESET', 'including its own properties');
+			// Reachable through the public statusForComponent(...).get() path, so a candidate could otherwise
+			// edit the serving component's own error object.
+			seen.message = 'mutated by candidate code';
+			seen.code = 'MUTATED';
+		});
+
+		assert.strictEqual(registry.getStatus('error-probe').error.message, 'database connection lost');
+		assert.strictEqual(registry.getStatus('error-probe').error.code, 'ECONNRESET');
+		assert.strictEqual(live.cause, cause, 'and the live error still holds its own cause');
+	});
 });

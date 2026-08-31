@@ -207,6 +207,36 @@ describe('parseGitReference', () => {
 	});
 });
 
+describe('assertApplicationConfig names', () => {
+	it('rejects a name that would collide with a deploy control file', () => {
+		// A deployment directory holds the candidate tree under the component's OWN name beside dot-prefixed
+		// control files. An application named `.activation.json` puts its tree on the journal path, where the
+		// journal write takes EEXIST as "a retry of this activation" and the swap proceeds with no journal at
+		// all — so nothing holds the legacy pass back after a crash. Nothing else validates a root-config key.
+		for (const name of ['.activation.json', '.component', '.complete', '.unsettled', '.anything']) {
+			assert.throws(
+				() => assertApplicationConfig(name, { package: 'npm:@org/app@1.0.0' }),
+				/must not begin with a dot/,
+				`${name} must be rejected`
+			);
+		}
+	});
+
+	it('rejects a name that is not a single path segment', () => {
+		// A backslash is not a separator on POSIX, so it is a legitimate single segment there — platform-
+		// dependent cases do not belong in this list.
+		for (const name of ['..', '.', 'a/b', 'a/', '']) {
+			assert.throws(() => assertApplicationConfig(name, { package: 'npm:@org/app@1.0.0' }), /Invalid application name/);
+		}
+	});
+
+	it('still accepts ordinary and scoped-looking names', () => {
+		for (const name of ['web', 'my-app', 'app_1', 'App2']) {
+			assert.doesNotThrow(() => assertApplicationConfig(name, { package: 'npm:@org/app@1.0.0' }));
+		}
+	});
+});
+
 describe('assertApplicationConfig credentials', () => {
 	it('accepts a config with no credentials', () => {
 		assert.doesNotThrow(() => assertApplicationConfig('app', { package: 'npm:@org/app@1.0.0' }));

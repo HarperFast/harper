@@ -383,15 +383,22 @@ describe('journal-first on the deploy path', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it("is not blocked by another component's unreadable staging entry", async () => {
-		// Same outage, different cause: ownership that cannot be READ, rather than a journal that cannot be
-		// parsed. This runs on every deploy, so one sibling with a directory-shaped sidecar would otherwise
-		// fail every neighbour's deploy.
-		const root = await newRoot('siblingunreadable');
+	it('fails closed when a staging entry can be attributed to no component at all', async () => {
+		// The sidecar cannot be read AND the journal cannot be parsed, so nothing on disk says whose
+		// deployment this is — including whether it is the one being deployed right now. Skipping it would
+		// let this deploy proceed over its own unsettled activation; an activation interrupted before B1 has
+		// no rollback record, so the restore gate would never catch it either.
+		//
+		// This is narrower than it looks: a sibling with a READABLE sidecar and a corrupt journal still does
+		// not block a neighbour (the test above), which is the outage the ownership-before-parsing order
+		// exists to prevent. Both sources have to be broken at once.
+		const root = await newRoot('unattributable-staging');
 		await fs.mkdir(path.join(root, DEPLOY_STAGING_DIR, 'd-broken', '.component'), { recursive: true });
 		await fs.writeFile(path.join(root, DEPLOY_STAGING_DIR, 'd-broken', '.activation.json'), 'truncated{');
 		await writeTree(path.join(root, 'healthy'), 'HEALTHY v1\n');
 
+		// The payload would fail on its own, so a rejection carrying the ATTRIBUTION error instead proves the
+		// deploy stopped at settlement, before it ever touched the payload.
 		const app = new Application({
 			name: 'healthy',
 			payload: Readable.from(
@@ -403,8 +410,8 @@ describe('journal-first on the deploy path', () => {
 		});
 		app.dirPath = path.join(root, 'healthy');
 
-		await assert.rejects(() => prepareApplication(app), /payload delivery failed/);
-		assert.strictEqual(await readLive(root, 'healthy'), 'HEALTHY v1\n');
+		await assert.rejects(() => prepareApplication(app), /could not be parsed|says which component/);
+		assert.strictEqual(await readLive(root, 'healthy'), 'HEALTHY v1\n', 'and the live tree is untouched');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -736,5 +743,75 @@ describe('activation transaction', () => {
 
 		assert.strictEqual(failures.size, 0, 'the component settled rather than failing closed');
 		assert.strictEqual(await readLive(root, 'web'), 'current', 'and the live tree still stands');
+	});
+
+	it('retires a rollback record it cannot remove, so the legacy pass cannot adopt it', async function () {
+		// chmod does not stop root, and is a no-op on Windows — the removal would succeed and prove nothing.
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const root = await newRoot('rollback-unremovable');
+		// Rolls back from the record: live is absent and the candidate never completed, so the displaced tree
+		// is the one that has to come back. A SECOND record is then swept — and one that survives the sweep
+		// stays authoritative to the legacy pass while settlement removes the journal holding that pass back,
+		// so it has to be retired rather than logged.
+		await stageState(root, 'web', 'd1', { candidate: 'NEW\n', journal: true, aside: 'DISPLACED\n' });
+		const asideDir = path.join(root, ASIDE_STAGING_DIR, 'web');
+		const stuck = path.join(asideDir, `${IN_PROGRESS}0-0-bbb`);
+		await writeTree(path.join(stuck, 'nested'), 'OLDER\n');
+		// Unremovable CONTENTS, with the parent still writable — so the restore rename and the retired marker
+		// both still work, and only this record's own removal fails.
+		await fs.chmod(path.join(stuck, 'nested'), 0o500);
+
+		const failures = await recoverInterruptedActivations(root);
+		await fs.chmod(path.join(stuck, 'nested'), 0o700);
+
+		assert.strictEqual(await readLive(root, 'web'), 'DISPLACED\n', 'the displaced tree came back');
+		assert.ok(
+			existsSync(path.join(asideDir, '.retired-0-0-bbb')),
+			'and the record that survived removal was retired, so the legacy pass cannot adopt it'
+		);
+		assert.strictEqual(failures.size, 0, 'retiring succeeded, so the component settled');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('settles from the journal on the DEPLOY path too when the sidecar is unreadable', async () => {
+		const root = await newRoot('journal-fallback-deploy');
+		await stageState(root, 'web', 'd1', { live: 'CURRENT\n', candidate: 'NEW\n', journal: true });
+		const deploymentDir = path.join(root, DEPLOY_STAGING_DIR, 'd1');
+		await fs.rm(path.join(deploymentDir, '.component'));
+		await fs.mkdir(path.join(deploymentDir, '.component'));
+
+		const app = new Application({
+			name: 'web',
+			payload: Readable.from(
+				(async function* () {
+					yield Buffer.from('not a tarball');
+					throw new Error('payload delivery failed');
+				})()
+			),
+		});
+		app.dirPath = path.join(root, 'web');
+
+		// Its OWN payload error, not a settlement error: the pre-deploy settle cleared the stale activation
+		// from the journal rather than skipping it and leaving it for recovery to keep failing on.
+		await assert.rejects(() => prepareApplication(app), /payload delivery failed/);
+		assert.ok(!existsSync(path.join(deploymentDir, '.activation.json')), 'the stale journal was settled away');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('settles this component from its journal when the ownership sidecar is unreadable', async () => {
+		const root = await newRoot('journal-fallback');
+		// Interrupted before B1, so there is no rollback record and the restore gate has nothing to catch.
+		// Skipping here would let a new deploy proceed over this unsettled activation, and recovery would go
+		// on failing the component on evidence this deploy could have cleared.
+		await stageState(root, 'web', 'd1', { live: 'CURRENT\n', candidate: 'NEW\n', journal: true });
+		const deploymentDir = path.join(root, DEPLOY_STAGING_DIR, 'd1');
+		await fs.rm(path.join(deploymentDir, '.component'));
+		await fs.mkdir(path.join(deploymentDir, '.component'));
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.strictEqual(failures.size, 0, 'the journal named the owner, so it settled');
+		assert.strictEqual(await readLive(root, 'web'), 'CURRENT\n', 'live stands and the candidate went');
+		assert.ok(!existsSync(path.join(deploymentDir, 'web')), 'the candidate was discarded');
 	});
 });

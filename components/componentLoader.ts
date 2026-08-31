@@ -64,6 +64,12 @@ import { pathToFileURL } from 'node:url';
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 let loadedComponents = new Map<any, any>();
+
+// Marks a registry entry as belonging to a deploy validation's throwaway load, so cleanup can tell whether
+// an ordinary load has since ADOPTED that module. Checking "was it already loaded?" before the fact is not
+// enough: ownership changes after that check when a real load reuses the entry while the validation is
+// still running, and deleting it then removes a module a live consumer depends on.
+const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
@@ -442,7 +448,12 @@ export function forgetLoadedPath(componentDirectory: string): void {
  * snapshots — and a diff would then delete that live module.
  */
 export function forgetLoadedModules(modules: Iterable<any>): void {
-	for (const module of modules) loadedComponents.delete(module);
+	// Only entries STILL owned by that validation. Validations serialize with each other but not with
+	// ordinary loads, so a real load can adopt a module the validation registered while it is still running —
+	// re-registering the same entry as live — and deleting it afterwards would take a live module with it.
+	for (const module of modules) {
+		if (loadedComponents.get(module) === VALIDATION_OWNED) loadedComponents.delete(module);
+	}
 }
 
 /** So a caller that installs a reporter can put the previous one back when it is done with it. */
@@ -1023,7 +1034,9 @@ export async function loadComponent(
 				// live from an ordinary load, and collecting it would have validation evict it from the
 				// registry during cleanup, so the next reload cycle no longer sees it as loaded.
 				if (!loadedComponents.has(extensionModule)) collectLoadedModules?.add(extensionModule);
-				loadedComponents.set(extensionModule, true);
+				// An ordinary load claims the entry outright, which is what releases it from a validation that
+				// registered it first and is still running.
+				loadedComponents.set(extensionModule, collectLoadedModules ? VALIDATION_OWNED : true);
 
 				if (
 					(extensionModule.handleFile ||

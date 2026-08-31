@@ -25,6 +25,28 @@ export type ComponentStatusMap = Map<string, ComponentStatus>;
  * Component Status Registry Class
  * Provides a centralized registry for managing component health status
  */
+/**
+ * A status copy handed to a validation must share nothing mutable with the live entry. `Error` is reachable
+ * through the public `statusForComponent(...).get()` path, so candidate code could otherwise edit
+ * `message`, `cause` or a custom field on the serving component's own error object. Own enumerable
+ * properties are carried across; `cause` is flattened to a message, because an error graph of unknown depth
+ * is not worth cloning to hand a throwaway load its own read.
+ */
+function detachError(error: Error | string | undefined): Error | string | undefined {
+	if (!(error instanceof Error)) return error;
+	const detached = new Error(error.message);
+	detached.name = error.name;
+	detached.stack = error.stack;
+	for (const [key, value] of Object.entries(error)) {
+		if (key === 'cause') continue;
+		(detached as unknown as Record<string, unknown>)[key] = value;
+	}
+	if (error.cause !== undefined) {
+		detached.cause = error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : error.cause;
+	}
+	return detached;
+}
+
 export class ComponentStatusRegistry {
 	private statusMap: ComponentStatusMap = new Map();
 
@@ -89,7 +111,7 @@ export class ComponentStatusRegistry {
 			if (diverted) return diverted;
 			const live = this.statusMap.get(componentName);
 			if (!live) return undefined;
-			const copy = new ComponentStatus(live.status, live.message, live.error);
+			const copy = new ComponentStatus(live.status, live.message, detachError(live.error));
 			// A new Date, not the live one: `Date` is mutable, so sharing it would let candidate code reach
 			// back into the serving component's status through the copy.
 			copy.lastChecked = new Date(live.lastChecked);

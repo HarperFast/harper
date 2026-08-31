@@ -122,6 +122,18 @@ export function assertApplicationConfig(
 	applicationName: string,
 	applicationConfig: Record<'package', unknown> & Record<string, unknown>
 ): asserts applicationConfig is ApplicationConfig {
+	// The deploy staging directory holds a candidate tree under the component's own name beside dot-prefixed
+	// control files, so a dot-prefixed component name collides with one of them — and an application named
+	// `.activation.json` puts its tree on the journal path, where the journal write takes EEXIST as "a retry
+	// of this activation" and the swap proceeds with no journal at all. Rejected HERE rather than tolerated
+	// downstream: nothing else validates a root-config application key.
+	if (!isJoinableComponentName(applicationName)) {
+		throw new Error(
+			`Invalid application name '${applicationName}': it must be a single path segment and must not begin ` +
+				`with a dot, which is reserved for Harper's own deploy control files`
+		);
+	}
+
 	if (typeof applicationConfig.package !== 'string') {
 		throw new InvalidPackageIdentifierError(applicationName, applicationConfig.package);
 	}
@@ -1347,15 +1359,33 @@ async function settleJournaledActivationsForComponent(
 		// legacy pass acting on it. Failing the deploy instead lets one unreadable sibling block every
 		// neighbour's deploys, which is the outage this ordering exists to prevent.
 		let owner: string | undefined;
+		let ownerUnreadable = false;
 		try {
 			owner = await candidateComponentName(deploymentDirPath);
 		} catch (error) {
-			logger.trace?.(`Skipping ${deploymentDirPath} while settling ${componentName}: ${errorMessage(error)}`);
-			continue;
+			ownerUnreadable = true;
+			logger.trace?.(
+				`Ownership of ${deploymentDirPath} is unreadable while settling ${componentName}, falling back to ` +
+					`its journal: ${errorMessage(error)}`
+			);
 		}
-		if (owner !== componentName) continue;
+		if (!ownerUnreadable && owner !== componentName) continue;
 		const journal = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
-		if (journal?.component !== componentName) continue;
+		if (ownerUnreadable) {
+			// The sidecar could not answer, so the JOURNAL decides — skipping outright would leave this
+			// component's OWN unsettled activation in place while a new deploy proceeds over it, and an
+			// activation interrupted before B1 has no rollback record, so there is nothing for the restore
+			// gate to catch. Recovery would then keep failing the component on evidence this deploy could
+			// have cleared. A journal naming a sibling is still none of our business; a deployment neither
+			// source can attribute fails closed, because we cannot rule out that it is ours.
+			if (!journal) {
+				throw new Error(
+					`Cannot settle deploy staging ${deploymentDirPath} before deploying ${componentName}: neither ` +
+						`its ownership sidecar nor an activation journal says which component it belongs to`
+				);
+			}
+			if (journal.component !== componentName) continue;
+		} else if (journal?.component !== componentName) continue;
 		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
 	}
 }
@@ -1555,7 +1585,10 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			// keys the journal, so neither name's deploy could ever clear it. Reported as unsettleable
 			// against the sidecar's name, which is the component actually stalled, instead of stalling it
 			// silently on every boot.
-			const sidecarOwner = await candidateComponentName(deploymentDirPath);
+			// Unreadable is not disagreement. The journal is the authority on this path — it named its
+			// component and can settle it — so a sidecar that cannot be read must not block that; only one
+			// that CAN be read and names something else is the wedge below.
+			const sidecarOwner = await candidateComponentName(deploymentDirPath).catch(() => undefined);
 			if (sidecarOwner !== undefined && sidecarOwner !== journal.component) {
 				const split = new Error(
 					`Deploy staging ${deploymentDirPath} is attributed to two different components: its journal ` +
@@ -1664,9 +1697,17 @@ async function settleInterruptedActivation(
 			await syncRenameParents(restoreFrom, liveDirPath);
 		}
 		for (const record of asideRecords) {
-			await rm(record, { recursive: true, force: true }).catch((error) =>
-				logger.warn(`Rolled ${journal.component} back but could not remove ${record}:`, errorForLog(error))
-			);
+			try {
+				await rm(record, { recursive: true, force: true });
+			} catch (error) {
+				// A record that survives removal is still AUTHORITATIVE to the legacy pass, and settlement is
+				// about to remove the journal that holds that pass back — so it would restore this older tree
+				// over the component just rolled back. Retiring is what makes a record non-authoritative, so
+				// do that instead of logging and moving on. A retire that ALSO fails propagates: the journal
+				// then survives and the next start retries, which is the same contract roll-forward uses.
+				logger.warn(`Rolled ${journal.component} back but could not remove ${record}:`, errorForLog(error));
+				await retireExtractionAside(record);
+			}
 		}
 	};
 
@@ -2095,27 +2136,50 @@ async function repairRelocatedDependencyLinks(liveDirPath: string, builtAtPath: 
 		}
 	};
 
-	const walk = async (dirPath: string): Promise<void> => {
+	// ONE bounded pool over a shared queue, not per-directory concurrency: bounding each parent
+	// independently let every one of N workers start N more, so a deep pnpm or monorepo tree fanned out to
+	// thousands of simultaneous opens. An EMFILE there would surface as skipped subtrees and dangling links.
+	const pending: string[] = [join(liveDirPath, 'node_modules')];
+	let active = 0;
+	const visit = async (dirPath: string): Promise<void> => {
 		let entries;
 		try {
 			entries = await readdir(dirPath, { withFileTypes: true });
-		} catch {
+		} catch (error) {
+			// Not silent. A missing directory is ordinary — the tree has no `node_modules`, or an install
+			// removed one — but an EACCES or EMFILE here means links under it were never examined, which is
+			// exactly the state that leaves a component running against a dangling dependency.
+			if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+				logger.warn(`Could not scan ${dirPath} for links to re-point after activation:`, errorForLog(error));
+			}
 			return;
 		}
 		// Every directory, not just `@scope` containers and nested `node_modules`: a dependency installed from
-		// outside the tree can be linked from deeper in. Walked with bounded concurrency rather than serially,
-		// because a pnpm or monorepo tree is thousands of directories and this runs after every activation.
-		const directories: string[] = [];
+		// outside the tree can be linked from deeper in.
 		for (const entry of entries) {
 			const entryPath = join(dirPath, entry.name);
 			if (entry.isSymbolicLink()) await relinkOne(entryPath);
-			else if (entry.isDirectory()) directories.push(entryPath);
-		}
-		for (let index = 0; index < directories.length; index += LINK_REPAIR_CONCURRENCY) {
-			await Promise.all(directories.slice(index, index + LINK_REPAIR_CONCURRENCY).map(walk));
+			else if (entry.isDirectory()) pending.push(entryPath);
 		}
 	};
-	await walk(join(liveDirPath, 'node_modules'));
+	const worker = async (): Promise<void> => {
+		for (;;) {
+			const next = pending.pop();
+			if (next === undefined) {
+				// Another worker may still be about to enqueue children, so only stop once nothing is in flight.
+				if (active === 0) return;
+				await new Promise((resolve) => setImmediate(resolve));
+				continue;
+			}
+			active++;
+			try {
+				await visit(next);
+			} finally {
+				active--;
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: LINK_REPAIR_CONCURRENCY }, worker));
 }
 
 /** Windows junction targets come back with an extended-length `\\?\` prefix that plain paths never have. */
