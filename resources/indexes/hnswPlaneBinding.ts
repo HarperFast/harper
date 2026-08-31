@@ -59,6 +59,7 @@ export interface HnswPlane {
 	getWatermark(): number;
 	setWatermark(txn: number): void;
 	flush(watermark?: number): void;
+	flushAsync(watermark?: number): Promise<void>;
 }
 
 export interface HnswPlaneConstructor {

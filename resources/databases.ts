@@ -3,7 +3,7 @@ import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
 import { join, extname, basename } from 'path';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, unlinkSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
@@ -34,7 +34,7 @@ import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
-import { planeFilePathFor } from './indexes/hnswPlaneBinding.ts';
+import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
@@ -3046,8 +3046,16 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 					unlinkSync(planeFilePathFor(rootStore.path, columnName));
 				} catch (error: any) {
 					// a stale plane left behind (e.g. Windows EBUSY while still mapped) would be
-					// opened over a fresh same-name CF, so a failed delete must be visible
-					if (error?.code !== 'ENOENT') logger.warn(`could not delete the HNSW plane file for ${columnName}`, error);
+					// opened over a fresh same-name CF, resolving another graph's node ids
+					// against it — tombstone it so no attach ever adopts it
+					if (error?.code !== 'ENOENT') {
+						logger.warn(`could not delete the HNSW plane file for ${columnName}; tombstoning it as stale`, error);
+						try {
+							closeSync(openSync(planeStalePathFor(planeFilePathFor(rootStore.path, columnName)), 'w'));
+						} catch (tombstoneError) {
+							logger.warn(`could not tombstone the stale HNSW plane file for ${columnName}`, tombstoneError);
+						}
+					}
 				}
 			}
 		}

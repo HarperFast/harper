@@ -140,15 +140,24 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
     }
 
     let mut stats = SearchStats { visits: 0 };
-    let entry_dist = match graph.distance_to(entry_id, &query) {
-        Some(d) => d,
+    let (entry_id, entry_level, entry_dist) = match graph.distance_to(entry_id, &query) {
+        Some(d) => (entry_id, entry_level, d),
         None => {
-            // The stored entry point is gone (deleted while it was still the entry, or a
-            // torn state). Without recovery every search returns empty and every insert
-            // links only to the dead entry, orphaning itself. Elect this node instead.
-            graph.write_node(id, level, &bytes, scale, inv_mag, &[], if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER });
-            graph.file.set_entry_point(id, level as u32);
-            return Some(id);
+            // The stored entry point is gone (e.g. a mirroring host cleared it without
+            // re-electing). Self-promoting an edgeless new node here would orphan the whole
+            // existing graph behind an unreachable root — re-elect from the live graph and
+            // continue; only a truly empty graph makes this node the first entry.
+            graph.reelect_entry_point(&[]);
+            let (re_id, re_level) = graph.file.entry_point();
+            match (re_id != NO_ID).then(|| graph.distance_to(re_id, &query)).flatten() {
+                Some(d) => (re_id, re_level, d),
+                None => {
+                    let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER };
+                    graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx);
+                    graph.file.set_entry_point(id, level as u32);
+                    return Some(id);
+                }
+            }
         }
     };
     let top = level.min(entry_level as u8);

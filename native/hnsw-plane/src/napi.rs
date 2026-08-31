@@ -118,6 +118,26 @@ impl Task for PredicateSearchTask {
     }
 }
 
+pub struct FlushTask {
+    graph: Arc<Graph>,
+    txn: Option<u64>,
+}
+
+#[napi]
+impl Task for FlushTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let txn = self.txn.unwrap_or_else(|| self.graph.file.watermark());
+        self.graph.file.flush_with_watermark(txn).map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
+        Ok(())
+    }
+}
+
 #[napi]
 pub struct Plane {
     graph: Arc<Graph>,
@@ -262,22 +282,56 @@ impl Plane {
         neighbors: Uint32Array,
         upper: Option<Vec<Uint32Array>>,
     ) -> Result<bool> {
-        if self.graph.node_touched(id) {
-            return Ok(false);
+        if vector.len() != self.graph.file.dims {
+            return Err(Error::from_reason(format!(
+                "vector is {} bytes; plane dims = {}",
+                vector.len(),
+                self.graph.file.dims
+            )));
         }
-        // between the check and write_node_raw's lock a live mirror can win; write_node_raw
-        // itself is last-writer-wins under the seqlock, and a live mirror that lands after
-        // this scan write carries newer state and will overwrite it — both orders converge
-        self.write_node_raw(id, level, vector, scale, inv_mag, neighbors, upper)?;
-        Ok(true)
+        if (id as u64) >= self.graph.file.max_nodes {
+            return Err(Error::from_reason(format!("id {} exceeds plane capacity {}", id, self.graph.file.max_nodes)));
+        }
+        if !(scale as f32).is_finite() || !(inv_mag as f32).is_finite() {
+            return Err(Error::from_reason("scale/invMag must be finite"));
+        }
+        let max = self.graph.file.max_nodes;
+        for &n in neighbors.iter() {
+            if (n as u64) >= max {
+                return Err(Error::from_reason(format!("neighbor id {n} exceeds plane capacity {max}")));
+            }
+        }
+        let upper_levels: Vec<Vec<u32>> =
+            upper.map(|ls| ls.iter().map(|l| l.to_vec()).collect()).unwrap_or_default();
+        for level_ids in &upper_levels {
+            for &n in level_ids {
+                if (n as u64) >= max {
+                    return Err(Error::from_reason(format!("upper neighbor id {n} exceeds plane capacity {max}")));
+                }
+            }
+        }
+        let vec_i8 = unsafe { std::slice::from_raw_parts(vector.as_ptr() as *const i8, vector.len()) };
+        let mut l0 = neighbors.to_vec();
+        l0.truncate(self.graph.file.layer0_cap);
+        // the untouched check and the write share one seqlock acquisition inside the crate:
+        // a live mirror's newer write can never be overwritten by this scan's older snapshot
+        Ok(self.graph.write_node_if_untouched(id, level, vec_i8, scale as f32, inv_mag as f32, &l0, &upper_levels))
     }
 
-    /// Whether the file recorded a clean shutdown when this handle opened it. False means
-    /// torn seqlocks were scrubbed but slot contents may be incomplete — hosts should
-    /// rebuild the plane rather than trust it as a complete mirror.
+    /// Advisory: whether the file recorded a durability barrier (flush) as its last state
+    /// when this handle opened it. Crash recovery does not depend on it — torn per-slot
+    /// locks are taken over lazily at the affected slot.
     #[napi]
     pub fn opened_clean(&self) -> bool {
         self.graph.file.opened_clean
+    }
+
+    /// Async durability barrier on the libuv pool: same ordering contract as flush(), off
+    /// the event loop — a whole-map msync over a large mapping stalls its calling thread.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn flush_async(&self, watermark: Option<f64>) -> AsyncTask<FlushTask> {
+        let txn = watermark.map(|w| w as u64);
+        AsyncTask::new(FlushTask { graph: self.graph.clone(), txn })
     }
 
     /// Mark a node deleted without touching the plane freelist (dual-write mode: the host

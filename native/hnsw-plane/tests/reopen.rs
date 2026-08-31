@@ -17,7 +17,7 @@ fn tmp(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn torn_seqlock_is_scrubbed_on_unclean_reopen() {
+fn torn_seqlock_is_taken_over_after_a_dead_writer() {
     let dims = 32;
     let path = tmp("torn");
     let _ = std::fs::remove_file(&path);
@@ -32,19 +32,40 @@ fn torn_seqlock_is_scrubbed_on_unclean_reopen() {
         graph.file.seq_atomic(7).fetch_add(1, Ordering::SeqCst);
         assert_eq!(graph.file.seq_atomic(7).load(Ordering::SeqCst) & 1, 1);
         graph.file.msync().unwrap();
-        // dropped without flush_with_watermark => clean-shutdown flag stays dirty
     }
     let graph = Graph::new(PlaneFile::open(&path).expect("reopen"));
-    assert_eq!(
-        graph.file.seq_atomic(7).load(Ordering::SeqCst) & 1,
-        0,
-        "unclean reopen must scrub persisted-odd seqlocks or the slot wedges forever"
-    );
-    // the slot is readable and the graph searches
-    assert!(graph.read_node(7).is_some());
+    // no open-time scrub: the abandoned lock is taken over lazily by the first reader that
+    // waits past the takeover window — the read must complete, not wedge the thread
+    let start = std::time::Instant::now();
+    assert!(graph.read_node(7).is_some(), "torn slot must become readable via takeover");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "takeover must be fast");
+    assert_eq!(graph.file.seq_atomic(7).load(Ordering::SeqCst) & 1, 0, "takeover leaves the seq even");
     let mut scratch = SearchScratch::new();
     let (hits, _) = search(&graph, &Query::new(vector_for(7, dims)), 5, 64, &mut scratch);
-    assert!(hits.iter().any(|&(_, d)| d < 1e-3), "torn slot's vector must be findable after scrub");
+    assert!(hits.iter().any(|&(_, d)| d < 1e-3), "torn slot's vector must be findable after takeover");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn double_remove_does_not_cycle_the_freelist() {
+    let dims = 32;
+    let path = tmp("dblrm");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..20 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    graph.delete_node(5);
+    graph.delete_node(5); // second delete must be a no-op, not a second freelist push
+    graph.delete_node(2_000_000); // out-of-range must be a no-op, not an OOB write
+    let a = insert(&graph, &vector_for(101, dims), &params, &mut scratch).unwrap();
+    let b = insert(&graph, &vector_for(102, dims), &params, &mut scratch).unwrap();
+    let c = insert(&graph, &vector_for(103, dims), &params, &mut scratch).unwrap();
+    assert_eq!(a, 5, "freed id is reused once");
+    assert_ne!(b, a, "a double-freed id must not be handed out twice");
+    assert_ne!(c, b);
     let _ = std::fs::remove_file(&path);
 }
 

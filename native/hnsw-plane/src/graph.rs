@@ -274,9 +274,13 @@ impl Graph {
     /// Mark deleted WITHOUT returning the id to the plane freelist — dual-write mode, where
     /// the host owns id allocation and may re-mint or reuse ids on its own schedule.
     pub fn clear_node(&self, id: u32) {
-        if !self.in_range(id) {
+        if (id as u64) >= self.file.max_nodes {
             return;
         }
+        // extend the high-water rather than skipping: a delete mirrored while a backfill
+        // scan runs must leave a touched (deleted) slot behind, or the scan's older
+        // snapshot would resurrect the node when its cursor reaches this id
+        self.file.ensure_high_water(id);
         let seq = self.file.seq_atomic(id);
         let _guard = seqlock::write_lock(seq);
         unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = FLAG_DELETED };
@@ -413,6 +417,9 @@ impl Graph {
     /// that, every search returns empty and every insert orphans itself against the dead
     /// entry.
     pub fn delete_node(&self, id: u32) {
+        if !self.in_range(id) {
+            return; // never-allocated or out-of-range ids have nothing to delete
+        }
         // capture neighbors before invalidating: they are the best re-election candidates
         let (entry_id, _) = self.file.entry_point();
         let mut candidates: Vec<u32> = Vec::new();
@@ -425,6 +432,12 @@ impl Graph {
             let _guard = seqlock::write_lock(seq);
             let p = self.file.slot_ptr_mut(id);
             unsafe {
+                if *p.add(S_FLAGS) != FLAG_VALID {
+                    // deleting a never-written or already-deleted id must not free again:
+                    // a double-push makes the freelist a self-cycle that hands the same id
+                    // to every subsequent allocation
+                    return;
+                }
                 upper_idx = (p.add(S_UPPER_IDX) as *const u32).read_unaligned();
                 (p.add(S_UPPER_IDX) as *mut u32).write_unaligned(NO_UPPER);
                 *p.add(S_FLAGS) = FLAG_DELETED;
@@ -440,21 +453,48 @@ impl Graph {
     /// Pick a new entry point: the highest-level live node among `preferred`, else the
     /// first live node found scanning the id range (rare path: only when the entry's whole
     /// neighborhood is gone). An empty graph clears the entry.
-    fn reelect_entry_point(&self, preferred: &[u32]) {
+    /// A node's level without copying its vector or edges (cheap re-election scans).
+    fn node_level(&self, id: u32) -> Option<u8> {
+        if !self.in_range(id) {
+            return None;
+        }
+        let seq = self.file.seq_atomic(id);
+        seqlock::read_consistent(seq, || {
+            let p = self.file.slot_ptr(id);
+            unsafe {
+                if *p.add(S_FLAGS) != FLAG_VALID {
+                    return None;
+                }
+                Some(*p.add(S_LEVEL))
+            }
+        })
+    }
+
+    /// Pick a new entry point: the highest-level live node among `preferred`, else the
+    /// highest-level live node found scanning the id range (level reads only — no per-node
+    /// vector copies; still O(high-water), which only runs when an entry point vanished
+    /// with no live neighborhood). Preferring level keeps the hierarchy navigable — a
+    /// level-0 entry degrades every search to a layer-0-only beam. An empty graph clears
+    /// the entry.
+    pub(crate) fn reelect_entry_point(&self, preferred: &[u32]) {
         let mut best: Option<(u32, u8)> = None;
         for &cand in preferred {
-            if let Some(n) = self.read_node(cand) {
-                if best.map(|(_, l)| n.level > l).unwrap_or(true) {
-                    best = Some((cand, n.level));
+            if let Some(level) = self.node_level(cand) {
+                if best.map(|(_, l)| level > l).unwrap_or(true) {
+                    best = Some((cand, level));
                 }
             }
         }
         if best.is_none() {
             let hw = self.file.id_high_water().min(self.file.max_nodes) as u32;
             for cand in 0..hw {
-                if let Some(n) = self.read_node(cand) {
-                    best = Some((cand, n.level));
-                    break;
+                if let Some(level) = self.node_level(cand) {
+                    if best.map(|(_, l)| level > l).unwrap_or(true) {
+                        best = Some((cand, level));
+                        if level as usize >= MAX_UPPER_LEVELS {
+                            break; // cannot do better
+                        }
+                    }
                 }
             }
         }
@@ -462,5 +502,55 @@ impl Graph {
             Some((cand, level)) => self.file.set_entry_point(cand, level as u32),
             None => self.file.set_entry_point(crate::format::NO_ID, 0),
         }
+    }
+
+    /// write_node, but only when the slot has never been touched — the check and the write
+    /// share ONE seqlock acquisition, so a concurrent live mirror's newer write can never be
+    /// overwritten by a backfill scan's older snapshot (a two-step check-then-write left
+    /// exactly that window). Returns true when this state was written.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_node_if_untouched(
+        &self,
+        id: u32,
+        level: u8,
+        vector: &[i8],
+        scale: f32,
+        inv_mag: f32,
+        neighbors: &[u32],
+        upper_levels: &[Vec<u32>],
+    ) -> bool {
+        debug_assert!(neighbors.len() <= self.file.layer0_cap);
+        debug_assert_eq!(vector.len(), self.file.dims);
+        self.file.ensure_high_water(id);
+        // the upper entry is allocated before taking the slot lock (allocation is cheap and
+        // an unused entry is freed below on the untouched-check failing)
+        let upper_idx = if upper_levels.is_empty() { NO_UPPER } else { self.write_upper(upper_levels) };
+        let seq = self.file.seq_atomic(id);
+        let written = {
+            let _guard = seqlock::write_lock(seq);
+            let p = self.file.slot_ptr_mut(id);
+            let dims = self.file.dims;
+            unsafe {
+                if *p.add(S_FLAGS) != 0 {
+                    false
+                } else {
+                    *p.add(S_LEVEL) = level;
+                    (p.add(S_DEGREE) as *mut u16).write_unaligned((neighbors.len() as u16).to_le());
+                    (p.add(S_SCALE) as *mut f32).write_unaligned(scale);
+                    (p.add(S_INV_MAG) as *mut f32).write_unaligned(inv_mag);
+                    (p.add(S_UPPER_IDX) as *mut u32).write_unaligned(upper_idx);
+                    std::ptr::copy_nonoverlapping(vector.as_ptr() as *const u8, p.add(S_VECTOR), dims);
+                    for (i, n) in neighbors.iter().enumerate() {
+                        (p.add(S_VECTOR + dims + i * 4) as *mut u32).write_unaligned(n.to_le());
+                    }
+                    *p.add(S_FLAGS) = FLAG_VALID;
+                    true
+                }
+            }
+        };
+        if !written {
+            self.file.free_upper(upper_idx);
+        }
+        written
     }
 }

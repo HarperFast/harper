@@ -156,9 +156,16 @@ impl PlaneFile {
         if dims == 0 || slot_size == 0 || slot_size != slot_size_for(dims, layer0_cap) {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "plane header geometry is inconsistent: recreate the index"));
         }
+        if max_nodes > NO_ID as u64 || slots_per_page != slots_per_page_for(slot_size) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "plane header geometry is inconsistent: recreate the index"));
+        }
         let upper_offset = HEADER_SIZE + slot_region_len(max_nodes, slot_size, slots_per_page) as usize;
         let upper_capacity = max_nodes / 8 + 64;
-        let expected = upper_offset as u64 + upper_capacity * upper_entry_size() as u64;
+        let expected = (upper_offset as u64)
+            .checked_add(upper_capacity.checked_mul(upper_entry_size() as u64).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "plane header geometry overflows: recreate the index")
+            })?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "plane header geometry overflows: recreate the index"))?;
         if file_len < expected {
             // header-valid but short (rsync/backup truncation): mid-range slot_ptr/upper_ptr
             // would otherwise read off the mapping
@@ -173,36 +180,15 @@ impl PlaneFile {
         if hw > max_nodes {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "plane header id high-water exceeds capacity: recreate the index"));
         }
-        // A crash while a writer held a slot's seqlock odd persists the odd value; nothing
-        // would ever make it even again, so readers and writers of that slot would spin
-        // forever. Scrub on any unclean open (one sequential pass over the written range).
-        if !opened_clean {
-            plane.scrub_torn_seqlocks(hw);
-        }
-        unsafe { *(plane.map.as_ptr().add(H_CLEAN_SHUTDOWN) as *mut u8) = 0 }; // dirty until flush
+        // No open-time repair: seqlocks persisted odd by a dead writer are taken over lazily
+        // at the contended slot (seqlock.rs) — a whole-file scrub would page in the entire
+        // mapping and, with another process still mapping the file, could force a LIVE
+        // writer's lock. The clean-shutdown byte remains advisory metadata only.
         Ok(plane)
     }
 
     /// Force any persisted-odd seqlocks (slot + upper regions) back to even after an unclean
     /// shutdown. Safe because open() runs before any concurrent access exists.
-    fn scrub_torn_seqlocks(&self, high_water: u64) {
-        for id in 0..high_water.min(self.max_nodes) as u32 {
-            let seq = self.seq_atomic(id);
-            let v = seq.load(Ordering::Relaxed);
-            if v & 1 == 1 {
-                seq.store(v.wrapping_add(1), Ordering::Relaxed);
-            }
-        }
-        let upper_hw = self.header_atomic_u64(H_UPPER_HIGH_WATER).load(Ordering::Relaxed);
-        for idx in 0..upper_hw.min(self.upper_capacity) as u32 {
-            let seq = self.upper_seq_atomic(idx);
-            let v = seq.load(Ordering::Relaxed);
-            if v & 1 == 1 {
-                seq.store(v.wrapping_add(1), Ordering::Relaxed);
-            }
-        }
-    }
-
     #[inline]
     pub fn slot_ptr(&self, id: u32) -> *const u8 {
         let off = if self.slots_per_page > 0 {

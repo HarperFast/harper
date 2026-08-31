@@ -305,6 +305,7 @@ export class HierarchicalNavigableSmallWorld {
 	private plane: HnswPlane | null | undefined;
 	private planeBuild: Promise<void> | undefined; // in-flight first-enable mirror (tests await it)
 	private planeMutationsSinceFlush = 0;
+	private planeFlushInFlight = false;
 	private planeEligible = false;
 	private planeReady = false;
 	private planeRetryAt = 0;
@@ -344,7 +345,12 @@ export class HierarchicalNavigableSmallWorld {
 			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
 			// layer-0 cap exceeds the plane maximum is refused rather than silently truncated.
 			this.planeEligible =
-				this.int8 && this.distance === cosineDistance && this.planeLayer0Cap() <= PLANE_LAYER0_CAP_MAX;
+				this.int8 &&
+				this.distance === cosineDistance &&
+				this.planeLayer0Cap() <= PLANE_LAYER0_CAP_MAX &&
+				// the plane's fixed upper-level cap must hold this graph's full upper adjacency
+				// (M<<2 under optimizeRouting) or hierarchy edges would be silently truncated
+				(this.optimizeRouting ? this.M << 2 : this.M) <= PLANE_UPPER_CAP;
 			if (!this.planeEligible) {
 				logger.info?.(
 					'nativePlane requires an int8-quantized cosine HNSW index whose M fits the plane geometry; using the JS search path'
@@ -421,16 +427,10 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			if (existsSync(filePath)) {
 				try {
-					const plane = Plane.open(filePath);
-					if (!plane.openedClean()) {
-						// torn seqlocks were scrubbed, but slot contents may be an incomplete
-						// writeback: a derived mirror is cheap to rebuild and wrong to trust
-						logger.warn?.('rebuilding the HNSW plane file after an unclean shutdown');
-						unlinkSync(filePath);
-						// fall through to the create path below
-					} else {
-						return (this.plane = plane);
-					}
+					// crash recovery is per-slot inside the crate (abandoned seqlocks are taken
+					// over lazily); the clean flag is advisory only — acting on it here would let
+					// a second worker unlink a plane the first worker is live-mirroring into
+					return (this.plane = Plane.open(filePath));
 				} catch (openError) {
 					if (now - statSync(filePath).mtimeMs <= PLANE_STALE_CREATE_MS) {
 						// another worker is between its exclusive create and the header write
@@ -558,7 +558,7 @@ export class HierarchicalNavigableSmallWorld {
 				if (typeof key !== 'number') continue;
 				lastKey = key;
 				if (!value || value.level === undefined) continue;
-				if (this.plane === null) return; // disabled while building
+				if (this.plane !== plane) return; // disabled, reset, or replaced while building
 				this.writeNodeToPlane(plane, key, value, true);
 				mirrored++;
 			}
@@ -566,16 +566,18 @@ export class HierarchicalNavigableSmallWorld {
 			nextStart = lastKey + 1;
 			// each chunk re-reads current committed state after yielding the event loop
 			await new Promise((resolve) => setImmediate(resolve));
-			if (this.plane === null) return; // disabled while building
+			if (this.plane !== plane) return; // disabled, reset, or replaced while building
 		}
+		if (this.plane !== plane) return; // never stamp a replacement plane ready
 		const entryPointId = this.indexStore.getSync(ENTRY_POINT);
 		if (typeof entryPointId === 'number' && plane.getEntryPoint()[0] === PLANE_NO_ID) {
 			plane.setEntryPoint(entryPointId, this.safeGetSync(entryPointId)?.level ?? 0);
 		}
 		// flush(watermark) is a durability barrier: all slots reach disk before the watermark
-		// and clean-shutdown flag do, so a crash can only under-claim, never adopt a torn
-		// mirror as complete
-		plane.flush(PLANE_MIRRORED);
+		// does, so a crash can only under-claim, never adopt a torn mirror as complete; async
+		// because a whole-map msync would stall the event loop
+		await plane.flushAsync(PLANE_MIRRORED);
+		if (this.plane !== plane) return;
 		this.planeReady = true;
 		if (mirrored > 0) logger.info?.(`built the HNSW plane file from ${mirrored} existing graph nodes`);
 	}
@@ -652,12 +654,21 @@ export class HierarchicalNavigableSmallWorld {
 		}
 	}
 
-	/** Bounded-lag durability: a flush barrier every PLANE_FLUSH_EVERY mirrored mutations. */
+	/**
+	 * Bounded-lag durability: a flush barrier every PLANE_FLUSH_EVERY mirrored mutations,
+	 * on the libuv pool — a synchronous whole-map msync would stall this worker's event
+	 * loop for the writeback of a multi-GB mapping. At most one barrier in flight.
+	 */
 	private planeFlushTick(plane: HnswPlane): void {
-		if (++this.planeMutationsSinceFlush >= PLANE_FLUSH_EVERY) {
+		if (++this.planeMutationsSinceFlush >= PLANE_FLUSH_EVERY && !this.planeFlushInFlight) {
 			this.planeMutationsSinceFlush = 0;
-			if (this.planeReady) plane.flush(PLANE_MIRRORED);
-			else plane.flush();
+			this.planeFlushInFlight = true;
+			plane
+				.flushAsync(this.planeReady ? PLANE_MIRRORED : undefined)
+				.catch((error) => logger.warn?.('HNSW plane flush barrier failed', error))
+				.finally(() => {
+					this.planeFlushInFlight = false;
+				});
 		}
 	}
 
