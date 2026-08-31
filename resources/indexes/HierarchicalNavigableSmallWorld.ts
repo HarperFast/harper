@@ -51,11 +51,23 @@ function dequantizeInt8(q: Int8Array, scale: number): number[] {
  */
 function planeConnectionIds(connections: Connection[] | undefined, cap: number): Uint32Array {
 	if (!connections?.length) return new Uint32Array(0);
-	let usable = connections.filter((connection) => typeof connection.id === 'number' && connection.id >= 0);
-	if (usable.length > cap) {
-		usable = usable.sort((a, b) => a.distance - b.distance).slice(0, cap);
+	let usableCount = 0;
+	for (const connection of connections) {
+		if (typeof connection.id === 'number' && connection.id >= 0) usableCount++;
 	}
-	return Uint32Array.from(usable, (connection) => connection.id);
+	if (usableCount > cap) {
+		// rare (transient overshoot / the tighter upper cap): worth the intermediate copies
+		const nearest = connections
+			.filter((connection) => typeof connection.id === 'number' && connection.id >= 0)
+			.sort((a, b) => a.distance - b.distance);
+		return Uint32Array.from({ length: cap }, (_, i) => nearest[i].id);
+	}
+	const ids = new Uint32Array(usableCount);
+	let at = 0;
+	for (const connection of connections) {
+		if (typeof connection.id === 'number' && connection.id >= 0) ids[at++] = connection.id;
+	}
+	return ids;
 }
 
 // Auto-scaled search ef, used only when an index does not explicitly configure efConstructionSearch
@@ -382,6 +394,12 @@ export class HierarchicalNavigableSmallWorld {
 				return null;
 			}
 			closeSync(fd);
+			// a populated graph's own dimensionality sizes the file — a caller-supplied dims
+			// (possibly a malformed search target) must not; the file format pins dims forever
+			for (const { value } of this.indexStore.getRange({ start: 0, end: Infinity, limit: 1 })) {
+				const storedVector = value?.level !== undefined ? value.vector : undefined;
+				if (storedVector) dims = Array.isArray(storedVector) ? storedVector.length : storedVector.byteLength;
+			}
 			try {
 				return (this.plane = this.createAndMirrorPlane(Plane, filePath, dims));
 			} catch (createError) {
@@ -416,7 +434,10 @@ export class HierarchicalNavigableSmallWorld {
 		const filePath = this.planeFilePath();
 		if (filePath) {
 			try {
-				if (Date.now() - statSync(filePath).mtimeMs > PLANE_INCOMPLETE_REBUILD_MS) {
+				// age by creation time: ongoing dual-writes into an abandoned build keep
+				// refreshing mtime, which would defer this rebuild forever
+				const stat = statSync(filePath);
+				if (Date.now() - (stat.birthtimeMs || stat.mtimeMs) > PLANE_INCOMPLETE_REBUILD_MS) {
 					logger.warn?.('rebuilding an HNSW plane file whose initial mirror never completed');
 					this.resetDerivedStorage();
 				}
@@ -590,7 +611,12 @@ export class HierarchicalNavigableSmallWorld {
 		try {
 			unlinkSync(filePath);
 		} catch (error: any) {
-			if (error?.code !== 'ENOENT') logger.warn?.('could not delete the HNSW plane file', error);
+			if (error?.code !== 'ENOENT') {
+				// a stale file that cannot be deleted (e.g. Windows EBUSY while mapped) must not
+				// be reopened as if current — keep the plane disabled for this process instead
+				this.plane = null;
+				logger.warn?.('could not delete the HNSW plane file', error);
+			}
 		}
 	}
 
@@ -615,6 +641,7 @@ export class HierarchicalNavigableSmallWorld {
 		if (filter && filterState) {
 			const predicate = (ids: number[]): Uint8Array => {
 				const verdicts = new Uint8Array(ids.length);
+				if (predicateError !== undefined) return verdicts; // already failed — deny remaining batches cheaply
 				try {
 					for (let i = 0; i < ids.length; i++) {
 						const primaryKey = this.safeGetSync(ids[i], options)?.primaryKey;
@@ -1566,7 +1593,9 @@ export class HierarchicalNavigableSmallWorld {
 			: undefined;
 		if (this.planeEligible) {
 			const plane = this.getPlane(target.length);
-			if (plane && this.planeSearchReady(plane)) {
+			// a query whose dimensionality differs from the graph's takes the JS path (which
+			// tolerates the mismatch) rather than erroring or disabling the healthy plane
+			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
 				// Native cutover: same resolved ef, same predicate semantics; resolves to the same
 				// entries shape ({ key, distance }) the JS path returns, so rescoreResults and all
 				// post-load behavior are unchanged. searchByIndex handles the promise.

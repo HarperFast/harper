@@ -15,6 +15,7 @@ export interface PlaneSearchHit {
  * path is bypassed by design) plus the search entry points.
  */
 export interface HnswPlane {
+	readonly dims: number;
 	writeNodeRaw(
 		id: number,
 		level: number,
