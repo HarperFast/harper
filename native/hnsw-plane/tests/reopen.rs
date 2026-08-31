@@ -17,7 +17,7 @@ fn tmp(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn torn_seqlock_is_taken_over_after_a_dead_writer() {
+fn dead_writer_lock_is_taken_over_and_slot_sanitized() {
     let dims = 32;
     let path = tmp("torn");
     let _ = std::fs::remove_file(&path);
@@ -28,21 +28,58 @@ fn torn_seqlock_is_taken_over_after_a_dead_writer() {
         for i in 0..200 {
             insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
         }
-        // simulate a writer killed mid-write: leave one slot's seqlock odd on disk
-        graph.file.seq_atomic(7).fetch_add(1, Ordering::SeqCst);
-        assert_eq!(graph.file.seq_atomic(7).load(Ordering::SeqCst) & 1, 1);
+        // simulate a writer killed mid-write: lock word = bit31 | its (now dead) pid.
+        // 0x7ff_fff0 exceeds Linux pid_max (4M) and any real pid space: kill() -> ESRCH.
+        graph.file.seq_atomic(7).store((1 << 31) | 0x7ff_fff0, Ordering::SeqCst);
         graph.file.msync().unwrap();
     }
     let graph = Graph::new(PlaneFile::open(&path).expect("reopen"));
-    // no open-time scrub: the abandoned lock is taken over lazily by the first reader that
-    // waits past the takeover window — the read must complete, not wedge the thread
+    // the first reader waits out the takeover window, confirms the owner is dead, takes the
+    // lock over, and SANITIZES the slot: a dead writer's payload is half-written, so the
+    // node must read as absent (heal-on-touch), never as a spliced-but-valid vector
     let start = std::time::Instant::now();
-    assert!(graph.read_node(7).is_some(), "torn slot must become readable via takeover");
+    assert!(graph.read_node(7).is_none(), "taken-over slot must read absent, not spliced");
     assert!(start.elapsed() < std::time::Duration::from_secs(5), "takeover must be fast");
-    assert_eq!(graph.file.seq_atomic(7).load(Ordering::SeqCst) & 1, 0, "takeover leaves the seq even");
+    assert_eq!(graph.file.seq_atomic(7).load(Ordering::SeqCst) >> 31, 0, "takeover unlocks the slot");
+    // the graph still searches (node 7 is just missing), and rewriting the slot heals it
     let mut scratch = SearchScratch::new();
-    let (hits, _) = search(&graph, &Query::new(vector_for(7, dims)), 5, 64, &mut scratch);
-    assert!(hits.iter().any(|&(_, d)| d < 1e-3), "torn slot's vector must be findable after takeover");
+    let (hits, _) = search(&graph, &Query::new(vector_for(3, dims)), 5, 64, &mut scratch);
+    assert!(!hits.is_empty());
+    let q = hnsw_plane::distance::quantize_int8(&vector_for(7, dims));
+    graph.write_node_raw(7, 0, &q.0, q.1, q.2, &[3, 4], &[]);
+    assert!(graph.read_node(7).is_some(), "a rewrite heals the sanitized slot");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn live_writer_is_never_robbed() {
+    let dims = 32;
+    let path = tmp("liverob");
+    let _ = std::fs::remove_file(&path);
+    let graph = std::sync::Arc::new(Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create")));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..50 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    // a LIVE writer (this process) holds slot 9's lock far past the takeover window; readers
+    // must wait or degrade to absent — never force the lock and never observe torn payload
+    let seq9 = graph.file.seq_atomic(9) as *const _ as usize;
+    let g2 = graph.clone();
+    let hold = std::thread::spawn(move || {
+        let seq = unsafe { &*(seq9 as *const std::sync::atomic::AtomicU32) };
+        let guard = hnsw_plane::seqlock::write_lock(seq, || panic!("a live same-process writer must never be sanitized"));
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        drop(guard);
+        drop(g2);
+    });
+    std::thread::sleep(std::time::Duration::from_millis(30)); // reader arrives mid-hold
+    let n9 = graph.read_node(9);
+    // either it waited for the release (Some) or degraded to absent for this read (None) —
+    // but the lock must have been RELEASED by the owner, not forced
+    hold.join().unwrap();
+    assert!(graph.read_node(9).is_some(), "the slot is intact after the live writer releases");
+    let _ = n9;
     let _ = std::fs::remove_file(&path);
 }
 

@@ -34,6 +34,17 @@ impl Graph {
         (id as u64) < self.file.id_high_water()
     }
 
+    /// Sanitizer for a slot lock taken over from a dead writer: the payload is half-written,
+    /// so the slot must read as absent until something rewrites it (heal-on-touch contract).
+    fn slot_sanitizer(&self, id: u32) -> impl Fn() + '_ {
+        move || unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = 0 }
+    }
+
+    /// Sanitizer for an upper-entry lock taken over from a dead writer.
+    fn upper_sanitizer(&self, idx: u32) -> impl Fn() + '_ {
+        move || unsafe { *self.file.upper_ptr_mut(idx).add(U_LEVELS) = 0 }
+    }
+
     /// Zero-copy distance from `query` to the stored vector of `id`. None for absent/deleted.
     #[inline]
     pub fn distance_to(&self, id: u32, query: &Query) -> Option<f32> {
@@ -52,7 +63,7 @@ impl Graph {
                 let inv_mag = (p.add(S_INV_MAG) as *const f32).read_unaligned();
                 Some(cosine_int8_raw(query, p.add(S_VECTOR) as *const i8, scale, inv_mag))
             }
-        })
+        }, self.slot_sanitizer(id), || None)
     }
 
     /// Symmetric stored-to-stored distance (construction-time neighbor↔neighbor checks).
@@ -113,7 +124,7 @@ impl Graph {
                 }
                 Some(level)
             }
-        })
+        }, self.slot_sanitizer(id), || None)
     }
 
     /// The node's upper-region entry index, or NO_UPPER.
@@ -132,7 +143,7 @@ impl Graph {
                 }
                 (p.add(S_UPPER_IDX) as *const u32).read_unaligned()
             }
-        })
+        }, self.slot_sanitizer(id), || NO_UPPER)
     }
 
     /// Copy `id`'s neighbor ids at upper `level` (1-based) into `out`. False when the node
@@ -161,7 +172,7 @@ impl Graph {
                 }
                 true
             }
-        })
+        }, self.upper_sanitizer(idx), || false)
     }
 
     /// Write a node's full upper adjacency into a fresh region entry; returns the entry
@@ -175,7 +186,7 @@ impl Graph {
             return NO_UPPER;
         }
         let seq = self.file.upper_seq_atomic(idx);
-        let _guard = seqlock::write_lock(seq);
+        let _guard = seqlock::write_lock(seq, self.upper_sanitizer(idx));
         let p = self.file.upper_ptr_mut(idx);
         unsafe {
             let n = levels.len().min(MAX_UPPER_LEVELS);
@@ -198,7 +209,7 @@ impl Graph {
     /// per rewrite.
     pub fn rewrite_upper(&self, idx: u32, levels: &[Vec<u32>]) {
         let seq = self.file.upper_seq_atomic(idx);
-        let _guard = seqlock::write_lock(seq);
+        let _guard = seqlock::write_lock(seq, self.upper_sanitizer(idx));
         let p = self.file.upper_ptr_mut(idx);
         unsafe {
             let n = levels.len().min(MAX_UPPER_LEVELS);
@@ -222,7 +233,7 @@ impl Graph {
             return false;
         }
         let seq = self.file.seq_atomic(id);
-        seqlock::read_consistent(seq, || unsafe { *self.file.slot_ptr(id).add(S_FLAGS) != 0 })
+        seqlock::read_consistent(seq, || unsafe { *self.file.slot_ptr(id).add(S_FLAGS) != 0 }, self.slot_sanitizer(id), || true)
     }
 
     /// The slot's stored upper idx regardless of valid/deleted flags — the raw mirroring
@@ -240,7 +251,7 @@ impl Graph {
                 }
                 (p.add(S_UPPER_IDX) as *const u32).read_unaligned()
             }
-        })
+        }, self.slot_sanitizer(id), || NO_UPPER)
     }
 
     /// Mirror a host-maintained node into the plane: full state per call, host-allocated id
@@ -282,7 +293,7 @@ impl Graph {
         // snapshot would resurrect the node when its cursor reaches this id
         self.file.ensure_high_water(id);
         let seq = self.file.seq_atomic(id);
-        let _guard = seqlock::write_lock(seq);
+        let _guard = seqlock::write_lock(seq, self.slot_sanitizer(id));
         unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = FLAG_DELETED };
     }
 
@@ -294,7 +305,7 @@ impl Graph {
             return false;
         }
         let seq = self.file.upper_seq_atomic(idx);
-        let _guard = seqlock::write_lock(seq);
+        let _guard = seqlock::write_lock(seq, self.upper_sanitizer(idx));
         let p = self.file.upper_ptr_mut(idx);
         unsafe {
             let levels = *p.add(U_LEVELS);
@@ -339,7 +350,7 @@ impl Graph {
                 let neighbors = (0..degree.min(cap)).map(|i| u32::from_le(nbase.add(i).read_unaligned())).collect();
                 Some(NodeRead { level, scale, inv_mag, vector, neighbors })
             }
-        })
+        }, self.slot_sanitizer(id), || None)
     }
 
     /// Write a full slot under its seqlock. `neighbors` is pruned to layer0_cap by the
@@ -348,7 +359,7 @@ impl Graph {
         debug_assert!(neighbors.len() <= self.file.layer0_cap);
         debug_assert_eq!(vector.len(), self.file.dims);
         let seq = self.file.seq_atomic(id);
-        let _guard = seqlock::write_lock(seq);
+        let _guard = seqlock::write_lock(seq, self.slot_sanitizer(id));
         let p = self.file.slot_ptr_mut(id);
         let dims = self.file.dims;
         unsafe {
@@ -375,7 +386,7 @@ impl Graph {
             return false;
         }
         let seq = self.file.seq_atomic(id);
-        let _guard = seqlock::write_lock(seq);
+        let _guard = seqlock::write_lock(seq, self.slot_sanitizer(id));
         let p = self.file.slot_ptr_mut(id);
         let dims = self.file.dims;
         let cap = self.file.layer0_cap;
@@ -401,7 +412,7 @@ impl Graph {
     pub fn write_neighbors(&self, id: u32, neighbors: &[u32]) {
         debug_assert!(neighbors.len() <= self.file.layer0_cap);
         let seq = self.file.seq_atomic(id);
-        let _guard = seqlock::write_lock(seq);
+        let _guard = seqlock::write_lock(seq, self.slot_sanitizer(id));
         let p = self.file.slot_ptr_mut(id);
         let dims = self.file.dims;
         unsafe {
@@ -429,7 +440,7 @@ impl Graph {
         let upper_idx;
         {
             let seq = self.file.seq_atomic(id);
-            let _guard = seqlock::write_lock(seq);
+            let _guard = seqlock::write_lock(seq, self.slot_sanitizer(id));
             let p = self.file.slot_ptr_mut(id);
             unsafe {
                 if *p.add(S_FLAGS) != FLAG_VALID {
@@ -443,9 +454,15 @@ impl Graph {
                 *p.add(S_FLAGS) = FLAG_DELETED;
             }
         }
+        if upper_idx != NO_UPPER {
+            // empty the entry under its own lock BEFORE freeing: a traversal that already
+            // read this node's upper_idx must find a dead entry, not one reallocated to a
+            // different node mid-read
+            self.rewrite_upper(upper_idx, &[]);
+        }
         self.file.free_upper(upper_idx);
         if entry_id == id {
-            self.reelect_entry_point(&candidates);
+            self.reelect_entry_point_replacing(&candidates, id);
         }
         self.file.free_id(id);
     }
@@ -467,7 +484,7 @@ impl Graph {
                 }
                 Some(*p.add(S_LEVEL))
             }
-        })
+        }, self.slot_sanitizer(id), || None)
     }
 
     /// Pick a new entry point: the highest-level live node among `preferred`, else the
@@ -477,6 +494,10 @@ impl Graph {
     /// level-0 entry degrades every search to a layer-0-only beam. An empty graph clears
     /// the entry.
     pub(crate) fn reelect_entry_point(&self, preferred: &[u32]) {
+        self.reelect_entry_point_replacing(preferred, crate::format::NO_ID)
+    }
+
+    fn reelect_entry_point_replacing(&self, preferred: &[u32], replacing: u32) {
         let mut best: Option<(u32, u8)> = None;
         for &cand in preferred {
             if let Some(level) = self.node_level(cand) {
@@ -499,8 +520,8 @@ impl Graph {
             }
         }
         match best {
-            Some((cand, level)) => self.file.set_entry_point(cand, level as u32),
-            None => self.file.set_entry_point(crate::format::NO_ID, 0),
+            Some((cand, level)) => self.file.set_entry_point_if_not_better(cand, level as u32, replacing),
+            None => self.file.set_entry_point_if_not_better(crate::format::NO_ID, 0, replacing),
         }
     }
 
@@ -527,7 +548,7 @@ impl Graph {
         let upper_idx = if upper_levels.is_empty() { NO_UPPER } else { self.write_upper(upper_levels) };
         let seq = self.file.seq_atomic(id);
         let written = {
-            let _guard = seqlock::write_lock(seq);
+            let _guard = seqlock::write_lock(seq, self.slot_sanitizer(id));
             let p = self.file.slot_ptr_mut(id);
             let dims = self.file.dims;
             unsafe {

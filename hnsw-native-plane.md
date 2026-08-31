@@ -128,9 +128,14 @@ a header field, so revising it is a rebuild, not a format change.
 
 ## 5. Concurrency
 
-- **Per-slot seqlock.** Writer: fetch_add seq to odd → write slot → fetch_add to even. Reader
-  (traversal): read seq, copy the ≤1 KB slot (or read fields in place), re-check seq; retry on
-  change. Retries are rare (writes touch ~40 slots per insert out of millions) and cheap.
+- **Per-slot lock with owner identity.** The lock word is a u32: bit 31 = locked, low bits =
+  the owner's pid; unlocked values are generations, validated seqlock-style by readers. A lock
+  whose value stays unchanged for a 20 ms window AND whose owner pid is dead (ESRCH) is taken
+  over by the waiter, which SANITIZES the slot (marks it invalid — a dead writer's payload is
+  half-written; invisible-until-rewritten, never spliced-but-valid). Elapsed time alone never
+  robs a lock: a live writer descheduled by CFS throttling or a page-fault storm keeps its
+  lock until rescheduled. On platforms without a liveness check, readers degrade to
+  treat-as-absent after the window and writers wait.
 - **No cross-slot atomicity.** An insert updates the new node's slot plus ~M neighbors'
   back-edge lists, each independently. A traversal may observe the half-linked state: an edge
   to a slot whose valid flag is not yet set → skip (HNSW tolerates missing edges); a

@@ -9,6 +9,7 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+libc = "0.2"
 memmap2 = "0.9"
 napi = { version = "2", default-features = false, features = ["napi8"], optional = true }
 napi-derive = { version = "2", optional = true }

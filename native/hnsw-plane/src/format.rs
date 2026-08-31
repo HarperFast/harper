@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub const MAGIC: u32 = 0x484e_5357; // "HNSW"
-pub const VERSION: u32 = 3; // v3: packed entry point, UPPER_CAP 64 (older files: reindex)
+pub const VERSION: u32 = 4; // v4: owner-identity lock words (older files: reindex)
 pub const HEADER_SIZE: usize = 4096;
 
 // Header field byte offsets.
@@ -290,6 +290,26 @@ impl PlaneFile {
         self.header_atomic_u64(H_ENTRY).store((id as u64) | ((level as u64) << 32), Ordering::Release);
     }
 
+    /// Entry-point CAS for re-election: install (id, level) only while the current entry is
+    /// still `expected_id` or is of a lower level — a concurrent insert that just promoted a
+    /// higher-level entry must not be clobbered by a delete's level-0 survivor.
+    pub fn set_entry_point_if_not_better(&self, id: u32, level: u32, expected_id: u32) {
+        let cell = self.header_atomic_u64(H_ENTRY);
+        let new = (id as u64) | ((level as u64) << 32);
+        let mut cur = cell.load(Ordering::Acquire);
+        loop {
+            let cur_id = (cur & 0xffff_ffff) as u32;
+            let cur_level = (cur >> 32) as u32;
+            if cur_id != expected_id && cur_id != NO_ID && cur_level > level {
+                return; // someone installed a better entry meanwhile
+            }
+            match cell.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(now) => cur = now,
+            }
+        }
+    }
+
     pub fn set_watermark(&self, txn: u64) {
         self.header_atomic_u64(H_TXN_WATERMARK).store(txn, Ordering::Release);
     }
@@ -378,9 +398,13 @@ impl PlaneFile {
     /// re-covers a suffix, which is idempotent — never a new watermark over missing data.
     /// (A single whole-map msync cannot express "data before watermark": the kernel may
     /// write the header page back first.)
-    pub fn flush_with_watermark(&self, txn: u64) -> io::Result<()> {
+    pub fn flush_with_watermark(&self, txn: Option<u64>) -> io::Result<()> {
         self.map.flush()?;
-        self.set_watermark(txn);
+        if let Some(txn) = txn {
+            // None must not TOUCH the watermark: a cadence barrier reading-then-rewriting it
+            // on a pool thread could write a stale value over a completion stamp
+            self.set_watermark(txn);
+        }
         unsafe { *(self.map.as_ptr().add(H_CLEAN_SHUTDOWN) as *mut u8) = 1 };
         self.map.flush_range(0, HEADER_SIZE)
     }

@@ -129,8 +129,7 @@ impl Task for FlushTask {
     type JsValue = ();
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let txn = self.txn.unwrap_or_else(|| self.graph.file.watermark());
-        self.graph.file.flush_with_watermark(txn).map_err(|e| Error::from_reason(e.to_string()))
+        self.graph.file.flush_with_watermark(self.txn).map_err(|e| Error::from_reason(e.to_string()))
     }
 
     fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
@@ -471,7 +470,6 @@ impl Plane {
     /// re-covers a suffix), never a new watermark over missing data.
     #[napi]
     pub fn flush(&self, watermark: Option<f64>) -> Result<()> {
-        let txn = watermark.map(|w| w as u64).unwrap_or_else(|| self.graph.file.watermark());
-        self.graph.file.flush_with_watermark(txn).map_err(|e| Error::from_reason(e.to_string()))
+        self.graph.file.flush_with_watermark(watermark.map(|w| w as u64)).map_err(|e| Error::from_reason(e.to_string()))
     }
 }
