@@ -23,8 +23,8 @@
  * test in contentTypes.test.js) in bounded time, receiving only the events flushed before the
  * throw, with NO uncaughtException logged and the worker still alive afterward.
  *
- * This suite starts from the QA-537 harness/fixture pattern (qa-scratch/qa537-sse-finite-
- * generator/) and its `ThrowGen` case, which *documented* (did not assert) the pre-fix hang.
+ * This suite starts from the QA-537 harness/fixture pattern (sse-finite-generator.test.ts, which
+ * anchors #1628) and its `ThrowGen` case, which *documented* (did not assert) the pre-fix hang.
  * Here the throw cases are promoted to hard assertions of clean termination:
  *   ThrowFirst - throws on the very first step, before any bytes are yielded.
  *   ThrowMid   - yields 3 of an intended 6 events, then throws (genuine mid-stream failure).
@@ -44,14 +44,19 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { resolve, join } from 'node:path';
+import { resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as sleep } from 'node:timers/promises';
-import http from 'node:http';
-import https from 'node:https';
-import { URL } from 'node:url';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import {
+	consumeSse,
+	countUncaught,
+	getProbe,
+	readLogSafe,
+	resolveHdbLogPath,
+	uncaughtAfterSettle,
+	waitForProbe,
+} from '../utils/sseStream.ts';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
@@ -65,170 +70,6 @@ interface ProbeSnap {
 	throwFirst: { opened: number; closed: number };
 	throwMid: { opened: number; closed: number };
 	clean: { opened: number; closed: number };
-}
-
-async function getProbe(restBase: string, authHeaders: Record<string, string>): Promise<ProbeSnap> {
-	const url = new URL(`${restBase}/Probe/`);
-	const lib = url.protocol === 'https:' ? https : http;
-	return new Promise((resolvePromise, reject) => {
-		const req = lib.request(
-			url,
-			{
-				method: 'GET',
-				headers: { ...authHeaders, Accept: 'application/json' },
-				rejectUnauthorized: false,
-				signal: AbortSignal.timeout(3_000),
-			} as any,
-			(res) => {
-				const chunks: Buffer[] = [];
-				res.on('data', (d: Buffer) => chunks.push(d));
-				res.on('end', () => {
-					try {
-						resolvePromise(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-					} catch (e) {
-						reject(e);
-					}
-				});
-				res.on('error', reject);
-			}
-		);
-		req.on('error', reject);
-		req.end();
-	});
-}
-
-async function waitForProbe(
-	restBase: string,
-	authHeaders: Record<string, string>,
-	predicate: (probe: ProbeSnap) => boolean,
-	timeoutMs = 5_000
-): Promise<ProbeSnap | null> {
-	const deadline = Date.now() + timeoutMs;
-	let probe: ProbeSnap | null = null;
-	while (Date.now() < deadline) {
-		probe = await getProbe(restBase, authHeaders).catch(() => null);
-		if (probe && predicate(probe)) return probe;
-		await sleep(50);
-	}
-	return probe;
-}
-
-// ── AbortController-bounded SSE stream consumer ──────────────────────────────────────────
-// Wraps the request in an AbortController with a generous but bounded timeout, so a genuine
-// regression (hung response) shows up as a caught timeout/abort in the test, never a hung
-// process. Resolves on whichever of 'end' / 'error' / 'close' fires first, since the fixed
-// pipeline()-based teardown closes the response abruptly (not via a clean 'end') on a source
-// error -- see PR #1789.
-
-interface SseResult {
-	status: number;
-	raw: string;
-	events: string[]; // parsed `data: ...` payloads, in order
-	terminatedBy: 'end' | 'error' | 'close' | null; // which event resolved the request
-	aborted: boolean; // did our own timeout abort fire (i.e. it hung)?
-	errored: Error | null;
-	elapsedMs: number;
-}
-
-function consumeSse(urlStr: string, authHeaders: Record<string, string>, timeoutMs = 12_000): Promise<SseResult> {
-	const url = new URL(urlStr);
-	const lib = url.protocol === 'https:' ? https : http;
-	const controller = new AbortController();
-	let timedOut = false;
-	const start = Date.now();
-	const timer = setTimeout(() => {
-		timedOut = true;
-		controller.abort();
-	}, timeoutMs);
-
-	return new Promise((resolvePromise) => {
-		const result: SseResult = {
-			status: 0,
-			raw: '',
-			events: [],
-			terminatedBy: null,
-			aborted: false,
-			errored: null,
-			elapsedMs: 0,
-		};
-		let settled = false;
-		const finish = (terminatedBy: SseResult['terminatedBy'], err?: Error) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			result.terminatedBy = terminatedBy;
-			result.errored = err ?? null;
-			result.elapsedMs = Date.now() - start;
-			result.events = result.raw
-				.split('\n')
-				.filter((l) => l.startsWith('data: '))
-				.map((l) => l.slice('data: '.length));
-			resolvePromise(result);
-		};
-		const req = lib.request(
-			url,
-			{
-				method: 'GET',
-				headers: { ...authHeaders, Accept: 'text/event-stream' },
-				rejectUnauthorized: false,
-				signal: controller.signal,
-			} as any,
-			(res) => {
-				result.status = res.statusCode ?? 0;
-				// Decode incrementally: a bare d.toString('utf8') per chunk corrupts any multi-byte
-				// character that straddles a TCP chunk boundary into U+FFFD.
-				const decoder = new StringDecoder('utf8');
-				res.on('data', (d: Buffer) => {
-					result.raw += decoder.write(d);
-				});
-				res.on('end', () => {
-					result.raw += decoder.end();
-					finish('end');
-				});
-				res.on('error', (e: Error) => finish('error', e));
-				res.on('close', () => finish('close'));
-			}
-		);
-		req.on('error', (e: any) => {
-			if (timedOut || e?.name === 'AbortError') {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timer);
-				result.aborted = true;
-				result.elapsedMs = Date.now() - start;
-				result.events = result.raw
-					.split('\n')
-					.filter((l) => l.startsWith('data: '))
-					.map((l) => l.slice('data: '.length));
-				resolvePromise(result);
-			} else {
-				finish('error', e);
-			}
-		});
-		req.end();
-	});
-}
-
-function readLogSafe(logPath: string): string {
-	try {
-		return readFileSync(logPath, 'utf8');
-	} catch {
-		return '';
-	}
-}
-
-function countUncaught(log: string): number {
-	return log.split('\n').filter((l) => l.includes('uncaughtException')).length;
-}
-
-/**
- * Asserting a NON-event: the worker logs an uncaughtException asynchronously, so reading hdb.log
- * the instant the response closes can pass vacuously by simply outrunning the flush. Give the
- * writer a bounded settle first — one of the cases AGENTS.md reserves a fixed sleep for.
- */
-async function uncaughtAfterSettle(logPath: string): Promise<number> {
-	await sleep(1_000);
-	return countUncaught(readLogSafe(logPath));
 }
 
 // ── Suite ──────────────────────────────────────────────────────────────────────────────────
@@ -250,15 +91,13 @@ suite(
 			client = createApiClient(ctx.harper);
 			restBase = client.restURL;
 			authHeaders = { Authorization: client.headers.Authorization as string };
-			logPath = (ctx.harper as any).logDir
-				? join((ctx.harper as any).logDir, 'hdb.log')
-				: join((ctx.harper as any).dataRootDir, 'log', 'hdb.log');
+			logPath = resolveHdbLogPath(ctx.harper as any);
 
 			const deadline = Date.now() + 30_000;
 			let ready = false;
 			while (Date.now() < deadline) {
 				try {
-					const p = await getProbe(restBase, authHeaders);
+					const p = await getProbe<ProbeSnap>(restBase, authHeaders);
 					if (p?.ok !== undefined) {
 						ready = true;
 						break;
@@ -301,7 +140,11 @@ suite(
 					`expected 0 events (throw before any yield), got ${r.events.length}. raw:\n${r.raw}`
 				);
 
-				const probe = await waitForProbe(restBase, authHeaders, (snapshot) => snapshot.throwFirst.closed >= 1);
+				const probe = await waitForProbe<ProbeSnap>(
+					restBase,
+					authHeaders,
+					(snapshot) => snapshot.throwFirst.closed >= 1
+				);
 				ok(probe && probe.throwFirst.closed >= 1, 'ThrowFirst generator should have completed cleanup');
 				const uncaughtAfter = await uncaughtAfterSettle(logPath);
 				strictEqual(
@@ -339,7 +182,7 @@ suite(
 					ok(r.events[i].includes(`"n":${i}`), `expected event ${i} to contain n=${i}, got: ${r.events[i]}`);
 				}
 
-				const probe = await waitForProbe(restBase, authHeaders, (snapshot) => snapshot.throwMid.closed >= 1);
+				const probe = await waitForProbe<ProbeSnap>(restBase, authHeaders, (snapshot) => snapshot.throwMid.closed >= 1);
 				ok(probe && probe.throwMid.closed >= 1, 'ThrowMid generator should have completed cleanup');
 				const uncaughtAfter = await uncaughtAfterSettle(logPath);
 				strictEqual(
@@ -378,7 +221,7 @@ suite(
 			{ timeout: 30_000 },
 			async () => {
 				const logBefore = readLogSafe(logPath);
-				const p = await waitForProbe(
+				const p = await waitForProbe<ProbeSnap>(
 					restBase,
 					authHeaders,
 					(snapshot) => snapshot.throwFirst.closed >= 1 && snapshot.throwMid.closed >= 1 && snapshot.clean.closed >= 1

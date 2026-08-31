@@ -1,0 +1,9 @@
+# QA-537 — regression verify for #1628 ("Fix SSE hang on finite generator streamed to
+# completion", merged via PR #1632 / commit 69c8c89a9).
+#
+# No table backing is needed for the generator Resources under test, but a jsResource
+# fixture requires at least one @table/@export type to be a valid component, so this is a
+# minimal placeholder.
+type Placeholder @table @export {
+	id: ID @primaryKey
+}

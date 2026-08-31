@@ -1,0 +1,209 @@
+/**
+ * Shared helpers for the SSE streaming regression suites in `integrationTests/server/`
+ * (`sse-finite-generator.test.ts`, `sse-throw-midstream.test.ts`).
+ *
+ * These suites all need the same three things, and each grew its own copy before this module
+ * existed:
+ *
+ *  - an SSE consumer bounded by an AbortController, so a regressed hang fails the test in
+ *    bounded time instead of wedging the whole run;
+ *  - a `/Probe/` reader for the per-resource open/close lifecycle counters the fixtures keep,
+ *    with a polling form for the counters that settle asynchronously after a response ends;
+ *  - an `hdb.log` reader that counts `uncaughtException` lines, since the bugs these suites
+ *    anchor (#1628, #1789) manifested as an uncaught throw inside the worker rather than as a
+ *    bad response.
+ *
+ * Nothing here is Harper-specific beyond the `/Probe/` path convention and the log layout; the
+ * raw-socket capture used by `stream-error-contract.test.ts` is a deliberately different
+ * technique (it inspects chunk framing and the exact close mechanism) and is not shared.
+ */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
+import { setTimeout as sleep } from 'node:timers/promises';
+import http from 'node:http';
+import https from 'node:https';
+import { URL } from 'node:url';
+
+export interface SseResult {
+	status: number;
+	raw: string;
+	/** parsed `data: ...` payloads, in order */
+	events: string[];
+	/** which response event resolved the request, or null if our own timeout fired first */
+	terminatedBy: 'end' | 'error' | 'close' | null;
+	/** did our own timeout abort fire (i.e. the response hung)? */
+	aborted: boolean;
+	errored: Error | null;
+	elapsedMs: number;
+}
+
+function parseEvents(raw: string): string[] {
+	return raw
+		.split('\n')
+		.filter((line) => line.startsWith('data: '))
+		.map((line) => line.slice('data: '.length));
+}
+
+/**
+ * Consume an SSE response, bounded by an AbortController.
+ *
+ * Resolves on whichever of 'end' / 'error' / 'close' fires first: the pipeline()-based teardown
+ * introduced by #1789 closes the response abruptly rather than via a clean 'end' when the source
+ * generator rejects, so waiting only for 'end' would read a correct abrupt close as a hang.
+ */
+export function consumeSse(
+	urlStr: string,
+	authHeaders: Record<string, string>,
+	timeoutMs = 12_000
+): Promise<SseResult> {
+	const url = new URL(urlStr);
+	const lib = url.protocol === 'https:' ? https : http;
+	const controller = new AbortController();
+	let timedOut = false;
+	const start = Date.now();
+	const timer = setTimeout(() => {
+		timedOut = true;
+		controller.abort();
+	}, timeoutMs);
+
+	return new Promise((resolvePromise) => {
+		const result: SseResult = {
+			status: 0,
+			raw: '',
+			events: [],
+			terminatedBy: null,
+			aborted: false,
+			errored: null,
+			elapsedMs: 0,
+		};
+		let settled = false;
+		const finish = (terminatedBy: SseResult['terminatedBy'], err?: Error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			result.terminatedBy = terminatedBy;
+			result.errored = err ?? null;
+			result.elapsedMs = Date.now() - start;
+			result.events = parseEvents(result.raw);
+			resolvePromise(result);
+		};
+		const req = lib.request(
+			url,
+			{
+				method: 'GET',
+				headers: { ...authHeaders, Accept: 'text/event-stream' },
+				rejectUnauthorized: false,
+				signal: controller.signal,
+			} as any,
+			(res) => {
+				result.status = res.statusCode ?? 0;
+				// Decode incrementally: a bare d.toString('utf8') per chunk corrupts any multi-byte
+				// character that straddles a TCP chunk boundary into U+FFFD.
+				const decoder = new StringDecoder('utf8');
+				res.on('data', (d: Buffer) => {
+					result.raw += decoder.write(d);
+				});
+				res.on('end', () => {
+					result.raw += decoder.end();
+					finish('end');
+				});
+				res.on('error', (e: Error) => finish('error', e));
+				res.on('close', () => finish('close'));
+			}
+		);
+		req.on('error', (e: any) => {
+			if (timedOut || e?.name === 'AbortError') {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				result.aborted = true;
+				result.elapsedMs = Date.now() - start;
+				result.events = parseEvents(result.raw);
+				resolvePromise(result);
+			} else {
+				finish('error', e);
+			}
+		});
+		req.end();
+	});
+}
+
+/** Read the fixture's `/Probe/` resource: readiness plus its open/close lifecycle counters. */
+export function getProbe<T>(restBase: string, authHeaders: Record<string, string>, timeoutMs = 3_000): Promise<T> {
+	const url = new URL(`${restBase}/Probe/`);
+	const lib = url.protocol === 'https:' ? https : http;
+	return new Promise((resolvePromise, reject) => {
+		const req = lib.request(
+			url,
+			{
+				method: 'GET',
+				headers: { ...authHeaders, Accept: 'application/json' },
+				rejectUnauthorized: false,
+				signal: AbortSignal.timeout(timeoutMs),
+			} as any,
+			(res) => {
+				const chunks: Buffer[] = [];
+				res.on('data', (d: Buffer) => chunks.push(d));
+				res.on('end', () => {
+					try {
+						resolvePromise(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+					} catch (e) {
+						reject(e);
+					}
+				});
+				res.on('error', reject);
+			}
+		);
+		req.on('error', reject);
+		req.end();
+	});
+}
+
+/**
+ * Poll `/Probe/` until `predicate` holds. A generator's `finally` block runs after the response
+ * has already terminated, so its close counter is not readable the instant the client resolves.
+ * Returns the last snapshot read (which may not satisfy the predicate) or null if none was.
+ */
+export async function waitForProbe<T>(
+	restBase: string,
+	authHeaders: Record<string, string>,
+	predicate: (probe: T) => boolean,
+	timeoutMs = 5_000
+): Promise<T | null> {
+	const deadline = Date.now() + timeoutMs;
+	let probe: T | null = null;
+	while (Date.now() < deadline) {
+		probe = await getProbe<T>(restBase, authHeaders).catch(() => null);
+		if (probe && predicate(probe)) return probe;
+		await sleep(50);
+	}
+	return probe;
+}
+
+/** Where the test instance writes hdb.log, across framework versions that expose either field. */
+export function resolveHdbLogPath(harper: { logDir?: string; dataRootDir?: string }): string {
+	return harper.logDir ? join(harper.logDir, 'hdb.log') : join(harper.dataRootDir as string, 'log', 'hdb.log');
+}
+
+export function readLogSafe(logPath: string): string {
+	try {
+		return readFileSync(logPath, 'utf8');
+	} catch {
+		return '';
+	}
+}
+
+export function countUncaught(log: string): number {
+	return log.split('\n').filter((line) => line.includes('uncaughtException')).length;
+}
+
+/**
+ * Asserting a NON-event: the worker logs an uncaughtException asynchronously, so reading hdb.log
+ * the instant the response closes can pass vacuously by simply outrunning the flush. Give the
+ * writer a bounded settle first — one of the cases AGENTS.md reserves a fixed sleep for.
+ */
+export async function uncaughtAfterSettle(logPath: string): Promise<number> {
+	await sleep(1_000);
+	return countUncaught(readLogSafe(logPath));
+}
