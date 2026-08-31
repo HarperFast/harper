@@ -160,7 +160,9 @@ async function moveLogFile(logPath: string, rotatedLogPath: string, logger?: any
 	// and `/logs/b/hdb.log`), so a hash of the full resolved source path plus a pid+sequence suffix
 	// give every archive a name POSIX rename() can never clobber, even under a same-millisecond race.
 	const sourceName = path.basename(logPath, path.extname(logPath)) || 'HDB';
-	const sourceId = createHash('sha1').update(path.resolve(logPath)).digest('hex').slice(0, 8);
+	// sha256, not sha1: this only needs a stable identifier, not cryptographic strength, but a FIPS-mode
+	// OpenSSL provider disables sha1 and throws synchronously, which would crash every rotation tick.
+	const sourceId = createHash('sha256').update(path.resolve(logPath)).digest('hex').slice(0, 8);
 	const uniqueSuffix = `${process.pid}-${rotationSequence++}`;
 	let fullRotateLogPath = path.join(
 		rotatedLogPath,
