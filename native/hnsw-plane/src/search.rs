@@ -1,7 +1,8 @@
-//! Beam search over the plane. Visited tracking is an epoch-stamped array (no per-query
-//! allocation once warmed); candidate/result sets are simple binary heaps.
+//! Beam search over the plane, zero-copy: per-visit cost is one seqlock-guarded distance
+//! against mmap bytes plus primitive heap/visited ops. Visited tracking is an epoch-stamped
+//! array; neighbor ids stream through a reusable scratch buffer.
 
-use crate::distance::{cosine_int8, Query};
+use crate::distance::Query;
 use crate::format::NO_ID;
 use crate::graph::Graph;
 use std::cmp::Ordering as CmpOrdering;
@@ -43,15 +44,20 @@ impl PartialOrd for Result_ {
     }
 }
 
-/// Reusable per-thread search scratch: epoch-stamped visited array.
+/// Reusable per-thread search scratch.
 pub struct SearchScratch {
     visited: Vec<u32>,
     epoch: u32,
+    neighbors: Vec<u32>,
 }
 
 impl SearchScratch {
     pub fn new() -> Self {
-        SearchScratch { visited: Vec::new(), epoch: 0 }
+        SearchScratch { visited: Vec::new(), epoch: 0, neighbors: Vec::new() }
+    }
+
+    pub fn begin_public(&mut self, capacity: u64) {
+        self.begin(capacity)
     }
 
     fn begin(&mut self, capacity: u64) {
@@ -77,8 +83,117 @@ impl SearchScratch {
     }
 }
 
+impl Default for SearchScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct SearchStats {
     pub visits: u64,
+}
+
+/// Beam search within one layer, starting from `entry`. Level 0 reads slot adjacency;
+/// upper levels read the resident upper map. Returns (id, distance) ascending by distance.
+/// Assumes scratch.begin() was called for this query; entry is marked visited here.
+pub fn search_layer(
+    graph: &Graph,
+    query: &Query,
+    entry: u32,
+    entry_dist: f32,
+    ef: usize,
+    level: u8,
+    scratch: &mut SearchScratch,
+    stats: &mut SearchStats,
+) -> Vec<(u32, f32)> {
+    let mut candidates = BinaryHeap::new();
+    let mut results: BinaryHeap<Result_> = BinaryHeap::new();
+    scratch.visit(entry);
+    candidates.push(Candidate { distance: entry_dist, id: entry });
+    results.push(Result_ { distance: entry_dist, id: entry });
+
+    // take() the scratch neighbor buffer to sidestep the double-borrow of scratch
+    let mut nbuf = std::mem::take(&mut scratch.neighbors);
+
+    while let Some(c) = candidates.pop() {
+        let worst = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+        if results.len() >= ef && c.distance > worst {
+            break;
+        }
+        if level == 0 {
+            if graph.neighbors_into(c.id, &mut nbuf).is_none() {
+                continue;
+            }
+        } else {
+            nbuf.clear();
+            let upper = graph.upper.read().unwrap();
+            if let Some(levels) = upper.get(&c.id) {
+                if let Some(list) = levels.get(level as usize - 1) {
+                    nbuf.extend_from_slice(list);
+                }
+            }
+        }
+        for i in 0..nbuf.len() {
+            let nid = nbuf[i];
+            if !scratch.visit(nid) {
+                continue;
+            }
+            if let Some(d) = graph.distance_to(nid, query) {
+                stats.visits += 1;
+                let worst = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
+                if results.len() < ef || d < worst {
+                    candidates.push(Candidate { distance: d, id: nid });
+                    results.push(Result_ { distance: d, id: nid });
+                    if results.len() > ef {
+                        results.pop();
+                    }
+                }
+            }
+        }
+    }
+    scratch.neighbors = nbuf;
+
+    let mut out: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
+    out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(CmpOrdering::Equal));
+    out
+}
+
+/// Greedy single-candidate descent through upper layers from `from_level` down to
+/// `to_level` (exclusive lower bound handled by caller loops). Returns improved entry.
+pub fn greedy_descend(
+    graph: &Graph,
+    query: &Query,
+    mut current: u32,
+    mut current_dist: f32,
+    from_level: u32,
+    to_level: u32,
+    stats: &mut SearchStats,
+) -> (u32, f32) {
+    let upper = graph.upper.read().unwrap();
+    let mut level = from_level;
+    while level > to_level {
+        let mut improved = true;
+        while improved {
+            improved = false;
+            let neighbors = upper
+                .get(&current)
+                .and_then(|levels| levels.get(level as usize - 1))
+                .cloned()
+                .unwrap_or_default();
+            for nid in neighbors {
+                if let Some(d) = graph.distance_to(nid, query) {
+                    stats.visits += 1;
+                    if d < current_dist {
+                        current = nid;
+                        current_dist = d;
+                        improved = true;
+                    }
+                }
+            }
+        }
+        level -= 1;
+    }
+    (current, current_dist)
 }
 
 /// Full search: greedy descent through upper layers, then beam at layer 0.
@@ -96,75 +211,15 @@ pub fn search(
     }
     scratch.begin(graph.file.id_high_water());
 
-    // Greedy descent: single-candidate walk from the top level down to level 1.
-    let mut current = entry_id;
-    let mut current_dist = match graph.read_node(current) {
-        Some(n) => {
+    let entry_dist = match graph.distance_to(entry_id, query) {
+        Some(d) => {
             stats.visits += 1;
-            cosine_int8(query, &n.vector, n.scale, n.inv_mag)
+            d
         }
         None => return (Vec::new(), stats),
     };
-    let upper = graph.upper.read().unwrap();
-    for level in (1..=entry_level).rev() {
-        let mut improved = true;
-        while improved {
-            improved = false;
-            let neighbors = upper
-                .get(&current)
-                .and_then(|levels| levels.get(level as usize - 1))
-                .cloned()
-                .unwrap_or_default();
-            for nid in neighbors {
-                if let Some(n) = graph.read_node(nid) {
-                    stats.visits += 1;
-                    let d = cosine_int8(query, &n.vector, n.scale, n.inv_mag);
-                    if d < current_dist {
-                        current = nid;
-                        current_dist = d;
-                        improved = true;
-                    }
-                }
-            }
-        }
-    }
-    drop(upper);
-
-    // Layer-0 beam.
-    let mut candidates = BinaryHeap::new();
-    let mut results: BinaryHeap<Result_> = BinaryHeap::new();
-    scratch.visit(current);
-    candidates.push(Candidate { distance: current_dist, id: current });
-    results.push(Result_ { distance: current_dist, id: current });
-
-    while let Some(c) = candidates.pop() {
-        let worst = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-        if results.len() >= ef && c.distance > worst {
-            break;
-        }
-        if let Some(node) = graph.read_node(c.id) {
-            for nid in node.neighbors {
-                if !scratch.visit(nid) {
-                    continue;
-                }
-                if let Some(n) = graph.read_node(nid) {
-                    stats.visits += 1;
-                    let d = cosine_int8(query, &n.vector, n.scale, n.inv_mag);
-                    let worst = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
-                    if results.len() < ef || d < worst {
-                        candidates.push(Candidate { distance: d, id: nid });
-                        results.push(Result_ { distance: d, id: nid });
-                        if results.len() > ef {
-                            results.pop();
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut out: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-    out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(CmpOrdering::Equal));
+    let (ep, ep_dist) = greedy_descend(graph, query, entry_id, entry_dist, entry_level, 0, &mut stats);
+    let mut out = search_layer(graph, query, ep, ep_dist, ef, 0, scratch, &mut stats);
     out.truncate(k);
     (out, stats)
 }
