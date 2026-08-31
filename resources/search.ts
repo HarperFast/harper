@@ -1493,6 +1493,7 @@ function parseBlock(query, expectedEnd) {
 						break;
 					case 'group-by':
 						recordError('group by is not implemented yet');
+						break;
 					case 'sort':
 						query.sort = toSortObject(args);
 						break;
