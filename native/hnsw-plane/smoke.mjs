@@ -40,15 +40,10 @@ console.log('freelist reuse OK, highWater still', plane.idHighWater());
 // pipelined JS predicate: admit only ids divisible by 3; verdicts computed on the JS
 // event loop while traversal runs on the libuv pool
 let predicateCalls = 0;
-const pred = await plane.searchWithPredicate(
-	vec(44),
-	5,
-	128,
-	(ids) => {
-		predicateCalls++;
-		return Uint8Array.from(ids, (id) => (id % 3 === 0 ? 1 : 0));
-	}
-);
+const pred = await plane.searchWithPredicate(vec(44), 5, 128, (ids) => {
+	predicateCalls++;
+	return Uint8Array.from(ids, (id) => (id % 3 === 0 ? 1 : 0));
+});
 for (const h of pred) if (h.id % 3 !== 0) throw new Error(`predicate leak: id ${h.id}`);
 if (pred.length === 0) throw new Error('predicate search returned nothing');
 console.log(`predicate top hit: id ${pred[0].id} (calls: ${predicateCalls})`);
@@ -58,19 +53,25 @@ const mirror = Plane.create(`/tmp/smoke-mirror-${process.pid}.hnsw`, dims, 32, 1
 const q42 = vec(42);
 // quantize like the host: scale maps max|c| to 127, invMag = 1/|v|
 function quant(v) {
-	let maxAbs = 0, magSq = 0;
-	for (const x of v) { maxAbs = Math.max(maxAbs, Math.abs(x)); magSq += x * x; }
+	let maxAbs = 0,
+		magSq = 0;
+	for (const x of v) {
+		maxAbs = Math.max(maxAbs, Math.abs(x));
+		magSq += x * x;
+	}
 	const scale = maxAbs === 0 ? 1 : maxAbs / 127;
 	const bytes = Buffer.from(Int8Array.from(v, (x) => Math.max(-127, Math.min(127, Math.round(x / scale)))).buffer);
 	return { bytes, scale, invMag: 1 / Math.sqrt(magSq) };
 }
 // two nodes linked to each other, host ids 10 and 20; node 10 is the entry at level 1
-const a = quant(q42), b = quant(vec(43));
+const a = quant(q42),
+	b = quant(vec(43));
 mirror.writeNodeRaw(10, 1, a.bytes, a.scale, a.invMag, Uint32Array.from([20]), [Uint32Array.from([])]);
 mirror.writeNodeRaw(20, 0, b.bytes, b.scale, b.invMag, Uint32Array.from([10]), null);
 mirror.setEntryPoint(10, 1);
 const mhits = mirror.searchSync(q42, 2, 16);
-if (mhits[0].id !== 10 || mhits[0].distance > 1e-3) throw new Error(`mirror self-query failed: ${JSON.stringify(mhits)}`);
+if (mhits[0].id !== 10 || mhits[0].distance > 1e-3)
+	throw new Error(`mirror self-query failed: ${JSON.stringify(mhits)}`);
 mirror.clearNode(20);
 const mhits2 = mirror.searchSync(vec(43), 2, 16);
 if (mhits2.some((h) => h.id === 20)) throw new Error('cleared node still returned');

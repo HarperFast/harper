@@ -54,6 +54,7 @@
 	"scripts": {
 		"build": "tsc --project tsconfig.build.json",
 		"build:watch": "npm run build -- --watch --incremental",
+		"build:hnsw-plane": "node native/hnsw-plane/build.mjs",
 		"typecheck": "tsc --project tsconfig.json",
 		"typecheck:fast": "npx -y -p typescript@7.0.2 tsc --noEmit --project tsconfig.json",
 		"test:types": "tsc --project unitTests/types/tsconfig.json",

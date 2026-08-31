@@ -1628,6 +1628,7 @@ export function makeTable(options) {
 							const index = indices[attribute.name];
 							if (index)
 								try {
+									index.customIndex?.resetDerivedStorage?.();
 									index.dropSync();
 								} catch (error) {
 									ignoreAlreadyDropped(error);
@@ -1648,7 +1649,10 @@ export function makeTable(options) {
 					const drops = [];
 					for (const attribute of attributes) {
 						const index = indices[attribute.name];
-						if (index) drops.push(index.drop().catch(ignoreAlreadyDropped));
+						if (index) {
+							index.customIndex?.resetDerivedStorage?.();
+							drops.push(index.drop().catch(ignoreAlreadyDropped));
+						}
 					}
 					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
 					await Promise.all(drops);
@@ -5494,6 +5498,7 @@ export function makeTable(options) {
 			const promises = [primaryStore.clear()];
 			for (const key in indices) {
 				const index = indices[key];
+				index.customIndex?.resetDerivedStorage?.();
 				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
 			}
 			return Promise.all(promises);

@@ -191,6 +191,14 @@ impl Plane {
                 self.graph.file.dims
             )));
         }
+        // ensure_high_water + slot_ptr have no bounds check, so a host id past the fixed
+        // reservation would address past the slot region (mmap overrun) — reject it here.
+        if id as u64 >= self.graph.file.max_nodes {
+            return Err(Error::from_reason(format!(
+                "node id {} exceeds the plane's maxNodes reservation ({})",
+                id, self.graph.file.max_nodes
+            )));
+        }
         let vec_i8 = unsafe { std::slice::from_raw_parts(vector.as_ptr() as *const i8, vector.len()) };
         let upper_levels: Vec<Vec<u32>> =
             upper.map(|ls| ls.iter().map(|l| l.to_vec()).collect()).unwrap_or_default();

@@ -10,12 +10,12 @@ ceiling both auto-scale with the graph") and issues #693, #711, #895, #2182.
 Per-visit cost decomposition at 5M nodes / ef 512 (768-d int8, `benchmarks/hnsw-scale.js`
 corpus, 22.18 ms p50 / 5,107 visits):
 
-| Component                                         | Cost    | Share of a warm visit |
-| ------------------------------------------------- | ------- | ---------------------- |
-| Total per visited node                             | 4.34 µs | 100%                   |
-| int8 asymmetric cosine, 768-d, JS                  | 0.43 µs | 10%                    |
-| msgpackr decode of one node (VT-cache miss)        | 5.57 µs | +128% when cold        |
-| Neighbour iteration + visited-set ops              | 0.21 µs | 5%                     |
+| Component                                   | Cost    | Share of a warm visit |
+| ------------------------------------------- | ------- | --------------------- |
+| Total per visited node                      | 4.34 µs | 100%                  |
+| int8 asymmetric cosine, 768-d, JS           | 0.43 µs | 10%                   |
+| msgpackr decode of one node (VT-cache miss) | 5.57 µs | +128% when cold       |
+| Neighbour iteration + visited-set ops       | 0.21 µs | 5%                    |
 
 ~85% of a warm visit is JS object bookkeeping — candidate heap, visited `Set`, property access,
 allocation, GC — not distance math and not I/O. Three consequences:
@@ -84,31 +84,31 @@ One file per index (per slice, once C2 lands): `<index-path>.hnsw`.
 
 **Header (4 KB page):**
 
-| Field | Type | Notes |
-| --- | --- | --- |
-| magic + format version | u32 + u32 | rebuild required on version mismatch (accepted contract) |
-| dims, quantization mode | u16 + u8 | v1: int8 asymmetric; f32 supported for `quantization:"none"` |
-| slot_size, layer0_cap, upper_cap | u16 ×3 | derived from M/optimizeRouting at creation |
-| entry_point_id, entry_point_level | u32 + u8 | atomically updated |
-| id_high_water | u64 atomic | replaces the shared Atomics BigInt64Array incrementer |
-| freelist_head | u64 atomic | CAS push/pop; ABA-guarded with a 32-bit tag |
-| txn_watermark | u64 | last durably indexed transaction; advanced by msync cadence |
-| clean_shutdown flag | u8 | torn-state detection on open |
+| Field                             | Type       | Notes                                                        |
+| --------------------------------- | ---------- | ------------------------------------------------------------ |
+| magic + format version            | u32 + u32  | rebuild required on version mismatch (accepted contract)     |
+| dims, quantization mode           | u16 + u8   | v1: int8 asymmetric; f32 supported for `quantization:"none"` |
+| slot_size, layer0_cap, upper_cap  | u16 ×3     | derived from M/optimizeRouting at creation                   |
+| entry_point_id, entry_point_level | u32 + u8   | atomically updated                                           |
+| id_high_water                     | u64 atomic | replaces the shared Atomics BigInt64Array incrementer        |
+| freelist_head                     | u64 atomic | CAS push/pop; ABA-guarded with a 32-bit tag                  |
+| txn_watermark                     | u64        | last durably indexed transaction; advanced by msync cadence  |
+| clean_shutdown flag               | u8         | torn-state detection on open                                 |
 
 **Main region — layer-0 slots**, addressed `4096 + id × slot_size`:
 
-| Field | Size (768-d int8, cap 64) |
-| --- | --- |
-| seq (seqlock) | 4 B |
-| flags (valid/deleted) + level | 2 B |
-| scale (f32) + invMag (f32) | 8 B |
-| degree | 2 B |
-| vector (int8 × 768) | 768 B |
-| neighbor ids (u32 × layer0_cap) | 256 B |
-| **total, padded** | **1,040 B → 1 KB-aligned 1,088 B** |
+| Field                           | Size (768-d int8, cap 64)          |
+| ------------------------------- | ---------------------------------- |
+| seq (seqlock)                   | 4 B                                |
+| flags (valid/deleted) + level   | 2 B                                |
+| scale (f32) + invMag (f32)      | 8 B                                |
+| degree                          | 2 B                                |
+| vector (int8 × 768)             | 768 B                              |
+| neighbor ids (u32 × layer0_cap) | 256 B                              |
+| **total, padded**               | **1,040 B → 1 KB-aligned 1,088 B** |
 
 At 100M nodes: ~109 GB (int8). A binary-code v2 slot (96 B codes + ids) is ~384 B → ~38 GB.
-For comparison, today's encoding averages 1,425 B/node *plus* RocksDB overhead — so v1 is
+For comparison, today's encoding averages 1,425 B/node _plus_ RocksDB overhead — so v1 is
 already ~25% smaller while being fixed-offset addressable, because per-edge cached float64
 distances are dropped (recomputing a distance costs ~50 ns native; storing it costs 8 B and
 ~40% of today's node bytes).
@@ -135,7 +135,7 @@ a header field, so revising it is a rebuild, not a format change.
   back-edge lists, each independently. A traversal may observe the half-linked state: an edge
   to a slot whose valid flag is not yet set → skip (HNSW tolerates missing edges); a
   just-deleted neighbor → skip via flags. Wrong-candidate leakage is filtered by the existing
-  exact rescore + MVCC record load, which is why relaxed adherence is safe *here* and not a
+  exact rescore + MVCC record load, which is why relaxed adherence is safe _here_ and not a
   general storage pattern.
 - **Writers.** Multiple worker threads insert concurrently today (distinct records); the same
   holds: id allocation is one atomic fetch_add on the header, freelist pop is CAS, slot writes
@@ -207,6 +207,17 @@ search(sliceHandles, queryVector: Float32Array, k, ef, filter?): Promise<{ids, d
   file. Validation = compare native results against the JS path on the same graph; rollback =
   flip search back to JS, drop the file. The double-write cost is bounded (index writes are
   a fraction of insert cost) and temporary.
+
+  _Integrated_ behind the opt-in `nativePlane: true` index option (search-only: toggling never
+  reindexes; int8 + cosine indexes only — the flag no-ops elsewhere). Mutations mirror at the
+  exact `indexStore.put/remove` sites via `writeNodeRaw`/`clearNode`/`setEntryPoint` with
+  host-allocated ids; the plane file (`<store path>/<table>.<attr>.hnsw`, layer0 cap 128,
+  16M-node sparse reservation) is created lazily with a full mirror of the existing CF graph on
+  first enable, reopened on restart, deleted on drop/clear/reindex. The compiled module is
+  optional (`npm run build:hnsw-plane`); absence falls back to the JS path with one warning.
+  Parity, predicate, restart, and lifecycle coverage in `unitTests/resources/vectorIndexPlane.test.js`.
+  Watermark/replay wiring, slicing, and msync-cadence flushes are not wired yet (open items).
+
 - **Phase 2 — file-primary.** Drop the CF writes; the file is the only graph store. JS insert
   reads nodes through a native `getNode(id)` (one NAPI crossing per read, ~1 µs — comparable to
   today's decode path). Migration for existing indexes: reindex (accepted contract), or a
@@ -275,13 +286,13 @@ Gaussian-mixture corpus matching `benchmarks/hnsw-scale.js` calibration (intra-c
 clusters = N/500). JS baseline for scale: 4.34 µs/visit; 1M efC-200 anchor: p50 7.2 ms,
 recall@10-set 0.997, ~3,110 visits.
 
-| N | cap | p50 | p95 | visits/query | µs/visit | recall@10 (set) | build rate |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 100K | 64 | 0.28 ms | 0.46 ms | 1,395 | 0.201 | 1.000 | 5,583 inserts/s |
-| 1M | 64 | 0.81 ms | 1.60 ms | 2,279 | 0.353 | 0.975 | 1,670 inserts/s |
-| 1M | 128 | 0.75 ms | 1.48 ms | 2,309 | 0.324 | **0.996** | 1,242 inserts/s |
-| 1M (fmt v2) | 128 | 0.83 ms | 1.61 ms | 2,309 | 0.359 | 0.996 | 1,346 inserts/s |
-| 1M (coverage prune) | 128 | 0.75 ms | 1.52 ms | 2,279 | 0.327 | **0.999** | 1,359 inserts/s |
+| N                   | cap | p50     | p95     | visits/query | µs/visit | recall@10 (set) | build rate      |
+| ------------------- | --- | ------- | ------- | ------------ | -------- | --------------- | --------------- |
+| 100K                | 64  | 0.28 ms | 0.46 ms | 1,395        | 0.201    | 1.000           | 5,583 inserts/s |
+| 1M                  | 64  | 0.81 ms | 1.60 ms | 2,279        | 0.353    | 0.975           | 1,670 inserts/s |
+| 1M                  | 128 | 0.75 ms | 1.48 ms | 2,309        | 0.324    | **0.996**       | 1,242 inserts/s |
+| 1M (fmt v2)         | 128 | 0.83 ms | 1.61 ms | 2,309        | 0.359    | 0.996           | 1,346 inserts/s |
+| 1M (coverage prune) | 128 | 0.75 ms | 1.52 ms | 2,279        | 0.327    | **0.999**       | 1,359 inserts/s |
 
 Concurrency (same 1M graph): **6,345 QPS aggregate** across 8 searcher threads (p50 1.03 ms,
 worst-thread p99 3.84 ms) while a background writer sustained **1,102 inserts/s** — the QPS
