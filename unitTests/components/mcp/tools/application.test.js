@@ -7,6 +7,7 @@ const {
 	_resetCustomToolWarningsForTest,
 	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
+const { Resource } = require('#src/resources/Resource');
 const { listTools, getTool, _resetRegistryForTest } = require('#src/components/mcp/toolRegistry');
 const { listPrompts, _resetPromptRegistryForTest } = require('#src/components/mcp/promptRegistry');
 
@@ -230,6 +231,69 @@ describe('mcp/tools/application — registration', () => {
 			(t) => t.name
 		);
 		assert.deepEqual(names, []);
+	});
+
+	it('does not manufacture create_ for a real Resource subclass that never overrides post/update', () => {
+		// Unlike makeTableResource's plain `class Cls {}`, this inherits `post` from the real
+		// base Resource prototype, so it reproduces the inherited-function bug.
+		class ReadOnly extends Resource {
+			async get(target) {
+				return { id: target.id, name: 'sample' };
+			}
+			async search() {
+				return [{ id: '1' }];
+			}
+		}
+		ReadOnly.databaseName = 'data';
+		ReadOnly.tableName = 'readonly';
+		ReadOnly.primaryKey = 'id';
+		_setResourcesForTest(makeRegistry([['ReadOnly', { Resource: ReadOnly }]]));
+		registerApplicationTools();
+		const names = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.deepEqual(names.sort(), ['get_ReadOnly', 'search_ReadOnly']);
+	});
+
+	it('manufactures create_ for a real Resource subclass that only overrides update() (Table.ts pattern)', () => {
+		class Writable extends Resource {
+			async get(target) {
+				return { id: target.id, name: 'sample' };
+			}
+			async update(target, record) {
+				return record;
+			}
+		}
+		Writable.databaseName = 'data';
+		Writable.tableName = 'writable';
+		Writable.primaryKey = 'id';
+		_setResourcesForTest(makeRegistry([['Writable', { Resource: Writable }]]));
+		registerApplicationTools();
+		const names = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.deepEqual(names.sort(), ['create_Writable', 'get_Writable']);
+	});
+
+	it('manufactures create_ for a loadAsInstance: false Resource subclass that only overrides create()', () => {
+		class LoadAsRecord extends Resource {
+			async get(target) {
+				return { id: target.id, name: 'sample' };
+			}
+			async create(target, record) {
+				return record;
+			}
+		}
+		LoadAsRecord.loadAsInstance = false;
+		LoadAsRecord.databaseName = 'data';
+		LoadAsRecord.tableName = 'loadasrecord';
+		LoadAsRecord.primaryKey = 'id';
+		_setResourcesForTest(makeRegistry([['LoadAsRecord', { Resource: LoadAsRecord }]]));
+		registerApplicationTools();
+		const names = listTools({ user: SUPER, profile: 'application', sessionId: 's', limit: 200 }).tools.map(
+			(t) => t.name
+		);
+		assert.deepEqual(names.sort(), ['create_LoadAsRecord', 'get_LoadAsRecord']);
 	});
 
 	describe('exportTypes gating', () => {
