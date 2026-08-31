@@ -1,18 +1,18 @@
-//! Slot-level node access over the plane file, mediated by the seqlock, plus the resident
-//! upper-layer structure. Hot-path reads (distance, neighbor ids) are zero-copy against the
-//! mmap; full-copy read_node exists for construction paths. Prototype status: upper layers
-//! live in memory; the append-allocated file region from the design doc is a TODO.
+//! Slot-level node access over the plane file, mediated by per-slot seqlocks. Hot-path
+//! reads (distance, neighbor ids) are zero-copy against the mmap; full-copy read_node
+//! exists for construction paths. Upper-layer adjacency lives in a fixed-entry region of
+//! the same file (per-entry seqlocks), so the hierarchy persists with the graph and
+//! concurrent searches share nothing mutable.
 
 use crate::distance::{cosine_i8_i8_raw, cosine_int8_raw, Query};
-use crate::format::{PlaneFile, FLAG_DELETED, FLAG_VALID, S_DEGREE, S_FLAGS, S_INV_MAG, S_LEVEL, S_SCALE, S_VECTOR};
+use crate::format::{
+    PlaneFile, FLAG_DELETED, FLAG_VALID, MAX_UPPER_LEVELS, NO_UPPER, S_DEGREE, S_FLAGS, S_INV_MAG, S_LEVEL, S_SCALE,
+    S_UPPER_IDX, S_VECTOR, UPPER_CAP, UPPER_LEVEL_STRIDE, U_LEVELS, U_LISTS,
+};
 use crate::seqlock;
-use std::collections::HashMap;
-use std::sync::RwLock;
 
 pub struct Graph {
     pub file: PlaneFile,
-    /// Upper-layer adjacency: node id -> [neighbors at level 1, level 2, ...]. ~6% of nodes.
-    pub upper: RwLock<HashMap<u32, Vec<Vec<u32>>>>,
 }
 
 /// A consistent full copy of one node (construction paths only; search uses zero-copy).
@@ -26,7 +26,7 @@ pub struct NodeRead {
 
 impl Graph {
     pub fn new(file: PlaneFile) -> Self {
-        Graph { file, upper: RwLock::new(HashMap::new()) }
+        Graph { file }
     }
 
     #[inline]
@@ -56,12 +56,11 @@ impl Graph {
     }
 
     /// Symmetric stored-to-stored distance (construction-time neighbor↔neighbor checks).
+    /// Plain unlocked reads: a torn read only perturbs a construction heuristic.
     pub fn distance_between(&self, a: u32, b: u32) -> Option<f32> {
         if !self.in_range(a) || !self.in_range(b) {
             return None;
         }
-        // Two independent seqlock reads: copy a's params + vector ptr safely by nesting reads.
-        // A torn cross-pair read is acceptable here (construction heuristic, not a result).
         let dims = self.file.dims;
         let pa = self.file.slot_ptr(a);
         let pb = self.file.slot_ptr(b);
@@ -117,6 +116,112 @@ impl Graph {
         })
     }
 
+    /// The node's upper-region entry index, or NO_UPPER.
+    #[inline]
+    fn upper_idx_of(&self, id: u32) -> u32 {
+        if !self.in_range(id) {
+            return NO_UPPER;
+        }
+        let seq = self.file.seq_atomic(id);
+        seqlock::read_consistent(seq, || {
+            let p = self.file.slot_ptr(id);
+            unsafe {
+                let flags = *p.add(S_FLAGS);
+                if flags & FLAG_VALID == 0 || flags & FLAG_DELETED != 0 {
+                    return NO_UPPER;
+                }
+                (p.add(S_UPPER_IDX) as *const u32).read_unaligned()
+            }
+        })
+    }
+
+    /// Copy `id`'s neighbor ids at upper `level` (1-based) into `out`. False when the node
+    /// has no upper entry or no such level.
+    pub fn upper_neighbors_into(&self, id: u32, level: u8, out: &mut Vec<u32>) -> bool {
+        out.clear();
+        debug_assert!(level >= 1);
+        let idx = self.upper_idx_of(id);
+        if idx == NO_UPPER || level as usize > MAX_UPPER_LEVELS {
+            return false;
+        }
+        let seq = self.file.upper_seq_atomic(idx);
+        seqlock::read_consistent(seq, || {
+            out.clear();
+            let p = self.file.upper_ptr(idx);
+            unsafe {
+                let levels = *p.add(U_LEVELS);
+                if level > levels {
+                    return false;
+                }
+                let lp = p.add(U_LISTS + (level as usize - 1) * UPPER_LEVEL_STRIDE);
+                let degree = u16::from_le((lp as *const u16).read_unaligned()) as usize;
+                let base = lp.add(2) as *const u32;
+                for i in 0..degree.min(UPPER_CAP) {
+                    out.push(u32::from_le(base.add(i).read_unaligned()));
+                }
+                true
+            }
+        })
+    }
+
+    /// Write a node's full upper adjacency into a fresh region entry; returns the entry
+    /// index to store in the slot (NO_UPPER when the region is exhausted or levels is empty).
+    pub fn write_upper(&self, levels: &[Vec<u32>]) -> u32 {
+        if levels.is_empty() {
+            return NO_UPPER;
+        }
+        let idx = self.file.allocate_upper();
+        if idx == NO_UPPER {
+            return NO_UPPER;
+        }
+        let seq = self.file.upper_seq_atomic(idx);
+        let _guard = seqlock::write_lock(seq);
+        let p = self.file.upper_ptr_mut(idx);
+        unsafe {
+            let n = levels.len().min(MAX_UPPER_LEVELS);
+            *p.add(U_LEVELS) = n as u8;
+            for (l, list) in levels.iter().take(n).enumerate() {
+                let lp = p.add(U_LISTS + l * UPPER_LEVEL_STRIDE);
+                let deg = list.len().min(UPPER_CAP);
+                (lp as *mut u16).write_unaligned((deg as u16).to_le());
+                let base = lp.add(2) as *mut u32;
+                for (i, id) in list.iter().take(deg).enumerate() {
+                    base.add(i).write_unaligned(id.to_le());
+                }
+            }
+        }
+        idx
+    }
+
+    /// Atomic read-modify-write of `id`'s upper adjacency at `level` (1-based). Returns
+    /// false when the node has no entry or level. `f` may read other slots.
+    pub fn update_upper_level<F: FnOnce(&mut Vec<u32>)>(&self, id: u32, level: u8, f: F) -> bool {
+        let idx = self.upper_idx_of(id);
+        if idx == NO_UPPER || level as usize > MAX_UPPER_LEVELS {
+            return false;
+        }
+        let seq = self.file.upper_seq_atomic(idx);
+        let _guard = seqlock::write_lock(seq);
+        let p = self.file.upper_ptr_mut(idx);
+        unsafe {
+            let levels = *p.add(U_LEVELS);
+            if level > levels {
+                return false;
+            }
+            let lp = p.add(U_LISTS + (level as usize - 1) * UPPER_LEVEL_STRIDE);
+            let degree = u16::from_le((lp as *const u16).read_unaligned()) as usize;
+            let base = lp.add(2) as *mut u32;
+            let mut list: Vec<u32> = (0..degree.min(UPPER_CAP)).map(|i| u32::from_le(base.add(i).read_unaligned())).collect();
+            f(&mut list);
+            list.truncate(UPPER_CAP);
+            (lp as *mut u16).write_unaligned((list.len() as u16).to_le());
+            for (i, id) in list.iter().enumerate() {
+                base.add(i).write_unaligned(id.to_le());
+            }
+        }
+        true
+    }
+
     /// Seqlock-consistent full copy (construction paths).
     pub fn read_node(&self, id: u32) -> Option<NodeRead> {
         if !self.in_range(id) {
@@ -144,8 +249,9 @@ impl Graph {
         })
     }
 
-    /// Write a full slot under its seqlock. `neighbors` is pruned to layer0_cap by the caller.
-    pub fn write_node(&self, id: u32, level: u8, vector: &[i8], scale: f32, inv_mag: f32, neighbors: &[u32]) {
+    /// Write a full slot under its seqlock. `neighbors` is pruned to layer0_cap by the
+    /// caller; `upper_idx` is a write_upper() result (NO_UPPER for level-0 nodes).
+    pub fn write_node(&self, id: u32, level: u8, vector: &[i8], scale: f32, inv_mag: f32, neighbors: &[u32], upper_idx: u32) {
         debug_assert!(neighbors.len() <= self.file.layer0_cap);
         debug_assert_eq!(vector.len(), self.file.dims);
         let seq = self.file.seq_atomic(id);
@@ -157,6 +263,7 @@ impl Graph {
             (p.add(S_DEGREE) as *mut u16).write_unaligned((neighbors.len() as u16).to_le());
             (p.add(S_SCALE) as *mut f32).write_unaligned(scale);
             (p.add(S_INV_MAG) as *mut f32).write_unaligned(inv_mag);
+            (p.add(S_UPPER_IDX) as *mut u32).write_unaligned(upper_idx);
             std::ptr::copy_nonoverlapping(vector.as_ptr() as *const u8, p.add(S_VECTOR), dims);
             for (i, n) in neighbors.iter().enumerate() {
                 (p.add(S_VECTOR + dims + i * 4) as *mut u32).write_unaligned(n.to_le());
@@ -169,8 +276,7 @@ impl Graph {
     /// Atomic read-modify-write of a node's layer-0 neighbor list under its seqlock.
     /// `f` may read OTHER slots (e.g. distance_between for pruning) — those are plain
     /// unlocked reads, so no lock ordering issue — but must not lock this graph's slots.
-    /// Two-step read-then-write callers race (concurrent reverse-edge adds lose edges);
-    /// all edge maintenance goes through here. Returns false for absent/deleted nodes.
+    /// Returns false for absent/deleted nodes.
     pub fn update_neighbors<F: FnOnce(&mut Vec<u32>)>(&self, id: u32, f: F) -> bool {
         if !self.in_range(id) {
             return false;
@@ -198,7 +304,7 @@ impl Graph {
         true
     }
 
-    /// Replace only the neighbor list (back-edge maintenance path).
+    /// Replace only the neighbor list (single-writer construction path).
     pub fn write_neighbors(&self, id: u32, neighbors: &[u32]) {
         debug_assert!(neighbors.len() <= self.file.layer0_cap);
         let seq = self.file.seq_atomic(id);
@@ -213,75 +319,14 @@ impl Graph {
         }
     }
 
-    /// Persist the upper-layer adjacency to a sidecar file (prototype; the production design
-    /// is an append-allocated region inside the plane file — see design doc §4). Stale-on-crash
-    /// is acceptable: watermark replay re-feeds recent inserts, which re-links upper edges.
-    pub fn save_upper(&self, path: &std::path::Path) -> std::io::Result<()> {
-        use std::io::Write;
-        let upper = self.upper.read().unwrap();
-        let mut buf: Vec<u8> = Vec::new();
-        buf.extend_from_slice(&(upper.len() as u32).to_le_bytes());
-        for (&id, levels) in upper.iter() {
-            buf.extend_from_slice(&id.to_le_bytes());
-            buf.push(levels.len() as u8);
-            for list in levels {
-                buf.extend_from_slice(&(list.len() as u16).to_le_bytes());
-                for &n in list {
-                    buf.extend_from_slice(&n.to_le_bytes());
-                }
-            }
-        }
-        let tmp = path.with_extension("upper.tmp");
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&buf)?;
-        f.sync_all()?;
-        std::fs::rename(tmp, path)
-    }
-
-    /// Load the sidecar written by save_upper. Missing file leaves the hierarchy empty
-    /// (layer-0 search still works, just without upper-layer routing).
-    pub fn load_upper(&self, path: &std::path::Path) -> std::io::Result<()> {
-        let buf = match std::fs::read(path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        let mut pos = 0usize;
-        let rd_u32 = |b: &[u8], p: &mut usize| {
-            let v = u32::from_le_bytes(b[*p..*p + 4].try_into().unwrap());
-            *p += 4;
-            v
-        };
-        let count = rd_u32(&buf, &mut pos);
-        let mut upper = self.upper.write().unwrap();
-        upper.clear();
-        for _ in 0..count {
-            let id = rd_u32(&buf, &mut pos);
-            let nlevels = buf[pos] as usize;
-            pos += 1;
-            let mut levels = Vec::with_capacity(nlevels);
-            for _ in 0..nlevels {
-                let len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
-                pos += 2;
-                let mut list = Vec::with_capacity(len);
-                for _ in 0..len {
-                    list.push(rd_u32(&buf, &mut pos));
-                }
-                levels.push(list);
-            }
-            upper.insert(id, levels);
-        }
-        Ok(())
-    }
-
-    /// Mark deleted (traversals skip it) and return the id to the freelist.
+    /// Mark deleted (traversals skip it) and return the id to the freelist. The upper-region
+    /// entry, if any, is leaked (bounded by the region's 2x-headroom reserve; freelist TODO).
     pub fn delete_node(&self, id: u32) {
         {
             let seq = self.file.seq_atomic(id);
             let _guard = seqlock::write_lock(seq);
             unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = FLAG_DELETED };
         }
-        self.upper.write().unwrap().remove(&id);
         self.file.free_id(id);
     }
 }
