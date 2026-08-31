@@ -287,7 +287,7 @@ describe('read-only verdict for worker boot', () => {
 		// chmod does not stop root writing, and it is a no-op on Windows — in either case the retire would
 		// SUCCEED and this would assert nothing.
 		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
-		// Retiring is CORRECTNESS: the retired marker is what stops the journal-blind legacy pass treating the
+		// Retiring is CORRECTNESS: the retired marker is what stops the legacy pass treating the
 		// record as authoritative. A record left un-retired while the journal is removed would let that pass
 		// restore the displaced tree over the candidate just rolled forward — so this must fail closed and
 		// keep the journal, not report success.
@@ -418,7 +418,7 @@ describe('journal-first on the deploy path', () => {
 	it('does not let the legacy aside pass restore a displaced tree over a live candidate', async () => {
 		// The state a completed activation whose RETIREMENT failed leaves behind: the candidate is live, the
 		// journal is still there, and an `.in-progress-*` aside still names the version it displaced. The
-		// legacy pass is journal-blind and would restore that aside — putting the old version back.
+		// legacy pass would restore that aside once the journal is gone — putting the old version back.
 		const root = await newRoot('journalfirst');
 		await stageState(root, 'web', 'd1', { live: 'CANDIDATE\n', journal: true, aside: 'PREVIOUS\n' });
 		// A payload that fails mid-delivery, so the deploy cannot succeed and replace the live tree — what is
@@ -567,7 +567,7 @@ describe('activation transaction', () => {
 		assert.strictEqual(await readLive(root, 'web'), 'new', 'the committed candidate is still live');
 	});
 
-	it('fails one unreadable deployment closed without aborting the rest of the scan', async () => {
+	it('settles the rest of the scan past a deployment whose ownership cannot be read', async () => {
 		const root = await newRoot('scan-isolation');
 		// Ownership cannot be read at all: the sidecar is a directory, so the read fails with EISDIR rather
 		// than reporting "unowned". This used to escape the scan and leave every later deployment unsettled.
@@ -576,8 +576,15 @@ describe('activation transaction', () => {
 
 		const failures = await recoverInterruptedActivations(root);
 
-		assert.ok(failures.has('d1'), 'the deployment that could not be read is reported');
 		assert.strictEqual(await readLive(root, 'web'), 'new', 'its sibling was still settled');
+		// And NO verdict for the unreadable one. It holds no journal, so it never had an unsettled
+		// activation — a marker written here would outlive it and, once that sidecar became readable, be
+		// attributed to a live component that every worker would then refuse permanently.
+		assert.ok(!failures.has('d1'), 'a journal-less deployment gets no unsettled verdict');
+		assert.ok(
+			!existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.unsettled')),
+			'and nothing was written to disk for it'
+		);
 	});
 
 	it('keeps both trees when the live path reappears after the swap moved it aside', async () => {

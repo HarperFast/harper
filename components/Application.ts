@@ -1017,10 +1017,8 @@ export async function extractApplication(
 // share that namespace. A component named `activation.json` would put its tree on the journal path, the
 // journal write would take EEXIST as "a retry of this activation", and the swap would proceed with no
 // journal to hold the legacy pass back; one named `unsettled` would make every settle throw on a
-// non-recursive `rm` of a directory. Dotting them removes the class for every name that reaches a deploy
-// through `isJoinableComponentName`. A root-config key is not checked against it, so one literally named
-// `.activation.json` still collides — but only with itself: a dot-prefixed directory is skipped by every
-// component scan, so it fails its own deploy rather than putting another component's tree at risk.
+// non-recursive `rm` of a directory. `assertApplicationConfig` rejects any name `isJoinableComponentName`
+// rejects, so the collision is unreachable from a root-config key as well as from a deploy.
 const CANDIDATE_COMPLETE_MARKER = '.complete';
 // Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
 // tree and configuration together — instead of inferring intent from filesystem shape alone.
@@ -1428,20 +1426,13 @@ async function settleJournaledActivationsForComponent(
 		}
 		if (!ownerUnreadable && owner !== componentName) continue;
 		const journal = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
-		// NO JOURNAL means no activation was attempted in that deployment — so there is nothing here for a
-		// deploy to settle, whether or not the sidecar can say whose it is. This must not fail closed: a
-		// journal-less staging directory is exactly what SUCCESSFUL settlement leaves behind, because the
-		// journal is removed first and the directory sweep after it is best-effort. Failing closed on it
-		// wedged every later deploy of every component on one un-swept directory whose sidecar had also
-		// become unreadable, and falsely rejected any deploy that raced that same window.
-		//
-		// Ambiguity that DOES have to fail closed is already covered: `readActivationJournal` throws on a
-		// journal that exists but cannot be read, so an unattributable *activation* propagates from the read
-		// above rather than being decided here.
+		// A journal-less directory is what a SUCCESSFUL settlement leaves when its best-effort sweep fails, so
+		// this must not fail closed. An unattributable *activation* still does: `readActivationJournal` throws
+		// on a journal that exists but cannot be read.
 		if (!journal) continue;
-		// Otherwise the journal decides. Skipping on an unreadable sidecar alone would leave this component's
-		// OWN unsettled activation in place while a new deploy proceeded over it — and an activation
-		// interrupted before B1 has no rollback record, so the restore gate has nothing to catch either.
+		// The journal decides, not the sidecar. Skipping on an unreadable sidecar alone would leave this
+		// component's own unsettled activation in place while a new deploy proceeded over it, and an
+		// activation interrupted before B1 has no rollback record for the restore gate to catch.
 		if (journal.component !== componentName) continue;
 		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
 	}
@@ -1611,11 +1602,27 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				}
 				await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 			};
-			// Scoped to THIS deployment, like the journaled branch below. A lock timeout, or an EIO from the
-			// under-lock re-read, used to abort the entire scan: every later deployment went unsettled and
-			// unmarked, and on a worker the caller only warns before running the legacy pass anyway.
+			// Attribution FIRST, in its own scope, and its failure is not a verdict. A journal-less directory
+			// is what a successful settlement leaves when its best-effort sweep fails, so a `fail()` here
+			// wrote `.unsettled` keyed by the deployment id for a deployment that never held an unsettled
+			// activation — and nothing ever cleared it, because settlement never runs for a journal-less
+			// directory. If that sidecar later became readable as `web`, the stale marker was attributed to
+			// the live `web` and every worker refused it permanently. This is the same shape the deploy path
+			// skips; the two paths now agree.
 			try {
 				owner = await candidateComponentName(deploymentDirPath);
+			} catch (error) {
+				logger.trace?.(
+					`Leaving deploy staging ${deploymentDirPath} in place: it holds no activation journal and its ` +
+						`ownership cannot be read: ${errorMessage(error)}`
+				);
+				continue;
+			}
+			// Scoped to THIS deployment, like the journaled branch below. A lock timeout, or an EIO from the
+			// under-lock re-read, used to abort the entire scan: every later deployment went unsettled and
+			// unmarked, and on a worker the caller only warns before running the legacy pass anyway. A failure
+			// from here IS a verdict — `removeResidue` settles a journal that appeared under the lock.
+			try {
 				if (owner) {
 					await withComponentPreparationLock(join(componentsRootDirPath, owner), removeResidue, {
 						purpose: 'activation-recovery',

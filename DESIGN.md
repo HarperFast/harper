@@ -325,12 +325,15 @@ Every control file is dot-prefixed — `.activation.json`, `.component`, `.compl
 a deployment directory holds the candidate tree under the _component's_ own name beside them, and
 `isJoinableComponentName` rejects a leading dot. An undotted control file shares that namespace: a component
 named `activation.json` would put its tree on the journal path and activate with no journal at all, and one
-named `unsettled` would make every settle throw. Dotting removes the class for every name that reaches a
-deploy through that check. A root-config key is not checked against it, so one literally named
-`.activation.json` still collides — but only with itself, since a dot-prefixed directory is skipped by every
-component scan, so it fails its own deploy rather than putting another component's tree at risk. Ownership
-inferred from a directory name is validated the same way, so a control file cannot impersonate a component
-either.
+named `unsettled` would make every settle throw. `assertApplicationConfig` rejects any name
+`isJoinableComponentName` rejects, so the collision is unreachable from a root-config key as well as from a
+deploy. Ownership inferred from a directory name is validated the same way, so a control file cannot
+impersonate a component either.
+
+A journal-LESS staging directory is not ambiguous: it is what a successful settlement leaves when its
+best-effort sweep fails. Both the deploy path and boot recovery pass over one rather than failing it closed,
+because a verdict written there would outlive the deployment and, once its sidecar became readable again, be
+attributed to a live component that never held an unsettled activation.
 
 An `.activation.json` journal is written beside the candidate — with a `.complete` marker recording that
 build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()` can
