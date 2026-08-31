@@ -16,6 +16,7 @@ export interface PlaneSearchHit {
  */
 export interface HnswPlane {
 	readonly dims: number;
+	readonly layer0Cap: number;
 	writeNodeRaw(
 		id: number,
 		level: number,

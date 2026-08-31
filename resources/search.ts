@@ -552,8 +552,6 @@ export function searchByIndex(
 					}
 					let inner: Iterator<any> | null = null;
 					return {
-						// always promise-shaped, as the async-iterator protocol requires of every
-						// next() result, not just the first
 						next() {
 							if (inner) return Promise.resolve(inner.next());
 							return pending.then((entries) => {

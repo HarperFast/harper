@@ -1,6 +1,6 @@
-// Builds the optional hnsw-plane NAPI module in place: harper installs never require a cargo
-// toolchain (the nativePlane index option falls back to the JS path when the artifact is
-// absent), so this is a local/dev step: `npm run build:hnsw-plane`.
+// Builds the optional hnsw-plane NAPI module in place (`npm run build:hnsw-plane`); harper
+// installs never require a cargo toolchain — without the artifact, nativePlane falls back to
+// the JS path.
 import { execSync } from 'node:child_process';
 import { copyFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

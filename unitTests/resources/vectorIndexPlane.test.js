@@ -286,6 +286,43 @@ describe('HNSW native plane dual-write', function () {
 		await Later.dropTable();
 	});
 
+	it('a plane whose initial mirror never completed is not searched', async () => {
+		const condition = { target: vectors.get(11), comparator: 'sort', distance: 'cosine', ef: EF };
+		const index = customIndex();
+		const plane = index.getPlane();
+		assert.ok(plane, 'the plane should be attached');
+		plane.setWatermark(0); // simulate a crashed/incomplete initial mirror
+		index.planeReady = false;
+		const jsResults = index.search(condition, { transaction: undefined });
+		assert.equal(typeof jsResults?.then, 'undefined', 'an incomplete mirror must fall back to the JS path');
+		assert.ok(jsResults.length > 0);
+		plane.setWatermark(1);
+		const planeResults = index.search(condition, { transaction: undefined });
+		assert.equal(typeof planeResults?.then, 'function', 'a completed mirror serves searches again');
+		await planeResults;
+	});
+
+	it('an unopenable plane file degrades to the JS path without erroring', async () => {
+		const Foreign = table({
+			table: 'PlaneForeign',
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+			],
+		});
+		const index = Foreign.indices.vector.customIndex;
+		fs.writeFileSync(index.planeFilePath(), 'not a plane'); // e.g. a crashed create's leftovers
+		for (let i = 0; i < 20; i++) await Foreign.put(i, { vector: makeVector(i + 20000) });
+		const results = index.search(
+			{ target: makeVector(20003), comparator: 'sort', distance: 'cosine', ef: 50 },
+			{ transaction: undefined }
+		);
+		assert.equal(typeof results?.then, 'undefined', 'writes and searches must run on the JS path meanwhile');
+		assert.ok(results.length > 0);
+		await Foreign.dropTable();
+	});
+
 	it('index drop removes the plane file', async () => {
 		const planePath = customIndex().planeFilePath();
 		assert.ok(fs.existsSync(planePath));
