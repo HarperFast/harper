@@ -41,9 +41,9 @@ function totalSortedRuns(levelStats) {
 	let deeperNonEmptyLevels = 0;
 	let sawAnyLevel = false;
 	for (const line of levelStats.split('\n')) {
-		// Level numbers are bare digits on this build; the optional L covers RocksDB builds that
-		// print them as L0/L1.
-		const match = line.match(/^\s*L?(\d+)\s+(\d+)\s/i);
+		// This build prints bare level numbers and a plain file count; the optional L and /N cover
+		// builds that print "L0  2/0" instead.
+		const match = line.match(/^\s*L?(\d+)\s+(\d+)(?:\/\d+)?\s/i);
 		if (!match) continue;
 		sawAnyLevel = true;
 		const level = Number(match[1]);
