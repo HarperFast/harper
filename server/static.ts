@@ -312,6 +312,14 @@ export function handleApplication(scope: Scope) {
 	});
 
 	scope.server.http(
+		// Ownership invariant (#2418): every response this handler originates — both index redirects,
+		// the served file, and both `fallthrough: false` not-found forms — is Harper answering for the
+		// URL, so a credential the authentication middleware deferred rather than rejecting in line is
+		// settled before that response is built, with no URL exempted. Settling before the response body
+		// is resolved also keeps a rejected credential from turning a missing file or bad `notFound`
+		// config into a 500 the pre-deferral revision answered with 401. Only the `next(req)` fallthrough
+		// leaves the deferral in place: there Harper declines the URL, so a downstream owner or an
+		// application catch-all applies its own scheme.
 		(req, next) => {
 			// TODO: Not sure if the isWebSocket check is still necessary
 			if (req.method !== 'GET' || req.isWebSocket) return next(req);
@@ -341,37 +349,39 @@ export function handleApplication(scope: Scope) {
 					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
 					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
 					// redirect the no-slash form so relative links on the index page resolve under
-					// the mount (#1583). Query string is preserved across both redirects; compute it
-					// lazily inside each branch so the common (non-redirect) index serve stays allocation-free.
-					// Gated on the EXTERNAL base path, not the plugin-local one: a root-level static
-					// plugin (baseURLPath === '/') still needs this redirect when the application
-					// itself carries a host/urlPath mount, since the client-visible mount root is then
-					// externalBaseURLPath, not '/' (review finding).
-					if (staticFile && req.pathname === '/' && externalBaseURLPath !== '/') {
-						const originalPathname: string | undefined = (req as any).originalPathname;
-						if (originalPathname && !originalPathname.endsWith('/')) {
-							const queryIndex = (req.url as string).indexOf('?');
-							const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
-							return {
-								status: 301,
-								headers: {
-									Location: externalBaseURLPath + query,
-								},
-							};
-						}
-					}
+					// the mount (#1583). Gated on the EXTERNAL base path, not the plugin-local one: a
+					// root-level static plugin (baseURLPath === '/') still needs this redirect when the
+					// application itself carries a host/urlPath mount, since the client-visible mount root
+					// is then externalBaseURLPath, not '/' (review finding).
+					// The other form is the `null` index entry — a registered directory redirecting to its
+					// trailing-slash form; req.pathname arrives with the mount prefix stripped, so the
+					// external path is rebuilt for the Location header (#1583). The two are mutually
+					// exclusive, since a `null` entry is never the mount-root serve. They share one branch
+					// so both settle a deferred credential rejection before redirecting; the query string
+					// is built inside it, keeping the common (non-redirect) index serve allocation-free.
+					const originalPathname: string | undefined = (req as any).originalPathname;
+					const redirectsMountRoot = !!(
+						staticFile &&
+						req.pathname === '/' &&
+						externalBaseURLPath !== '/' &&
+						originalPathname &&
+						!originalPathname.endsWith('/')
+					);
 
-					// If `null`, redirect to trailing slash. req.pathname arrives with the mount
-					// prefix stripped, so rebuild the external path for the Location header (#1583)
-					if (staticFile === null) {
-						const externalPath =
-							externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname;
+					if (redirectsMountRoot || staticFile === null) {
+						const settledCredentialRejection = settleDeferredCredentialRejection(req);
+						if (settledCredentialRejection) return settledCredentialRejection;
 						const queryIndex = (req.url as string).indexOf('?');
 						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
+						const location = redirectsMountRoot
+							? externalBaseURLPath + query
+							: (externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname) +
+								'/' +
+								query;
 						return {
 							status: 301,
 							headers: {
-								Location: externalPath + '/' + query,
+								Location: location,
 							},
 						};
 					}
@@ -394,9 +404,6 @@ export function handleApplication(scope: Scope) {
 
 			// If an entry matched, serve it
 			if (staticFile) {
-				// Harper owns this URL, so a credential the authentication middleware deferred rather than
-				// answering in line (#2418) is settled here — otherwise an unrecognized credential would
-				// be served static content that the base revision answered with 401.
 				const settledCredentialRejection = settleDeferredCredentialRejection(req);
 				if (settledCredentialRejection) return settledCredentialRejection;
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
@@ -411,7 +418,10 @@ export function handleApplication(scope: Scope) {
 				return next(req);
 			}
 
-			// Otherwise, handle not found
+			// Otherwise, handle not found — settled once here, covering both the built-in 404 and the
+			// configured `notFound` response below.
+			const settledCredentialRejection = settleDeferredCredentialRejection(req);
+			if (settledCredentialRejection) return settledCredentialRejection;
 
 			const notFound = scope.options.get(['notFound']);
 

@@ -5,6 +5,11 @@ const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { handleApplication } = require('#src/server/static');
+const {
+	credentialRejectionError,
+	deferCredentialRejection,
+	getDeferredCredentialRejection,
+} = require('#src/security/deferredAuthentication');
 
 // A minimal Scope stand-in: captures the http registration and warning log so tests can
 // assert on the middleware ordering options the plugin passes to the server.
@@ -397,5 +402,219 @@ describe('static plugin mount-root redirect', () => {
 		}));
 
 		assert.notEqual(result.status, 301);
+	});
+});
+
+// A request shaped enough for both the static handler and the settled-rejection serializer
+// (`findBestSerializer` reads `headers.asObject`).
+function staticRequest(pathname, { url = pathname, originalPathname, authorization } = {}) {
+	const asObject = { accept: 'application/json' };
+	if (authorization) asObject.authorization = authorization;
+	return {
+		method: 'GET',
+		isWebSocket: false,
+		pathname,
+		url,
+		originalPathname,
+		headers: { asObject, get: (name) => asObject[name.toLowerCase()] },
+	};
+}
+
+const NEXT_HANDLER = Symbol('next handler');
+const next = () => NEXT_HANDLER;
+
+function assertSettledUnauthorized(result, request, authorization) {
+	assert.equal(result.status, 401, 'a static-owned response must settle the deferred rejection');
+	assert.equal(result.headers.get('Content-Type'), 'application/json');
+	assert.deepStrictEqual(JSON.parse(result.body.toString()), { error: 'Login failed' });
+	// The header the deferral exists to protect must survive byte-for-byte.
+	assert.equal(request.headers.get('authorization'), authorization);
+}
+
+// A static handler ordered `after: 'rest'` runs downstream of authentication, so it is one of the
+// Harper-owned layers that must settle a deferred credential rejection (#2418). Settlement covered
+// only the ordinary file response, leaving redirects and both `fallthrough: false` not-found forms
+// answering a rejected credential as if it were anonymous.
+describe('static plugin deferred credential rejection', () => {
+	const BASIC = 'Basic d29yZHByZXNzOmFwcC1wYXNzd29yZA==';
+	const BEARER = 'Bearer downstream-owned-token';
+
+	function deferred(request) {
+		deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+		return request;
+	}
+
+	it('settles the mount-root redirect instead of answering 301', () => {
+		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: '/fake/app/web/index.html' });
+
+		const request = deferred(staticRequest('/', { originalPathname: '/v1', authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BASIC);
+	});
+
+	it('settles the trailing-slash directory redirect instead of answering 301', () => {
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+		state.entryCallback({
+			eventType: 'add',
+			urlPath: '/docs/index.html',
+			absolutePath: '/fake/app/web/docs/index.html',
+		});
+
+		const request = deferred(staticRequest('/docs', { authorization: BEARER }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BEARER);
+	});
+
+	it('settles the built-in fallthrough: false 404 instead of answering "File not found"', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+
+		const request = deferred(staticRequest('/wp-json/wc/v3/orders', { authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BASIC);
+	});
+
+	it('settles the configured notFound response instead of serving the fallback page', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-notfound-'));
+		writeFileSync(join(directory, 'spa.html'), '<html>spa</html>');
+
+		try {
+			const { scope, state } = fakeScope({
+				fallthrough: false,
+				after: 'rest',
+				notFound: { file: 'spa.html', statusCode: 200 },
+			});
+			scope.directory = directory;
+			handleApplication(scope);
+
+			const request = deferred(staticRequest('/app/route', { authorization: BEARER }));
+			const result = state.listener(request, next);
+
+			assertSettledUnauthorized(result, request, BEARER);
+			assert.equal(result.handlesHeaders, undefined, 'the settled 401 is not the send() stream response');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('settles the ordinary file response', () => {
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/asset.js', absolutePath: __filename });
+
+		const request = deferred(staticRequest('/asset.js', { authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BASIC);
+	});
+
+	it('leaves the rejection deferred on the actual fallthrough so a downstream owner still decides', () => {
+		// The whole point of deferral: Harper does not own this URL, so an application catch-all
+		// registered after this handler applies its own authentication scheme to the untouched header.
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+
+		const request = deferred(staticRequest('/wp-json/wc/v3/orders', { authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assert.strictEqual(result, NEXT_HANDLER);
+		assert.equal(getDeferredCredentialRejection(request).status, 401);
+		assert.equal(request.headers.get('authorization'), BASIC);
+		assert.equal(request.user, undefined);
+	});
+
+	it('leaves a non-GET request deferred', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+
+		const request = deferred(staticRequest('/app/route', { authorization: BASIC }));
+		request.method = 'POST';
+
+		assert.strictEqual(state.listener(request, next), NEXT_HANDLER);
+		assert.equal(getDeferredCredentialRejection(request).status, 401);
+	});
+});
+
+// The settlement points sit immediately before each response is built, so the responses themselves
+// must be unchanged for every request that carries no deferred rejection.
+describe('static plugin responses without a deferred rejection', () => {
+	it('still redirects the mount root, preserving the query string', () => {
+		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: '/fake/app/web/index.html' });
+
+		const result = state.listener(staticRequest('/', { url: '/?a=1', originalPathname: '/v1' }), next);
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/v1/?a=1');
+	});
+
+	it('still redirects a directory to its trailing-slash form, preserving the query string', () => {
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+		state.entryCallback({
+			eventType: 'add',
+			urlPath: '/docs/index.html',
+			absolutePath: '/fake/app/web/docs/index.html',
+		});
+
+		const result = state.listener(staticRequest('/docs', { url: '/docs?a=1' }), next);
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/docs/?a=1');
+	});
+
+	it('still rebuilds the directory redirect against an application mount', () => {
+		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({
+			eventType: 'add',
+			urlPath: '/docs/index.html',
+			absolutePath: '/fake/app/web/docs/index.html',
+		});
+
+		const result = state.listener(staticRequest('/docs'), next);
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/v1/docs/');
+	});
+
+	it('still answers the built-in 404 body', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+
+		const result = state.listener(staticRequest('/missing'), next);
+
+		assert.equal(result.status, 404);
+		assert.equal(result.body, 'File not found');
+	});
+
+	it('still serves the configured notFound file with its status code', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-notfound-ok-'));
+		writeFileSync(join(directory, 'spa.html'), '<html>spa</html>');
+
+		try {
+			const { scope, state } = fakeScope({
+				fallthrough: false,
+				after: 'rest',
+				notFound: { file: 'spa.html', statusCode: 200 },
+			});
+			scope.directory = directory;
+			handleApplication(scope);
+
+			const result = state.listener(staticRequest('/app/route'), next);
+
+			assert.equal(result.status, 200);
+			assert.equal(result.handlesHeaders, true);
+			assert.equal(typeof result.body.pipe, 'function');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });
