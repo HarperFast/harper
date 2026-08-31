@@ -536,6 +536,10 @@ export class HierarchicalNavigableSmallWorld {
 		dims: number
 	): HnswPlane {
 		const plane = Plane.create(filePath, dims, this.planeLayer0Cap(), PLANE_MAX_NODES);
+		// The build aborts whenever this.plane stops being this handle (disable/reset/replace),
+		// so the handle must be current BEFORE the builder's first generation check — including
+		// the fully synchronous single-chunk path.
+		this.plane = plane;
 		// The full mirror runs in the background in bounded chunks — a 5M-node synchronous scan
 		// would freeze this worker's event loop for its duration. Until the builder stamps the
 		// watermark, planeSearchReady keeps searches on the JS path while live mutations mirror
