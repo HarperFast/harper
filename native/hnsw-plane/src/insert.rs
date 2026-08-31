@@ -69,7 +69,7 @@ fn prune_with_coverage(graph: &Graph, base: u32, list: &mut Vec<u32>, cap: usize
         .iter()
         .filter_map(|&cand| graph.distance_between(base, cand).map(|d| (cand, d)))
         .collect();
-    scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| a.1.total_cmp(&b.1));
     while scored.len() > cap {
         let check_from = scored.len().saturating_sub(16);
         let keepers = &scored[..16.min(check_from)];
@@ -119,9 +119,13 @@ fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize)
     }
 }
 
-pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mut SearchScratch) -> u32 {
+/// Insert a vector, returning its node id — or None when the plane is full (max_nodes).
+pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mut SearchScratch) -> Option<u32> {
     let (bytes, scale, inv_mag) = quantize_int8(vector);
     let id = graph.file.allocate_id();
+    if id == NO_ID {
+        return None;
+    }
     let level = level_for(id, params.ml);
     let query = Query::new(vector.to_vec());
     let layer0_cap = graph.file.layer0_cap;
@@ -132,12 +136,21 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
         let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER };
         graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx);
         graph.file.set_entry_point(id, level as u32);
-        return id;
+        return Some(id);
     }
 
     let mut stats = SearchStats { visits: 0 };
-    // scratch epochs are per search_layer sweep; begin() per level below.
-    let entry_dist = graph.distance_to(entry_id, &query).unwrap_or(f32::INFINITY);
+    let entry_dist = match graph.distance_to(entry_id, &query) {
+        Some(d) => d,
+        None => {
+            // The stored entry point is gone (deleted while it was still the entry, or a
+            // torn state). Without recovery every search returns empty and every insert
+            // links only to the dead entry, orphaning itself. Elect this node instead.
+            graph.write_node(id, level, &bytes, scale, inv_mag, &[], if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER });
+            graph.file.set_entry_point(id, level as u32);
+            return Some(id);
+        }
+    };
     let top = level.min(entry_level as u8);
     let (mut ep, mut ep_dist) =
         greedy_descend(graph, &query, entry_id, entry_dist, entry_level, top as u32, &mut stats);
@@ -227,7 +240,7 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
     if (level as u32) > entry_level {
         graph.file.set_entry_point(id, level as u32);
     }
-    id
+    Some(id)
 }
 
 #[inline]

@@ -10,6 +10,7 @@ pub struct SeqWriteGuard<'a> {
 
 /// Acquire write ownership of a slot, spinning while another writer holds it odd.
 pub fn write_lock(seq: &AtomicU32) -> SeqWriteGuard<'_> {
+    let mut spins = 0u32;
     loop {
         let cur = seq.load(Ordering::Acquire);
         if cur & 1 == 0
@@ -19,7 +20,14 @@ pub fn write_lock(seq: &AtomicU32) -> SeqWriteGuard<'_> {
         {
             return SeqWriteGuard { seq };
         }
-        std::hint::spin_loop();
+        spins += 1;
+        if spins > 1 << 10 {
+            // a preempted or slow writer (e.g. a coverage prune) holds this slot: burn no
+            // more cores; persisted-odd values are scrubbed at open, so this always ends
+            std::thread::yield_now();
+        } else {
+            std::hint::spin_loop();
+        }
     }
 }
 
@@ -34,6 +42,7 @@ impl Drop for SeqWriteGuard<'_> {
 /// side-effect-free on retry and must not dereference data whose validity depends on seq.
 #[inline]
 pub fn read_consistent<T>(seq: &AtomicU32, mut read: impl FnMut() -> T) -> T {
+    let mut spins = 0u32;
     loop {
         let before = seq.load(Ordering::Acquire);
         if before & 1 == 0 {
@@ -43,6 +52,11 @@ pub fn read_consistent<T>(seq: &AtomicU32, mut read: impl FnMut() -> T) -> T {
                 return value;
             }
         }
-        std::hint::spin_loop();
+        spins += 1;
+        if spins > 1 << 10 {
+            std::thread::yield_now();
+        } else {
+            std::hint::spin_loop();
+        }
     }
 }

@@ -130,6 +130,11 @@ impl PlaneFile {
 
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let file_len = file.metadata()?.len();
+        if file_len < HEADER_SIZE as u64 {
+            // a truncated or interrupted create must be a catchable error, not a slice panic
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "plane file shorter than its header: recreate the index"));
+        }
         let map = unsafe { MmapMut::map_mut(&file)? };
         let magic = u32::from_le_bytes(map[H_MAGIC..H_MAGIC + 4].try_into().unwrap());
         let version = u32::from_le_bytes(map[H_VERSION..H_VERSION + 4].try_into().unwrap());
@@ -141,9 +146,53 @@ impl PlaneFile {
         let slot_size = u32::from_le_bytes(map[H_SLOT_SIZE..H_SLOT_SIZE + 4].try_into().unwrap()) as usize;
         let slots_per_page = u16::from_le_bytes(map[H_SLOTS_PER_PAGE..H_SLOTS_PER_PAGE + 2].try_into().unwrap()) as usize;
         let max_nodes = u64::from_le_bytes(map[H_MAX_NODES..H_MAX_NODES + 8].try_into().unwrap());
+        if dims == 0 || slot_size == 0 || slot_size != slot_size_for(dims, layer0_cap) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "plane header geometry is inconsistent: recreate the index"));
+        }
         let upper_offset = HEADER_SIZE + slot_region_len(max_nodes, slot_size, slots_per_page) as usize;
         let upper_capacity = max_nodes / 8 + 64;
-        Ok(PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page })
+        let expected = upper_offset as u64 + upper_capacity * upper_entry_size() as u64;
+        if file_len < expected {
+            // header-valid but short (rsync/backup truncation): mid-range slot_ptr/upper_ptr
+            // would otherwise read off the mapping
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("plane file is {file_len} bytes but its header implies {expected}: recreate the index"),
+            ));
+        }
+        let plane = PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page };
+        let hw = plane.id_high_water();
+        if hw > max_nodes {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "plane header id high-water exceeds capacity: recreate the index"));
+        }
+        // A crash while a writer held a slot's seqlock odd persists the odd value; nothing
+        // would ever make it even again, so readers and writers of that slot would spin
+        // forever. Scrub on any unclean open (one sequential pass over the written range).
+        if plane.map[H_CLEAN_SHUTDOWN] == 0 {
+            plane.scrub_torn_seqlocks(hw);
+        }
+        unsafe { *(plane.map.as_ptr().add(H_CLEAN_SHUTDOWN) as *mut u8) = 0 }; // dirty until flush
+        Ok(plane)
+    }
+
+    /// Force any persisted-odd seqlocks (slot + upper regions) back to even after an unclean
+    /// shutdown. Safe because open() runs before any concurrent access exists.
+    fn scrub_torn_seqlocks(&self, high_water: u64) {
+        for id in 0..high_water.min(self.max_nodes) as u32 {
+            let seq = self.seq_atomic(id);
+            let v = seq.load(Ordering::Relaxed);
+            if v & 1 == 1 {
+                seq.store(v.wrapping_add(1), Ordering::Relaxed);
+            }
+        }
+        let upper_hw = self.header_atomic_u64(H_UPPER_HIGH_WATER).load(Ordering::Relaxed);
+        for idx in 0..upper_hw.min(self.upper_capacity) as u32 {
+            let seq = self.upper_seq_atomic(idx);
+            let v = seq.load(Ordering::Relaxed);
+            if v & 1 == 1 {
+                seq.store(v.wrapping_add(1), Ordering::Relaxed);
+            }
+        }
     }
 
     #[inline]
@@ -173,7 +222,9 @@ impl PlaneFile {
         unsafe { &*(self.slot_ptr(id).add(S_SEQ) as *const AtomicU32) }
     }
 
-    /// Allocate a node id: pop the freelist, else bump the high-water.
+    /// Allocate a node id: pop the freelist, else bump the high-water. Returns NO_ID when
+    /// the plane is full (max_nodes reached) — an unchecked bump would address into the
+    /// upper-layer region and, past that, off the mapping.
     pub fn allocate_id(&self) -> u32 {
         let head = self.header_atomic_u64(H_FREELIST_HEAD);
         loop {
@@ -181,7 +232,12 @@ impl PlaneFile {
             let id = (cur & 0xffff_ffff) as u32;
             if id == NO_ID {
                 let hw = self.header_atomic_u64(H_ID_HIGH_WATER);
-                return hw.fetch_add(1, Ordering::AcqRel) as u32;
+                let new = hw.fetch_add(1, Ordering::AcqRel);
+                if new >= self.max_nodes {
+                    hw.fetch_sub(1, Ordering::AcqRel);
+                    return NO_ID;
+                }
+                return new as u32;
             }
             // next-pointer lives in the dead slot's first neighbor word
             let next = unsafe {
@@ -322,5 +378,18 @@ impl PlaneFile {
 
     pub fn msync(&self) -> io::Result<()> {
         self.map.flush()
+    }
+
+    /// Durability barrier with watermark ordering: flush all data, then advance the
+    /// watermark and mark the shutdown clean, then flush the header page alone. A crash
+    /// between the two flushes leaves the OLD watermark over fully-durable data — replay
+    /// re-covers a suffix, which is idempotent — never a new watermark over missing data.
+    /// (A single whole-map msync cannot express "data before watermark": the kernel may
+    /// write the header page back first.)
+    pub fn flush_with_watermark(&self, txn: u64) -> io::Result<()> {
+        self.map.flush()?;
+        self.set_watermark(txn);
+        unsafe { *(self.map.as_ptr().add(H_CLEAN_SHUTDOWN) as *mut u8) = 1 };
+        self.map.flush_range(0, HEADER_SIZE)
     }
 }

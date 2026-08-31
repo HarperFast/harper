@@ -39,7 +39,7 @@ fn concurrent_insert_search() {
                 let mut scratch = SearchScratch::new();
                 for i in 0..per_writer {
                     let v = vector_for(w * per_writer + i, dims);
-                    insert(&graph, &v, &params, &mut scratch);
+                    insert(&graph, &v, &params, &mut scratch).expect("plane full");
                 }
             });
         }
@@ -99,8 +99,8 @@ fn concurrent_insert_search() {
     graph.delete_node(5);
     graph.delete_node(6);
     let params = InsertParams::default();
-    let a = insert(&graph, &vector_for(90_001, dims), &params, &mut scratch);
-    let b = insert(&graph, &vector_for(90_002, dims), &params, &mut scratch);
+    let a = insert(&graph, &vector_for(90_001, dims), &params, &mut scratch).unwrap();
+    let b = insert(&graph, &vector_for(90_002, dims), &params, &mut scratch).unwrap();
     assert!(a == 5 || a == 6, "expected freelist reuse, got {a}");
     assert!(b == 5 || b == 6, "expected freelist reuse, got {b}");
     assert_eq!(graph.file.id_high_water(), total as u64, "high-water must not grow on reuse");

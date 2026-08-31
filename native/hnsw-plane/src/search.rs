@@ -73,7 +73,8 @@ impl SearchScratch {
 
     #[inline]
     fn visit(&mut self, id: u32) -> bool {
-        // ids minted by concurrent inserts after begin() can exceed the sizing snapshot
+        // ids minted by concurrent inserts after begin() can exceed the sizing snapshot;
+        // growth is bounded by the id itself, which write paths bound by max_nodes
         if id as usize >= self.visited.len() {
             self.visited.resize(id as usize + 1024, 0);
         }
@@ -176,7 +177,7 @@ pub fn search_layer(
     scratch.neighbors = nbuf;
 
     let mut out: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-    out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(CmpOrdering::Equal));
+    out.sort_by(|a, b| a.1.total_cmp(&b.1));
     out
 }
 
@@ -413,7 +414,7 @@ pub fn search_predicated(
     });
 
     let mut out: Vec<(u32, f32)> = results.into_iter().map(|r| (r.id, r.distance)).collect();
-    out.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(CmpOrdering::Equal));
+    out.sort_by(|a, b| a.1.total_cmp(&b.1));
     out.truncate(k);
     (out, stats)
 }
@@ -435,7 +436,7 @@ mod predicate_tests {
         let mut scratch = SearchScratch::new();
         for i in 0..1_000u32 {
             let v: Vec<f32> = (0..dims).map(|d| ((i as f32 * 0.31 + d as f32) * 0.7).sin()).collect();
-            insert(&graph, &v, &params, &mut scratch);
+            insert(&graph, &v, &params, &mut scratch).unwrap();
         }
 
         // evaluator thread: admit even ids only, answering over a channel like the TSFN does

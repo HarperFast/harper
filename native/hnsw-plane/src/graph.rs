@@ -399,8 +399,16 @@ impl Graph {
     }
 
     /// Mark deleted (traversals skip it), free its upper entry, and return the id to the
-    /// plane freelist.
+    /// plane freelist. Deleting the current entry point re-elects a replacement — without
+    /// that, every search returns empty and every insert orphans itself against the dead
+    /// entry.
     pub fn delete_node(&self, id: u32) {
+        // capture neighbors before invalidating: they are the best re-election candidates
+        let (entry_id, _) = self.file.entry_point();
+        let mut candidates: Vec<u32> = Vec::new();
+        if entry_id == id {
+            self.neighbors_into(id, &mut candidates);
+        }
         let upper_idx;
         {
             let seq = self.file.seq_atomic(id);
@@ -413,6 +421,36 @@ impl Graph {
             }
         }
         self.file.free_upper(upper_idx);
+        if entry_id == id {
+            self.reelect_entry_point(&candidates);
+        }
         self.file.free_id(id);
+    }
+
+    /// Pick a new entry point: the highest-level live node among `preferred`, else the
+    /// first live node found scanning the id range (rare path: only when the entry's whole
+    /// neighborhood is gone). An empty graph clears the entry.
+    fn reelect_entry_point(&self, preferred: &[u32]) {
+        let mut best: Option<(u32, u8)> = None;
+        for &cand in preferred {
+            if let Some(n) = self.read_node(cand) {
+                if best.map(|(_, l)| n.level > l).unwrap_or(true) {
+                    best = Some((cand, n.level));
+                }
+            }
+        }
+        if best.is_none() {
+            let hw = self.file.id_high_water().min(self.file.max_nodes) as u32;
+            for cand in 0..hw {
+                if let Some(n) = self.read_node(cand) {
+                    best = Some((cand, n.level));
+                    break;
+                }
+            }
+        }
+        match best {
+            Some((cand, level)) => self.file.set_entry_point(cand, level as u32),
+            None => self.file.set_entry_point(crate::format::NO_ID, 0),
+        }
     }
 }

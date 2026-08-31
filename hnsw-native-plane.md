@@ -255,8 +255,8 @@ Decided (Kris, 2026-08-31):
   plane reopens the question** (cap-64 ≈ 352 B vs cap-128 ≈ 608 B slots, +73% — there a
   diversity-preserving prune at lower cap is worth engineering).
 - **Platform policy.** Performance is a Linux target only. macOS must work (mmap/msync semantics
-  differ slightly — `F_FULLFSYNC` for real durability barriers, no sparse-file guarantees on all
-  filesystems — both handled, neither optimized). Windows may fall back to the JS implementation
+  differ — msync alone is a weaker barrier there; an `F_FULLFSYNC` pass is a known follow-up,
+  and sparse-file behavior varies by filesystem — functional, not optimized). Windows may fall back to the JS implementation
   entirely; the native plane is allowed to be absent there.
 - **Packaging: independent open-source package.** The core has zero Harper coupling — the crate
   compiles standalone and its NAPI surface is generic (create/open plane, insert(id, vector),

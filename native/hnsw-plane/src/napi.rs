@@ -155,11 +155,20 @@ impl Plane {
         }
     }
 
-    /// Insert a vector; returns the allocated node id (freelist ids are reused).
+    /// Insert a vector; returns the allocated node id (freelist ids are reused). Throws on
+    /// a dimension mismatch or a full plane (maxNodes reached).
     #[napi]
     pub fn insert(&self, vector: Float32Array) -> Result<u32> {
+        if vector.len() != self.graph.file.dims {
+            return Err(Error::from_reason(format!(
+                "vector has {} dims; plane was created with {}",
+                vector.len(),
+                self.graph.file.dims
+            )));
+        }
         let mut scratch = self.insert_scratch.lock().unwrap();
-        Ok(insert(&self.graph, &vector, &self.params, &mut scratch))
+        insert(&self.graph, &vector, &self.params, &mut scratch)
+            .ok_or_else(|| Error::from_reason("plane is full (maxNodes reached)"))
     }
 
     /// Delete a node; its id returns to the plane freelist. Standalone-allocation mode only
@@ -199,9 +208,31 @@ impl Plane {
                 id, self.graph.file.max_nodes
             )));
         }
+        if (id as u64) >= self.graph.file.max_nodes {
+            return Err(Error::from_reason(format!("id {} exceeds plane capacity {}", id, self.graph.file.max_nodes)));
+        }
+        if !(scale as f32).is_finite() || !(inv_mag as f32).is_finite() {
+            return Err(Error::from_reason("scale/invMag must be finite"));
+        }
         let vec_i8 = unsafe { std::slice::from_raw_parts(vector.as_ptr() as *const i8, vector.len()) };
         let upper_levels: Vec<Vec<u32>> =
             upper.map(|ls| ls.iter().map(|l| l.to_vec()).collect()).unwrap_or_default();
+        // reject out-of-range neighbor ids rather than letting them poison traversal
+        // (SearchScratch::visit would size its array from them; distance_to skips them, but
+        // a u32::MAX id costs a huge allocation before it is skipped)
+        let max = self.graph.file.max_nodes;
+        for &n in neighbors.iter() {
+            if (n as u64) >= max {
+                return Err(Error::from_reason(format!("neighbor id {n} exceeds plane capacity {max}")));
+            }
+        }
+        for level in &upper_levels {
+            for &n in level {
+                if (n as u64) >= max {
+                    return Err(Error::from_reason(format!("upper neighbor id {n} exceeds plane capacity {max}")));
+                }
+            }
+        }
         self.graph.write_node_raw(
             id,
             level,
@@ -345,9 +376,13 @@ impl Plane {
         self.graph.file.set_watermark(txn as u64);
     }
 
-    /// msync the plane (slots + upper region, one file); advances durability.
+    /// Durability barrier: flush all data, then advance the watermark (defaults to the
+    /// current one) and the clean-shutdown flag, then flush the header alone — so a crash
+    /// between the flushes can only leave an OLD watermark over durable data (replay
+    /// re-covers a suffix), never a new watermark over missing data.
     #[napi]
-    pub fn flush(&self) -> Result<()> {
-        self.graph.file.msync().map_err(|e| Error::from_reason(e.to_string()))
+    pub fn flush(&self, watermark: Option<f64>) -> Result<()> {
+        let txn = watermark.map(|w| w as u64).unwrap_or_else(|| self.graph.file.watermark());
+        self.graph.file.flush_with_watermark(txn).map_err(|e| Error::from_reason(e.to_string()))
     }
 }
