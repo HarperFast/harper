@@ -232,15 +232,50 @@ p50 7.2 ms / recall@10-set 0.997 @ ef 512). Acceptance for phase 1:
 5. **Churn:** delete/reinsert cycles hold node count stable (freelist reuse; #2182 regression
    test).
 
-## 10. Open questions
+## 10. Decisions & open questions
 
-- **Degree cap 64 vs 128** — measured decision, §9.2.
-- **macOS/Windows sparse-file + mmap growth semantics** — Linux is the production target;
-  dev platforms may need chunked remapping instead of one large sparse reservation.
+Decided (Kris, 2026-08-31):
+
+- **Degree cap = 64.** Size is critical; 128 doubles the file for a degree tail (measured mean
+  ~37). Confirmed empirically: cap-64 graphs reach recall@10 = 1.000 at 100K on the calibrated
+  corpus (§11). Cap remains a header field; revising it is a rebuild.
+- **Platform policy.** Performance is a Linux target only. macOS must work (mmap/msync semantics
+  differ slightly — `F_FULLFSYNC` for real durability barriers, no sparse-file guarantees on all
+  filesystems — both handled, neither optimized). Windows may fall back to the JS implementation
+  entirely; the native plane is allowed to be absent there.
+- **Packaging: independent open-source package.** The core has zero Harper coupling — the crate
+  compiles standalone and its NAPI surface is generic (create/open plane, insert(id, vector),
+  remove(id), search(query, k, ef, filter), watermark get/set). Harper-specific glue — the
+  pk→nodeId mapping, commit-callback integration, txnlog-anchored replay, auto-ef policy
+  constants — stays in Harper regardless of packaging. Plan: develop in-repo under
+  `native/hnsw-plane/` until the NAPI surface stabilizes (end of phase 1), then split to its own
+  repo in the symphony/lmdb-js mold and consume via npm. The pitch as a community package: a
+  persistent, incrementally-maintained, concurrently-searchable HNSW for Node — hnswlib-node has
+  no durable incremental persistence, no off-loop batched filtering, no seqlock concurrency.
+
+Open:
+
 - **msync cadence default** — bounded-lag durability window vs write amplification; needs a
   workload measurement, not a guess.
-- **Where the crate lives** — in-repo `native/hnsw-plane/` (tight iteration, CI builds Rust)
-  vs separate repo à la symphony (prebuilds, independent versioning). Prototype in-repo;
-  decide before merge.
 - **f32 (quantization:"none") slot variant** — 3,072 B vectors → 3.4 KB slots; supported by the
   format (dims × mode in header) but int8 is the default and the optimization target.
+- **Upper-layer region persistence** — prototype keeps upper adjacency in memory (rebuilt at
+  open by scanning slots); the append-allocated file region is pending.
+
+## 11. Prototype measurements (kzyp Linux box, 768-d int8, ef 512, cap 64)
+
+Gaussian-mixture corpus matching `benchmarks/hnsw-scale.js` calibration (intra-cos 0.75,
+clusters = N/500). JS baseline for scale: 4.34 µs/visit; 1M efC-200 anchor: p50 7.2 ms,
+recall@10-set 0.997, ~3,110 visits.
+
+| N | p50 | p95 | visits/query | µs/visit | recall@10 (set) | build rate |
+| --- | --- | --- | --- | --- | --- | --- |
+| 100K | 0.28 ms | 0.46 ms | 1,395 | 0.201 | 1.000 | 5,583 inserts/s |
+
+Milestones: zero-copy seqlock reads + AVX2 kernels took per-visit cost from 0.440 µs (first
+scalar prototype) to ~0.1–0.2 µs — **~22–45× vs the JS per-visit baseline**, beating the
+0.25–0.4 µs design budget. The optimizeRouting-parity insert (including the recomputed
+neighbor↔neighbor distances) restored recall to 1.000 where the placeholder insert produced
+unnavigable graphs. Uniform-random 768-d corpora produce meaningless recall numbers (the JS
+benchmark's own calibration note: a corpus "no ANN can index") — all comparisons use the
+mixture corpus.
