@@ -4,8 +4,9 @@ const { EventEmitter, once } = require('node:events');
 const assert = require('node:assert');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
-const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync } = require('node:fs');
 const { writeFile, rm } = require('node:fs/promises');
+const { setTimeout: delay } = require('node:timers/promises');
 const { stringify } = require('yaml');
 const { spy } = require('sinon');
 const chokidar = require('chokidar');
@@ -173,6 +174,645 @@ describe('OptionsWatcher', () => {
 
 		assert.deepEqual(options.getAll(), expected, 'should return the entire configuration');
 
+		await teardown({ fixture, options });
+	});
+
+	it('finishes root config reads before its change callback returns', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, false);
+		await options.ready;
+
+		const updated = { ...CONFIG, [NAME]: { ...OPTIONS, str: 'updated' } };
+		writeFileSync(configFilePath, stringify(updated), 'utf-8');
+		options._refreshForTests();
+
+		assert.equal(options.get(['str']), 'updated', 'root watcher must not leave a same-thread read in flight');
+		await teardown({ fixture, options });
+	});
+
+	// `<name>: [1, 2` is what a prefix of `<name>: [1, 2, 3]` looks like on disk mid-write: it does
+	// not parse, and the event carrying the rest of the document is the one chokidar throttles away.
+	it('rides out an unparseable read on the retry ladder', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath);
+		await options.ready;
+
+		const before = options._readCountForTests;
+		writeFileSync(configFilePath, `${NAME}: [1, 2`, 'utf-8');
+		options._refreshForTests();
+
+		for (let waited = 0; waited < 3000 && options._readCountForTests - before < 3; waited += 50) await delay(50);
+
+		assert.ok(
+			options._readCountForTests - before >= 3,
+			`the ladder attempted ${options._readCountForTests - before} reads after the unparseable read`
+		);
+		assert.deepEqual(options.getAll(), OPTIONS, 'a mid-write prefix must not replace the scope config');
+
+		await teardown({ fixture, options });
+	}).timeout(10000);
+
+	// `once(this, 'ready')` turns an `error` emitted before `ready` into a rejection, and
+	// `componentLoader` awaits `Scope.ready` — so a failing watcher used to fail the component load
+	// rather than settle it onto the defaults the way every read outcome does.
+	it('settles ready when the watcher itself fails', async () => {
+		const { fixture, configFilePath } = createFixture();
+		const options = new OptionsWatcher(NAME, configFilePath);
+		const errorSpy = spy();
+		options.on('error', errorSpy);
+
+		options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+		await options.ready;
+		assert.equal(errorSpy.callCount, 1, 'the watcher error must still reach consumers');
+
+		await teardown({ fixture, options });
+	});
+
+	// `componentLoader` builds scopes from a memoized view of the config, so a block removed under a
+	// booting worker leaves a read that parses perfectly and simply has nothing for this scope.
+	it('settles ready when the config that read fine no longer carries this scope', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify({ somethingElse: true }), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath);
+
+		await options.ready;
+
+		await teardown({ fixture, options });
+	}).timeout(5000);
+
+	it('keeps the config a scope-less read produced instead of falling back to the defaults', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ somethingElse: true }), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath);
+
+		await options.ready;
+		assert.deepEqual(options.getRoot(), { somethingElse: true });
+
+		await teardown({ fixture, options });
+	}).timeout(5000);
+
+	it('does not let a throwing error listener escape the failure path', async () => {
+		const { fixture, configFilePath } = createFixture();
+		const options = new OptionsWatcher(NAME, configFilePath);
+		options.on('error', () => {
+			throw new Error('listener boom');
+		});
+
+		options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+		await teardown({ fixture, options });
+	});
+
+	it('emits remove when a scope declared with no body is deleted', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify({ [NAME]: null }), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath);
+		await options.ready;
+		assert.strictEqual(options.getAll(), null, '`myPlugin:` with no body is a configured scope');
+
+		const removed = once(options, 'remove');
+		writeFileSync(configFilePath, stringify({ somethingElse: true }), 'utf-8');
+		options._refreshForTests();
+		await removed;
+
+		await teardown({ fixture, options });
+	}).timeout(5000);
+
+	// The failure paths emit `ready` from a retry timer and from chokidar's error dispatch, where a
+	// throwing listener is an uncaught exception rather than something a caller can absorb.
+	it('does not let a throwing ready listener escape the failure path', async () => {
+		const { fixture, configFilePath } = createFixture();
+		const options = new OptionsWatcher(NAME, configFilePath);
+		options.on('ready', () => {
+			throw new Error('listener boom');
+		});
+		options.on('error', () => {});
+
+		options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+		await teardown({ fixture, options });
+	});
+
+	it('re-reads the root config when the watcher arms', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath);
+		await options.ready;
+
+		for (let waited = 0; waited < 3000 && !options._armedForTests; waited += 50) await delay(50);
+		assert.equal(options._armedForTests, true, 'the watcher must arm once chokidar has finished its scan');
+		// A write landing in the unarmed window is reported by no event, so the arming re-read is the
+		// only thing that can deliver it — arming must read rather than trust the scan's read.
+		assert.ok(options._readCountForTests >= 2, `arming must re-read (${options._readCountForTests} reads)`);
+
+		await teardown({ fixture, options });
+	});
+
+	// Where the platform has an arming grace (darwin), the re-read lands a beat after `ready`, and
+	// a deletion in between used to reach the scope as a `remove` before chokidar had reported —
+	// or finished processing — the unlink itself. A consumer acting on that early `remove` recreates
+	// the file inside chokidar's own teardown window, where the `add` is not observed at all, and
+	// the scope keeps the defaults with no further event coming (harper#2191 review).
+	it('does not read a missing file as a deletion when the re-read came from arming', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath);
+		await options.ready;
+
+		let removed = false;
+		options.on('remove', () => {
+			removed = true;
+		});
+		rmSync(configFilePath);
+		// Asserted before yielding, so chokidar's own `unlink` — which is what may legitimately
+		// report this deletion — cannot have run yet.
+		options._refreshForTests(true);
+
+		assert.equal(removed, false, 'the arm gate exists to catch a write, not to report a deletion');
+		assert.equal(options.get(['str']), 'foo', 'the applied config must survive the arming re-read');
+
+		await teardown({ fixture, options });
+	});
+
+	it('still reads a missing file as a deletion on an ordinary re-read', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath);
+		await options.ready;
+
+		let removed = false;
+		options.on('remove', () => {
+			removed = true;
+		});
+		rmSync(configFilePath);
+		options._refreshForTests();
+
+		assert.equal(removed, true, 'an ENOENT read outside the arm gate is still the install/removal path');
+
+		await teardown({ fixture, options });
+	});
+
+	// A mode-000 file denies the read the way a Windows sharing violation does without stubbing
+	// node:fs, which AGENTS.md forbids. It has to be the file and not its directory: chokidar
+	// cannot watch an unreadable directory and synthesizes an `unlink` when it tries. chmod leaves
+	// mtime alone, so no watcher event fires for the lock or its release and a retry is provably
+	// the only thing that can read the file again. Root ignores the mode and Windows has no POSIX
+	// modes, so those hosts skip.
+	function denyReads(filePath) {
+		chmodSync(filePath, 0o000);
+		try {
+			readFileSync(filePath, 'utf-8');
+			chmodSync(filePath, 0o644);
+			return false;
+		} catch {
+			return true;
+		}
+	}
+
+	it('keeps the previous options through a denied read and applies the file once it clears', async function () {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+		await options.ready;
+		if (!denyReads(configFilePath)) {
+			await teardown({ fixture, options });
+			return this.skip();
+		}
+
+		chmodSync(configFilePath, 0o644);
+		const errors = [];
+		options.on('error', (error) => errors.push(error));
+
+		// Written and locked in one synchronous block, so the watcher event this write queues is
+		// already denied by the time it runs and the new contents sit on disk unreachable. Which
+		// path delivers them after the unlock is not observable here — chokidar reports a chmod as
+		// a change of its own — so this asserts the invariant, and configReadRetry.test.js proves
+		// the ladder that upholds it when no event follows.
+		const updated = { ...CONFIG, [NAME]: { ...OPTIONS, str: 'unlocked' } };
+		writeFileSync(configFilePath, stringify(updated), 'utf-8');
+		chmodSync(configFilePath, 0o000);
+
+		await delay(300);
+		assert.deepEqual(errors, [], 'a denied read must be retried before it is surfaced');
+		assert.equal(options.get(['str']), 'foo', 'a denied read must leave the previous options in place');
+
+		chmodSync(configFilePath, 0o644);
+		for (let waited = 0; waited < 2500 && options.get(['str']) !== 'unlocked'; waited += 50) await delay(50);
+
+		assert.equal(options.get(['str']), 'unlocked', 'a lock that clears must leave the options current');
+		assert.deepEqual(errors, [], 'a lock that clears within the ladder must never surface');
+		await teardown({ fixture, options });
+	});
+
+	it('retries a denied application-config read instead of settling the scope on the defaults', async function () {
+		// Application configs read asynchronously so a stalled component-config volume cannot block
+		// the thread — which is a reason not to *block*, not a reason for a transient failure to be
+		// terminal. Nothing emits a second watcher event when it clears.
+		const fixture = mkdtempSync(getFixtureName());
+		const appConfigPath = join(fixture, 'config.yaml');
+		writeFileSync(appConfigPath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, appConfigPath, undefined, false);
+		await options.ready;
+		if (!denyReads(appConfigPath)) {
+			await teardown({ fixture, options });
+			return this.skip();
+		}
+
+		const errors = [];
+		options.on('error', (error) => errors.push(error));
+
+		// The file stays locked, so chokidar reports nothing further — chmod leaves mtime alone —
+		// and every read past the first can only have come from a ladder rung.
+		const before = options._readCountForTests;
+		await options._refreshForTests();
+		for (let waited = 0; waited < 3000 && options._readCountForTests - before < 3; waited += 50) await delay(50);
+
+		assert.ok(
+			options._readCountForTests - before >= 3,
+			`the ladder attempted ${options._readCountForTests - before} reads while the lock held`
+		);
+		assert.deepEqual(errors, [], 'a denied read must be retried before it is surfaced');
+		assert.equal(options.get(['str']), 'foo', 'a denied read must leave the previous options in place');
+
+		chmodSync(appConfigPath, 0o644);
+		await teardown({ fixture, options });
+	});
+
+	// `DEFAULT_CONFIG` names six scopes, and a boot that finds none of its own config hands the
+	// scope that scope's defaults. Read as a value the file supplied, the next read of the very
+	// same file looks like the block being deleted — a `remove`, and through `Scope` a restart, on
+	// a config that never changed.
+	it('does not report a removal for the defaults it booted on', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify({ http: { port: 9926 } }), 'utf-8');
+		const options = new OptionsWatcher('graphqlSchema', configFilePath, undefined, true);
+		await options.ready;
+		assert.equal(options.get(['files']), DEFAULT_CONFIG.graphqlSchema.files, 'the boot falls back to the defaults');
+
+		let removed = false;
+		options.on('remove', () => {
+			removed = true;
+		});
+		await options._refreshForTests();
+		await options._refreshForTests();
+
+		assert.equal(removed, false, 'the defaults are not a configuration that can be removed');
+		await teardown({ fixture, options });
+	});
+
+	it('reports removal after an identical file value replaces the boot fallback', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify({ http: { port: 9926 } }), 'utf-8');
+		const options = new OptionsWatcher('graphqlSchema', configFilePath, undefined, true);
+		await options.ready;
+
+		writeFileSync(configFilePath, stringify({ graphqlSchema: DEFAULT_CONFIG.graphqlSchema }), 'utf-8');
+		await options._refreshForTests();
+
+		const removed = once(options, 'remove');
+		writeFileSync(configFilePath, stringify({ http: { port: 9926 } }), 'utf-8');
+		await options._refreshForTests();
+		await removed;
+
+		await teardown({ fixture, options });
+	});
+
+	// A scope declared with no body is configured and falsy. Filling it in is a change; only the
+	// unconfigured → configured transition is a `ready`, which `Scope` answers with a restart.
+	it('delivers a filled-in falsy scope as a change, not a second ready', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, `${NAME}:\n`, 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+
+		const [value] = await options.ready;
+		assert.strictEqual(value, null, 'a scope declared with no body is configured as null');
+
+		let readyAgain = 0;
+		options.on('ready', () => readyAgain++);
+		const changed = once(options, 'change');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		await changed;
+
+		assert.equal(readyAgain, 0, 'filling in a configured scope is not the unconfigured transition');
+		assert.equal(options.get(['str']), 'foo', 'the filled-in value must be applied');
+		await teardown({ fixture, options });
+	});
+
+	// The other half of not reporting a deletion from the arming re-read: the unarmed window is
+	// exactly where an `unlink` can go missing, so an absence it observes cannot just be dropped.
+	it('still reports an absence the arming re-read observed, once the loop has had its turn', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+		await options.ready;
+
+		// Armed first, so the watcher's own arming re-read is already spent and cannot be mistaken
+		// for the re-check below.
+		for (let waited = 0; waited < 3000 && !options._armedForTests; waited += 10) await delay(10);
+
+		const removed = once(options, 'remove');
+		rmSync(configFilePath);
+		options._refreshForTests(true);
+		// Captured synchronously, so only the re-check the arming read queued can move it: one
+		// check-phase turn later, ahead of anything chokidar can deliver (which needs a poll-phase
+		// turn first), and `#handleUnlink` does not read at all.
+		const afterArming = options._readCountForTests;
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.ok(
+			options._readCountForTests > afterArming,
+			'the absence the arming re-read saw must be re-checked, not dropped'
+		);
+		await removed;
+		assert.equal(options.get(['str']), undefined, 'the scope must fall back to its defaults');
+		await teardown({ fixture, options });
+	});
+
+	// `Scope.ready` has no timeout, so a shutdown mid-ladder must not strand `componentLoader`.
+	it('settles ready when it is closed mid-ladder', async function () {
+		this.timeout(2000);
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		// Empty, so the ladder is still running and `ready` is nowhere near its own settle.
+		writeFileSync(configFilePath, '', 'utf-8');
+
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+
+		await options.close();
+		await options.ready;
+
+		rmSync(fixture, { recursive: true, force: true });
+	});
+
+	it('still becomes ready when the config cannot be applied at boot', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, `${NAME}:\n  str: [unclosed\n`, 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+
+		const errors = [];
+		options.on('error', (error) => errors.push(error));
+
+		// componentLoader awaits this with no timeout and nothing consumes `error`, so a failure
+		// that leaves `ready` unemitted hangs the boot instead of surfacing.
+		await options.ready;
+
+		assert.equal(errors.length, 1, 'the failure must still surface');
+		assert.deepEqual(options.getAll(), DEFAULT_CONFIG[NAME], 'boot falls back to the defaults');
+		await teardown({ fixture, options });
+	});
+
+	it('re-reads from the ladder while the file stays locked, with no watcher event to help', async function () {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+		await options.ready;
+		if (!denyReads(configFilePath)) {
+			await teardown({ fixture, options });
+			return this.skip();
+		}
+
+		options.on('error', () => {});
+		const before = options._readCountForTests;
+		options._refreshForTests();
+
+		// Nothing touches the file for the rest of the case, so chokidar has nothing to report: any
+		// further read attempt came from a ladder rung.
+		for (let waited = 0; waited < 3000 && options._readCountForTests - before < 3; waited += 50) await delay(50);
+
+		assert.ok(
+			options._readCountForTests - before >= 3,
+			`the ladder attempted ${options._readCountForTests - before} reads while the lock held`
+		);
+		chmodSync(configFilePath, 0o644);
+		await teardown({ fixture, options });
+	});
+
+	it('surfaces a denied root config read once the retry ladder is spent', async function () {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+		await options.ready;
+		if (!denyReads(configFilePath)) {
+			await teardown({ fixture, options });
+			return this.skip();
+		}
+
+		const errored = once(options, 'error');
+		options._refreshForTests();
+		const [error] = await errored;
+
+		assert.equal(error.code, 'EACCES', 'a lock that outlives the ladder must not be swallowed');
+		chmodSync(configFilePath, 0o644);
+		await teardown({ fixture, options });
+	});
+
+	it('does not read a writer truncate window as a removed config', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+		await options.ready;
+
+		let removed = false;
+		options.on('remove', () => {
+			removed = true;
+		});
+		writeFileSync(configFilePath, '', 'utf-8');
+		options._refreshForTests();
+
+		assert.equal(removed, false, 'an empty read must not read as a deleted scope');
+		assert.equal(options.get(['str']), 'foo', 'the loaded options must survive a truncate window');
+		await teardown({ fixture, options });
+	});
+
+	it('does not write an applied config into the shared defaults', async function () {
+		// `.mocharc.json` sets `timeout: 0`, so a lost event here wedges the whole run rather than
+		// failing this case.
+		this.timeout(10_000);
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'a.graphql' } }), 'utf-8');
+		const options = new OptionsWatcher('graphqlSchema', configFilePath, undefined, true);
+		await options.ready;
+
+		// A reset hands the scope the defaults, and whatever it applies next merges into them in
+		// place — into the module-level object every later reset hands out, if it is not cloned.
+		const removed = once(options, 'remove');
+		rmSync(configFilePath);
+		await removed;
+
+		// `await removed` resumes as a microtask of chokidar's own `unlink` dispatch, so the
+		// recreate below lands while chokidar is still tearing that watch down and its `add` is not
+		// reliably reported — on darwin every run, on Linux CI under load. `should continue to watch
+		// if file is removed and recreated` is where that delivery is asserted; what this case is
+		// about is the merge, so it drives the read itself rather than racing the watcher.
+		const change = once(options, 'change');
+		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'custom.graphql' } }), 'utf-8');
+		await options._refreshForTests();
+		await change;
+
+		assert.equal(options.get(['files']), 'custom.graphql', 'the scope must apply its own config');
+		assert.equal(DEFAULT_CONFIG.graphqlSchema.files, '*.graphql', 'the shared defaults must survive it');
+		await teardown({ fixture, options });
+	});
+
+	// componentLoader awaits `Scope.ready` with no timeout, so a file that is still empty when the
+	// ladder is spent has to settle on the defaults rather than strand the component.
+	it('becomes ready on the defaults when the config file stays empty', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, '', 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+
+		await options.ready;
+
+		assert.equal(options.get(['str']), undefined, 'an empty config carries no scoped options');
+		await teardown({ fixture, options });
+	}).timeout(10000);
+
+	// `myPlugin:` with nothing under it is a configured scope whose value happens to be falsy, and
+	// `Scope` turns a repeat `ready` into a restart request — so a re-read of it must not look like
+	// the unconfigured → configured transition.
+	it('does not re-emit ready when a falsy scope value is read again', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, `${NAME}:\n`, 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+
+		const [value] = await options.ready;
+		assert.strictEqual(value, null, 'a scope declared with no body is configured as null');
+
+		let readyAgain = 0;
+		options.on('ready', () => readyAgain++);
+		options._refreshForTests();
+		options._refreshForTests();
+
+		assert.equal(readyAgain, 0, 're-reading the same falsy value is not a transition');
+		await teardown({ fixture, options });
+	});
+
+	// A scope that booted unconfigured is in the same state as one whose config file was deleted:
+	// `ready` is how the watcher says it has config again, and `Scope` re-initializes on each one.
+	it('delivers a scope that arrives after the boot fallback as a ready', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, '', 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+
+		// A file still empty when the ladder is spent settles `ready` on the defaults, which do
+		// not name this scope.
+		await options.ready;
+		assert.equal(options.get(['str']), undefined, 'the fallback carries no scoped options');
+
+		const readyAgain = once(options, 'ready');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const [value] = await readyAgain;
+
+		assert.equal(value.str, 'foo', 'the second ready must carry the config that arrived');
+		assert.equal(options.get(['str']), 'foo', 'the scope must apply the config that arrived');
+		await teardown({ fixture, options });
+	}).timeout(10000);
+
+	it('does not read a writer truncate window as a removed config on the async read path', async () => {
+		const { fixture, configFilePath, options } = await setup();
+
+		let removed = false;
+		options.on('remove', () => {
+			removed = true;
+		});
+		writeFileSync(configFilePath, '', 'utf-8');
+		options._refreshForTests();
+		await delay(50);
+
+		assert.equal(removed, false, 'an empty read must not read as a deleted scope');
+		assert.equal(options.get(['str']), 'foo', 'the loaded options must survive a truncate window');
+		await teardown({ fixture, options });
+	});
+
+	it('does not surface the source lines yaml frames into a parse failure', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+		await options.ready;
+
+		const errored = once(options, 'error');
+		writeFileSync(configFilePath, `${NAME}:\n  str: [unclosed\n  password: hunter2\n`, 'utf-8');
+		options._refreshForTests();
+		const [error] = await errored;
+
+		// The scope logs whatever is emitted here, and a config file holds credentials.
+		assert.ok(!error.message.includes('hunter2'), `the emitted parse error framed the config: ${error.message}`);
+		assert.ok(/line \d+, column \d+/.test(error.message), 'the emitted parse error must locate the failure');
+		assert.equal(options.get(['str']), 'foo', 'a parse failure keeps the last valid options');
+		await teardown({ fixture, options });
+	});
+
+	it('does not treat an ENOENT from a change listener as a missing config file', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, false);
+		await options.ready;
+
+		const listenerError = Object.assign(new Error('listener file missing'), { code: 'ENOENT' });
+		let emittedError;
+		options.on('error', (error) => {
+			emittedError = error;
+		});
+		let removed = false;
+		options.on('remove', () => {
+			removed = true;
+		});
+		options.on('change', () => {
+			throw listenerError;
+		});
+
+		writeFileSync(configFilePath, stringify({ ...CONFIG, [NAME]: { ...OPTIONS, str: 'updated' } }), 'utf-8');
+		options._refreshForTests();
+
+		assert.equal(emittedError, listenerError);
+		assert.equal(removed, false, 'listener errors must not reset the scope');
+		await teardown({ fixture, options });
+	});
+
+	it('does not treat an ENOENT from a change listener as a missing config file on the async read path', async () => {
+		const { fixture, configFilePath, options } = await setup();
+
+		const listenerError = Object.assign(new Error('listener file missing'), { code: 'ENOENT' });
+		let removed = false;
+		options.on('remove', () => {
+			removed = true;
+		});
+		options.on('change', () => {
+			throw listenerError;
+		});
+
+		const errored = once(options, 'error');
+		await writeFile(configFilePath, stringify({ ...CONFIG, [NAME]: { ...OPTIONS, str: 'updated' } }), 'utf-8');
+		const [emitted] = await errored;
+
+		assert.equal(emitted, listenerError);
+		assert.equal(removed, false, 'listener errors must not reset the scope');
 		await teardown({ fixture, options });
 	});
 
