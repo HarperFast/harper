@@ -279,9 +279,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 				if (isMidLogBreak(error)) corruptFrameStop.midLogBreak = true;
 				report(error);
 			});
-			// Predeclared, not left to the first assignment below: adding these fields after the object
-			// literal is built gives every TrackedIterator the same shape from birth, so V8 sees one
-			// hidden class here instead of a transition on this iterator's first entry.
+			// Set here, once, rather than left for the per-entry write sites below to add these fields
+			// on their first call: every TrackedIterator then reaches its final shape before any entry
+			// is consumed, so the hot per-entry writes hit an already-stable shape instead of each
+			// triggering its own transition on that iterator's first entry.
 			iterator.lastVersion = undefined;
 			iterator.lastEndTxn = undefined;
 			return iterator;

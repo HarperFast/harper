@@ -225,7 +225,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 							transaction?.abort();
 						} else transaction?.directCommitSync();
 					} catch (error) {
-						// directCommitSync aborts and detaches its transaction on failure; no cleanup here
+						// directCommitSync aborts and detaches its transaction on failure; no cleanup here.
+						// The torn branch already backed stagedWrites out of writes before this try, so
+						// only a failed COMMIT (never applied) needs it backed out here too — otherwise a
+						// commit failure left `writes` counting records that never actually landed.
+						if (!torn) writes -= stagedWrites;
 						if (electedReplayer) {
 							strictFailure = error;
 							break;
@@ -360,7 +364,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					transaction?.abort();
 				} else transaction?.directCommitSync();
 			} catch (error) {
-				// directCommitSync aborts and detaches its transaction on failure; no cleanup here
+				// directCommitSync aborts and detaches its transaction on failure; no cleanup here.
+				// Mirrors the interior version-boundary catch above: a failed commit never applied, so
+				// it must not stay counted in `writes`.
+				if (!finalTorn) writes -= stagedWrites;
 				if (electedReplayer) strictFailure = error;
 				logger.error(`Error ${finalTorn ? 'discarding a torn' : 'committing'} replay transaction`, error);
 			}
