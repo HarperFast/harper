@@ -18,7 +18,7 @@ import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
-import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
+import { appendHeader, Headers, mergeChainHeadersIntoFallback, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
 import {
 	decodeProxyHeader,
 	applyProxyHeader,
@@ -490,7 +490,7 @@ export function httpServer(listener, options) {
 			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
 		} else if (isBun) {
 			// On Bun, store non-function listeners (e.g. Fastify's http.Server) for fallback delegation
-			fallbackServers[port] = listener;
+			registerFallbackServer(port, listener);
 		} else if ((httpServers[port] as any)?.uws) {
 			// uWS HTTP path (#914, HARPER_UWS_HTTP): the port is backed by uWebSockets.js, not a Node
 			// http server, so a raw non-function listener (e.g. Fastify's http.Server via
@@ -499,7 +499,7 @@ export function httpServer(listener, options) {
 			// port. Divert it to the fallback map like the Bun path; makeUwsHandler delegates unhandled
 			// requests to it via inject(). The { uws: true } marker is guaranteed present here: the
 			// getServer(port) call above (same loop iteration) sets it before this branch runs.
-			fallbackServers[port] = listener;
+			registerFallbackServer(port, listener);
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
@@ -984,7 +984,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
  * and a Fastify fallback is registered for the port, it delegates via inject() (see injectToFastify),
  * mirroring the Bun path — so legacy Fastify routes work behind uWS too.
  */
-function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
+export function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
 	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
 	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
 	// mutates. `headers` is normalized in place the same way the Bun path does.
@@ -1020,6 +1020,12 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
 					else respHeaders.set(k, String(v));
 				}
+				// Fastify's own headers win, but the chain's identity/cache floor is not discarded with
+				// them: authentication stamps `Cache-Control: private, no-cache` and
+				// `Vary: Authorization, Cookie` on a credential-dependent response, and a deferred
+				// credential can now reach this fallback (#2418, #1565). Node preserves these via
+				// `nodeResponse.setHeader` before emitting 'unhandled'; do the equivalent here.
+				mergeChainHeadersIntoFallback(headers, respHeaders);
 				if (universalHeaders.length > 0) applyUniversalHeaders(respHeaders);
 				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
 				const responseStream = injectResult.stream();
@@ -1043,6 +1049,9 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 			}
 			logHttpRequest(request, 404, requestId, performance.now() - startTime);
 			const notFoundHeaders = new Headers({ 'content-type': 'text/plain' });
+			// A 404 produced under a credential is credential-dependent too, so it keeps the same floor
+			// the fallback branch above preserves.
+			mergeChainHeadersIntoFallback(headers, notFoundHeaders);
 			if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
 			return { status: 404, headers: notFoundHeaders, body: 'Not found\n' };
 		}
@@ -1217,10 +1226,11 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 						// Delegate to the fallback server (e.g. Fastify) via node:http compatibility.
 						// We create a Node-compatible IncomingMessage/ServerResponse and emit 'request'
 						// on the fallback server, then capture the response.
-						return await bunDelegateToNodeServer(fallbackServer, webRequest, request);
+						return await bunDelegateToNodeServer(fallbackServer, webRequest, request, response.headers);
 					}
 					logHttpRequest(request, 404, requestId, performance.now() - startTime);
 					const notFoundHeaders = new globalThis.Headers();
+					mergeChainHeadersIntoFallback(response.headers, notFoundHeaders);
 					if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
 					return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 				}
@@ -1404,6 +1414,15 @@ let fastifyInstances: Record<string | number, any> = {};
 export function registerFastifyInstance(port: string | number, instance: any) {
 	fastifyInstances[port] = instance;
 }
+
+/**
+ * Records the legacy Fastify `http.Server` the Bun and uWS adapters delegate an unhandled request to.
+ * Both runtimes divert a non-function `server.http()` listener here instead of binding it, because
+ * neither backs its port with a Node http server.
+ */
+export function registerFallbackServer(port: string | number, listener: any) {
+	fallbackServers[port] = listener;
+}
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
 
 /**
@@ -1434,10 +1453,11 @@ function injectToFastify(
 	return fastify.inject({ method: req.method, url: req.url, headers, payload: req.body, payloadAsStream: true });
 }
 
-async function bunDelegateToNodeServer(
+export async function bunDelegateToNodeServer(
 	nodeServer: any,
 	webRequest: globalThis.Request,
-	bunRequest?: any
+	bunRequest?: any,
+	chainHeaders?: any
 ): Promise<Response> {
 	// Check if there's a Fastify instance registered for this port (preferred path)
 	for (const port in fallbackServers) {
@@ -1465,6 +1485,10 @@ async function bunDelegateToNodeServer(
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
+			// See mergeChainHeadersIntoFallback: Fastify's headers win, but authentication's
+			// identity/cache floor on a credential-dependent response is preserved rather than dropped
+			// with the rest of the chain response (#2418, #1565).
+			mergeChainHeadersIntoFallback(chainHeaders, webHeaders);
 			if (universalHeaders.length > 0) applyUniversalHeaders(webHeaders);
 			const responseStream = injectResult.stream();
 			// Event-stream responses (MCP SSE) must reach the client incrementally — return
@@ -1499,6 +1523,7 @@ async function bunDelegateToNodeServer(
 	}
 	// No Fastify instance found — return 404
 	const notFoundHeaders = new globalThis.Headers();
+	mergeChainHeadersIntoFallback(chainHeaders, notFoundHeaders);
 	if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
 	return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 }

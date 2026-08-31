@@ -3,7 +3,7 @@ import type { RequestParams } from 'graphql-http';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import { resources } from '../resources/Resources.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import { getDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
+import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 // This code makes heavy use of the word "node" to refer to a node in the GraphQL AST.
 
@@ -581,13 +581,16 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				return nextLayer(request);
 			}
 
+			// Harper owns /graphql, so a credential the authentication middleware deferred is rejected
+			// here instead of reaching a resolver as an anonymous request (#2418). Settled ahead of the
+			// try/catch on purpose: the GraphQL error mapping below renders every failure as
+			// `{errors:[{message}]}` in a GraphQL media type, but a rejected credential has always been
+			// answered by authentication itself with `{error: message}` in the request's negotiated
+			// serialization, and that contract is what callers depend on.
+			const settledCredentialRejection = settleDeferredCredentialRejection(request);
+			if (settledCredentialRejection) return settledCredentialRejection;
+
 			try {
-				// Harper owns /graphql, so a credential the authentication middleware deferred is
-				// rejected here instead of reaching a resolver as an anonymous request (#2418).
-				// Raised as this file's own HTTPError so the status survives the handler's error
-				// mapping below, which would otherwise render an unrecognized Error as a 500.
-				const deferred = getDeferredCredentialRejection(request);
-				if (deferred) throw new HTTPError(deferred.message, deferred.status);
 				// Await the `graphqlHandler` call here so that errors are caught.
 				return await graphqlQueryingHandler(request as any);
 			} catch (error) {

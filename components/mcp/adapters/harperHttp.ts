@@ -12,6 +12,7 @@
  * automatically and pipes the iterable to the wire.
  */
 import { handleMcpRequest, type McpProfile, type NormRequest, type NormResponse } from '../transport.ts';
+import { settleDeferredCredentialRejection } from '../../../security/deferredAuthentication.ts';
 import { toSseStream, type SseFrameSource } from '../sse.ts';
 
 /**
@@ -42,6 +43,9 @@ interface HarperHttpRequest {
 	ip?: string;
 }
 
+/** The settled authentication response, when a deferred credential rejection decides the request. */
+type SettledCredentialRejection = { status: number; headers: unknown; body: string | Buffer };
+
 interface HarperHttpResponse {
 	status: number;
 	headers: Record<string, string>;
@@ -55,6 +59,15 @@ export function createHarperHttpHandler(profile: McpProfile) {
 	): Promise<HarperHttpResponse | unknown> {
 		// WebSocket upgrades aren't ours — let the next handler take it.
 		if (request.isWebSocket) return nextHandler(request);
+
+		// This mount is Harper-owned, so route ownership is settled the moment we decline to delegate.
+		// The authentication middleware defers an unrecognized credential rather than answering it in
+		// line (#2418), and `request.user` is simply unset in that case — which `norm.user` below would
+		// map to `''`, i.e. anonymous, letting an invalid credential open an MCP session that the base
+		// revision answered with 401. Settled before the body is read or a session is created.
+		const settledCredentialRejection = settleDeferredCredentialRejection(request) as
+			SettledCredentialRejection | undefined;
+		if (settledCredentialRejection) return settledCredentialRejection;
 
 		const norm: NormRequest = {
 			method: request.method,

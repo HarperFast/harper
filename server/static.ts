@@ -5,6 +5,7 @@ import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { isMatch } from 'micromatch';
 import send from 'send';
+import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 /**
  * The static plugin handles serving static files from the respective application directory.
@@ -393,6 +394,11 @@ export function handleApplication(scope: Scope) {
 
 			// If an entry matched, serve it
 			if (staticFile) {
+				// Harper owns this URL, so a credential the authentication middleware deferred rather than
+				// answering in line (#2418) is settled here — otherwise an unrecognized credential would
+				// be served static content that the base revision answered with 401.
+				const settledCredentialRejection = settleDeferredCredentialRejection(req);
+				if (settledCredentialRejection) return settledCredentialRejection;
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
 				return {
 					handlesHeaders: true,

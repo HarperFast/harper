@@ -41,9 +41,9 @@ suite(
 		let adminAuthorization = '';
 
 		/** Issues a raw request so the exact Authorization header under test reaches the wire unchanged. */
-		async function get(pathname: string, authorization?: string) {
+		async function get(pathname: string, authorization?: string, extraHeaders: Record<string, string> = {}) {
 			const response = await fetch(`${restURL}${pathname}`, {
-				headers: authorization ? { Authorization: authorization } : {},
+				headers: { ...(authorization ? { Authorization: authorization } : {}), ...extraHeaders },
 			});
 			const text = await response.text();
 			let body: any;
@@ -52,7 +52,7 @@ suite(
 			} catch {
 				body = text;
 			}
-			return { status: response.status, body, text };
+			return { status: response.status, body, text, headers: response.headers };
 		}
 
 		before(async () => {
@@ -173,6 +173,42 @@ suite(
 				/private|no-store/i.test(response.headers.get('cache-control') ?? ''),
 				`expected a private cache scope, got ${response.headers.get('cache-control')}`
 			);
+		});
+
+		test('a rejected credential on a REST route keeps the authentication error envelope', async () => {
+			// The wire contract every caller has seen for a rejected credential: `{error: message}` in
+			// the request's negotiated serialization. REST's own error mapping renders a thrown error as
+			// an RFC 9457 Problem Details document (`type`/`title`/`status`), which is NOT this, so a
+			// settlement that went through REST's catch would silently change the response shape.
+			const response = await get(PROTECTED_ROUTE, WORDPRESS_BASIC, { Accept: 'application/json' });
+
+			equal(response.status, 401, `expected a generic unauthorized: ${response.text}`);
+			equal(response.headers.get('content-type')?.split(';')[0], 'application/json');
+			equal(typeof response.body?.error, 'string', `expected an {error} body, got: ${response.text}`);
+			ok(response.body.title === undefined, `expected no Problem Details envelope, got: ${response.text}`);
+			ok(response.body.errors === undefined, `expected no GraphQL error envelope, got: ${response.text}`);
+		});
+
+		test('a rejected credential on /graphql keeps the same envelope, not GraphQL errors', async () => {
+			const response = await fetch(`${restURL}/graphql?query=%7B__typename%7D`, {
+				headers: { Authorization: WORDPRESS_BASIC, Accept: 'application/json' },
+			});
+			const text = await response.text();
+
+			equal(response.status, 401, `expected a generic unauthorized: ${text}`);
+			equal(response.headers.get('content-type')?.split(';')[0], 'application/json');
+			const body = JSON.parse(text);
+			equal(typeof body.error, 'string', `expected an {error} body, got: ${text}`);
+			ok(body.errors === undefined, `expected no GraphQL {errors:[...]} envelope, got: ${text}`);
+		});
+
+		test('/graphql still answers an anonymous request normally', async () => {
+			// The contrast case: without a credential to reject, GraphQL's own handling is untouched.
+			const response = await fetch(`${restURL}/graphql?query=%7B__typename%7D`, {
+				headers: { Accept: 'application/json' },
+			});
+
+			ok(response.status !== 401, `an anonymous /graphql request must not be rejected: ${await response.text()}`);
 		});
 
 		test('the operations API still rejects an unrecognized credential in place', async () => {

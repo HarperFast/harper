@@ -159,3 +159,67 @@ export function toWriteHeadHeaders(headers: any): any {
 	}
 	return result;
 }
+
+// RFC 9111 cache-scope directives; boundaries on both sides so a token like `public-foo` doesn't match.
+export const SHARED_CACHE_OPTIN = /(^|[,\s])(public|s-maxage)($|[\s,;=])/i;
+export const PRIVATE_SCOPE = /(^|[,\s])(private|no-store)($|[\s,;=])/i;
+
+function headerValueString(value: unknown): string {
+	if (value == null) return '';
+	return Array.isArray(value) ? value.join(', ') : String(value);
+}
+
+/**
+ * Folds the middleware chain's response headers into the headers a fallback server produced for the
+ * same request.
+ *
+ * When the chain declines a request (`status: -1`) the Bun and uWS adapters hand it to legacy Fastify
+ * and build their response headers solely from Fastify's reply, dropping everything the chain had
+ * already decided. The Node adapter does not: it copies the chain headers onto the `ServerResponse`
+ * before emitting `unhandled`. That divergence used to be invisible, because a request carrying an
+ * unrecognized credential never reached a fallback — authentication answered it in line. Deferral
+ * (#2418) makes it reachable, and with it the identity floor authentication stamps on a
+ * credential-dependent response (`Cache-Control: private, no-cache`, `Vary: Authorization, Cookie`
+ * — #1565).
+ *
+ * Fastify wins every header it actually set; the chain only fills gaps. `Vary` is unioned rather than
+ * replaced, and the chain's private cache scope is re-applied unless the final response explicitly
+ * opts into shared caching (`public`/`s-maxage`), which is RFC 9111's opt-in and the same signal
+ * `security/auth.ts` honours.
+ */
+export function mergeChainHeadersIntoFallback<
+	T extends {
+		get(name: string): any;
+		set(name: string, value: any): any;
+		has(name: string): boolean;
+		append?(name: string, value: any): any;
+	},
+>(chainHeaders: any, finalHeaders: T): T {
+	if (!chainHeaders?.[Symbol.iterator]) return finalHeaders;
+	const chainVary = headerValueString(chainHeaders.get('Vary'));
+	const chainCacheControl = headerValueString(chainHeaders.get('Cache-Control'));
+	for (const [name, value] of chainHeaders) {
+		const lowerName = String(name).toLowerCase();
+		if (lowerName === 'vary' || lowerName === 'cache-control') continue;
+		if (finalHeaders.has(name)) continue;
+		if (Array.isArray(value)) {
+			// Set-Cookie is the multi-valued case that must never be comma-joined.
+			for (const single of value) appendHeader(finalHeaders, name, single, lowerName !== 'set-cookie');
+		} else finalHeaders.set(name, value);
+	}
+	for (const token of chainVary.split(',')) {
+		const trimmed = token.trim();
+		if (trimmed) addVaryHeader(finalHeaders as any, trimmed);
+	}
+	if (chainCacheControl) {
+		const finalCacheControl = headerValueString(finalHeaders.get('Cache-Control'));
+		if (!finalCacheControl) finalHeaders.set('Cache-Control', chainCacheControl);
+		else if (
+			PRIVATE_SCOPE.test(chainCacheControl) &&
+			!PRIVATE_SCOPE.test(finalCacheControl) &&
+			!SHARED_CACHE_OPTIN.test(finalCacheControl)
+		)
+			finalHeaders.set('Cache-Control', finalCacheControl + ', private');
+	}
+	return finalHeaders;
+}

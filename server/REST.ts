@@ -15,7 +15,10 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { ASIDE_STAGING_DIR } from '../components/Application.ts';
 import { COMPONENT_PREPARATION_LOCK_DIR } from '../components/componentPreparationLock.ts';
 import { restartNeeded } from '../components/requestRestart.ts';
-import { assertNoDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
+import {
+	assertNoDeferredCredentialRejection,
+	settleDeferredCredentialRejection,
+} from '../security/deferredAuthentication.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -227,7 +230,12 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		// document — so a credential the authentication middleware deferred is decided here rather
 		// than travelling on to an application catch-all (#2418). Every path that reaches an
 		// application instead returned via `nextHandler` above.
-		assertNoDeferredCredentialRejection(request);
+		//
+		// Returned as the authentication middleware's own response descriptor rather than thrown: a
+		// throw would be rendered by the catch below as an RFC 9457 Problem Details document, which is
+		// not the `{error: message}` body a rejected credential has always produced.
+		const settledCredentialRejection = settleDeferredCredentialRejection(request);
+		if (settledCredentialRejection) return settledCredentialRejection;
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {

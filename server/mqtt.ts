@@ -19,6 +19,10 @@ import { forComponent as loggerForComponent } from '../utility/logging/harper_lo
 import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
+import { getDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
+
+/** RFC 6455 private-use close code Harper already maps HTTP 401 to (see server/REST.ts). */
+const WEBSOCKET_UNAUTHORIZED_CLOSE_CODE = 3000;
 const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
@@ -64,6 +68,15 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			(ws, request, chainCompletion, next: any) => {
 				if (request.headers.get('sec-websocket-protocol') !== 'mqtt') {
 					return next(ws, request, chainCompletion);
+				}
+
+				// Declining to delegate settles route ownership: this socket is Harper's. A credential the
+				// authentication middleware deferred rather than answering in line (#2418) leaves
+				// `request.user` unset, which would otherwise open an anonymous MQTT session where the
+				// base revision returned 401 before the upgrade.
+				const deferred = getDeferredCredentialRejection(request);
+				if (deferred) {
+					return ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, deferred.message);
 				}
 
 				emitEvent('connection', ws);

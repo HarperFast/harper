@@ -107,6 +107,7 @@ import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
+import { credentialRejectionError } from './credentialRejection.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -420,11 +421,14 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	const userTmp = usersWithRolesMap.get(username);
 	if (!userTmp) {
 		if (!validatePassword) return { username };
-		throw new ClientError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+		// Tagged as a credential rejection (#2418): callers must be able to tell "this credential is
+		// not acceptable" apart from a fault raised while loading the user cache above, which shares
+		// the 4xx range but must fail closed instead of deferring to application authorization.
+		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 
 	if (userTmp && !userTmp.active)
-		throw new ClientError(AUTHENTICATION_ERROR_MSGS.USER_INACTIVE, HTTP_STATUS_CODES.UNAUTHORIZED);
+		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.USER_INACTIVE, HTTP_STATUS_CODES.UNAUTHORIZED);
 
 	const user: User = {
 		active: userTmp.active,
@@ -449,7 +453,7 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 			// argon2id hash validation is async so await it if it is a promise
 			if (typeof validated === 'object' && (validated as Promise<boolean>)?.then) validated = await validated;
 			if (validated === true) passwordHashCache.set(pw, userTmp.password);
-			else throw new ClientError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+			else throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 	}
 	return user;

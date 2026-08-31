@@ -224,30 +224,78 @@ So a rejection is recorded rather than answered:
   `security/deferredAuthentication.ts`. The state lives behind a module-private `Symbol`: it is not
   a header, not a `Request` field, not enumerable, and cannot be forged or read from outside that
   module.
-- **An internal authentication fault** — unreadable JWT keys, a storage failure, an unexpected error
-  type — is never deferred. `isCredentialRejection` only accepts an error carrying a 4xx status, so
-  anything else fails closed with the in-line 401. `tokenAuthentication.ts → validateToken` no longer
-  masks such faults as `invalid token`, which is what makes that distinction reachable.
+- **An internal authentication fault** — unreadable or malformed JWT key material, a storage failure,
+  an unexpected error type — is never deferred, and fails closed with the in-line 401.
 - **The operations API** never defers: `request.isOperationsServer` short-circuits to the in-line
   401, because every operations route is Harper-owned and there is nothing to defer to.
 
+**Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` holds a
+module-private `Symbol` tag; only the code that actually concludes "this credential is unacceptable"
+sets it, and `isCredentialRejection()` reads nothing else. Status ranges cannot carry that meaning:
+`findAndValidateUser()` lazily loads the user cache, whose system-table searches raise a
+default-status-400 `ClientError` when `system.hdb_role`/`system.hdb_user` is unavailable, so a 4xx
+test would classify a storage outage as an unknown credential and hand it to application
+authorization. The tag is set at exactly these points:
+
+| Tagged rejection                                                   | Where                                      |
+| ------------------------------------------------------------------ | ------------------------------------------ |
+| unknown user, inactive user, bad password                          | `security/user.ts → findAndValidateUser()` |
+| JWT syntax, signature, expiry, not-before, subject/claim rejection | `tokenAuthentication.ts → validateToken()` |
+| refresh-token hash mismatch, malformed scoped-token claims         | `tokenAuthentication.ts`                   |
+| an `Authorization` scheme Harper does not implement                | `security/auth.ts`                         |
+
+`validateToken()` separates the two in the same catch: `jsonwebtoken` reports unusable key material
+through the very same `JsonWebTokenError` type it uses for a forged token, so the public key is
+validated as key material before `jwt.verify()` runs and a residual key-material message is treated
+as a fault. An untagged error propagates unmasked.
+
+The Bearer path's refresh-token probe follows the same rule. When operation-token validation says
+`invalid token`, authentication retries the credential as a refresh token; a fault raised by that
+retry propagates, and only an ordinary _tagged_ refresh rejection restores the original
+operation-token rejection for deferral. An in-line fail-closed response logs the original fault
+server-side and returns the same generic authentication failure a rejected credential gets, so
+internal detail never reaches an unauthenticated client.
+
 Any layer that establishes Harper owns the route then settles the deferred state before doing work:
 
-| Layer                       | Where                                                              |
-| --------------------------- | ------------------------------------------------------------------ |
-| `REST.ts → http()`          | after `resources.getMatch` succeeds (and for the OpenAPI document) |
-| `REST.ts` WebSocket handler | after `resources.getMatch(url, 'ws')` succeeds                     |
-| `graphqlQuerying.ts`        | after the `/graphql` prefix match, raised as its own `HTTPError`   |
+| Layer                                   | Where                                                              |
+| --------------------------------------- | ------------------------------------------------------------------ |
+| `REST.ts → http()`                      | after `resources.getMatch` succeeds (and for the OpenAPI document) |
+| `REST.ts` WebSocket handler             | after `resources.getMatch(url, 'ws')` succeeds                     |
+| `graphqlQuerying.ts`                    | after the `/graphql` prefix match, ahead of its error mapping      |
+| `static.ts`                             | after a static file entry matches                                  |
+| `mqtt.ts` WebSocket handler             | after the `mqtt` subprotocol claims the socket                     |
+| `components/mcp/adapters/harperHttp.ts` | after the WebSocket hand-off, before the body is read              |
 
-Each renders the same generic 401 the middleware would have returned in-line — the deferred status
-is pinned to 401 regardless of the underlying error's own status, so a 403 `token expired` reads
-exactly as it did before. A Harper-owned route therefore behaves identically to the pre-deferral
+**Every Harper-owned handler registered `after: 'authentication'` owes this settlement**, because
+declining to call `nextHandler` is precisely the moment ownership is settled. A handler that skips
+it serves an unrecognized credential as anonymous — the MCP application mount did exactly that, and
+returned 200 for an `initialize` the base revision answered with 401.
+
+Settlement goes through `settleDeferredCredentialRejection()`, which returns the response descriptor
+`security/auth.ts` used to return in line: status 401 and `serializeMessage({error: message}, request)`
+in the request's negotiated content type. That matters because an owner's own error mapping is not
+that contract — REST renders a thrown error as an RFC 9457 Problem Details document and GraphQL as
+`{errors:[{message}]}` — and a rejected credential never reached either before deferral existed.
+`assertNoDeferredCredentialRejection()` is the throwing form, for a WebSocket upgrade that has no
+descriptor to return. The deferred status is pinned to 401 regardless of the underlying error's own
+status, so a 403 `token expired` reads exactly as it did before. A Harper-owned route therefore behaves identically to the pre-deferral
 build, protected or public: an unknown credential can never buy access an anonymous caller would
 have received, and can never reach an application catch-all. Only a URL that reached
 `nextHandler` — one no Harper route owns — carries the original header onward.
 
 The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
 header, no credential rename, and no pre-auth stripping shim.
+
+**The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a
+deferred credential is credential-dependent (#1565), so `authentication` stamps
+`Cache-Control: private, no-cache` and `Vary: Authorization, Cookie` on it. When the chain declines
+a request (`status: -1`), Node carries those onto the `ServerResponse` before emitting `unhandled`,
+but the Bun and uWS adapters used to rebuild their headers solely from Fastify's reply and drop
+them. Before deferral an unrecognized credential could not reach a fallback at all, so this was
+unreachable; now both adapters merge through `Headers.ts → mergeChainHeadersIntoFallback()` —
+Fastify wins every header it set, `Vary` is unioned, and the private scope is re-applied unless the
+final response explicitly opts into shared caching (`public`/`s-maxage`).
 
 ### Response Cache-Control / Vary policy (#1518, #1565)
 

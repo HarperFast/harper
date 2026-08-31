@@ -9,4 +9,7 @@ graphqlSchema:
 jsResource:
   files: resources.js
 rest: true
+# /graphql is Harper-owned too, so the deferred rejection has to be settled there with the same
+# authentication error envelope REST returns — not GraphQL's own {errors:[...]} mapping.
+graphql: true
 deferredAuthAppCatchAll: true

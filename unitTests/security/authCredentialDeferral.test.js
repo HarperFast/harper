@@ -12,7 +12,7 @@ testUtils.preTestPrep();
 
 const { makeCallbackChain } = require('#src/server/middlewareChain');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-const { assertNoDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
+const { credentialRejectionError, settleDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 const serverModule = require('#src/server/Server');
 const tokenAuthentication = require('#src/security/tokenAuthentication');
@@ -65,11 +65,10 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	function restLayer(request, nextHandler) {
 		if (!ownedPaths.has(request.pathname)) return nextHandler(request);
 		trace.push('rest');
-		try {
-			assertNoDeferredCredentialRejection(request);
-		} catch (error) {
-			return { status: error.statusCode, headers: new Headers(), body: JSON.stringify({ error: error.message }) };
-		}
+		// The production settlement helper, not a local re-implementation: it is what decides the
+		// status, body, and content type an owning Harper layer returns.
+		const settled = settleDeferredCredentialRejection(request);
+		if (settled) return settled;
 		if (!request.user && request.pathname !== HARPER_OWNED_PUBLIC)
 			return { status: 401, headers: new Headers(), body: JSON.stringify({ error: 'Login failed' }) };
 		return {
@@ -114,17 +113,19 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		originalValidateOperationToken = tokenAuthentication.validateOperationToken;
 		originalValidateRefreshToken = tokenAuthentication.validateRefreshToken;
 
+		// The stubs raise what production raises: `findAndValidateUser()` and `validateToken()` tag a
+		// rejected credential explicitly, and an untagged error is by construction an internal fault.
 		serverModule.server.getUser = async (username, password) => {
 			if (getUserFault) throw getUserFault;
 			const user = knownUsers.get(`${username}:${password}`);
-			if (!user) throw new ClientError('Login failed', 401);
+			if (!user) throw credentialRejectionError('Login failed', 401);
 			return user;
 		};
 		tokenAuthentication.validateOperationToken = async () => {
-			throw new ClientError('invalid token', 401);
+			throw credentialRejectionError('invalid token', 401);
 		};
 		tokenAuthentication.validateRefreshToken = async () => {
-			throw new ClientError('invalid token', 401);
+			throw credentialRejectionError('invalid token', 401);
 		};
 	});
 
@@ -196,7 +197,7 @@ describe('deferred credential rejection through the app-port middleware chain', 
 			assert.deepStrictEqual(trace, []);
 		} finally {
 			tokenAuthentication.validateRefreshToken = async () => {
-				throw new ClientError('invalid token', 401);
+				throw credentialRejectionError('invalid token', 401);
 			};
 		}
 	});
@@ -220,7 +221,7 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 	it('reports an expired Harper token as 401 at a Harper-owned route, as it did before deferral', async () => {
 		tokenAuthentication.validateOperationToken = async () => {
-			throw new ClientError('token expired', 403);
+			throw credentialRejectionError('token expired', 403);
 		};
 		try {
 			const { response, body } = await send(HARPER_OWNED, 'Bearer expired-harper-token');
@@ -230,7 +231,7 @@ describe('deferred credential rejection through the app-port middleware chain', 
 			assert.deepStrictEqual(trace, ['rest']);
 		} finally {
 			tokenAuthentication.validateOperationToken = async () => {
-				throw new ClientError('invalid token', 401);
+				throw credentialRejectionError('invalid token', 401);
 			};
 		}
 	});
@@ -324,6 +325,87 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 		assert.strictEqual(response.status, 401);
 		assert.deepStrictEqual(trace, []);
+	});
+
+	it('fails closed on an internal fault that happens to carry a 4xx status', async () => {
+		// The exact production shape: `findAndValidateUser()` lazily loads the user cache, whose
+		// system-table searches reach `ResourceBridge.searchByValue()` and raise a `ClientError` with
+		// the default 400 status when `system.hdb_role`/`system.hdb_user` is unavailable. Classifying
+		// by status range read that as an ordinary unknown credential and deferred it, so an unowned
+		// URL reached the application catch-all during a storage outage.
+		getUserFault = new ClientError('Table system.hdb_role not found');
+		assert.strictEqual(getUserFault.statusCode, 400, 'the fault must actually be in the 4xx range');
+
+		const { response } = await send(APP_OWNED, WORDPRESS_BASIC);
+
+		assert.strictEqual(response.status, 401);
+		assert.deepStrictEqual(trace, [], 'a storage outage must never reach application authorization');
+	});
+
+	it('returns a generic failure for an internal fault and does not echo its message', async () => {
+		getUserFault = new ClientError('Table system.hdb_role not found');
+
+		const { response, body } = await send(APP_OWNED, WORDPRESS_BASIC);
+
+		assert.strictEqual(response.status, 401);
+		assert.strictEqual(body.error, 'Login failed');
+		assert.ok(!JSON.stringify(body).includes('hdb_role'), 'internal detail must not reach the client');
+	});
+
+	it('propagates a refresh-validation fault instead of restoring the deferrable outer rejection', async () => {
+		// The operation-token path falls back to refresh-token validation on `invalid token`. Discarding
+		// whatever that raises and rethrowing the outer ordinary rejection let a refresh-side storage or
+		// runtime fault be classified as a deferrable unknown credential.
+		tokenAuthentication.validateRefreshToken = async () => {
+			throw new ServerError('refresh token store unavailable');
+		};
+		try {
+			const { response, body } = await send(APP_OWNED, 'Bearer some-harper-looking-token');
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(body.error, 'Login failed');
+			assert.deepStrictEqual(trace, [], 'a refresh-validation fault must not reach the catch-all');
+		} finally {
+			tokenAuthentication.validateRefreshToken = async () => {
+				throw credentialRejectionError('invalid token', 401);
+			};
+		}
+	});
+
+	it('propagates a refresh-validation fault that carries a 4xx status', async () => {
+		tokenAuthentication.validateRefreshToken = async () => {
+			throw new ClientError('Table system.hdb_user not found');
+		};
+		try {
+			const { response } = await send(APP_OWNED, 'Bearer some-harper-looking-token');
+
+			assert.strictEqual(response.status, 401);
+			assert.deepStrictEqual(trace, []);
+		} finally {
+			tokenAuthentication.validateRefreshToken = async () => {
+				throw credentialRejectionError('invalid token', 401);
+			};
+		}
+	});
+
+	it('restores the operation-token rejection after an ordinary refresh rejection, and defers it', async () => {
+		// The other half of the same branch: an ordinary tagged refresh rejection still yields the
+		// original `invalid token`, which is deferrable.
+		const { response, body } = await send(APP_OWNED, DOWNSTREAM_BEARER);
+
+		assert.strictEqual(response.status, 200);
+		assert.strictEqual(body.servedBy, 'catch-all');
+		assert.strictEqual(body.authorization, DOWNSTREAM_BEARER);
+	});
+
+	it("answers a Harper-owned route with the authentication error envelope, not the owner's", async () => {
+		// `{error: message}` in the request's negotiated serialization is what authentication returned
+		// in line before deferral existed; REST's RFC 9457 Problem Details mapping must not replace it.
+		const { response, body } = await send(HARPER_OWNED, WORDPRESS_BASIC);
+
+		assert.strictEqual(response.status, 401);
+		assert.deepStrictEqual(body, { error: 'Login failed' });
+		assert.strictEqual(response.headers.get('Content-Type'), 'application/json');
 	});
 
 	it('never defers on the operations API, where Harper owns every route', async () => {

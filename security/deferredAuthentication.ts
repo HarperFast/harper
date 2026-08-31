@@ -1,4 +1,8 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { serializeMessage, findBestSerializer } from '../server/serverHelpers/contentTypes.ts';
+import { Headers } from '../server/serverHelpers/Headers.ts';
+
+export { isCredentialRejection, markCredentialRejection, credentialRejectionError } from './credentialRejection.ts';
 
 /**
  * Request-local state recorded when `security/auth.ts` accepts a syntactically valid credential it
@@ -26,24 +30,11 @@ export type DeferredCredentialRejection = {
 const CREDENTIAL_REJECTION_STATUS = 401;
 
 /**
- * Distinguishes an ordinary credential rejection — a well-formed credential Harper does not
- * recognize — from an internal authentication fault such as unreadable JWT keys, a storage failure,
- * or a bug.
- *
- * Only the former may be deferred. Deferring a fault would let an outage quietly downgrade a Harper
- * request into one an application's own authorization decides, so anything that is not positively
- * identifiable as a client-side rejection fails closed. Harper's authentication errors carry a 4xx
- * `statusCode` (`ClientError`); an unexpected error type, a bare `Error`, and a 5xx all fall through
- * to `false`.
- */
-export function isCredentialRejection(error: unknown): boolean {
-	const status = (error as { statusCode?: unknown; status?: unknown })?.statusCode ?? (error as any)?.status;
-	return typeof status === 'number' && status >= 400 && status < 500;
-}
-
-/**
  * Records that this request presented a credential Harper rejected, without deciding the request.
  * The caller leaves `request.user` unset and the inbound `Authorization` header untouched.
+ *
+ * Installed non-enumerable so an application catch-all that spreads or `Reflect.ownKeys`-walks the
+ * request cannot observe it: object spread copies enumerable symbol-keyed properties.
  */
 export function deferCredentialRejection(request: any, error: { message?: string }, strategy: string): void {
 	const deferred: DeferredCredentialRejection = {
@@ -51,7 +42,12 @@ export function deferCredentialRejection(request: any, error: { message?: string
 		message: error?.message ?? 'Unauthorized',
 		strategy,
 	};
-	request[DEFERRED_CREDENTIAL_REJECTION] = deferred;
+	Object.defineProperty(request, DEFERRED_CREDENTIAL_REJECTION, {
+		value: deferred,
+		enumerable: false,
+		configurable: true,
+		writable: true,
+	});
 }
 
 export function getDeferredCredentialRejection(request: any): DeferredCredentialRejection | undefined {
@@ -59,12 +55,38 @@ export function getDeferredCredentialRejection(request: any): DeferredCredential
 }
 
 /**
- * Called by a layer that has just established Harper owns the route being served. A credential the
- * authentication middleware deferred is decided here — where ownership is finally known — and never
- * travels past a Harper-owned route to an application catch-all.
+ * The response an owning layer returns once it has established Harper owns the route: exactly the
+ * descriptor `security/auth.ts` used to return in-line, so the wire contract a rejected credential
+ * has always produced survives the move downstream.
  *
- * Throws the same `ClientError` the authentication middleware would have produced in-line, so an
- * owning layer's existing error path renders the identical unauthorized response.
+ * Owner-specific error mapping must not run first. REST renders a thrown error as an RFC 9457
+ * Problem Details document and GraphQL as `{errors:[…]}`; before deferral existed, neither ever saw
+ * a rejected credential, because authentication answered `{error: message}` in the request's
+ * negotiated serialization before route matching (#2418).
+ *
+ * Returns `undefined` when nothing was deferred, so a caller can `return settled ?? …` inline.
+ */
+export function settleDeferredCredentialRejection(
+	request: any
+): { status: number; headers: Headers; body: string | Buffer } | undefined {
+	const deferred = getDeferredCredentialRejection(request);
+	if (!deferred) return undefined;
+	// The negotiated serializer is the same one `serializeMessage` selects below; naming it in
+	// Content-Type keeps the body self-describing on a path that historically emitted none.
+	const contentType = (request?.headers ? findBestSerializer(request).type : undefined) ?? 'application/json';
+	return {
+		status: deferred.status,
+		// A real Headers, not a plain object: the authentication middleware's own 401 post-processing
+		// calls `response.headers.set()` (WWW-Authenticate, or a Location when a login page is
+		// configured) on whatever an owning layer returns, and a plain object has no `set`.
+		headers: new Headers({ 'Content-Type': contentType }),
+		body: serializeMessage({ error: deferred.message }, request) as string | Buffer,
+	};
+}
+
+/**
+ * Throwing form of `settleDeferredCredentialRejection`, for owners with no response descriptor to
+ * return — a WebSocket upgrade closes the socket with a status-derived close code instead.
  */
 export function assertNoDeferredCredentialRejection(request: any): void {
 	const deferred = getDeferredCredentialRejection(request);

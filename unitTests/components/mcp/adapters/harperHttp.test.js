@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const { Readable } = require('node:stream');
 const { EventEmitter } = require('node:events');
 const { createHarperHttpHandler } = require('#src/components/mcp/adapters/harperHttp');
+const { credentialRejectionError, deferCredentialRejection } = require('#src/security/deferredAuthentication');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
 const { Headers } = require('#src/server/serverHelpers/Headers');
 
@@ -96,6 +97,82 @@ describe('mcp/adapters/harperHttp', () => {
 		const parsed = JSON.parse(result.body);
 		assert.equal(parsed.id, 1);
 		assert.equal(parsed.result.protocolVersion, '2025-06-18');
+	});
+
+	describe('deferred credential rejection (#2418)', () => {
+		/**
+		 * `mcp.application` mounts this handler `after: 'authentication'`, and REST declines an
+		 * unmatched `/mcp`, so this handler is where route ownership is finally known. Authentication
+		 * now defers an unrecognized credential instead of answering 401 in line, which leaves
+		 * `request.user` unset — the same shape as an anonymous request. Without settlement here, an
+		 * invalid credential opened an MCP session that the base revision answered with 401.
+		 */
+		function deferredRequest(overrides = {}) {
+			const request = {
+				method: 'POST',
+				headers: makeHeaders({ 'content-type': 'application/json' }),
+				body: bodyStream(
+					JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+				),
+				...overrides,
+			};
+			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+			return request;
+		}
+
+		it('answers 401 instead of creating an anonymous session', async () => {
+			const handler = createHarperHttpHandler('application');
+
+			const result = await handler(deferredRequest(), next);
+
+			assert.equal(result.status, 401);
+			assert.deepEqual(JSON.parse(result.body.toString()), { error: 'Login failed' });
+			assert.equal(result.headers['Mcp-Session-Id'], undefined);
+		});
+
+		it('does not read the request body before rejecting', async () => {
+			const handler = createHarperHttpHandler('application');
+			let bodyRead = false;
+			const body = {
+				on(event, listener) {
+					if (event === 'data') bodyRead = true;
+					if (event === 'end') queueMicrotask(listener);
+					return body;
+				},
+			};
+
+			await handler(deferredRequest({ body }), next);
+
+			assert.equal(bodyRead, false, 'the body must not be consumed once the credential is rejected');
+		});
+
+		it('still serves a request with no deferred rejection', async () => {
+			// The contrast case: identical request minus the deferral produces a real session.
+			const handler = createHarperHttpHandler('application');
+			const request = {
+				method: 'POST',
+				headers: makeHeaders({ 'content-type': 'application/json' }),
+				body: bodyStream(
+					JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })
+				),
+				user: { username: 'alice' },
+			};
+
+			const result = await handler(request, next);
+
+			assert.equal(result.status, 200);
+			assert.match(result.headers['Mcp-Session-Id'], /^[0-9a-f-]{36}$/);
+		});
+
+		it('still lets a WebSocket upgrade through to the next handler', async () => {
+			// Upgrades are not this handler's route, so ownership is not settled here and the deferred
+			// rejection is left for whichever layer does own the socket.
+			const handler = createHarperHttpHandler('application');
+
+			const out = await handler(deferredRequest({ method: 'GET', isWebSocket: true }), () => 'next-handler-result');
+
+			assert.equal(out, 'next-handler-result');
+		});
 	});
 
 	it('hands off WebSocket-upgrade requests to the next handler', async () => {

@@ -7,19 +7,20 @@ import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-const { forComponent, AuthAuditLog } = harperLogger;
+const { forComponent, AuthAuditLog, errorForLog } = harperLogger;
 import serverHandlers from '../server/itc/serverHandlers.js';
 const { user } = serverHandlers;
-import { Headers, addVaryHeader } from '../server/serverHelpers/Headers.ts';
+import { Headers, addVaryHeader, SHARED_CACHE_OPTIN, PRIVATE_SCOPE } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
 import {
+	credentialRejectionError,
 	deferCredentialRejection,
 	getDeferredCredentialRejection,
 	isCredentialRejection,
 } from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
-import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { hdbErrors } from '../utility/errors/hdbError.ts';
 const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
@@ -56,10 +57,6 @@ const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUC
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 
 const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
-
-// RFC 9111 cache-scope directives; boundaries on both sides so a token like `public-foo` doesn't match
-const SHARED_CACHE_OPTIN = /(^|[,\s])(public|s-maxage)($|[\s,;=])/i;
-const PRIVATE_SCOPE = /(^|[,\s])(private|no-store)($|[\s,;=])/i;
 
 let authorizationCache = new Map();
 server.onInvalidatedUser(() => {
@@ -245,7 +242,12 @@ export async function authentication(request, nextHandler) {
 											// API has its own logic for handling this
 											status: -1,
 										});
-									} catch {
+									} catch (refreshError) {
+										// A refresh-validation *fault* (user store down, a password-validation crash)
+										// must not be swallowed: rethrowing the outer ordinary rejection would tag an
+										// outage as a deferrable unknown credential. Only after an ordinary tagged
+										// refresh rejection is the original operation-token rejection restored.
+										if (!isCredentialRejection(refreshError)) throw refreshError;
 										throw error;
 									}
 								}
@@ -261,7 +263,10 @@ export async function authentication(request, nextHandler) {
 							// that is precisely the downgrade this change exists to prevent. Rejecting it
 							// here routes it through the same audit, fail-closed, and deferral handling as
 							// an unrecognized Basic or Bearer credential.
-							throw new ClientError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
+							throw credentialRejectionError(
+								AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
+								HTTP_STATUS_CODES.UNAUTHORIZED
+							);
 					}
 				} catch (err) {
 					if (LOG_AUTH_FAILED) {
@@ -277,10 +282,18 @@ export async function authentication(request, nextHandler) {
 					//  - an internal fault (unreadable JWT keys, storage failure, a bug), which must fail
 					//    closed instead of letting an outage hand the request to application authorization;
 					//  - the operations API, where Harper owns every route, so there is nothing to defer to.
-					if (request.isOperationsServer || !isCredentialRejection(err)) {
+					const internalFault = !isCredentialRejection(err);
+					if (request.isOperationsServer || internalFault) {
+						// An internal fault's own message describes Harper's internals (a missing system
+						// table, a key path) and is not the client's to read, so it is logged here and the
+						// client gets the same generic failure a rejected credential gets.
+						if (internalFault) authLogger.error('Authentication failed internally', errorForLog(err));
 						return applyResponseHeaders({
 							status: 401,
-							body: serializeMessage({ error: err.message }, request),
+							body: serializeMessage(
+								{ error: internalFault ? AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL : err.message },
+								request
+							),
 						});
 					}
 					credentialRejection = err;
