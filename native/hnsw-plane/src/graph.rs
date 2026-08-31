@@ -181,6 +181,67 @@ impl Graph {
         }
     }
 
+    /// Persist the upper-layer adjacency to a sidecar file (prototype; the production design
+    /// is an append-allocated region inside the plane file — see design doc §4). Stale-on-crash
+    /// is acceptable: watermark replay re-feeds recent inserts, which re-links upper edges.
+    pub fn save_upper(&self, path: &std::path::Path) -> std::io::Result<()> {
+        use std::io::Write;
+        let upper = self.upper.read().unwrap();
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&(upper.len() as u32).to_le_bytes());
+        for (&id, levels) in upper.iter() {
+            buf.extend_from_slice(&id.to_le_bytes());
+            buf.push(levels.len() as u8);
+            for list in levels {
+                buf.extend_from_slice(&(list.len() as u16).to_le_bytes());
+                for &n in list {
+                    buf.extend_from_slice(&n.to_le_bytes());
+                }
+            }
+        }
+        let tmp = path.with_extension("upper.tmp");
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&buf)?;
+        f.sync_all()?;
+        std::fs::rename(tmp, path)
+    }
+
+    /// Load the sidecar written by save_upper. Missing file leaves the hierarchy empty
+    /// (layer-0 search still works, just without upper-layer routing).
+    pub fn load_upper(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let buf = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let mut pos = 0usize;
+        let rd_u32 = |b: &[u8], p: &mut usize| {
+            let v = u32::from_le_bytes(b[*p..*p + 4].try_into().unwrap());
+            *p += 4;
+            v
+        };
+        let count = rd_u32(&buf, &mut pos);
+        let mut upper = self.upper.write().unwrap();
+        upper.clear();
+        for _ in 0..count {
+            let id = rd_u32(&buf, &mut pos);
+            let nlevels = buf[pos] as usize;
+            pos += 1;
+            let mut levels = Vec::with_capacity(nlevels);
+            for _ in 0..nlevels {
+                let len = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+                pos += 2;
+                let mut list = Vec::with_capacity(len);
+                for _ in 0..len {
+                    list.push(rd_u32(&buf, &mut pos));
+                }
+                levels.push(list);
+            }
+            upper.insert(id, levels);
+        }
+        Ok(())
+    }
+
     /// Mark deleted (traversals skip it) and return the id to the freelist.
     pub fn delete_node(&self, id: u32) {
         {
