@@ -215,11 +215,16 @@ export class CompactAndStats extends Resource {
 		if (typeof index.compact !== 'function') {
 			throw new Error('phantom-index-permanence: compact() unavailable on this storage engine');
 		}
+		const label = `${tableName}.${INDEXED_ATTRIBUTE} index`;
+		// Both samples are taken here rather than by the caller: rocksdb.compact.write.bytes is a
+		// DB-wide lifetime counter, so a sample taken in an earlier request would let a background
+		// compaction of any column family land in between and account for the whole delta.
+		const before = statsOf(index, label);
 		// bottommost: true rewrites every file in the range whether or not RocksDB considers it
 		// worth doing, so the phantom's file is rewritten even when background compaction has
-		// already merged the range — which is what makes the proof below independent of timing.
+		// already merged the range — which is what makes the proof independent of timing.
 		await index.compact({ bottommost: true });
-		return { table: tableName, index: statsOf(index, `${tableName}.${INDEXED_ATTRIBUTE} index`) };
+		return { table: tableName, before, after: statsOf(index, label) };
 	}
 }
 

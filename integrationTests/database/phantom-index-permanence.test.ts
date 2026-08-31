@@ -170,6 +170,8 @@ suite(
 							headers: { Authorization: auth },
 							signal: AbortSignal.timeout(2000),
 						});
+						// An unconsumed undici body holds its socket out of the pool for the whole poll.
+						await probe.text();
 						ready = probe.status !== 404;
 					} catch {
 						/* worker routes not registered yet */
@@ -262,8 +264,8 @@ suite(
 		);
 
 		test('the phantom survives an explicit compaction of its index column family', { timeout: 60_000 }, async () => {
-			const before = (await post('/FlushAndStats/', { table: 'Host' })).index;
-			const after = (await post('/CompactAndStats/', { table: 'Host' })).index;
+			await post('/FlushAndStats/', { table: 'Host' });
+			const { before, after } = await post('/CompactAndStats/', { table: 'Host' });
 			deepStrictEqual(
 				[...before.errors, ...after.errors],
 				[],
