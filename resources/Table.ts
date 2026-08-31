@@ -474,6 +474,7 @@ export function makeTable(options) {
 		description,
 		hidden,
 		cacheControl,
+		isBranch,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
@@ -1491,7 +1492,25 @@ export function makeTable(options) {
 			return coerceType(id, primaryKeyAttribute);
 		}
 
+		/**
+		 * A branch's Table classes deliberately carry the BASE's logical database name so an
+		 * application's schema and code resolve unchanged (harper#643). That makes every schema
+		 * mutation resolve against the global catalog — a `dropTable()` through a branch would delete
+		 * the live base table. Reads and writes are per-branch and unaffected; DDL is refused until a
+		 * branch owns a schema identity of its own.
+		 */
+		static assertSchemaMutable(operation: string) {
+			if (!isBranch) return;
+			const error: any = new Error(
+				`Cannot ${operation} through a branched database: '${tableName}' resolves to the schema of base ` +
+					`database '${databaseName}', so the change would apply to the base rather than the branch`
+			);
+			error.statusCode = 400;
+			throw error;
+		}
+
 		static async dropTable() {
+			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
@@ -4147,6 +4166,10 @@ export function makeTable(options) {
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {
+				// Turning auditing on is a schema write, and a branch's Table classes carry the base's
+				// logical name: without this a subscribe through a branched application would enable
+				// auditing on the live base table for every other consumer, with no DDL call involved.
+				TableResource.assertSchemaMutable('enable auditing for a subscription');
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
 			const getFullRecord = !request.rawEvents;
@@ -4920,6 +4943,7 @@ export function makeTable(options) {
 			return this.#version;
 		}
 		static async addAttributes(attributesToAdd: Attribute[]) {
+			TableResource.assertSchemaMutable('add attributes');
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributesToAdd) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
@@ -4937,6 +4961,7 @@ export function makeTable(options) {
 			return (TableResource as any).indexingOperation;
 		}
 		static async removeAttributes(names: string[]) {
+			TableResource.assertSchemaMutable('remove attributes');
 			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
