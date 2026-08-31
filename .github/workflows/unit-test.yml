@@ -73,7 +73,6 @@ jobs:
 
       - name: Run tests
         run: npm run test:unit:all
-
   # Windows had no unit-level coverage at all before this job: every job above pins
   # ubuntu-latest, and integration-tests.yml was the only workflow touching Windows.
   # Platform-gated code and the tests written to prove it therefore never executed.
@@ -119,3 +118,44 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 30
         run: npm run test:unit:windows
+  # The vectorIndexPlane suite self-skips when the optional native artifact is absent, so
+  # without this job nothing in CI would ever exercise the dual-write mirroring or the
+  # native search cutover — green CI would only prove the JS path unchanged.
+  hnsw-plane:
+    name: HNSW native plane (Node.js v24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build || true # we currently have type errors so just ignore that
+
+      - name: Build native hnsw-plane module
+        run: npm run build:hnsw-plane
+
+      - name: Crate tests
+        run: cargo test --release --manifest-path native/hnsw-plane/Cargo.toml
+
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+          NODE_HOSTNAME: 'localhost'
+          LOGGING_LEVEL: 'info'
+        run: node --enable-source-maps ./dist/bin/harper.js install
+
+      - name: Plane dual-write + parity tests
+        run: npx mocha unitTests/resources/vectorIndexPlane.test.js

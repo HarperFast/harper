@@ -77,7 +77,7 @@ pub struct PredicateSearchTask {
     k: usize,
     ef: usize,
     tsfn: Option<ThreadsafeFunction<Vec<u32>, ErrorStrategy::Fatal>>,
-    filter_expansion: usize,
+    visit_budget: u64,
 }
 
 #[napi]
@@ -108,7 +108,7 @@ impl Task for PredicateSearchTask {
         let mut scratch = self.pool.take();
         let query = Query::new(std::mem::take(&mut self.query));
         let (hits, _stats) =
-            search_predicated(&self.graph, &query, self.k, self.ef, &mut pipe, self.filter_expansion, &mut scratch);
+            search_predicated(&self.graph, &query, self.k, self.ef, &mut pipe, self.visit_budget, &mut scratch);
         self.pool.put(scratch);
         Ok(hits)
     }
@@ -260,7 +260,9 @@ impl Plane {
     /// (one 0/1 byte per id, evaluated synchronously). Batches of candidate ids stream to
     /// the predicate over a ThreadsafeFunction while traversal keeps expanding — the search
     /// thread never blocks on the JS event loop until the beam itself is done, so a busy
-    /// loop costs speculative overshoot (bounded by ef * filterExpansion), not latency.
+    /// loop costs speculative overshoot (bounded by the visit budget), not latency.
+    /// `visitBudget` caps layer-0 visits absolutely (a host budget may sit below ef, which a
+    /// multiplier cannot express); when absent the budget is ef * filterExpansion.
     /// Must not be awaited synchronously from code the predicate itself blocks.
     #[napi(ts_return_type = "Promise<Array<SearchHit>>")]
     pub fn search_with_predicate(
@@ -270,20 +272,24 @@ impl Plane {
         ef: u32,
         #[napi(ts_arg_type = "(ids: Array<number>) => Uint8Array")] predicate: JsFunction,
         filter_expansion: Option<u32>,
+        visit_budget: Option<f64>,
     ) -> Result<AsyncTask<PredicateSearchTask>> {
         let tsfn: ThreadsafeFunction<Vec<u32>, ErrorStrategy::Fatal> = predicate
             .create_threadsafe_function(0, |ctx: napi::threadsafe_function::ThreadSafeCallContext<Vec<u32>>| {
                 let ids: Vec<f64> = ctx.value.iter().map(|&v| v as f64).collect();
                 Ok(vec![ids])
             })?;
+        let ef = ef as usize;
         Ok(AsyncTask::new(PredicateSearchTask {
             graph: self.graph.clone(),
             pool: self.pool.clone(),
             query: vector.to_vec(),
             k: k as usize,
-            ef: ef as usize,
+            ef,
             tsfn: Some(tsfn),
-            filter_expansion: filter_expansion.unwrap_or(24) as usize,
+            visit_budget: visit_budget
+                .map(|b| b.max(1.0) as u64)
+                .unwrap_or((ef * filter_expansion.unwrap_or(24) as usize) as u64),
         }))
     }
 

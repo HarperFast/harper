@@ -144,6 +144,9 @@ const PLANE_INCOMPLETE_REBUILD_MS = 3_600_000;
 // Watermark stamped when the initial full mirror completes; 0 = still building (or crashed
 // mid-build). Phase-2 replay wiring will carry real transaction ids, which are also nonzero.
 const PLANE_MIRRORED = 1;
+// Marks an error thrown by an app-supplied filter during a plane search: the caller re-raises
+// it as an ordinary query failure instead of disabling the (healthy) plane.
+const PLANE_PREDICATE_ERROR = Symbol('planePredicateError');
 
 class MinHeap {
 	private data: Candidate[] = [];
@@ -612,26 +615,39 @@ export class HierarchicalNavigableSmallWorld {
 	): Promise<any[]> {
 		const query = Float32Array.from(target);
 		let resultPromise: Promise<{ id: number; distance: number }[]>;
+		let predicateError: unknown;
 		if (filter && filterState) {
-			// The plane bounds filtered visits at ef * filterExpansion; recover the multiplier from
-			// the already-resolved JS budget so both paths stop at the same visit count. The u32
-			// multiplier makes this exact only to the nearest multiple of ef: when a limit-widened
-			// ef exceeds maxVisits the floor of 1 over-explores (latency, never correctness), and
-			// ordinary rounding keeps the budgets within half an ef of each other.
-			const planeFilterExpansion = Math.max(1, Math.round(filterState.maxVisits / ef));
 			const predicate = (ids: number[]): Uint8Array => {
 				const verdicts = new Uint8Array(ids.length);
-				for (let i = 0; i < ids.length; i++) {
-					const primaryKey = this.safeGetSync(ids[i], options)?.primaryKey;
-					if (primaryKey !== undefined && this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
+				try {
+					for (let i = 0; i < ids.length; i++) {
+						const primaryKey = this.safeGetSync(ids[i], options)?.primaryKey;
+						if (primaryKey !== undefined && this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
+					}
+				} catch (error) {
+					// an app-supplied filter threw: deny the batch and surface the error once the
+					// traversal resolves — the same query failure the JS path raises — instead of
+					// letting it escape into the fatal-strategy ThreadsafeFunction callback
+					predicateError ??= error;
 				}
 				return verdicts;
 			};
-			resultPromise = plane.searchWithPredicate(query, ef, ef, predicate, planeFilterExpansion);
+			// pass the already-resolved JS visit budget verbatim so both paths stop at the same count
+			resultPromise = plane.searchWithPredicate(query, ef, ef, predicate, undefined, filterState.maxVisits);
 		} else {
 			resultPromise = plane.search(query, ef, ef);
 		}
 		return resultPromise.then((hits) => {
+			if (predicateError !== undefined) {
+				// the plane itself is healthy; mark the failure as the application's so the caller
+				// re-raises it rather than disabling the plane and retrying
+				try {
+					(predicateError as any)[PLANE_PREDICATE_ERROR] = true;
+				} catch {
+					// a frozen/primitive throw still propagates, it just also disables the plane
+				}
+				throw predicateError;
+			}
 			const entries: any[] = [];
 			for (const hit of hits) {
 				const primaryKey = this.safeGetSync(hit.id, options)?.primaryKey;
@@ -1559,6 +1575,8 @@ export class HierarchicalNavigableSmallWorld {
 				// entries shape ({ key, distance }) the JS path returns, so rescoreResults and all
 				// post-load behavior are unchanged. searchByIndex handles the promise.
 				return this.searchPlane(plane, target, effectiveEf, filter, filterState, options).catch((error) => {
+					// an app filter's own throw is the query's failure, not the plane's
+					if (error?.[PLANE_PREDICATE_ERROR]) throw error;
 					// a failed native search disables the plane and re-runs this query on the JS path
 					this.disablePlane(error);
 					return this.search(

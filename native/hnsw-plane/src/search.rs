@@ -290,14 +290,16 @@ const PREDICATE_BATCH: usize = 64;
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Full search with a pipelined predicate filter (upper-layer descent is unfiltered, as in
-/// the JS implementation — predicates gate results, not routing).
+/// the JS implementation — predicates gate results, not routing). `visit_budget` is the
+/// absolute layer-0 visit cap: hosts pass their own resolved budget directly, since a
+/// multiplier-of-ef encoding cannot express a budget below ef.
 pub fn search_predicated(
     graph: &Graph,
     query: &Query,
     k: usize,
     ef: usize,
     pipe: &mut PredicatePipe,
-    filter_expansion: usize,
+    visit_budget: u64,
     scratch: &mut SearchScratch,
 ) -> (Vec<(u32, f32)>, SearchStats) {
     let mut stats = SearchStats { visits: 0 };
@@ -314,7 +316,6 @@ pub fn search_predicated(
         None => return (Vec::new(), stats),
     };
     let (ep, ep_dist) = greedy_descend(graph, query, entry_id, entry_dist, entry_level, 0, &mut stats);
-    let visit_budget = (ef * filter_expansion) as u64;
 
     use std::collections::HashMap;
     let mut verdicts: HashMap<u32, bool> = HashMap::new();
@@ -457,7 +458,7 @@ mod predicate_tests {
         };
         let q: Vec<f32> = (0..dims).map(|d| ((41.0f32 * 0.31 + d as f32) * 0.7).sin()).collect();
         let (hits, _) =
-            search_predicated(&graph, &Query::new(q), 10, 64, &mut pipe, 24, &mut scratch);
+            search_predicated(&graph, &Query::new(q), 10, 64, &mut pipe, 64 * 24, &mut scratch);
         assert!(!hits.is_empty());
         for (id, _) in &hits {
             assert_eq!(id % 2, 0, "odd id {id} leaked through the predicate");
