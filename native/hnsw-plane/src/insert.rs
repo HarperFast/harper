@@ -34,13 +34,11 @@ fn level_for(id: u32, ml: f64) -> u8 {
 /// Remove `to` from `from`'s adjacency at `level` (edge-replacement maintenance).
 fn remove_edge(graph: &Graph, from: u32, to: u32, level: u8) {
     if level == 0 {
-        if let Some(n) = graph.read_node(from) {
-            if let Some(pos) = n.neighbors.iter().position(|&x| x == to) {
-                let mut list = n.neighbors;
+        graph.update_neighbors(from, |list| {
+            if let Some(pos) = list.iter().position(|&x| x == to) {
                 list.remove(pos);
-                graph.write_neighbors(from, &list);
             }
-        }
+        });
     } else {
         let mut upper = graph.upper.write().unwrap();
         if let Some(levels) = upper.get_mut(&from) {
@@ -71,43 +69,36 @@ fn neighbors_at(graph: &Graph, id: u32, level: u8, buf: &mut Vec<u32>) {
 /// Add `new_id` to `nid`'s adjacency at `level`, pruning to `cap` closest when over.
 fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize) {
     if level == 0 {
-        let Some(n) = graph.read_node(nid) else { return };
-        let mut list = n.neighbors;
-        if list.contains(&new_id) {
-            return;
-        }
-        list.push(new_id);
-        if list.len() > cap {
-            let mut scored: Vec<(u32, f32)> = list
-                .iter()
-                .filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d)))
-                .collect();
-            scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            list = scored.into_iter().take(cap).map(|(cand, _)| cand).collect();
-        }
-        graph.write_neighbors(nid, &list);
+        graph.update_neighbors(nid, |list| {
+            if list.contains(&new_id) {
+                return;
+            }
+            list.push(new_id);
+            if list.len() > cap {
+                // distance_between reads other slots without locks; safe under this seqlock
+                let mut scored: Vec<(u32, f32)> = list
+                    .iter()
+                    .filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d)))
+                    .collect();
+                scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                *list = scored.into_iter().take(cap).map(|(cand, _)| cand).collect();
+            }
+        });
     } else {
+        // held across the prune: upper mutations are rare (~6% of nodes) and the recomputed
+        // distances are ~cap * 0.2us — an acceptable hold for prototype correctness
         let mut upper = graph.upper.write().unwrap();
         if let Some(levels) = upper.get_mut(&nid) {
             if let Some(list) = levels.get_mut(level as usize - 1) {
                 if !list.contains(&new_id) {
                     list.push(new_id);
                     if list.len() > cap {
-                        drop(upper);
-                        // prune by recomputed distance outside the write lock
-                        let mut scored: Vec<(u32, f32)> = {
-                            let upper = graph.upper.read().unwrap();
-                            let list = upper.get(&nid).and_then(|l| l.get(level as usize - 1)).cloned().unwrap_or_default();
-                            list.iter().filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d))).collect()
-                        };
+                        let mut scored: Vec<(u32, f32)> = list
+                            .iter()
+                            .filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d)))
+                            .collect();
                         scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                        let pruned: Vec<u32> = scored.into_iter().take(cap).map(|(c, _)| c).collect();
-                        let mut upper = graph.upper.write().unwrap();
-                        if let Some(levels) = upper.get_mut(&nid) {
-                            if let Some(list) = levels.get_mut(level as usize - 1) {
-                                *list = pruned;
-                            }
-                        }
+                        *list = scored.into_iter().take(cap).map(|(c, _)| c).collect();
                     }
                 }
             }
@@ -146,7 +137,8 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
 
     for l in (0..=top).rev() {
         scratch_begin(graph, scratch);
-        let mut neighbors = search_layer(graph, &query, ep, ep_dist, params.ef_construction, l, scratch, &mut stats);
+        let mut neighbors =
+            search_layer(graph, &query, ep, ep_dist, params.ef_construction, l, scratch, &mut stats, None, u64::MAX);
         neighbors.truncate(m << 1);
         if let Some(&(best, best_d)) = neighbors.first() {
             ep = best;

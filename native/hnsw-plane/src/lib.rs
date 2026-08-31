@@ -6,6 +6,8 @@ pub mod distance;
 pub mod format;
 pub mod graph;
 pub mod insert;
+#[cfg(feature = "napi")]
+mod napi;
 pub mod search;
 pub mod seqlock;
 
