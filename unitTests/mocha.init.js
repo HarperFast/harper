@@ -101,8 +101,9 @@ if (isMainThread) {
 			}
 		}
 	}
-	// preTestPrep() prepends an 'exit' listener that calls process.exit(), which skips the
-	// listeners after it — it calls removePerPidRoot() itself for that reason
+	// preTestPrep() also calls removePerPidRoot() from its own prepended 'exit' listener
+	// (belt-and-suspenders for suites that call it), but suites that never call preTestPrep
+	// still need cleanup, which is what this listener covers
 	process.on('exit', removePerPidRoot);
 }
 materializePerPidRoot();
