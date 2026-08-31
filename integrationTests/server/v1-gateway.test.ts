@@ -8,10 +8,15 @@
  *   POST /v1/embeddings           — embed a string
  *   POST /v1/chat/completions     — non-streaming and streaming chat
  *
- * The streaming test uses the real OpenAI Node.js SDK to confirm that the
- * SSE framing (openaiStream → serializeStream → HTTP) is parseable by an
- * unmodified OpenAI client. See the SSE serving-path note in chatCompletions.ts
- * for why `stream: true` routes through `post()` rather than `connect()`.
+ * The dedicated client-compatibility lane uses the real OpenAI Node.js SDK to
+ * confirm that the SSE framing (openaiStream → serializeStream → HTTP) is
+ * parseable by an unmodified OpenAI client. See the SSE serving-path note in
+ * chatCompletions.ts for why `stream: true` routes through `post()` rather than
+ * `connect()`.
+ *
+ * The LangChain.js tests do the same with an unmodified `@langchain/openai`
+ * client, covering its chat, streaming chat, and embeddings defaults and
+ * decoders.
  *
  * NOTE: `modelsGateway: { enabled: true }` is passed explicitly because
  * defaultConfig.yaml ships no `modelsGateway` block at all — an absent key is
@@ -31,6 +36,16 @@ import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const ECHO_BACKEND_PATH = resolvePath(__dirname, 'fixtures/v1-gateway-test-backend.cjs');
+const CLIENT_COMPATIBILITY_ENABLED = process.env.HARPER_V1_CLIENT_COMPATIBILITY === '1';
+const CLIENT_COMPATIBILITY_REQUIRED = process.env.HARPER_V1_CLIENT_COMPATIBILITY_REQUIRED === '1';
+const clientCompatibilityTest = CLIENT_COMPATIBILITY_ENABLED ? test : test.skip;
+
+if (CLIENT_COMPATIBILITY_REQUIRED) {
+	assert.ok(
+		CLIENT_COMPATIBILITY_ENABLED,
+		'HARPER_V1_CLIENT_COMPATIBILITY_REQUIRED requires HARPER_V1_CLIENT_COMPATIBILITY=1 so the real-client tests cannot silently skip'
+	);
+}
 
 function restUrl(ctx: ContextWithHarper, path: string): string {
 	return `${ctx.harper.httpURL}${path}`;
@@ -45,6 +60,30 @@ async function harperFetch(ctx: ContextWithHarper, url: string, init: RequestIni
 	const headers = new Headers(init.headers);
 	headers.set('Authorization', authHeader(ctx));
 	return fetch(url, { ...init, headers });
+}
+
+/**
+ * Mint a real operation token to use as the OpenAI-client api key.
+ *
+ * SDK clients send their apiKey as `Authorization: Bearer <key>`. A present-but-
+ * invalid credential is rejected by Harper's auth (401 "invalid token") even
+ * under AUTHENTICATION_AUTHORIZELOCAL (which only covers requests with no
+ * credentials at all). This is also the documented production flow: a Harper
+ * JWT is the OpenAI api key.
+ */
+async function mintOperationToken(ctx: ContextWithHarper): Promise<string> {
+	const tokenRes = await fetch(ctx.harper.operationsAPIURL, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(ctx) },
+		body: JSON.stringify({
+			operation: 'create_authentication_tokens',
+			username: ctx.harper.admin.username,
+			password: ctx.harper.admin.password,
+		}),
+	});
+	const { operation_token } = (await tokenRes.json()) as { operation_token: string };
+	assert.ok(operation_token, 'expected create_authentication_tokens to return an operation_token');
+	return operation_token;
 }
 
 suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
@@ -133,6 +172,36 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 		assert.equal(body.data[0].index, 0);
 		assert.equal(body.data[1].index, 1);
 		assert.equal(body.data[2].index, 2);
+	});
+
+	test('POST /v1/embeddings honors encoding_format: base64', async () => {
+		const res = await harperFetch(ctx, restUrl(ctx, '/v1/embeddings'), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ model: 'default', input: 'hello world', encoding_format: 'base64' }),
+		});
+		const text = await res.text();
+		assert.equal(res.status, 200, `expected 200, got ${res.status}: ${text}`);
+		const body = JSON.parse(text) as { data: Array<{ embedding: string }> };
+		assert.equal(typeof body.data[0].embedding, 'string', 'expected base64 string embedding');
+		const buf = Buffer.from(body.data[0].embedding, 'base64');
+		assert.equal(buf.byteLength % 4, 0, 'expected float32-aligned byte length');
+		// Copy into a fresh buffer before viewing as Float32Array — a pooled
+		// Buffer's byteOffset is not guaranteed 4-byte-aligned.
+		const floats = new Float32Array(new Uint8Array(buf).buffer);
+		assert.ok(floats.length > 0);
+		assert.ok(Math.abs(floats[0] - 0.1) < 1e-6, `expected first float ~0.1, got ${floats[0]}`);
+	});
+
+	test('POST /v1/embeddings rejects an unknown encoding_format', async () => {
+		const res = await harperFetch(ctx, restUrl(ctx, '/v1/embeddings'), {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+			body: JSON.stringify({ model: 'default', input: 'hello', encoding_format: 'int8' }),
+		});
+		assert.equal(res.status, 400);
+		const body = (await res.json()) as { error: { type: string } };
+		assert.equal(body.error.type, 'invalid_request_error');
 	});
 
 	test('POST /v1/embeddings returns 400 with OpenAI error shape when input is missing', async () => {
@@ -256,51 +325,103 @@ suite('OpenAI /v1/* gateway (modelsGateway)', (ctx: ContextWithHarper) => {
 	// POST /v1/chat/completions — streaming via real OpenAI SDK
 	// -----------------------------------------------------------------------
 
-	test('streaming chat completions are parseable by the real OpenAI SDK (stream: true)', async () => {
-		// The OpenAI SDK sends Accept: application/json even for streaming requests,
-		// so the stream: true request lands in post() via Harper's REST layer.
-		// This test validates the full SSE framing path end-to-end.
-		//
-		// The SDK sends its apiKey as `Authorization: Bearer <key>`. A present-but-
-		// invalid credential is rejected by Harper's auth (401 "invalid token") even
-		// under AUTHENTICATION_AUTHORIZELOCAL (which only covers requests with no
-		// credentials at all). Mint a real operation token — this is also the
-		// documented production flow: a Harper JWT is the OpenAI api key.
-		const tokenRes = await fetch(ctx.harper.operationsAPIURL, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(ctx) },
-			body: JSON.stringify({
-				operation: 'create_authentication_tokens',
-				username: ctx.harper.admin.username,
-				password: ctx.harper.admin.password,
-			}),
-		});
-		const { operation_token } = (await tokenRes.json()) as { operation_token: string };
-		assert.ok(operation_token, 'expected create_authentication_tokens to return an operation_token');
+	clientCompatibilityTest(
+		'streaming chat completions are parseable by the real OpenAI SDK (stream: true)',
+		async () => {
+			// The OpenAI SDK sends Accept: application/json even for streaming requests,
+			// so the stream: true request lands in post() via Harper's REST layer.
+			// This test validates the full SSE framing path end-to-end.
+			const { OpenAI } = (await import('openai')) as { OpenAI: new (opts: object) => any };
+			const client = new OpenAI({
+				apiKey: await mintOperationToken(ctx),
+				baseURL: `${ctx.harper.httpURL}/v1`,
+			});
 
-		const { OpenAI } = (await import('openai')) as { OpenAI: new (opts: object) => any };
-		const client = new OpenAI({
-			apiKey: operation_token,
-			baseURL: `${ctx.harper.httpURL}/v1`,
+			const chunks: string[] = [];
+			const stream = client.chat.completions.stream({
+				model: 'default',
+				messages: [{ role: 'user', content: 'tell me something' }],
+			});
+
+			for await (const chunk of stream) {
+				const delta = chunk.choices[0]?.delta?.content;
+				if (delta) chunks.push(delta);
+			}
+
+			const content = chunks.join('');
+			assert.ok(content.length > 0, 'expected non-empty streamed content');
+			assert.ok(content.includes('[echo stream]'), `unexpected content: ${content}`);
+
+			const completion = await stream.finalChatCompletion();
+			assert.equal(completion.object, 'chat.completion');
+			assert.equal(completion.choices[0].finish_reason, 'stop');
+		}
+	);
+
+	clientCompatibilityTest('LangChain.js ChatOpenAI completes a chat against Harper (non-streaming)', async () => {
+		const { ChatOpenAI } = await import('@langchain/openai');
+		const chat = new ChatOpenAI({
+			model: 'default',
+			apiKey: await mintOperationToken(ctx),
+			configuration: { baseURL: `${ctx.harper.httpURL}/v1` },
+		});
+
+		const res = await chat.invoke([{ role: 'user' as const, content: 'hello from langchain' }]);
+		assert.ok(typeof res.content === 'string', `expected string content, got ${typeof res.content}`);
+		assert.ok(res.content.includes('[echo]'), `unexpected content: ${res.content}`);
+		assert.ok(res.usage_metadata, 'expected usage_metadata on the AIMessage');
+		assert.ok(res.usage_metadata.total_tokens > 0, 'expected non-zero total_tokens');
+	});
+
+	clientCompatibilityTest('LangChain.js ChatOpenAI streams a chat against Harper', async () => {
+		// LangChain sends stream_options: { include_usage: true } by default; the
+		// gateway ignores unknown request fields, and LangChain tolerates the
+		// absence of a trailing usage chunk.
+		const { ChatOpenAI } = await import('@langchain/openai');
+		const chat = new ChatOpenAI({
+			model: 'default',
+			apiKey: await mintOperationToken(ctx),
+			configuration: { baseURL: `${ctx.harper.httpURL}/v1` },
 		});
 
 		const chunks: string[] = [];
-		const stream = client.chat.completions.stream({
-			model: 'default',
-			messages: [{ role: 'user', content: 'tell me something' }],
-		});
-
+		const stream = await chat.stream('tell me something');
 		for await (const chunk of stream) {
-			const delta = chunk.choices[0]?.delta?.content;
-			if (delta) chunks.push(delta);
+			if (typeof chunk.content === 'string' && chunk.content) chunks.push(chunk.content);
 		}
 
 		const content = chunks.join('');
-		assert.ok(content.length > 0, 'expected non-empty streamed content');
+		assert.ok(chunks.length > 1, `expected multiple streamed chunks, got ${chunks.length}`);
 		assert.ok(content.includes('[echo stream]'), `unexpected content: ${content}`);
+	});
 
-		const completion = await stream.finalChatCompletion();
-		assert.equal(completion.object, 'chat.completion');
-		assert.equal(completion.choices[0].finish_reason, 'stop');
+	clientCompatibilityTest('LangChain.js OpenAIEmbeddings embeds a query against Harper', async () => {
+		const { OpenAIEmbeddings } = await import('@langchain/openai');
+		const embeddings = new OpenAIEmbeddings({
+			model: 'default',
+			apiKey: await mintOperationToken(ctx),
+			configuration: { baseURL: `${ctx.harper.httpURL}/v1` },
+		});
+
+		// Assert the fixture's exact vector ([0.1, 0.2, 0.3, 0.4]), not just
+		// "nonempty finite numbers": a regression that returns the JSON float array
+		// while the SDK requested base64 is decoded by the client to [0], which
+		// still passes shape-only checks. Exact values validate the full unmodified
+		// LangChain/OpenAI-SDK base64 round trip end-to-end.
+		const expected = [0.1, 0.2, 0.3, 0.4];
+		const assertFixtureVector = (v, label) => {
+			assert.ok(Array.isArray(v), `${label}: expected an array embedding`);
+			assert.equal(v.length, expected.length, `${label}: expected dimension ${expected.length}, got ${v.length}`);
+			for (let i = 0; i < expected.length; i++) {
+				assert.ok(Math.abs(v[i] - expected[i]) < 1e-6, `${label}: component ${i} = ${v[i]}, expected ~${expected[i]}`);
+			}
+		};
+
+		const vector = await embeddings.embedQuery('hello world');
+		assertFixtureVector(vector, 'embedQuery');
+
+		const batch = await embeddings.embedDocuments(['foo', 'bar', 'baz']);
+		assert.equal(batch.length, 3);
+		batch.forEach((v, i) => assertFixtureVector(v, `embedDocuments[${i}]`));
 	});
 });

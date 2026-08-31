@@ -459,4 +459,26 @@ describe('toEmbedResponse', () => {
 		assert.equal(resp.usage.prompt_tokens, 5);
 		assert.equal(resp.usage.total_tokens, 5);
 	});
+
+	it("encodes vectors as base64 float32 bytes for encodingFormat 'base64'", () => {
+		const vec = new Float32Array([0.1, -0.5, 0.9]);
+		const resp = toEmbedResponse([vec], 'm', undefined, 'base64');
+		const embedding = resp.data[0].embedding;
+		assert.equal(typeof embedding, 'string');
+		const buf = Buffer.from(embedding, 'base64');
+		assert.equal(buf.byteLength, vec.byteLength);
+		// Copy into a fresh buffer before viewing as Float32Array — a pooled
+		// Buffer's byteOffset is not guaranteed 4-byte-aligned.
+		const roundTripped = new Float32Array(new Uint8Array(buf).buffer);
+		assert.deepEqual(Array.from(roundTripped), Array.from(vec));
+	});
+
+	it('base64-encodes a subarray view without leaking surrounding buffer bytes', () => {
+		const backing = new Float32Array([1, 2, 3, 4]);
+		const view = backing.subarray(1, 3);
+		const resp = toEmbedResponse([view], 'm', undefined, 'base64');
+		const buf = Buffer.from(resp.data[0].embedding, 'base64');
+		assert.equal(buf.byteLength, 8);
+		assert.deepEqual(Array.from(new Float32Array(new Uint8Array(buf).buffer)), [2, 3]);
+	});
 });

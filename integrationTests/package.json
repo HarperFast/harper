@@ -1,3 +1,8 @@
 {
-	"type": "module"
+	"private": true,
+	"type": "module",
+	"devDependencies": {
+		"@langchain/openai": "1.5.8",
+		"openai": "7.4.0"
+	}
 }

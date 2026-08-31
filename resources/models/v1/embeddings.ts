@@ -56,13 +56,19 @@ export class V1Embeddings extends Resource {
 		}
 
 		const model = typeof raw.model === 'string' ? raw.model : 'default';
+
+		const encodingFormat = raw.encoding_format ?? 'float';
+		if (encodingFormat !== 'float' && encodingFormat !== 'base64') {
+			return badRequest("'encoding_format' must be 'float' or 'base64'");
+		}
+
 		const opts = toEmbedOpts(raw as any);
 
 		try {
 			// embedWithUsage, not embed(): the public facade drops the result-level usage
 			// backends report, and OpenAI clients read real token counts off the response.
 			const { vectors, usage } = await models.embedWithUsage(input as string | string[], opts);
-			return toEmbedResponse(vectors, model, usage);
+			return toEmbedResponse(vectors, model, usage, encodingFormat);
 		} catch (err) {
 			return toOpenAIError(err);
 		}
