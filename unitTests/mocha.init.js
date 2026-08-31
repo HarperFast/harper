@@ -76,7 +76,9 @@ if (isMainThread) {
 	// config, keys, and a seeded system database this run must not inherit; also reclaim
 	// roots whose owning run is gone, since the exit hook never fires on SIGKILL/OOM.
 	// Worker threads re-run this preload under the same PID, so only the main thread wipes.
-	fs.removeSync(PID_DIR_PATH);
+	try {
+		fs.removeSync(PID_DIR_PATH);
+	} catch {}
 	let envDirEntries = [];
 	try {
 		envDirEntries = fs.readdirSync(ENV_DIR_PATH);
