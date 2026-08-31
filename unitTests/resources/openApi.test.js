@@ -335,6 +335,23 @@ describe('test openApi module', () => {
 			expect(api.paths).not.to.have.property('/Bad/');
 		});
 
+		it('contains a cyclic Array-form attribute graph to its Resource', () => {
+			const r = programmaticResources();
+			const cyclic = { name: 'loop', type: 'object', properties: [] };
+			cyclic.properties.push(cyclic);
+			r.set('Bad', {
+				path: 'Bad',
+				Resource: {
+					prototype: { get: () => [] },
+					attributes: [{ name: 'id', type: 'String', isPrimaryKey: true }, cyclic],
+				},
+			});
+			const api = generateJsonApi(r, serverURL);
+			expect(api.components.schemas).to.have.property('Widget');
+			expect(api.components.schemas).not.to.have.property('Bad');
+			expect(api.paths).not.to.have.property('/Bad/');
+		});
+
 		it('preserves a Resource schema named `__proto__` as an own property', () => {
 			const r = new Map();
 			r.set('__proto__', {
