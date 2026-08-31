@@ -215,6 +215,24 @@ impl Graph {
         }
     }
 
+    /// The slot's stored upper idx regardless of valid/deleted flags — the raw mirroring
+    /// path reuses a cleared node's entry when the host rewrites the same id.
+    fn upper_idx_raw(&self, id: u32) -> u32 {
+        if !self.in_range(id) {
+            return NO_UPPER;
+        }
+        let seq = self.file.seq_atomic(id);
+        seqlock::read_consistent(seq, || {
+            let p = self.file.slot_ptr(id);
+            unsafe {
+                if *p.add(S_FLAGS) == 0 {
+                    return NO_UPPER; // never written
+                }
+                (p.add(S_UPPER_IDX) as *const u32).read_unaligned()
+            }
+        })
+    }
+
     /// Mirror a host-maintained node into the plane: full state per call, host-allocated id
     /// (high-water is raised, the plane allocator is bypassed), upper entry reused in place
     /// when present. This is the dual-write phase-1 write path.
@@ -229,7 +247,7 @@ impl Graph {
         upper_levels: &[Vec<u32>],
     ) {
         self.file.ensure_high_water(id);
-        let existing = self.upper_idx_of(id);
+        let existing = self.upper_idx_raw(id);
         let upper_idx = if upper_levels.is_empty() {
             existing // keep an existing entry bound (level never shrinks in practice)
         } else if existing != NO_UPPER {
@@ -380,14 +398,21 @@ impl Graph {
         }
     }
 
-    /// Mark deleted (traversals skip it) and return the id to the freelist. The upper-region
-    /// entry, if any, is leaked (bounded by the region's 2x-headroom reserve; freelist TODO).
+    /// Mark deleted (traversals skip it), free its upper entry, and return the id to the
+    /// plane freelist.
     pub fn delete_node(&self, id: u32) {
+        let upper_idx;
         {
             let seq = self.file.seq_atomic(id);
             let _guard = seqlock::write_lock(seq);
-            unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = FLAG_DELETED };
+            let p = self.file.slot_ptr_mut(id);
+            unsafe {
+                upper_idx = (p.add(S_UPPER_IDX) as *const u32).read_unaligned();
+                (p.add(S_UPPER_IDX) as *mut u32).write_unaligned(NO_UPPER);
+                *p.add(S_FLAGS) = FLAG_DELETED;
+            }
         }
+        self.file.free_upper(upper_idx);
         self.file.free_id(id);
     }
 }

@@ -26,6 +26,7 @@ const H_TXN_WATERMARK: usize = 48; // u64
 const H_CLEAN_SHUTDOWN: usize = 56; // u8
 const H_MAX_NODES: usize = 64; // u64
 const H_UPPER_HIGH_WATER: usize = 72; // u64 atomic: upper-entry allocator
+const H_UPPER_FREELIST: usize = 80; // u64 atomic: (tag<<32)|idx; NO_UPPER = empty
 
 /// Upper-layer region geometry: fixed entries covering levels 1..=MAX_UPPER_LEVELS at
 /// UPPER_CAP ids per level. P(level >= 1) = 1/M ~ 6.25%; the region reserves entries for
@@ -122,6 +123,7 @@ impl PlaneFile {
         map[H_FREELIST_HEAD..H_FREELIST_HEAD + 8]
             .copy_from_slice(&((NO_ID as u64) | 0u64 << 32).to_le_bytes());
         map[H_MAX_NODES..H_MAX_NODES + 8].copy_from_slice(&max_nodes.to_le_bytes());
+        map[H_UPPER_FREELIST..H_UPPER_FREELIST + 8].copy_from_slice(&(NO_UPPER as u64).to_le_bytes());
         let upper_offset = HEADER_SIZE + slot_region_len(max_nodes, slot_size, slots_per_page) as usize;
         Ok(PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page })
     }
@@ -264,17 +266,54 @@ impl PlaneFile {
         unsafe { &*(self.upper_ptr(idx).add(U_SEQ) as *const AtomicU32) }
     }
 
-    /// Allocate an upper-region entry. Entries are not freed on delete (bounded leak within
-    /// the 2x-headroom reserve; freelist reuse is a TODO). Returns NO_UPPER when exhausted —
-    /// the node then simply has no upper links, which degrades routing, not correctness.
+    /// Allocate an upper-region entry: pop the upper freelist, else bump the high-water.
+    /// Returns NO_UPPER when exhausted — the node then simply has no upper links, which
+    /// degrades routing, not correctness. A dead entry's next-pointer lives in its first
+    /// list bytes (offset U_LISTS), clobbered on reuse by the full rewrite.
     pub fn allocate_upper(&self) -> u32 {
-        let hw = self.header_atomic_u64(H_UPPER_HIGH_WATER);
-        let idx = hw.fetch_add(1, Ordering::AcqRel);
-        if idx >= self.upper_capacity {
-            hw.fetch_sub(1, Ordering::AcqRel);
-            return NO_UPPER;
+        let head = self.header_atomic_u64(H_UPPER_FREELIST);
+        loop {
+            let cur = head.load(Ordering::Acquire);
+            let idx = (cur & 0xffff_ffff) as u32;
+            if idx == NO_UPPER {
+                let hw = self.header_atomic_u64(H_UPPER_HIGH_WATER);
+                let new = hw.fetch_add(1, Ordering::AcqRel);
+                if new >= self.upper_capacity {
+                    hw.fetch_sub(1, Ordering::AcqRel);
+                    return NO_UPPER;
+                }
+                return new as u32;
+            }
+            let next = unsafe { (*(self.upper_ptr(idx).add(U_LISTS) as *const AtomicU32)).load(Ordering::Acquire) };
+            let tag = (cur >> 32).wrapping_add(1);
+            if head
+                .compare_exchange(cur, (next as u64) | (tag << 32), Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return idx;
+            }
         }
-        idx as u32
+    }
+
+    /// Return a dead upper entry to the freelist. Caller must have unlinked it from its
+    /// node's slot (or marked the node deleted) first.
+    pub fn free_upper(&self, idx: u32) {
+        if idx == NO_UPPER {
+            return;
+        }
+        let head = self.header_atomic_u64(H_UPPER_FREELIST);
+        let next_word = unsafe { &*(self.upper_ptr(idx).add(U_LISTS) as *const AtomicU32) };
+        loop {
+            let cur = head.load(Ordering::Acquire);
+            next_word.store((cur & 0xffff_ffff) as u32, Ordering::Release);
+            let tag = (cur >> 32).wrapping_add(1);
+            if head
+                .compare_exchange(cur, (idx as u64) | (tag << 32), Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
     }
 
     pub fn set_clean_shutdown(&mut self, clean: bool) {
