@@ -57,7 +57,43 @@ fn neighbors_at(graph: &Graph, id: u32, level: u8, buf: &mut Vec<u32>) {
     }
 }
 
-/// Add `new_id` to `nid`'s adjacency at `level`, pruning to `cap` closest when over.
+/// Prune an over-cap adjacency list by evicting the most REDUNDANT far member rather than
+/// blindly the farthest: plain closest-keep can strip a node's last in-edge in dense
+/// near-duplicate clusters, orphaning it from the graph (observed as unfindable self-queries
+/// under concurrent builds). A far member e is redundant when some kept nearer member k has
+/// d(e, k) < d(base, e) — searches reaching k still reach e. Bounded: farthest 16 candidates
+/// checked against the nearest 16 keepers (~30us per overflow event); falls back to evicting
+/// the plain farthest when nothing is provably redundant.
+fn prune_with_coverage(graph: &Graph, base: u32, list: &mut Vec<u32>, cap: usize) {
+    let mut scored: Vec<(u32, f32)> = list
+        .iter()
+        .filter_map(|&cand| graph.distance_between(base, cand).map(|d| (cand, d)))
+        .collect();
+    scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    while scored.len() > cap {
+        let check_from = scored.len().saturating_sub(16);
+        let keepers = &scored[..16.min(check_from)];
+        let mut evict = scored.len() - 1; // fallback: farthest
+        'hunt: for i in (check_from..scored.len()).rev() {
+            let (e, d_base_e) = scored[i];
+            for &(k, _) in keepers {
+                if k == e {
+                    continue;
+                }
+                if let Some(d_ek) = graph.distance_between(e, k) {
+                    if d_ek < d_base_e {
+                        evict = i;
+                        break 'hunt;
+                    }
+                }
+            }
+        }
+        scored.remove(evict);
+    }
+    *list = scored.into_iter().map(|(cand, _)| cand).collect();
+}
+
+/// Add `new_id` to `nid`'s adjacency at `level`, coverage-pruning to `cap` when over.
 fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize) {
     if level == 0 {
         graph.update_neighbors(nid, |list| {
@@ -67,12 +103,7 @@ fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize)
             list.push(new_id);
             if list.len() > cap {
                 // distance_between reads other slots without locks; safe under this seqlock
-                let mut scored: Vec<(u32, f32)> = list
-                    .iter()
-                    .filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d)))
-                    .collect();
-                scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                *list = scored.into_iter().take(cap).map(|(cand, _)| cand).collect();
+                prune_with_coverage(graph, nid, list, cap);
             }
         });
     } else {
@@ -82,12 +113,7 @@ fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize)
             }
             list.push(new_id);
             if list.len() > cap {
-                let mut scored: Vec<(u32, f32)> = list
-                    .iter()
-                    .filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d)))
-                    .collect();
-                scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                *list = scored.into_iter().take(cap).map(|(c, _)| c).collect();
+                prune_with_coverage(graph, nid, list, cap);
             }
         });
     }

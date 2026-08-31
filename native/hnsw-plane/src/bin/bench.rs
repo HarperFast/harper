@@ -2,7 +2,9 @@
 //! per-visit cost — the number that decides whether the native plane hits its 0.25–0.4 µs
 //! budget (JS baseline: 4.34 µs/visit at 5M/ef 512).
 //!
-//! Usage: bench [n=100000] [dims=768] [queries=200] [ef=512] [path=/tmp/bench.hnsw] [cap=128]
+//! Usage: bench [n=100000] [dims=768] [queries=200] [ef=512] [path=/tmp/bench.hnsw] [cap=128] [threads=0]
+//! threads > 0 adds a concurrent-throughput pass: T searcher threads (queries each) + one
+//! background writer inserting throughout, reporting aggregate QPS and per-thread p50/p99.
 
 use hnsw_plane::distance::Query;
 use hnsw_plane::insert::{insert, InsertParams};
@@ -169,4 +171,74 @@ fn main() {
         us_per_visit
     );
     println!("recall@10 (set): {:.3}", recall_hits as f64 / recall_total as f64);
+
+    let threads: usize = args.get(7).and_then(|a| a.parse().ok()).unwrap_or(0);
+    if threads > 0 {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let graph = Arc::new(graph);
+        let corpus = Arc::new(corpus);
+        let stop = Arc::new(AtomicBool::new(false));
+        let per_thread = queries.max(100);
+        let start = Instant::now();
+        let mut handles = Vec::new();
+        for t in 0..threads {
+            let graph = graph.clone();
+            let corpus = corpus.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut scratch = SearchScratch::new();
+                let mut rng = Rng(0x9e37_79b9 ^ (t as u64 + 1) * 0x1234_5677);
+                let mut lat: Vec<std::time::Duration> = Vec::with_capacity(per_thread);
+                for _ in 0..per_thread {
+                    let q = Query::new(corpus.row(&mut rng));
+                    let s = Instant::now();
+                    let (r, _) = search(&graph, &q, 10, ef, &mut scratch);
+                    lat.push(s.elapsed());
+                    assert!(!r.is_empty());
+                }
+                lat.sort();
+                (lat[per_thread / 2], lat[(per_thread * 99 / 100).min(per_thread - 1)])
+            }));
+        }
+        // background writer: sustained inserts while searchers run
+        let writer = {
+            let graph = graph.clone();
+            let corpus = corpus.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let params = InsertParams::default();
+                let mut scratch = SearchScratch::new();
+                let mut rng = Rng(0xdead_beef_cafe_f00d);
+                let mut count = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    let v = corpus.row(&mut rng);
+                    insert(&graph, &v, &params, &mut scratch);
+                    count += 1;
+                }
+                count
+            })
+        };
+        let mut p50s = Vec::new();
+        let mut p99s = Vec::new();
+        for h in handles {
+            let (p50, p99) = h.join().unwrap();
+            p50s.push(p50);
+            p99s.push(p99);
+        }
+        let wall = start.elapsed();
+        stop.store(true, Ordering::Relaxed);
+        let inserted = writer.join().unwrap();
+        let total_q = (threads * per_thread) as f64;
+        p50s.sort();
+        p99s.sort();
+        println!(
+            "concurrent: {} threads x {} queries + writer -> {:.0} QPS aggregate  p50(med) {:.2} ms  p99(worst) {:.2} ms  writer {:.0} inserts/s",
+            threads,
+            per_thread,
+            total_q / wall.as_secs_f64(),
+            p50s[threads / 2].as_secs_f64() * 1e3,
+            p99s[threads - 1].as_secs_f64() * 1e3,
+            inserted as f64 / wall.as_secs_f64()
+        );
+    }
 }
