@@ -323,6 +323,40 @@ describe('HNSW native plane dual-write', function () {
 		await Foreign.dropTable();
 	});
 
+	it('disabling the flag deletes the plane file so a re-enable rebuilds instead of adopting it stale', async () => {
+		const planePath = customIndex().planeFilePath();
+		assert.ok(fs.existsSync(planePath));
+		resetDatabases();
+		PlaneTest = table({
+			table: 'PlaneTest',
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		assert.ok(!PlaneTest.indexingOperation, 'removing the search-only flag must not reindex');
+		assert.ok(!fs.existsSync(planePath), 'the derived plane file should be deleted with the flag off');
+		// mutate while the flag is off, then re-enable: the rebuilt plane must see the mutation
+		const vector = makeVector(30001);
+		vectors.set(1201, vector);
+		await PlaneTest.put(1201, { name: 'rec1201', vector });
+		resetDatabases();
+		PlaneTest = table({
+			table: 'PlaneTest',
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'vector', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+			],
+		});
+		const { planeEntries, jsEntries } = await searchBoth(vector);
+		assertParity(planeEntries, jsEntries);
+		assert.equal(planeEntries[0].key, 1201, 'a record written while the flag was off must be in the rebuilt plane');
+	});
+
 	it('index drop removes the plane file', async () => {
 		const planePath = customIndex().planeFilePath();
 		assert.ok(fs.existsSync(planePath));

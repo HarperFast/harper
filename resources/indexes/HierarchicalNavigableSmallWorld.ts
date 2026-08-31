@@ -345,6 +345,26 @@ export class HierarchicalNavigableSmallWorld {
 		}
 	}
 
+	/**
+	 * Called by openIndex on the authoritative index instance. With the flag off (or the index
+	 * ineligible) nothing mirrors, so an existing plane file only goes stale — and a later
+	 * re-enable would adopt it; deleting it here makes re-enabling rebuild from the CF (the
+	 * documented rollback: flag off + file deleted). Not done in the constructor: auxiliary
+	 * instances over the same store (e.g. a flag-off reference in tests) must not delete the
+	 * live index's plane.
+	 */
+	cleanupDisabledPlane(): void {
+		if (this.planeEligible) return;
+		const filePath = this.planeFilePath();
+		if (!filePath) return;
+		try {
+			unlinkSync(filePath);
+			logger.info?.('deleted the HNSW plane file of an index no longer using nativePlane');
+		} catch (error: any) {
+			if (error?.code !== 'ENOENT') logger.warn?.('could not delete the HNSW plane file', error);
+		}
+	}
+
 	/** Absolute path of this index's plane file, or undefined when the store exposes no path. */
 	planeFilePath(): string | undefined {
 		const storePath = this.indexStore?.path;
