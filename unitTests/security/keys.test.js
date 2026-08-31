@@ -978,6 +978,450 @@ describe('Test keys module', () => {
 		});
 	});
 
+	describe('updateTLS transactional publication — retain-last-good on record failure (#2382)', () => {
+		// These tests pin harper#2382's replacement contract: a rebuild pass never publishes a
+		// state worse than the one being served (clear-first used to drop a mismatched record's
+		// hostnames to the self-signed default for days).
+		let databases;
+		let liveTLSRebuilders;
+		let rebuildersSnapshot;
+		let keyPairA;
+		let keyPairB;
+
+		before(async function () {
+			this.timeout(10000);
+			keyPairA = await mkcert.createCert({
+				domains: ['retain-a.harper.test'],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+			keyPairB = await mkcert.createCert({
+				domains: ['retain-b.harper.test'],
+				validityDays: 1,
+				ca: { key: ca_key, cert: test_ca },
+			});
+		});
+
+		beforeEach(() => {
+			databases = require('#src/resources/databases').databases;
+			liveTLSRebuilders = keys.__get__('liveTLSRebuilders');
+			rebuildersSnapshot = [...liveTLSRebuilders];
+		});
+
+		afterEach(() => {
+			liveTLSRebuilders.clear();
+			rebuildersSnapshot.forEach((r) => liveTLSRebuilders.add(r));
+		});
+
+		const uniqueName = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+		async function putRecord(name, certificate, keyName, hostnames, uses = ['mqtt']) {
+			await databases.system.hdb_certificate.put({
+				name,
+				certificate,
+				uses,
+				is_authority: false,
+				private_key_name: keyName,
+				hostnames,
+			});
+		}
+
+		async function healthySelector(recordName, keyName, hostname) {
+			keys.getPrivateKeys().set(keyName, keyPairA.key);
+			await putRecord(recordName, keyPairA.cert, keyName, [hostname]);
+			const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+			const selector = keys.createTLSSelector('mqtt', undefined, true);
+			await selector.initialize(pseudoServer);
+			await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+				timeout: 6000,
+				message: 'baseline context for the test record never published',
+			});
+			return pseudoServer;
+		}
+
+		it('a record whose context fails to build keeps serving its last-good context, logs once, and heals on retry', async function () {
+			this.timeout(30000);
+			const recordName = uniqueName('retain');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const logCalls = [];
+			// keys.ts logs through a module-local component logger, not the global.
+			const tlsLogger = keys.__get__('logger');
+			const originalError = tlsLogger.error;
+			tlsLogger.error = (...args) => {
+				logCalls.push(args);
+				return originalError?.apply(tlsLogger, args);
+			};
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				const baselineDefault = pseudoServer.defaultContext;
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() =>
+					publishes.push(pseudoServer.secureContexts.get(hostname)?.certStart)
+				);
+
+				// Break the record: cert B in the table, key A still in the map — createSecureContext
+				// throws for this record on the next rebuild (the #2382 mismatch shape).
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(() => publishes.length >= 1, {
+					timeout: 6000,
+					message: 'the failing rebuild never published',
+				});
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'the failed record must keep its last-good context, not lose its hostname to the default'
+				);
+				assert.strictEqual(
+					pseudoServer.defaultContext,
+					baselineDefault,
+					'the default must not fall to a lower-quality survivor while the best record is retained'
+				);
+
+				// Throttling: the retry (backoff base 1.5s) reruns the same failure; the count of
+				// per-record error lines for this record must not grow while the signature is unchanged.
+				const failureLogs = () => logCalls.filter((args) => args.includes(recordName)).length;
+				const loggedAfterFirstPass = failureLogs();
+				assert.ok(loggedAfterFirstPass >= 1, 'the first failing pass must log the record error');
+				await waitFor(() => publishes.length >= 2, {
+					timeout: 10000,
+					message: 'the failure retry never ran a second pass',
+				});
+				assert.strictEqual(
+					failureLogs(),
+					loggedAfterFirstPass,
+					'an unchanged failure signature must not re-log per-record errors on every retry'
+				);
+
+				// Heal: key B arrives in the map. Nothing else triggers a rebuild — the failure retry
+				// itself must pick it up and converge, replacing the retained context with cert B.
+				keys.getPrivateKeys().set(keyName, keyPairB.key);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.options?.cert?.includes(keyPairB.cert), {
+					timeout: 15000,
+					message: 'the failure retry never healed the record after its key became available',
+				});
+			} finally {
+				tlsLogger.error = originalError;
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('deleting a record drops its contexts — retention never outlives the record', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('drop');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				await databases.system.hdb_certificate.delete(recordName);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname) === undefined, {
+					timeout: 6000,
+					message: 'a deleted record must drop its hostname contexts on the next pass',
+				});
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a successful pass drops hostnames the record no longer claims', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('rename');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const newHostname = `${recordName}-renamed.harper.test`;
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				await putRecord(recordName, keyPairA.cert, keyName, [newHostname]);
+				await waitFor(
+					() =>
+						pseudoServer.secureContexts.get(newHostname)?.name === recordName &&
+						pseudoServer.secureContexts.get(hostname) === undefined,
+					{ timeout: 6000, message: 'a successful pass must publish the new hostname and drop the old one' }
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a CA-set change does not cost a non-mTLS record its retention', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('castale');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const caName = uniqueName('retain-ca');
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.get(hostname)));
+				// Change the CA set and break the record in the same window. Without mTLS nothing in
+				// the context consults the CA set, so retention keeps serving the same object rather
+				// than dropping the record or paying for a rebuild.
+				await databases.system.hdb_certificate.put({
+					name: caName,
+					certificate: keyPairB.cert,
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(() => publishes.length >= 1, {
+					timeout: 8000,
+					message: 'the failing rebuild never published',
+				});
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'a non-mTLS record must retain its context across a CA-set change'
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(caName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it("an equal-quality sibling cannot take a failed record's hostname or the default on a tie", async function () {
+			this.timeout(20000);
+			const recordA = uniqueName('tie-a');
+			const recordB = uniqueName('tie-b');
+			const keyA = `${recordA}.pem`;
+			const keyB = `${recordB}.pem`;
+			const hostname = `${recordA}.harper.test`;
+			try {
+				// Baseline: A alone owns the hostname and the default.
+				const pseudoServer = await healthySelector(recordA, keyA, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				assert.strictEqual(pseudoServer.defaultContext?.name, recordA);
+
+				// Add B with equal quality claiming the SAME hostname, and break A in the same window.
+				// B builds; retained A must reclaim the hostname it owned and keep the default — ties
+				// go to the incumbent, not to whichever sibling happened to build this pass.
+				keys.getPrivateKeys().set(keyB, keyPairB.key);
+				await putRecord(recordB, keyPairB.cert, keyB, [hostname]);
+				await putRecord(recordA, keyPairB.cert, keyA, [hostname]); // cert B against key A: A now fails
+				await waitFor(
+					() => {
+						const context = pseudoServer.secureContexts.get(hostname);
+						return context && context.name === recordA && pseudoServer.defaultContext?.name === recordA;
+					},
+					{
+						timeout: 8000,
+						message: 'the failed incumbent lost its hostname or the default to an equal-quality sibling',
+					}
+				);
+				assert.strictEqual(
+					pseudoServer.secureContexts.get(hostname),
+					baselineContext,
+					'the retained incumbent must keep serving its last-good context'
+				);
+			} finally {
+				keys.getPrivateKeys().delete(keyA);
+				keys.getPrivateKeys().delete(keyB);
+				await databases.system.hdb_certificate.delete(recordA).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordB).catch(() => {});
+			}
+		});
+
+		it('a retained mTLS context stops trusting a removed client CA', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('carevoke');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const caName = uniqueName('revoked-ca');
+			try {
+				// The CA to revoke exists before the selector is built, so the baseline context's
+				// frozen ca: trust list includes it.
+				await databases.system.hdb_certificate.put({
+					name: caName,
+					certificate: keyPairB.cert,
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				keys.getPrivateKeys().set(keyName, keyPairA.key);
+				await putRecord(recordName, keyPairA.cert, keyName, [hostname]);
+				const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+				const selector = keys.createTLSSelector('mqtt', { requestCert: true }, true);
+				await selector.initialize(pseudoServer);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+					timeout: 6000,
+					message: 'baseline mTLS context for the test record never published',
+				});
+				const baseline = pseudoServer.secureContexts.get(hostname);
+				assert.ok(
+					baseline.options.ca?.includes(keyPairB.cert),
+					'the baseline trust list must include the CA about to be revoked'
+				);
+
+				// Revoke the CA while the record is failing: retention must publish a REBUILT context
+				// whose ca: no longer trusts the removed PEM — not the stale object.
+				await databases.system.hdb_certificate.delete(caName);
+				await putRecord(recordName, keyPairB.cert, keyName, [hostname]);
+				await waitFor(
+					() => {
+						const context = pseudoServer.secureContexts.get(hostname);
+						return (
+							context &&
+							context !== baseline &&
+							Array.isArray(context.options.ca) &&
+							context.options.ca.every((pem) => pem !== keyPairB.cert)
+						);
+					},
+					{ timeout: 8000, message: 'the retained context kept trusting the removed CA' }
+				);
+				assert.strictEqual(pseudoServer.secureContexts.get(hostname).name, recordName);
+			} finally {
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(caName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a corrupt authority row is reported through the throttle, armed for retry, and never claims recovery', async function () {
+			// Recovery may ride a backed-off retry timer when the delete event coalesces into an
+			// already-armed rebuild, and every selector accumulated by this suite retries on its own
+			// schedule — generous timeout, condition-based waits.
+			this.timeout(60000);
+			const recordName = uniqueName('badca');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			const corruptName = uniqueName('corrupt-ca');
+			const errorLogs = [];
+			const warnLogs = [];
+			const tlsLogger = keys.__get__('logger');
+			const originalError = tlsLogger.error;
+			const originalWarn = tlsLogger.warn;
+			tlsLogger.error = (...args) => {
+				errorLogs.push(args);
+				return originalError?.apply(tlsLogger, args);
+			};
+			tlsLogger.warn = (...args) => {
+				warnLogs.push(args);
+				return originalWarn?.apply(tlsLogger, args);
+			};
+			// A unique listener type makes this selector's failure logs attributable — foreign
+			// suite-accumulated selectors log the same record under their own types.
+			const listenerType = uniqueName('throttle-lens');
+			try {
+				keys.getPrivateKeys().set(keyName, keyPairA.key);
+				await putRecord(recordName, keyPairA.cert, keyName, [hostname], [listenerType]);
+				const pseudoServer = { secureContexts: null, secureContextsListeners: [] };
+				const selector = keys.createTLSSelector(listenerType, undefined, true);
+				await selector.initialize(pseudoServer);
+				await waitFor(() => pseudoServer.secureContexts.get(hostname)?.name === recordName, {
+					timeout: 6000,
+					message: 'baseline context for the test record never published',
+				});
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.size));
+				await databases.system.hdb_certificate.put({
+					name: corruptName,
+					certificate: 'NOT-A-PEM',
+					uses: [],
+					is_authority: true,
+					is_self_signed: true,
+				});
+				const corruptErrors = () =>
+					errorLogs.filter((args) => args.includes(corruptName) && args.some((a) => String(a).includes(listenerType)))
+						.length;
+				await waitFor(() => corruptErrors() >= 1, {
+					timeout: 8000,
+					message: 'the corrupt authority row was never reported',
+				});
+				// Throttle invariant: this selector's failure logs are attributable via its unique
+				// listener type, so with a stable signature it must log EXACTLY once no matter how many
+				// foreign selectors also fail on the same record. Three completed passes guarantee an
+				// unthrottled implementation would have re-logged.
+				await waitFor(() => publishes.length >= 3, {
+					timeout: 30000,
+					message: 'the failure retry never completed further passes',
+				});
+				assert.strictEqual(
+					corruptErrors(),
+					1,
+					'an unchanged corrupt-row signature must log exactly once for this selector'
+				);
+				assert.ok(
+					!warnLogs.some((args) => String(args[0]).includes('recovered')),
+					'a pass that skipped a corrupt row must not claim recovery'
+				);
+				assert.ok(pseudoServer.secureContexts.get(hostname), 'healthy records must keep publishing');
+
+				// Recovery, state-based: the delete-triggered pass runs, publishes, and the corrupt
+				// failure stops being reported. (The 'recovered' log line itself needs a fully clean
+				// pass across every record, which is suite-order-dependent — not asserted here.)
+				const publishesBeforeDelete = publishes.length;
+				await databases.system.hdb_certificate.delete(corruptName);
+				await waitFor(() => publishes.length > publishesBeforeDelete, {
+					timeout: 30000,
+					message: 'no pass published after the corrupt row was removed',
+				});
+				const errorsAfterRecovery = corruptErrors();
+				await new Promise((resolve) => setTimeout(resolve, 2000));
+				assert.strictEqual(corruptErrors(), errorsAfterRecovery, 'a removed corrupt row must stop being reported');
+			} finally {
+				tlsLogger.error = originalError;
+				tlsLogger.warn = originalWarn;
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(corruptName).catch(() => {});
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+
+		it('a whole-pass failure leaves the published state untouched and the retry heals it', async function () {
+			this.timeout(20000);
+			const recordName = uniqueName('passfail');
+			const keyName = `${recordName}.pem`;
+			const hostname = `${recordName}.harper.test`;
+			let searchStub;
+			try {
+				const pseudoServer = await healthySelector(recordName, keyName, hostname);
+				const baselineContext = pseudoServer.secureContexts.get(hostname);
+				const baselineSize = pseudoServer.secureContexts.size;
+				const baselineDefault = pseudoServer.defaultContext;
+
+				searchStub = sandbox
+					.stub(databases.system.hdb_certificate, 'search')
+					.throws(new Error('injected pass failure'));
+				// Trigger a rebuild through the key-reload path; the throwing stub itself is the
+				// observable that the pass ran (a failed pass never publishes).
+				keys.__get__('rebuildLiveTLSContexts')();
+				await waitFor(() => searchStub.called, {
+					timeout: 6000,
+					message: 'the failing pass never ran',
+				});
+				assert.strictEqual(pseudoServer.secureContexts.get(hostname), baselineContext);
+				assert.strictEqual(
+					pseudoServer.secureContexts.size,
+					baselineSize,
+					'a pass-level throw must not clear live state'
+				);
+				assert.strictEqual(pseudoServer.defaultContext, baselineDefault);
+
+				searchStub.restore();
+				searchStub = undefined;
+				// The armed failure retry must recover on its own once the table is readable again —
+				// observable via a publish (listeners only fire on a completed pass).
+				const publishes = [];
+				pseudoServer.secureContextsListeners.push(() => publishes.push(pseudoServer.secureContexts.size));
+				await waitFor(() => publishes.length >= 1, {
+					timeout: 15000,
+					message: 'the retry never republished after the pass-level failure cleared',
+				});
+				assert.ok(pseudoServer.secureContexts.get(hostname), 'the record must survive the recovery pass');
+			} finally {
+				searchStub?.restore();
+				keys.getPrivateKeys().delete(keyName);
+				await databases.system.hdb_certificate.delete(recordName).catch(() => {});
+			}
+		});
+	});
+
 	describe('certificate file_timestamp staleness guard', () => {
 		let certTable;
 		let certCn;
@@ -1283,6 +1727,103 @@ describe('Test keys module', () => {
 			loadAndWatch(watchPath, () => {}, 'certificate');
 
 			expect(watchTimers.get(watchPath), 'no timer should be registered when polling is disabled').to.be.undefined;
+		});
+	});
+
+	describe('loadAndWatch mtime latch rollback on failed apply (#2382)', () => {
+		// The latch must represent the last successfully APPLIED file, not the last attempted one:
+		// a callback that throws (bad read) or rejects (failed hdb_certificate write) used to leave
+		// the mtime latched, so both chokidar and the poll deduplicated the change forever and the
+		// renewal could never heal without another file write.
+		const loadAndWatch = keys.__get__('loadAndWatch');
+		const watchTimers = keys.__get__('certificateWatchTimers');
+		const watchPollers = keys.__get__('certificateWatchPollers');
+		const chokidar = require('chokidar');
+		const realChokidarWatch = chokidar.watch;
+		let watchPath;
+
+		const bumpMtime = () => {
+			const future = (Date.now() + 5000 + Math.random() * 5000) / 1000;
+			fs.utimesSync(watchPath, future, future);
+		};
+
+		beforeEach(() => {
+			chokidar.watch = () => ({
+				on: function () {
+					return this;
+				},
+				close: () => Promise.resolve(),
+			});
+			watchPath = path.join(test_dir, `latch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
+			fs.writeFileSync(watchPath, 'PEM-V1');
+		});
+
+		afterEach(() => {
+			chokidar.watch = realChokidarWatch;
+			const timer = watchTimers.get(watchPath);
+			if (timer) clearInterval(timer);
+			watchTimers.delete(watchPath);
+			watchPollers.delete(watchPath);
+			if (fs.existsSync(watchPath)) fs.removeSync(watchPath);
+		});
+
+		it('a synchronous callback throw unlatches the mtime so the poll retries', () => {
+			const calls = [];
+			let failNext = true;
+			loadAndWatch(
+				watchPath,
+				(pem) => {
+					calls.push(pem);
+					if (calls.length > 1 && failNext) {
+						failNext = false;
+						throw new Error('injected sync apply failure');
+					}
+				},
+				'certificate'
+			);
+			assert.deepStrictEqual(calls, ['PEM-V1']);
+
+			bumpMtime();
+			watchPollers.get(watchPath)(); // reload attempt — throws, must roll back the latch
+			assert.strictEqual(calls.length, 2);
+			watchPollers.get(watchPath)(); // same mtime again — must NOT be deduplicated away
+			assert.strictEqual(calls.length, 3, 'a failed apply must be retried by the next poll');
+			watchPollers.get(watchPath)(); // applied successfully — latched again
+			assert.strictEqual(calls.length, 3, 'a successful apply must re-latch and deduplicate');
+		});
+
+		it('an async rejection unlatches the mtime, and a stale rejection cannot unlatch a newer reload', async () => {
+			const outcomes = [];
+			loadAndWatch(watchPath, () => outcomes.shift(), 'certificate');
+
+			// First change: the callback's write rejects — the poll must retry this mtime.
+			let rejectFirst;
+			outcomes.push(new Promise((_, reject) => (rejectFirst = reject)));
+			bumpMtime();
+			watchPollers.get(watchPath)();
+			rejectFirst(new Error('injected write rejection'));
+			await new Promise((resolve) => setImmediate(resolve));
+
+			outcomes.push(Promise.resolve()); // the retry succeeds; consumption of the queue proves it ran
+			watchPollers.get(watchPath)();
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(outcomes.length, 0, 'the rejected apply must be retried on the next poll');
+
+			// Stale-rejection guard: a slow rejection from an OLD mtime must not unlatch a NEWER
+			// successful reload. Queue a pending promise, reload at mtime M2, then reload at M3
+			// successfully, then reject the M2 promise — the latch must stay at M3.
+			let rejectStale;
+			outcomes.push(new Promise((_, reject) => (rejectStale = reject)));
+			bumpMtime();
+			watchPollers.get(watchPath)(); // M2 attempt, left pending
+			outcomes.push(Promise.resolve());
+			bumpMtime();
+			watchPollers.get(watchPath)(); // M3 applied successfully
+			rejectStale(new Error('stale rejection'));
+			await new Promise((resolve) => setImmediate(resolve));
+			outcomes.push(Promise.resolve());
+			watchPollers.get(watchPath)(); // same M3 mtime — must stay deduplicated
+			assert.strictEqual(outcomes.length, 1, 'a stale rejection must not unlatch a newer successful reload');
 		});
 	});
 

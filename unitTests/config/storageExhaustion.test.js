@@ -9,9 +9,17 @@ const { atomicWriteFile, isStorageExhausted, persistConfigDuringBoot } = require
 const { prepareRuntimeEnvConfig, discardConfigState } = require('#src/config/harperConfigEnvVars');
 const hdbTerms = require('#src/utility/hdbTerms');
 
+// Absent from os.constants.errno on platforms with no quota support (win32), where production
+// deliberately declines to synthesize one, so there is no EDQUOT behavior to assert there.
+const PLATFORM_DEFINES_EDQUOT = os.constants.errno.EDQUOT !== undefined;
+
 // A real ENOSPC/EDQUOT needs a volume with no room, which no unit test can arrange portably.
 function storageExhaustedError(errnoName) {
 	const errno = os.constants.errno[errnoName];
+	// Negating an errno the platform does not define yields NaN, which matches nothing in
+	// configUtils, leaving the caller asserting against an error no platform can produce.
+	if (errno === undefined)
+		throw new Error(`os.constants.errno.${errnoName} is undefined on ${process.platform}; gate the caller on it`);
 	// Node has no code mapping for EDQUOT on Linux: the error arrives as `Unknown system error
 	// -122` and only the errno identifies it.
 	return Object.assign(new Error(`Unknown system error -${errno}`), {
@@ -41,8 +49,15 @@ describe('storage exhaustion during boot (#847)', function () {
 		fs.removeSync(testRoot);
 	});
 
+	describe('storageExhaustedError', function () {
+		it('refuses an errno name the platform does not define', function () {
+			assert.throws(() => storageExhaustedError('ENOTAREALERRNO'), /ENOTAREALERRNO is undefined/);
+		});
+	});
+
 	describe('isStorageExhausted', function () {
 		it('recognizes EDQUOT by errno when the platform gives no usable code', function () {
+			if (!PLATFORM_DEFINES_EDQUOT) return this.skip();
 			assert.strictEqual(isStorageExhausted(storageExhaustedError('EDQUOT')), true);
 		});
 
@@ -56,6 +71,21 @@ describe('storage exhaustion during boot (#847)', function () {
 			assert.strictEqual(isStorageExhausted(Object.assign(new Error('gone'), { code: 'ENOENT', errno: -2 })), false);
 			assert.strictEqual(isStorageExhausted(undefined), false);
 		});
+
+		// NaN is SameValueZero-equal to itself, so an errno set built without filtering undefined
+		// out would hold NaN and report exhaustion for any error carrying one.
+		it('does not claim a NaN errno left by an undefined constant', function () {
+			assert.strictEqual(
+				isStorageExhausted(
+					Object.assign(new Error('Unknown system error -undefined'), {
+						errno: NaN,
+						code: 'Unknown system error -undefined',
+						syscall: 'open',
+					})
+				),
+				false
+			);
+		});
 	});
 
 	describe('persistConfigDuringBoot', function () {
@@ -66,10 +96,12 @@ describe('storage exhaustion during boot (#847)', function () {
 			);
 		});
 
+		// ENOSPC carries the same unusable `code` here as a Linux EDQUOT, so it reaches the swallow
+		// through the same errno branch while existing on every platform.
 		it('swallows storage exhaustion so startup continues', function () {
 			assert.strictEqual(
 				persistConfigDuringBoot('artifact', () => {
-					throw storageExhaustedError('EDQUOT');
+					throw storageExhaustedError('ENOSPC');
 				}),
 				false
 			);
