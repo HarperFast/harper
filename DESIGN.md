@@ -1434,3 +1434,34 @@ half-written file into a valid-looking env-only config. Its three outcomes are d
 one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
 restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
 report standing, since it is shared with every other watcher of that file; closing is terminal.
+
+## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
+
+`estimateCondition` estimates range comparators (`starts_with`/`prefix`, the `between` family,
+`lt`/`le`/`gt`/`ge`) via the store's `estimateCount({start, end, …}) → { count, confidence }`
+(rocksdb-js ≥ 2.8.0) instead of flat table fractions, blended as
+`round(confidence × count + (1 − confidence) × fraction-heuristic)` so a low-confidence estimate
+degrades to the historical behavior rather than replacing it. Invariants that are easy to break:
+
+- **Capability is feature-detected per store** (`typeof store.estimateCount === 'function'`)
+  because LMDB-backed and custom index stores do not implement it. The result shape is validated
+  (`Number.isFinite(count)`, `0 ≤ confidence ≤ 1`) and the native call is try/caught, so a store
+  that answers differently — or one closing concurrently — degrades the plan to the fraction
+  heuristic instead of NaN-poisoning condition ordering.
+- **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
+  comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
+  execution truncates + filters (wider range than the estimable one). Two ways this has already
+  been got wrong: `lt`/`le` need `searchByIndex`'s `start: true` lower bound, or the estimate
+  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips (`true`
+  sorts above `null`) — measured at 21× inflation on an index that is 99% nulls, which is worse
+  than the flat heuristic it replaces; and `RocksIndexStore` must widen value-space bounds to
+  `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
+  semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
+  `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
+- **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
+  the filter-only convention (`contains`/`ends_with`): the negated flag always forces
+  `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —
+  a narrow negated range must never look selective enough to become the driving condition.
+- `estimatedEntryCount` reads `estimate-num-keys` (O(1)) rather than iterating; it skews high on
+  overwrite/delete-heavy data until compaction, which is acceptable for the relative-ordering and
+  explicitly-estimated consumers it feeds (and it is a divisor — keep the ≥1 floor).
