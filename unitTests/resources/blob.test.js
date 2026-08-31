@@ -146,13 +146,9 @@ describe('Blob test', () => {
 		assert(retrievedBytes.equals(random.slice(300, 400)));
 	});
 	it('decodes a blob created from a plain Uint8Array, not just from a Buffer', async () => {
-		// Uint8Array.prototype.toString() joins byte values with commas instead of decoding UTF-8, so a
-		// source that is not already a Buffer has to be normalized when the blob is constructed
 		const text = 'blob contents \u2014 \u2705 '.repeat(4000);
 		const content = Buffer.from(text);
-		assert(content.length > 65536); // over FILE_STORAGE_THRESHOLD, so it is externalized
-		// a non-zero-offset view inside a larger allocation: the normalized Buffer must carry the source's
-		// offset and length across, or the surrounding bytes leak into the blob
+		assert(content.length > 65536); // far enough over FILE_STORAGE_THRESHOLD that raising it cannot make this vacuous
 		const sentinel = Buffer.alloc(64, 0xa5);
 		const backing = Buffer.concat([sentinel, content, sentinel]);
 		const source = new Uint8Array(backing.buffer, backing.byteOffset + sentinel.length, content.length);
@@ -163,7 +159,6 @@ describe('Blob test', () => {
 		const filePath = getFilePathForBlob(blob);
 		assert.notEqual(filePath, null);
 		assert.equal(blob.size, content.length);
-		// the writer still holds the in-memory content, which is the path that produced byte values
 		assert.equal(await blob.text(), text);
 		assert.equal(blob.toJSON(), text);
 		assert.equal(await blob.slice(0, 100).text(), content.subarray(0, 100).toString());
@@ -172,11 +167,9 @@ describe('Blob test', () => {
 		assert.notStrictEqual(record.blob, blob);
 		assert.equal(getFilePathForBlob(record.blob), filePath);
 		assert.equal(await record.blob.text(), text);
-		assert((await record.blob.bytes()).equals(content));
+		assert((await record.blob.bytes()).equals(content)); // the sentinel bytes on either side of the view stayed out
 	});
 	it('decodes a sub-threshold Uint8Array blob that is stored inline in the record', async () => {
-		// under FILE_STORAGE_THRESHOLD the content is packed into the record, so the read back decodes
-		// it from msgpack rather than from a file
 		const text = 'inline blob contents \u2014 \u2705';
 		const blob = await createBlob(new Uint8Array(Buffer.from(text)), { type: 'text/plain' });
 		assert.equal(await blob.text(), text);
