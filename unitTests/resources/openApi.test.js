@@ -322,7 +322,7 @@ describe('test openApi module', () => {
 							properties: { w: { type: 'integer' }, h: { type: 'integer' } },
 						},
 						rows: { type: 'array', items: { type: 'object', properties: { x: { type: 'integer' } } } },
-						anything: { type: 'array' }, // no items — valid JSON Schema, must not crash generation
+						anything: { type: 'array' },
 					},
 				},
 			});
@@ -340,8 +340,8 @@ describe('test openApi module', () => {
 			expect(schema.properties.rows.type).to.equal('array');
 			expect(schema.properties.rows.items.type).to.equal('object');
 			expect(schema.properties.rows.items.properties.x).to.include({ type: 'integer' });
-			// array with no items: emitted as a bare array (no crash on undefined elements)
-			expect(schema.properties.anything).to.deep.equal({ type: 'array' });
+			// OpenAPI 3.0.3 requires `items` on every array schema, even when unconstrained.
+			expect(schema.properties.anything).to.deep.equal({ type: 'array', items: {} });
 		});
 
 		it('omits a malformed resource without suppressing valid siblings', () => {

@@ -285,12 +285,26 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		assert.equal(openapi.wrapper.properties.inner.nullable, true, 'openapi nested nullable is emitted');
 	});
 
-	it('allows null in an enum carried by a nullable multi-type union', () => {
+	it('preserves enum intersection semantics for a nullable multi-type union', () => {
 		const { mcp, openapi } = bothSurfaces({ choice: { type: ['string', 'integer', 'null'], enum: ['a', 1] } });
 		assert.ok(mcp.choice.type.includes('null'));
-		assert.deepEqual(mcp.choice.enum, ['a', 1, null]);
+		assert.deepEqual(mcp.choice.enum, ['a', 1]);
 		assert.ok(openapi.choice.anyOf.some((arm) => arm.enum?.includes(null)));
-		assert.deepEqual(openapi.choice.enum, ['a', 1, null]);
+		assert.deepEqual(openapi.choice.enum, ['a', 1]);
+	});
+
+	it('emits unconstrained arrays in the form required by each dialect', () => {
+		const { mcp, openapi } = bothSurfaces({
+			plain: { type: 'array' },
+			union: { type: ['array', 'string'] },
+		});
+		assert.deepEqual(mcp.plain, { type: 'array' });
+		assert.deepEqual(openapi.plain, { type: 'array', items: {} });
+		assert.deepEqual(mcp.union.type, ['array', 'string']);
+		assert.deepEqual(
+			openapi.union.anyOf.find((arm) => arm.type === 'array'),
+			{ type: 'array', items: {} }
+		);
 	});
 
 	for (const [label, type] of [

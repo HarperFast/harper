@@ -68,6 +68,8 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 			enum: ['open', 'closed'],
 		});
 		assert.deepEqual(create.inputSchema.properties.note.type, ['string', 'null']);
+		assert.deepEqual(create.inputSchema.properties.anything, { type: 'array' });
+		assert.deepEqual(create.inputSchema.properties.choice.enum, ['a', 1]);
 		assert.equal(create.inputSchema.properties.profile.properties.creditScore, undefined);
 		assert.deepEqual(create.inputSchema.required, ['status']);
 	});
@@ -100,5 +102,11 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 	test('carries enum and description into array items', () => {
 		assert.deepEqual(schema.properties.tags.items.enum, ['x', 'y']);
 		assert.equal(schema.properties.tags.items.description, 'Tag.');
+	});
+
+	test('emits dialect-valid unconstrained arrays without widening structural enum intersections', () => {
+		assert.deepEqual(schema.properties.anything, { type: 'array', items: {} });
+		assert.deepEqual(schema.properties.choice.enum, ['a', 1]);
+		assert.ok(schema.properties.choice.anyOf.some((arm) => arm.enum?.includes(null)));
 	});
 });
