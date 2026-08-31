@@ -1,16 +1,7 @@
 // Fixture for phantom-index-permanence.test.ts.
 //
-// A "phantom" here is a secondary-index entry whose primary record does not exist. Both write
-// paths that used to produce one are fixed (harper#1854, harper#1989), so the divergence is
-// created synthetically: InjectPhantom writes the composite index key directly through the
-// table's own index store, bypassing Table.delete()/updateIndices() entirely.
-//
-// The oracle is that same server-owned index store read back through getRange() —
-// RocksIndexStore.getRange() is a raw composite-key scan with no join through the primary
-// record, so unlike search_by_value it can see an entry whose primary is absent.
-//
-// Table and attribute names are fixed rather than taken from the request: these endpoints can
-// write raw index keys, and a generic one reused elsewhere could corrupt an unrelated store.
+// Table and attribute names are fixed rather than taken from the request: these endpoints write
+// raw index keys, and a generic one reused by another fixture could corrupt an unrelated store.
 
 const INDEXED_ATTRIBUTE = 'category';
 
@@ -31,11 +22,19 @@ function qget(query, name) {
 	return typeof query.get === 'function' ? query.get(name) : query[name];
 }
 
-/** Diagnostic only — the compaction proof is the compact.write.bytes delta, because a sorted-run
- * count can legitimately already be 1 when RocksDB's own background compaction got there first.
- * L0 files overlap so each is its own sorted run, while an entire non-L0 level is one run however
- * many files it is split across; a raw sum of per-level file counts reads an L0->L1 merge that
- * splits across several files as "no change". */
+async function searchIds(tableName, category) {
+	const ids = [];
+	for await (const record of getTable(tableName).search({
+		conditions: [{ attribute: INDEXED_ATTRIBUTE, value: category }],
+	})) {
+		ids.push(record.id);
+	}
+	return ids;
+}
+
+/** Diagnostic only. L0 files overlap so each is its own sorted run, while an entire non-L0 level
+ * is one run however many files it is split across; a raw sum of per-level file counts reads an
+ * L0->L1 merge that splits across several files as "no change". */
 function totalSortedRuns(levelStats) {
 	if (typeof levelStats !== 'string') return null;
 	let l0 = 0;
@@ -53,8 +52,6 @@ function totalSortedRuns(levelStats) {
 	return sawAnyLevel ? l0 + deeperNonEmptyLevels : null;
 }
 
-// Anything unreadable must reach the test as null rather than 0: a 0 would satisfy an
-// "after > before" comparison without any measurement behind it.
 function statsOf(store, label) {
 	const stats = { compactWriteBytes: null, totalSortedRuns: null, errors: [] };
 	if (typeof store?.getStats !== 'function' || typeof store?.getDBProperty !== 'function') {
@@ -62,16 +59,16 @@ function statsOf(store, label) {
 		return stats;
 	}
 	try {
-		const written = store.getStats(true)?.['rocksdb.compact.write.bytes'];
+		// RocksDB omits a counter that is still zero, which is a legitimate reading for the sample
+		// taken before any compaction has run; only an unusable API is an error.
+		const written = store.getStats(true)?.['rocksdb.compact.write.bytes'] ?? 0;
 		if (typeof written === 'number') stats.compactWriteBytes = written;
-		else stats.errors.push(`${label}: rocksdb.compact.write.bytes was ${typeof written}, not a number`);
+		else stats.errors.push(`${label}: rocksdb.compact.write.bytes was a ${typeof written}, not a number`);
 	} catch (error) {
 		stats.errors.push(`${label}: getStats threw: ${error.message}`);
 	}
 	try {
-		const levelStats = store.getDBProperty('rocksdb.levelstats');
-		stats.totalSortedRuns = totalSortedRuns(levelStats);
-		if (stats.totalSortedRuns == null) stats.errors.push(`${label}: could not parse rocksdb.levelstats`);
+		stats.totalSortedRuns = totalSortedRuns(store.getDBProperty('rocksdb.levelstats'));
 	} catch (error) {
 		stats.errors.push(`${label}: getDBProperty threw: ${error.message}`);
 	}
@@ -85,8 +82,8 @@ export class Probe extends Resource {
 	}
 }
 
-// GET /EngineInfo/?table=Host -> the class actually backing the index store, so the suite can
-// assert RocksDB rather than trusting that its HARPER_STORAGE_ENGINE request was honored.
+// The class actually backing the index store, so the suite can assert RocksDB rather than trust
+// that its HARPER_STORAGE_ENGINE request was honored.
 export class EngineInfo extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -100,8 +97,6 @@ export class EngineInfo extends Resource {
 	}
 }
 
-// POST /Seed/ { table, rows: [{ id, category, value }] } -> ordinary puts through the normal
-// write path.
 export class Seed extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
@@ -114,53 +109,51 @@ export class Seed extends Resource {
 	}
 }
 
-// POST /DeleteOne/ { table, id } -> an ordinary committed delete, no abort.
 export class DeleteOne extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
 		const b = body || query || {};
-		const table = getTable(b.table);
-		await table.delete(b.id);
+		await getTable(b.table).delete(b.id);
 		return { ok: true, table: b.table, id: b.id };
 	}
 }
 
-// POST /InjectPhantom/ { category, id } -> write [category, id] straight into Host's category
-// index with no primary record behind it. Refuses if the id does exist, so the fixture cannot
-// quietly produce a live entry and call it a phantom.
+/** Writes [category, id] into Host's category index directly, bypassing Table's write path. */
+async function injectIndexEntry(category, id) {
+	await getIndex(tables.Host, 'Host').put(category, id);
+	return { ok: true, category, id };
+}
+
+// InjectPhantom and InjectStaleEntry differ only in which primary state they require, and that is
+// the whole point of having two: a single endpoint taking a flag would let a caller inject the
+// wrong kind of entry and still be believed.
 export class InjectPhantom extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
 		const b = body || query || {};
-		const table = tables.Host;
-		if (table.primaryStore.getEntry(b.id)?.value) {
+		if (tables.Host.primaryStore.getEntry(b.id)?.value) {
 			throw new Error(`phantom-index-permanence: id "${b.id}" exists in the primary store; it would not be a phantom`);
 		}
-		await getIndex(table, 'Host').put(b.category, b.id);
-		return { ok: true, category: b.category, id: b.id };
+		return injectIndexEntry(b.category, b.id);
 	}
 }
 
-// POST /InjectStaleEntry/ { category, id } -> the contrast to InjectPhantom: an index entry
-// under a value the record does NOT hold, for an id that DOES exist. Refuses if the id is
-// absent, so the two endpoints cannot be confused for one another.
 export class InjectStaleEntry extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
 		const b = body || query || {};
-		const table = tables.Host;
-		if (!table.primaryStore.getEntry(b.id)?.value) {
+		if (!tables.Host.primaryStore.getEntry(b.id)?.value) {
 			throw new Error(
 				`phantom-index-permanence: id "${b.id}" has no primary record; that would be a phantom, not a stale entry`
 			);
 		}
-		await getIndex(table, 'Host').put(b.category, b.id);
-		return { ok: true, category: b.category, id: b.id };
+		return injectIndexEntry(b.category, b.id);
 	}
 }
 
-// GET /IndexDump/?table=Host&category=X -> raw index-store scan, no join through the primary
-// record. Optionally filtered to one indexed value.
+// The raw index scan, with no join through the primary record — the only oracle that can see an
+// entry whose primary is absent. Deliberately scans the whole index rather than seeking to the
+// requested value, so an entry filed under an unexpected key is still observable.
 export class IndexDump extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -176,7 +169,6 @@ export class IndexDump extends Resource {
 	}
 }
 
-// GET /PrimaryHas/?table=Host&id=X -> does the primary store hold this record at all?
 export class PrimaryHas extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -186,10 +178,6 @@ export class PrimaryHas extends Resource {
 	}
 }
 
-// POST /FlushAndStats/ { table } and POST /CompactAndStats/ { table } fold the storage operation
-// and the levelstats read into ONE handler call. Split across two requests, RocksDB's own
-// background compaction can run in between and the stats read then describes a different on-disk
-// state than the one the operation produced.
 export class FlushAndStats extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
@@ -228,24 +216,8 @@ export class CompactAndStats extends Resource {
 	}
 }
 
-// GET /Search/?table=Host&category=X -> single-table indexed search(), the shared mechanism REST
-// and search_by_value both resolve through.
-export class Search extends Resource {
-	static loadAsInstance = false;
-	async get(query) {
-		const tableName = qget(query, 'table') || 'Host';
-		const category = qget(query, 'category');
-		const table = getTable(tableName);
-		const ids = [];
-		for await (const record of table.search({ conditions: [{ attribute: INDEXED_ATTRIBUTE, value: category }] })) {
-			ids.push(record.id);
-		}
-		return { table: tableName, category, ids };
-	}
-}
-
-// GET /ComboSearch/?tables=Companion,Host&category=X -> both tables searched by secondary index,
-// in the given order, within ONE request (harper#1881's cross-table read shape).
+// Every named table searched by secondary index, in the given order, within one request —
+// harper#1881's cross-table read shape. One table in `tables` is the ordinary single-table search.
 export class ComboSearch extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -256,12 +228,7 @@ export class ComboSearch extends Resource {
 			.filter(Boolean);
 		const results = {};
 		for (const tableName of order) {
-			const table = getTable(tableName);
-			const ids = [];
-			for await (const record of table.search({ conditions: [{ attribute: INDEXED_ATTRIBUTE, value: category }] })) {
-				ids.push(record.id);
-			}
-			results[tableName] = ids;
+			results[tableName] = await searchIds(tableName, category);
 		}
 		return { order, category, results };
 	}

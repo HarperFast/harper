@@ -2,14 +2,10 @@
  * A phantom secondary-index entry — an index key whose primary record does not exist — is
  * permanent, and it is never served.
  *
- * Two write paths used to create one and both are fixed: harper#1854 (an aborted transaction on
- * an `audit:false` table committed the primary removal standalone because
- * `removeEntry(primaryStore, existingEntry)` did not thread `{transaction}`, while the
- * transaction-scoped index removal rolled back) and harper#1989/#1894 (`updateIndices(id,
- * existing, null)` resolved a removed record's new value to `null` instead of `undefined`, so an
- * `indexNulls`-default index re-added a `[null, id]` entry). Those two are anchored by
- * `integrationTests/resources/audit-false-delete-rollback.test.ts` and
- * `eviction-index-phantom-null-keys.test.ts` respectively; this file pins what happens to such an
+ * Two write paths used to create one and both are fixed — harper#1854 (an aborted `audit:false`
+ * delete escaping its transaction) and harper#1989/#1894 (a removal re-adding a `[null, id]`
+ * entry) — anchored by `integrationTests/resources/audit-false-delete-rollback.test.ts` and
+ * `eviction-index-phantom-null-keys.test.ts` respectively. This file pins what happens to such an
  * entry if one ever exists again, which is a property of the entry rather than of either bug.
  *
  * Nothing reaps one. RocksDB compaction collapses superseded and tombstoned versions, and a
@@ -100,11 +96,6 @@ suite(
 			return entries.map((entry) => entry.primaryKey).sort();
 		}
 
-		async function searchIds(category: string, table = 'Host'): Promise<string[]> {
-			const result = await get(`/Search/?table=${table}&category=${encodeURIComponent(category)}`);
-			return result.ids.sort();
-		}
-
 		async function comboSearchIds(order: string, category: string): Promise<Record<string, string[]>> {
 			const result = await get(`/ComboSearch/?tables=${order}&category=${encodeURIComponent(category)}`);
 			for (const name of Object.keys(result.results)) result.results[name].sort();
@@ -132,12 +123,20 @@ suite(
 			return response.body.map((row: any) => row.id).sort();
 		}
 
-		/** Every enumerated index-backed read surface, for one indexed value. */
+		/** Every enumerated index-backed read surface, for one indexed value. Companion never holds a
+		 * row under any category this suite queries, so its side of each cross-table read is asserted
+		 * empty here — a phantom leaking across tables would otherwise go unnoticed. */
 		async function allReadSurfaces(category: string): Promise<Record<string, string[]>> {
 			const companionFirst = await comboSearchIds('Companion,Host', category);
 			const hostFirst = await comboSearchIds('Host,Companion', category);
+			for (const [order, results] of [
+				['Companion,Host', companionFirst],
+				['Host,Companion', hostFirst],
+			] as const) {
+				deepStrictEqual(results.Companion, [], `${order}: Companion must never match category "${category}"`);
+			}
 			return {
-				search: await searchIds(category),
+				search: (await comboSearchIds('Host', category)).Host,
 				comboCompanionFirst: companionFirst.Host,
 				comboHostFirst: hostFirst.Host,
 				searchByValue: await searchByValueIds(category),

@@ -1,10 +1,6 @@
-# Two audit:false @indexed tables, the shape both phantom-index findings were reported against
-# (harper#1854, harper#1989).
-#
-#   Host      — holds the injected phantom index entry, plus a live row under the same category.
-#   Companion — never holds a phantom; it occupies the other table slot in the single-request,
-#               two-table indexed read, so that read runs under a realistic multi-sorted-run
-#               precondition on both sides rather than only on Host.
+# Companion never holds a row under any category the suite queries; it exists to occupy the other
+# table slot in the single-request, two-table indexed read, fragmented into sorted runs the same
+# way as Host so that read runs under a realistic precondition on both sides.
 type Host @table(audit: false) @export {
 	id: ID! @primaryKey
 	category: String @indexed
