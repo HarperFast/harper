@@ -31,9 +31,11 @@ function qget(query, name) {
 	return typeof query.get === 'function' ? query.get(name) : query[name];
 }
 
-/** L0 file count plus one per non-empty deeper level. NOT a sum of per-level file counts: L0
- * files overlap so each is its own sorted run, while an entire non-L0 level is one run however
- * many files it is split across — a sum reads an L0->L1 merge that splits as "no change". */
+/** Diagnostic only — the compaction proof is the compact.write.bytes delta, because a sorted-run
+ * count can legitimately already be 1 when RocksDB's own background compaction got there first.
+ * L0 files overlap so each is its own sorted run, while an entire non-L0 level is one run however
+ * many files it is split across; a raw sum of per-level file counts reads an L0->L1 merge that
+ * splits across several files as "no change". */
 function totalSortedRuns(levelStats) {
 	if (typeof levelStats !== 'string') return null;
 	let l0 = 0;
@@ -51,22 +53,29 @@ function totalSortedRuns(levelStats) {
 	return sawAnyLevel ? l0 + deeperNonEmptyLevels : null;
 }
 
-// A null totalSortedRuns must reach the test as null, never as 0: a 0 would satisfy an
-// "after < before" compaction proof without any compaction having been measured.
+// Anything unreadable must reach the test as null rather than 0: a 0 would satisfy an
+// "after > before" comparison without any measurement behind it.
 function statsOf(store, label) {
-	if (typeof store?.getDBProperty !== 'function') {
-		return { totalSortedRuns: null, error: `${label}: getDBProperty() unavailable (not RocksDB?)` };
+	const stats = { compactWriteBytes: null, totalSortedRuns: null, errors: [] };
+	if (typeof store?.getStats !== 'function' || typeof store?.getDBProperty !== 'function') {
+		stats.errors.push(`${label}: RocksDB statistics API unavailable`);
+		return stats;
 	}
-	let levelStats;
 	try {
-		levelStats = store.getDBProperty('rocksdb.levelstats');
+		const written = store.getStats(true)?.['rocksdb.compact.write.bytes'];
+		if (typeof written === 'number') stats.compactWriteBytes = written;
+		else stats.errors.push(`${label}: rocksdb.compact.write.bytes was ${typeof written}, not a number`);
 	} catch (error) {
-		return { totalSortedRuns: null, error: `${label}: getDBProperty threw: ${error.message}` };
+		stats.errors.push(`${label}: getStats threw: ${error.message}`);
 	}
-	const runs = totalSortedRuns(levelStats);
-	return runs == null
-		? { totalSortedRuns: null, error: `${label}: could not parse rocksdb.levelstats`, levelStats }
-		: { totalSortedRuns: runs, levelStats };
+	try {
+		const levelStats = store.getDBProperty('rocksdb.levelstats');
+		stats.totalSortedRuns = totalSortedRuns(levelStats);
+		if (stats.totalSortedRuns == null) stats.errors.push(`${label}: could not parse rocksdb.levelstats`);
+	} catch (error) {
+		stats.errors.push(`${label}: getDBProperty threw: ${error.message}`);
+	}
+	return stats;
 }
 
 export class Probe extends Resource {
@@ -206,8 +215,9 @@ export class CompactAndStats extends Resource {
 		if (typeof index.compact !== 'function') {
 			throw new Error('phantom-index-permanence: compact() unavailable on this storage engine');
 		}
-		// bottommost: true because RocksDB otherwise skips the bottommost level, which for this
-		// fixture's data volume is where the compaction under test would have to happen.
+		// bottommost: true rewrites every file in the range whether or not RocksDB considers it
+		// worth doing, so the phantom's file is rewritten even when background compaction has
+		// already merged the range — which is what makes the proof below independent of timing.
 		await index.compact({ bottommost: true });
 		return { table: tableName, index: statsOf(index, `${tableName}.${INDEXED_ATTRIBUTE} index`) };
 	}

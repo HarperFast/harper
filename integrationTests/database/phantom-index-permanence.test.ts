@@ -34,8 +34,8 @@
  * via `getRange()`, which is a raw composite-key scan with no primary join — `search_by_value`
  * is structurally blind here and cannot be used as one.
  *
- * RocksDB only: `flush()`, `compact()` and `rocksdb.levelstats` are RocksDB APIs, and LMDB has no
- * sorted-run structure for compaction to collapse.
+ * RocksDB only: `flush()`, `compact()` and the RocksDB statistics the compaction proof reads are
+ * RocksDB APIs, and LMDB has no on-disk sorted runs for a compaction to rewrite.
  *
  *   npm run test:integration -- "integrationTests/database/phantom-index-permanence.test.ts"
  */
@@ -54,10 +54,8 @@ const PHANTOM_CATEGORY = 'phantom-category';
 const PHANTOM_ID = 'phantom-1';
 const LIVE_ID = 'live-1';
 const STALE_CATEGORY = 'stale-category';
-// Two flushed waves here plus the live row's own flush leave three files in L0 at the moment
-// the compaction proof samples them — enough sorted runs to collapse, and below RocksDB's
-// default level0_file_num_compaction_trigger of 4, so a background compaction is not invited to
-// collapse them first.
+// Enough flushed waves to put the phantom in an SST with other files around it, and few enough to
+// stay under RocksDB's default level0_file_num_compaction_trigger of 4.
 const WAVES = 2;
 const ROWS_PER_WAVE = 6;
 
@@ -127,8 +125,11 @@ suite(
 				})
 				.timeout(REQUEST_TIMEOUT);
 			strictEqual(response.status, 200, `search_by_value must succeed; got ${response.status}`);
-			const rows: any[] = Array.isArray(response.body) ? response.body : [];
-			return rows.map((row) => row.id).sort();
+			ok(
+				Array.isArray(response.body),
+				`search_by_value must return an array of rows, or the "no hits" assertions below pass vacuously; got ${typeof response.body}`
+			);
+			return response.body.map((row: any) => row.id).sort();
 		}
 
 		/** Every enumerated index-backed read surface, for one indexed value. */
@@ -149,80 +150,89 @@ suite(
 			}
 		}
 
-		async function indexSortedRuns(): Promise<number> {
-			const result = await post('/CompactAndStats/', { table: 'Host' });
-			return result.index.totalSortedRuns;
-		}
+		before(
+			async () => {
+				await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+					// One worker, so the flush/compact/index-dump calls and the read surfaces are
+					// structurally the same process rather than incidentally so.
+					config: { threads: { count: 1 }, logging: { console: true, level: 'error' } },
+					env: { HARPER_STORAGE_ENGINE: 'rocksdb' },
+				});
+				client = createApiClient(ctx.harper);
+				httpURL = ctx.harper.httpURL;
+				auth = client.headers.Authorization;
 
-		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: { logging: { console: true, level: 'error' } },
-				env: { HARPER_STORAGE_ENGINE: 'rocksdb' },
-			});
-			client = createApiClient(ctx.harper);
-			httpURL = ctx.harper.httpURL;
-			auth = client.headers.Authorization;
-
-			const deadline = Date.now() + 120_000;
-			while (Date.now() < deadline) {
-				try {
-					const probe = await fetch(`${httpURL}/Probe/`, {
-						headers: { Authorization: auth },
-						signal: AbortSignal.timeout(2000),
-					});
-					if (probe.status !== 404) break;
-				} catch {
-					/* worker routes not registered yet */
+				const deadline = Date.now() + 120_000;
+				let ready = false;
+				while (!ready && Date.now() < deadline) {
+					try {
+						const probe = await fetch(`${httpURL}/Probe/`, {
+							headers: { Authorization: auth },
+							signal: AbortSignal.timeout(2000),
+						});
+						ready = probe.status !== 404;
+					} catch {
+						/* worker routes not registered yet */
+					}
+					if (!ready) await sleep(250);
 				}
-				await sleep(250);
-			}
+				ok(ready, 'fixture routes never registered; every assertion below would fail as a confusing 404');
 
-			for (let wave = 0; wave < WAVES; wave++) {
-				for (const table of ['Host', 'Companion']) {
-					const rows = Array.from({ length: ROWS_PER_WAVE }, (_, i) => ({
-						id: `${table.toLowerCase()}-${wave}-${i}`,
-						category: `bulk-${wave}`,
-						value: `wave ${wave}`,
-					}));
-					await post('/Seed/', { table, rows });
+				for (let wave = 0; wave < WAVES; wave++) {
+					for (const table of ['Host', 'Companion']) {
+						const rows = Array.from({ length: ROWS_PER_WAVE }, (_, i) => ({
+							id: `${table.toLowerCase()}-${wave}-${i}`,
+							category: `bulk-${wave}`,
+							value: `wave ${wave}`,
+						}));
+						await post('/Seed/', { table, rows });
+					}
+					// Inject before the last flush so the phantom is sealed into an SST and is therefore
+					// data that the compaction below actually has to rewrite.
+					if (wave === WAVES - 1) await post('/InjectPhantom/', { category: PHANTOM_CATEGORY, id: PHANTOM_ID });
+					await post('/FlushAndStats/', { table: 'Host' });
+					await post('/FlushAndStats/', { table: 'Companion' });
 				}
-				// Inject before the last flush so the phantom is sealed into an SST and is therefore
-				// data that the compaction below actually has to rewrite.
-				if (wave === WAVES - 1) await post('/InjectPhantom/', { category: PHANTOM_CATEGORY, id: PHANTOM_ID });
-				await post('/FlushAndStats/', { table: 'Host' });
-				await post('/FlushAndStats/', { table: 'Companion' });
-			}
-		});
+			},
+			{ timeout: 300_000 }
+		);
 
-		after(async () => {
-			await teardownHarper(ctx);
-		});
+		after(
+			async () => {
+				await teardownHarper(ctx);
+			},
+			{ timeout: 60_000 }
+		);
 
-		test('the table is backed by the RocksDB index store', async () => {
+		test('the table is backed by the RocksDB index store', { timeout: 60_000 }, async () => {
 			const info = await get('/EngineInfo/?table=Host');
 			strictEqual(
 				info.indexStoreClass,
 				'RocksIndexStore',
-				`this suite's flush/compact/levelstats machinery is RocksDB-only, but the category index is a ${info.indexStoreClass}`
+				`this suite's flush/compact/statistics machinery is RocksDB-only, but the category index is a ${info.indexStoreClass}`
 			);
 		});
 
-		test('the injected phantom is visible to the raw index oracle and to no read surface', async () => {
-			deepStrictEqual(
-				await rawIndexKeysFor(PHANTOM_CATEGORY),
-				[PHANTOM_ID],
-				'the raw index store must hold the injected entry — otherwise every "not served" assertion below is vacuous'
-			);
-			strictEqual(
-				(await get(`/PrimaryHas/?table=Host&id=${PHANTOM_ID}`)).present,
-				false,
-				'the injected id must have no primary record, or it is not a phantom'
-			);
+		test(
+			'the injected phantom is visible to the raw index oracle and to no read surface',
+			{ timeout: 60_000 },
+			async () => {
+				deepStrictEqual(
+					await rawIndexKeysFor(PHANTOM_CATEGORY),
+					[PHANTOM_ID],
+					'the raw index store must hold the injected entry — otherwise every "not served" assertion below is vacuous'
+				);
+				strictEqual(
+					(await get(`/PrimaryHas/?table=Host&id=${PHANTOM_ID}`)).present,
+					false,
+					'the injected id must have no primary record, or it is not a phantom'
+				);
 
-			assertEverySurface(await allReadSurfaces(PHANTOM_CATEGORY), [], 'phantom alone');
-		});
+				assertEverySurface(await allReadSurfaces(PHANTOM_CATEGORY), [], 'phantom alone');
+			}
+		);
 
-		test('a live row under the same category is served, and only it', async () => {
+		test('a live row under the same category is served, and only it', { timeout: 60_000 }, async () => {
 			await post('/Seed/', { table: 'Host', rows: [{ id: LIVE_ID, category: PHANTOM_CATEGORY, value: 'live' }] });
 
 			deepStrictEqual(
@@ -233,28 +243,41 @@ suite(
 			assertEverySurface(await allReadSurfaces(PHANTOM_CATEGORY), [LIVE_ID], 'phantom beside a live row');
 		});
 
-		test('the phantom is dropped because its primary record is absent, not because the surfaces ignore the raw index', async () => {
-			// Same raw write as the phantom, but for an id that DOES have a primary record. If the read
-			// surfaces served [] here too they would be ignoring the index rather than joining against
-			// the primary, and every zero above would be meaningless.
-			await post('/InjectStaleEntry/', { category: STALE_CATEGORY, id: LIVE_ID });
+		test(
+			'the phantom is dropped because its primary record is absent, not because the surfaces ignore the raw index',
+			{ timeout: 60_000 },
+			async () => {
+				// Same raw write as the phantom, but for an id that DOES have a primary record. If the read
+				// surfaces served [] here too they would be ignoring the index rather than joining against
+				// the primary, and every zero above would be meaningless.
+				await post('/InjectStaleEntry/', { category: STALE_CATEGORY, id: LIVE_ID });
 
-			deepStrictEqual(await rawIndexKeysFor(STALE_CATEGORY), [LIVE_ID], 'the raw index must hold the stale entry');
-			assertEverySurface(
-				await allReadSurfaces(STALE_CATEGORY),
-				[LIVE_ID],
-				'an index entry under a value the record does not hold is served when the primary record exists'
+				deepStrictEqual(await rawIndexKeysFor(STALE_CATEGORY), [LIVE_ID], 'the raw index must hold the stale entry');
+				assertEverySurface(
+					await allReadSurfaces(STALE_CATEGORY),
+					[LIVE_ID],
+					'an index entry under a value the record does not hold is served when the primary record exists'
+				);
+			}
+		);
+
+		test('the phantom survives an explicit compaction of its index column family', { timeout: 60_000 }, async () => {
+			const before = (await post('/FlushAndStats/', { table: 'Host' })).index;
+			const after = (await post('/CompactAndStats/', { table: 'Host' })).index;
+			deepStrictEqual(
+				[...before.errors, ...after.errors],
+				[],
+				'RocksDB statistics must be readable on both sides of the compaction'
 			);
-		});
 
-		test('the phantom survives an explicit compaction of its index column family', async () => {
-			const before = (await post('/FlushAndStats/', { table: 'Host' })).index.totalSortedRuns;
-			strictEqual(typeof before, 'number', 'rocksdb.levelstats must be readable before compaction');
-			ok(before > 1, `the compaction proof needs more than one sorted run to collapse; got ${before}`);
-
-			const after = await indexSortedRuns();
-			strictEqual(typeof after, 'number', 'rocksdb.levelstats must be readable after compaction');
-			ok(after < before, `compaction must have run: sorted runs went ${before} -> ${after}`);
+			// Proven by bytes actually rewritten rather than by a drop in sorted runs: with data this
+			// small RocksDB's own background compaction can collapse the runs first, which would fail a
+			// run-count proof for a reason that has nothing to do with the phantom.
+			ok(
+				after.compactWriteBytes > before.compactWriteBytes,
+				`compact() must have rewritten data: rocksdb.compact.write.bytes ${before.compactWriteBytes} -> ` +
+					`${after.compactWriteBytes} (sorted runs ${before.totalSortedRuns} -> ${after.totalSortedRuns})`
+			);
 
 			deepStrictEqual(
 				await rawIndexKeysFor(PHANTOM_CATEGORY),
@@ -263,7 +286,7 @@ suite(
 			);
 		});
 
-		test('a repeat delete() of the phantom id is a no-op', async () => {
+		test('a repeat delete() of the phantom id is a no-op', { timeout: 60_000 }, async () => {
 			await post('/DeleteOne/', { table: 'Host', id: PHANTOM_ID });
 
 			deepStrictEqual(
@@ -273,7 +296,7 @@ suite(
 			);
 		});
 
-		test('no read surface serves the phantom after compaction and the repeat delete', async () => {
+		test('no read surface serves the phantom after compaction and the repeat delete', { timeout: 60_000 }, async () => {
 			assertEverySurface(await allReadSurfaces(PHANTOM_CATEGORY), [LIVE_ID], 'after compaction and repeat delete');
 		});
 	}
