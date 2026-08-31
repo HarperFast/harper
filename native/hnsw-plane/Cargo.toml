@@ -1,0 +1,22 @@
+[package]
+name = "hnsw-plane"
+version = "0.0.1"
+edition = "2021"
+description = "Native HNSW traversal plane: mmap fixed-slot graph file + off-loop search"
+license = "MIT"
+
+[dependencies]
+memmap2 = "0.9"
+
+[features]
+default = []
+# napi bindings added in phase 1 integration; core stays buildable standalone
+# napi = ["dep:napi", "dep:napi-derive"]
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
