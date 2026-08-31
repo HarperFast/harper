@@ -200,6 +200,15 @@ describe('HNSW native plane dual-write', function () {
 		for (const record of within) assert.ok(record.$distance <= 0.05, `distance ${record.$distance} exceeds threshold`);
 	});
 
+	it('synchronous iteration of plane-backed results fails loudly instead of spinning', () => {
+		const results = PlaneTest.search({
+			sort: { attribute: 'vector', target: vectors.get(42), distance: 'cosine' },
+			select: ['id'],
+			limit: 5,
+		});
+		assert.throws(() => [...results], /async/i, 'sync iteration must throw, not loop on promise-shaped results');
+	});
+
 	it('reopens the same plane file across a restart', async () => {
 		const planePath = customIndex().planeFilePath();
 		const inodeBefore = fs.statSync(planePath).ino;
