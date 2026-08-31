@@ -3745,6 +3745,16 @@ export function makeTable(options) {
 				const wantExact = target.count === 'exact';
 				const pageEnd = offset + pageLimit;
 				const countStart = performance.now();
+				// A vector/HNSW-driven result set — sorted by a custom index, or shaped by a vector filter —
+				// is a bounded, approximate candidate set whose size is chosen from `minResults` (offset +
+				// limit), so `scanned` tracks the requested page size, not the true match count. It is not an
+				// authoritative total: the same query at limit(5) vs limit(200) would otherwise advertise two
+				// different `count=exact` totals. Report the total as unavailable instead (mirroring how the
+				// estimated branch below already bails to null for a vector/row filter).
+				let approximateResultSet = typeof target.vectorFilter === 'function';
+				for (let order = sort; !approximateResultSet && order; order = order.next) {
+					if (typeof order.attribute === 'string' && indices[order.attribute]?.customIndex) approximateResultSet = true;
+				}
 				return (async () => {
 					const page: any = [];
 					let scanned = 0;
@@ -3772,7 +3782,9 @@ export function makeTable(options) {
 					}
 					let total: number | null;
 					if (wantExact) {
-						total = exact ? scanned : null;
+						// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
+						// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
+						total = exact && !approximateResultSet ? scanned : null;
 					} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
 						// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
 						// estimate; guessing would both mislead and disclose cardinality the filter hides.
@@ -3795,7 +3807,7 @@ export function makeTable(options) {
 						total = offset + page.length;
 					}
 					page.recordCount = total;
-					page.recordCountExact = wantExact && exact;
+					page.recordCountExact = wantExact && exact && !approximateResultSet;
 					page.selectApplied = true;
 					page.getColumns = getColumns;
 					return page;
