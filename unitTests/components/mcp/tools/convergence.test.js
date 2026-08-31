@@ -29,6 +29,8 @@ function makeResources() {
 		value: { type: ['String', 'Int'] },
 		tags: { type: ['array', 'null'], items: { type: 'string' } },
 		nothing: { type: ['null'] },
+		structural: { type: ['array', 'string'], items: { type: 'number' } },
+		typoUnion: { type: ['Text', 'string'] },
 	};
 	for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Widget.prototype[v] = function () {};
 	Widget.get = async (t) => ({ id: t.id });
@@ -90,10 +92,10 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 		// MCP speaks JSON Schema, which has type unions — pass the author's declaration through.
 		assert.deepEqual(create.inputSchema.properties.mixed.type, ['string', 'number']);
 
-		// OpenAPI 3.0 has no type arrays; the equivalent is `oneOf`. Same declaration, two encodings —
+		// OpenAPI 3.0 has no type arrays; the equivalent is `anyOf`. Same declaration, two encodings —
 		// what must NOT happen is either surface narrowing it to `string`.
 		const schema = generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget;
-		assert.deepEqual(schema.properties.mixed.oneOf, [{ type: 'string' }, { type: 'number' }]);
+		assert.deepEqual(schema.properties.mixed.anyOf, [{ type: 'string' }, { type: 'number' }]);
 		assert.equal(schema.properties.mixed.type, undefined);
 	});
 
@@ -106,7 +108,7 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 		assert.deepEqual(mcp.when.type, ['string', 'number', 'null']);
 		assert.deepEqual(mcp.value.type, ['string', 'integer']);
 		assert.deepEqual(openapi.when, { type: 'string', format: 'Date', nullable: true });
-		assert.deepEqual(openapi.value.oneOf, [{ type: 'string' }, { type: 'integer', format: 'Int' }]);
+		assert.deepEqual(openapi.value.anyOf, [{ type: 'string' }, { type: 'integer', format: 'Int' }]);
 	});
 
 	it('retains array items and null-only constraints through dialect projection', () => {
@@ -120,6 +122,19 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 		assert.deepEqual(openapi.tags, { type: 'array', items: { type: 'string' }, nullable: true });
 		assert.deepEqual(mcp.nothing, { type: 'null' });
 		assert.deepEqual(openapi.nothing, { nullable: true, enum: [null] });
+	});
+
+	it('preserves structural union members and drops unknown members on both surfaces', () => {
+		const resources = makeResources();
+		_setResourcesForTest(resources);
+		registerApplicationTools();
+		const mcp = getTool('create_Widget').inputSchema.properties;
+		const openapi = generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget.properties;
+		const expectedStructural = [{ type: 'array', items: { type: 'number' } }, { type: 'string' }];
+		assert.deepEqual(mcp.structural.anyOf, expectedStructural);
+		assert.deepEqual(openapi.structural.anyOf, expectedStructural);
+		assert.deepEqual(mcp.typoUnion, { type: 'string' });
+		assert.deepEqual(openapi.typoUnion, { type: 'string' });
 	});
 });
 

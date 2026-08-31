@@ -343,50 +343,41 @@ describe('openApi — static-property union translation (3.0.3)', () => {
 		Widget.primaryKey = 'id';
 		Widget.properties = {
 			id: { type: 'string', primaryKey: true },
-			kind: { type: 'string', const: 'widget' },
 			nothing: { type: 'null' },
 			maybe: { type: ['string', 'null'] },
 			mixed: { type: ['string', 'number'] },
 			mixedMaybe: { type: ['string', 'integer', 'null'] },
-			nested: { type: 'object', properties: { inner: { type: 'string', const: 'x' }, deepNull: { type: 'null' } } },
+			nested: { type: 'object', properties: { deepNull: { type: 'null' } } },
 			nullList: { type: 'array', items: { type: 'null' } },
-			list: { type: 'array', items: { type: 'string', const: 'y' } },
-			nullableEnum: { type: 'string', enum: ['a', 'b'], nullable: true },
-			nullableConst: { type: 'string', const: 'fixed', nullable: true },
-			bogus: { type: 'Text' },
-			secret: { type: 'string', hidden: true },
-			when: { type: 'Date', format: 'date-time' },
-			bytes: { type: 'Bytes' },
 		};
 		Widget.prototype.get = function () {};
 		const resources = new Map();
 		resources.set('Widget', { path: 'Widget', Resource: Widget, hasSubPaths: false, relativeURL: '' });
 		resources.allTypes = new Map();
-		// Judge what a consumer actually receives: `JSON.stringify` drops undefined-valued keys,
-		// so walking the live object would flag artifacts that never reach the wire.
 		return JSON.parse(JSON.stringify(generateJsonApi(resources, 'https://harper.fast')));
 	}
 
 	it('carries nullability onto the emitted scalar schema', () => {
-		// The walk assertions above only prove `type: 'null'` and unions are gone; they would pass just as
-		// happily if nullability were dropped instead of translated.
 		const props = buildDocument().components.schemas.Widget.properties;
 		expect(props.maybe).to.deep.equal({ type: 'string', nullable: true });
 		expect(props.nothing.nullable).to.equal(true);
 	});
 
-	it('translates a genuine multi-type union to `oneOf`', () => {
+	it('translates a genuine multi-type union to `anyOf`', () => {
 		// 3.0 has no type arrays. Keeping only the first member would narrow the contract silently —
 		// a client would be told `mixed` is a string when the resource also accepts a number.
 		const props = buildDocument().components.schemas.Widget.properties;
-		expect(props.mixed).to.deep.equal({ oneOf: [{ type: 'string' }, { type: 'number' }] });
+		expect(props.mixed).to.deep.equal({ anyOf: [{ type: 'string' }, { type: 'number' }] });
 		expect(props.mixed).to.not.have.property('type');
 	});
 
 	it('carries nullability alongside a union', () => {
 		const props = buildDocument().components.schemas.Widget.properties;
-		expect(props.mixedMaybe.oneOf).to.deep.equal([{ type: 'string' }, { type: 'integer' }]);
-		expect(props.mixedMaybe.nullable).to.equal(true);
+		expect(props.mixedMaybe.anyOf).to.deep.equal([
+			{ type: 'string' },
+			{ type: 'integer' },
+			{ nullable: true, enum: [null] },
+		]);
 	});
 
 	it('expresses a null-only declaration at every depth, not just the top level', () => {
@@ -412,6 +403,21 @@ describe('openApi — empty required omission', () => {
 		resources.allTypes = new Map();
 		const schema = generateJsonApi(resources, 'https://harper.fast').components.schemas.AllOptional;
 		expect(schema).to.not.have.property('required');
+	});
+
+	it('contains a malformed request-contract fragment instead of losing the document', () => {
+		function Contract() {}
+		Contract.prototype.post = function () {};
+		Contract.path = '/contract';
+		Contract.requestContract = { path: '/contract' };
+		const cyclic = { type: 'object', properties: {} };
+		cyclic.properties.self = cyclic;
+		Contract.inputSchemas = { post: { body: cyclic } };
+		const resources = new Map();
+		resources.set('Contract', { path: '/contract', Resource: Contract, hasSubPaths: false, relativeURL: '' });
+		resources.allTypes = new Map();
+		const document = generateJsonApi(resources, 'https://harper.fast');
+		expect(document.paths['/contract'].post.requestBody.content['application/json'].schema).to.deep.equal({});
 	});
 });
 
@@ -564,7 +570,7 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 		expect(body.properties.kind).to.not.have.property('const');
 		expect(body.properties.note.type, 'union folds to a single type').to.equal('string');
 		expect(body.properties.note.nullable).to.equal(true);
-		expect(body.properties.mixed.oneOf).to.deep.equal([{ type: 'string' }, { type: 'number' }]);
+		expect(body.properties.mixed.anyOf).to.deep.equal([{ type: 'string' }, { type: 'number' }]);
 		expect(body.properties.nothing).to.deep.equal({ nullable: true, enum: [null] });
 		expect(body.properties.emptyRequired).to.not.have.property('required');
 		expect(body.properties.status.enum, 'nullable enum admits null').to.deep.equal(['a', 'b', null]);

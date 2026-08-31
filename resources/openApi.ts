@@ -637,8 +637,13 @@ function Parameter(name, i, type) {
  */
 function fragmentToOpenApiSchema(fragment: any): any {
 	if (!fragment || typeof fragment !== 'object') return { type: 'object' };
-	const [attribute] = projectPropertiesToAttributes({ value: fragment });
-	return attributeToOpenApiSchema(attribute) ?? {};
+	try {
+		const [attribute] = projectPropertiesToAttributes({ value: fragment });
+		return attributeToOpenApiSchema(attribute) ?? {};
+	} catch (error) {
+		warnInvalidResourceSchema(fragment, 'request contract', error);
+		return {};
+	}
 }
 
 /** Build OpenAPI query `Parameter`s from a contract verb's query fragment (`{ type:'object', properties }`). */

@@ -644,6 +644,24 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		assert.ok(getTool('say_hello'), 'custom-only Resources still publish their mcpTools');
 	});
 
+	it('custom-only Resources continue reserving colliding suffixes for stable verb-tool names', () => {
+		class CustomOnly {
+			async hello() {
+				return { greeting: 'hi' };
+			}
+		}
+		CustomOnly.mcpTools = [{ name: 'say_hello', method: 'hello' }];
+		const Order = makeTableResource({ databaseName: 'data', tableName: 'order', verbs: ['get'] });
+		_setResourcesForTest(
+			makeRegistry([
+				['Order/', { Resource: CustomOnly }],
+				['Order.', { Resource: Order }],
+			])
+		);
+		registerApplicationTools();
+		assert.ok(getTool('get_data_Order_'), 'the later colliding Resource keeps its established disambiguated name');
+	});
+
 	it('Resources can publish both verb tools AND custom tools', async () => {
 		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', verbs: ['get'] });
 		Product.prototype.bulkDiscount = async function (args) {

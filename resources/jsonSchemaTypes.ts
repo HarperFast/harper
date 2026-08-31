@@ -30,8 +30,8 @@ export interface JsonSchemaFragment {
 	additionalProperties?: boolean;
 	format?: string;
 	const?: unknown;
-	/** Emitted by the OpenAPI 3.0 projection for a genuine multi-type union; not authored directly. */
-	oneOf?: JsonSchemaFragment[];
+	/** Emitted when mapped union members need schemas richer than a JSON Schema `type` array. */
+	anyOf?: JsonSchemaFragment[];
 	/** Binary encoding of a string-typed value. Emitted on the MCP surface only — not a 3.0.3 keyword. */
 	contentEncoding?: string;
 }
@@ -80,7 +80,7 @@ export interface AttributeLike {
 	/**
 	 * The source JSON-Schema type union, verbatim, when `static properties` declared one. `type` holds
 	 * the first non-null member so single-type consumers keep working; surfaces that can express a
-	 * union (MCP passes it through, OpenAPI 3.0 translates it to `oneOf`) read this instead.
+	 * union (MCP passes it through, OpenAPI 3.0 translates it to `anyOf`) read this instead.
 	 */
 	types?: readonly string[];
 	elements?: AttributeLike;
@@ -296,12 +296,6 @@ export function resolveDeclaredType(type: string | undefined, context?: string):
 	return undefined;
 }
 
-export function unionMembers(attr: { types?: readonly string[] }): string[] | undefined {
-	if (!attr.types) return undefined;
-	const members = attr.types.filter((member) => member !== 'null');
-	return members.length > 1 ? members : undefined;
-}
-
 /** Test hook: the unknown-type warning is once-per-process, which would leak across test cases. */
 export function _resetUnknownTypeWarningsForTest(): void {
 	warnedUnknownTypes.clear();
@@ -320,8 +314,48 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 	// `ignoreHidden` applies to this attribute only — a hidden sub-property of a surfaced primary key
 	// is still a hidden field and stays suppressed.
 	const childOptions = options.ignoreHidden ? { ...options, ignoreHidden: false } : options;
+	const unionTypes = attr.types?.filter((member) => member !== 'null');
+	const structuralUnionMember = (member: string): JsonSchemaFragment | undefined => {
+		if (member === 'object' && attr.properties) {
+			return attributeToSchema(
+				{
+					name: attr.name,
+					type: 'object',
+					properties: attr.properties,
+					required: attr.required,
+					additionalProperties: attr.additionalProperties,
+				},
+				childOptions
+			);
+		}
+		if (member === 'array' && attr.elements) {
+			return attributeToSchema({ name: attr.name, type: 'array', elements: attr.elements }, childOptions);
+		}
+		return options.mapPrimitive(member, attr);
+	};
 
-	if (attr.properties) {
+	if (unionTypes && unionTypes.length > 1) {
+		const mapped = [
+			...new Map(
+				unionTypes
+					.map(structuralUnionMember)
+					.filter((schema): schema is JsonSchemaFragment => Boolean(schema && Object.keys(schema).length > 0))
+					.map((schema) => [JSON.stringify(schema), schema])
+			).values(),
+		];
+		if (mapped.length === 1) {
+			Object.assign(fragment, mapped[0]);
+		} else if (mapped.length > 1) {
+			const onlyTypes = mapped.every((schema) => Object.keys(schema).length === 1 && schema.type !== undefined);
+			if (options.dialect === 'json-schema' && onlyTypes) {
+				fragment.type = [
+					...new Set(mapped.flatMap((schema) => (Array.isArray(schema.type) ? schema.type : [schema.type]))),
+				] as JsonSchemaType[];
+			} else {
+				fragment.anyOf = mapped;
+			}
+		}
+	} else if (attr.properties) {
 		fragment.type = 'object';
 		fragment.properties = {};
 		const visibleNames = new Set<string>();
@@ -347,30 +381,8 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 			const items = attributeToSchema(attr.elements, childOptions);
 			if (items) fragment.items = items;
 		}
-	} else if (attr.types && options.dialect === 'json-schema') {
-		const mapped = attr.types
-			.filter((member) => member !== 'null')
-			.map((member) => options.mapPrimitive(member, attr))
-			.filter((schema) => Object.keys(schema).length > 0);
-		if (mapped.length === 0) {
-			if (attr.types.includes('null')) fragment.type = 'null';
-		} else if (mapped.length === 1) {
-			Object.assign(fragment, mapped[0]);
-		} else {
-			const onlyTypes = mapped.every((schema) => Object.keys(schema).length === 1 && schema.type !== undefined);
-			if (onlyTypes) {
-				fragment.type = [
-					...new Set(mapped.flatMap((schema) => (Array.isArray(schema.type) ? schema.type : [schema.type]))),
-				] as JsonSchemaType[];
-			} else {
-				fragment.oneOf = mapped;
-			}
-		}
 	} else {
-		const union = unionMembers(attr);
-		if (union) {
-			fragment.oneOf = union.map((member) => options.mapPrimitive(member, attr));
-		} else if (attr.types?.every((member) => member === 'null')) {
+		if (attr.types?.every((member) => member === 'null')) {
 			Object.assign(fragment, options.mapPrimitive('null', attr));
 		} else {
 			Object.assign(fragment, options.mapPrimitive(attr.type, attr));
@@ -411,10 +423,12 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 }
 
 function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect): void {
-	if ((!('type' in fragment) || fragment.type === undefined) && fragment.oneOf === undefined) return;
+	if ((!('type' in fragment) || fragment.type === undefined) && fragment.anyOf === undefined) return;
 	if (fragment.type === undefined) {
-		if (dialect === 'openapi-3.0.3') fragment.nullable = true;
-		else fragment.oneOf = [...fragment.oneOf, { type: 'null' }];
+		fragment.anyOf = [
+			...fragment.anyOf,
+			dialect === 'openapi-3.0.3' ? { nullable: true, enum: [null] } : { type: 'null' },
+		];
 		return;
 	}
 	if (dialect === 'openapi-3.0.3') {
