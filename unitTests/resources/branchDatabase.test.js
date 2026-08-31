@@ -1,9 +1,12 @@
 require('../testUtils');
 const assert = require('assert');
 const { existsSync } = require('node:fs');
+const { mkdir, rm, writeFile } = require('node:fs/promises');
+const { join } = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
-const { table, databases, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
+const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
 const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
+const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -109,6 +112,29 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	it('rejects a path segment that would escape the reserved root', function () {
 		assert.throws(() => resolveBranchPath('lifebase', '..'), /Invalid application name/);
 		assert.throws(() => resolveBranchPath('a/b', 'appA'), /Invalid database name/);
+	});
+
+	it('settles an elected replay instead of hanging: resolve on completion, reject on a held lock', async function () {
+		// The elected replay promise is awaited inside the branch claim's CREATING window, so it must
+		// always settle — an unresolved promise would wedge the claim and every waiting thread.
+		const rootStore = database({ database: 'lifebase', table: undefined });
+		await replayLogs(rootStore, databases.lifebase, true);
+		// The completed replay holds the store's replay lock forever (by design: replay runs once per
+		// store per process), so a second elected call must reject rather than hang or run again.
+		await assert.rejects(() => replayLogs(rootStore, databases.lifebase, true), /replay lock/);
+	});
+
+	it('releases the claim when the winner cannot open the branch, so a repaired retry works', async function () {
+		// A directory that exists is adopted, so plant one that cannot be opened: the winner must
+		// close whatever it opened and release the claim, not leave it wedged in CREATING or READY.
+		const path = resolveBranchPath('lifebase', 'appBroken');
+		await mkdir(path, { recursive: true });
+		await writeFile(join(path, 'CURRENT'), 'not a database\n');
+		await assert.rejects(() => getOrCreateBranch('lifebase', 'appBroken'));
+
+		await rm(path, { recursive: true, force: true });
+		const branch = await getOrCreateBranch('lifebase', 'appBroken');
+		assert.ok(await branch.tables.LifecycleSource.get('a'), 'the retry after repair must serve the base rows');
 	});
 });
 

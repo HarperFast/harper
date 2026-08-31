@@ -5,15 +5,18 @@ import logger from '../utility/logging/harper_logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
+import type { RocksDatabase } from '@harperfast/rocksdb-js';
 import {
 	type BranchDatabase,
 	database,
 	databases,
 	getDatabases,
 	hydrateBranchRelationships,
+	isReadOnlyMode,
 	openBranchDatabase,
 	resolveBranchPath,
 } from './databases.ts';
+import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
 
 /**
  * Private per-application forks of a database, for running several variants of an application against
@@ -36,7 +39,8 @@ const READY = 2n;
 
 const MAX_NAME_LENGTH = commonValidators.schema_length.maximum;
 
-/** How long a loser waits for the winner's checkpoint before giving up on the branch. */
+/** How long a loser waits for the winner's checkpoint before giving up on the branch; the
+ *  winner's replay budget is added on top where the deadline is built (`openOrCreate`). */
 const CLAIM_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface OpenBranch {
@@ -133,7 +137,11 @@ function branchStoreName(appName: string, baseName: string): string {
 
 async function openOrCreate(baseName: string, appName: string, branchPath: string): Promise<OpenBranch> {
 	const claimState = claimStateFor(baseName, branchPath);
-	const deadline = Date.now() + CLAIM_TIMEOUT_MS;
+	const storeName = branchStoreName(appName, baseName);
+	// The claim's CREATING window now covers the winner's replay as well as its checkpoint, so
+	// waiters must outlast the replay budget too, or a merely slow (but live) recovery would time
+	// out every other thread's application load minutes before the winner publishes READY.
+	const deadline = Date.now() + CLAIM_TIMEOUT_MS + replayTimeBudgetMs();
 	for (;;) {
 		// The deadline bounds the whole protocol, not just a single wait: an unexpected state word --
 		// a future state, a buffer another version wrote -- must fail this load, never spin forever.
@@ -141,29 +149,43 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 		const previous = Atomics.compareExchange(claimState, 0, UNCLAIMED, CREATING);
 		if (previous === READY) break;
 		if (previous === UNCLAIMED) {
+			let branch: BranchDatabase | undefined;
 			try {
 				// Adopt rather than recreate. The branch outlives the process that first made it, so on
 				// every restart after the first the directory is already here — and `materializeBranch`
 				// only ever publishes by renaming a finished checkpoint into place, so a directory that
 				// exists is always a complete one, never a half-copy to be distrusted.
 				if (!existsSync(branchPath)) await materializeBranch(baseName, branchPath);
+				branch = openBranchDatabase(branchPath, baseName, storeName);
+				// An adopted directory is only complete up to its last memtable flush: its column
+				// families write with the WAL disabled, so anything after that flush exists solely in
+				// the branch's own transaction log — which a process that died without the exit-time
+				// flush (a crash, a Windows hard kill) always leaves behind. Replay that tail, and
+				// finish before READY is published, because READY is what releases the other threads
+				// to open the branch and serve reads from it. The claim makes this thread the sole
+				// elected replayer; a fresh checkpoint has no log, so replay is then a no-op. Skipped
+				// in read-only mode for the same snapshot semantics the base's boot replay uses.
+				if (!isReadOnlyMode()) await replayLogs(branch.rootStore as RocksDatabase, branch.tables, true);
 				Atomics.store(claimState, 0, READY);
 			} catch (error) {
 				// Release rather than record the failure. A claim that stays un-releasable turns one
 				// transient error -- a full disk, a rename losing a race -- into a branch that can never
 				// be created again for the life of the process, because the buffer outlives every retry.
+				// The opened branch must go first: it holds the path and store identity, so leaving it
+				// open would make every retry fail with "already open" instead of retrying.
+				branch?.close();
 				Atomics.store(claimState, 0, UNCLAIMED);
 				throw error;
 			} finally {
 				wakeWaiters(claimState);
 			}
-			break;
+			return { branch, claimState };
 		}
 		// Someone else holds it. A wait that settles on UNCLAIMED means they failed and released, so
 		// take another turn at being the one who creates it.
 		if ((await awaitClaim(claimState, branchPath, deadline)) === READY) break;
 	}
-	return { branch: openBranchDatabase(branchPath, baseName, branchStoreName(appName, baseName)), claimState };
+	return { branch: openBranchDatabase(branchPath, baseName, storeName), claimState };
 }
 
 /** Remove the now-empty `<app>` directory a removed branch leaves behind. */
