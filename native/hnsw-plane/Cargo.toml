@@ -3,7 +3,7 @@ name = "hnsw-plane"
 version = "0.0.1"
 edition = "2021"
 description = "Native HNSW traversal plane: mmap fixed-slot graph file + off-loop search"
-license = "MIT"
+license = "Apache-2.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
