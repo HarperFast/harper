@@ -39,9 +39,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
-// One mocha process per entry. Whole directories, so new suites are picked up, and the same
-// filename shape `test:unit:main` collects, so a `.test.mjs` suite cannot run on Ubuntu while
-// this gate reports its group green having never opened the file.
+// Same filename shape `test:unit:main` collects (package.json), so a `.test.mjs` suite under
+// one of these directories is not silently skipped.
 const GROUPS = [
 	'unitTests/agent/**/*test.*js',
 	'unitTests/buildTools/**/*test.*js',
@@ -106,19 +105,20 @@ const EXCLUDED = [
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MOCHA = join(repoRoot, 'node_modules', 'mocha', 'bin', 'mocha.js');
-// Line-anchored and last-match: mocha's epilogue is the final such line, so a test that logs
-// one of its own cannot stand in for it on a group that terminated before printing one.
+// Anchored and last-match, so a test logging its own "N passing" line cannot stand in for
+// the epilogue on a group that terminated before printing one.
 const SUMMARY = /^\s*(\d+) passing\b/gm;
-// setTimeout holds its delay in a 32-bit int and clamps anything outside 1..2^31-1 to 1ms, so
-// an override that is empty, unparseable, negative, or huge would SIGKILL every group at spawn.
+// setTimeout clamps anything outside 1..2^31-1 to 1ms, so an unguarded override that is empty,
+// unparseable, negative, sub-millisecond, or huge would SIGKILL every group at spawn.
 const overrideTimeoutMs = Number(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS);
-const GROUP_TIMEOUT_MS = overrideTimeoutMs > 0 ? Math.min(overrideTimeoutMs, 2_147_483_647) : 600_000;
+const GROUP_TIMEOUT_MS =
+	overrideTimeoutMs >= 1 ? Math.min(Math.trunc(overrideTimeoutMs), 2_147_483_647) : 600_000;
 
 // No --config: mocha discovers .mocharc.json itself, so the gate inherits the same
 // root config (and unitTests/mocha.init.js) as every other unit-test run.
 function runGroup(pattern) {
 	return new Promise((settle) => {
-		// --no-color: SUMMARY anchors on the line start, which an ANSI-prefixed epilogue defeats.
+		// --no-color: an ANSI-prefixed epilogue would defeat SUMMARY's line anchor.
 		const args = [MOCHA, '--reporter', 'dot', '--no-color', pattern];
 		for (const excluded of EXCLUDED) args.push('--exclude', excluded);
 
