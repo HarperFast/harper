@@ -2,7 +2,7 @@
 //! per-visit cost — the number that decides whether the native plane hits its 0.25–0.4 µs
 //! budget (JS baseline: 4.34 µs/visit at 5M/ef 512).
 //!
-//! Usage: bench [n=100000] [dims=768] [queries=200] [ef=512] [path=/tmp/bench.hnsw]
+//! Usage: bench [n=100000] [dims=768] [queries=200] [ef=512] [path=/tmp/bench.hnsw] [cap=64]
 
 use hnsw_plane::distance::Query;
 use hnsw_plane::insert::{insert, InsertParams};
@@ -83,9 +83,20 @@ fn main() {
     let queries: usize = args.get(3).and_then(|a| a.parse().ok()).unwrap_or(200);
     let ef: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(512);
     let path: PathBuf = args.get(5).map(Into::into).unwrap_or_else(|| "/tmp/bench.hnsw".into());
+    let layer0_cap: usize = args.get(6).and_then(|a| a.parse().ok()).unwrap_or(64);
 
-    let layer0_cap = 64;
-    let file = PlaneFile::create(&path, dims, layer0_cap, n + 1024).expect("create");
+    // Reuse an existing plane file when it already holds exactly n nodes at the same cap
+    // (ef sweeps without rebuilding). The corpus RNG below replays identically.
+    let reuse = PlaneFile::open(&path)
+        .ok()
+        .filter(|f| f.id_high_water() == n && f.layer0_cap == layer0_cap)
+        .is_some();
+    let file = if reuse {
+        println!("reusing existing plane at {}", path.display());
+        PlaneFile::open(&path).expect("open")
+    } else {
+        PlaneFile::create(&path, dims, layer0_cap, n + 1024).expect("create")
+    };
     println!(
         "plane: {} nodes x {} dims, slot {} B, file {:.1} GB (sparse)",
         n,
@@ -99,17 +110,35 @@ fn main() {
     let mut rng = Rng(0x1234_5678_9abc_def0);
     let corpus = Corpus::new(n, dims, &mut rng);
 
-    let build_start = Instant::now();
-    for i in 0..n {
-        let v = corpus.row(&mut rng);
-        insert(&graph, &v, &params, &mut scratch);
-        if (i + 1) % 50_000 == 0 {
-            let rate = (i + 1) as f64 / build_start.elapsed().as_secs_f64();
-            println!("  built {} ({:.0} inserts/s)", i + 1, rate);
+    if reuse {
+        // replay the build's RNG draws so query rows match a fresh run, and rebuild the
+        // in-memory upper layers (prototype: upper region not yet persisted) by re-linking
+        // via slot levels. Greedy descent degrades to entry-only when upper lists are empty,
+        // so recall at layer 0 still measures the persisted graph.
+        for _ in 0..n {
+            let _ = corpus.row(&mut rng);
         }
+        let mut upper = graph.upper.write().unwrap();
+        for id in 0..n as u32 {
+            if let Some(node) = graph.read_node(id) {
+                if node.level > 0 {
+                    upper.insert(id, vec![Vec::new(); node.level as usize]);
+                }
+            }
+        }
+    } else {
+        let build_start = Instant::now();
+        for i in 0..n {
+            let v = corpus.row(&mut rng);
+            insert(&graph, &v, &params, &mut scratch);
+            if (i + 1) % 50_000 == 0 {
+                let rate = (i + 1) as f64 / build_start.elapsed().as_secs_f64();
+                println!("  built {} ({:.0} inserts/s)", i + 1, rate);
+            }
+        }
+        let build = build_start.elapsed();
+        println!("build: {:.1}s ({:.0} inserts/s)", build.as_secs_f64(), n as f64 / build.as_secs_f64());
     }
-    let build = build_start.elapsed();
-    println!("build: {:.1}s ({:.0} inserts/s)", build.as_secs_f64(), n as f64 / build.as_secs_f64());
 
     // Query with held-out vectors; measure latency and set-recall@10 vs brute-force truth
     // (same asymmetric metric, so recall isolates graph quality, not quantization).
