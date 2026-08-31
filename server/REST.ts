@@ -208,9 +208,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				// `rest: { exactCount: true }` (default off); count=exact is otherwise served as a cheap
 				// estimate. Estimated is always available. Accept a string `"true"` too, since not every
 				// config source coerces to a boolean.
-				const exactEnabled = (httpOptions as any).exactCount === true || (httpOptions as any).exactCount === 'true';
+				const exactEnabled = (httpOptions as any)?.exactCount === true || (httpOptions as any)?.exactCount === 'true';
 				for (const pref of parseHeaderValue(prefer as any)) {
-					const mode = (pref?.value as string | undefined)?.toLowerCase();
+					// The header parser can hand back a non-string value (e.g. a bare `Prefer: count` with no
+					// `=`), so coerce before lower-casing rather than calling `.toLowerCase()` on a boolean.
+					const mode = String(pref?.value ?? '').toLowerCase();
 					if (pref?.name === 'count' && (mode === 'exact' || mode === 'estimated')) {
 						// A count=exact request on a mount that hasn't opted in is downgraded to estimated,
 						// signaled back to the client via Preference-Applied.

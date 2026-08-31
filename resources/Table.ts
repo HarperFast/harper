@@ -157,6 +157,9 @@ const MAX_EXACT_COUNT_MS = 1_000;
 // not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
 // streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
 const MAX_COUNT_PAGE = 10_000;
+// How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
+// check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
+const COUNT_YIELD_INTERVAL = 2_048;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -3770,10 +3773,17 @@ export function makeTable(options) {
 						for await (const record of results) {
 							if (scanned >= offset && scanned < pageEnd) page.push(record);
 							scanned++;
+							// A store whose async iterator settles synchronously (the common indexed-scan case) would
+							// otherwise let this drain spin as one uninterrupted microtask run, blocking the event loop
+							// for the whole count. Yield to the macrotask queue periodically so concurrent requests and
+							// I/O still make progress during a large exact scan.
+							if ((scanned & (COUNT_YIELD_INTERVAL - 1)) === 0) await new Promise((resolve) => setImmediate(resolve));
 							// The page window [offset, pageEnd) is always collected in full first — the guardrail
 							// only ever abandons the running TOTAL, never truncates the page body.
 							if (scanned >= pageEnd) {
-								if (!wantExact) break; // `estimated` needs nothing past the page
+								// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
+								// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
+								if (!wantExact || approximateResultSet) break;
 								// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
 								// large match set can't turn a bounded page fetch into an unbounded scan.
 								if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
