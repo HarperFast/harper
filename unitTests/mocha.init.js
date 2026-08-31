@@ -78,7 +78,12 @@ if (isMainThread) {
 	// Worker threads re-run this preload under the same PID, so only the main thread wipes.
 	try {
 		fs.removeSync(PID_DIR_PATH);
-	} catch {}
+	} catch (error) {
+		// Swallowing this would let the run continue into the very state and config we must
+		// not inherit — surface a clear cause instead of the opaque crash a bare removeSync
+		// throw produces (e.g. a held file handle on Windows).
+		throw new Error(`mocha.init.js: could not clear stale per-PID root ${PID_DIR_PATH}`, { cause: error });
+	}
 	let envDirEntries = [];
 	try {
 		envDirEntries = fs.readdirSync(ENV_DIR_PATH);
