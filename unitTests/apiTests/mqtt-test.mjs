@@ -890,108 +890,117 @@ describe('test MQTT connections and commands', function () {
 		const granted = await subscribeAllowingSubackError(clientV5, '+/SimpleRecord/test');
 		assert.equal(granted[0].qos, 0x8f); // assert that the subscription was rejected
 	});
-	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
-		this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
-		// this first connection is a tear down to remove any previous durable session with this id
-		let client = await connectAsync(mqttUrl, {
-			clean: true,
-			clientId: 'test-client1',
-			protocolVersion: 4,
-		});
-		await endDurableSession(client, 'test-client1');
-		client = await connectAsync(mqttUrl, {
-			clean: false,
-			clientId: 'test-client1',
-			protocolVersion: 4,
-		});
-		await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
-		await endDurableSession(client, 'test-client1');
-		client = await connectAsync(mqttUrl, {
-			clean: false,
-			clientId: 'test-client1',
-			protocolVersion: 4,
-		});
-		await new Promise((resolve) => {
-			// Wait for the broker to finish processing (and durably persisting) our ack of this
-			// message, not just for the client to have sent it — see `session.acknowledge()`.
-			const acknowledged = waitForMqttSessionEvent('acknowledged', 'test-client1');
-			client.on('message', (topic, payload) => {
-				JSON.parse(payload);
-				resolve(acknowledged);
+	// Quarantined on lmdb only: hung silently to its 20s timeout on CI main (lmdb pass, Node 26)
+	// with no server-side log output; not reproduced in 30 contended local runs. The rocksdb pass
+	// keeps this durable-session coverage. Evidence, hypotheses, and the reinstatement path
+	// (bounded per-step waits) are in https://github.com/HarperFast/harper/issues/2274.
+	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
+		'subscribe with QoS=1 and reconnect with non-clean session',
+		async function () {
+			this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
+			// this first connection is a tear down to remove any previous durable session with this id
+			let client = await connectAsync(mqttUrl, {
+				clean: true,
+				clientId: 'test-client1',
+				protocolVersion: 4,
 			});
+			await endDurableSession(client, 'test-client1');
+			client = await connectAsync(mqttUrl, {
+				clean: false,
+				clientId: 'test-client1',
+				protocolVersion: 4,
+			});
+			await client.subscribeAsync(['SimpleRecord/41', 'SimpleRecord/42'], { qos: 1 });
+			await endDurableSession(client, 'test-client1');
+			client = await connectAsync(mqttUrl, {
+				clean: false,
+				clientId: 'test-client1',
+				protocolVersion: 4,
+			});
+			await new Promise((resolve) => {
+				// Wait for the broker to finish processing (and durably persisting) our ack of this
+				// message, not just for the client to have sent it — see `session.acknowledge()`.
+				const acknowledged = waitForMqttSessionEvent('acknowledged', 'test-client1');
+				client.on('message', (topic, payload) => {
+					JSON.parse(payload);
+					resolve(acknowledged);
+				});
 
-			client.publish(
+				client.publish(
+					'SimpleRecord/41',
+					JSON.stringify({
+						name: 'This is a test of durable session with subscriptions restarting',
+					}),
+					{
+						qos: 1,
+					}
+				);
+			});
+			await endDurableSession(client, 'test-client1');
+			await clientV5.publishAsync(
 				'SimpleRecord/41',
 				JSON.stringify({
-					name: 'This is a test of durable session with subscriptions restarting',
+					name: 'This is a test of publishing to a disconnected durable session',
 				}),
 				{
 					qos: 1,
 				}
 			);
-		});
-		await endDurableSession(client, 'test-client1');
-		await clientV5.publishAsync(
-			'SimpleRecord/41',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session',
-			}),
-			{
-				qos: 1,
-			}
-		);
-		await clientV5.publishAsync(
-			'SimpleRecord/42',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session 2',
-			}),
-			{
-				qos: 1,
-			}
-		);
-		await clientV5.publishAsync(
-			'SimpleRecord/42',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session 3',
-			}),
-			{
-				qos: 1,
-			}
-		);
-		let messages = [];
-		client = await connectWithMessageListener(
-			mqttUrl,
-			{
-				clean: false,
-				clientId: 'test-client1',
-				protocolVersion: 5,
-				properties: {
-					sessionExpiryInterval: 3600,
-				},
-			},
-			(topic, message) => {
-				messages.push(message.toString());
-			}
-		);
-		await new Promise((resolve, reject) => {
-			const interval = setInterval(() => {
-				if (messages.length === 3) {
-					clearInterval(interval);
-					resolve();
+			await clientV5.publishAsync(
+				'SimpleRecord/42',
+				JSON.stringify({
+					name: 'This is a test of publishing to a disconnected durable session 2',
+				}),
+				{
+					qos: 1,
 				}
-			}, 1);
-			setTimeout(() => {
-				clearInterval(interval);
-				reject(
-					new Error(`Expected 3 queued messages to be delivered to reconnected durable session, got ${messages.length}`)
-				);
-			}, 15000);
-		});
-		await delay(50);
-		await client.endAsync();
-		if (messages.length !== 3) console.error('Incorrect messages', { messages });
-		assert(messages.length === 3);
-	});
+			);
+			await clientV5.publishAsync(
+				'SimpleRecord/42',
+				JSON.stringify({
+					name: 'This is a test of publishing to a disconnected durable session 3',
+				}),
+				{
+					qos: 1,
+				}
+			);
+			let messages = [];
+			client = await connectWithMessageListener(
+				mqttUrl,
+				{
+					clean: false,
+					clientId: 'test-client1',
+					protocolVersion: 5,
+					properties: {
+						sessionExpiryInterval: 3600,
+					},
+				},
+				(topic, message) => {
+					messages.push(message.toString());
+				}
+			);
+			await new Promise((resolve, reject) => {
+				const interval = setInterval(() => {
+					if (messages.length === 3) {
+						clearInterval(interval);
+						resolve();
+					}
+				}, 1);
+				setTimeout(() => {
+					clearInterval(interval);
+					reject(
+						new Error(
+							`Expected 3 queued messages to be delivered to reconnected durable session, got ${messages.length}`
+						)
+					);
+				}, 15000);
+			});
+			await delay(50);
+			await client.endAsync();
+			if (messages.length !== 3) console.error('Incorrect messages', { messages });
+			assert(messages.length === 3);
+		}
+	);
 	it('subscribe with QoS=2', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
 		let client = await connectAsync(mqttUrl, {
