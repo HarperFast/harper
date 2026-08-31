@@ -209,6 +209,20 @@ impl PlaneFile {
         }
     }
 
+    /// Raise the high-water to at least `id + 1` (dual-write mode: ids are allocated by the
+    /// host's existing allocator and mirrored in; the plane allocator is bypassed).
+    pub fn ensure_high_water(&self, id: u32) {
+        let hw = self.header_atomic_u64(H_ID_HIGH_WATER);
+        let want = id as u64 + 1;
+        let mut cur = hw.load(Ordering::Acquire);
+        while cur < want {
+            match hw.compare_exchange_weak(cur, want, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(now) => cur = now,
+            }
+        }
+    }
+
     pub fn id_high_water(&self) -> u64 {
         self.header_atomic_u64(H_ID_HIGH_WATER).load(Ordering::Acquire)
     }

@@ -162,10 +162,67 @@ impl Plane {
         Ok(insert(&self.graph, &vector, &self.params, &mut scratch))
     }
 
-    /// Delete a node; its id returns to the freelist.
+    /// Delete a node; its id returns to the plane freelist. Standalone-allocation mode only
+    /// (pairs with insert()); dual-write hosts use clearNode instead.
     #[napi]
     pub fn remove(&self, id: u32) {
         self.graph.delete_node(id);
+    }
+
+    /// Mirror a host-maintained node into the plane (dual-write phase 1): full node state
+    /// per call, host-allocated id, int8 vector bin + quantization scale + cached 1/|v|,
+    /// layer-0 neighbor ids, and per-upper-level neighbor id arrays (level 1 first). An
+    /// existing upper entry is rewritten in place. Idempotent per (id, state).
+    #[napi]
+    pub fn write_node_raw(
+        &self,
+        id: u32,
+        level: u8,
+        vector: Buffer,
+        scale: f64,
+        inv_mag: f64,
+        neighbors: Uint32Array,
+        upper: Option<Vec<Uint32Array>>,
+    ) -> Result<()> {
+        if vector.len() != self.graph.file.dims {
+            return Err(Error::from_reason(format!(
+                "vector is {} bytes; plane dims = {}",
+                vector.len(),
+                self.graph.file.dims
+            )));
+        }
+        let vec_i8 = unsafe { std::slice::from_raw_parts(vector.as_ptr() as *const i8, vector.len()) };
+        let upper_levels: Vec<Vec<u32>> =
+            upper.map(|ls| ls.iter().map(|l| l.to_vec()).collect()).unwrap_or_default();
+        self.graph.write_node_raw(
+            id,
+            level,
+            vec_i8,
+            scale as f32,
+            inv_mag as f32,
+            &neighbors.to_vec(),
+            &upper_levels,
+        );
+        Ok(())
+    }
+
+    /// Mark a node deleted without touching the plane freelist (dual-write mode: the host
+    /// owns id allocation).
+    #[napi]
+    pub fn clear_node(&self, id: u32) {
+        self.graph.clear_node(id);
+    }
+
+    /// Set the graph entry point (dual-write mode mirrors the host's entry-point updates).
+    #[napi]
+    pub fn set_entry_point(&self, id: u32, level: u32) {
+        self.graph.file.set_entry_point(id, level);
+    }
+
+    #[napi]
+    pub fn get_entry_point(&self) -> Vec<f64> {
+        let (id, level) = self.graph.file.entry_point();
+        vec![id as f64, level as f64]
     }
 
     /// Async k-NN search on the libuv thread pool. `filter` is an optional allow-bitset
