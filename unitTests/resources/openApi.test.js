@@ -334,6 +334,21 @@ describe('test openApi module', () => {
 			expect(api.components.schemas).not.to.have.property('Bad');
 			expect(api.paths).not.to.have.property('/Bad/');
 		});
+
+		it('preserves a Resource schema named `__proto__` as an own property', () => {
+			const r = new Map();
+			r.set('__proto__', {
+				path: '__proto__',
+				Resource: {
+					prototype: { get: () => [] },
+					properties: { id: { type: 'string', primaryKey: true } },
+				},
+			});
+			r.allTypes = new Map();
+			const api = generateJsonApi(r, serverURL);
+			expect(Object.hasOwn(api.components.schemas, '__proto__')).to.equal(true);
+			expect(api.components.schemas.__proto__.properties.id.type).to.equal('string');
+		});
 	});
 });
 
@@ -547,14 +562,14 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 		expect(props.list.items.enum).to.deep.equal(['y']);
 	});
 
-	it('includes null in the value list when a nullable property carries an enum', () => {
+	it('widens a nullable enum while keeping const as the stricter constraint', () => {
 		// 3.0's `nullable` does not widen an `enum` — without `null` in the list a validator rejects it
 		// regardless of the flag, so the schema would contradict itself.
 		const doc = buildDocument();
 		const props = doc.components.schemas.Widget.properties;
 		expect(props.nullableEnum.enum).to.deep.equal(['a', 'b', null]);
 		expect(props.nullableEnum.nullable).to.equal(true);
-		expect(props.nullableConst.enum).to.deep.equal(['fixed', null]);
+		expect(props.nullableConst.enum).to.deep.equal(['fixed']);
 	});
 
 	it('lets an author-declared format outrank the Harper type name', () => {

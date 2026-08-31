@@ -293,6 +293,19 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		assert.deepEqual(openapi.choice.enum, ['a', 1, null]);
 	});
 
+	for (const [label, type] of [
+		['scalar', 'string'],
+		['multi-type union', ['string', 'number', 'null']],
+	]) {
+		it(`keeps const stricter than nullability for a ${label}`, () => {
+			const { mcp, openapi } = bothSurfaces({ fixed: { type, const: 'x', nullable: true } });
+			assert.equal(mcp.fixed.const, 'x');
+			assert.equal(mcp.fixed.enum, undefined);
+			assert.deepEqual(openapi.fixed.enum, ['x']);
+			assert.equal(openapi.fixed.enum.includes(null), false);
+		});
+	}
+
 	it('preserves a property named `__proto__` on both surfaces', () => {
 		const properties = Object.create(null);
 		properties.__proto__ = { type: 'string' };
@@ -394,5 +407,11 @@ describe('attributeToSchema — emitter edge cases (#1941, #1942)', () => {
 		assert.ok(out, 'the hidden attribute itself is emitted');
 		assert.ok(out.properties.visible);
 		assert.equal(out.properties.secret, undefined, 'hidden sub-property stays suppressed');
+	});
+
+	it('rejects a cyclic attribute graph with an actionable error', () => {
+		const cyclic = { name: 'self', type: 'object', properties: [] };
+		cyclic.properties.push(cyclic);
+		assert.throws(() => emit(cyclic), /Schema attribute "self" contains a cycle/);
 	});
 });
