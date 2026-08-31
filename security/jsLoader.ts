@@ -15,7 +15,8 @@ import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import * as child_process from 'node:child_process';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
+import { assertTableTargetNotBranched } from '../resources/branchGuard.ts';
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type {} from 'ses';
 import {
@@ -863,6 +864,52 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 // `Resource`/`tables`/`databases`/`createBlob`/… below are the live, process-wide singletons (the
 // same values surfaced as the top-level package exports and bare globals), not per-compartment
 // copies — only `server`/`logger`/`resources`/`config` are scope-overridable.
+/**
+ * The `databases`/`tables` a scope sees. An application that declared `branchedDatabases` gets a view
+ * in which those names resolve to its private graph and everything else falls through to the real
+ * map, live: `databases` gains entries at runtime (`ensureDB`), so a copy taken at load would
+ * silently stop showing databases created afterwards.
+ *
+ * An unbranched scope gets the process-wide singletons **by identity**, not a view: that is the
+ * overwhelmingly common case and it must stay indistinguishable from before, and it means only
+ * branched applications pay for the indirection. Proxying rather than copying also keeps
+ * `databases.system` — deliberately non-enumerable (`resources/databases.ts`) — reachable for free.
+ */
+function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tables: any } {
+	const branches = scope.branches;
+	if (!branches?.size) return { databases, tables };
+	// Every branched name already exists on the target as a writable, configurable property (a branch
+	// is only ever taken of a database that exists), so overriding it here breaks no Proxy invariant.
+	const scoped = new Proxy(databases, {
+		get: (target, key, receiver) =>
+			typeof key === 'string' && branches.has(key) ? branches.get(key)!.tables : Reflect.get(target, key, receiver),
+		getOwnPropertyDescriptor(target, key) {
+			if (typeof key !== 'string' || !branches.has(key)) return Reflect.getOwnPropertyDescriptor(target, key);
+			return { value: branches.get(key)!.tables, writable: true, enumerable: true, configurable: true };
+		},
+	});
+	// `tables` is the flat alias for the default database, so it follows that database's branch.
+	return { databases: scoped, tables: branches.get(DEFAULT_DATABASE_NAME)?.tables ?? tables };
+}
+
+/**
+ * `defineTable` registers into the process-wide catalog, so for a branched name it is refused rather
+ * than silently misdirected onto the base. See `assertTableTargetNotBranched`.
+ */
+function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
+	const branches = scope.branches;
+	if (!branches?.size) return defineTable;
+	return function (name: string, shape: any, options: any = {}) {
+		assertTableTargetNotBranched(branches, options.database, name, 'defineTable');
+		return defineTable(name, shape, options);
+	} as typeof defineTable;
+}
+
+/** Everything an application sees differently because of what it declared. Built once, at load. */
+export function scopedBindings(scope: ApplicationScope): { databases: any; tables: any; defineTable: any } {
+	return { ...scopedDatabaseBindings(scope), defineTable: scopedDefineTable(scope) };
+}
+
 function getHarperExports(scope: ApplicationScope) {
 	return {
 		server: scope.server ?? server,
@@ -873,9 +920,7 @@ function getHarperExports(scope: ApplicationScope) {
 		// the process-wide singletons below.
 		secrets: getSecretsForComponent(scope.name),
 		Resource,
-		tables,
-		databases,
-		defineTable,
+		...scopedBindings(scope),
 		types,
 		defineResource,
 		t,
@@ -928,7 +973,6 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 				return true;
 			},
 		};
-const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
@@ -1084,10 +1128,15 @@ function acquirePidFileLock(
 }
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
-	const basePath = env.getHdbBasePath();
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
-		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
-			throw new Error(`Command ${command} is not allowed`);
+		// componentLoader imports this module, so it can load before the config is resolved; a value
+		// captured out here would pin an empty allowlist, and an undefined base path, for the life of
+		// the process. Anything but a configured list denies.
+		if (!alwaysAllow) {
+			const allowedCommands = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS);
+			if (!Array.isArray(allowedCommands) || !allowedCommands.includes(command.split(' ')[0])) {
+				throw new Error(`Command ${command} is not allowed`);
+			}
 		}
 		const processName = options?.name;
 		if (!processName)
@@ -1097,7 +1146,7 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		const requestedVersion = options?.version;
 
 		// Ensure PID directory exists
-		const pidDir = join(basePath, 'pids');
+		const pidDir = join(env.getHdbBasePath(), 'pids');
 		mkdirSync(pidDir, { recursive: true });
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);

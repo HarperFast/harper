@@ -63,4 +63,4 @@ test_export*.json
 
 # dev-mode boots (harper dev <fixture>) symlink node_modules/harper into the
 # fixture component dir; keep those out of commits
-integrationTests/fixtures/*/node_modules/
+integrationTests/**/node_modules/

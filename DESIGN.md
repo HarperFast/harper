@@ -40,6 +40,42 @@ Consequence: never replace `entry.value` with a copy of `updatedRecord` in this 
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
+## getFromSource() keeps source versions separate from fill ordering
+
+`getFromSource()` reserves a fallback timestamp before calling the source so competing first fills
+whose source does not report a version have a stable ordering token. An inherited request/transaction
+timestamp is used when present; otherwise the storage engine supplies a monotonic timestamp. After
+the source responds, a valid positive, finite, Date-representable `sourceContext.lastModified` is the
+record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the
+existing version.
+
+The candidate is capped at local time (`max(reserved token, Date.now())`). A record's version is also
+this node's ordering token — `precedesExistingVersion()` compares a write's transaction timestamp
+against it — so a source that reports a `lastModified` ahead of local time (a skewed origin clock)
+would otherwise make every later local write to that row look out-of-order and be discarded until
+wall-clock caught up. Capping costs the shared-version property only for that misbehaving case, and
+the cap is logged.
+
+The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction
+keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB
+stores the source candidate directly, preserving its separate source-version/local-time semantics;
+only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
+
+Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the
+fetch. First fills may replace a raced record only when their candidate version is strictly greater
+than the raced record's. The comparison is deliberately not `precedesExistingVersion()`: that breaks
+a version tie with the _executing_ node's name, and a fill from a shared source carries no node
+identity of its own, so two replicas resolving the same tie could keep different values at the same
+version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A
+RocksDB replacement whose candidate cannot advance the current version stores at the current version
+and carries `VERSION_NOT_UNIQUE_FLAG`; rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
+then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
+an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
+vouched as fresh.
+
+The flag is also applied to ordinary resequenced RocksDB writes. Those records remain ineligible for
+VerificationTable fast-path confirmation until a later write advances their version.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
@@ -663,6 +699,30 @@ its coalescing must stay a superset-safe no-op for the single-swap #586 case. Re
 `integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
 (it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
 
+**Publication is transactional (#2382).** `updateTLS` builds the entire replacement state —
+hostname→context map, CA map, and default candidate — into pass-local candidates and reconciles the
+live maps in place only after the pass completes (their identity is load-bearing:
+`server.secureContexts` and each context's `availableCAs` alias them). A record that is still in the
+table but fails to build (`ERR_OSSL_X509_KEY_VALUES_MISMATCH` when the table's cert outruns the
+on-disk key, a missing key on this thread) keeps every live entry it owns _and_ its default
+candidacy — a record can be serving as the default with no hostname entries at all — so a transient
+mismatch never downgrades serving below last-good (the pre-fix behavior served the self-signed
+default for days). Retention is trust-aware: a context froze its `ca:` list at build time, so when
+the CA set has changed since, the retained pair is rebuilt against the current trust material —
+new handshakes never see revoked client-CA trust; established sessions and outstanding session
+tickets are unaffected, exactly as on a fresh build (ticket keys are process-wide and never rotate
+on trust changes) — and if that rebuild fails the record's entries
+drop for that pass, except when nothing else is servable: the zero-certificate guard then retains
+the old state (availability outranks the drop in that corner) while the failure keeps retrying. Deleting the record remains the way to drop its contexts; a corrupt authority
+row is a pass failure like any other (reported through the signature throttle, armed for retry) and
+its trust drops until it heals. A failed pass arms a
+self-retry on the shared debounce with a per-signature backoff (1.5s doubling to 5min) and
+signature-throttled logging; external triggers (table subscription, key reload) stay at the plain
+debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll dedupe, but rolls
+the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
+rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
+periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
@@ -696,6 +756,71 @@ mirrors loader behaviors that must stay in sync if the loader changes: config fi
 (`harper-config.yaml` → `harperdb-config.yaml` → `config.yaml`) and `files` pattern validation
 (`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
 arrives via env var cannot redirect the scan.
+
+## Boot-path config persistence is best-effort, and its two artifacts commit as a unit (`config/configUtils.ts`, `config/harperConfigEnvVars.ts`)
+
+Every boot with a `HARPER_*_CONFIG` env var set re-derives the merged config and, historically, wrote
+it back unconditionally. On a full or quota-exhausted volume that write is refused and, being fatal,
+turned a full disk into a container restart loop nothing inside the container could break — the
+cleanup that frees space needs a started process (#847). Two rules follow.
+
+**Derived boot writes are best-effort; user-requested ones are not.** `persistConfigDuringBoot()`
+swallows exactly ENOSPC/EDQUOT (matching on `errno` as well as `code`, because Linux has no libuv
+mapping for EDQUOT and reports `Unknown system error -122`) and lets the boot proceed on the
+in-memory config. `updateConfig`/`set_configuration`, `addConfig`, `deleteConfigFromFile` and the
+install path keep persist-or-throw: a caller who asked to persist must not get a silent success, and
+an install has no last-known-good config to fall back on.
+
+**The env-config state and the config file must never disagree.** The state file records the
+_pre-env_ values, so it is the only copy of what the operator's config said before an env layer
+overwrote it — the config file itself holds the env-derived value. Both single-file orderings lose
+something: writing the state last means the file it would read originals from is already
+overwritten; writing it first leaves a state ahead of the file, which the next boot's
+`detectConfigDrift` reads as a manual user edit and _permanently_ reassigns those paths to `user`,
+silently disabling the env layer even after space is freed. So the commit is three steps —
+`saveState()` stages the new state in `.harper-config-state.pending.<pid>.json`, the config file is
+written, and `confirmConfigWritten()` **renames** the sidecar over the confirmed record. A rename
+needs no free space, which is the point: no write an exhausted volume can refuse ever stands between
+the confirmed originals and disk. A refused staging write leaves the config file alone; a refused
+config write unlinks the sidecar; a sidecar found at load means a commit was interrupted, so it is
+cleared and drift detection is skipped for that boot rather than mistaking the in-flight write for
+an edit. A boot that re-derives the same state writes nothing at all.
+
+Two details the name and the caller carry. The sidecar is **per-process**: every CLI invocation runs
+`initConfig`, and one shared name would let a starting server clear a running process's in-flight
+commit — the loser would then rewrite the config file with the confirmed state still describing the
+old values, which is the failure the protocol exists to prevent. Recovery therefore only clears a
+sidecar whose owning pid is gone. And only the **main thread** persists or runs recovery: workers
+derive the same merged config and would otherwise race over one pair of files for a result they
+already agree on — and since a worker shares its process's pid, a recovery scan from one would
+delete the main thread's in-flight sidecar as if it were the last boot's wreckage.
+
+A sidecar owned by a _live_ foreign process is not cleared — that process is mid-commit — but its
+presence still turns drift detection off for this boot: a pair someone else is halfway through is no
+more comparable than one an interruption left behind. That suspension is why a sidecar also ages
+out regardless of what its pid says: without it, a sidecar whose owner was killed and whose pid was
+later recycled would look mid-commit forever and suspend drift detection on every boot. The age-out
+is deliberately far longer than a commit could take — recovery from a recycled pid only has to be
+eventual, while deleting a slow-but-live writer's sidecar is the worse error, stranding its config
+file against an unpromoted state.
+
+Drift detection is main-thread-only for the same reason recovery is. A worker never owns the state:
+in the normal sequence the main thread has already classified and persisted before any worker runs,
+and inside the main thread's commit window a file that differs from the snapshot is as likely to be
+the write in flight as an operator edit. A worker that concluded "user edit" would drop the
+env-supplied value for itself alone and serve different config than its siblings.
+
+Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
+CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo
+serializes config writes across processes. Pre-existing — both artifacts were unordered before this
+protocol — and out of scope here, but the "commits as a unit" guarantee stops at the process
+boundary.
+
+Related: a log write must not be fatal either. `fs.appendFileSync` in `logQueuedData` throws from
+both inline and timer call sites, so on a full volume every log statement was a crash point. The
+fallback goes through `nativeStdWrite`, never `console` — `installStdioGuard` routes console output
+back into this same file logger when `logging.file` and `logging.console` are both on, so a console
+fallback recurses until the stack blows.
 
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
@@ -951,6 +1076,48 @@ extensionModule.handleApplication` gate (`components/componentLoader.ts`) means 
 Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
 so ops responses **will** carry the headers there (benign).
 
+## Under Bun, the main HTTP port is served by `node:http`, not `Bun.serve`
+
+Worth knowing before debugging anything Bun-specific on the HTTP path: `getBunHTTPServer()` builds
+the `Bun.serve()` fetch config, but `onWebSocket()` calls `getHTTPServer()` unconditionally — it has
+a uWS branch and no Bun branch, because Bun native WebSockets are unimplemented (nothing ever sets
+`config.websocket`, so WS relies on the Node `ws` server attached to an `http.Server`). MQTT's
+`handleApplication` registers WS on the default port before REST's `httpServer()` call for that same
+port, so `httpServers[port]` is already a Node server by then and `getBunHTTPServer` early-returns
+without registering a serve config. The port is bound by `registerServer()`'s Node server via
+`listenOnPortsBun`'s trailing "non-HTTP servers" loop, and the fetch handler is never invoked for it
+(only the exclusive operations port reaches `Bun.serve`). Consequence: on Bun the `Request`/`Response`
+fetch path is dead code for the main port, and its divergences show up as `node:http`-emulation
+divergences instead.
+
+One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from the request. For a
+`Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
+header nor `response.socket.end()` closes the connection — a **stream-ended** response (an async
+source ended through `pipeline()`; a direct `response.end()` is fine) delivers its full body and
+terminal chunk, then holds the connection until Bun's own idle timeout — a chunked-aware client
+completes the message and can walk away, but the un-honored close still violates RFC 9112 §9.6 and
+strands the socket; a raw client waiting on the FIN (and the HTTP/1.0 case below, which has no
+terminal chunk to stop at) hangs outright. An HTTP/1.0 client hangs the same way
+without asking to close at all, since 1.0 persistence needs both an explicit `keep-alive` and a length
+to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
+draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
+both versions. A 1.0 `keep-alive` request whose response _did_ get a
+`Content-Length` (`body.size` on a blob, `server/http.ts:698-709`) is left open, which is again what
+Node does and what Bun then handles correctly.
+
+`pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
+(`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path only — the error path
+already closes because `pipeline()` destroys the response with the stream error). Ending the
+_request's_ socket is the only remedy that works after a clean stream end on Bun: a `Connection:
+close` response header, `response.socket.end()` and `response.destroy()` were all measured as no-ops
+there. `socket.end()` is graceful, so it does not truncate — 8 MB over plain TCP and 6 MB over TLS to
+a deliberately slow reader each arrive whole. The
+`Content-Length` check reads `response.hasHeader()`, which Bun populates from the `writeHead(status,
+headers)` fast path this file uses (Node does not, but the branch is Bun-only). A
+keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
+HTTP/1.0 arms are Node/Bun-only, because uWS does not route an HTTP/1.0 request to the resource at
+all.
+
 ## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
 
 npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
@@ -1158,6 +1325,15 @@ graphs being identical, though equal metrics do not prove it. It is the expected
 the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
 standard HNSW descends this way.
 
+Greedy-equals-full is statistical, not per-graph: rare level layouts route to a different layer-0
+entry point and displace the tail of the top-k (~2-3% of random 600-node graphs in the unit test's
+corpus). Tests that assert exact result-set equality across search strategies must therefore pin the
+graph: level assignment draws from the instance's `random` property (a test seam defaulting to
+`Math.random`), which the routing test replaces with a seeded PRNG. One pinned graph samples the
+property once, so that test sweeps a fixed list of seeds, each verified non-divergent when the list
+was written — a seed that starts diverging after an intentional index change is a re-pin, not
+necessarily a routing regression.
+
 ## `efConstruction` and the search-`ef` ceiling both auto-scale with the graph
 
 The connection-building pass selects each node's stored edges from a candidate list of
@@ -1336,3 +1512,34 @@ half-written file into a valid-looking env-only config. Its three outcomes are d
 one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
 restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
 report standing, since it is shared with every other watcher of that file; closing is terminal.
+
+## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
+
+`estimateCondition` estimates range comparators (`starts_with`/`prefix`, the `between` family,
+`lt`/`le`/`gt`/`ge`) via the store's `estimateCount({start, end, …}) → { count, confidence }`
+(rocksdb-js ≥ 2.8.0) instead of flat table fractions, blended as
+`round(confidence × count + (1 − confidence) × fraction-heuristic)` so a low-confidence estimate
+degrades to the historical behavior rather than replacing it. Invariants that are easy to break:
+
+- **Capability is feature-detected per store** (`typeof store.estimateCount === 'function'`)
+  because LMDB-backed and custom index stores do not implement it. The result shape is validated
+  (`Number.isFinite(count)`, `0 ≤ confidence ≤ 1`) and the native call is try/caught, so a store
+  that answers differently — or one closing concurrently — degrades the plan to the fraction
+  heuristic instead of NaN-poisoning condition ordering.
+- **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
+  comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
+  execution truncates + filters (wider range than the estimable one). Two ways this has already
+  been got wrong: `lt`/`le` need `searchByIndex`'s `start: true` lower bound, or the estimate
+  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips (`true`
+  sorts above `null`) — measured at 21× inflation on an index that is 99% nulls, which is worse
+  than the flat heuristic it replaces; and `RocksIndexStore` must widen value-space bounds to
+  `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
+  semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
+  `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
+- **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
+  the filter-only convention (`contains`/`ends_with`): the negated flag always forces
+  `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —
+  a narrow negated range must never look selective enough to become the driving condition.
+- `estimatedEntryCount` reads `estimate-num-keys` (O(1)) rather than iterating; it skews high on
+  overwrite/delete-heavy data until compaction, which is acceptable for the relative-ordering and
+  explicitly-estimated consumers it feeds (and it is a divisor — keep the ≥1 floor).

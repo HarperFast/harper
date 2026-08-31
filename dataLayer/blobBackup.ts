@@ -168,14 +168,13 @@ async function copyTree(
 }
 
 /**
- * Snapshot a database's blob roots into a backup's blob directory. Writes to a temporary sibling
- * and atomically renames into place so a create_backup that fails mid-copy never leaves a partial
- * `blobs/<backupId>/` that a later restore would trust. Overwrites any pre-existing snapshot for the
- * same id (create_backup always produces a fresh id, so this only matters on a retried offline run).
+ * Copy every blob root into `destDir` as `<rootIndex>/<relpath>`, hard-linking where possible.
+ * Writes to a temporary sibling and atomically renames into place so a run that fails mid-copy never
+ * leaves a partial directory a later restore would trust, and replaces any pre-existing `destDir`.
+ * Shared by managed-backup snapshots and `copy-db`'s standalone blob copy (harper#2048).
  */
-export async function snapshotBlobs(backupDir: string, backupId: number, blobRoots: string[]): Promise<void> {
-	const finalDir = blobSnapshotDir(backupDir, backupId);
-	const tempDir = join(blobsRootDir(backupDir), `.tmp-${backupId}`);
+export async function copyBlobRootsByIndex(destDir: string, blobRoots: string[]): Promise<void> {
+	const tempDir = destDir + '.tmp';
 	await rm(tempDir, { recursive: true, force: true });
 	await mkdir(tempDir, { recursive: true });
 	try {
@@ -188,45 +187,67 @@ export async function snapshotBlobs(backupDir: string, backupId: number, blobRoo
 		}
 		if (substituted > 0) {
 			logger.warn(
-				`Blob snapshot for backup ${backupId} substituted ${substituted} of ${substituted + captured} blob ` +
+				`Blob copy into ${destDir} substituted ${substituted} of ${substituted + captured} blob ` +
 					`file(s) with PENDING or ERROR markers because they were not capturable whole.`
 			);
 		}
-		await rm(finalDir, { recursive: true, force: true });
-		await rename(tempDir, finalDir);
+		await rm(destDir, { recursive: true, force: true });
+		await rename(tempDir, destDir);
 	} catch (error) {
 		await rm(tempDir, { recursive: true, force: true }).catch(() => {});
 		throw error;
 	}
+}
+
+/**
+ * Snapshot a database's blob roots into a backup's blob directory. Overwrites any pre-existing
+ * snapshot for the same id (create_backup always produces a fresh id, so this only matters on a
+ * retried offline run).
+ */
+export async function snapshotBlobs(backupDir: string, backupId: number, blobRoots: string[]): Promise<void> {
+	await copyBlobRootsByIndex(blobSnapshotDir(backupDir, backupId), blobRoots);
 	await writeBlobsReadme(backupDir, blobRoots);
 }
 
 /**
  * Build the `blobs/README.md` documenting the blob snapshot layout, so an operator inspecting or
- * hand-recovering a backup can decode the numeric directories. Two variants:
- * - managed (default): a create_backup repository, where snapshots are keyed by backup id
+ * hand-recovering a backup can decode the numeric directories. Three variants:
+ * - `managed` (default): a create_backup repository, where snapshots are keyed by backup id
  *   (`<backupId>/<rootIndex>/…`) and restore is automatic via `restore_backup`.
- * - archive (`archive: true`): a downloaded `get_backup` tar, which holds a single snapshot with no
- *   backup-id level (`<rootIndex>/…`) and is restored by extracting the files back into the roots.
+ * - `archive`: a downloaded `get_backup` tar, which holds a single snapshot with no backup-id level
+ *   (`<rootIndex>/…`) and is restored by extracting the files back into the roots.
+ * - `copy`: the companion directory `copy-db` writes beside a database copy, restored by hand.
  */
-export function blobsReadmeContent(blobRoots: string[], { archive = false }: { archive?: boolean } = {}): string {
+export function blobsReadmeContent(
+	blobRoots: string[],
+	{ variant = 'managed' }: { variant?: 'managed' | 'archive' | 'copy' } = {}
+): string {
 	const rootMapping =
 		blobRoots.length > 0 ? blobRoots.map((root, index) => `      ${index} -> ${root}`).join('\n') : '      (none)';
-	const layout = archive
-		? '<rootIndex>/<shard1>/<shard2>/<fileId>'
-		: '<backupId>/<rootIndex>/<shard1>/<shard2>/<fileId>';
-	const intro = archive
-		? `This directory holds this database's file-backed blobs within a downloaded \`get_backup\` archive.
+	const layout =
+		variant === 'managed'
+			? '<backupId>/<rootIndex>/<shard1>/<shard2>/<fileId>'
+			: '<rootIndex>/<shard1>/<shard2>/<fileId>';
+	const intro =
+		variant === 'copy'
+			? `This directory holds the file-backed blobs of a \`copy-db\` database copy; the database file itself
+is the sibling \`.mdb\` this directory is named after. Blobs are addressed by database NAME and the
+configured blob roots — never by the database file's path — so a copy is only restorable with these
+files: put each \`<rootIndex>/\` tree into the matching blob root of whatever database name you
+restore the copy as (mapping below).`
+			: variant === 'archive'
+				? `This directory holds this database's file-backed blobs within a downloaded \`get_backup\` archive.
 To restore them, extract each \`<rootIndex>/\` tree back into the matching blob root (see the mapping
 below and ../README.md).`
-		: `This directory holds point-in-time snapshots of this database's file-backed blobs, captured
+				: `This directory holds point-in-time snapshots of this database's file-backed blobs, captured
 alongside each RocksDB managed backup. You do not restore these by hand — \`restore_backup\` puts
 them back automatically (see ../README.md); this file just documents the layout.`;
-	const backupIdBullet = archive
-		? ''
-		: `- **<backupId>** matches the RocksDB backup id (\`harper list_backups\`). Each id is a full,
+	const backupIdBullet =
+		variant === 'managed'
+			? `- **<backupId>** matches the RocksDB backup id (\`harper list_backups\`). Each id is a full,
   independent snapshot (not incremental).
-`;
+`
+			: '';
 	return `# Harper blob snapshots
 
 ${intro}
@@ -237,7 +258,7 @@ ${intro}
 
 ${backupIdBullet}- **<rootIndex>** is which of the database's blob roots the file came from — the index into
   \`storage.blobPaths[n]\`. When \`storage.blobPaths\` is not configured there is a single default root
-  (\`<rootPath>/blobs/<db>\`) at index 0. Current mapping for this backup:
+  (\`<rootPath>/blobs/<db>\`) at index 0. Current mapping:
 
 ${rootMapping}
 
@@ -246,7 +267,7 @@ ${rootMapping}
   4096 entries per directory). E.g. a blob with id \`0x12345678\` lives at \`12/345/678\`; a short id
   like \`0xc1a\` lives at \`0/0/c1a\`.
 
-Complete blobs are hard links to the live blobs when the backup is on the same filesystem, and
+Complete blobs are hard links to the live blobs when the destination is on the same filesystem, and
 copies otherwise. A blob that was not capturable whole is stored as a marker instead: header type
 \`0xfe\` is retryable (PENDING), while \`0xff\` is terminal (ERROR). The marker preserves the file id
 but does not contain the original blob bytes.

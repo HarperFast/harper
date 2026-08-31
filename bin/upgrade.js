@@ -110,11 +110,15 @@ async function runUpgrade(upgradeObj) {
 		throw err;
 	}
 
+	// The stamp is what stops these directives running again on data they have already migrated.
 	try {
-		await hdbInfoController.insertHdbUpgradeInfo(upgradeObj[UPGRADE_VERSION]);
+		await hdbInfoController.insertHdbUpgradeInfo(upgradeObj[UPGRADE_VERSION] ?? packageJson.version);
 	} catch (err) {
-		hdbLogger.error("Error updating the 'hdb_info' system table.");
-		hdbLogger.error(err);
+		printToLogAndConsole(
+			`The data upgrade completed, but the new data version could not be recorded in the '${hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME}' table, so Harper will not start. Every restart re-runs the upgrade directives against already-upgraded data, so stop any process supervisor that restarts Harper automatically, then check the logs and contact ${hdbTerms.HDB_SUPPORT_ADDRESS}.`,
+			hdbTerms.LOG_LEVELS.ERROR
+		);
+		throw err;
 	}
 }
 

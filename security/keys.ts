@@ -151,6 +151,12 @@ const privateKeys = new Map();
 // subscription and the private-key hot-reload trigger so both coalesce on the same cadence.
 const TLS_REBUILD_DEBOUNCE_MS = 1500;
 
+// Self-retry backoff cap: a permanently bad record must not cost every selector on every
+// thread a table scan + X509 parse per debounce interval, forever.
+const TLS_FAILURE_RETRY_MAX_DELAY_MS = 300_000;
+// While a failure signature is unchanged, repeat occurrences log a summary at most this often.
+const TLS_FAILURE_SUMMARY_INTERVAL_MS = 3_600_000;
+
 // Debounced rebuild triggers, one per live server TLS selector (registered in createTLSSelector's
 // initialize). When a private key is hot-reloaded on this thread, every live selector re-runs
 // updateTLS so a secure context built with a stale key — or built before this key arrived — is
@@ -271,7 +277,9 @@ export function loadCertificates() {
 									return;
 								}
 
-								promise = certificateTable.put({
+								// Returned so loadAndWatch can roll back its mtime latch if the write fails —
+								// assigned as well to preserve loadCertificates()'s awaited-return contract.
+								return (promise = certificateTable.put({
 									name: certCn,
 									uses: config.uses ?? (configKey.includes('operations') ? ['operations-api'] : []),
 									ciphers: config.ciphers,
@@ -288,7 +296,7 @@ export function loadCertificates() {
 										valid_from: x509Cert.validFrom,
 										valid_to: x509Cert.validTo,
 									},
-								});
+								}));
 							},
 							ca ? 'certificate authority' : 'certificate'
 						);
@@ -341,18 +349,30 @@ const certificateWatchPollers = new Map<string, () => void>();
 function loadAndWatch(path, loadCert, type) {
 	let lastModified;
 	const loadFile = (path, stats?) => {
+		// The latch dedupes chokidar/poll but must mean "last successfully APPLIED", or a failed
+		// apply is deduplicated forever (#2382). Rollbacks are equality-guarded so an old failure
+		// can't unlatch a newer successful reload.
+		const previousModified = lastModified;
+		let modified;
 		try {
 			// chokidar's 'change' event omits stats unless alwaysStat is set (default off in v4), so
 			// stat the file here when it's missing — otherwise the inotify fast path would throw and
 			// silently never reload, leaving only the periodic poll to catch the change.
-			let modified = (stats ?? statSync(path)).mtimeMs;
+			modified = (stats ?? statSync(path)).mtimeMs;
 			if (modified && modified !== lastModified) {
 				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
-				loadCert(readPEM(path));
+				const applied = loadCert(readPEM(path));
+				if (typeof (applied as any)?.then === 'function') {
+					(applied as Promise<unknown>).catch((error) => {
+						logger.error?.(`Error applying ${type}:`, path, error);
+						if (lastModified === modified) lastModified = previousModified;
+					});
+				}
 			}
 		} catch (error) {
 			logger.error?.(`Error loading ${type}:`, path, error);
+			if (modified !== undefined && lastModified === modified) lastModified = previousModified;
 		}
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
@@ -1022,10 +1042,79 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 		let subscribedTable = null;
 		let activeSubscription: Promise<any> | null = null;
 		return ((SNICallback as any).ready = new Promise<void>((resolve, reject) => {
+			// Pass-level failure before `.ready` settles still rejects (boot surfaces it); after,
+			// the only safe response is to keep serving live state and retry.
+			let readySettled = false;
+			const settle = (value?) => {
+				readySettled = true;
+				resolve(value);
+			};
+			// Self-retry state for passes with per-record failures: the signature identifies the
+			// failure set, the delay backs off while it is unchanged, and summaries are rate-limited.
+			let failureSignature = '';
+			let failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
+			let failureRetryTimer;
+			let failureRetryCount = 0;
+			let failureLastSummaryAt = 0;
+			const scheduleFailureRetry = () => {
+				// An armed external rebuild (or an armed retry) will run a pass that re-arms if needed.
+				if (failureRetryTimer || rebuildTimer) return;
+				failureRetryTimer = setTimeout(() => {
+					failureRetryTimer = undefined;
+					updateTLS();
+				}, failureRetryDelay).unref();
+				failureRetryDelay = Math.min(failureRetryDelay * 2, TLS_FAILURE_RETRY_MAX_DELAY_MS);
+			};
+			// Log each failure on a new/changed failure set; while unchanged, stay silent apart from a
+			// rate-limited summary — an un-throttled 1.5s retry would emit ~57k lines/day per selector.
+			const reportFailures = (failures: { cert: any; error: any }[]) => {
+				const signature = failures
+					.map(({ cert, error }) => `${cert.name}: ${error?.message}`)
+					.sort()
+					.join('; ');
+				if (signature !== failureSignature) {
+					failureSignature = signature;
+					failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
+					failureRetryCount = 0;
+					failureLastSummaryAt = Date.now();
+					// A timer armed for the previous signature would run the next pass on its stale
+					// (possibly maxed-out) delay; re-arm fresh for the new failure set.
+					if (failureRetryTimer) {
+						clearTimeout(failureRetryTimer);
+						failureRetryTimer = undefined;
+					}
+					for (const { cert, error } of failures)
+						logger.error?.('Error applying TLS for', cert.name, `on the '${type}' listener`, error);
+				} else {
+					failureRetryCount++;
+					// Stays at error: a stuck rotation must keep an alertable signal — the retained cert
+					// is aging toward its notAfter the whole time.
+					if (Date.now() - failureLastSummaryAt >= TLS_FAILURE_SUMMARY_INTERVAL_MS) {
+						failureLastSummaryAt = Date.now();
+						logger.error?.(
+							`TLS rebuild for the '${type}' listener is still failing for [${failures
+								.map(({ cert }) => cert.name)
+								.join(', ')}] after ${failureRetryCount} retries; serving the last good state`
+						);
+					}
+				}
+			};
+			const clearFailureState = () => {
+				if (failureSignature) {
+					logger.warn?.(`TLS rebuild for the '${type}' listener recovered; all certificates applied`);
+				}
+				failureSignature = '';
+				failureRetryDelay = TLS_REBUILD_DEBOUNCE_MS;
+				failureRetryCount = 0;
+				if (failureRetryTimer) {
+					clearTimeout(failureRetryTimer);
+					failureRetryTimer = undefined;
+				}
+			};
 			function updateTLS() {
 				try {
 					if (databases === undefined) {
-						resolve();
+						settle();
 						return;
 					}
 					if (databases.system?.hdb_certificate === undefined) {
@@ -1055,19 +1144,19 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						scheduleRebuild();
 						return;
 					}
-					// Guards above have returned before touching secureContexts/caCerts, so the retry
-					// path never wipes a previously-published (non-empty) state before failing to
-					// replace it.
-					secureContexts.clear();
-					caCerts.clear();
+					// Transactional publication (#2382): build the whole replacement state off to the
+					// side and reconcile the live maps only after the pass completes, so a failure of
+					// any shape leaves the currently-served state intact.
+					const candidateContexts = new Map();
+					const candidateCAs = new Map();
+					let candidateHasWildcards = false;
 					let bestQuality = 0;
-					// Whether THIS pass produced a default context. The `defaultContext` closure variable
-					// is deliberately never reset (a transient zero-cert pass must keep serving the prior
-					// default while the retry below waits for certs to come back), so it can't be used to
-					// ask "did this pass find anything?" — after the first successful pass it is truthy
-					// forever, which would let a later transient zero-cert rebuild skip the retry and
-					// publish an empty certificates list (the #1998 symptom) on the post-boot path.
+					let candidateDefault;
+					// Whether THIS pass produced a default. The `defaultContext` closure variable is never
+					// reset (a transient zero-cert pass keeps serving the prior default), so keying the
+					// zero-cert retry off it would republish empty post-boot — the #1998 symptom.
 					let defaultContextSetThisPass = false;
+					const failedThisPass: { cert: any; error: any }[] = [];
 					// Track the actual table instance, not just whether we've ever subscribed: resetDatabases()
 					// (copy_db, ITC restart handling) replaces databases.system.hdb_certificate with a new
 					// table object, and a boolean flag would never re-subscribe to it, permanently losing
@@ -1097,24 +1186,28 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							previousSubscription.then((subscription: any) => subscription?.end?.()).catch(() => {});
 						}
 					}
-					for (const cert of databases.system.hdb_certificate.search([])) {
+					// One snapshot drives both loops: separate search() calls own separate read
+					// snapshots, and a write committing between them could publish a renewed leaf
+					// against the previous CA set.
+					const certRecords = Array.from(databases.system.hdb_certificate.search([])) as any[];
+					for (const cert of certRecords) {
 						const certificate = cert.certificate;
 						let certParsed;
 						try {
 							certParsed = new X509Certificate(certificate);
 						} catch (error) {
-							// One unparseable record shouldn't abort the whole pass before any context is
-							// built — the second loop's per-cert try/catch doesn't cover this loop.
-							logger.error?.('Skipping unparseable certificate record', cert.name, error);
+							// A pass failure like any other (throttle + retry). Its caCerts entry can't be
+							// retained — the subject is unrecoverable from a PEM that won't parse.
+							failedThisPass.push({ cert, error });
 							continue;
 						}
 						if (cert.is_authority) {
 							(certParsed as any).asString = certificate;
-							caCerts.set(certParsed.subject, certificate);
+							candidateCAs.set(certParsed.subject, certificate);
 						}
 					}
 
-					for (const cert of databases.system.hdb_certificate.search([])) {
+					for (const cert of certRecords) {
 						try {
 							if (cert.is_authority) {
 								continue;
@@ -1132,8 +1225,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 
 							let certificate = cert.certificate;
 							const certParsed = new X509Certificate(certificate);
-							if (caCerts.has(certParsed.issuer)) {
-								certificate += '\n' + caCerts.get(certParsed.issuer);
+							if (candidateCAs.has(certParsed.issuer)) {
+								certificate += '\n' + candidateCAs.get(certParsed.issuer);
 							}
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
@@ -1141,8 +1234,10 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							const secureOptions = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
-								availableCAs: caCerts, // preserve the record of caCerts even if not used for mTLS here
-								ca: mtlsOptions && Array.from(caCerts.values()),
+								// the live map, not the candidate: its identity survives publication, so contexts
+								// keep seeing the current CA set after later rebuilds
+								availableCAs: caCerts,
+								ca: mtlsOptions && Array.from(candidateCAs.values()),
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
@@ -1158,7 +1253,7 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							(secureContext as any).name = cert.name;
 							(secureContext as any).options = secureOptions;
 							(secureContext as any).quality = quality;
-							(secureContext as any).certificateAuthorities = Array.from(caCerts);
+							(secureContext as any).certificateAuthorities = Array.from(candidateCAs);
 							// we store the first 100 bytes of the certificate just for debug logging
 							(secureContext as any).certStart = certificate.toString().slice(0, 100);
 							// we want to configure SNI handling to pick the right certificate based on all the registered SANs
@@ -1166,14 +1261,14 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							for (let hostname of hostnames) {
 								if (hostname) {
 									if (hostname[0] === '*') {
-										hasWildcards = true;
+										candidateHasWildcards = true;
 										hostname = hostname.slice(1);
 									}
 									// we use this certificate if it has a higher quality than the existing one for this hostname
-									let existingCertQuality = secureContexts.get(hostname)?.quality ?? 0;
+									let existingCertQuality = candidateContexts.get(hostname)?.quality ?? 0;
 									logger.trace?.('Assigning TLS for hostname', hostname, 'if', quality, '>', existingCertQuality);
 									if (quality > existingCertQuality) {
-										secureContexts.set(hostname, secureContext);
+										candidateContexts.set(hostname, secureContext);
 									}
 								} else {
 									logger.error?.('No hostname found for certificate at', (tls as any).certificate);
@@ -1195,55 +1290,139 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 							);
 							if (quality > bestQuality /* && hasIpAddress*/) {
 								// we use this certificate as the default if it has a higher quality than the existing one
-								(SNICallback as any).defaultContext = defaultContext = secureContext;
+								candidateDefault = secureContext;
 								defaultContextSetThisPass = true;
 								bestQuality = quality;
-								if (server) {
-									server.defaultContext = secureContext;
-									// note that we can not set the secure context on the server here, because this creates an
-									// indeterminate situation of whether openssl will use this certificate or the one from the SNI
-									// callback
-									//server.setSecureContext?.(server, secureOptions);
-								}
 							}
 						} catch (error) {
-							logger.error?.('Error applying TLS for', cert.name, error);
+							failedThisPass.push({ cert, error });
 						}
 					}
-					if (liveReload && secureContexts.size === 0 && !defaultContextSetThisPass) {
-						// The not-loaded-yet guard above only covers the table object being absent, not the
-						// table being present but every row failing to apply (e.g. a private key not yet
-						// available on this thread, caught above per-cert). Resolving here would still write
-						// an empty `certificates:` list — the exact customer-visible symptom this PR exists to
-						// fix. Retry on the same debounce instead of publishing that state; a rebuild trigger
-						// (cert-table change or private-key reload, both already wired to scheduleRebuild) is
-						// almost certainly still coming on a normal boot, and this just avoids a window where
-						// we'd otherwise publish empty in the meantime.
-						//
-						// `!defaultContextSetThisPass` because an empty hostname map is not the same as "no TLS
-						// available": a cert whose hostnames resolve to [] (no usable SANs and no CN) builds no
-						// per-hostname entry but still sets a serviceable default context — that listener must
-						// resolve and serve via the default rather than retry forever for hostname entries that
-						// can't exist. It must be the per-pass flag, not the persistent `defaultContext` (see its
-						// declaration note): keying off the closure variable would disarm this retry for every
-						// pass after the first success, reopening the publish-empty window on live rebuilds.
-						//
-						// Gated on liveReload: transient, single-use selectors (getReplicationCert) legitimately
-						// resolve empty — e.g. the bootstrap check `if (!(await getReplicationCert())) { create
-						// one }` in generateCertAuthority's caller depends on an empty resolution meaning "no
-						// cert yet," and must not hang waiting for a cert that this exact call is about to create.
-						//
-						// Latched like the system-db wait above: this retries indefinitely on the debounce, and
-						// an unlatched warn would emit ~57k lines/day from a listener stuck this way.
+
+					// Retain-last-good: a record still in the table whose build failed keeps its live
+					// hostname entries and its default candidacy; deletion remains the way to drop them.
+					// On an mTLS listener whose CA set changed, the retained pair is rebuilt against the
+					// current trust material — new handshakes never see stale trust (established sessions
+					// and outstanding tickets are unaffected, as on any build); if the rebuild fails the entries drop
+					// unless nothing else is servable (the zero-cert guard below then keeps the old
+					// state). Full contract in DESIGN.md "TLS hot-reload".
+					const caSetUnchanged = (previous) => {
+						const builtWith = (previous as any).certificateAuthorities;
+						if (!Array.isArray(builtWith)) return candidateCAs.size === 0;
+						return (
+							builtWith.length === candidateCAs.size &&
+							builtWith.every(([subject, pem]) => candidateCAs.get(subject) === pem)
+						);
+					};
+					const rebuiltRetentions = new Map();
+					const retentionFailures: { cert: any; error: any }[] = [];
+					const retainable = (previous) => {
+						// Without mTLS nothing consulted depends on the CA set — skip the rebuild, but
+						// refresh the CA bookkeeping mirrored into socket metadata for fronting proxies.
+						if (!mtlsOptions || caSetUnchanged(previous)) {
+							(previous as any).certificateAuthorities = Array.from(candidateCAs);
+							return previous;
+						}
+						if (rebuiltRetentions.has(previous)) return rebuiltRetentions.get(previous);
+						try {
+							const secureOptions = {
+								...(previous as any).options,
+								ticketKeys: getTicketKeys(),
+								availableCAs: caCerts,
+								ca: mtlsOptions && Array.from(candidateCAs.values()),
+							};
+							const rebuilt = tls.createSecureContext(secureOptions);
+							(rebuilt as any).name = (previous as any).name;
+							(rebuilt as any).options = secureOptions;
+							(rebuilt as any).quality = (previous as any).quality;
+							(rebuilt as any).certificateAuthorities = Array.from(candidateCAs);
+							(rebuilt as any).certStart = (previous as any).certStart;
+							rebuiltRetentions.set(previous, rebuilt);
+							return rebuilt;
+						} catch (error) {
+							retentionFailures.push({
+								cert: { name: `${(previous as any).name} (retained-context rebuild)` },
+								error,
+							});
+							rebuiltRetentions.set(previous, undefined);
+							return undefined;
+						}
+					};
+					for (const { cert } of failedThisPass) {
+						// Ties go to the incumbent: a hostname the retained context already owned, and the
+						// live default when it is the retained record, must not flip to an equal-quality
+						// sibling because of a transient failure. A context retained only for a hostname
+						// still needs strict > to become the default.
+						const retain = (previous, hostname?) => {
+							const retained = retainable(previous);
+							if (!retained) return;
+							const previousQuality = (retained as any).quality ?? 0;
+							if (hostname !== undefined) {
+								if (previousQuality >= ((candidateContexts.get(hostname) as any)?.quality ?? 0)) {
+									candidateContexts.set(hostname, retained);
+								}
+								if (hostname[0] === '.') candidateHasWildcards = true;
+							}
+							const winsDefault =
+								previous === defaultContext ? previousQuality >= bestQuality : previousQuality > bestQuality;
+							if (winsDefault) {
+								candidateDefault = retained;
+								defaultContextSetThisPass = true;
+								bestQuality = previousQuality;
+							}
+						};
+						for (const [hostname, previous] of secureContexts) {
+							if ((previous as any).name === cert.name) retain(previous, hostname);
+						}
+						if ((defaultContext as any)?.name === cert.name) retain(defaultContext);
+					}
+					if (liveReload && candidateContexts.size === 0 && !defaultContextSetThisPass) {
+						// Every row failed to apply (e.g. keys not yet on this thread). Publishing or
+						// resolving would write an empty `certificates:` list (the #1998 symptom), so keep
+						// live state and retry. `!defaultContextSetThisPass`, not the persistent
+						// `defaultContext`: a cert with no usable hostnames still sets a serviceable
+						// default (must resolve, not retry forever), while the closure variable is truthy
+						// forever after the first success. Gated on liveReload: transient selectors
+						// (getReplicationCert) legitimately resolve empty — bootstrap depends on that
+						// meaning "no cert yet". Warn is latched: unlatched would emit ~57k lines/day.
 						if (server && !server.tlsSelectorWarnedZeroCerts) {
 							server.tlsSelectorWarnedZeroCerts = true;
 							logger.warn?.(
 								`TLS selector for the '${type}' listener resolved zero certificates; retrying every ${TLS_REBUILD_DEBOUNCE_MS}ms`
 							);
 						}
-						scheduleRebuild();
+						if (failedThisPass.length > 0) {
+							// Surface WHY the pass came up empty and put the retry on the backoff.
+							reportFailures(failedThisPass.concat(retentionFailures));
+							scheduleFailureRetry();
+						} else {
+							scheduleRebuild();
+						}
 						return;
 					}
+					// Publish: reconcile the live maps in place (their identity is aliased by
+					// server.secureContexts and every context's availableCAs) and advance all default
+					// references together so SNI and non-SNI traffic can't diverge.
+					secureContexts.clear();
+					for (const [hostname, context] of candidateContexts) secureContexts.set(hostname, context);
+					caCerts.clear();
+					for (const [subject, certificate] of candidateCAs) caCerts.set(subject, certificate);
+					hasWildcards = candidateHasWildcards;
+					if (candidateDefault) {
+						(SNICallback as any).defaultContext = defaultContext = candidateDefault;
+						// note that we can not set the secure context on the server here, because this creates an
+						// indeterminate situation of whether openssl will use this certificate or the one from the SNI
+						// callback
+						if (server) server.defaultContext = candidateDefault;
+					}
+
+					if (failedThisPass.length > 0) {
+						reportFailures(failedThisPass.concat(retentionFailures));
+						scheduleFailureRetry();
+					} else {
+						clearFailureState();
+					}
+
 					// A successful pass ends any warn latches so a later recurrence logs again.
 					if (server) {
 						server.tlsSelectorWaitedForSystemDb = false;
@@ -1269,8 +1448,14 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						}
 					}
 					server?.secureContextsListeners.forEach((listener) => listener());
-					resolve(defaultContext);
+					settle(defaultContext);
 				} catch (error) {
+					if (readySettled) {
+						// Live state is untouched (candidates are pass-local): keep serving it and retry.
+						reportFailures([{ cert: { name: `(${type} rebuild pass)` }, error }]);
+						scheduleFailureRetry();
+						return;
+					}
 					reject(error);
 				}
 			}

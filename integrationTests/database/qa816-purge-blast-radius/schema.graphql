@@ -1,0 +1,39 @@
+# QA-816 — purge blast-radius anchor. Two databases, because a RocksDB transaction log is
+# per-database: `qa816a` is the purge target, `qa816b` is the isolation control. Within each
+# database the `*Churn` table exists only to push the shared log past its rotation size, so the
+# protected tables' audit entries land in a sealed (and therefore purge-eligible) file rather
+# than the active one.
+type Ledger @table(database: "qa816a", audit: true) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}
+
+type QuietLedger @table(database: "qa816a", audit: true) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}
+
+type Churn @table(database: "qa816a", audit: true) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}
+
+type RemoteLedger @table(database: "qa816b", audit: true) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}
+
+type RemoteChurn @table(database: "qa816b", audit: true) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	seq: Int
+	payload: String
+}
