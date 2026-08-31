@@ -73,6 +73,10 @@ impl SearchScratch {
 
     #[inline]
     fn visit(&mut self, id: u32) -> bool {
+        // ids minted by concurrent inserts after begin() can exceed the sizing snapshot
+        if id as usize >= self.visited.len() {
+            self.visited.resize(id as usize + 1024, 0);
+        }
         let slot = &mut self.visited[id as usize];
         if *slot == self.epoch {
             false
@@ -93,9 +97,24 @@ pub struct SearchStats {
     pub visits: u64,
 }
 
+#[inline]
+fn bit_allowed(filter: Option<&[u8]>, id: u32) -> bool {
+    match filter {
+        None => true,
+        Some(bits) => {
+            let byte = (id >> 3) as usize;
+            byte < bits.len() && bits[byte] & (1 << (id & 7)) != 0
+        }
+    }
+}
+
 /// Beam search within one layer, starting from `entry`. Level 0 reads slot adjacency;
 /// upper levels read the resident upper map. Returns (id, distance) ascending by distance.
 /// Assumes scratch.begin() was called for this query; entry is marked visited here.
+///
+/// `filter`: optional allow-bitset over node ids (bit i of byte i>>3). Filtered-out nodes
+/// are traversed (their edges route) but excluded from results — ACORN-style — with
+/// `visit_budget` bounding total visits so a selective filter terminates.
 pub fn search_layer(
     graph: &Graph,
     query: &Query,
@@ -105,12 +124,16 @@ pub fn search_layer(
     level: u8,
     scratch: &mut SearchScratch,
     stats: &mut SearchStats,
+    filter: Option<&[u8]>,
+    visit_budget: u64,
 ) -> Vec<(u32, f32)> {
     let mut candidates = BinaryHeap::new();
     let mut results: BinaryHeap<Result_> = BinaryHeap::new();
     scratch.visit(entry);
     candidates.push(Candidate { distance: entry_dist, id: entry });
-    results.push(Result_ { distance: entry_dist, id: entry });
+    if bit_allowed(filter, entry) {
+        results.push(Result_ { distance: entry_dist, id: entry });
+    }
 
     // take() the scratch neighbor buffer to sidestep the double-borrow of scratch
     let mut nbuf = std::mem::take(&mut scratch.neighbors);
@@ -118,6 +141,9 @@ pub fn search_layer(
     while let Some(c) = candidates.pop() {
         let worst = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
         if results.len() >= ef && c.distance > worst {
+            break;
+        }
+        if stats.visits >= visit_budget {
             break;
         }
         if level == 0 {
@@ -143,9 +169,11 @@ pub fn search_layer(
                 let worst = results.peek().map(|r| r.distance).unwrap_or(f32::INFINITY);
                 if results.len() < ef || d < worst {
                     candidates.push(Candidate { distance: d, id: nid });
-                    results.push(Result_ { distance: d, id: nid });
-                    if results.len() > ef {
-                        results.pop();
+                    if bit_allowed(filter, nid) {
+                        results.push(Result_ { distance: d, id: nid });
+                        if results.len() > ef {
+                            results.pop();
+                        }
                     }
                 }
             }
@@ -219,7 +247,38 @@ pub fn search(
         None => return (Vec::new(), stats),
     };
     let (ep, ep_dist) = greedy_descend(graph, query, entry_id, entry_dist, entry_level, 0, &mut stats);
-    let mut out = search_layer(graph, query, ep, ep_dist, ef, 0, scratch, &mut stats);
+    let mut out = search_layer(graph, query, ep, ep_dist, ef, 0, scratch, &mut stats, None, u64::MAX);
+    out.truncate(k);
+    (out, stats)
+}
+
+/// Full search with an optional allow-bitset filter. `filter_expansion` multiplies ef into
+/// the visit budget when a filter is present (matching the JS filterExpansion semantics).
+pub fn search_filtered(
+    graph: &Graph,
+    query: &Query,
+    k: usize,
+    ef: usize,
+    filter: Option<&[u8]>,
+    filter_expansion: usize,
+    scratch: &mut SearchScratch,
+) -> (Vec<(u32, f32)>, SearchStats) {
+    let mut stats = SearchStats { visits: 0 };
+    let (entry_id, entry_level) = graph.file.entry_point();
+    if entry_id == NO_ID {
+        return (Vec::new(), stats);
+    }
+    scratch.begin_public(graph.file.id_high_water());
+    let entry_dist = match graph.distance_to(entry_id, query) {
+        Some(d) => {
+            stats.visits += 1;
+            d
+        }
+        None => return (Vec::new(), stats),
+    };
+    let (ep, ep_dist) = greedy_descend(graph, query, entry_id, entry_dist, entry_level, 0, &mut stats);
+    let budget = if filter.is_some() { (ef * filter_expansion) as u64 } else { u64::MAX };
+    let mut out = search_layer(graph, query, ep, ep_dist, ef, 0, scratch, &mut stats, filter, budget);
     out.truncate(k);
     (out, stats)
 }

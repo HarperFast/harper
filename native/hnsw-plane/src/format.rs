@@ -45,18 +45,42 @@ pub struct PlaneFile {
     pub dims: usize,
     pub layer0_cap: usize,
     pub slot_size: usize,
+    /// Slots per 4 KB page under page-grouped addressing; 0 = packed (slots may straddle
+    /// pages). Grouped is chosen at create when the per-page waste is small (e.g. 1,344 B
+    /// slots: 3/page, 64 B waste). Straddling only costs on cold faults, but the layout is
+    /// header-pinned so it must be decided before any data exists.
+    pub slots_per_page: usize,
 }
+
+const PAGE: usize = 4096;
+const H_SLOTS_PER_PAGE: usize = 20; // u16
 
 fn slot_size_for(dims: usize, layer0_cap: usize) -> usize {
     let raw = S_VECTOR + dims + layer0_cap * 4;
     raw.next_multiple_of(64) // cache-line align
 }
 
+fn slots_per_page_for(slot_size: usize) -> usize {
+    if slot_size > PAGE {
+        return 0;
+    }
+    let per = PAGE / slot_size;
+    let waste = PAGE - per * slot_size;
+    // group when waste is under ~3% of the page; otherwise pack
+    if waste <= 128 { per } else { 0 }
+}
+
 impl PlaneFile {
     /// Create a new plane file with capacity for `max_nodes` (sparse; pages materialize on write).
     pub fn create(path: &Path, dims: usize, layer0_cap: usize, max_nodes: u64) -> io::Result<Self> {
         let slot_size = slot_size_for(dims, layer0_cap);
-        let len = HEADER_SIZE as u64 + max_nodes * slot_size as u64;
+        let slots_per_page = slots_per_page_for(slot_size);
+        let data_len = if slots_per_page > 0 {
+            max_nodes.div_ceil(slots_per_page as u64) * PAGE as u64
+        } else {
+            max_nodes * slot_size as u64
+        };
+        let len = HEADER_SIZE as u64 + data_len;
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
         file.set_len(len)?;
         let mut map = unsafe { MmapMut::map_mut(&file)? };
@@ -66,10 +90,11 @@ impl PlaneFile {
         map[H_QUANT] = 0;
         map[H_LAYER0_CAP..H_LAYER0_CAP + 2].copy_from_slice(&(layer0_cap as u16).to_le_bytes());
         map[H_SLOT_SIZE..H_SLOT_SIZE + 4].copy_from_slice(&(slot_size as u32).to_le_bytes());
+        map[H_SLOTS_PER_PAGE..H_SLOTS_PER_PAGE + 2].copy_from_slice(&(slots_per_page as u16).to_le_bytes());
         map[H_ENTRY_ID..H_ENTRY_ID + 4].copy_from_slice(&NO_ID.to_le_bytes());
         map[H_FREELIST_HEAD..H_FREELIST_HEAD + 8]
             .copy_from_slice(&((NO_ID as u64) | 0u64 << 32).to_le_bytes());
-        Ok(PlaneFile { map, dims, layer0_cap, slot_size })
+        Ok(PlaneFile { map, dims, layer0_cap, slot_size, slots_per_page })
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -83,12 +108,18 @@ impl PlaneFile {
         let dims = u16::from_le_bytes(map[H_DIMS..H_DIMS + 2].try_into().unwrap()) as usize;
         let layer0_cap = u16::from_le_bytes(map[H_LAYER0_CAP..H_LAYER0_CAP + 2].try_into().unwrap()) as usize;
         let slot_size = u32::from_le_bytes(map[H_SLOT_SIZE..H_SLOT_SIZE + 4].try_into().unwrap()) as usize;
-        Ok(PlaneFile { map, dims, layer0_cap, slot_size })
+        let slots_per_page = u16::from_le_bytes(map[H_SLOTS_PER_PAGE..H_SLOTS_PER_PAGE + 2].try_into().unwrap()) as usize;
+        Ok(PlaneFile { map, dims, layer0_cap, slot_size, slots_per_page })
     }
 
     #[inline]
     pub fn slot_ptr(&self, id: u32) -> *const u8 {
-        unsafe { self.map.as_ptr().add(HEADER_SIZE + id as usize * self.slot_size) }
+        let off = if self.slots_per_page > 0 {
+            (id as usize / self.slots_per_page) * PAGE + (id as usize % self.slots_per_page) * self.slot_size
+        } else {
+            id as usize * self.slot_size
+        };
+        unsafe { self.map.as_ptr().add(HEADER_SIZE + off) }
     }
 
     #[inline]

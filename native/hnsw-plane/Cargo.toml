@@ -5,13 +5,20 @@ edition = "2021"
 description = "Native HNSW traversal plane: mmap fixed-slot graph file + off-loop search"
 license = "MIT"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 memmap2 = "0.9"
+napi = { version = "2", default-features = false, features = ["napi8"], optional = true }
+napi-derive = { version = "2", optional = true }
+
+[build-dependencies]
+napi-build = "2"
 
 [features]
 default = []
-# napi bindings added in phase 1 integration; core stays buildable standalone
-# napi = ["dep:napi", "dep:napi-derive"]
+napi = ["dep:napi", "dep:napi-derive"]
 
 [[bin]]
 name = "bench"

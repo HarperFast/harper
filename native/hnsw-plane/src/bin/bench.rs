@@ -2,7 +2,7 @@
 //! per-visit cost — the number that decides whether the native plane hits its 0.25–0.4 µs
 //! budget (JS baseline: 4.34 µs/visit at 5M/ef 512).
 //!
-//! Usage: bench [n=100000] [dims=768] [queries=200] [ef=512] [path=/tmp/bench.hnsw] [cap=64]
+//! Usage: bench [n=100000] [dims=768] [queries=200] [ef=512] [path=/tmp/bench.hnsw] [cap=128]
 
 use hnsw_plane::distance::Query;
 use hnsw_plane::insert::{insert, InsertParams};
@@ -83,7 +83,7 @@ fn main() {
     let queries: usize = args.get(3).and_then(|a| a.parse().ok()).unwrap_or(200);
     let ef: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(512);
     let path: PathBuf = args.get(5).map(Into::into).unwrap_or_else(|| "/tmp/bench.hnsw".into());
-    let layer0_cap: usize = args.get(6).and_then(|a| a.parse().ok()).unwrap_or(64);
+    let layer0_cap: usize = args.get(6).and_then(|a| a.parse().ok()).unwrap_or(128);
 
     // Reuse an existing plane file when it already holds exactly n nodes at the same cap
     // (ef sweeps without rebuilding). The corpus RNG below replays identically.

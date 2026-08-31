@@ -166,6 +166,38 @@ impl Graph {
         }
     }
 
+    /// Atomic read-modify-write of a node's layer-0 neighbor list under its seqlock.
+    /// `f` may read OTHER slots (e.g. distance_between for pruning) — those are plain
+    /// unlocked reads, so no lock ordering issue — but must not lock this graph's slots.
+    /// Two-step read-then-write callers race (concurrent reverse-edge adds lose edges);
+    /// all edge maintenance goes through here. Returns false for absent/deleted nodes.
+    pub fn update_neighbors<F: FnOnce(&mut Vec<u32>)>(&self, id: u32, f: F) -> bool {
+        if !self.in_range(id) {
+            return false;
+        }
+        let seq = self.file.seq_atomic(id);
+        let _guard = seqlock::write_lock(seq);
+        let p = self.file.slot_ptr_mut(id);
+        let dims = self.file.dims;
+        let cap = self.file.layer0_cap;
+        unsafe {
+            let flags = *p.add(S_FLAGS);
+            if flags & FLAG_VALID == 0 || flags & FLAG_DELETED != 0 {
+                return false;
+            }
+            let degree = u16::from_le((p.add(S_DEGREE) as *const u16).read_unaligned()) as usize;
+            let base = p.add(S_VECTOR + dims) as *mut u32;
+            let mut list: Vec<u32> = (0..degree.min(cap)).map(|i| u32::from_le(base.add(i).read_unaligned())).collect();
+            f(&mut list);
+            list.truncate(cap);
+            (p.add(S_DEGREE) as *mut u16).write_unaligned((list.len() as u16).to_le());
+            for (i, n) in list.iter().enumerate() {
+                base.add(i).write_unaligned(n.to_le());
+            }
+        }
+        true
+    }
+
     /// Replace only the neighbor list (back-edge maintenance path).
     pub fn write_neighbors(&self, id: u32, neighbors: &[u32]) {
         debug_assert!(neighbors.len() <= self.file.layer0_cap);
