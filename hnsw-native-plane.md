@@ -280,7 +280,26 @@ Open:
 - ~~Reservation growth~~ — decided (Kris, 2026-08-31): a generous sparse reservation at create
   is the model; mremap-based growth is a possible later enhancement, not a requirement.
 
-## 11. Prototype measurements (kzyp Linux box, 768-d int8, ef 512, cap 64)
+## 11. Known phase-1 limitations (reviewed, accepted, tracked)
+
+From the round-1 cross-model review (codex + gemini + cursor-grok + harper-domain), two
+architectural findings are deliberately deferred rather than fixed in phase 1 — both are
+bounded by the phase-1 contract (opt-in flag, CF authoritative, plane derived):
+
+- **Mirroring runs at the indexStore.put sites, inside the transaction.** A rolled-back
+  transaction can leave phantom nodes in the plane (the CF never had them). Phantom ids are
+  filtered at record load (missing record → SKIP), so results can be transiently short by
+  the phantom count; the garbage accumulates only at the rollback rate. The structural fix —
+  driving the mirror from committed state (commit callback / txnlog consumer) — is the
+  phase-2 "watermark/replay wiring" work item and also subsumes the residual lost-write
+  window during attach retry (mirror calls during the 250 ms backoff are dropped and heal
+  only on the node's next touch).
+- **The async custom-index search contract** (`resources/search.ts`): a plane-backed search
+  returns a promise-backed, async-only iterable; synchronous consumers of custom-index
+  results would throw. Harper's search paths tolerate MaybePromise, and one full-stack test
+  covers the async path; widening coverage of other consumers is follow-up.
+
+## 12. Prototype measurements (kzyp Linux box, 768-d int8, ef 512, cap 64)
 
 Gaussian-mixture corpus matching `benchmarks/hnsw-scale.js` calibration (intra-cos 0.75,
 clusters = N/500). JS baseline for scale: 4.34 µs/visit; 1M efC-200 anchor: p50 7.2 ms,
