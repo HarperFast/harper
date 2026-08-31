@@ -495,6 +495,26 @@ describe('mcp/resources', () => {
 			);
 			assert.equal(JSON.stringify(body).includes('internal only'), false);
 		});
+
+		it('does not traverse non-enumerable relationship metadata', async () => {
+			const books = { name: 'books', type: 'array', elements: { name: '', type: 'Book' } };
+			const author = { name: 'author', type: 'Author' };
+			Object.defineProperty(books.elements, 'properties', { value: [author] });
+			Object.defineProperty(author, 'properties', { value: [books] });
+			const Authors = makeTableResource({
+				databaseName: 'data',
+				tableName: 'author',
+				attributes: [{ name: 'id', type: 'String' }, books],
+			});
+			_setResourcesForTest(makeFakeResources([['Authors', Authors]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/author',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true);
+			assert.equal(JSON.stringify(JSON.parse(res.contents[0].text)).includes('"properties"'), false);
+		});
 	});
 
 	describe('readResource — harper://operations', () => {

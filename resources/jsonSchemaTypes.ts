@@ -163,6 +163,8 @@ export function projectAttributesToProperties(attributes: AttributeLike[]): Reco
  */
 const MAX_SCHEMA_DEPTH = 100;
 
+export class SchemaTraversalError extends Error {}
+
 function fragmentToAttribute(
 	name: string,
 	fragment: JsonSchemaFragment,
@@ -325,8 +327,8 @@ function emitAttributeSchema(
 ): JsonSchemaFragment | undefined {
 	if (attr.hidden && !options.ignoreHidden) return undefined;
 	if (depth > MAX_SCHEMA_DEPTH)
-		throw new RangeError(`Schema attribute "${attr.name}" exceeds ${MAX_SCHEMA_DEPTH} levels`);
-	if (ancestors.has(attr)) throw new TypeError(`Schema attribute "${attr.name}" contains a cycle`);
+		throw new SchemaTraversalError(`Schema attribute "${attr.name}" exceeds ${MAX_SCHEMA_DEPTH} levels`);
+	if (ancestors.has(attr)) throw new SchemaTraversalError(`Schema attribute "${attr.name}" contains a cycle`);
 	ancestors.add(attr);
 	try {
 		const fragment: JsonSchemaFragment = {};

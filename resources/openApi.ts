@@ -38,7 +38,8 @@ function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | und
 
 /** Shared by the nested emitter and the top-level attribute loop so both warn on an unknown type. */
 function openApiPrimitive(type: string | undefined, attributeName: string | undefined): JsonSchemaFragment {
-	if (type === 'Any' || type === undefined) return {};
+	if (type === 'Any') return { format: type };
+	if (type === undefined) return {};
 	const resolved = resolveDeclaredType(type, `OpenAPI property "${attributeName || '<unnamed>'}"`);
 	if (!resolved) return {};
 	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
@@ -180,7 +181,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 
 		if (attributes) {
 			for (const attr of attributes) {
-				const { type, name, elements, relationship, definition, nullable, description, hidden } = attr;
+				const { type, name, elements, relationship, definition, nullable, hidden } = attr;
 				if (hidden) continue;
 				const def = definition ?? elements?.definition;
 				if (def) includeDefinitionInSchema(def);
@@ -195,8 +196,6 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						type === 'array'
 							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } }
 							: { $ref: SCHEMA_COMP_REF + def.type };
-				} else if (type === 'Any') {
-					props[name] = description ? { format: type, description } : { format: type };
 				} else {
 					props[name] = attributeToOpenApiSchema(attr) ?? {};
 				}

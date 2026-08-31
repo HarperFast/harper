@@ -331,6 +331,14 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		assert.equal(openapi.a.type, 'string');
 		assert.equal(openapi.b.type, 'integer');
 	});
+
+	it('preserves constraints on an `Any` property across both surfaces', () => {
+		const { mcp, openapi } = bothSurfaces({ payload: { type: 'Any', enum: ['a', 'b'], const: 'a' } });
+		assert.deepEqual(mcp.payload.enum, ['a', 'b']);
+		assert.equal(mcp.payload.const, 'a');
+		assert.deepEqual(openapi.payload.enum, ['a']);
+		assert.equal(openapi.payload.format, 'Any');
+	});
 });
 
 // Emitter-level behaviors that are cheaper to assert directly than through both surfaces.
