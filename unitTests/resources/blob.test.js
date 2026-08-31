@@ -145,6 +145,35 @@ describe('Blob test', () => {
 		retrievedBytes = await sliced.bytes();
 		assert(retrievedBytes.equals(random.slice(300, 400)));
 	});
+	it('decodes a blob created from a plain Uint8Array, not just from a Buffer', async () => {
+		// Uint8Array.prototype.toString() joins byte values with commas instead of decoding UTF-8, so a
+		// source that is not already a Buffer has to be normalized when the blob is constructed
+		const text = 'blob contents \u2014 \u2705 '.repeat(4000);
+		const content = Buffer.from(text);
+		assert(content.length > 65536); // comfortably over FILE_STORAGE_THRESHOLD, so it is externalized
+		// a non-zero-offset view inside a larger allocation: the normalized Buffer must carry the source's
+		// offset and length across, or the surrounding bytes leak into the blob
+		const sentinel = Buffer.alloc(64, 0xa5);
+		const backing = Buffer.concat([sentinel, content, sentinel]);
+		const source = new Uint8Array(backing.buffer, backing.byteOffset + sentinel.length, content.length);
+		assert(!Buffer.isBuffer(source));
+
+		const blob = await createBlob(source, { type: 'text/plain' });
+		await BlobTest.put({ id: 1, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert.notEqual(filePath, null); // the payload is in a file, not stored inline in the record
+		assert.equal(blob.size, content.length);
+		// the writer still holds the in-memory content, which is the path that produced byte values
+		assert.equal(await blob.text(), text);
+		assert.equal(blob.toJSON(), text);
+		assert.equal(await blob.slice(0, 100).text(), content.subarray(0, 100).toString());
+
+		const record = await BlobTest.get(1);
+		assert.notStrictEqual(record.blob, blob); // a separate instance, reading the stored file
+		assert.equal(getFilePathForBlob(record.blob), filePath);
+		assert.equal(await record.blob.text(), text);
+		assert((await record.blob.bytes()).equals(content)); // none of the surrounding bytes were stored
+	});
 	it('round-trips a compressed blob via bytes() and stream()', async () => {
 		// compressible payload, comfortably over FILE_STORAGE_THRESHOLD so it is file-backed
 		let original = Buffer.from('compressible blob payload '.repeat(2000));
