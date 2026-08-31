@@ -577,9 +577,7 @@ describe('activation transaction', () => {
 		const failures = await recoverInterruptedActivations(root);
 
 		assert.strictEqual(await readLive(root, 'web'), 'new', 'its sibling was still settled');
-		// And NO verdict for the unreadable one. It holds no journal, so it never had an unsettled
-		// activation — a marker written here would outlive it and, once that sidecar became readable, be
-		// attributed to a live component that every worker would then refuse permanently.
+		// And no verdict for it: a journal-less deployment never held an unsettled activation.
 		assert.ok(!failures.has('d1'), 'a journal-less deployment gets no unsettled verdict');
 		assert.ok(
 			!existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1', '.unsettled')),
@@ -847,6 +845,28 @@ describe('activation transaction', () => {
 		// Its OWN payload error: the settled residue was passed over, not treated as ambiguous evidence.
 		await assert.rejects(() => prepareApplication(app), /payload delivery failed/);
 		assert.strictEqual(await readLive(root, 'healthy'), 'HEALTHY v1\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('records no verdict when settled residue cannot be swept, even with a readable owner', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const root = await newRoot('unsweepable-residue');
+		// The other half of the same trap: ownership reads fine, so this enters the locked cleanup, and an
+		// `rm` that keeps failing used to be recorded against `web` — refusing a live component on every
+		// worker for a deployment that provably never held an unsettled activation.
+		const staging = path.join(root, DEPLOY_STAGING_DIR);
+		const settled = path.join(staging, 'd-settled');
+		await fs.mkdir(settled, { recursive: true });
+		await fs.writeFile(path.join(settled, '.component'), 'web');
+		await writeTree(path.join(root, 'web'), 'CURRENT\n');
+		await fs.chmod(staging, 0o500); // the directory entry cannot be removed
+
+		const failures = await recoverInterruptedActivations(root);
+		await fs.chmod(staging, 0o700);
+
+		assert.strictEqual(failures.size, 0, 'a sweep failure is cleanup noise, not an unsettled activation');
+		assert.ok(!existsSync(path.join(settled, '.unsettled')), 'and nothing was written into it');
+		assert.strictEqual(await readLive(root, 'web'), 'CURRENT\n', 'the live component is untouched');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });

@@ -343,11 +343,14 @@ written, since `.complete` is what vouches for them. Recovery runs before `insta
 installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
 
 The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
-refuses to restore a rollback record while an unsettled journal names that component. Ordering settlement
+refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
+own `component` field OR by the deployment's ownership sidecar, whichever can be read, because restoring is
+the destructive step and takes the conservative union while settlement keeps the precise intersection.
+Ordering settlement
 ahead of it is not enough, because a worker can be respawned mid-activation with no settlement in front of
 it, and settlement that _fails_ deliberately keeps the journal while the same boot carries on. The refusal
 is scoped to the branch that actually restores a tree — a record that was already retired has nothing to
-restore, so that component still loads. Where no journal names the component, the legacy pass applies
+restore, so that component still loads. Where no journal is attributable to the component, the legacy pass applies
 unchanged: a crash in that path also leaves an in-progress aside with the live tree present, and retiring
 it there would keep a half-written tree instead of restoring the good one.
 

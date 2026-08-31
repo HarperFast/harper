@@ -1591,16 +1591,26 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			// has no journal yet, because the journal is written after build and validation — so an unlocked
 			// delete here removes a live build out from under it.
 			let owner: string | undefined;
+			// Set only if a journal turns up under the lock. That is the one thing in this branch that IS an
+			// activation, so it is the only thing whose failure may be recorded as an unsettled one.
+			let appearedJournal: ActivationJournal | undefined;
 			const removeResidue = async () => {
 				// Re-read UNDER the lock, and do not swallow: the first scan raced a deploy that can publish a
 				// journal before releasing the lock, so a journal found now must be settled rather than deleted.
 				// Treating a read error as "no journal" would delete the evidence instead.
 				const appeared = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
 				if (appeared) {
+					appearedJournal = appeared;
 					await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared);
 					return;
 				}
-				await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+				// Cleanup, not settlement. There was no activation here — this is most often the residue a
+				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
+				// make anything unsettled, and recording it would refuse a live component on every worker
+				// until the filesystem fault cleared.
+				await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
+					logger.warn(`Could not clean up deploy staging ${deploymentDirPath}:`, errorForLog(error))
+				);
 			};
 			// Attribution FIRST, in its own scope, and its failure is not a verdict. A journal-less directory
 			// is what a successful settlement leaves when its best-effort sweep fails, so a `fail()` here
@@ -1618,10 +1628,8 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				);
 				continue;
 			}
-			// Scoped to THIS deployment, like the journaled branch below. A lock timeout, or an EIO from the
-			// under-lock re-read, used to abort the entire scan: every later deployment went unsettled and
-			// unmarked, and on a worker the caller only warns before running the legacy pass anyway. A failure
-			// from here IS a verdict — `removeResidue` settles a journal that appeared under the lock.
+			// Scoped to THIS deployment, like the journaled branch below: a lock timeout or an EIO here used to
+			// abort the entire scan, leaving every later deployment unsettled and unmarked.
 			try {
 				if (owner) {
 					await withComponentPreparationLock(join(componentsRootDirPath, owner), removeResidue, {
@@ -1639,7 +1647,14 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					logger.trace?.(`Leaving unowned deploy staging ${deploymentDirPath} in place: no component names it`);
 				}
 			} catch (error) {
-				await fail(owner ?? deployment.name, error);
+				// A verdict only for a journal that appeared under the lock. A lock a live deploy is holding,
+				// or a directory that cannot be swept, is not an unsettled activation.
+				if (appearedJournal) await fail(appearedJournal.component, error);
+				else
+					logger.warn(
+						`Could not settle deploy staging ${deploymentDirPath}, which holds no activation journal:`,
+						errorForLog(error instanceof Error ? error : new Error(String(error)))
+					);
 			}
 			continue;
 		}
