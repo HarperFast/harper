@@ -17,6 +17,21 @@ const {
 
 const mode = process.argv[2];
 
+// How long to wait for an asynchronous watch failure. On Windows it is the error itself we are
+// waiting for, and delivery competes with everything else on a loaded CI runner; elsewhere nothing
+// will ever arrive and this is only a settle period, so it stays short. Cases that can observe the
+// error poll for it and exit early, so the deadline is a ceiling, not a sleep.
+const DELIVERY_DEADLINE_MS = process.platform === 'win32' ? 5000 : 1500;
+
+function waitForDelivery(isDelivered, onDeadline) {
+	const deadline = Date.now() + DELIVERY_DEADLINE_MS;
+	const poll = setInterval(() => {
+		if (!isDelivered() && Date.now() < deadline) return;
+		clearInterval(poll);
+		onDeadline();
+	}, 50);
+}
+
 if (mode === 'warn-threshold') {
 	// No watcher needed: claim a run of synthetic lost-watch errors and let the caller count the
 	// warnings that reach the log. Warn is the default level, so this is the visible cadence.
@@ -52,10 +67,24 @@ const watcher = guardedWatch('.', { cwd: watched, persistent: false, followSymli
 watcher.on('ready', () => {
 	if (mode === 'prepend-ordering') {
 		fs.rmSync(watched, { recursive: true, force: true });
+		// The handler above exits as soon as it runs, so reaching this is the failure.
 		setTimeout(() => {
 			process.stdout.write('thread-handler never ran\n');
 			process.exit(3);
-		}, 1500);
+		}, DELIVERY_DEADLINE_MS);
+		return;
+	}
+
+	if (mode === 'frozen-claim') {
+		// A lost-watch-shaped error the guard cannot mark handled: `isHandled` is unassignable on a
+		// frozen object, so classifying it throws. That throw happens inside the guard's
+		// 'uncaughtException' listener, which runs first, so an unprotected guard would replace this
+		// error's report with a TypeError and exit 7 instead of leaving it fatal on its own terms.
+		setTimeout(() => {
+			throw Object.freeze(
+				Object.assign(new Error('frozen lost watch'), { code: 'EPERM', syscall: 'watch', filename: null })
+			);
+		}, 10);
 		return;
 	}
 
@@ -81,8 +110,11 @@ watcher.on('ready', () => {
 	// The delete is what raises `EPERM: operation not permitted, watch` on Windows,
 	// asynchronously, on a native watcher chokidar never attached a listener to.
 	fs.rmSync(watched, { recursive: true, force: true });
-	setTimeout(() => {
-		process.stdout.write(`survived lostWatchCount=${_lostNativeWatchCountForTests()}\n`);
-		process.exit(0);
-	}, 1500);
+	waitForDelivery(
+		() => _lostNativeWatchCountForTests() > 0,
+		() => {
+			process.stdout.write(`survived lostWatchCount=${_lostNativeWatchCountForTests()}\n`);
+			process.exit(0);
+		}
+	);
 });

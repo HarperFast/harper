@@ -191,7 +191,18 @@ export function claimLostNativeWatchError(error: unknown): boolean {
 let lostNativeWatchGuardInstalled = false;
 
 function handleUncaughtException(error: unknown): void {
-	if (claimLostNativeWatchError(error)) return;
+	let claimed = false;
+	try {
+		claimed = claimLostNativeWatchError(error);
+	} catch {
+		// Classifying must never be the thing that kills the process. A throw from inside an
+		// 'uncaughtException' listener replaces Node's report with this one and exits 7, and this
+		// listener runs first, so it would also cost the thread-level handlers their turn. A frozen
+		// error (`isHandled` unassignable) or a throwing property getter lands here; "not ours" is
+		// the safe reading, leaving the original exception fatal exactly as it would have been.
+		claimed = false;
+	}
+	if (claimed) return;
 	// Not ours. Node suppresses its default fatal handling as soon as *any*
 	// 'uncaughtException' listener exists, so if this guard is the only listener
 	// its mere presence would turn unrelated crashes into silent hangs. Step out

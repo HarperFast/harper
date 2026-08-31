@@ -178,8 +178,8 @@ describe('watcherFallback', () => {
 		// uncaughtException listener regardless, so ordering is the whole mechanism.
 		it('runs ahead of a thread-level handler registered before the first watcher', async function () {
 			this.timeout(30000);
-			const { code, stdout, stderr } = await runHarness('prepend-ordering');
 			if (process.platform !== 'win32') return this.skip(); // only Windows raises the error
+			const { code, stdout, stderr } = await runHarness('prepend-ordering');
 			assert.equal(code, 0, `harness exited ${code}: ${stderr}`);
 			assert.match(stdout, /thread-handler saw isHandled=true/);
 		});
@@ -202,6 +202,19 @@ describe('watcherFallback', () => {
 			const { code, stderr } = await runHarness('sync-watch-failure');
 			assert.equal(code, 1);
 			assert.match(stderr, /ENOENT/);
+		});
+
+		// The guard runs before every other uncaughtException listener, so a throw out of its own
+		// classification would cost the process both the original error's report (exit 7, with the
+		// guard's TypeError in its place) and the thread-level handlers' turn. A frozen error of
+		// exactly the claimed shape is the reachable version of that: reading it succeeds, marking
+		// it handled does not.
+		it('stays out of the way when it cannot mark an error handled', async function () {
+			this.timeout(30000);
+			const { code, stderr } = await runHarness('frozen-claim');
+			assert.equal(code, 1, `expected the original error to stay fatal, got exit ${code}: ${stderr}`);
+			assert.match(stderr, /frozen lost watch/);
+			assert.doesNotMatch(stderr, /not extensible/);
 		});
 	});
 });
