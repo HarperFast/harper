@@ -255,12 +255,15 @@ describe('mcp/tools/application — registration', () => {
 		assert.deepEqual(names.sort(), ['get_ReadOnly', 'search_ReadOnly']);
 	});
 
-	it('manufactures create_ for a real Resource subclass that only overrides update() (Table.ts pattern)', () => {
+	it('manufactures create_ for a real Resource subclass that overrides update() and create(), not post() (Table.ts pattern)', () => {
 		class Writable extends Resource {
 			async get(target) {
 				return { id: target.id, name: 'sample' };
 			}
 			async update(target, record) {
+				return record;
+			}
+			async create(target, record) {
 				return record;
 			}
 		}
