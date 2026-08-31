@@ -28,6 +28,13 @@ export class ApplicationScope {
 	allowedPath?: string;
 	runtimeRoot?: string;
 	config: any;
+	/**
+	 * Private forks of the databases this application declared, keyed by the LOGICAL name its code
+	 * uses (`data`). Present only for a branched application; `getHarperExports` reads it to build
+	 * the scoped `databases` binding, and an unbranched scope leaves it undefined so that binding
+	 * stays the process-wide singleton by identity.
+	 */
+	branches?: Map<string, { tables: any }>;
 	moduleCache: any; // used by the loader to retain a cache of modules, type is an internal detail of the loader
 	#runtimeModules: RuntimeModuleTracker;
 	constructor(name: string, resources: Resources, server: Server, isInternal = false) {

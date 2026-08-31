@@ -615,6 +615,12 @@ async function deployComponent(req) {
 		}
 		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
 		if (req.host !== undefined) applicationConfig.host = req.host;
+		// Same convention as host/urlPath above, and for the same reason: a package redeploy rebuilds
+		// this application's whole root-config entry from request fields, so a deployment-level key that
+		// isn't re-supplied here is silently dropped -- for branchedDatabases specifically, that means an
+		// application which believed it had a private fork resumes sharing the base after the next
+		// restart, with nothing in this operation to say so.
+		if (req.branchedDatabases !== undefined) applicationConfig.branchedDatabases = req.branchedDatabases;
 		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
 		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;

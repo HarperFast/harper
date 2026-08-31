@@ -32,8 +32,11 @@ npm run test:unit:components       # Component/plugin system tests
 npm run test:unit:security         # Security tests
 npm run test:unit:apitests         # API tests (stops running server first)
 npm run test:unit:lmdb             # LMDB storage engine tests
+npm run test:unit:windows          # The Windows CI gate — a scoped slice, see below
 npm run test:integration           # Full integration test suite
 ```
+
+**Windows:** `test:unit:windows` is what the `unit-test-windows` CI job runs, and it covers only the part of the unit tree verified green on Windows. If you touch platform-specific code, run it — the Ubuntu jobs will not catch a Windows-only break. `unitTests/windowsGate.mjs` holds the scope and the list of suites still excluded, each with the reason; shrinking that list is welcome work. The gate runs one mocha process per directory and fails any group that exits without printing a summary line — keep both. A mocha run can stop advancing with nothing failed (`timeout: 0` in `.mocharc.json` means no test ever times out), in which case the event loop drains and the process exits 0 having printed no epilogue; that reads as a pass to every runner. `unitTests/mocha.init.js` fails such a run from the inside, and the gate's summary check backstops a process that never gets that far.
 
 Run a single test file directly:
 
@@ -42,6 +45,8 @@ npx mocha unitTests/resources/mytest.js
 ```
 
 TypeScript is stripped at runtime via `--conditions=typestrip` (Node.js native type stripping) — no compilation required for development. Use `npm run test:unit:typestrip` to run tests with this mode.
+
+**No ambient Harper install:** a unit test must not depend on one. The Ubuntu `unit-test` job runs `harper install` before its suites; the Windows gate does not, and neither does a clean checkout — so a test that reads whatever config the machine happens to have is green on Ubuntu and red on Windows. Three suites hit exactly this: `harper_logger`/`logRotator` (no config means `logging.file` is off, and `createLogger({ path })` silently writes nothing), `globalIsolation` (`applications.allowedSpawnCommands` is empty, so `spawn('npm')` is rejected as a disallowed command), and `terminalShutdown` (`restartWorkers()` loads the root components, and `loadCertificates()` reads the config _file_, so it rejects with ENOENT). Pin what the suite needs — `unitTests/logConfigFixture.js`, `env.setProperty()`, or a `ROOTPATH` pointed at a config the test writes — instead of reading it off the machine.
 
 **Test timing:** prefer condition-waits over fixed `delay(N)` sleeps. `await delay(N); assert(sideEffectHappened)` races against loaded runners and is the root cause of a class of flakiness (#1138). Use the shared `waitFor(condition, timeout?, interval?)` helper in `unitTests/waitFor.js` to poll until the actual condition holds. Reserve fixed sleeps for genuinely modeling elapsed time (TTL/expiry windows) or asserting a non-event (that something has _not_ happened yet).
 

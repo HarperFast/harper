@@ -548,6 +548,8 @@ export function getDatabases(): Databases {
 			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
 			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
 			if (databaseEntry.name === RESTORE_META_DIR) continue;
+			// branch directories are process-local derivatives, never databases in their own right
+			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
@@ -613,6 +615,7 @@ export function getDatabases(): Databases {
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
+					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
@@ -690,6 +693,32 @@ export function getDatabases(): Databases {
 	return databases;
 }
 
+/**
+ * Hydrate one branch's relationships, resolving each target against the application's own branches
+ * first and only then against the real databases: a target the application also branched must be its
+ * branch's table, and a target it did not branch is legitimately the shared one.
+ */
+export function hydrateBranchRelationships(branch: BranchDatabase, branches: Map<string, BranchDatabase>): void {
+	const resolveTarget: ResolveRelationshipTarget = (target) => {
+		const targetBranch = branches.get(target.database);
+		// A branched target resolves ONLY within that branch. A durable branch is a checkpoint frozen
+		// at creation while the base keeps evolving, so falling through to the base for a table the
+		// branch's own copy lacks would point a branched application's relationship reads at live base
+		// data -- the fallback belongs to a database the application did not branch, never to one it did.
+		return targetBranch ? targetBranch.tables?.[target.table] : databases[target.database]?.[target.table];
+	};
+	for (const hydration of branch.pendingRelationships.splice(0)) {
+		try {
+			hydrateTableRelationships(hydration, resolveTarget);
+		} catch (error) {
+			logger.error(
+				`Unable to hydrate persisted relationships for branch table ${hydration.databaseName}.${hydration.tableName}`,
+				error
+			);
+		}
+	}
+}
+
 function hydrateCatalogRelationships(): void {
 	for (const hydration of relationshipsToHydrate) {
 		try {
@@ -707,7 +736,14 @@ function hydrateCatalogRelationships(): void {
 	}
 }
 
-function hydrateTableRelationships({ table, databaseName, tableName, definitions }: RelationshipHydration): void {
+type ResolveRelationshipTarget = (target: RelationshipTarget) => any;
+
+const resolveTargetGlobally: ResolveRelationshipTarget = (target) => databases[target.database]?.[target.table];
+
+function hydrateTableRelationships(
+	{ table, databaseName, tableName, definitions }: RelationshipHydration,
+	resolveTarget: ResolveRelationshipTarget = resolveTargetGlobally
+): void {
 	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
 	for (let index = 0; index < definitions.length; index++) {
 		const definition = definitions[index] as PersistedRelationship;
@@ -726,7 +762,7 @@ function hydrateTableRelationships({ table, databaseName, tableName, definitions
 		// for threads that never loaded the schema
 		if (table.attributes.some((attribute) => attribute.name === definition.name && !attribute[CATALOG_RELATIONSHIP]))
 			continue;
-		const targetTable = databases[definition.target.database]?.[definition.target.table];
+		const targetTable = resolveTarget(definition.target);
 		if (!targetTable || !relationshipFieldsExist(table, targetTable, definition)) {
 			reportRelationshipError(
 				`${errorKey}:unavailable`,
@@ -896,11 +932,13 @@ function readRocksMetaDb(
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
 			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
-			// a caller-owned graph is replayed into as well: nothing else will ever replay this store.
-			// `replayLogs` is a no-op off the main thread, so a branch opened on a worker sees only
-			// what the checkpoint's SSTs hold — see the note on `openBranchDatabase`
-			if (!isReadOnlyMode()) {
-				replayLogs(rootStore, destination ?? databases[databaseName]);
+			// A branch (`destination`) is a checkpoint and nothing more, deliberately. Replaying into one
+			// would make its content depend on which thread opened it — `replayLogs` is a no-op off the
+			// main thread, and applications load on workers — and it hands an un-awaited writer to a
+			// store the branch's owner may close moments later, which aborts the process rather than
+			// failing a load. See the contract note on `openBranchDatabase` (harper#643).
+			if (!isReadOnlyMode() && !destination) {
+				replayLogs(rootStore, databases[databaseName]);
 			}
 		}
 		return rootStore;
@@ -1223,6 +1261,8 @@ function initStores(
 				tables,
 				tableName,
 				makeTable({
+					// A branch builds into a caller-owned destination; its tables must refuse DDL.
+					isBranch: Boolean(destination),
 					primaryStore,
 					auditStore,
 					audit,
@@ -1260,9 +1300,49 @@ function initStores(
 	return rootStore;
 }
 
+/**
+ * Branch directories live beside the base database's own storage root, never under the HDB root: a
+ * database can be placed on its own volume, and `createCheckpoint` only hardlinks when source and
+ * target share a filesystem — off-volume it degrades to a full byte copy, which is the property the
+ * whole feature rests on.
+ *
+ * The backticks are what make the name reserved rather than merely conventional: `schemaRegex`
+ * (validation/common_validators.ts) excludes 0x60, so no database can ever be created under this
+ * name and shadow the branch root -- the same protection RESTORE_META_DIR uses.
+ */
+export const BRANCH_ROOT_DIR = '`branches`';
+
+/**
+ * Where the branch of `baseName` belonging to `appName` lives. Derived only from those two names, so
+ * every node in a cluster resolves the same application's branch to the same place — the identity an
+ * application's data needs if it is to be addressed, and eventually replicated, cluster-wide.
+ *
+ * App and database are separate path segments: joining them (`<app>__<db>`) is not injective —
+ * `(a__b, c)` and `(a, b__c)` collide — so two declarations could otherwise open one directory.
+ */
+export function resolveBranchPath(baseName: string, appName: string): string {
+	for (const [label, segment] of [
+		['application', appName],
+		['database', baseName],
+	]) {
+		if (!segment || segment.includes('/') || segment.includes('\\') || segment === '.' || segment === '..') {
+			throw new Error(`Invalid ${label} name for a branch path: ${JSON.stringify(segment)}`);
+		}
+	}
+	return join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR, appName, baseName);
+}
+
+/** A branch's private table graph plus the handle needed to tear it down. */
 export interface BranchDatabase {
 	tables: Tables;
 	rootStore: RootDatabaseKind;
+	/**
+	 * Relationships this branch's tables declared, still un-hydrated. They cannot be resolved at open
+	 * time: a branch's definitions name the BASE database (its tables carry the base's logical names),
+	 * so resolving them through the global map would point the application's relationship reads at the
+	 * base. `hydrateBranchRelationships` finishes the job once the whole branch set is known.
+	 */
+	pendingRelationships: RelationshipHydration[];
 	close(): void;
 }
 
@@ -1361,6 +1441,10 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// initStores opens a table's column families well before `setTable` publishes it into `tables`,
 	// so the graph is not a complete record of what a failed open must release
 	const openedStores: any[] = [];
+	// The boot-time hydration pass has already run by the time a branch opens, so anything this open
+	// queues would never be drained. It is handed to the caller instead, which is the only place that
+	// knows the application's other branches and can therefore resolve targets without leaking to base.
+	const queuedRelationshipsAt = relationshipsToHydrate.length;
 	let rootStore: RootDatabaseKind;
 	// claim the path before the open, not after: readRocksMetaDb registers the store in
 	// `rocksdbDatabaseEnvs` partway through, so anything re-entering `database()` during initStores
@@ -1381,6 +1465,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
+		pendingRelationships: relationshipsToHydrate.splice(queuedRelationshipsAt),
 		close() {
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
 			// branch frees its path, so a stale handle would otherwise tear down its successor

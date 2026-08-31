@@ -5,7 +5,8 @@ import { configValidator, getDomainSocketPathLengthWarning } from '../validation
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import path from 'path';
-import { threadId } from 'node:worker_threads';
+import { constants as osConstants } from 'node:os';
+import { isMainThread, threadId } from 'node:worker_threads';
 import { randomBytes } from 'node:crypto';
 import isNumber from 'is-number';
 import propertiesReaderModule from 'properties-reader';
@@ -23,7 +24,7 @@ import { server } from '../server/Server.ts';
 import { getBackupDirPath } from './configHelpers.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import * as env from '../utility/environment/environmentManager.ts';
-import { applyRuntimeEnvConfig, hasPersistedEnvConfigState } from './harperConfigEnvVars.ts';
+import { prepareRuntimeEnvConfig, hasPersistedEnvConfigState, discardConfigState } from './harperConfigEnvVars.ts';
 import { warnComponentEnvConfigVars, resolveConfiguredPath } from './componentEnvPrepass.ts';
 import { isStartableThreadHeapMemory } from '../server/threads/threadHeapMemory.ts';
 
@@ -102,6 +103,36 @@ const RENAME_RETRY_MAX_DELAY_MS = 500;
 // Never notified; exists only so Atomics.wait can time out (a synchronous, CPU-idle sleep).
 const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
+// Linux has no libuv mapping for EDQUOT, so a quota-exhausted write surfaces as
+// `Unknown system error -122` with an unusable `code`; the numeric errno is the portable signal
+// (EDQUOT is 122 on Linux, 69 on macOS).
+const STORAGE_EXHAUSTED_CODES = new Set(['ENOSPC', 'EDQUOT']);
+// EDQUOT is absent from os.constants.errno on platforms without quotas, so filter before negating:
+// -undefined is NaN, which would sit in the set matching nothing and reading as a bug.
+const STORAGE_EXHAUSTED_ERRNOS = new Set(
+	[osConstants.errno.ENOSPC, osConstants.errno.EDQUOT].filter((errno) => errno !== undefined).map((errno) => -errno)
+);
+
+export function isStorageExhausted(error): boolean {
+	return STORAGE_EXHAUSTED_CODES.has(error?.code) || STORAGE_EXHAUSTED_ERRNOS.has(error?.errno);
+}
+
+// Boot-path persistence of derived config is best-effort: on an exhausted volume a fatal write here
+// is an un-breakable restart loop, because freeing space needs a started process (#847).
+export function persistConfigDuringBoot(artifactPath: string, write: () => void): boolean {
+	try {
+		write();
+		return true;
+	} catch (error) {
+		if (!isStorageExhausted(error)) throw error;
+		logger.error(
+			`Storage exhausted (${error.code ?? error.errno}) writing ${artifactPath}; continuing startup with the in-memory configuration. The file on disk is unchanged - free space on the Harper volume to restore config persistence.`
+		);
+		return false;
+	}
+}
+
+// Returns true when the file was written, false when an unchanged write was skipped.
 export function atomicWriteFile(
 	filePath,
 	content,
@@ -109,45 +140,83 @@ export function atomicWriteFile(
 		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
 		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
 		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
+		skipIfUnchanged = false,
 	} = {}
 ) {
+	// Opt-in: skipping means no mtime bump, so no watcher event. Only callers that re-derive the
+	// same file every boot want that.
+	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;
 	const tempPath = `${filePath}.${process.pid}.${threadId}.${randomBytes(4).toString('hex')}.tmp`;
+	try {
+		fs.writeFileSync(tempPath, content);
+	} catch (err) {
+		// The open succeeds before the write runs out of room, leaving the temp file behind.
+		removeTempFile(tempPath);
+		throw err;
+	}
+	try {
+		renameWithRetry(tempPath, filePath, { maxRetries, initialDelayMs, maxDelayMs });
+	} catch (err) {
+		removeTempFile(tempPath);
+		throw err;
+	}
+	return true;
+}
+
+export function renameWithRetry(
+	fromPath,
+	toPath,
+	{
+		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
+		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
+		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
+	} = {}
+) {
 	let retries = maxRetries;
 	let delayMs = initialDelayMs;
 	let attempts = 0;
 	const startedAt = Date.now();
-	let renamed = false;
-	try {
-		// Inside the cleanup boundary: a write that fails partway leaves a partial temp behind.
-		fs.writeFileSync(tempPath, content);
-		while (!renamed) {
-			try {
-				attempts++;
-				fs.renameSync(tempPath, filePath);
-				renamed = true;
-			} catch (err) {
-				if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
-					retries--;
-					if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
-					delayMs = Math.min(delayMs * 2, maxDelayMs);
-					continue;
-				}
-				// Attempts and elapsed distinguish a holder that never released from one that lost
-				// a race, and neither survives on the rethrown error.
-				if (err.code === 'EPERM' || err.code === 'EACCES') {
-					logger.warn(
-						`Could not replace ${filePath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms`
-					);
-				}
-				throw err;
+	while (true) {
+		try {
+			attempts++;
+			fs.renameSync(fromPath, toPath);
+			return;
+		} catch (err) {
+			if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
+				retries--;
+				// Sleep synchronously (all call sites are sync) to allow the holder to close the
+				// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
+				// which is what makes a multi-second worst-case budget affordable.
+				if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
+				delayMs = Math.min(delayMs * 2, maxDelayMs);
+				continue;
 			}
+			// Attempts and elapsed distinguish a holder that never released from one that lost
+			// a race, and neither survives on the rethrown error.
+			if (err.code === 'EPERM' || err.code === 'EACCES') {
+				logger.warn(
+					`Could not replace ${toPath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms`
+				);
+			}
+			throw err;
 		}
-	} finally {
-		if (!renamed) {
-			try {
-				fs.unlinkSync(tempPath);
-			} catch {}
-		}
+	}
+}
+
+function removeTempFile(tempPath) {
+	try {
+		fs.unlinkSync(tempPath);
+	} catch {
+		// ignore cleanup errors
+	}
+}
+
+function matchesFileContent(filePath, content): boolean {
+	if (typeof content !== 'string') return false;
+	try {
+		return fs.readFileSync(filePath, 'utf8') === content;
+	} catch {
+		return false;
 	}
 }
 
@@ -361,7 +430,10 @@ export function ensureConfigKeysPresent(keys: string[]): string[] {
 	}
 	if (added.length === 0) return [];
 
-	atomicWriteFile(configFilePath, String(configDoc));
+	// Worker threads re-read the config from disk and never run this backfill, so a key that only
+	// exists in this thread's memory activates nowhere that serves requests: report nothing when the
+	// write was refused rather than logging an activation the request path did not get.
+	if (!persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)))) return [];
 
 	// Mirror the additions into the already-memoized config so a built-in gated on the new key
 	// activates on the CURRENT boot: componentLoader reads the root config from getConfigObj(),
@@ -581,7 +653,7 @@ function checkForUpdatedConfig(configDoc, configFilePath) {
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		atomicWriteFile(configFilePath, String(configDoc));
+		persistConfigDuringBoot(configFilePath, () => atomicWriteFile(configFilePath, String(configDoc)));
 	}
 }
 
@@ -1258,9 +1330,16 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 	// Convert to JSON for processing
 	const configObj = configDoc.toJSON();
 
+	let saveEnvConfigState;
+	let confirmEnvConfigState;
+	let commitEnvConfigState;
 	try {
 		// Apply env vars with source tracking and drift detection
-		applyRuntimeEnvConfig(configObj, rootPath, options);
+		({
+			saveState: saveEnvConfigState,
+			confirmConfigWritten: confirmEnvConfigState,
+			commitState: commitEnvConfigState,
+		} = prepareRuntimeEnvConfig(configObj, rootPath, options));
 
 		// If securePort was set to the same value as port, auto-null port to avoid clashing
 		if (configObj.http?.port && configObj.http?.port === configObj.http?.securePort) {
@@ -1292,10 +1371,17 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 		throw error;
 	}
 
-	// We're done here if no config file to write to
+	// Install has no config file yet and no process to keep alive, so its snapshot write stays
+	// mandatory - an install that never recorded originals should fail, not proceed.
 	if (!configFilePath) {
+		commitEnvConfigState();
 		return;
 	}
+
+	// Every worker thread runs initConfig and derives the same merged config, so letting them all
+	// persist it means N threads racing over one pair of files for a result they already agree on.
+	// The main thread owns the on-disk copy; a worker runs on the in-memory one.
+	if (!isMainThread) return;
 
 	// Persist changes to file
 	try {
@@ -1306,8 +1392,30 @@ function applyRuntimeEnvVarConfig(configDoc, configFilePath, options = {}) {
 				HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
 			);
 		}
-		atomicWriteFile(configFilePath, String(configDoc));
-		logger.debug('Config file updated with runtime env var values');
+		// Stage, write the file, promote by rename: the confirmed state is the only record of the
+		// file's pre-env values, so no write an exhausted volume can refuse may stand between it and
+		// disk. See DESIGN.md, boot-path config persistence.
+		let stateStaged = false;
+		if (persistConfigDuringBoot(`${rootPath} env config state`, () => (stateStaged = saveEnvConfigState()))) {
+			let configPersisted = false;
+			let configRewritten = false;
+			try {
+				configPersisted = persistConfigDuringBoot(configFilePath, () => {
+					configRewritten = atomicWriteFile(configFilePath, String(configDoc), { skipIfUnchanged: true });
+				});
+			} finally {
+				if (!configPersisted && stateStaged) discardConfigState(rootPath as string);
+			}
+			if (configPersisted) {
+				if (stateStaged) confirmEnvConfigState();
+				// Distinguished, because this is the line that answers "did something rewrite my config?"
+				logger.debug(
+					configRewritten
+						? 'Config file updated with runtime env var values'
+						: 'Config file already matched the runtime env var values'
+				);
+			}
+		}
 	} catch (error) {
 		logger.error(`Failed to write config file after applying runtime env vars: ${error.message}`);
 		throw error;

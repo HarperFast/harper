@@ -25,7 +25,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, resetDatabases, getDatabases } = require('#src/resources/databases');
+const { table, resetDatabases, getDatabases, closeDatabase } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -542,6 +542,7 @@ describe('schema relationship catalog round-trip', () => {
 	});
 
 	after(async () => {
+		closeDatabase(DB);
 		await fs.remove(testRoot);
 	});
 
