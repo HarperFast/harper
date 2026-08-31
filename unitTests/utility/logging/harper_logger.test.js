@@ -168,17 +168,19 @@ describe('Test harper_logger module', () => {
 		const afterThisTest = [];
 
 		// these tests exercise initLogSettings' boot-props resolution, which mocha.init.js's
-		// ROOTPATH export shadows (see its header comment) — clear it for this describe only:
-		// the stdio-capture tests below must keep it, or their fresh module copies bind the
-		// log file to the installed root
+		// ROOTPATH export shadows (see its header comment) — clear it, and the noBootFile()
+		// memo derived from it, for this describe only: the stdio-capture tests below must
+		// keep ROOTPATH, or their fresh module copies bind the log file to the installed root
 		let savedRootPathEnv;
 		before(() => {
 			savedRootPathEnv = process.env.ROOTPATH;
 			delete process.env.ROOTPATH;
+			require('#src/utility/common_utils').resetNoBootFileCache();
 		});
 
 		after(() => {
 			if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
+			require('#src/utility/common_utils').resetNoBootFileCache();
 		});
 
 		afterEach(() => {
