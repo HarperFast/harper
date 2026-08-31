@@ -15,6 +15,8 @@ export class OrderSummary extends Resource {
 		},
 		allHidden: { type: 'object', properties: { secret: { type: 'string', hidden: true } }, required: ['secret'] },
 		tags: { type: 'array', items: { type: 'string', enum: ['x', 'y'], description: 'Tag.' } },
+		anything: { type: 'array' },
+		choice: { type: ['string', 'integer', 'null'], enum: ['a', 1] },
 	};
 
 	get() {

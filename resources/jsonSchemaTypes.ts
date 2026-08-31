@@ -351,7 +351,7 @@ function emitAttributeSchema(
 					depth + 1
 				);
 			}
-			if (member === 'array' && attr.elements) {
+			if (member === 'array') {
 				return emitAttributeSchema(
 					{ name: attr.name, type: 'array', elements: attr.elements },
 					childOptions,
@@ -406,11 +406,11 @@ function emitAttributeSchema(
 			if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
 		} else if (attr.type === 'array') {
 			fragment.type = 'array';
-			// `{ type: 'array' }` with no element schema is valid — an array of anything.
 			if (attr.elements) {
 				const items = emitAttributeSchema(attr.elements, childOptions, ancestors, depth + 1);
 				if (items) fragment.items = items;
 			}
+			if (options.dialect === 'openapi-3.0.3' && fragment.items === undefined) fragment.items = {};
 		} else {
 			if (attr.types?.every((member) => member === 'null')) {
 				Object.assign(fragment, options.mapPrimitive('null', attr));
@@ -441,13 +441,10 @@ function emitAttributeSchema(
 				fragment.const = attr.const;
 			}
 		}
-		// Nullability does not widen an `enum` in either dialect — a validator still rejects `null` unless
-		// the value list contains it. Keep the type/null arm and the value constraint consistent.
-		const admitsNull =
-			fragment.nullable === true ||
-			(Array.isArray(fragment.type) && fragment.type.includes('null')) ||
-			fragment.anyOf?.some((arm) => arm.type === 'null' || arm.enum?.includes(null));
-		if (attr.const === undefined && admitsNull && fragment.enum && !fragment.enum.includes(null)) {
+		// Harper's explicit `nullable` directive widens a value constraint; a JSON Schema type union does
+		// not override the intersection semantics of a co-declared `enum`.
+		const explicitlyNullable = attr.nullable && !attr.types?.includes('null');
+		if (attr.const === undefined && explicitlyNullable && fragment.enum && !fragment.enum.includes(null)) {
 			fragment.enum = [...fragment.enum, null];
 		}
 		// `hidden` / `primaryKey` / `assignCreatedTime` / `assignUpdatedTime` are Harper directives, not
