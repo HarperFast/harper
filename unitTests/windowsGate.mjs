@@ -106,14 +106,17 @@ const EXCLUDED = [
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MOCHA = join(repoRoot, 'node_modules', 'mocha', 'bin', 'mocha.js');
-const SUMMARY = /\b(\d+) passing\b/;
+// Line-anchored and last-match: mocha's epilogue is the final such line, so a test that logs
+// one of its own cannot stand in for it on a group that terminated before printing one.
+const SUMMARY = /^\s*(\d+) passing\b/gm;
 const GROUP_TIMEOUT_MS = Number(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS ?? 600_000);
 
 // No --config: mocha discovers .mocharc.json itself, so the gate inherits the same
 // root config (and unitTests/mocha.init.js) as every other unit-test run.
 function runGroup(pattern) {
 	return new Promise((settle) => {
-		const args = [MOCHA, '--reporter', 'dot', pattern];
+		// --no-color: SUMMARY anchors on the line start, which an ANSI-prefixed epilogue defeats.
+		const args = [MOCHA, '--reporter', 'dot', '--no-color', pattern];
 		for (const excluded of EXCLUDED) args.push('--exclude', excluded);
 
 		const startedAt = Date.now();
@@ -140,7 +143,7 @@ function runGroup(pattern) {
 			// here on would interleave through later groups and through the summary table.
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			const passing = SUMMARY.exec(output)?.[1];
+			const passing = [...output.matchAll(SUMMARY)].at(-1)?.[1];
 			if (!reason) {
 				if (timedOut) reason = `timed out after ${GROUP_TIMEOUT_MS}ms`;
 				else if (passing === undefined) reason = `exited ${code} without reporting a summary`;
