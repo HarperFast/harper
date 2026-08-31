@@ -157,7 +157,10 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 			},
 			auditStore: {
 				getRange() {
-					return [{ type: 'put', tableId: 7, version: 1, extendedType: 17, getValue: () => ({ id: 1 }) }];
+					return Object.assign(
+						[{ type: 'put', tableId: 7, version: 1, extendedType: 17, getValue: () => ({ id: 1 }) }],
+						{ corruptFrameStop: { breaks: 0, truncatedVersions: new Set() } }
+					);
 				},
 			},
 		};
