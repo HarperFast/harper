@@ -193,6 +193,13 @@ describe('Test harper_logger module', () => {
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('trace', TEST_LOG_DIR, false, true));
 			sandbox.stub(fs, 'readFileSync').returns('foo');
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			// The module-load-time auto-init (`if (hdbProperties === undefined) initLogSettings();`)
+			// already ran against PropertiesReader() reading whatever ~/.harperdb/hdb_boot_properties.file
+			// happens to exist on this machine — nothing on a clean checkout. Stub PropertiesReader and
+			// force a re-init, same as the ENOENT test below, so this doesn't depend on ambient state.
+			harper_logger.__set__('PropertiesReader', sandbox.stub().returns({ get: () => 'settings.test' }));
+			harper_logger.__set__('hdbProperties', undefined);
+			harper_logger.__get__('initLogSettings')();
 			const log_to_file = harper_logger.__get__('log_to_file');
 			const log_to_stdstreams = harper_logger.__get__('logToStdstreams');
 			const log_level = harper_logger.logLevel;
