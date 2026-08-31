@@ -150,7 +150,7 @@ describe('Blob test', () => {
 		// source that is not already a Buffer has to be normalized when the blob is constructed
 		const text = 'blob contents \u2014 \u2705 '.repeat(4000);
 		const content = Buffer.from(text);
-		assert(content.length > 65536); // comfortably over FILE_STORAGE_THRESHOLD, so it is externalized
+		assert(content.length > 65536); // over FILE_STORAGE_THRESHOLD, so it is externalized
 		// a non-zero-offset view inside a larger allocation: the normalized Buffer must carry the source's
 		// offset and length across, or the surrounding bytes leak into the blob
 		const sentinel = Buffer.alloc(64, 0xa5);
@@ -161,7 +161,7 @@ describe('Blob test', () => {
 		const blob = await createBlob(source, { type: 'text/plain' });
 		await BlobTest.put({ id: 1, blob });
 		const filePath = getFilePathForBlob(blob);
-		assert.notEqual(filePath, null); // the payload is in a file, not stored inline in the record
+		assert.notEqual(filePath, null);
 		assert.equal(blob.size, content.length);
 		// the writer still holds the in-memory content, which is the path that produced byte values
 		assert.equal(await blob.text(), text);
@@ -169,10 +169,23 @@ describe('Blob test', () => {
 		assert.equal(await blob.slice(0, 100).text(), content.subarray(0, 100).toString());
 
 		const record = await BlobTest.get(1);
-		assert.notStrictEqual(record.blob, blob); // a separate instance, reading the stored file
+		assert.notStrictEqual(record.blob, blob);
 		assert.equal(getFilePathForBlob(record.blob), filePath);
 		assert.equal(await record.blob.text(), text);
-		assert((await record.blob.bytes()).equals(content)); // none of the surrounding bytes were stored
+		assert((await record.blob.bytes()).equals(content));
+	});
+	it('decodes a sub-threshold Uint8Array blob that is stored inline in the record', async () => {
+		// under FILE_STORAGE_THRESHOLD the content is packed into the record, so the read back decodes
+		// it from msgpack rather than from a file
+		const text = 'inline blob contents \u2014 \u2705';
+		const blob = await createBlob(new Uint8Array(Buffer.from(text)), { type: 'text/plain' });
+		assert.equal(await blob.text(), text);
+		await BlobTest.put({ id: 1, blob });
+		const record = await BlobTest.get(1);
+		assert.notStrictEqual(record.blob, blob);
+		assert.equal(getFilePathForBlob(record.blob), null);
+		assert.equal(await record.blob.text(), text);
+		assert.equal(record.blob.toJSON(), text);
 	});
 	it('round-trips a compressed blob via bytes() and stream()', async () => {
 		// compressible payload, comfortably over FILE_STORAGE_THRESHOLD so it is file-backed

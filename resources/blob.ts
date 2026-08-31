@@ -1426,7 +1426,6 @@ export type BlobCreationOptions = {
 /**
  * `StorageInfo.contentBuffer` must always hold a `Buffer`: `Buffer.prototype.toString()` decodes
  * UTF-8, while the inherited `Uint8Array.prototype.toString()` joins the byte values with commas.
- * The returned view is zero-copy, so the packed record and the written file are byte-identical.
  */
 function asBuffer(bytes: Uint8Array): Buffer {
 	return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
