@@ -112,7 +112,7 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	// mapping.
 	if (attr.properties) {
 		fragment.type = attr.types ? [...attr.types] : 'object';
-		fragment.properties = {};
+		fragment.properties = Object.create(null);
 		for (const sub of attr.properties) fragment.properties[sub.name] = attributeToFragment(sub);
 		if (attr.required) fragment.required = attr.required;
 		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
@@ -147,7 +147,7 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
  * hasn't declared `static properties` on the class.
  */
 export function projectAttributesToProperties(attributes: AttributeLike[]): Record<string, JsonSchemaFragment> {
-	const result: Record<string, JsonSchemaFragment> = {};
+	const result: Record<string, JsonSchemaFragment> = Object.create(null);
 	for (const attr of attributes) {
 		result[attr.name] = attributeToFragment(attr);
 	}
@@ -188,6 +188,11 @@ function fragmentToAttribute(
 		} else if (fragment.type != null) {
 			if (typeof fragment.type !== 'string') throw new TypeError(`Schema property "${name}.type" must be a string`);
 			attr.type = fragment.type;
+		}
+		if (fragment.required !== undefined) {
+			if (!Array.isArray(fragment.required) || !fragment.required.every((item) => typeof item === 'string')) {
+				throw new TypeError(`Schema property "${name}.required" must be an array of strings`);
+			}
 		}
 		if (fragment.properties !== undefined) {
 			if (
@@ -357,20 +362,22 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 		}
 	} else if (attr.properties) {
 		fragment.type = 'object';
-		fragment.properties = {};
-		const visibleNames = new Set<string>();
+		fragment.properties = Object.create(null);
+		const suppressedNames = new Set<string>();
 		for (const sub of attr.properties) {
 			const subSchema = attributeToSchema(sub, childOptions);
-			if (!subSchema) continue;
+			if (!subSchema) {
+				suppressedNames.add(sub.name);
+				continue;
+			}
 			fragment.properties[sub.name] = subSchema;
-			visibleNames.add(sub.name);
 		}
 		// Drop suppressed sub-properties from `required` too — advertising a required property the
 		// schema does not define makes the object unsatisfiable for any client that validates. Omit the
 		// key entirely when nothing survives: JSON Schema draft-04 (which OpenAPI 3.0.3 inherits)
 		// requires `required` to have at least one element, so `required: []` fails validators.
 		if (attr.required) {
-			const visibleRequired = attr.required.filter((name) => visibleNames.has(name));
+			const visibleRequired = attr.required.filter((name) => !suppressedNames.has(name));
 			if (visibleRequired.length > 0) fragment.required = visibleRequired;
 		}
 		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
@@ -411,10 +418,13 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 			fragment.const = attr.const;
 		}
 	}
-	// OpenAPI 3.0's `nullable` does not widen an `enum` — a validator still rejects `null` unless the
-	// value list contains it. Without this, marking an enum (or a const, now emitted as one) nullable
-	// produces a schema that contradicts itself.
-	if (options.dialect === 'openapi-3.0.3' && fragment.nullable && fragment.enum && !fragment.enum.includes(null)) {
+	// Nullability does not widen an `enum` in either dialect — a validator still rejects `null` unless
+	// the value list contains it. Keep the type/null arm and the value constraint consistent.
+	const admitsNull =
+		fragment.nullable === true ||
+		(Array.isArray(fragment.type) && fragment.type.includes('null')) ||
+		fragment.anyOf?.some((arm) => arm.type === 'null' || arm.enum?.includes(null));
+	if (admitsNull && fragment.enum && !fragment.enum.includes(null)) {
 		fragment.enum = [...fragment.enum, null];
 	}
 	// `hidden` / `primaryKey` / `assignCreatedTime` / `assignUpdatedTime` are Harper directives, not

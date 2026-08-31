@@ -227,6 +227,18 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		assert.deepEqual(openapi.profile.required, ['name']);
 	});
 
+	it('preserves required undeclared properties while dropping explicitly hidden ones', () => {
+		const { mcp, openapi } = bothSurfaces({
+			profile: {
+				type: 'object',
+				properties: { secret: { type: 'string', hidden: true } },
+				required: ['extensionField', 'secret'],
+			},
+		});
+		assert.deepEqual(mcp.profile.required, ['extensionField']);
+		assert.deepEqual(openapi.profile.required, ['extensionField']);
+	});
+
 	it('carries enum/format/const/description into nested objects and array items on both surfaces', () => {
 		const { mcp, openapi } = bothSurfaces({
 			order: {
@@ -271,6 +283,24 @@ describe('mcp/openapi — schema emitter convergence (#1941, #1942)', () => {
 		assert.equal(openapi.note.type, 'string', 'openapi top-level stays a single type');
 		assert.equal(openapi.note.nullable, true, 'openapi top-level nullable is emitted');
 		assert.equal(openapi.wrapper.properties.inner.nullable, true, 'openapi nested nullable is emitted');
+	});
+
+	it('allows null in an enum carried by a nullable multi-type union', () => {
+		const { mcp, openapi } = bothSurfaces({ choice: { type: ['string', 'integer', 'null'], enum: ['a', 1] } });
+		assert.ok(mcp.choice.type.includes('null'));
+		assert.deepEqual(mcp.choice.enum, ['a', 1, null]);
+		assert.ok(openapi.choice.anyOf.some((arm) => arm.enum?.includes(null)));
+		assert.deepEqual(openapi.choice.enum, ['a', 1, null]);
+	});
+
+	it('preserves a property named `__proto__` on both surfaces', () => {
+		const properties = Object.create(null);
+		properties.__proto__ = { type: 'string' };
+		const { mcp, openapi } = bothSurfaces(properties);
+		assert.ok(Object.hasOwn(mcp, '__proto__'));
+		assert.ok(Object.hasOwn(openapi, '__proto__'));
+		assert.equal(mcp.__proto__.type, 'string');
+		assert.equal(openapi.__proto__.type, 'string');
 	});
 
 	it('emits an unrecognized type name as untyped on both surfaces instead of diverging', () => {

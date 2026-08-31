@@ -174,7 +174,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 			continue;
 		}
 		if (!primaryKey) continue;
-		const props = {};
+		const props = Object.create(null);
 		const queryParamsArray = [];
 		const resourceRequired: string[] = [];
 

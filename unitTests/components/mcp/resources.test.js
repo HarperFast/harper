@@ -459,6 +459,29 @@ describe('mcp/resources', () => {
 			assert.match(res.reason, /invalid schema for data\.broken/);
 			assert.match(res.reason, /cycle/);
 		});
+
+		it('does not publish hidden static properties through the schema resource', async () => {
+			class PrivateFields {}
+			PrivateFields.databaseName = 'data';
+			PrivateFields.tableName = 'private_fields';
+			PrivateFields.properties = {
+				id: { type: 'string', primaryKey: true },
+				publicName: { type: 'string' },
+				secret: { type: 'string', hidden: true },
+			};
+			_setResourcesForTest(makeFakeResources([['PrivateFields', PrivateFields]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/private_fields',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, true);
+			const body = JSON.parse(res.contents[0].text);
+			assert.deepEqual(
+				body.attributes.map((attribute) => attribute.name),
+				['id', 'publicName']
+			);
+		});
 	});
 
 	describe('readResource — harper://operations', () => {

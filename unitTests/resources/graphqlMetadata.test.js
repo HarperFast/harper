@@ -192,6 +192,23 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			assert.throws(() => projectPropertiesToAttributes({ cyclic }), /contains a cycle/);
 		});
 
+		it('rejects a non-array or non-string nested required declaration', () => {
+			assert.throws(
+				() =>
+					projectPropertiesToAttributes({
+						profile: { type: 'object', properties: { name: { type: 'string' } }, required: 'name' },
+					}),
+				/profile\.required.*array of strings/
+			);
+			assert.throws(
+				() =>
+					projectPropertiesToAttributes({
+						profile: { type: 'object', properties: { name: { type: 'string' } }, required: ['name', 1] },
+					}),
+				/profile\.required.*array of strings/
+			);
+		});
+
 		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {
 			// The `.properties` projection is front-end-neutral: type, description, primaryKey,
 			// nested/array shapes, and nested object-level constraints (required/additionalProperties)
@@ -208,7 +225,7 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 				},
 			};
 			const roundTripped = projectAttributesToProperties(projectPropertiesToAttributes(properties));
-			assert.deepStrictEqual(roundTripped, properties);
+			assert.deepStrictEqual(JSON.parse(JSON.stringify(roundTripped)), properties);
 		});
 
 		it('folds a JSON-Schema union `["T","null"]` into nullable (not truncated to the first member)', () => {

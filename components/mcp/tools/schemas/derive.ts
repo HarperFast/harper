@@ -41,6 +41,8 @@ export interface HarperAttribute {
 	const?: unknown;
 	required?: readonly string[];
 	additionalProperties?: boolean;
+	relationship?: unknown;
+	definition?: unknown;
 }
 
 export interface AttributePermissionEntry {
@@ -58,7 +60,8 @@ type Mode = 'read' | 'insert' | 'update';
  */
 function harperTypeToJsonSchema(
 	type: string | undefined,
-	attributeName?: string
+	attributeName?: string,
+	isDeclaredReference = false
 ): { type: string | string[] } | object {
 	// A programmatic Resource's `static properties` already speaks JSON Schema (lowercase types, no
 	// collision with Harper's capitalized GraphQL types); pass those through unchanged.
@@ -85,6 +88,7 @@ function harperTypeToJsonSchema(
 		case undefined:
 			return {};
 		default: {
+			if (isDeclaredReference) return {};
 			const resolved = resolveDeclaredType(type, `MCP tool schema property "${attributeName ?? '<unnamed>'}"`);
 			return resolved ? { type: resolved } : {};
 		}
@@ -101,7 +105,12 @@ function harperTypeToJsonSchema(
 function attributeToProperty(attr: HarperAttribute): object | undefined {
 	return attributeToSchema(attr as AttributeLike, {
 		dialect: 'json-schema',
-		mapPrimitive: (type, a) => harperTypeToJsonSchema(type, a.name) as JsonSchemaFragment,
+		mapPrimitive: (type, a) =>
+			harperTypeToJsonSchema(
+				type,
+				a.name,
+				Boolean((a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+			) as JsonSchemaFragment,
 	});
 }
 
@@ -115,7 +124,12 @@ function primaryKeySchema(pk: HarperAttribute | undefined): object {
 	return (
 		attributeToSchema(pk as AttributeLike, {
 			dialect: 'json-schema',
-			mapPrimitive: (type, a) => harperTypeToJsonSchema(type, a.name) as JsonSchemaFragment,
+			mapPrimitive: (type, a) =>
+				harperTypeToJsonSchema(
+					type,
+					a.name,
+					Boolean((a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+				) as JsonSchemaFragment,
 			ignoreHidden: true,
 		}) ?? { type: 'string' }
 	);
@@ -164,7 +178,7 @@ function buildPropertiesObject(
 	mode: Mode,
 	include?: (a: HarperAttribute) => boolean
 ): { properties: Record<string, object>; required: string[] } {
-	const properties: Record<string, object> = {};
+	const properties: Record<string, object> = Object.create(null);
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (include && !include(attr)) continue;
@@ -320,7 +334,7 @@ function deriveRecordSchema(
 	attributes: HarperAttribute[],
 	permissions: AttributePermissionEntry[] | undefined
 ): object {
-	const properties: Record<string, object> = {};
+	const properties: Record<string, object> = Object.create(null);
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (!attributeVisible(attr, permissions, 'read')) continue;

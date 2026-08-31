@@ -827,7 +827,8 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 	} catch (error) {
 		return { ok: false, reason: `invalid schema for ${db}.${table}: ${(error as Error).message}` };
 	}
-	const filteredAttributes = filterAttributesByPermissions(attributes, perm?.attribute_permissions);
+	const visibleAttributes = attributes.filter((attribute) => !attribute.hidden);
+	const filteredAttributes = filterAttributesByPermissions(visibleAttributes, perm?.attribute_permissions);
 	const body = {
 		database: db,
 		table,
