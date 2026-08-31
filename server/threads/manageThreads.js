@@ -652,7 +652,6 @@ async function restartWorkers(
 				replacementsStarting.push(replacementStarting);
 			}
 
-
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
