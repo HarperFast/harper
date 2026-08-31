@@ -1428,32 +1428,21 @@ async function settleJournaledActivationsForComponent(
 		}
 		if (!ownerUnreadable && owner !== componentName) continue;
 		const journal = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
-		if (ownerUnreadable) {
-			// The sidecar could not answer, so the JOURNAL decides — skipping outright would leave this
-			// component's OWN unsettled activation in place while a new deploy proceeds over it, and an
-			// activation interrupted before B1 has no rollback record, so there is nothing for the restore
-			// gate to catch. Recovery would then keep failing the component on evidence this deploy could
-			// have cleared. A journal naming a sibling is still none of our business; a deployment neither
-			// source can attribute fails closed, because we cannot rule out that it is ours.
-			if (!journal) {
-				// Re-checked, because both reads can lose a race with a concurrent settle: the deployment
-				// directory being GONE is not an unattributable deployment, it is one somebody else already
-				// cleaned up, and failing this deploy closed over it would be a false rejection.
-				const stillThere = await lstat(deploymentDirPath).then(
-					() => true,
-					(error) => {
-						if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-						throw error;
-					}
-				);
-				if (!stillThere) continue;
-				throw new Error(
-					`Cannot settle deploy staging ${deploymentDirPath} before deploying ${componentName}: neither ` +
-						`its ownership sidecar nor an activation journal says which component it belongs to`
-				);
-			}
-			if (journal.component !== componentName) continue;
-		} else if (journal?.component !== componentName) continue;
+		// NO JOURNAL means no activation was attempted in that deployment — so there is nothing here for a
+		// deploy to settle, whether or not the sidecar can say whose it is. This must not fail closed: a
+		// journal-less staging directory is exactly what SUCCESSFUL settlement leaves behind, because the
+		// journal is removed first and the directory sweep after it is best-effort. Failing closed on it
+		// wedged every later deploy of every component on one un-swept directory whose sidecar had also
+		// become unreadable, and falsely rejected any deploy that raced that same window.
+		//
+		// Ambiguity that DOES have to fail closed is already covered: `readActivationJournal` throws on a
+		// journal that exists but cannot be read, so an unattributable *activation* propagates from the read
+		// above rather than being decided here.
+		if (!journal) continue;
+		// Otherwise the journal decides. Skipping on an unreadable sidecar alone would leave this component's
+		// OWN unsettled activation in place while a new deploy proceeded over it — and an activation
+		// interrupted before B1 has no rollback record, so the restore gate has nothing to catch either.
+		if (journal.component !== componentName) continue;
 		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
 	}
 }

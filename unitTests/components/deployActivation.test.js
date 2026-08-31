@@ -814,4 +814,32 @@ describe('activation transaction', () => {
 		assert.strictEqual(await readLive(root, 'web'), 'CURRENT\n', 'live stands and the candidate went');
 		assert.ok(!existsSync(path.join(deploymentDir, 'web')), 'the candidate was discarded');
 	});
+
+	it('is not wedged by the residue a SUCCESSFUL settlement leaves behind', async () => {
+		// Settlement removes the journal first and sweeps the staging directory after, best-effort. A sweep
+		// that fails leaves a journal-less directory — and if its sidecar has also become unreadable, treating
+		// that as "unattributable" failed every later deploy of every component, permanently, over a
+		// deployment that was already settled correctly.
+		const root = await newRoot('settled-residue');
+		const settled = path.join(root, DEPLOY_STAGING_DIR, 'd-settled');
+		await fs.mkdir(path.join(settled, '.component'), { recursive: true }); // unreadable ownership
+		await fs.writeFile(path.join(settled, '.complete'), ''); // what a swept-but-not-removed dir keeps
+		await writeTree(path.join(root, 'healthy'), 'HEALTHY v1\n');
+
+		const app = new Application({
+			name: 'healthy',
+			payload: Readable.from(
+				(async function* () {
+					yield Buffer.from('not a tarball');
+					throw new Error('payload delivery failed');
+				})()
+			),
+		});
+		app.dirPath = path.join(root, 'healthy');
+
+		// Its OWN payload error: the settled residue was passed over, not treated as ambiguous evidence.
+		await assert.rejects(() => prepareApplication(app), /payload delivery failed/);
+		assert.strictEqual(await readLive(root, 'healthy'), 'HEALTHY v1\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
 });
