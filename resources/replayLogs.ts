@@ -55,7 +55,7 @@ export function replayTimeBudgetMs(): number {
  * construction, and end-of-log is the designed reading of it (see replayLogsGuards.ts).
  */
 export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplayer?: boolean): Promise<void> {
-	if (!isMainThread && !electedReplayer) return; // ideally we don't do it like this, but for now this is predictable
+	if (!isMainThread && !electedReplayer) return Promise.resolve(); // ideally we don't do it like this, but for now this is predictable
 	return new Promise((resolve, reject) => {
 		const acquired = rootStore.tryLock('replayLogs', async () => {
 			resolve();
@@ -95,7 +95,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			tableById.set(table.tableId, table);
 		}
 		// replay all the logs
-		let transaction: DatabaseTransaction;
+		let transaction: DatabaseTransaction | undefined;
 		let lastTimestamp = 0;
 		let writes = 0;
 		let skipped = 0;
@@ -221,7 +221,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					// write batch in half. Re-clone to recover the unreplayed remainder.
 					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
 						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`;
-						transaction = undefined as any; // already committed above; nothing staged for the new version
+						transaction = undefined; // already committed above; nothing staged for the new version
 						if (electedReplayer) {
 							strictFailure = new Error(slowMessage);
 							break;
