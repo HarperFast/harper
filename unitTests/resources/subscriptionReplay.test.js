@@ -13,9 +13,8 @@ require('#src/server/serverHelpers/serverUtilities');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 function assertChronological(events, msg = 'events out of order') {
-	// Use `version` because lmdb populates localTime on cursor sends but rocksdb doesn't; both
-	// backends set version on the audit record to the commit timestamp, so version is the
-	// portable "time" key.
+	// Use `version`: both backends set it to the commit timestamp on cursor sends (rocksdb now
+	// also populates localTime with the log key, but version remains the portable "time" key).
 	for (let i = 1; i < events.length; i++) {
 		assert.ok(
 			events[i].version >= events[i - 1].version,

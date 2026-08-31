@@ -4133,7 +4133,8 @@ export function makeTable(options) {
 							// been written, so are fresh in memory.
 							const entry: Entry = primaryStore.getEntry(id);
 							if (entry) {
-								if (entry.version !== auditRecord.version) return; // out of order event, with old update, don't send anything
+								// staleness is a record-version comparison; auditRecord.version is the log key on RocksDB
+								if (entry.version !== (auditRecord.recordVersion ?? auditRecord.version)) return; // out of order event, with old update, don't send anything
 								value = entry.value;
 								type = entry.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
 							} else {
