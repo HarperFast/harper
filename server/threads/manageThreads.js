@@ -721,8 +721,7 @@ async function restartWorkers(
 					// a worker that exited on its own mid-restart is spliced out of `workers` and
 					// auto-restarted onto the new code (see the exit handler above); it is not still on
 					// the previous code even though this loop never got to it.
-					.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other))
-					.length;
+					.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other)).length;
 				harperLogger.error(
 					`${replacementsFailedToStart} replacement worker thread(s) did not start; stopping this restart with ${untouched} worker(s) still on the previous code`
 				);
