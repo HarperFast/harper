@@ -1271,7 +1271,7 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		assert.equal(create.inputSchema.properties.label.description, 'Human-readable label');
 		assert.equal(create.inputSchema.properties.size.type, 'integer');
 		assert.equal(create.inputSchema.properties.size.description, 'Width in pixels');
-		// enum and array shapes survive too (per cross-model review).
+		// Enum and array shapes survive the projection too.
 		assert.deepEqual(create.inputSchema.properties.status.enum, ['active', 'archived']);
 		assert.equal(create.inputSchema.properties.tags.type, 'array');
 		assert.equal(create.inputSchema.properties.tags.items.type, 'string');

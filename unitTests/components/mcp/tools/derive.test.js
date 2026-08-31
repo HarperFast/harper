@@ -263,4 +263,25 @@ describe('mcp/derive — hidden attributes and unrecognized types', () => {
 		}
 		assert.deepEqual(warnings, [], `Blob/Any must not warn: ${JSON.stringify(warnings)}`);
 	});
+
+	it('does not warn for a declared relationship target type', () => {
+		const loggerModule = require('#src/utility/logging/harper_logger');
+		const logger = loggerModule.default || loggerModule;
+		const warnings = [];
+		const original = logger.warn;
+		logger.warn = (message) => warnings.push(String(message));
+		try {
+			const schema = deriveGetOutputSchema(
+				[
+					{ name: 'id', type: 'String', isPrimaryKey: true },
+					{ name: 'author', type: 'Author', relationship: { from: 'authorId' } },
+				],
+				undefined
+			);
+			assert.equal(schema.properties.author.type, undefined);
+		} finally {
+			logger.warn = original;
+		}
+		assert.deepEqual(warnings, []);
+	});
 });
