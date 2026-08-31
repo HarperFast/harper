@@ -1657,9 +1657,12 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					logger.trace?.(`Leaving unowned deploy staging ${deploymentDirPath} in place: no component names it`);
 				}
 			} catch (error) {
-				// A verdict only when an activation was actually involved. A lock a live deploy is holding, or a
-				// directory that cannot be swept, is not one.
+				// A verdict only when an activation was actually involved; a directory that cannot be swept is
+				// not one. A lock TIMEOUT is still recorded, because it is the signal `componentLoader` uses
+				// to defer this component until the deploy holding that lock finishes — and it leaves nothing
+				// durable behind, since `fail()` writes no marker for a deferral.
 				if (activationToFail) await fail(activationToFail, error);
+				else if (error instanceof ComponentPreparationLockTimeoutError) await fail(owner ?? deployment.name, error);
 				else
 					logger.warn(
 						`Could not settle deploy staging ${deploymentDirPath}, which holds no activation journal:`,
