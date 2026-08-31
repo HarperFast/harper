@@ -1375,6 +1375,9 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
 		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
 		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) return;
+		if (!hasVerbs) {
+			claimedSuffixes.add(uniqueSuffix(path, ResourceClass?.databaseName, claimedSuffixes));
+		}
 		if (hasVerbs) {
 			let attributes: HarperAttribute[] | undefined;
 			try {

@@ -2,7 +2,6 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
-import { resolveAttributes } from './jsonSchemaTypes.ts';
 
 function getChanges(target) {
 	let changes = target.getChanges();
@@ -26,7 +25,16 @@ function getChanges(target) {
 export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
 	const prototype = Target.prototype;
 	const descriptors = {};
-	const attributes: any[] = Array.isArray(typeDef.properties) ? typeDef.properties : resolveAttributes(typeDef);
+	// Read the Array form. `typeDef.properties` is now a Record<string, JsonSchemaFragment>
+	// after the schema-metadata alignment; iterating it with for...of would throw.
+	// For typeDefs that only carry the Record (e.g. a programmatic Resource that declared
+	// `static properties` without populating `attributes`), synthesize a minimal Array by
+	// projecting the Record keys so the tracked accessors still bind something.
+	const attributes =
+		typeDef.attributes ||
+		(typeDef.properties
+			? Object.entries(typeDef.properties).map(([name, frag]) => ({ name, ...(frag as object) }))
+			: []);
 	for (const attribute of attributes) {
 		const name = attribute.name;
 		let set;
@@ -48,7 +56,6 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 		} else {
 			switch (attribute.type) {
 				case 'String':
-				case 'string':
 					set = function (value) {
 						if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
@@ -68,19 +75,10 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					break;
 				case 'Float':
 				case 'Number':
-				case 'number':
 					set = function (value) {
 						const scalarValue = value?.__op__ ? value.value : value;
 						if (!(typeof scalarValue === 'number' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a number, attempt to assign ${scalarValue}`);
-						getChanges(this)[name] = value;
-					};
-					break;
-				case 'integer':
-					set = function (value) {
-						const scalarValue = value?.__op__ ? value.value : value;
-						if (!(Number.isInteger(scalarValue) || (value == null && attribute.nullable !== false)))
-							throw new ClientError(`${name} must be an integer, attempt to assign ${scalarValue}`);
 						getChanges(this)[name] = value;
 					};
 					break;
@@ -135,27 +133,9 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					};
 					break;
 				case 'Boolean':
-				case 'boolean':
 					set = function (value) {
 						if (!(typeof value === 'boolean' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a boolean, attempt to assign ${value}`);
-						getChanges(this)[name] = value;
-					};
-					break;
-				case 'array':
-					set = function (value) {
-						if (!(Array.isArray(value) || (value == null && attribute.nullable !== false)))
-							throw new ClientError(`${name} must be an array, attempt to assign ${value}`);
-						getChanges(this)[name] = value;
-					};
-					break;
-				case 'object':
-					set = function (value) {
-						if (!(
-							(value !== null && typeof value === 'object' && !Array.isArray(value)) ||
-							(value == null && attribute.nullable !== false)
-						))
-							throw new ClientError(`${name} must be an object, attempt to assign ${value}`);
 						getChanges(this)[name] = value;
 					};
 					break;

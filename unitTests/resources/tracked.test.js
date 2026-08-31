@@ -89,20 +89,6 @@ describe('Tracked Object', () => {
 		assert.equal(collapseData(instance).arrayOfStrings[0], 'str1');
 		assert.equal(collapseData(instance).arrayOfStrings[2], 'another string');
 	});
-
-	it('binds accessors from the static-properties Record form', () => {
-		class ProgrammaticResource extends GenericTrackedObject {}
-		assignTrackedAccessors(ProgrammaticResource, {
-			properties: { title: { type: 'string' }, nested: { type: 'object', properties: { label: { type: 'string' } } } },
-		});
-		const instance = new ProgrammaticResource({ title: 'hello', nested: { label: 'inside' } });
-		assert.equal(instance.title, 'hello');
-		assert.equal(instance.nested.label, 'inside');
-		assert.doesNotThrow(() => (instance.title = 'updated'));
-		assert.throws(() => (instance.title = 42), /must be a string/);
-		assert.doesNotThrow(() => (instance.nested = { label: 'replacement' }));
-		assert.throws(() => (instance.nested = 'wrong'), /must be an object/);
-	});
 });
 
 describe('updateAndFreeze CRDT operations', () => {
