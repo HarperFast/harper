@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub const MAGIC: u32 = 0x484e_5357; // "HNSW"
-pub const VERSION: u32 = 2; // v2: in-file upper region + S_UPPER_IDX (v1 files: reindex)
+pub const VERSION: u32 = 3; // v3: packed entry point, UPPER_CAP 64 (older files: reindex)
 pub const HEADER_SIZE: usize = 4096;
 
 // Header field byte offsets.
@@ -18,8 +18,7 @@ const H_DIMS: usize = 8; // u16
 const H_QUANT: usize = 10; // u8: 0 = int8, 1 = f32
 const H_LAYER0_CAP: usize = 12; // u16
 const H_SLOT_SIZE: usize = 16; // u32
-const H_ENTRY_ID: usize = 24; // u32 (u32::MAX = none)
-const H_ENTRY_LEVEL: usize = 28; // u32
+const H_ENTRY: usize = 24; // u64 atomic: (level << 32) | id, one word so readers never see a torn pair
 const H_ID_HIGH_WATER: usize = 32; // u64 atomic
 const H_FREELIST_HEAD: usize = 40; // u64 atomic: (tag << 32) | id; id u32::MAX = empty
 const H_TXN_WATERMARK: usize = 48; // u64
@@ -32,7 +31,7 @@ const H_UPPER_FREELIST: usize = 80; // u64 atomic: (tag<<32)|idx; NO_UPPER = emp
 /// UPPER_CAP ids per level. P(level >= 1) = 1/M ~ 6.25%; the region reserves entries for
 /// 1/8 of max_nodes (2x headroom). P(level >= 9) at mL = 1/ln16 is ~e^-25 — unreachable.
 pub const MAX_UPPER_LEVELS: usize = 8;
-pub const UPPER_CAP: usize = 32;
+pub const UPPER_CAP: usize = 64; // matches the JS graph's upper cap (M<<2 under optimizeRouting)
 // entry: seq u32 | levels u8 | pad | per-level (degree u16 + ids u32*UPPER_CAP)
 pub const U_SEQ: usize = 0;
 pub const U_LEVELS: usize = 4;
@@ -64,6 +63,10 @@ pub struct PlaneFile {
     pub max_nodes: u64,
     upper_offset: usize,
     pub upper_capacity: u64,
+    /// Whether the file recorded a clean shutdown when opened (create() reports true).
+    /// An unclean open has had its torn seqlocks scrubbed, but individual slots may hold
+    /// unflushed/partial states — hosts should rebuild rather than trust completeness.
+    pub opened_clean: bool,
     /// Slots per 4 KB page under page-grouped addressing; 0 = packed (slots may straddle
     /// pages). Grouped is chosen at create when the per-page waste is small (e.g. 1,344 B
     /// slots: 3/page, 64 B waste). Straddling only costs on cold faults, but the layout is
@@ -112,20 +115,24 @@ impl PlaneFile {
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
         file.set_len(len)?;
         let mut map = unsafe { MmapMut::map_mut(&file)? };
-        map[H_MAGIC..H_MAGIC + 4].copy_from_slice(&MAGIC.to_le_bytes());
-        map[H_VERSION..H_VERSION + 4].copy_from_slice(&VERSION.to_le_bytes());
+        // geometry and allocator state first; MAGIC+VERSION last, so a concurrent opener
+        // in the create window sees an invalid header (retryable) rather than adopting a
+        // half-initialized plane with max_nodes = 0
         map[H_DIMS..H_DIMS + 2].copy_from_slice(&(dims as u16).to_le_bytes());
         map[H_QUANT] = 0;
         map[H_LAYER0_CAP..H_LAYER0_CAP + 2].copy_from_slice(&(layer0_cap as u16).to_le_bytes());
         map[H_SLOT_SIZE..H_SLOT_SIZE + 4].copy_from_slice(&(slot_size as u32).to_le_bytes());
         map[H_SLOTS_PER_PAGE..H_SLOTS_PER_PAGE + 2].copy_from_slice(&(slots_per_page as u16).to_le_bytes());
-        map[H_ENTRY_ID..H_ENTRY_ID + 4].copy_from_slice(&NO_ID.to_le_bytes());
+        map[H_ENTRY..H_ENTRY + 8].copy_from_slice(&(NO_ID as u64).to_le_bytes());
         map[H_FREELIST_HEAD..H_FREELIST_HEAD + 8]
             .copy_from_slice(&((NO_ID as u64) | 0u64 << 32).to_le_bytes());
         map[H_MAX_NODES..H_MAX_NODES + 8].copy_from_slice(&max_nodes.to_le_bytes());
         map[H_UPPER_FREELIST..H_UPPER_FREELIST + 8].copy_from_slice(&(NO_UPPER as u64).to_le_bytes());
+        map[H_VERSION..H_VERSION + 4].copy_from_slice(&VERSION.to_le_bytes());
+        std::sync::atomic::fence(Ordering::Release);
+        map[H_MAGIC..H_MAGIC + 4].copy_from_slice(&MAGIC.to_le_bytes());
         let upper_offset = HEADER_SIZE + slot_region_len(max_nodes, slot_size, slots_per_page) as usize;
-        Ok(PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page })
+        Ok(PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page, opened_clean: true })
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -160,7 +167,8 @@ impl PlaneFile {
                 format!("plane file is {file_len} bytes but its header implies {expected}: recreate the index"),
             ));
         }
-        let plane = PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page };
+        let opened_clean = map[H_CLEAN_SHUTDOWN] == 1;
+        let plane = PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page, opened_clean };
         let hw = plane.id_high_water();
         if hw > max_nodes {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "plane header id high-water exceeds capacity: recreate the index"));
@@ -168,7 +176,7 @@ impl PlaneFile {
         // A crash while a writer held a slot's seqlock odd persists the odd value; nothing
         // would ever make it even again, so readers and writers of that slot would spin
         // forever. Scrub on any unclean open (one sequential pass over the written range).
-        if plane.map[H_CLEAN_SHUTDOWN] == 0 {
+        if !opened_clean {
             plane.scrub_torn_seqlocks(hw);
         }
         unsafe { *(plane.map.as_ptr().add(H_CLEAN_SHUTDOWN) as *mut u8) = 0 }; // dirty until flush
@@ -285,17 +293,15 @@ impl PlaneFile {
         self.header_atomic_u64(H_ID_HIGH_WATER).load(Ordering::Acquire)
     }
 
+    /// Entry point (id, level), read as one atomic word — a torn (new id, old level) pair
+    /// would blind a racing search.
     pub fn entry_point(&self) -> (u32, u32) {
-        let id = u32::from_le_bytes(self.map[H_ENTRY_ID..H_ENTRY_ID + 4].try_into().unwrap());
-        let level = u32::from_le_bytes(self.map[H_ENTRY_LEVEL..H_ENTRY_LEVEL + 4].try_into().unwrap());
-        (id, level)
+        let packed = self.header_atomic_u64(H_ENTRY).load(Ordering::Acquire);
+        ((packed & 0xffff_ffff) as u32, (packed >> 32) as u32)
     }
 
     pub fn set_entry_point(&self, id: u32, level: u32) {
-        unsafe {
-            (*(self.map.as_ptr().add(H_ENTRY_ID) as *const AtomicU32)).store(id, Ordering::Release);
-            (*(self.map.as_ptr().add(H_ENTRY_LEVEL) as *const AtomicU32)).store(level, Ordering::Release);
-        }
+        self.header_atomic_u64(H_ENTRY).store((id as u64) | ((level as u64) << 32), Ordering::Release);
     }
 
     pub fn set_watermark(&self, txn: u64) {

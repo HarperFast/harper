@@ -45,10 +45,20 @@ export interface HnswPlane {
 		visitBudget?: number | null
 	): Promise<PlaneSearchHit[]>;
 	searchSync(vector: Float32Array, k: number, ef: number): PlaneSearchHit[];
+	writeNodeRawIfAbsent(
+		id: number,
+		level: number,
+		vector: Buffer,
+		scale: number,
+		invMag: number,
+		neighbors: Uint32Array,
+		upper: Uint32Array[] | null
+	): boolean;
+	openedClean(): boolean;
 	idHighWater(): number;
 	getWatermark(): number;
 	setWatermark(txn: number): void;
-	flush(): void;
+	flush(watermark?: number): void;
 }
 
 export interface HnswPlaneConstructor {
@@ -65,7 +75,19 @@ export const PLANE_NO_ID = 0xffffffff;
  * instance so crash-recovery drop paths can remove the file without opening the index.
  */
 export function planeFilePathFor(storePath: string, storeName: string): string {
-	return join(storePath, `${storeName.replace(/[/\\]/g, '.')}.hnsw`);
+	// encodeURIComponent is injective and never emits a path separator: table `a` attribute
+	// `b.c` and table `a.b` attribute `c` must not share a plane file (dot-flattening let two
+	// indexes serve each other's node ids as their own primary keys)
+	return join(storePath, `${encodeURIComponent(storeName)}.hnsw`);
+}
+
+/**
+ * Tombstone marking a plane file that could not be deleted (e.g. Windows EBUSY while still
+ * mapped). Its presence means the plane file is STALE: never open it — delete both when
+ * possible and rebuild.
+ */
+export function planeStalePathFor(planePath: string): string {
+	return `${planePath}.stale`;
 }
 
 // The compiled artifact is optional: harper installs carry no cargo toolchain, so absence just

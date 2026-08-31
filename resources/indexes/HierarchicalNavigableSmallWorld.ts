@@ -5,7 +5,7 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
 import { SKIP } from '@harperfast/extended-iterable';
-import { getPlaneBinding, planeFilePathFor, PLANE_NO_ID, type HnswPlane } from './hnswPlaneBinding.ts';
+import { getPlaneBinding, planeFilePathFor, planeStalePathFor, PLANE_NO_ID, type HnswPlane } from './hnswPlaneBinding.ts';
 
 const logger = loggerWithTag('HNSW');
 
@@ -142,7 +142,7 @@ const NODE_COUNT_TTL = 10_000;
 const PLANE_LAYER0_CAP_MAX = 1024;
 // Ids kept per upper level — the crate's format-level UPPER_CAP, which truncates whatever is
 // passed; pre-sorting to this cap keeps the nearest edges instead of an array prefix.
-const PLANE_UPPER_CAP = 32;
+const PLANE_UPPER_CAP = 64; // matches the crate's UPPER_CAP and the JS graph's M<<2 upper cap
 const PLANE_MAX_NODES = 1 << 24;
 // An existing plane file that cannot be opened is normally another worker mid-create (retry);
 // past this age it is a crashed create and is deleted and rebuilt — the plane is derived state,
@@ -157,6 +157,12 @@ const PLANE_INCOMPLETE_REBUILD_MS = 3_600_000;
 // Watermark stamped when the initial full mirror completes; 0 = still building (or crashed
 // mid-build). Phase-2 replay wiring will carry real transaction ids, which are also nonzero.
 const PLANE_MIRRORED = 1;
+// Steady-state durability cadence: a flush barrier every N mirrored mutations, so a crash
+// loses a bounded tail (scrubbed + rebuilt on unclean reopen) instead of everything since the
+// initial build's flush.
+const PLANE_FLUSH_EVERY = 4096;
+// Builder yield cadence: nodes mirrored per event-loop turn during the first-enable build.
+const PLANE_BUILD_CHUNK = 5_000;
 // Marks an error thrown by an app-supplied filter during a plane search: the caller re-raises
 // it as an ordinary query failure instead of disabling the (healthy) plane.
 const PLANE_PREDICATE_ERROR = Symbol('planePredicateError');
@@ -297,6 +303,8 @@ export class HierarchicalNavigableSmallWorld {
 	// is mirrored into the plane file and search runs native when the flag is on.
 	// undefined = not yet attached (may retry), null = unavailable or disabled for this process.
 	private plane: HnswPlane | null | undefined;
+	private planeBuild: Promise<void> | undefined; // in-flight first-enable mirror (tests await it)
+	private planeMutationsSinceFlush = 0;
 	private planeEligible = false;
 	private planeReady = false;
 	private planeRetryAt = 0;
@@ -386,7 +394,7 @@ export class HierarchicalNavigableSmallWorld {
 	 * its searches on the JS path until the builder stamps the mirror complete. A crashed create
 	 * leaves an unopenable file; once older than PLANE_STALE_CREATE_MS it is deleted and rebuilt.
 	 */
-	private getPlane(dims?: number): HnswPlane | null {
+	private getPlane(dims?: number, dimsFromVector = false): HnswPlane | null {
 		if (this.plane !== undefined) return this.plane;
 		if (!this.planeEligible) return (this.plane = null);
 		const now = Date.now();
@@ -399,9 +407,30 @@ export class HierarchicalNavigableSmallWorld {
 			return null;
 		}
 		try {
+			// a tombstone marks a plane a previous unlink could not remove (Windows EBUSY while
+			// mapped): the file is stale and must never be opened over a fresh graph
+			const stalePath = planeStalePathFor(filePath);
+			if (existsSync(stalePath)) {
+				try {
+					unlinkSync(filePath);
+					unlinkSync(stalePath);
+				} catch {
+					this.planeRetryAt = now + NODE_COUNT_TTL;
+					return null;
+				}
+			}
 			if (existsSync(filePath)) {
 				try {
-					return (this.plane = Plane.open(filePath));
+					const plane = Plane.open(filePath);
+					if (!plane.openedClean()) {
+						// torn seqlocks were scrubbed, but slot contents may be an incomplete
+						// writeback: a derived mirror is cheap to rebuild and wrong to trust
+						logger.warn?.('rebuilding the HNSW plane file after an unclean shutdown');
+						unlinkSync(filePath);
+						// fall through to the create path below
+					} else {
+						return (this.plane = plane);
+					}
 				} catch (openError) {
 					if (now - statSync(filePath).mtimeMs <= PLANE_STALE_CREATE_MS) {
 						// another worker is between its exclusive create and the header write
@@ -425,9 +454,19 @@ export class HierarchicalNavigableSmallWorld {
 			closeSync(fd);
 			// a populated graph's own dimensionality sizes the file — a caller-supplied dims
 			// (possibly a malformed search target) must not; the file format pins dims forever
+			let dimsFromStore = false;
 			for (const { value } of this.indexStore.getRange({ start: 0, end: Infinity, limit: 1 })) {
 				const storedVector = value?.level !== undefined ? value.vector : undefined;
-				if (storedVector) dims = Array.isArray(storedVector) ? storedVector.length : storedVector.byteLength;
+				if (storedVector) {
+					dims = Array.isArray(storedVector) ? storedVector.length : storedVector.byteLength;
+					dimsFromStore = true;
+				}
+			}
+			if (!dimsFromStore && !dimsFromVector) {
+				// empty graph and the dims came from a search target: a malformed query must not
+				// pin the file's dimensionality forever — defer creation to the first real write
+				unlinkSync(filePath);
+				return null;
 			}
 			try {
 				return (this.plane = this.createAndMirrorPlane(Plane, filePath, dims));
@@ -497,29 +536,52 @@ export class HierarchicalNavigableSmallWorld {
 		dims: number
 	): HnswPlane {
 		const plane = Plane.create(filePath, dims, this.planeLayer0Cap(), PLANE_MAX_NODES);
-		let mirrored = 0;
-		for (const { key, value } of this.indexStore.getRange({ start: 0, end: Infinity })) {
-			if (typeof key !== 'number' || !value || value.level === undefined) continue;
-			this.writeNodeToPlane(plane, key, value);
-			mirrored++;
-		}
-		const entryPointId = this.indexStore.getSync(ENTRY_POINT);
-		if (typeof entryPointId === 'number') {
-			plane.setEntryPoint(entryPointId, this.safeGetSync(entryPointId)?.level ?? 0);
-		}
-		// make the mirrored graph durable BEFORE stamping the watermark, then flush again: a
-		// durable watermark must imply durable slots, or a crash between writebacks could adopt
-		// a torn mirror as complete. Steady-state flush cadence is a recorded phase-2 open item.
-		plane.flush();
-		plane.setWatermark(PLANE_MIRRORED);
-		plane.flush();
-		this.planeReady = true;
-		if (mirrored > 0) logger.info?.(`built the HNSW plane file from ${mirrored} existing graph nodes`);
+		// The full mirror runs in the background in bounded chunks — a 5M-node synchronous scan
+		// would freeze this worker's event loop for its duration. Until the builder stamps the
+		// watermark, planeSearchReady keeps searches on the JS path while live mutations mirror
+		// write-through; the scan uses writeNodeRawIfAbsent so an older snapshot can never
+		// overwrite what a concurrent live mirror (this worker's or another's) already wrote.
+		this.planeBuild = this.buildPlaneMirror(plane).catch((error) => {
+			this.disablePlane(error);
+		});
 		return plane;
 	}
 
+	private async buildPlaneMirror(plane: HnswPlane): Promise<void> {
+		let mirrored = 0;
+		let nextStart = 0;
+		for (;;) {
+			let inChunk = 0;
+			let lastKey = -1;
+			for (const { key, value } of this.indexStore.getRange({ start: nextStart, end: Infinity, limit: PLANE_BUILD_CHUNK })) {
+				inChunk++;
+				if (typeof key !== 'number') continue;
+				lastKey = key;
+				if (!value || value.level === undefined) continue;
+				if (this.plane === null) return; // disabled while building
+				this.writeNodeToPlane(plane, key, value, true);
+				mirrored++;
+			}
+			if (inChunk < PLANE_BUILD_CHUNK || lastKey < 0) break;
+			nextStart = lastKey + 1;
+			// each chunk re-reads current committed state after yielding the event loop
+			await new Promise((resolve) => setImmediate(resolve));
+			if (this.plane === null) return; // disabled while building
+		}
+		const entryPointId = this.indexStore.getSync(ENTRY_POINT);
+		if (typeof entryPointId === 'number' && plane.getEntryPoint()[0] === PLANE_NO_ID) {
+			plane.setEntryPoint(entryPointId, this.safeGetSync(entryPointId)?.level ?? 0);
+		}
+		// flush(watermark) is a durability barrier: all slots reach disk before the watermark
+		// and clean-shutdown flag do, so a crash can only under-claim, never adopt a torn
+		// mirror as complete
+		plane.flush(PLANE_MIRRORED);
+		this.planeReady = true;
+		if (mirrored > 0) logger.info?.(`built the HNSW plane file from ${mirrored} existing graph nodes`);
+	}
+
 	/** Write one JS graph node's full state into the plane (throws on ineligible node state). */
-	private writeNodeToPlane(plane: HnswPlane, nodeId: number, node: any): void {
+	private writeNodeToPlane(plane: HnswPlane, nodeId: number, node: any, ifAbsent = false): void {
 		if (!Number.isInteger(nodeId) || nodeId < 0 || nodeId >= PLANE_NO_ID) {
 			throw new Error(`node id ${nodeId} is outside the plane's u32 id space`);
 		}
@@ -559,7 +621,8 @@ export class HierarchicalNavigableSmallWorld {
 			upper = [];
 			for (let l = 1; l <= level; l++) upper.push(planeConnectionIds(node[l], PLANE_UPPER_CAP));
 		}
-		plane.writeNodeRaw(nodeId, level, bin, scale, invMag, layer0, upper);
+		if (ifAbsent) plane.writeNodeRawIfAbsent(nodeId, level, bin, scale, invMag, layer0, upper);
+		else plane.writeNodeRaw(nodeId, level, bin, scale, invMag, layer0, upper);
 	}
 
 	/** Mirror a node put into the plane; a plane failure never fails the CF write. */
@@ -567,10 +630,11 @@ export class HierarchicalNavigableSmallWorld {
 		if (!this.planeEligible) return;
 		const vector = node?.vector;
 		const dims = Array.isArray(vector) ? vector.length : vector?.byteLength;
-		const plane = this.getPlane(dims);
+		const plane = this.getPlane(dims, true);
 		if (!plane) return;
 		try {
 			this.writeNodeToPlane(plane, nodeId, node);
+			this.planeFlushTick(plane);
 		} catch (error) {
 			this.disablePlane(error);
 		}
@@ -582,8 +646,18 @@ export class HierarchicalNavigableSmallWorld {
 		if (!plane) return;
 		try {
 			plane.clearNode(nodeId);
+			this.planeFlushTick(plane);
 		} catch (error) {
 			this.disablePlane(error);
+		}
+	}
+
+	/** Bounded-lag durability: a flush barrier every PLANE_FLUSH_EVERY mirrored mutations. */
+	private planeFlushTick(plane: HnswPlane): void {
+		if (++this.planeMutationsSinceFlush >= PLANE_FLUSH_EVERY) {
+			this.planeMutationsSinceFlush = 0;
+			if (this.planeReady) plane.flush(PLANE_MIRRORED);
+			else plane.flush();
 		}
 	}
 
@@ -623,7 +697,10 @@ export class HierarchicalNavigableSmallWorld {
 			try {
 				unlinkSync(filePath);
 			} catch (unlinkError: any) {
-				if (unlinkError?.code !== 'ENOENT') logger.warn?.('could not delete the disabled HNSW plane file', unlinkError);
+				if (unlinkError?.code !== 'ENOENT') {
+					logger.warn?.('could not delete the disabled HNSW plane file; tombstoning it as stale', unlinkError);
+					this.tombstonePlane(filePath);
+				}
 			}
 		}
 		if (!this.planeDisabledLogged) {
@@ -650,10 +727,20 @@ export class HierarchicalNavigableSmallWorld {
 		} catch (error: any) {
 			if (error?.code !== 'ENOENT') {
 				// a stale file that cannot be deleted (e.g. Windows EBUSY while mapped) must not
-				// be reopened as if current — keep the plane disabled for this process instead
+				// be reopened as if current — tombstone it so no process ever adopts it
 				this.plane = null;
-				logger.warn?.('could not delete the HNSW plane file', error);
+				logger.warn?.('could not delete the HNSW plane file; tombstoning it as stale', error);
+				this.tombstonePlane(filePath);
 			}
+		}
+	}
+
+	/** Mark an undeletable plane file stale; getPlane refuses to open a tombstoned plane. */
+	private tombstonePlane(filePath: string): void {
+		try {
+			closeSync(openSync(planeStalePathFor(filePath), 'w'));
+		} catch (tombstoneError) {
+			logger.warn?.('could not tombstone the stale HNSW plane file', tombstoneError);
 		}
 	}
 
@@ -1629,7 +1716,7 @@ export class HierarchicalNavigableSmallWorld {
 				}
 			: undefined;
 		if (this.planeEligible) {
-			const plane = this.getPlane(target.length);
+			const plane = this.getPlane(target.length, false);
 			// a query whose dimensionality differs from the graph's takes the JS path (which
 			// tolerates the mismatch) rather than erroring or disabling the healthy plane
 			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {

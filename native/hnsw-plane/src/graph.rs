@@ -215,6 +215,16 @@ impl Graph {
         }
     }
 
+    /// Whether a slot has ever been written (valid or deleted) — the builder scan's
+    /// skip-if-touched check.
+    pub fn node_touched(&self, id: u32) -> bool {
+        if !self.in_range(id) {
+            return false;
+        }
+        let seq = self.file.seq_atomic(id);
+        seqlock::read_consistent(seq, || unsafe { *self.file.slot_ptr(id).add(S_FLAGS) != 0 })
+    }
+
     /// The slot's stored upper idx regardless of valid/deleted flags — the raw mirroring
     /// path reuses a cleared node's entry when the host rewrites the same id.
     fn upper_idx_raw(&self, id: u32) -> u32 {

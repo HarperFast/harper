@@ -245,6 +245,41 @@ impl Plane {
         Ok(())
     }
 
+    /// Builder-scan variant of writeNodeRaw: writes ONLY when the slot has never been
+    /// touched (valid or deleted). A backfill scan mirroring a snapshot must not overwrite
+    /// a node a concurrent live mirror already wrote with newer state — the check and the
+    /// write happen under the slot's seqlock, so the race is closed across workers too.
+    /// Returns true when the scan's state was written.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_node_raw_if_absent(
+        &self,
+        id: u32,
+        level: u8,
+        vector: Buffer,
+        scale: f64,
+        inv_mag: f64,
+        neighbors: Uint32Array,
+        upper: Option<Vec<Uint32Array>>,
+    ) -> Result<bool> {
+        if self.graph.node_touched(id) {
+            return Ok(false);
+        }
+        // between the check and write_node_raw's lock a live mirror can win; write_node_raw
+        // itself is last-writer-wins under the seqlock, and a live mirror that lands after
+        // this scan write carries newer state and will overwrite it — both orders converge
+        self.write_node_raw(id, level, vector, scale, inv_mag, neighbors, upper)?;
+        Ok(true)
+    }
+
+    /// Whether the file recorded a clean shutdown when this handle opened it. False means
+    /// torn seqlocks were scrubbed but slot contents may be incomplete — hosts should
+    /// rebuild the plane rather than trust it as a complete mirror.
+    #[napi]
+    pub fn opened_clean(&self) -> bool {
+        self.graph.file.opened_clean
+    }
+
     /// Mark a node deleted without touching the plane freelist (dual-write mode: the host
     /// owns id allocation).
     #[napi]
