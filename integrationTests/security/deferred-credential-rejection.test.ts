@@ -150,7 +150,13 @@ suite(
 			equal(unowned.status, 200);
 			equal(unowned.body.servedBy, 'application-catch-all');
 			equal(unowned.body.authorization, null);
-			equal(unowned.body.harperUser, null);
+			// No Authorization header means no credential to defer, so Harper's own principal
+			// resolution runs exactly as it did before: this harness starts Harper with
+			// AUTHENTICATION_AUTHORIZELOCAL=true, and a loopback caller with no credentials is
+			// therefore still the local super user. That untouched path is precisely why the
+			// deferred-credential cases above assert `harperUser === null` — a rejected credential
+			// must not reach this bypass and be answered as a privileged anonymous request.
+			equal(unowned.body.harperUser, ctx.harper.admin.username);
 		});
 
 		test('a deferred-credential response is kept out of shared caches', async () => {

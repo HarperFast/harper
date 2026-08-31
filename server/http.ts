@@ -34,7 +34,7 @@ import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, Upgr
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
-import { makeCallbackChain as buildCallbackChain, describeChains } from './middlewareChain.ts';
+import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
 
 const { errorToString, errorForLog } = harperLogger;
@@ -504,7 +504,7 @@ export function httpServer(listener, options) {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
 		}
-		httpChain[port] = makeCallbackChain(httpResponders, port);
+		buildChains(httpChain, httpResponders, port);
 	}
 
 	return servers;
@@ -1507,13 +1507,51 @@ type SerializedRoute = { host?: string; urlPath?: string; order: string[] };
 // Resolved order captured at chain-build time, keyed identically to httpChain/upgradeChains/
 // websocketChains (kind → port → routes). Reporting the stored build-time order rather than
 // recomputing from current responders guarantees get_status matches the callback chain actually
-// serving that port — including cases where a late `port: 'all'` registration rebuilds only the
-// 'all' chain and leaves a concrete port's chain (and this description) unchanged (#1573).
+// serving that port: buildChains() writes both in the same pass, so a description can never
+// describe an order the port isn't running (#1573).
 const resolvedChainDescriptions: Record<string, Record<string, SerializedRoute[]>> = {
 	http: {},
 	upgrade: {},
 	websocket: {},
 };
+
+// Every port that has a built chain, per kind, mapping its stringified form to the port value as
+// registered. The chain maps are plain objects, so their own keys are strings, but chain building
+// selects responders with `port === portNum` — rebuilding port 9926 under the key '9926' would
+// match no responder at all.
+const builtChainPorts: Record<string, Map<string, number | string>> = {
+	http: new Map(),
+	upgrade: new Map(),
+	websocket: new Map(),
+};
+
+/**
+ * Builds `chains[port]` from the current `listeners` and, when `port` is the 'all' pseudo-port,
+ * rebuilds every other already-built chain of the same kind too.
+ *
+ * An entry registered on 'all' is folded into each concrete port's chain when that chain is built,
+ * so a registration arriving after those chains exist — an application catch-all mounted
+ * `after: 'rest'`, say — would otherwise update only `chains.all`, which nothing serves, leaving
+ * every bound port running the chain it had beforehand (#2418). Rebuilding is a pure function of
+ * the listener list and the port, so re-running it for an already-built port can only reproduce
+ * that port's order or extend it with the entry just registered.
+ */
+function buildChains(
+	chains: Record<string, Function>,
+	listeners: HttpEntry[],
+	port: number | string,
+	requestArgIndex: number = 0,
+	kind: string = 'http'
+) {
+	builtChainPorts[kind].set(String(port), port);
+	if (port !== 'all') {
+		chains[port] = makeCallbackChain(listeners, port, requestArgIndex, kind);
+		return;
+	}
+	for (const builtPort of builtChainPorts[kind].values()) {
+		chains[builtPort] = makeCallbackChain(listeners, builtPort, requestArgIndex, kind);
+	}
+}
 
 function makeCallbackChain(
 	responders: typeof httpResponders,
@@ -1640,7 +1678,7 @@ function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 			host: options?.host || undefined,
 		};
 		upgradeListeners[options?.runFirst ? 'unshift' : 'push'](entry);
-		upgradeChains[port] = makeCallbackChain(upgradeListeners, port, 0, 'upgrade');
+		buildChains(upgradeChains, upgradeListeners, port, 0, 'upgrade');
 	}
 }
 
@@ -1779,10 +1817,10 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			host: options?.host || undefined,
 		};
 		websocketListeners[options?.runFirst ? 'unshift' : 'push'](wsEntry);
-		websocketChains[port] = makeCallbackChain(websocketListeners, port, 1, 'websocket');
+		buildChains(websocketChains, websocketListeners, port, 1, 'websocket');
 
 		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
-		httpChain[port] = makeCallbackChain(httpResponders, port);
+		buildChains(httpChain, httpResponders, port);
 	}
 
 	return servers;
