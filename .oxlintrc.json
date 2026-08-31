@@ -76,5 +76,5 @@
 		"logger": "readonly",
 		"Bun": "readonly"
 	},
-	"ignorePatterns": ["unitTests/security/jsLoader/fixtures", "integrationTests/**/fixture-broken-*"]
+	"ignorePatterns": ["unitTests/security/jsLoader/fixtures", "integrationTests/**/fixture-broken-*/**"]
 }
