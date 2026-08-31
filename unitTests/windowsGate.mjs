@@ -109,7 +109,10 @@ const MOCHA = join(repoRoot, 'node_modules', 'mocha', 'bin', 'mocha.js');
 // Line-anchored and last-match: mocha's epilogue is the final such line, so a test that logs
 // one of its own cannot stand in for it on a group that terminated before printing one.
 const SUMMARY = /^\s*(\d+) passing\b/gm;
-const GROUP_TIMEOUT_MS = Number(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS ?? 600_000);
+// setTimeout holds its delay in a 32-bit int and clamps anything outside 1..2^31-1 to 1ms, so
+// an override that is empty, unparseable, negative, or huge would SIGKILL every group at spawn.
+const overrideTimeoutMs = Number(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS);
+const GROUP_TIMEOUT_MS = overrideTimeoutMs > 0 ? Math.min(overrideTimeoutMs, 2_147_483_647) : 600_000;
 
 // No --config: mocha discovers .mocharc.json itself, so the gate inherits the same
 // root config (and unitTests/mocha.init.js) as every other unit-test run.
