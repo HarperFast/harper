@@ -39,7 +39,8 @@ export interface HnswPlane {
 		k: number,
 		ef: number,
 		predicate: (ids: number[]) => Uint8Array,
-		filterExpansion?: number | null
+		filterExpansion?: number | null,
+		visitBudget?: number | null
 	): Promise<PlaneSearchHit[]>;
 	searchSync(vector: Float32Array, k: number, ef: number): PlaneSearchHit[];
 	idHighWater(): number;

@@ -200,6 +200,21 @@ describe('HNSW native plane dual-write', function () {
 		for (const record of within) assert.ok(record.$distance <= 0.05, `distance ${record.$distance} exceeds threshold`);
 	});
 
+	it('a throwing app filter surfaces as the query error without disabling the plane', async () => {
+		const condition = { target: vectors.get(3), comparator: 'sort', distance: 'cosine', ef: EF };
+		await assert.rejects(
+			Promise.resolve(
+				customIndex().search(condition, { transaction: undefined }, () => {
+					throw new Error('filter boom');
+				})
+			),
+			/filter boom/
+		);
+		const after = customIndex().search(condition, { transaction: undefined });
+		assert.equal(typeof after?.then, 'function', 'the plane must stay enabled after an app-filter throw');
+		assert.ok((await after).length > 0);
+	});
+
 	it('synchronous iteration of plane-backed results fails loudly instead of spinning', () => {
 		const results = PlaneTest.search({
 			sort: { attribute: 'vector', target: vectors.get(42), distance: 'cosine' },
