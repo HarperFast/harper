@@ -54,6 +54,12 @@ interface OpenBranch {
 // READY at the same moment and would otherwise each try to open the directory the winner just opened.
 const branchesByPath = new Map<string, Promise<OpenBranch>>();
 
+/**
+ * The claim word is process-local shared memory (in-process only, seeded UNCLAIMED each boot) and
+ * must stay that way: the winner's tail replay runs exactly once per boot because every boot starts
+ * from UNCLAIMED. A durable or cross-process claim would read READY on restart and silently skip
+ * recovery.
+ */
 function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
 	const baseStore = database({ database: baseName, table: undefined });
 	const seed = new BigInt64Array([UNCLAIMED]);
@@ -157,23 +163,26 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 				// exists is always a complete one, never a half-copy to be distrusted.
 				if (!existsSync(branchPath)) await materializeBranch(baseName, branchPath);
 				branch = openBranchDatabase(branchPath, baseName, storeName);
-				// An adopted directory is only complete up to its last memtable flush: its column
-				// families write with the WAL disabled, so anything after that flush exists solely in
-				// the branch's own transaction log — which a process that died without the exit-time
-				// flush (a crash, a Windows hard kill) always leaves behind. Replay that tail, and
-				// finish before READY is published, because READY is what releases the other threads
-				// to open the branch and serve reads from it. The claim makes this thread the sole
-				// elected replayer; a fresh checkpoint has no log, so replay is then a no-op. Skipped
-				// in read-only mode for the same snapshot semantics the base's boot replay uses.
+				// The branch's column families write with the WAL disabled, so writes since its last
+				// memtable flush exist only in its own transaction log — which a process that died
+				// without the exit-time flush (a crash, a Windows hard kill) always leaves behind.
+				// Replay must finish before READY, because READY is what releases the other threads to
+				// serve reads. A fresh checkpoint carries no transaction_logs (verified: the native
+				// checkpoint copies only RocksDB files), so replay after materialize is a no-op; the
+				// read-only skip mirrors the base's boot replay.
 				if (!isReadOnlyMode()) await replayLogs(branch.rootStore as RocksDatabase, branch.tables, true);
 				Atomics.store(claimState, 0, READY);
 			} catch (error) {
 				// Release rather than record the failure. A claim that stays un-releasable turns one
 				// transient error -- a full disk, a rename losing a race -- into a branch that can never
 				// be created again for the life of the process, because the buffer outlives every retry.
-				// The opened branch must go first: it holds the path and store identity, so leaving it
-				// open would make every retry fail with "already open" instead of retrying.
-				branch?.close();
+				// The branch is closed first — it holds the path and store identity a retry needs — and
+				// a close failure must not leave the claim wedged in CREATING for the whole deadline.
+				try {
+					branch?.close();
+				} catch (closeError) {
+					logger.warn(`Error closing branch at ${branchPath} after a failed open`, closeError);
+				}
 				Atomics.store(claimState, 0, UNCLAIMED);
 				throw error;
 			} finally {

@@ -61,9 +61,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			resolve();
 		});
 		if (!acquired) {
-			// The boot-scan caller keeps the old semantics (settle only if the holder ever unlocks —
-			// nothing awaits it). An elected replayer is the store's sole opener, so a held lock is a
-			// protocol violation; hanging its awaited promise would wedge the claim in CREATING.
+			// An elected replayer is the store's sole opener, so a held lock is a protocol violation;
+			// hanging its awaited promise would wedge the branch claim in CREATING. The boot-scan
+			// caller keeps the settle-on-unlock semantics (nothing awaits it).
 			if (electedReplayer) reject(new Error(`The replay lock for ${(rootStore as any).databaseName} is already held`));
 			return;
 		}
@@ -110,8 +110,8 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		// Total wall-clock budget (ms) for replay, configurable via `replication.replayTimeout`;
 		// falls back to the 10-minute default (harper#1316).
 		const replayTimeoutMs = replayTimeBudgetMs();
-		// A strict (elected) replay must not publish a store it knows it left incomplete, so the
-		// first unrecoverable failure is carried out of the loop and rejects below.
+		// Set on the first unrecoverable failure in elected mode; rejects below instead of publishing
+		// a store the replay knows is incomplete.
 		let strictFailure: Error | undefined;
 		const strictAbort = (error: Error, staged: DatabaseTransaction | undefined): void => {
 			try {
@@ -206,7 +206,6 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 						// commit the last transaction since we are starting a new one
 						transaction?.directCommitSync();
 					} catch (error) {
-						// directCommitSync already aborted and detached the failed transaction
 						if (electedReplayer) {
 							strictFailure = error;
 							break;
