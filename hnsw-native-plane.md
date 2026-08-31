@@ -236,9 +236,13 @@ p50 7.2 ms / recall@10-set 0.997 @ ef 512). Acceptance for phase 1:
 
 Decided (Kris, 2026-08-31):
 
-- **Degree cap = 64.** Size is critical; 128 doubles the file for a degree tail (measured mean
-  ~37). Confirmed empirically: cap-64 graphs reach recall@10 = 1.000 at 100K on the calibrated
-  corpus (§11). Cap remains a header field; revising it is a rebuild.
+- **Degree cap: 128 for the int8 plane** (revised 2026-08-31 after measurement). The original
+  cap-64 preference assumed 128 doubles the file; it does not for int8 slots — the 768 B vector
+  dominates, so 128 costs +23.5% (1,344 vs 1,088 B slots). Measured at 1M: cap-64 loses 2.2 pts
+  of recall (0.975 vs 0.996, where JS = 0.997) at equal ef and equal latency. +24% bytes for
+  full recall parity is the right trade. The cap stays a header field; the **binary-code v2
+  plane reopens the question** (cap-64 ≈ 352 B vs cap-128 ≈ 608 B slots, +73% — there a
+  diversity-preserving prune at lower cap is worth engineering).
 - **Platform policy.** Performance is a Linux target only. macOS must work (mmap/msync semantics
   differ slightly — `F_FULLFSYNC` for real durability barriers, no sparse-file guarantees on all
   filesystems — both handled, neither optimized). Windows may fall back to the JS implementation
@@ -268,14 +272,22 @@ Gaussian-mixture corpus matching `benchmarks/hnsw-scale.js` calibration (intra-c
 clusters = N/500). JS baseline for scale: 4.34 µs/visit; 1M efC-200 anchor: p50 7.2 ms,
 recall@10-set 0.997, ~3,110 visits.
 
-| N | p50 | p95 | visits/query | µs/visit | recall@10 (set) | build rate |
-| --- | --- | --- | --- | --- | --- | --- |
-| 100K | 0.28 ms | 0.46 ms | 1,395 | 0.201 | 1.000 | 5,583 inserts/s |
+| N | cap | p50 | p95 | visits/query | µs/visit | recall@10 (set) | build rate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 100K | 64 | 0.28 ms | 0.46 ms | 1,395 | 0.201 | 1.000 | 5,583 inserts/s |
+| 1M | 64 | 0.81 ms | 1.60 ms | 2,279 | 0.353 | 0.975 | 1,670 inserts/s |
+| 1M | 128 | 0.75 ms | 1.48 ms | 2,309 | 0.324 | **0.996** | 1,242 inserts/s |
+| 1M JS anchor | 128 | 7.2 ms | 12.0 ms | ~3,110 | 4.34 | 0.997 | ~263 inserts/s |
+
+At the 1M anchor with cap 128: **9.6× p50, 12.9× per-visit, 4.7× build rate, at JS-equal
+recall.** The µs/visit rise from 100K (0.20) to 1M (0.32–0.35) is the working set leaving L3 —
+the memory-hierarchy term; it is the number that holds at 60–100M. An ef-1024 sweep on a
+reopened cap-64 plane without its hierarchy (pre-sidecar) still reached 0.985 at p50 2.47 ms —
+layer-0 beam is robust to a missing hierarchy, at ~3.4× the visits.
 
 Milestones: zero-copy seqlock reads + AVX2 kernels took per-visit cost from 0.440 µs (first
-scalar prototype) to ~0.1–0.2 µs — **~22–45× vs the JS per-visit baseline**, beating the
-0.25–0.4 µs design budget. The optimizeRouting-parity insert (including the recomputed
-neighbor↔neighbor distances) restored recall to 1.000 where the placeholder insert produced
-unnavigable graphs. Uniform-random 768-d corpora produce meaningless recall numbers (the JS
-benchmark's own calibration note: a corpus "no ANN can index") — all comparisons use the
-mixture corpus.
+scalar prototype) to ~0.1–0.35 µs, beating the 0.25–0.4 µs design budget. The
+optimizeRouting-parity insert (including the recomputed neighbor↔neighbor distances) restored
+recall from 0.49 (placeholder insert) to JS parity. Uniform-random 768-d corpora produce
+meaningless recall numbers (the JS benchmark's own calibration note: a corpus "no ANN can
+index") — all comparisons use the mixture corpus.
