@@ -948,7 +948,9 @@ function filterHiddenAttributes(attributes: any[]): any[] {
 		.filter((attribute) => !attribute?.hidden)
 		.map((attribute) => {
 			const visible = { ...attribute };
-			if (Array.isArray(attribute.properties)) visible.properties = filterHiddenAttributes(attribute.properties);
+			if (Object.prototype.propertyIsEnumerable.call(attribute, 'properties') && Array.isArray(attribute.properties)) {
+				visible.properties = filterHiddenAttributes(attribute.properties);
+			}
 			if (attribute.elements && typeof attribute.elements === 'object') {
 				const [elements] = filterHiddenAttributes([attribute.elements]);
 				if (elements) visible.elements = elements;

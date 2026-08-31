@@ -53,7 +53,7 @@ import {
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
-import { resolveAttributes } from '../../../resources/jsonSchemaTypes.ts';
+import { resolveAttributes, SchemaTraversalError } from '../../../resources/jsonSchemaTypes.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -1390,15 +1390,20 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 				const tableName = ResourceClass?.tableName;
 				const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
 				claimedSuffixes.add(suffix);
-				toolsRegistered += registerVerbTools({
-					path,
-					suffix,
-					ResourceClass,
-					databaseName,
-					tableName,
-					attributes,
-					verbs,
-				});
+				try {
+					toolsRegistered += registerVerbTools({
+						path,
+						suffix,
+						ResourceClass,
+						databaseName,
+						tableName,
+						attributes,
+						verbs,
+					});
+				} catch (error) {
+					if (!(error instanceof SchemaTraversalError)) throw error;
+					warnInvalidResourceSchema(ResourceClass, path, error);
+				}
 			}
 		}
 		toolsRegistered += registerCustomMcpTools(ResourceClass, path);

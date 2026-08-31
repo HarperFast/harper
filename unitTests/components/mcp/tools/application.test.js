@@ -1407,4 +1407,28 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		assert.ok(getTool('bad_custom'), 'custom tools do not depend on the malformed derived schema');
 		assert.equal(warnings.filter((message) => message.includes("resource '/Bad'")).length, 1);
 	});
+
+	it('isolates a cyclic attribute graph without dropping sibling tools', () => {
+		const cyclic = { name: 'loop', type: 'object', properties: [] };
+		cyclic.properties.push(cyclic);
+		const Bad = makeTableResource({
+			databaseName: 'data',
+			tableName: 'bad',
+			attributes: [{ name: 'id', type: 'String', isPrimaryKey: true }, cyclic],
+		});
+		const Good = makeTableResource({
+			databaseName: 'data',
+			tableName: 'good',
+			attributes: [{ name: 'id', type: 'String', isPrimaryKey: true }],
+		});
+		_setResourcesForTest(
+			makeRegistry([
+				['Bad', { Resource: Bad }],
+				['Good', { Resource: Good }],
+			])
+		);
+		assert.doesNotThrow(() => registerApplicationTools());
+		assert.equal(getTool('get_Bad'), undefined);
+		assert.ok(getTool('get_Good'));
+	});
 });
