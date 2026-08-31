@@ -141,6 +141,10 @@ describe('branchedDatabases config (harper#643)', () => {
 		// application a divergent view of the instance rather than of its data.
 		assert.throws(() => assertBranchedDatabases('app', ['system']), /'system' database cannot be branched/);
 	});
+
+	it('accepts `true` as a declaration of every database', function () {
+		assert.doesNotThrow(() => assertBranchedDatabases('app', true));
+	});
 });
 
 describe('branch preparation rejects rather than falling back (harper#643)', () => {
@@ -186,6 +190,39 @@ describe('branch preparation rejects rather than falling back (harper#643)', () 
 	itUnlessLmdb('branches a real database and exposes it under its logical name', async function () {
 		const branches = await prepareBranches('app', ['prepbase'], 'vm-current-context');
 		assert.ok(branches.get('prepbase')?.tables.PrepSource);
+	});
+
+	itUnlessLmdb('`true` branches every database on the instance except `system`', async function () {
+		this.timeout(30000);
+		table({
+			table: 'OtherSource',
+			database: 'prepbase2',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+
+		const branches = await prepareBranches('allApp', true, 'vm-current-context');
+
+		assert.ok(branches.get('prepbase')?.tables.PrepSource, 'an existing database is branched');
+		assert.ok(branches.get('prepbase2')?.tables.OtherSource, 'as is a second one');
+		assert.strictEqual(branches.has('system'), false, 'system is excluded even under `true`');
+	});
+
+	itUnlessLmdb('`true` is a snapshot of what exists at THIS load, not a standing subscription', async function () {
+		this.timeout(30000);
+		const branches = await prepareBranches('snapshotApp', true, 'vm-current-context');
+		assert.ok(branches.has('prepbase'), 'sanity: the databases that already existed are branched');
+
+		table({
+			table: 'LaterSource',
+			database: 'preplater',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+
+		assert.strictEqual(
+			branches.has('preplater'),
+			false,
+			'a database created after this call must not retroactively appear in it'
+		);
 	});
 });
 

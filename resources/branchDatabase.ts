@@ -235,11 +235,11 @@ export async function removeBranches(): Promise<void> {
  */
 export async function prepareBranches(
 	appName: string,
-	branchedDatabases: string[] | undefined,
+	branchedDatabases: string[] | true | undefined,
 	loaderMode: string | undefined
 ): Promise<Map<string, BranchDatabase>> {
 	const branches = new Map<string, BranchDatabase>();
-	if (!branchedDatabases?.length) return branches;
+	if (branchedDatabases === undefined) return branches;
 
 	// The scoped `databases` binding is delivered through the module loader. Under `native` the
 	// loader hands back the process-wide exports, so a branch would be created and then never
@@ -255,6 +255,15 @@ export async function prepareBranches(
 	}
 
 	getDatabases();
+	if (branchedDatabases === true) {
+		// A snapshot, not a subscription: this is every database that exists at THIS load. One created
+		// afterward -- by another application, or by this one once schema declarations can target a
+		// branch -- is not retroactively branched. `system` is excluded the same way an explicit
+		// declaration of it is refused (assertBranchedDatabases): it carries the instance's own catalog,
+		// users and jobs, not application data.
+		branchedDatabases = Object.keys(databases).filter((name) => name !== 'system');
+	}
+	if (!branchedDatabases.length) return branches;
 	for (const baseName of branchedDatabases) {
 		if (!databases[baseName]) {
 			throw new Error(`Application '${appName}' declares a branch of database '${baseName}', which does not exist`);

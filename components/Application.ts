@@ -68,6 +68,10 @@ interface ApplicationConfig {
 	 * application forks is a deployment decision, not something the application checks in. Declaring
 	 * it in the application's own config.yaml is refused rather than ignored.
 	 *
+	 * `true` forks every database on the instance except `system` -- a snapshot of what exists when
+	 * this application loads, not a standing subscription: a database created afterward is not
+	 * retroactively branched.
+	 *
 	 * The fork is durable: it lives at a path derived from the application and database names, is
 	 * adopted again on restart, and is invisible to other applications.
 	 *
@@ -76,7 +80,7 @@ interface ApplicationConfig {
 	 * and cannot be scoped, so an application that uses them reads and writes the BASE — silently.
 	 * Per-application globals are a property of thread-level isolation, not of branching.
 	 */
-	branchedDatabases?: string[];
+	branchedDatabases?: string[] | true;
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -206,9 +210,9 @@ export function assertApplicationConfig(
  * shared database it asked not to have, with no signal that it happened.
  */
 export function assertBranchedDatabases(applicationName: string, value: unknown): void {
-	if (value === undefined) return;
+	if (value === undefined || value === true) return;
 	if (!Array.isArray(value)) {
-		throw new InvalidBranchedDatabasesError(applicationName, `expected an array, got ${typeof value}`);
+		throw new InvalidBranchedDatabasesError(applicationName, `expected an array or true, got ${typeof value}`);
 	}
 	const seen = new Set<string>();
 	for (const name of value) {

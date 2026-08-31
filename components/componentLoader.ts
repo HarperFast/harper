@@ -146,7 +146,7 @@ function rootConfigMount(appName: string): ScopeMount | undefined {
  *   branchedDatabases: [data]
  * ```
  */
-function rootConfigBranchedDatabases(appName: string): unknown {
+function rootConfigBranchedDatabases(appName: string): string[] | true | undefined {
 	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return undefined;
 	return (getConfigObj()?.[appName] as any)?.branchedDatabases;
 }
@@ -580,7 +580,7 @@ export interface LoadComponentOptions {
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
 	/** Databases this application forks, from its root-config entry (see `rootConfigBranchedDatabases`). */
-	branchedDatabases?: unknown;
+	branchedDatabases?: string[] | true;
 	// When provided, every Scope created during this load is added to this set instead of being
 	// auto-closed on worker shutdown. The caller then owns closing them. Used by transient loads
 	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
@@ -664,7 +664,7 @@ export async function loadComponent(
 			assertBranchedDatabases(branchAppName, options.branchedDatabases);
 			applicationScope.branches = await prepareBranches(
 				branchAppName,
-				options.branchedDatabases as string[],
+				options.branchedDatabases,
 				applicationScope.mode
 			);
 		}
