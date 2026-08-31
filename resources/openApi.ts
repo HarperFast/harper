@@ -4,6 +4,7 @@ import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
 import {
 	DATA_TYPES,
+	SchemaTraversalError,
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
@@ -141,7 +142,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 	};
 
-	for (const [, resource] of resources) {
+	resourceLoop: for (const [, resource] of resources) {
 		// skip invalid and error resources
 		if (!resource.path || resource.Resource.isError) continue;
 		// @hidden type-level: drop the Resource from the OpenAPI document entirely.
@@ -197,7 +198,13 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } }
 							: { $ref: SCHEMA_COMP_REF + def.type };
 				} else {
-					props[name] = attributeToOpenApiSchema(attr) ?? {};
+					try {
+						props[name] = attributeToOpenApiSchema(attr) ?? {};
+					} catch (error) {
+						if (!(error instanceof SchemaTraversalError)) throw error;
+						warnInvalidResourceSchema(resource.Resource, resource.path, error);
+						continue resourceLoop;
+					}
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
