@@ -85,60 +85,34 @@ export function _resetForTests(): void {
 // Lost native watch (predominantly Windows)
 // ---------------------------------------------------------------------------
 //
-// Every Harper watcher runs chokidar with `persistent: false` so a watcher never
-// holds the event loop open. That option takes chokidar down a code path that
-// never attaches an 'error' listener to the underlying Node `fs.FSWatcher`
-// (chokidar `handler.js`, `setFsWatchListener`):
-//
-//     if (!options.persistent) {
-//         watcher = createFsWatchInstance(path, options, listener, errHandler, rawEmitter);
-//         if (!watcher) return;
-//         return watcher.close.bind(watcher);   // <-- no watcher.on('error', ...)
-//     }
-//
-// `errHandler` is only consulted for a *synchronous* throw out of `fs.watch()`
-// (which is how ENOSPC/EMFILE reach `isWatcherExhaustionError` above). An
-// *asynchronous* watch failure — on Windows, deleting or replacing the watched
-// directory — is delivered by `node:internal/fs/watchers` as
-// `this.emit('error', err)` on an emitter with no listener, so Node turns it
-// into an uncaughtException. The error never reaches chokidar's wrapper, so
-// attaching `.on('error')` to the chokidar `FSWatcher` we hold does not help.
-//
-// chokidar's `persistent: true` branch does attach a listener and swallows this
-// exact error (its node#4337 workaround), which is why only Harper's watchers
-// see it. The upstream fix is one line — `watcher.on('error', errHandler)` in
-// the non-persistent branch — and is still missing as of chokidar 5.0.0.
-//
-// Until then `installLostNativeWatchGuard()` supplies the missing listener at
-// the only place the error is observable: the process. It claims *only* this
-// error shape and leaves every other uncaught exception exactly as Node would
-// have handled it.
+// Every Harper watcher runs `persistent: false`, which is the one chokidar
+// branch that never attaches an 'error' listener to the underlying Node
+// `fs.FSWatcher` (chokidar `handler.js`, `setFsWatchListener`; still so at
+// 5.0.0). Its `errHandler` covers only a synchronous throw out of `fs.watch()`
+// — the ENOSPC/EMFILE route above. An asynchronous failure is emitted on a
+// handle with no listener, so Node makes it an uncaughtException without it
+// ever reaching chokidar; `.on('error')` on the wrapper we hold cannot see it.
+// The process is therefore the only place it is observable, which is what
+// `installLostNativeWatchGuard()` uses.
 
 /**
  * Returns `true` for the asynchronous "the watched path went away" error raised
- * by Node's `fs.FSWatcher`: `EPERM: operation not permitted, watch` (errno
- * -4048), which fires on Windows whenever a watched directory is removed or
- * swapped out — a component redeploy, a test fixture teardown, an `npm install`
- * that replaces a tree.
+ * by Node's `fs.FSWatcher` — on Windows, `EPERM: operation not permitted, watch`
+ * (errno -4048) when a watched directory is removed or swapped out. Unlike
+ * {@link isWatcherExhaustionError} there is nothing to degrade to: polling a
+ * path that no longer exists only burns CPU.
  *
- * Deliberately distinct from {@link isWatcherExhaustionError}: exhaustion means
- * the host ran out of watch capacity and polling is a useful degradation; a lost
- * native watch means the thing being watched no longer exists, and polling would
- * only burn CPU on a path that isn't there.
- *
- * The three conditions are all load-bearing, because whatever this claims is
+ * All three conditions are load-bearing, because whatever this claims is
  * swallowed process-wide:
  *
  *   - `syscall === 'watch'` is only ever set by fs watch handles.
  *   - `EPERM` only. An async `ENOENT` from a watch handle has never been
  *     observed, whereas a *synchronous* one is the ordinary "watch a path that
  *     isn't there" misconfiguration, which must stay fatal.
- *   - no `path`. This is what separates the async failure from a synchronous
- *     `fs.watch()` throw: Node populates `path` on the thrown error but leaves
- *     it absent on the one delivered to the handle's 'error' event (which
- *     carries `filename: null` and nothing else locating it). Without this a
- *     raw `fs.watch(missingPath)` escaping into an uncaughtException would be
- *     mistaken for a benign lost watch and silently swallowed.
+ *   - no `path`. Node populates `path` on the error it throws out of
+ *     `fs.watch()` and leaves it absent on the one it delivers to the handle,
+ *     so without this a raw `fs.watch(missingPath)` reaching the guard would be
+ *     mistaken for a benign lost watch and swallowed.
  */
 export function isLostNativeWatchError(error: unknown): boolean {
 	if (typeof error !== 'object' || error === null) return false;
@@ -147,7 +121,6 @@ export function isLostNativeWatchError(error: unknown): boolean {
 }
 
 let lostNativeWatchCount = 0;
-// Warn on occurrence 1, then 10, 100, … — see claimLostNativeWatchError().
 let lostNativeWatchWarnThreshold = 1;
 
 /**
@@ -159,22 +132,17 @@ let lostNativeWatchWarnThreshold = 1;
 export function claimLostNativeWatchError(error: unknown): boolean {
 	if (!isLostNativeWatchError(error)) return false;
 	const claimed = error as { isHandled?: boolean };
-	// Already claimed. Counting the same instance twice would inflate the tally and trip the
-	// decade warning early, so report it as claimed and stop.
+	// Counting one instance twice would trip the warn threshold early.
 	if (claimed.isHandled) return true;
 	lostNativeWatchCount++;
-	// The claim is the classification above; everything from here is bookkeeping, and bookkeeping
-	// must not throw. This runs from a watcher's own 'error' route as well as from the process
-	// guard, so a frozen error (`isHandled` unassignable) or a logger that throws would otherwise
-	// turn a failure we just decided was benign into a fatal one.
+	// The claim is the classification above; the bookkeeping that follows must not be able to
+	// undo it. A frozen error (`isHandled` unassignable) or a throwing logger would otherwise
+	// make a failure just classified as benign fatal — here, or in a caller's 'error' route.
 	try {
 		fallbackLogger.trace?.(`Lost native file watch handle (occurrence ${lostNativeWatchCount}):`, error);
-		// Never go fully silent. Node gives this error no path, so it cannot be attributed to the
-		// watcher that raised it — ours or a dependency's — and a subsystem that has quietly stopped
-		// being watched is exactly what an operator needs to see. The default log level is `warn`, so
-		// trace alone would make every occurrence after the first invisible. Warn on the first and
-		// then at each decade, which keeps a delete storm (one error per directory in a removed tree)
-		// bounded without ever suppressing the signal outright.
+		// A subsystem that has silently stopped being watched is what an operator needs to see, and
+		// the default level is `warn`, so trace alone would hide every occurrence after the first.
+		// Warning at each decade keeps a delete storm bounded without ever going fully silent.
 		if (lostNativeWatchCount >= lostNativeWatchWarnThreshold) {
 			lostNativeWatchWarnThreshold *= 10;
 			fallbackLogger.warn?.(
@@ -187,9 +155,8 @@ export function claimLostNativeWatchError(error: unknown): boolean {
 					`a warning at each tenfold increase.`
 			);
 		}
-		// Last, because it is the only step whose failure costs nothing that has not already
-		// happened: server/threads/threadServer.js and server/threads/socketRouter.ts skip errors
-		// already marked handled, so this only keeps the benign case from being logged twice.
+		// Last: threadServer.js and socketRouter.ts skip errors already marked handled, so failing
+		// to mark one costs only a duplicate log line.
 		claimed.isHandled = true;
 	} catch {
 		// Marked or not, logged or not, the error stays claimed.
@@ -204,27 +171,20 @@ function handleUncaughtException(error: unknown): void {
 	try {
 		claimed = claimLostNativeWatchError(error);
 	} catch {
-		// Only classification can still throw here (a property getter that does), and it must not
-		// be what kills the process: a throw from inside an 'uncaughtException' listener replaces
-		// Node's report with this one and exits 7, and this listener runs first, so it would also
-		// cost the thread-level handlers their turn. An error we could not classify is not ours,
-		// and stays fatal exactly as it would have been unguarded.
+		// Classification is all that can still throw (a property getter that does), and a throw
+		// from inside an 'uncaughtException' listener would replace Node's report with it and
+		// exit 7. An error that cannot be classified is not ours to claim.
 		claimed = false;
 	}
 	if (claimed) return;
-	// Not ours. Node suppresses its default fatal handling as soon as *any*
-	// 'uncaughtException' listener exists, so if this guard is the only listener
-	// its mere presence would turn unrelated crashes into silent hangs. Step out
-	// of the way and let the exception be fatal exactly as it would have been.
+	// Node suppresses its default fatal handling as soon as *any* 'uncaughtException' listener
+	// exists, so being the only listener would turn unrelated crashes into silent hangs.
 	if (process.listenerCount('uncaughtException') > 1) return;
 	process.removeListener('uncaughtException', handleUncaughtException);
-	// Stepping aside is meant to be terminal, but say so in the state rather than assuming it:
-	// clearing the flag means a process that somehow survives re-arms on its next guardedWatch()
-	// instead of running unguarded for the rest of its life.
+	// A process that somehow survives re-arms on its next guardedWatch() rather than running
+	// unguarded thereafter.
 	lostNativeWatchGuardInstalled = false;
-	// Re-raising on the next tick (rather than throwing from inside the handler)
-	// keeps Node's normal report and exit code 1; a throw from within the handler
-	// exits 7 instead.
+	// nextTick, not a throw from inside the handler: that keeps Node's report and exit code 1.
 	process.nextTick(() => {
 		throw error;
 	});

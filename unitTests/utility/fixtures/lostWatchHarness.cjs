@@ -17,10 +17,9 @@ const {
 
 const mode = process.argv[2];
 
-// How long to wait for an asynchronous watch failure. On Windows it is the error itself we are
-// waiting for, and delivery competes with everything else on a loaded CI runner; elsewhere nothing
-// will ever arrive and this is only a settle period, so it stays short. Cases that can observe the
-// error poll for it and exit early, so the deadline is a ceiling, not a sleep.
+// A ceiling, not a sleep: observers poll and exit early. Windows is where the error actually
+// arrives, and delivery competes with everything else on a loaded runner; elsewhere nothing ever
+// arrives and this is only a settle period.
 const DELIVERY_DEADLINE_MS = process.platform === 'win32' ? 5000 : 1500;
 
 function waitForDelivery(isDelivered, onDeadline) {
@@ -76,10 +75,9 @@ watcher.on('ready', () => {
 	}
 
 	if (mode === 'frozen-claim') {
-		// A lost-watch-shaped error the guard cannot mark handled, because `isHandled` is
-		// unassignable on a frozen object. Marking is bookkeeping, so the claim still stands and the
-		// process lives; an unprotected guard would instead throw from inside its own
-		// 'uncaughtException' listener, replacing the report with a TypeError and exiting 7.
+		// `isHandled` is unassignable on a frozen error, and marking is only bookkeeping, so the claim
+		// stands and the process lives. An unprotected guard would throw from inside its own
+		// 'uncaughtException' listener instead, replacing the report with a TypeError and exiting 7.
 		setTimeout(() => {
 			throw Object.freeze(
 				Object.assign(new Error('frozen lost watch'), { code: 'EPERM', syscall: 'watch', filename: null })
@@ -93,9 +91,8 @@ watcher.on('ready', () => {
 	}
 
 	if (mode === 'unclassifiable-throw') {
-		// Classification is the one step left that can throw: reading the shape runs this getter.
-		// An error the guard cannot classify is not its to claim, so it has to stay fatal rather
-		// than take the process down with a TypeError from inside the guard's own listener.
+		// Reading the shape runs this getter, which is the one step left that can throw. An error the
+		// guard cannot classify is not its to claim and has to stay fatal on its own terms.
 		setTimeout(() => {
 			throw {
 				syscall: 'watch',

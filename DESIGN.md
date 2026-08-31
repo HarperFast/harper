@@ -1245,7 +1245,7 @@ is stat polling with no fs-event handle and is outside this invariant.
 Five of those six sites arm the watch through `guardedWatch()` (`utility/watcherFallback.ts`) rather
 than calling `chokidar.watch`/`fs.watch` directly — it installs a process-level guard for a second,
 unrelated failure (a watched path deleted out from under a non-persistent chokidar watcher raises an
-unhandled `EPERM`/`ENOENT`; see that file's header comment) but does no canonicalization of its own.
+unhandled async `EPERM`; see that file's header comment) but does no canonicalization of its own.
 Every caller still resolves its own path first and passes the resolved path in, exactly as when they
 called `chokidar.watch` directly, so the invariant holds through the wrapper. `utility/watcherFallback.ts`
 itself is the one file that touches `chokidar` without canonicalizing — the watch-sites source scan

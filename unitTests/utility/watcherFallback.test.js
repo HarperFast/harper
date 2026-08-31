@@ -133,9 +133,7 @@ describe('watcherFallback', () => {
 			assert.equal(error.isHandled, undefined);
 		});
 
-		// The watcher 'error' routes in EntryHandler, OptionsWatcher, RootConfigWatcher, keys.ts and
-		// manageThreads.js call this directly, outside the process guard's own try/catch, so marking
-		// an error it cannot mark has to be survivable here rather than only there.
+		// The five watcher 'error' routes call this directly, outside the process guard's try/catch.
 		it('claims an error it cannot mark handled instead of throwing', () => {
 			const error = Object.freeze(Object.assign(new Error('EPERM: watch'), { code: 'EPERM', syscall: 'watch' }));
 			assert.equal(claimLostNativeWatchError(error), true);
@@ -213,11 +211,9 @@ describe('watcherFallback', () => {
 			assert.match(stderr, /ENOENT/);
 		});
 
-		// The guard runs before every other uncaughtException listener, so a throw out of the guard
-		// itself costs the process both the original error's report (exit 7, with the guard's own
-		// TypeError in its place) and the thread-level handlers' turn. These two pin the boundary
-		// either side of the classification: bookkeeping that fails must not un-claim a benign
-		// error, and a shape the guard cannot read is not its error to claim.
+		// The two sides of the boundary: bookkeeping that fails must not un-claim a benign error, and
+		// a shape the guard cannot read is not its error to claim. A throw out of the guard itself
+		// would cost the process the original report (exit 7) and the thread-level handlers' turn.
 		it('still claims a lost watch it cannot mark handled', async function () {
 			this.timeout(30000);
 			const { code, stdout, stderr } = await runHarness('frozen-claim');
