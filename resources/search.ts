@@ -563,7 +563,7 @@ export function searchByIndex(
 						},
 						return(value?: any) {
 							(inner as any)?.return?.(value);
-							return { done: true, value };
+							return Promise.resolve({ done: true, value });
 						},
 					};
 				};

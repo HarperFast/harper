@@ -1599,18 +1599,23 @@ export class HierarchicalNavigableSmallWorld {
 				// Native cutover: same resolved ef, same predicate semantics; resolves to the same
 				// entries shape ({ key, distance }) the JS path returns, so rescoreResults and all
 				// post-load behavior are unchanged. searchByIndex handles the promise.
-				return this.searchPlane(plane, target, effectiveEf, filter, filterState, options).catch((error) => {
-					// an app filter's own throw is the query's failure, not the plane's
-					if (error?.[PLANE_PREDICATE_ERROR]) throw error;
-					// a failed native search disables the plane and re-runs this query on the JS path
+				try {
+					return this.searchPlane(plane, target, effectiveEf, filter, filterState, options).catch((error) => {
+						// an app filter's own throw is the query's failure, not the plane's
+						if (error?.[PLANE_PREDICATE_ERROR]) throw error;
+						// a failed native search disables the plane and re-runs this query on the JS path
+						this.disablePlane(error);
+						return this.search(
+							{ target, value, descending, distance, comparator, ef, filterExpansion },
+							context,
+							filter,
+							minResults
+						);
+					});
+				} catch (error) {
+					// a synchronous NAPI throw (before any promise exists) degrades to the JS path below
 					this.disablePlane(error);
-					return this.search(
-						{ target, value, descending, distance, comparator, ef, filterExpansion },
-						context,
-						filter,
-						minResults
-					);
-				});
+				}
 			}
 		}
 		let entryPoint = this.getEntryPoint(options);
