@@ -21,9 +21,9 @@
  * control below injects the same kind of raw entry for an id that DOES exist, and every surface
  * then serves it under a value the record does not hold. Without that control, the zeros this
  * file asserts would also be satisfied by surfaces that had stopped reading the index at all.
- * The enumerated index-backed surfaces are single-table `search()`, a two-table indexed read in
- * one request (harper#1881's shape), and the ops-API `search_by_value`; they converge on the
- * same join, and no claim is made here about protocols that do not.
+ * The surfaces asserted are single-table `search()`, a two-table indexed read in one request
+ * (harper#1881's shape), the ops-API `search_by_value`, and SQL; they converge on the same join.
+ * A surface that reached the index without that join would not be covered here.
  *
  * Because both producers are fixed, the divergence is injected: the fixture writes the composite
  * index key straight through the table's own index store. The oracle is that same store read back
@@ -77,7 +77,8 @@ suite(
 			});
 			const text = await response.text();
 			ok(response.ok, `POST ${path} must succeed; got ${response.status} ${text.slice(0, 300)}`);
-			return text ? JSON.parse(text) : null;
+			ok(text, `POST ${path} returned ${response.status} with an empty body`);
+			return JSON.parse(text);
 		}
 
 		async function get(path: string): Promise<any> {
@@ -87,10 +88,10 @@ suite(
 			});
 			const text = await response.text();
 			ok(response.ok, `GET ${path} must succeed; got ${response.status} ${text.slice(0, 300)}`);
-			return text ? JSON.parse(text) : null;
+			ok(text, `GET ${path} returned ${response.status} with an empty body`);
+			return JSON.parse(text);
 		}
 
-		/** Raw index-store scan for one indexed value — the only oracle that can see a phantom. */
 		async function rawIndexKeysFor(category: string, table = 'Host'): Promise<string[]> {
 			const entries: IndexEntry[] = await get(`/IndexDump/?table=${table}&category=${encodeURIComponent(category)}`);
 			return entries.map((entry) => entry.primaryKey).sort();
@@ -102,7 +103,6 @@ suite(
 			return result.results;
 		}
 
-		/** The literal ops-API surface, not a fixture re-implementation of it. */
 		async function searchByValueIds(category: string): Promise<string[]> {
 			const response = await client
 				.req()
@@ -123,6 +123,16 @@ suite(
 			return response.body.map((row: any) => row.id).sort();
 		}
 
+		async function sqlIds(category: string): Promise<string[]> {
+			const response = await client
+				.req()
+				.send({ operation: 'sql', sql: `SELECT id FROM data.Host WHERE category = '${category}'` })
+				.timeout(REQUEST_TIMEOUT);
+			strictEqual(response.status, 200, `SQL select must succeed; got ${response.status}`);
+			ok(Array.isArray(response.body), `SQL select must return rows; got ${typeof response.body}`);
+			return response.body.map((row: any) => row.id).sort();
+		}
+
 		/** Every enumerated index-backed read surface, for one indexed value. Companion never holds a
 		 * row under any category this suite queries, so its side of each cross-table read is asserted
 		 * empty here — a phantom leaking across tables would otherwise go unnoticed. */
@@ -140,6 +150,7 @@ suite(
 				comboCompanionFirst: companionFirst.Host,
 				comboHostFirst: hostFirst.Host,
 				searchByValue: await searchByValueIds(category),
+				sql: await sqlIds(category),
 			};
 		}
 
@@ -171,7 +182,7 @@ suite(
 						});
 						// An unconsumed undici body holds its socket out of the pool for the whole poll.
 						await probe.text();
-						ready = probe.status !== 404;
+						ready = probe.status === 200;
 					} catch {
 						/* worker routes not registered yet */
 					}
@@ -248,9 +259,6 @@ suite(
 			'the phantom is dropped because its primary record is absent, not because the surfaces ignore the raw index',
 			{ timeout: 60_000 },
 			async () => {
-				// Same raw write as the phantom, but for an id that DOES have a primary record. If the read
-				// surfaces served [] here too they would be ignoring the index rather than joining against
-				// the primary, and every zero above would be meaningless.
 				await post('/InjectStaleEntry/', { category: STALE_CATEGORY, id: LIVE_ID });
 
 				deepStrictEqual(await rawIndexKeysFor(STALE_CATEGORY), [LIVE_ID], 'the raw index must hold the stale entry');

@@ -82,8 +82,6 @@ export class Probe extends Resource {
 	}
 }
 
-// The class actually backing the index store, so the suite can assert RocksDB rather than trust
-// that its HARPER_STORAGE_ENGINE request was honored.
 export class EngineInfo extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -118,7 +116,7 @@ export class DeleteOne extends Resource {
 	}
 }
 
-/** Writes [category, id] into Host's category index directly, bypassing Table's write path. */
+/** Bypasses Table's write path entirely — this is the only way to create the divergence now. */
 async function injectIndexEntry(category, id) {
 	await getIndex(tables.Host, 'Host').put(category, id);
 	return { ok: true, category, id };
