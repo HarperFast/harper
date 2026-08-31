@@ -151,13 +151,7 @@ pub fn search_layer(
                 continue;
             }
         } else {
-            nbuf.clear();
-            let upper = graph.upper.read().unwrap();
-            if let Some(levels) = upper.get(&c.id) {
-                if let Some(list) = levels.get(level as usize - 1) {
-                    nbuf.extend_from_slice(list);
-                }
-            }
+            graph.upper_neighbors_into(c.id, level, &mut nbuf);
         }
         for i in 0..nbuf.len() {
             let nid = nbuf[i];
@@ -197,18 +191,15 @@ pub fn greedy_descend(
     to_level: u32,
     stats: &mut SearchStats,
 ) -> (u32, f32) {
-    let upper = graph.upper.read().unwrap();
+    let mut nbuf: Vec<u32> = Vec::new();
     let mut level = from_level;
     while level > to_level {
         let mut improved = true;
         while improved {
             improved = false;
-            let neighbors = upper
-                .get(&current)
-                .and_then(|levels| levels.get(level as usize - 1))
-                .cloned()
-                .unwrap_or_default();
-            for nid in neighbors {
+            graph.upper_neighbors_into(current, level.min(255) as u8, &mut nbuf);
+            for i in 0..nbuf.len() {
+                let nid = nbuf[i];
                 if let Some(d) = graph.distance_to(nid, query) {
                     stats.visits += 1;
                     if d < current_dist {

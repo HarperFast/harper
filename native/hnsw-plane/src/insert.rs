@@ -5,7 +5,7 @@
 //! format, so neighbor↔neighbor distances are recomputed (int8×int8) on id-match hits only.
 
 use crate::distance::{quantize_int8, Query};
-use crate::format::NO_ID;
+use crate::format::{NO_ID, NO_UPPER};
 use crate::graph::Graph;
 use crate::search::{greedy_descend, search_layer, SearchScratch, SearchStats};
 
@@ -28,7 +28,7 @@ fn level_for(id: u32, ml: f64) -> u8 {
     x ^= x >> 33;
     let unit = (x as f64) / (u64::MAX as f64);
     let level = (-unit.max(f64::MIN_POSITIVE).ln() * ml).floor();
-    level.min(31.0) as u8
+    (level as u8).min(crate::format::MAX_UPPER_LEVELS as u8)
 }
 
 /// Remove `to` from `from`'s adjacency at `level` (edge-replacement maintenance).
@@ -40,14 +40,11 @@ fn remove_edge(graph: &Graph, from: u32, to: u32, level: u8) {
             }
         });
     } else {
-        let mut upper = graph.upper.write().unwrap();
-        if let Some(levels) = upper.get_mut(&from) {
-            if let Some(list) = levels.get_mut(level as usize - 1) {
-                if let Some(pos) = list.iter().position(|&x| x == to) {
-                    list.remove(pos);
-                }
+        graph.update_upper_level(from, level, |list| {
+            if let Some(pos) = list.iter().position(|&x| x == to) {
+                list.remove(pos);
             }
-        }
+        });
     }
 }
 
@@ -56,13 +53,7 @@ fn neighbors_at(graph: &Graph, id: u32, level: u8, buf: &mut Vec<u32>) {
     if level == 0 {
         graph.neighbors_into(id, buf);
     } else {
-        buf.clear();
-        let upper = graph.upper.read().unwrap();
-        if let Some(levels) = upper.get(&id) {
-            if let Some(list) = levels.get(level as usize - 1) {
-                buf.extend_from_slice(list);
-            }
-        }
+        graph.upper_neighbors_into(id, level, buf);
     }
 }
 
@@ -85,24 +76,20 @@ fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize)
             }
         });
     } else {
-        // held across the prune: upper mutations are rare (~6% of nodes) and the recomputed
-        // distances are ~cap * 0.2us — an acceptable hold for prototype correctness
-        let mut upper = graph.upper.write().unwrap();
-        if let Some(levels) = upper.get_mut(&nid) {
-            if let Some(list) = levels.get_mut(level as usize - 1) {
-                if !list.contains(&new_id) {
-                    list.push(new_id);
-                    if list.len() > cap {
-                        let mut scored: Vec<(u32, f32)> = list
-                            .iter()
-                            .filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d)))
-                            .collect();
-                        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                        *list = scored.into_iter().take(cap).map(|(c, _)| c).collect();
-                    }
-                }
+        graph.update_upper_level(nid, level, |list| {
+            if list.contains(&new_id) {
+                return;
             }
-        }
+            list.push(new_id);
+            if list.len() > cap {
+                let mut scored: Vec<(u32, f32)> = list
+                    .iter()
+                    .filter_map(|&cand| graph.distance_between(nid, cand).map(|d| (cand, d)))
+                    .collect();
+                scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                *list = scored.into_iter().take(cap).map(|(c, _)| c).collect();
+            }
+        });
     }
 }
 
@@ -116,10 +103,8 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
 
     let (entry_id, entry_level) = graph.file.entry_point();
     if entry_id == NO_ID {
-        graph.write_node(id, level, &bytes, scale, inv_mag, &[]);
-        if level > 0 {
-            graph.upper.write().unwrap().insert(id, vec![Vec::new(); level as usize]);
-        }
+        let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER };
+        graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx);
         graph.file.set_entry_point(id, level as u32);
         return id;
     }
@@ -186,12 +171,9 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
         connections[l as usize] = conns;
     }
 
-    // Write the new node: layer-0 list pruned to the file cap (selection order = rank order).
-    let mut l0: Vec<u32> = connections[0].iter().map(|&(nid, _)| nid).collect();
-    l0.truncate(layer0_cap);
-    graph.write_node(id, level, &bytes, scale, inv_mag, &l0);
-
-    if level > 0 {
+    // Write the new node: upper entry first so a reader that sees the node sees its
+    // hierarchy; layer-0 list pruned to the file cap (selection order = rank order).
+    let upper_idx = if level > 0 {
         let levels: Vec<Vec<u32>> = (1..=level as usize)
             .map(|l| {
                 connections
@@ -200,8 +182,13 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
                     .unwrap_or_default()
             })
             .collect();
-        graph.upper.write().unwrap().insert(id, levels);
-    }
+        graph.write_upper(&levels)
+    } else {
+        NO_UPPER
+    };
+    let mut l0: Vec<u32> = connections[0].iter().map(|&(nid, _)| nid).collect();
+    l0.truncate(layer0_cap);
+    graph.write_node(id, level, &bytes, scale, inv_mag, &l0, upper_idx);
 
     // Reverse edges.
     for (l, conns) in connections.iter().enumerate() {

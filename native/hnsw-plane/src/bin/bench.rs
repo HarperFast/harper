@@ -110,16 +110,12 @@ fn main() {
     let mut rng = Rng(0x1234_5678_9abc_def0);
     let corpus = Corpus::new(n, dims, &mut rng);
 
-    let upper_path = path.with_extension("hnsw.upper");
     if reuse {
-        // replay the build's RNG draws so query rows match a fresh run, and load the
-        // persisted upper-layer sidecar (missing sidecar = layer-0-only search).
+        // replay the build's RNG draws so query rows match a fresh run; the upper region
+        // persists inside the plane file
         for _ in 0..n {
             let _ = corpus.row(&mut rng);
         }
-        graph.load_upper(&upper_path).expect("load upper sidecar");
-        let count = graph.upper.read().unwrap().len();
-        println!("upper layers loaded: {} nodes with level > 0", count);
     } else {
         let build_start = Instant::now();
         for i in 0..n {
@@ -132,7 +128,7 @@ fn main() {
         }
         let build = build_start.elapsed();
         println!("build: {:.1}s ({:.0} inserts/s)", build.as_secs_f64(), n as f64 / build.as_secs_f64());
-        graph.save_upper(&upper_path).expect("save upper sidecar");
+        graph.file.msync().expect("msync");
     }
 
     // Query with held-out vectors; measure latency and set-recall@10 vs brute-force truth

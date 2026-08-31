@@ -11,7 +11,6 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::JsFunction;
 use napi_derive::napi;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// Pooled per-query scratch (the visited array is O(nodes); never allocate per query).
@@ -123,7 +122,6 @@ impl Task for PredicateSearchTask {
 pub struct Plane {
     graph: Arc<Graph>,
     pool: Arc<ScratchPool>,
-    upper_path: PathBuf,
     params: InsertParams,
     // insert scratch, serialized: phase-1 hosts call insert from a single writer at a time
     // per index (Harper's commit path); a Mutex keeps misuse safe rather than fast.
@@ -138,24 +136,20 @@ impl Plane {
     pub fn create(path: String, dims: u32, layer0_cap: u32, max_nodes: f64) -> Result<Plane> {
         let file = PlaneFile::create(std::path::Path::new(&path), dims as usize, layer0_cap as usize, max_nodes as u64)
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        Ok(Self::wrap(file, &path))
+        Ok(Self::wrap(file))
     }
 
-    /// Open an existing plane file and its upper-layer sidecar.
+    /// Open an existing plane file (the upper-layer region lives in the same file).
     #[napi(factory)]
     pub fn open(path: String) -> Result<Plane> {
         let file = PlaneFile::open(std::path::Path::new(&path)).map_err(|e| Error::from_reason(e.to_string()))?;
-        let plane = Self::wrap(file, &path);
-        plane.graph.load_upper(&plane.upper_path).map_err(|e| Error::from_reason(e.to_string()))?;
-        Ok(plane)
+        Ok(Self::wrap(file))
     }
 
-    fn wrap(file: PlaneFile, path: &str) -> Plane {
-        let upper_path = PathBuf::from(format!("{path}.upper"));
+    fn wrap(file: PlaneFile) -> Plane {
         Plane {
             graph: Arc::new(Graph::new(file)),
             pool: Arc::new(ScratchPool(Mutex::new(Vec::new()))),
-            upper_path,
             params: InsertParams::default(),
             insert_scratch: Mutex::new(SearchScratch::new()),
         }
@@ -254,10 +248,9 @@ impl Plane {
         self.graph.file.set_watermark(txn as u64);
     }
 
-    /// msync the plane and persist the upper-layer sidecar; advances durability.
+    /// msync the plane (slots + upper region, one file); advances durability.
     #[napi]
     pub fn flush(&self) -> Result<()> {
-        self.graph.save_upper(&self.upper_path).map_err(|e| Error::from_reason(e.to_string()))?;
         self.graph.file.msync().map_err(|e| Error::from_reason(e.to_string()))
     }
 }

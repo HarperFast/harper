@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub const MAGIC: u32 = 0x484e_5357; // "HNSW"
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2; // v2: in-file upper region + S_UPPER_IDX (v1 files: reindex)
 pub const HEADER_SIZE: usize = 4096;
 
 // Header field byte offsets.
@@ -24,6 +24,20 @@ const H_ID_HIGH_WATER: usize = 32; // u64 atomic
 const H_FREELIST_HEAD: usize = 40; // u64 atomic: (tag << 32) | id; id u32::MAX = empty
 const H_TXN_WATERMARK: usize = 48; // u64
 const H_CLEAN_SHUTDOWN: usize = 56; // u8
+const H_MAX_NODES: usize = 64; // u64
+const H_UPPER_HIGH_WATER: usize = 72; // u64 atomic: upper-entry allocator
+
+/// Upper-layer region geometry: fixed entries covering levels 1..=MAX_UPPER_LEVELS at
+/// UPPER_CAP ids per level. P(level >= 1) = 1/M ~ 6.25%; the region reserves entries for
+/// 1/8 of max_nodes (2x headroom). P(level >= 9) at mL = 1/ln16 is ~e^-25 — unreachable.
+pub const MAX_UPPER_LEVELS: usize = 8;
+pub const UPPER_CAP: usize = 32;
+// entry: seq u32 | levels u8 | pad | per-level (degree u16 + ids u32*UPPER_CAP)
+pub const U_SEQ: usize = 0;
+pub const U_LEVELS: usize = 4;
+pub const U_LISTS: usize = 8;
+pub const UPPER_LEVEL_STRIDE: usize = 2 + UPPER_CAP * 4 + 2; // degree + ids + pad -> 132
+pub const NO_UPPER: u32 = u32::MAX;
 
 // Slot layout offsets (within a slot).
 pub const S_SEQ: usize = 0; // u32 seqlock
@@ -32,7 +46,8 @@ pub const S_LEVEL: usize = 5; // u8
 pub const S_DEGREE: usize = 6; // u16
 pub const S_SCALE: usize = 8; // f32
 pub const S_INV_MAG: usize = 12; // f32
-pub const S_VECTOR: usize = 16; // dims bytes (int8) or dims*4 (f32)
+pub const S_UPPER_IDX: usize = 16; // u32 index into the upper region; NO_UPPER = none
+pub const S_VECTOR: usize = 20; // dims bytes (int8) or dims*4 (f32)
                                 // neighbors: u32 * layer0_cap, follows vector
                                 // deleted slots reuse the first neighbor word as freelist next-pointer
 
@@ -45,6 +60,9 @@ pub struct PlaneFile {
     pub dims: usize,
     pub layer0_cap: usize,
     pub slot_size: usize,
+    pub max_nodes: u64,
+    upper_offset: usize,
+    pub upper_capacity: u64,
     /// Slots per 4 KB page under page-grouped addressing; 0 = packed (slots may straddle
     /// pages). Grouped is chosen at create when the per-page waste is small (e.g. 1,344 B
     /// slots: 3/page, 64 B waste). Straddling only costs on cold faults, but the layout is
@@ -58,6 +76,18 @@ const H_SLOTS_PER_PAGE: usize = 20; // u16
 fn slot_size_for(dims: usize, layer0_cap: usize) -> usize {
     let raw = S_VECTOR + dims + layer0_cap * 4;
     raw.next_multiple_of(64) // cache-line align
+}
+
+fn upper_entry_size() -> usize {
+    (U_LISTS + MAX_UPPER_LEVELS * UPPER_LEVEL_STRIDE).next_multiple_of(64)
+}
+
+fn slot_region_len(max_nodes: u64, slot_size: usize, slots_per_page: usize) -> u64 {
+    if slots_per_page > 0 {
+        max_nodes.div_ceil(slots_per_page as u64) * PAGE as u64
+    } else {
+        max_nodes * slot_size as u64
+    }
 }
 
 fn slots_per_page_for(slot_size: usize) -> usize {
@@ -75,12 +105,9 @@ impl PlaneFile {
     pub fn create(path: &Path, dims: usize, layer0_cap: usize, max_nodes: u64) -> io::Result<Self> {
         let slot_size = slot_size_for(dims, layer0_cap);
         let slots_per_page = slots_per_page_for(slot_size);
-        let data_len = if slots_per_page > 0 {
-            max_nodes.div_ceil(slots_per_page as u64) * PAGE as u64
-        } else {
-            max_nodes * slot_size as u64
-        };
-        let len = HEADER_SIZE as u64 + data_len;
+        let data_len = slot_region_len(max_nodes, slot_size, slots_per_page);
+        let upper_capacity = max_nodes / 8 + 64;
+        let len = HEADER_SIZE as u64 + data_len + upper_capacity * upper_entry_size() as u64;
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
         file.set_len(len)?;
         let mut map = unsafe { MmapMut::map_mut(&file)? };
@@ -94,7 +121,9 @@ impl PlaneFile {
         map[H_ENTRY_ID..H_ENTRY_ID + 4].copy_from_slice(&NO_ID.to_le_bytes());
         map[H_FREELIST_HEAD..H_FREELIST_HEAD + 8]
             .copy_from_slice(&((NO_ID as u64) | 0u64 << 32).to_le_bytes());
-        Ok(PlaneFile { map, dims, layer0_cap, slot_size, slots_per_page })
+        map[H_MAX_NODES..H_MAX_NODES + 8].copy_from_slice(&max_nodes.to_le_bytes());
+        let upper_offset = HEADER_SIZE + slot_region_len(max_nodes, slot_size, slots_per_page) as usize;
+        Ok(PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page })
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -109,7 +138,10 @@ impl PlaneFile {
         let layer0_cap = u16::from_le_bytes(map[H_LAYER0_CAP..H_LAYER0_CAP + 2].try_into().unwrap()) as usize;
         let slot_size = u32::from_le_bytes(map[H_SLOT_SIZE..H_SLOT_SIZE + 4].try_into().unwrap()) as usize;
         let slots_per_page = u16::from_le_bytes(map[H_SLOTS_PER_PAGE..H_SLOTS_PER_PAGE + 2].try_into().unwrap()) as usize;
-        Ok(PlaneFile { map, dims, layer0_cap, slot_size, slots_per_page })
+        let max_nodes = u64::from_le_bytes(map[H_MAX_NODES..H_MAX_NODES + 8].try_into().unwrap());
+        let upper_offset = HEADER_SIZE + slot_region_len(max_nodes, slot_size, slots_per_page) as usize;
+        let upper_capacity = max_nodes / 8 + 64;
+        Ok(PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page })
     }
 
     #[inline]
@@ -200,6 +232,35 @@ impl PlaneFile {
 
     pub fn watermark(&self) -> u64 {
         self.header_atomic_u64(H_TXN_WATERMARK).load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn upper_ptr(&self, idx: u32) -> *const u8 {
+        debug_assert!((idx as u64) < self.upper_capacity);
+        unsafe { self.map.as_ptr().add(self.upper_offset + idx as usize * upper_entry_size()) }
+    }
+
+    #[inline]
+    pub fn upper_ptr_mut(&self, idx: u32) -> *mut u8 {
+        self.upper_ptr(idx) as *mut u8
+    }
+
+    #[inline]
+    pub fn upper_seq_atomic(&self, idx: u32) -> &AtomicU32 {
+        unsafe { &*(self.upper_ptr(idx).add(U_SEQ) as *const AtomicU32) }
+    }
+
+    /// Allocate an upper-region entry. Entries are not freed on delete (bounded leak within
+    /// the 2x-headroom reserve; freelist reuse is a TODO). Returns NO_UPPER when exhausted —
+    /// the node then simply has no upper links, which degrades routing, not correctness.
+    pub fn allocate_upper(&self) -> u32 {
+        let hw = self.header_atomic_u64(H_UPPER_HIGH_WATER);
+        let idx = hw.fetch_add(1, Ordering::AcqRel);
+        if idx >= self.upper_capacity {
+            hw.fetch_sub(1, Ordering::AcqRel);
+            return NO_UPPER;
+        }
+        idx as u32
     }
 
     pub fn set_clean_shutdown(&mut self, clean: bool) {
