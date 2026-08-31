@@ -129,7 +129,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			strictFailure = error;
 		};
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
-		const entries = txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true });
+		const entries = txnLog.getRange({
+			startFromLastFlushed: true,
+			readUncommitted: true,
+			trackCorruptTransactions: true,
+		});
 		for (const auditRecord of entries as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
 				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table.`;
@@ -361,14 +365,18 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				logger.error(`Error ${finalTorn ? 'discarding a torn' : 'committing'} replay transaction`, error);
 			}
 		}
-		if (entries.corruptFrameStop.breaks > 0) {
+		// `breaks` also counts a torn tail — the designed, benign reading of a crash's last frame, and
+		// the reporter already logged it at `warn`. Only a mid-log break lost entries, so it alone earns
+		// this quarantine/repair summary; duplicating it for a torn tail would tell an operator to
+		// repair or re-clone the node on every ordinary unclean shutdown.
+		if (entries.corruptFrameStop.midLogBreak) {
 			logger.error(
 				`Transaction-log replay in ${(rootStore as any).databaseName} database stopped at a corrupt entry after replaying ${writes} records. Every entry after the break is quarantined — neither replayed nor replicated — and ${discardedWrites} record(s) of the transaction the break truncated were discarded rather than applied in part. Repair the transaction log or re-clone this node to recover them.`
 			);
-			// A mid-log break loses entries, not just a torn tail — see the electedReplayer doc comment
-			// above. Set even when strictFailure is already set (a different cause), so this database
-			// name's diagnostic never gets shadowed by an unrelated commit/write error.
-			if (electedReplayer && !strictFailure && entries.corruptFrameStop.midLogBreak) {
+			// electedReplayer must not resolve past known loss — see the doc comment above. Only set
+			// strictFailure if nothing has already failed the replay for an unrelated reason, so this
+			// diagnostic never shadows a more specific commit/write error.
+			if (electedReplayer && !strictFailure) {
 				strictFailure = new Error(
 					`Elected replay in ${(rootStore as any).databaseName} database stopped at a mid-log corrupt transaction-log frame; entries behind the break were acknowledged and are now quarantined. Refusing to publish a branch over known lost writes — repair the transaction log or re-clone this node.`
 				);

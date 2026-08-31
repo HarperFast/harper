@@ -250,17 +250,25 @@ export class RocksTransactionLogStore extends EventEmitter {
 		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
+		/**
+		 * Track which version a break truncated, in `corruptFrameStop.truncatedVersions`. Costs two
+		 * property stores per yielded entry (see below), so it defaults off: only boot replay reads
+		 * `truncatedVersions`, but this range is also the always-on source for live subscriptions and
+		 * replication, where every healthy entry would otherwise pay bookkeeping nothing consumes.
+		 */
+		trackCorruptTransactions?: boolean;
 	}): TransactionLogIterable {
 		let iterable = new ExtendedIterable<TransactionEntry>();
 		let aggregateIterator: TransactionLogIterator;
 		let singleLogIterator: TrackedIterator;
+		const attributeCorruption = options.trackCorruptTransactions === true;
 		const corruptFrameStop: CorruptFrameStop = { breaks: 0, truncatedVersions: new Set(), midLogBreak: false };
 		// Each log's iterator carries the version and endTxn of the last entry it yielded, so a break
 		// can be attributed to the source transaction whose remaining entries it swallowed — unless
 		// that entry's own endTxn already closed the transaction, in which case the break fell after
 		// it, not inside it. On the iterator itself, not in a map keyed by log: this is written per
-		// entry on the replay/broadcast path, and it stays attached when a removed log is spliced out
-		// of the aggregate.
+		// entry on the replay/broadcast path (when `attributeCorruption`), and it stays attached when a
+		// removed log is spliced out of the aggregate.
 		const trackCorruptFrames = (log: TransactionLog, queryOptions: typeof options): TrackedIterator => {
 			const report = reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`);
 			const iterator: TrackedIterator = endIteratorOnCorruptFrame(log.query(queryOptions), (error) => {
@@ -395,9 +403,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 							}
 						}
 						if (earliestIndex >= 0) {
-							// before the refill, which is where a break surfaces and needs this entry's version
-							iterators[earliestIndex].lastVersion = earliest.timestamp;
-							iterators[earliestIndex].lastEndTxn = earliest.endTxn;
+							if (attributeCorruption) {
+								// before the refill, which is where a break surfaces and needs this entry's version
+								iterators[earliestIndex].lastVersion = earliest.timestamp;
+								iterators[earliestIndex].lastEndTxn = earliest.endTxn;
+							}
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
@@ -434,7 +444,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// A break surfaces on the pull after this entry, so recording it here is in time to attribute
 			// that break to this entry's transaction. The aggregate branch records its own, per source
 			// log, because there this callback cannot tell which log an entry came from.
-			if (singleLogIterator) {
+			if (attributeCorruption && singleLogIterator) {
 				singleLogIterator.lastVersion = timestamp;
 				singleLogIterator.lastEndTxn = endTxn;
 			}
