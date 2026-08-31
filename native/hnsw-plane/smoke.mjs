@@ -37,6 +37,22 @@ const reused = plane.insert(vec(9001));
 if (reused !== ids[7]) throw new Error(`expected id reuse of ${ids[7]}, got ${reused}`);
 console.log('freelist reuse OK, highWater still', plane.idHighWater());
 
+// pipelined JS predicate: admit only ids divisible by 3; verdicts computed on the JS
+// event loop while traversal runs on the libuv pool
+let predicateCalls = 0;
+const pred = await plane.searchWithPredicate(
+	vec(44),
+	5,
+	128,
+	(ids) => {
+		predicateCalls++;
+		return Uint8Array.from(ids, (id) => (id % 3 === 0 ? 1 : 0));
+	}
+);
+for (const h of pred) if (h.id % 3 !== 0) throw new Error(`predicate leak: id ${h.id}`);
+if (pred.length === 0) throw new Error('predicate search returned nothing');
+console.log(`predicate top hit: id ${pred[0].id} (calls: ${predicateCalls})`);
+
 plane.flush();
 const reopened = Plane.open(path);
 const hits2 = reopened.searchSync(vec(42), 5, 128);
