@@ -347,13 +347,15 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 		if (strictFailure) {
 			// A failed strict replay must be re-runnable: the branch claim resets for a retry, so the
 			// lock must not be what survives to wedge it. Only a COMPLETED replay keeps the lock
-			// forever (the once-per-boot guarantee).
+			// forever (the once-per-boot guarantee). Reject BEFORE unlocking: unlock wakes tryLock
+			// callbacks — including this holder's own resolve() — and the first settle must be the
+			// rejection, or a failed replay reads as success.
+			reject(strictFailure);
 			try {
 				rootStore.unlock('replayLogs');
 			} catch (unlockError) {
 				logger.warn('Error releasing the replay lock after a failed replay', unlockError);
 			}
-			reject(strictFailure);
 		} else {
 			// we never actually release the lock because we only want to ever run one time
 			// rootStore.unlock('replayLogs');

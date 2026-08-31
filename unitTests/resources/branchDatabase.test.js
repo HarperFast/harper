@@ -132,6 +132,39 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		await assert.rejects(() => replayLogs(rootStore, databases.replaybase, true), /replay lock/);
 	});
 
+	it('a mid-flight strict replay failure rejects — and still rejects after releasing the lock', async function () {
+		// Releasing the lock wakes tryLock callbacks, including the holder's own resolve(); the
+		// rejection must win the settle or a failed replay reads as success and READY publishes an
+		// incomplete store. A stub store drives the real replay loop into its per-entry failure path.
+		let unlocked = false;
+		const queued = [];
+		const poisonedTable = {
+			tableId: 7,
+			getResource() {
+				throw new Error('poisoned resource');
+			},
+		};
+		const stubStore = {
+			databaseName: 'stub',
+			tryLock(key, onUnlocked) {
+				queued.push(onUnlocked);
+				return true;
+			},
+			unlock() {
+				unlocked = true;
+				for (const onUnlocked of queued) onUnlocked();
+				return true;
+			},
+			auditStore: {
+				getRange() {
+					return [{ type: 'put', tableId: 7, version: 1, extendedType: 17, getValue: () => ({ id: 1 }) }];
+				},
+			},
+		};
+		await assert.rejects(() => replayLogs(stubStore, { Poisoned: poisonedTable }, true), /poisoned resource/);
+		assert.strictEqual(unlocked, true, 'a failed strict replay must release the lock for the retry');
+	});
+
 	it('fails the load when the adopted branch cannot replay, then adopts cleanly once it can', async function () {
 		// Materialize by hand what a previous boot leaves behind, so this boot's first sight of the
 		// branch is the adopt path.
