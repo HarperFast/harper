@@ -1612,6 +1612,9 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				if (appeared) {
 					activationToFail = appeared.component;
 					await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared);
+					// Settled. Anything that fails after this — releasing the lock, say — is not this
+					// activation's, and attributing it here would fail a correctly settled component closed.
+					activationToFail = undefined;
 					return;
 				}
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
