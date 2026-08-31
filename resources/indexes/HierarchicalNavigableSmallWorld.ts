@@ -134,13 +134,13 @@ function autoScaleEfConstruction(nodeCount: number): number {
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
 const NODE_COUNT_TTL = 10_000;
 
-// Native traversal-plane geometry (see hnsw-native-plane.md). The layer-0 cap must cover the JS
-// graph's effective cap (M<<1 <<2 under optimizeRouting = 128); writeNodeRaw truncates the
-// transient 160 overshoot. maxNodes is a fixed sparse reservation — pages materialize on write —
+// Native traversal-plane geometry (see hnsw-native-plane.md). The layer-0 cap is derived from
+// M/optimizeRouting at creation to cover the JS graph's effective cap; grace overshoot above it
+// truncates by distance. maxNodes is a fixed sparse reservation — pages materialize on write —
 // and ids at or past it are rejected by the crate, which disables the plane for this process.
-const PLANE_LAYER0_CAP = 128;
-// Ids kept per upper level — must match the crate's format UPPER_CAP, which truncates whatever
-// is passed; pre-sorting to this cap keeps the nearest edges instead of an array prefix.
+const PLANE_LAYER0_CAP_MAX = 1024;
+// Ids kept per upper level — the crate's format-level UPPER_CAP, which truncates whatever is
+// passed; pre-sorting to this cap keeps the nearest edges instead of an array prefix.
 const PLANE_UPPER_CAP = 32;
 const PLANE_MAX_NODES = 1 << 24;
 // An existing plane file that cannot be opened is normally another worker mid-create (retry);
@@ -466,7 +466,10 @@ export class HierarchicalNavigableSmallWorld {
 		filePath: string,
 		dims: number
 	): HnswPlane {
-		const plane = Plane.create(filePath, dims, PLANE_LAYER0_CAP, PLANE_MAX_NODES);
+		// derived from M/optimizeRouting like the JS layer-0 cap, so a non-default M gets a
+		// matching slot geometry rather than silent truncation to a fixed width
+		const layer0Cap = Math.min(PLANE_LAYER0_CAP_MAX, this.optimizeRouting ? this.M << 3 : this.M << 1);
+		const plane = Plane.create(filePath, dims, layer0Cap, PLANE_MAX_NODES);
 		let mirrored = 0;
 		for (const { key, value } of this.indexStore.getRange({ start: 0, end: Infinity })) {
 			if (typeof key !== 'number' || !value || value.level === undefined) continue;
@@ -480,6 +483,9 @@ export class HierarchicalNavigableSmallWorld {
 		// stamped last: a crash or thrown mirror error leaves the watermark 0, and
 		// planeSearchReady refuses to serve searches from a mirror that never completed
 		plane.setWatermark(PLANE_MIRRORED);
+		// one msync so the completed mirror (and its watermark) is durable; steady-state
+		// flush cadence is a recorded phase-2 open item
+		plane.flush();
 		this.planeReady = true;
 		if (mirrored > 0) logger.info?.(`built the HNSW plane file from ${mirrored} existing graph nodes`);
 		return plane;
@@ -520,7 +526,7 @@ export class HierarchicalNavigableSmallWorld {
 			}
 		}
 		const level = node.level ?? 0;
-		const layer0 = planeConnectionIds(node[0], PLANE_LAYER0_CAP);
+		const layer0 = planeConnectionIds(node[0], plane.layer0Cap);
 		let upper: Uint32Array[] | null = null;
 		if (level >= 1) {
 			upper = [];

@@ -246,10 +246,14 @@ impl Plane {
         Ok(())
     }
 
-    /// Vector dimensionality of this plane (fixed at create).
     #[napi(getter)]
     pub fn dims(&self) -> u32 {
         self.graph.file.dims as u32
+    }
+
+    #[napi(getter)]
+    pub fn layer0_cap(&self) -> u32 {
+        self.graph.file.layer0_cap as u32
     }
 
     /// Async k-NN search on the libuv thread pool. `filter` is an optional allow-bitset

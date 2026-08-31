@@ -68,4 +68,3 @@ integrationTests/**/node_modules/
 # hnsw-plane native build outputs (optional module; build locally with npm run build:hnsw-plane)
 native/hnsw-plane/target/
 native/hnsw-plane/hnsw-plane.node
-native/hnsw-plane/Cargo.lock

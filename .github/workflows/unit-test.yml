@@ -118,9 +118,9 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 30
         run: npm run test:unit:windows
-  # The vectorIndexPlane suite self-skips when the optional native artifact is absent, so
-  # without this job nothing in CI would ever exercise the dual-write mirroring or the
-  # native search cutover — green CI would only prove the JS path unchanged.
+
+  # The vectorIndexPlane suite self-skips when the optional native artifact is absent; this
+  # job builds it so the dual-write mirroring and native search cutover run in CI.
   hnsw-plane:
     name: HNSW native plane (Node.js v24)
     runs-on: ubuntu-latest
