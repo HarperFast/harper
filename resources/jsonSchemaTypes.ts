@@ -16,7 +16,7 @@ import logger from '../utility/logging/harper_logger.ts';
 export type JsonSchemaType = 'string' | 'integer' | 'number' | 'boolean' | 'object' | 'array' | 'null';
 
 export interface JsonSchemaFragment {
-	type?: JsonSchemaType | JsonSchemaType[] | string;
+	type?: string | readonly string[];
 	description?: string;
 	primaryKey?: boolean;
 	assignCreatedTime?: boolean;
@@ -111,18 +111,18 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	// with `.elements`; map that to JSON Schema's items shape; otherwise fall through to the primitive
 	// mapping.
 	if (attr.properties) {
-		fragment.type = 'object';
+		fragment.type = attr.types ? [...attr.types] : 'object';
 		fragment.properties = {};
 		for (const sub of attr.properties) fragment.properties[sub.name] = attributeToFragment(sub);
 		if (attr.required) fragment.required = attr.required;
 		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
 	} else if (attr.type === 'array' && attr.elements) {
-		fragment.type = 'array';
+		fragment.type = attr.types ? [...attr.types] : 'array';
 		fragment.items = attributeToFragment(attr.elements);
 	} else if (attr.types) {
 		// A declared union round-trips verbatim; collapsing it to `attr.type` here would make the
 		// canonical `Table.properties` disagree with what the author wrote.
-		fragment.type = [...attr.types] as JsonSchemaType[];
+		fragment.type = [...attr.types];
 	} else {
 		const jsonType = attr.type ? DATA_TYPES[attr.type] : undefined;
 		if (jsonType) fragment.type = jsonType;
@@ -133,7 +133,7 @@ export function attributeToFragment(attr: AttributeLike): JsonSchemaFragment {
 	if (attr.assignCreatedTime) fragment.assignCreatedTime = true;
 	if (attr.assignUpdatedTime) fragment.assignUpdatedTime = true;
 	if (attr.hidden) fragment.hidden = true;
-	if (attr.nullable) fragment.nullable = true;
+	if (attr.nullable && !attr.types?.includes('null')) fragment.nullable = true;
 	// NOTE: enum/format/const are deliberately NOT emitted here. This projector feeds the canonical,
 	// front-end-neutral `Table.properties` Record, where a code-first `types.enum` column must stay
 	// identical to its GraphQL `String` equivalent (types.enum is advisory — see defineTable.ts). The
@@ -177,6 +177,18 @@ function fragmentToAttribute(
 	ancestors.add(fragment);
 	const attr: AttributeLike = { name };
 	try {
+		if (Array.isArray(fragment.type)) {
+			if (!fragment.type.every((type) => typeof type === 'string')) {
+				throw new TypeError(`Schema property "${name}.type" must contain only strings`);
+			}
+			attr.types = fragment.type;
+			const members = fragment.type.filter((type) => type !== 'null');
+			if (members.length !== fragment.type.length) attr.nullable = true;
+			if (members.length > 0) attr.type = members[0];
+		} else if (fragment.type != null) {
+			if (typeof fragment.type !== 'string') throw new TypeError(`Schema property "${name}.type" must be a string`);
+			attr.type = fragment.type;
+		}
 		if (fragment.properties !== undefined) {
 			if (
 				fragment.properties === null ||
@@ -188,22 +200,13 @@ function fragmentToAttribute(
 			attr.properties = Object.entries(fragment.properties).map(([subName, sub]) =>
 				fragmentToAttribute(subName, sub, ancestors, depth + 1)
 			);
+			attr.type ??= 'object';
 			if (fragment.required) attr.required = fragment.required;
 			if (fragment.additionalProperties !== undefined) attr.additionalProperties = fragment.additionalProperties;
-		} else if (fragment.type === 'array' && fragment.items !== undefined) {
-			attr.type = 'array';
+		}
+		const declaredTypes = Array.isArray(fragment.type) ? fragment.type : [fragment.type];
+		if (declaredTypes.includes('array') && fragment.items !== undefined) {
 			attr.elements = fragmentToAttribute('', fragment.items, ancestors, depth + 1);
-		} else if (Array.isArray(fragment.type)) {
-			if (!fragment.type.every((type) => typeof type === 'string')) {
-				throw new TypeError(`Schema property "${name}.type" must contain only strings`);
-			}
-			attr.types = fragment.type;
-			const members = fragment.type.filter((type) => type !== 'null');
-			if (members.length !== fragment.type.length) attr.nullable = true;
-			if (members.length > 0) attr.type = members[0];
-		} else if (fragment.type != null) {
-			if (typeof fragment.type !== 'string') throw new TypeError(`Schema property "${name}.type" must be a string`);
-			attr.type = fragment.type;
 		}
 		if (fragment.description) attr.description = fragment.description;
 		if (fragment.primaryKey) attr.isPrimaryKey = true;
@@ -309,14 +312,7 @@ export function _resetUnknownTypeWarningsForTest(): void {
  * document), as opposed to `attributeToFragment`, which produces the canonical, front-end-neutral
  * `Table.properties` Record.
  *
- * Returns `undefined` for a `hidden` attribute so callers skip it — at every nesting level, not just
- * the top one. Suppression used to be implemented in each surface's top-level loop, so a hidden
- * sub-property of a nested object was emitted anyway, and OpenAPI additionally leaked `hidden: true`
- * into the public document as a schema key (#1941).
- *
- * Per-property hints (`description`, `enum`, `format`, `const`) propagate at every level too; OpenAPI
- * previously attached them only to top-level properties, so the two surfaces described the same nested
- * fragment differently (#1942).
+ * Returns `undefined` for a `hidden` attribute so callers skip it at every nesting level.
  */
 export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOptions): JsonSchemaFragment | undefined {
 	if (attr.hidden && !options.ignoreHidden) return undefined;
@@ -352,25 +348,39 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 			if (items) fragment.items = items;
 		}
 	} else if (attr.types && options.dialect === 'json-schema') {
-		fragment.type = [...attr.types] as JsonSchemaType[];
+		const mapped = attr.types
+			.filter((member) => member !== 'null')
+			.map((member) => options.mapPrimitive(member, attr))
+			.filter((schema) => Object.keys(schema).length > 0);
+		if (mapped.length === 0) {
+			if (attr.types.includes('null')) fragment.type = 'null';
+		} else if (mapped.length === 1) {
+			Object.assign(fragment, mapped[0]);
+		} else {
+			const onlyTypes = mapped.every((schema) => Object.keys(schema).length === 1 && schema.type !== undefined);
+			if (onlyTypes) {
+				fragment.type = [
+					...new Set(mapped.flatMap((schema) => (Array.isArray(schema.type) ? schema.type : [schema.type]))),
+				] as JsonSchemaType[];
+			} else {
+				fragment.oneOf = mapped;
+			}
+		}
 	} else {
 		const union = unionMembers(attr);
 		if (union) {
 			fragment.oneOf = union.map((member) => options.mapPrimitive(member, attr));
+		} else if (attr.types?.every((member) => member === 'null')) {
+			Object.assign(fragment, options.mapPrimitive('null', attr));
 		} else {
-			const primitive = options.mapPrimitive(attr.type, attr);
-			if (primitive.type !== undefined) fragment.type = primitive.type;
-			if (primitive.description !== undefined) fragment.description = primitive.description;
-			if (primitive.format !== undefined) fragment.format = primitive.format;
-			if (primitive.contentEncoding !== undefined) fragment.contentEncoding = primitive.contentEncoding;
-			if (primitive.nullable !== undefined) fragment.nullable = primitive.nullable;
-			if (primitive.enum !== undefined) fragment.enum = primitive.enum;
+			Object.assign(fragment, options.mapPrimitive(attr.type, attr));
 		}
 	}
 
-	if (attr.nullable) applyNullability(fragment, options.dialect);
+	const nullOnly = attr.types?.every((member) => member === 'null');
+	if (attr.nullable && !nullOnly) applyNullability(fragment, options.dialect);
 	// An explicitly declared `description`/`format` outranks whatever the primitive mapper supplied as a
-	// default — a author writing `{ type: 'Date', format: 'date-time' }` means `date-time`, not the
+	// default — an author writing `{ type: 'Date', format: 'date-time' }` means `date-time`, not the
 	// Harper type name the mapper stamps on.
 	if (attr.description) fragment.description = attr.description;
 	if (attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;

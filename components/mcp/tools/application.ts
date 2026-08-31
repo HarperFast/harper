@@ -328,7 +328,7 @@ type RequestTargetCtor = new () => Record<string, unknown> & {
 // Test seams: avoid Harper's eager graph init in unit tests.
 let _resourcesOverride: ResourcesRegistry | undefined;
 let _requestTargetCtorOverride: RequestTargetCtor | undefined;
-const warnedInvalidResourceSchemas = new WeakSet<object>();
+let warnedInvalidResourceSchemas = new WeakSet<object>();
 
 function warnInvalidResourceSchema(resource: ResourceClassLike, path: string, error: unknown): void {
 	if (warnedInvalidResourceSchemas.has(resource)) return;
@@ -341,6 +341,9 @@ export function _setResourcesForTest(r: ResourcesRegistry | undefined): void {
 }
 export function _setRequestTargetForTest(ctor: RequestTargetCtor | undefined): void {
 	_requestTargetCtorOverride = ctor;
+}
+export function _resetInvalidSchemaWarningsForTest(): void {
+	warnedInvalidResourceSchemas = new WeakSet<object>();
 }
 
 // Cache the Resources module object (not the `resources` registry itself):
@@ -1372,29 +1375,28 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
 		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
 		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) return;
-		const databaseName = ResourceClass?.databaseName;
-		const tableName = ResourceClass?.tableName;
-		const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
-		claimedSuffixes.add(suffix);
-		// A programmatic Resource may declare `static properties` without an `attributes` Array; resolve
-		// the effective attributes so its verb tools get a rich inputSchema instead of a skeletal one.
-		let attributes: HarperAttribute[];
-		try {
-			attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
-		} catch (error) {
-			warnInvalidResourceSchema(ResourceClass, path, error);
-			return;
-		}
 		if (hasVerbs) {
-			toolsRegistered += registerVerbTools({
-				path,
-				suffix,
-				ResourceClass,
-				databaseName,
-				tableName,
-				attributes,
-				verbs,
-			});
+			let attributes: HarperAttribute[] | undefined;
+			try {
+				attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
+			} catch (error) {
+				warnInvalidResourceSchema(ResourceClass, path, error);
+			}
+			if (attributes) {
+				const databaseName = ResourceClass?.databaseName;
+				const tableName = ResourceClass?.tableName;
+				const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
+				claimedSuffixes.add(suffix);
+				toolsRegistered += registerVerbTools({
+					path,
+					suffix,
+					ResourceClass,
+					databaseName,
+					tableName,
+					attributes,
+					verbs,
+				});
+			}
 		}
 		toolsRegistered += registerCustomMcpTools(ResourceClass, path);
 		registerCustomMcpPrompts(ResourceClass, path);

@@ -98,6 +98,10 @@ describe('Tracked Object', () => {
 		const instance = new ProgrammaticResource({ title: 'hello', nested: { label: 'inside' } });
 		assert.equal(instance.title, 'hello');
 		assert.equal(instance.nested.label, 'inside');
+		assert.doesNotThrow(() => (instance.title = 'updated'));
+		assert.throws(() => (instance.title = 42), /must be a string/);
+		assert.doesNotThrow(() => (instance.nested = { label: 'replacement' }));
+		assert.throws(() => (instance.nested = 'wrong'), /must be an object/);
 	});
 });
 

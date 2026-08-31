@@ -224,10 +224,15 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 		});
 
 		it('round-trips a union back to the declared fragment (properties -> attributes -> properties)', () => {
-			const declared = { mixed: { type: ['string', 'number'] }, maybe: { type: ['string', 'null'] } };
+			const declared = {
+				mixed: { type: ['string', 'number'] },
+				maybe: { type: ['string', 'null'] },
+				tags: { type: ['array', 'null'], items: { type: 'string' } },
+			};
 			const round = projectAttributesToProperties(projectPropertiesToAttributes(declared));
 			assert.deepStrictEqual(round.mixed.type, ['string', 'number']);
 			assert.deepStrictEqual(round.maybe.type, ['string', 'null']);
+			assert.deepStrictEqual(round.tags, declared.tags);
 		});
 
 		it('keeps a `["null"]`-only declaration nullable rather than silently untyped', () => {

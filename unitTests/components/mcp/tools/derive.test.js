@@ -244,7 +244,8 @@ describe('mcp/derive — hidden attributes and unrecognized types', () => {
 	it('does not warn for Harper primitives that carry no DATA_TYPES entry (Blob, Any)', () => {
 		// `Blob` and `Any` are in graphql.ts's PRIMITIVE_TYPES but absent from DATA_TYPES, so a naive
 		// lookup reported them as typos on every process start.
-		const logger = require('#src/utility/logging/harper_logger');
+		const loggerModule = require('#src/utility/logging/harper_logger');
+		const logger = loggerModule.default || loggerModule;
 		const warnings = [];
 		const original = logger.warn;
 		logger.warn = (m) => warnings.push(String(m));

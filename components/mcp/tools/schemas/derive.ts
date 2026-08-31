@@ -53,9 +53,8 @@ export interface AttributePermissionEntry {
 type Mode = 'read' | 'insert' | 'update';
 
 /**
- * Maps a Harper attribute type to a JSON Schema `type` value (or list of
- * types when nullable). Falls back to "string" for unknown types — better
- * than blocking the field entirely; the runtime will validate.
+ * Maps a Harper attribute type to a JSON Schema `type` value. Unknown types
+ * remain untyped so the published contract does not invent a constraint.
  */
 function harperTypeToJsonSchema(
 	type: string | undefined,
@@ -86,9 +85,6 @@ function harperTypeToJsonSchema(
 		case undefined:
 			return {};
 		default: {
-			// Neither a Harper type nor a JSON Schema type. This used to coerce to `string` while OpenAPI
-			// emitted `{}` — two different wrong answers from one typo. Warn (once per name) and emit
-			// untyped, matching OpenAPI (#1942).
 			const resolved = resolveDeclaredType(type, `MCP tool schema property "${attributeName ?? '<unnamed>'}"`);
 			return resolved ? { type: resolved } : {};
 		}

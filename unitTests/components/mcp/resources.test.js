@@ -441,6 +441,24 @@ describe('mcp/resources', () => {
 			assert.equal(res.ok, false);
 			assert.match(res.reason, /table not found/);
 		});
+
+		it('contains a malformed static-properties schema as an actionable read failure', async () => {
+			const cyclic = { type: 'object', properties: {} };
+			cyclic.properties.self = cyclic;
+			class Broken {}
+			Broken.databaseName = 'data';
+			Broken.tableName = 'broken';
+			Broken.properties = { cyclic };
+			_setResourcesForTest(makeFakeResources([['Broken', Broken]]));
+			const res = await readResource({
+				uri: 'harper://schema/data/broken',
+				user: SUPER,
+				profile: 'application',
+			});
+			assert.equal(res.ok, false);
+			assert.match(res.reason, /invalid schema for data\.broken/);
+			assert.match(res.reason, /cycle/);
+		});
 	});
 
 	describe('readResource — harper://operations', () => {
