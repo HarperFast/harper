@@ -206,6 +206,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 						// commit the last transaction since we are starting a new one
 						transaction?.directCommitSync();
 					} catch (error) {
+						// directCommitSync aborts and detaches its transaction on failure; no cleanup here
 						if (electedReplayer) {
 							strictFailure = error;
 							break;
@@ -333,6 +334,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			try {
 				transaction?.directCommitSync();
 			} catch (error) {
+				// directCommitSync aborts and detaches its transaction on failure; no cleanup here
 				if (electedReplayer) strictFailure = error;
 				logger.error('Error committing replay transaction', error);
 			}
@@ -342,10 +344,21 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			logger.warn(
 				`Skipped ${skipped} unrecoverable audit entries in ${(rootStore as any).databaseName} database during replay`
 			);
-		// we never actually release the lock because we only want to ever run one time
-		// rootStore.unlock('replayLogs');
-		if (strictFailure) reject(strictFailure);
-		else resolve();
+		if (strictFailure) {
+			// A failed strict replay must be re-runnable: the branch claim resets for a retry, so the
+			// lock must not be what survives to wedge it. Only a COMPLETED replay keeps the lock
+			// forever (the once-per-boot guarantee).
+			try {
+				rootStore.unlock('replayLogs');
+			} catch (unlockError) {
+				logger.warn('Error releasing the replay lock after a failed replay', unlockError);
+			}
+			reject(strictFailure);
+		} else {
+			// we never actually release the lock because we only want to ever run one time
+			// rootStore.unlock('replayLogs');
+			resolve();
+		}
 	});
 }
 function asBinary(buffer) {
