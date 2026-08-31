@@ -173,7 +173,7 @@
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "3.1111.0",
+		"@aws-sdk/lib-storage": "3.1116.0",
 		"@endo/static-module-record": "^1.1.2",
 		"@fastify/autoload": "^6.3.1",
 		"@fastify/compress": "^8.3.1",
@@ -213,7 +213,7 @@
 		"human-readable-ids": "1.0.4",
 		"inquirer": "8.2.7",
 		"is-number": "7.0.0",
-		"joi": "17.13.4",
+		"joi": "17.13.6",
 		"json-bigint-fixes": "1.1.0",
 		"jsonata": "1.8.9",
 		"jsonwebtoken": "9.0.3",
