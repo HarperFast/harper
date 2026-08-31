@@ -114,3 +114,49 @@ jobs:
 
       - name: Plane dual-write + parity tests
         run: npx mocha unitTests/resources/vectorIndexPlane.test.js
+
+  # Windows had no unit-level coverage at all before this job: every job above pins
+  # ubuntu-latest, and integration-tests.yml was the only workflow touching Windows.
+  # Platform-gated code and the tests written to prove it therefore never executed.
+  #
+  # It runs a scoped slice of the unit tree rather than the whole thing — a set of
+  # suites still fail on Windows for environmental or test-design reasons that
+  # reproduce on `main`, so gating on everything would land red and stay red.
+  #
+  # This is the same `npm run test:unit:windows` a developer runs locally, so a failure
+  # here is reproducible without pushing. The scope, the exclusions (each with the
+  # reason it is there) and the reason the run is split into one mocha process per
+  # directory all live in unitTests/windowsGate.mjs — read its header before changing
+  # what this job covers.
+  #
+  # Make this `unit-test-windows` job a REQUIRED status check on `main`. It fires on
+  # every PR with no `paths:` filter, so it is satisfiable.
+  unit-test-windows:
+    name: Unit Test (Windows, Node.js v24)
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build
+        continue-on-error: true # we currently have type errors so just ignore that
+
+      # Bounded below the job so a hung group fails the step rather than cancelling
+      # the job, which keeps the gate's own group table in the log. The gate caps each
+      # group at 10 minutes on its own, so this bounds a pathological run, not a
+      # healthy one — a cold Windows runner does the whole gate in well under it.
+      - name: Run unit tests
+        timeout-minutes: 30
+        run: npm run test:unit:windows

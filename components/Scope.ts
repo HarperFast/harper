@@ -2,6 +2,7 @@ import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'node:events';
 import { databaseEventsEmitter, table } from '../resources/databases.ts';
+import { assertTableTargetNotBranched } from '../resources/branchGuard.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
@@ -240,6 +241,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	ensureTable<TableResourceType = unknown>(options: any): TableResourceType {
+		assertTableTargetNotBranched(this.applicationScope?.branches, options.database, options.table, 'ensureTable');
 		options.origin = this.#origin;
 		return table<TableResourceType>(options);
 	}

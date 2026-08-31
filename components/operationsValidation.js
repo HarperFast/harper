@@ -14,6 +14,7 @@ const { ENV_ENCRYPTED_PREFIX } = require('../utility/envFile.ts');
 // with the CLI (utility/componentNames.ts): `harper deploy setup=true` resolves a project name and a
 // credential host client-side, and has to reject exactly what these schemas would.
 const { PROJECT_NAME_PATTERN: PROJECT_FILE_NAME_REGEX, GIT_HOST_PATTERN } = require('../utility/componentNames.ts');
+const { assertBranchedDatabases } = require('./Application.ts');
 
 // dotenv's accepted key character set. Restricting keys to this prevents a crafted key (e.g. one
 // containing `=` or a newline) from injecting extra assignments into a .env file.
@@ -496,6 +497,20 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({ 'string.bracketedHost': '{#label} must not be bracketed; use the bare IPv6 literal' }),
+		// Databases this application forks a private copy of (harper#642/#643). Deployment routing
+		// like urlPath/host above, not component config: reusing assertBranchedDatabases here (rather
+		// than re-deriving its rules in Joi) gives a synchronous 400 at deploy time instead of a load
+		// failure discovered much later and disconnected from the request that caused it.
+		branchedDatabases: Joi.custom((value, helpers) => {
+			try {
+				assertBranchedDatabases(req.project, value);
+			} catch (error) {
+				return helpers.error('any.invalid', { reason: error.message });
+			}
+			return value;
+		}, 'branchedDatabases')
+			.optional()
+			.messages({ 'any.invalid': '{{#reason}}' }),
 		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
 		// identifying key rather than a separate discriminator field, so a new kind is added as
 		// another item alternative here without reshaping the field. Today: npm registry auth

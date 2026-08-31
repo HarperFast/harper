@@ -267,6 +267,10 @@ export class HierarchicalNavigableSmallWorld {
 	// a value of 1 is extremely aggressive.
 	optimizeRouting = 0.5;
 	nodesVisitedCount = 0;
+	// Test seam: source of randomness for level assignment. Tests that assert exact result-set
+	// equality across search strategies replace this with a seeded PRNG so the graph shape is
+	// reproducible; greedy routing legitimately diverges on rare unlucky graphs otherwise.
+	random: () => number = Math.random;
 	// Visit-budget multiplier for predicate-aware traversal (#1241). Under-filled filtered searches
 	// stop after the resolved budget ef * filterExpansion visits; automatic search ef contributes at
 	// most AUTO_EF_MAX, while explicit schema/query ef remains authoritative. A filter that fills its
@@ -791,7 +795,7 @@ export class HierarchicalNavigableSmallWorld {
 			const storedScale = q ? q.scale : undefined;
 			let entryPoint = entryPointId && this.safeGetSync(entryPointId, options);
 			if (entryPoint == null) {
-				const level = Math.floor(-Math.log(Math.random()) * this.mL);
+				const level = Math.min(Math.floor(-Math.log(this.random()) * this.mL), MAX_LEVEL);
 				const node = {
 					vector: storedVector,
 					scale: storedScale,
@@ -814,7 +818,7 @@ export class HierarchicalNavigableSmallWorld {
 			}
 
 			// Generate random level for this new element
-			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
+			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(this.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
 			let mirrorEntryPointAfterPut = false;
 			if (level > currentLevel) {

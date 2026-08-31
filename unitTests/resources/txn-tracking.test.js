@@ -73,18 +73,39 @@ describe('Txn Expiration', () => {
 			assert.equal(lastTxn.startedFrom.method, 'get');
 			assert.equal(lastTxn.timeout, 20);
 		}
-		await Promise.race([delay(50), result]);
-		assert(performedDBInteractions);
+		// The 500ms tail inside get() keeps `result` pending, so observing expiry before `result`
+		// settles proves the txn was expired mid-flight rather than removed by normal completion.
+		let resultSettled = false;
+		result.then(
+			() => (resultSettled = true),
+			() => (resultSettled = true)
+		);
+		await waitFor(() => performedDBInteractions, { message: 'read/write after expiry never completed' });
 		// Check the specific txn we started was expired and removed. Counting against
 		// existingTxns is unreliable: other tests' transactions can expire concurrently and
-		// shift the count underneath us during the 50ms window.
-		assert.ok(
-			!trackedTxns.has(lastTxn),
-			'expected the slow transaction to have been expired and removed from trackedTxns'
+		// shift the count underneath us.
+		const outcome = await waitFor(() => (!trackedTxns.has(lastTxn) ? 'expired' : resultSettled && 'settled'), {
+			message: 'the slow transaction was neither expired nor completed',
+		});
+		assert.equal(
+			outcome,
+			'expired',
+			'expected the slow transaction to have been expired and removed from trackedTxns before get() completed'
 		);
+		// Drain the slow get() so its 500ms tail and final read cannot run into the next
+		// describe's expiration settings and freshly re-pathed test DB. On rocksdb the aborted
+		// outer transaction must also surface to the caller.
+		if (SlowResource.primaryStore instanceof RocksDatabase) {
+			await assert.rejects(result, /aborted after exceeding the maximum open-transaction time/);
+		} else {
+			await result.catch(() => {});
+		}
 	});
 	after(function () {
+		// both expiration globals are process-wide, and the 20ms above went to whichever engine
+		// is active, so restoring only one leaks it into every later test on the other pass
 		setTxnExpiration(30000);
+		setLMDBTxnExpiration(30000);
 	});
 });
 
