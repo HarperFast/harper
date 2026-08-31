@@ -1,7 +1,7 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
-import { SKIP } from '@harperfast/extended-iterable';
+import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
@@ -510,26 +510,55 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const loaded = index.customIndex.search(searchCondition, context, recordFilter, minResults).map((entry) => {
-				// if the custom index returns an entry with metadata, merge it with the loaded entry
-				if (typeof entry === 'object' && entry) {
-					const { key, ...otherProps } = entry;
-					if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-					const loadedEntry = Table.primaryStore.getEntry(key, {
-						transaction: context && Table._readTxnForContext(context),
-					});
-					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
-					freezeRecord(loadedEntry?.value);
-					recordRead(loadedEntry);
-					return { ...otherProps, ...loadedEntry };
+			const searched = index.customIndex.search(searchCondition, context, recordFilter, minResults);
+			const processEntries = (entries: any[]) => {
+				const loaded = entries.map((entry) => {
+					// if the custom index returns an entry with metadata, merge it with the loaded entry
+					if (typeof entry === 'object' && entry) {
+						const { key, ...otherProps } = entry;
+						if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+						const loadedEntry = Table.primaryStore.getEntry(key, {
+							transaction: context && Table._readTxnForContext(context),
+						});
+						if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
+						freezeRecord(loadedEntry?.value);
+						recordRead(loadedEntry);
+						return { ...otherProps, ...loadedEntry };
+					}
+					return entry;
+				});
+				if (index.customIndex.rescoreResults) {
+					const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
+					if (rescored != null) return rescored as any;
 				}
-				return entry;
-			});
-			if (index.customIndex.rescoreResults) {
-				const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
-				if (rescored != null) return rescored as any;
+				return loaded;
+			};
+			if (typeof (searched as any)?.then === 'function') {
+				// An async custom-index search (the native HNSW plane runs off the event loop and
+				// resolves its candidate list as a promise). Apply the same load + rescore pipeline
+				// once it resolves, exposed as a lazily-resolving iterable — consumable through async
+				// iteration only, like the promise-entry filter paths above.
+				const pending = (searched as Promise<any[]>).then(processEntries);
+				const results: any = new ExtendedIterable();
+				results.iterate = () => {
+					let inner: Iterator<any> | null = null;
+					return {
+						next() {
+							if (inner) return inner.next();
+							return pending.then((entries) => {
+								inner = entries[Symbol.iterator]();
+								return inner.next();
+							});
+						},
+						return(value?: any) {
+							(inner as any)?.return?.(value);
+							return { done: true, value };
+						},
+					};
+				};
+				return results;
 			}
-			return loaded;
+			return processEntries(searched);
 		}
 		return index.getRange(rangeOptions).map(
 			filter
