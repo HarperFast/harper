@@ -1,3 +1,4 @@
+const assert = require('node:assert');
 const { expect } = require('chai');
 const { generateJsonApi } = require('#src/resources/openApi');
 const { Resources } = require('#src/resources/Resources');
@@ -124,6 +125,28 @@ describe('test openApi module', () => {
 			resources.get('Dog').Resource.attributes[0].description = "The dog's display name.";
 			const api = generateJsonApi(resources, serverURL);
 			expect(api.components.schemas.Dog.properties.name).to.have.property('description', "The dog's display name.");
+		});
+
+		it('preserves a description on an array relationship property', () => {
+			const ownerType = {
+				type: 'Owner',
+				attributes: [{ type: 'String', name: 'id', nullable: false }],
+			};
+			resources.allTypes.set('Owner', ownerType);
+			resources.get('Dog').Resource.attributes.push({
+				type: 'array',
+				name: 'owners',
+				elements: { type: 'Owner', definition: ownerType },
+				relationship: true,
+				description: 'People responsible for this dog.',
+			});
+
+			const api = generateJsonApi(resources, serverURL);
+			assert.deepStrictEqual(api.components.schemas.Dog.properties.owners, {
+				type: 'array',
+				items: { $ref: '#/components/schemas/Owner' },
+				description: 'People responsible for this dog.',
+			});
 		});
 
 		it('exposes Resource.description as components.schemas.X.description', () => {

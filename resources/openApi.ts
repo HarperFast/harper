@@ -206,6 +206,9 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 						continue resourceLoop;
 					}
 				}
+				if (type === 'array' && attr.description && (relationship || def)) {
+					props[name].description = attr.description;
+				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
 		}
