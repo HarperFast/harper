@@ -135,9 +135,10 @@ function autoScaleEfConstruction(nodeCount: number): number {
 const NODE_COUNT_TTL = 10_000;
 
 // Native traversal-plane geometry (see hnsw-native-plane.md). The layer-0 cap is derived from
-// M/optimizeRouting at creation to cover the JS graph's effective cap; grace overshoot above it
-// truncates by distance. maxNodes is a fixed sparse reservation — pages materialize on write —
-// and ids at or past it are rejected by the crate, which disables the plane for this process.
+// M/optimizeRouting at creation to cover the JS graph's effective cap (grace overshoot above it
+// truncates by distance); a configuration deriving past this ceiling is refused as ineligible
+// rather than silently truncated. maxNodes is a fixed sparse reservation — pages materialize on
+// write — and ids at or past it are rejected by the crate, which disables the plane.
 const PLANE_LAYER0_CAP_MAX = 1024;
 // Ids kept per upper level — the crate's format-level UPPER_CAP, which truncates whatever is
 // passed; pre-sorting to this cap keeps the nearest edges instead of an array prefix.
@@ -332,10 +333,14 @@ export class HierarchicalNavigableSmallWorld {
 		}
 		if (options?.nativePlane) {
 			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
-			// no-op for float (quantization: "none") and non-cosine indexes.
-			this.planeEligible = this.int8 && this.distance === cosineDistance;
+			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
+			// layer-0 cap exceeds the plane maximum is refused rather than silently truncated.
+			this.planeEligible =
+				this.int8 && this.distance === cosineDistance && this.planeLayer0Cap() <= PLANE_LAYER0_CAP_MAX;
 			if (!this.planeEligible) {
-				logger.info?.('nativePlane is only supported for int8-quantized cosine HNSW indexes; using the JS search path');
+				logger.info?.(
+					'nativePlane requires an int8-quantized cosine HNSW index whose M fits the plane geometry; using the JS search path'
+				);
 			}
 		}
 	}
@@ -461,15 +466,17 @@ export class HierarchicalNavigableSmallWorld {
 	 * scan's older snapshot of that node — it re-syncs on the node's next touch, and the exact
 	 * rescore + record load already filter stale candidates (relaxed adherence, design §5).
 	 */
+	/** The JS graph's effective layer-0 cap for this configuration; sizes the plane's slots. */
+	private planeLayer0Cap(): number {
+		return this.optimizeRouting ? this.M << 3 : this.M << 1;
+	}
+
 	private createAndMirrorPlane(
 		Plane: NonNullable<ReturnType<typeof getPlaneBinding>>,
 		filePath: string,
 		dims: number
 	): HnswPlane {
-		// derived from M/optimizeRouting like the JS layer-0 cap, so a non-default M gets a
-		// matching slot geometry rather than silent truncation to a fixed width
-		const layer0Cap = Math.min(PLANE_LAYER0_CAP_MAX, this.optimizeRouting ? this.M << 3 : this.M << 1);
-		const plane = Plane.create(filePath, dims, layer0Cap, PLANE_MAX_NODES);
+		const plane = Plane.create(filePath, dims, this.planeLayer0Cap(), PLANE_MAX_NODES);
 		let mirrored = 0;
 		for (const { key, value } of this.indexStore.getRange({ start: 0, end: Infinity })) {
 			if (typeof key !== 'number' || !value || value.level === undefined) continue;
@@ -480,11 +487,11 @@ export class HierarchicalNavigableSmallWorld {
 		if (typeof entryPointId === 'number') {
 			plane.setEntryPoint(entryPointId, this.safeGetSync(entryPointId)?.level ?? 0);
 		}
-		// stamped last: a crash or thrown mirror error leaves the watermark 0, and
-		// planeSearchReady refuses to serve searches from a mirror that never completed
+		// make the mirrored graph durable BEFORE stamping the watermark, then flush again: a
+		// durable watermark must imply durable slots, or a crash between writebacks could adopt
+		// a torn mirror as complete. Steady-state flush cadence is a recorded phase-2 open item.
+		plane.flush();
 		plane.setWatermark(PLANE_MIRRORED);
-		// one msync so the completed mirror (and its watermark) is durable; steady-state
-		// flush cadence is a recorded phase-2 open item
 		plane.flush();
 		this.planeReady = true;
 		if (mirrored > 0) logger.info?.(`built the HNSW plane file from ${mirrored} existing graph nodes`);
