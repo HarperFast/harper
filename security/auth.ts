@@ -13,6 +13,11 @@ const { user } = serverHandlers;
 import { Headers, addVaryHeader } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { verifyCertificate } from './certificateVerification/index.ts';
+import {
+	deferCredentialRejection,
+	getDeferredCredentialRejection,
+	isCredentialRejection,
+} from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
@@ -210,6 +215,7 @@ export async function authentication(request, nextHandler) {
 				const strategy = authorization.slice(0, spaceIndex);
 				const credentials = authorization.slice(spaceIndex + 1);
 				let username, password;
+				let credentialRejection;
 				try {
 					switch (strategy) {
 						case 'Basic':
@@ -256,18 +262,33 @@ export async function authentication(request, nextHandler) {
 						}
 					}
 
-					return applyResponseHeaders({
-						status: 401,
-						body: serializeMessage({ error: err.message }, request),
-					});
+					// #2418: route ownership isn't known yet, so an ordinary credential rejection is not
+					// decided here. Two cases are still answered in-line rather than deferred:
+					//  - an internal fault (unreadable JWT keys, storage failure, a bug), which must fail
+					//    closed instead of letting an outage hand the request to application authorization;
+					//  - the operations API, where Harper owns every route, so there is nothing to defer to.
+					if (request.isOperationsServer || !isCredentialRejection(err)) {
+						return applyResponseHeaders({
+							status: 401,
+							body: serializeMessage({ error: err.message }, request),
+						});
+					}
+					credentialRejection = err;
 				}
 
-				authorizationCache.set(authorization, newUser);
-				if (LOG_AUTH_SUCCESSFUL) authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
-				// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
-				// doesn't mutate the just-stored cache entry (defense-in-depth).
-				if (newUser?.role) {
-					newUser = { ...newUser, role: { ...newUser.role, permission: { ...newUser.role.permission } } };
+				if (credentialRejection) {
+					// Continue with no principal and the inbound Authorization header untouched. Any
+					// Harper-owned layer rejects this via assertNoDeferredCredentialRejection; only a
+					// request no Harper route owns reaches an application catch-all.
+					deferCredentialRejection(request, credentialRejection, strategy);
+				} else {
+					authorizationCache.set(authorization, newUser);
+					if (LOG_AUTH_SUCCESSFUL) authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+					// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
+					// doesn't mutate the just-stored cache entry (defense-in-depth).
+					if (newUser?.role) {
+						newUser = { ...newUser, role: { ...newUser.role, permission: { ...newUser.role.permission } } };
+					}
 				}
 			}
 
@@ -376,7 +397,10 @@ export async function authentication(request, nextHandler) {
 		// if we are rejecting the credentials (401, possibly rewritten to a login redirect); such a
 		// response must never be stored by a shared cache and served to a different principal (#1565)
 		const rejectedAuth = response?.status === 401 || wasUnauthorized;
-		const identityDependent = !!request.user || rejectedAuth;
+		// A deferred credential is still a credential this response was produced under — whoever
+		// owned the route saw the untouched Authorization header — so #1565's identity floor applies
+		// even though no Harper principal was resolved and the status may be a plain 200.
+		const identityDependent = !!request.user || rejectedAuth || !!getDeferredCredentialRejection(request);
 		// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
 		// its absence when no Origin was sent is origin-dependent too — so a shared cache must
 		// partition on Origin either way (#1518)

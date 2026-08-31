@@ -194,12 +194,53 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
 
+### Deferred credential rejection (#2418)
+
+`authentication` runs before route matching, so when it meets an `Authorization` header it cannot
+resolve it does not yet know whether Harper or an application owns the URL. Rejecting there forces
+an application to choose between two things it needs: Harper owning its own routes (status, REST
+resources) and its own routes receiving their own credential scheme untouched.
+
+So a rejection is recorded rather than answered:
+
+- **Valid Harper credentials** authenticate normally and populate `request.user`. Unchanged.
+- **No credentials** continue anonymously. Unchanged.
+- **A syntactically valid credential Harper does not recognize** leaves `request.user` unset, leaves
+  the inbound `Authorization` header byte-for-byte intact, and records request-local state through
+  `security/deferredAuthentication.ts`. The state lives behind a module-private `Symbol`: it is not
+  a header, not a `Request` field, not enumerable, and cannot be forged or read from outside that
+  module.
+- **An internal authentication fault** — unreadable JWT keys, a storage failure, an unexpected error
+  type — is never deferred. `isCredentialRejection` only accepts an error carrying a 4xx status, so
+  anything else fails closed with the in-line 401. `tokenAuthentication.ts → validateToken` no longer
+  masks such faults as `invalid token`, which is what makes that distinction reachable.
+- **The operations API** never defers: `request.isOperationsServer` short-circuits to the in-line
+  401, because every operations route is Harper-owned and there is nothing to defer to.
+
+Any layer that establishes Harper owns the route then settles the deferred state before doing work:
+
+| Layer                       | Where                                                              |
+| --------------------------- | ------------------------------------------------------------------ |
+| `REST.ts → http()`          | after `resources.getMatch` succeeds (and for the OpenAPI document) |
+| `REST.ts` WebSocket handler | after `resources.getMatch(url, 'ws')` succeeds                     |
+| `graphqlQuerying.ts`        | after the `/graphql` prefix match, raised as its own `HTTPError`   |
+
+Each renders the same generic 401 the middleware would have returned in-line — the deferred status
+is pinned to 401 regardless of the underlying error's own status, so a 403 `token expired` reads
+exactly as it did before. A Harper-owned route therefore behaves identically to the pre-deferral
+build, protected or public: an unknown credential can never buy access an anonymous caller would
+have received, and can never reach an application catch-all. Only a URL that reached
+`nextHandler` — one no Harper route owns — carries the original header onward.
+
+The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
+header, no credential rename, and no pre-auth stripping shim.
+
 ### Response Cache-Control / Vary policy (#1518, #1565)
 
 Three tiers, applied in two places:
 
 1. **App/resource explicit** — a `Cache-Control` set by the resource (or `@table(cacheControl: "...")` for anonymous reads, emitted in `REST.ts → http()`) always wins. The declaration is required: anonymous readability alone never emits shared-cache headers, because a request-attribute-gated `allowRead` (IP, headers) would make inferred `public` unsound.
-2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved or credentials were rejected (401), _unless_ the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
+2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved, credentials were rejected (401), or a credential rejection was deferred (#2418 — the application answered using the header Harper passed through, so the response is credential-dependent at a plain 200), _unless_ the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
 3. **CORS partitioning** — when CORS is enabled, every response gets `Vary: Origin` (the ACAO header is reflected per-origin, and its absence on no-Origin requests is origin-dependent too).
 
 The `@table(cacheControl:)` value is persisted on the primary-key attribute (like `expiration`), so all threads and future boots see it; `resources/databases.ts → table()` treats `null` as "schema explicitly has none" (clears on reload) and `undefined` as "caller is not schema-defining" (no clobber from `add_attribute`/cluster schema events).

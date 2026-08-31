@@ -15,6 +15,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { ASIDE_STAGING_DIR } from '../components/Application.ts';
 import { COMPONENT_PREPARATION_LOCK_DIR } from '../components/componentPreparationLock.ts';
 import { restartNeeded } from '../components/requestRestart.ts';
+import { assertNoDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -222,6 +223,11 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				}
 			}
 		}
+		// Route ownership is now settled — either a resource matched or this is Harper's OpenAPI
+		// document — so a credential the authentication middleware deferred is decided here rather
+		// than travelling on to an application catch-all (#2418). Every path that reaches an
+		// application instead returned via `nextHandler` above.
+		assertNoDeferredCredentialRejection(request);
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {
@@ -553,6 +559,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
 					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
 				} else {
+					// Harper owns this socket's route, so a deferred credential is rejected here too
+					// rather than being carried into the resource as anonymous (#2418).
+					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
 					recordAction(
 						(action) => ({

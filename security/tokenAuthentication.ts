@@ -428,18 +428,18 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 			return buildUserFromScopedToken(tokenVerified);
 		}
 		if (tokenVerified.sub !== tokenType) {
-			throw new Error('Invalid token');
+			throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		// If a role is present, it means the token is not an operation token. The validation of
 		// the token will happen in the respective function/component that uses the token.
 		if (tokenVerified.role) {
-			throw new Error('Invalid token');
+			throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		const user: any = await findAndValidateUser(tokenVerified.username, undefined, false);
 		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
-			throw new Error('Invalid token');
+			throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		// Surfaced as `tokenOperations` rather than merged into role.permission.operations: that field
@@ -457,9 +457,25 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		if (err?.name === 'TokenExpiredError') {
 			throw new ClientError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
 		}
+		// Only a client-side rejection may be reported as one. Everything else here — unreadable JWT
+		// keys (a 500 from getJWTRSAKeys), a storage failure inside findAndValidateUser, a bug —
+		// propagates unmasked, because callers now distinguish a rejected credential from an internal
+		// authentication fault and only the former is deferred past route matching (#2418). Masking a
+		// fault as `invalid token` would let a key or storage outage read as an unknown credential.
+		if (!isTokenRejection(err)) throw err;
 
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
+}
+
+/**
+ * True when `err` says the presented token is not acceptable, rather than that Harper failed to
+ * evaluate it. Covers `jsonwebtoken`'s verification errors and Harper's own 4xx `ClientError`s.
+ */
+function isTokenRejection(err: any): boolean {
+	if (err?.name === 'JsonWebTokenError' || err?.name === 'NotBeforeError') return true;
+	const status = err?.statusCode ?? err?.status;
+	return typeof status === 'number' && status >= 400 && status < 500;
 }
 
 /**
@@ -470,7 +486,7 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 function buildUserFromScopedToken(claims: JwtPayload): User {
 	const embedded = (claims.role as { permission?: Record<string, unknown> })?.permission;
 	if (!embedded || typeof embedded !== 'object' || Array.isArray(embedded) || typeof claims.username !== 'string') {
-		throw new Error('Invalid token');
+		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 	const permission: Record<string, unknown> = { ...embedded, super_user: false, cluster_user: false };
 	// Hashed from the server-side downgraded clone (before the _expandedOperations Set is attached),
