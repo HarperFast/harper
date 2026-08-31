@@ -19,6 +19,8 @@ import {
 	isCredentialRejection,
 } from './deferredAuthentication.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
+import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
+const { AUTHENTICATION_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
 const authEventLog = authLogger.withTag('auth-event');
@@ -252,6 +254,14 @@ export async function authentication(request, nextHandler) {
 								throw error;
 							}
 							break;
+						default:
+							// A scheme Harper does not implement (`Digest`, an application's own, or a
+							// header with no scheme token at all) previously matched no case and threw
+							// nothing, so it continued as an anonymous request — on a Harper-owned route
+							// that is precisely the downgrade this change exists to prevent. Rejecting it
+							// here routes it through the same audit, fail-closed, and deferral handling as
+							// an unrecognized Basic or Bearer credential.
+							throw new ClientError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
 					}
 				} catch (err) {
 					if (LOG_AUTH_FAILED) {
@@ -283,7 +293,10 @@ export async function authentication(request, nextHandler) {
 					deferCredentialRejection(request, credentialRejection, strategy);
 				} else {
 					authorizationCache.set(authorization, newUser);
-					if (LOG_AUTH_SUCCESSFUL) authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+					// `newUser` is null on the legacy blank-Basic-credentials path, which means "no auth"
+					// and stays anonymous; reading `.username` off it would crash the request.
+					if (LOG_AUTH_SUCCESSFUL && newUser != null)
+						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 					// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
 					// doesn't mutate the just-stored cache entry (defense-in-depth).
 					if (newUser?.role) {

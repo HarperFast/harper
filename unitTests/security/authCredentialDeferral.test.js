@@ -19,6 +19,9 @@ const tokenAuthentication = require('#src/security/tokenAuthentication');
 const { authentication } = require('#src/security/auth');
 
 const HARPER_OWNED = '/Ledger/1';
+// A Harper-owned route that serves anonymous callers — the case where 'continued as anonymous'
+// and 'rejected the credential' produce visibly different responses.
+const HARPER_OWNED_PUBLIC = '/PublicNotice/1';
 const APP_OWNED = '/wp-json/wc/v3/products';
 
 // A WordPress Application Password, base64'd exactly as WordPress sends it — spaces and all.
@@ -67,11 +70,12 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		} catch (error) {
 			return { status: error.statusCode, headers: new Headers(), body: JSON.stringify({ error: error.message }) };
 		}
-		if (!request.user) return { status: 401, headers: new Headers(), body: JSON.stringify({ error: 'Login failed' }) };
+		if (!request.user && request.pathname !== HARPER_OWNED_PUBLIC)
+			return { status: 401, headers: new Headers(), body: JSON.stringify({ error: 'Login failed' }) };
 		return {
 			status: 200,
 			headers: new Headers(),
-			body: JSON.stringify({ servedBy: 'rest', user: request.user.username }),
+			body: JSON.stringify({ servedBy: 'rest', user: request.user?.username ?? null }),
 		};
 	}
 
@@ -132,7 +136,7 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 	beforeEach(() => {
 		trace = [];
-		ownedPaths = new Set([HARPER_OWNED]);
+		ownedPaths = new Set([HARPER_OWNED, HARPER_OWNED_PUBLIC]);
 		knownUsers = new Map([['harper_admin:harper-pw', { username: 'harper_admin', role: { permission: {} } }]]);
 		getUserFault = undefined;
 	});
@@ -232,14 +236,66 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('does not downgrade a Harper-owned route to public just because the credential was unknown', async () => {
-		// `rest` here serves anonymous requests happily; the deferred rejection still wins, so an
-		// unknown credential can never buy access an anonymous caller would have received.
-		const anonymous = await send(HARPER_OWNED, undefined);
-		assert.strictEqual(anonymous.response.status, 401);
+		// This route serves anonymous callers, so an unknown credential that merely became
+		// "anonymous" would be handed the content. The deferred rejection wins instead.
+		const anonymous = await send(HARPER_OWNED_PUBLIC, undefined);
+		assert.strictEqual(anonymous.response.status, 200);
 
-		const withUnknownCredential = await send(HARPER_OWNED, WORDPRESS_BASIC);
+		const withUnknownCredential = await send(HARPER_OWNED_PUBLIC, WORDPRESS_BASIC);
 		assert.strictEqual(withUnknownCredential.response.status, 401);
 		assert.strictEqual(withUnknownCredential.body.error, 'Login failed');
+	});
+
+	it('defers a scheme Harper does not implement rather than continuing anonymously', async () => {
+		// Reported by review on this PR: `Digest` matches no case in the strategy switch and throws
+		// nothing, so before this it fell through as an anonymous request.
+		const digest = 'Digest username="wp", realm="site", response="0123456789abcdef"';
+		const { request, response, body } = await send(APP_OWNED, digest);
+
+		assert.strictEqual(response.status, 200);
+		assert.strictEqual(body.servedBy, 'catch-all');
+		assert.strictEqual(body.authorization, digest);
+		assert.strictEqual(request.user, undefined);
+	});
+
+	it('rejects a scheme Harper does not implement at an anonymously-readable Harper route', async () => {
+		// The decisive case: this route serves anonymous callers, so continuing as anonymous would
+		// return 200. Only an actual deferred rejection produces the 401.
+		const anonymous = await send(HARPER_OWNED_PUBLIC, undefined);
+		assert.strictEqual(anonymous.response.status, 200);
+
+		const { response, body } = await send(HARPER_OWNED_PUBLIC, 'Digest username="wp", response="deadbeef"');
+		assert.strictEqual(response.status, 401);
+		assert.strictEqual(body.error, 'Login failed');
+		assert.deepStrictEqual(trace, ['rest', 'rest']);
+	});
+
+	it('treats an Authorization header with no scheme token as an unrecognized credential', async () => {
+		const { response } = await send(HARPER_OWNED_PUBLIC, 'aGFyZGx5LWEtc2NoZW1l');
+
+		assert.strictEqual(response.status, 401);
+		assert.deepStrictEqual(trace, ['rest']);
+	});
+
+	it('fails an unimplemented scheme closed in place on the operations API', async () => {
+		const { response } = await send(APP_OWNED, 'Digest username="wp"', { isOperationsServer: true });
+
+		assert.strictEqual(response.status, 401);
+		assert.deepStrictEqual(trace, []);
+	});
+
+	it('keeps the legacy blank Basic credential anonymous instead of deferring it', async () => {
+		// `Basic ` + base64(':') is the documented "no auth" form: it must stay anonymous, so the
+		// unrecognized-scheme rejection above is gated on a strictly `undefined` user, not a nullish one.
+		const blank = `Basic ${Buffer.from(':').toString('base64')}`;
+		const { request, response, body } = await send(APP_OWNED, blank);
+
+		assert.strictEqual(response.status, 200);
+		assert.strictEqual(body.servedBy, 'catch-all');
+		assert.strictEqual(request.user, null);
+		// Anonymous, not deferred — so an anonymously-readable Harper route still serves it.
+		const owned = await send(HARPER_OWNED_PUBLIC, blank);
+		assert.strictEqual(owned.response.status, 200);
 	});
 
 	it('leaves a request with no credentials completely unchanged', async () => {
