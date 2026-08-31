@@ -3,7 +3,8 @@
  * and registers verb tools (`get_*`, `search_*`, `create_*`, `update_*`,
  * `delete_*`) for each exported Resource that:
  *   1. Has a `'mcp'` exportType not explicitly set to `false`.
- *   2. Implements the corresponding verb on its prototype.
+ *   2. Implements the corresponding verb on its prototype (for `create_*`, an actual
+ *      override, not mere inheritance of the base `Resource.post`).
  *
  * Tool dispatch delegates to the static `Resource.get/post/put/delete/search`
  * methods, which wrap `transactional()` internally. That entry point runs the
@@ -24,9 +25,11 @@ import { createHash } from 'node:crypto';
 import * as env from '../../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../../utility/hdbTerms.ts';
 import harperLogger from '../../../utility/logging/harper_logger.ts';
+import { Resource } from '../../../resources/Resource.ts';
 import {
 	addTool,
 	clearProfileTools,
+	hasClassLevelVerbs,
 	isAuthenticated,
 	snapshotProfileTools,
 	type AuthedUser,
@@ -687,12 +690,13 @@ function detectVerbs(ResourceClass: ResourceClassLike): VerbAvailability {
 	if (!p || typeof p !== 'object') {
 		return { get: false, search: false, create: false, updatePut: false, updatePatch: false, delete: false };
 	}
+	// `post` is inherited from the base `Resource` prototype whether or not a subclass
+	// overrides it, so `hasClassLevelVerbs` identity-compares instead of a bare `typeof`.
+	// A `create()` override counts too: `loadAsInstance === false` dispatches straight to it.
 	return {
 		get: typeof p.get === 'function',
 		search: typeof p.search === 'function',
-		// Resource.post defaults to no-op on the base class, but `update()` is the
-		// implicit override per the openApi pattern. Treat either as "has create".
-		create: typeof p.post === 'function' || typeof p.update === 'function',
+		create: hasClassLevelVerbs(p, Resource.prototype).post || typeof p.create === 'function',
 		updatePut: typeof p.put === 'function',
 		updatePatch: typeof p.patch === 'function',
 		delete: typeof p.delete === 'function',
