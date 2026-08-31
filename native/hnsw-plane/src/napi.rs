@@ -5,9 +5,11 @@
 
 use crate::distance::Query;
 use crate::insert::{insert, InsertParams};
-use crate::search::{search_filtered, SearchScratch};
+use crate::search::{search_filtered, search_predicated, PredicatePipe, SearchScratch};
 use crate::{Graph, PlaneFile};
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::JsFunction;
 use napi_derive::napi;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -60,6 +62,54 @@ impl Task for SearchTask {
             self.filter_expansion,
             &mut scratch,
         );
+        self.pool.put(scratch);
+        Ok(hits)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output.into_iter().map(|(id, d)| SearchHit { id, distance: d as f64 }).collect())
+    }
+}
+
+pub struct PredicateSearchTask {
+    graph: Arc<Graph>,
+    pool: Arc<ScratchPool>,
+    query: Vec<f32>,
+    k: usize,
+    ef: usize,
+    tsfn: Option<ThreadsafeFunction<Vec<u32>, ErrorStrategy::Fatal>>,
+    filter_expansion: usize,
+}
+
+#[napi]
+impl Task for PredicateSearchTask {
+    type Output = Vec<(u32, f32)>;
+    type JsValue = Vec<SearchHit>;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let tsfn = self.tsfn.take().ok_or_else(|| Error::from_reason("task reused"))?;
+        let (tx, rx) = std::sync::mpsc::channel::<(Vec<u32>, Vec<u8>)>();
+        let mut pipe = PredicatePipe {
+            dispatch: Box::new(move |ids: Vec<u32>| {
+                let tx = tx.clone();
+                let ids_echo = ids.clone();
+                tsfn.call_with_return_value(
+                    ids,
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                    move |ret: Uint8Array| {
+                        // predicate errors / env teardown surface as a missing send; the
+                        // drain deadline in search_predicated treats absent verdicts as deny
+                        let _ = tx.send((ids_echo, ret.to_vec()));
+                        Ok(())
+                    },
+                );
+            }),
+            rx,
+        };
+        let mut scratch = self.pool.take();
+        let query = Query::new(std::mem::take(&mut self.query));
+        let (hits, _stats) =
+            search_predicated(&self.graph, &query, self.k, self.ef, &mut pipe, self.filter_expansion, &mut scratch);
         self.pool.put(scratch);
         Ok(hits)
     }
@@ -145,6 +195,37 @@ impl Plane {
             filter: filter.map(|f| f.to_vec()),
             filter_expansion: filter_expansion.unwrap_or(24) as usize,
         })
+    }
+
+    /// Async k-NN search with a JS predicate: `predicate(ids: number[]) => Uint8Array`
+    /// (one 0/1 byte per id, evaluated synchronously). Batches of candidate ids stream to
+    /// the predicate over a ThreadsafeFunction while traversal keeps expanding — the search
+    /// thread never blocks on the JS event loop until the beam itself is done, so a busy
+    /// loop costs speculative overshoot (bounded by ef * filterExpansion), not latency.
+    /// Must not be awaited synchronously from code the predicate itself blocks.
+    #[napi(ts_return_type = "Promise<Array<SearchHit>>")]
+    pub fn search_with_predicate(
+        &self,
+        vector: Float32Array,
+        k: u32,
+        ef: u32,
+        #[napi(ts_arg_type = "(ids: Array<number>) => Uint8Array")] predicate: JsFunction,
+        filter_expansion: Option<u32>,
+    ) -> Result<AsyncTask<PredicateSearchTask>> {
+        let tsfn: ThreadsafeFunction<Vec<u32>, ErrorStrategy::Fatal> = predicate
+            .create_threadsafe_function(0, |ctx: napi::threadsafe_function::ThreadSafeCallContext<Vec<u32>>| {
+                let ids: Vec<f64> = ctx.value.iter().map(|&v| v as f64).collect();
+                Ok(vec![ids])
+            })?;
+        Ok(AsyncTask::new(PredicateSearchTask {
+            graph: self.graph.clone(),
+            pool: self.pool.clone(),
+            query: vector.to_vec(),
+            k: k as usize,
+            ef: ef as usize,
+            tsfn: Some(tsfn),
+            filter_expansion: filter_expansion.unwrap_or(24) as usize,
+        }))
     }
 
     /// Synchronous search (benchmarks/tests; blocks the calling thread).
