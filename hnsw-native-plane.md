@@ -277,8 +277,8 @@ Open:
 - ~~Upper-layer region persistence~~ — done (format v2): fixed-entry region in the same file,
   per-entry seqlocks, reserved for max_nodes/8. Upper entries leak on delete (bounded by the
   2x-headroom reserve); an upper freelist is the remaining nicety.
-- **Reservation growth** — max_nodes is fixed at create; production needs either a generous
-  sparse reservation (Linux-fine; strict-overcommit hosts need care) or mremap-based growth.
+- ~~Reservation growth~~ — decided (Kris, 2026-08-31): a generous sparse reservation at create
+  is the model; mremap-based growth is a possible later enhancement, not a requirement.
 
 ## 11. Prototype measurements (kzyp Linux box, 768-d int8, ef 512, cap 64)
 
