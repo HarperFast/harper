@@ -2230,4 +2230,24 @@ describe('Test harper_logger module', () => {
 			assert.ok(lines.join('\n').includes('Error: origin fetch failed'));
 		});
 	});
+
+	describe('Test applyLogSettings function (harper#2191)', () => {
+		const { _applyLogSettingsForTests, getLogFilePath } = harperLoggerModule;
+
+		it('does not throw on a component key declared with no body', () => {
+			// `myComponent:` with nothing under it parses to null, and this runs from the root
+			// config's async `change` listener, where the TypeError escapes as an unhandled
+			// rejection rather than as a listener fault the watcher contains.
+			assert.doesNotThrow(() => _applyLogSettingsForTests({ noBody: null }));
+		});
+
+		it('leaves the established settings alone when the barrier settles carrying no config', () => {
+			// A read that ends with nothing settles the barrier too, and `updateLogger` reads an
+			// absent `rotation`/`console` as off — so applying it would disable logging on the one
+			// boot that could not read its config.
+			const established = getLogFilePath();
+			_applyLogSettingsForTests(undefined);
+			assert.equal(getLogFilePath(), established, 'a config-less settle must not reconfigure logging');
+		});
+	});
 });

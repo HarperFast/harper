@@ -4,7 +4,6 @@ const { tmpdir } = require('node:os');
 const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = require('node:fs');
 const { once } = require('node:events');
 const { waitFor } = require('../waitFor');
-const { isPartialReadWarned, clearPartialReadWarning } = require('#src/utility/watcherFallback');
 const { stringify } = require('yaml');
 const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { OptionsWatcher } = require('#src/components/OptionsWatcher');
@@ -122,7 +121,7 @@ describe('root config read handle lifetime', () => {
 		// transient replace-under-us failures Windows produces; the change must not be dropped.
 		rmSync(configFilePath);
 		mkdirSync(configFilePath);
-		watcher._handleChangeForTests();
+		watcher._refreshForTests();
 		assert.deepStrictEqual(errors, [], 'a recoverable read failure must not surface as an error');
 
 		rmSync(configFilePath, { recursive: true });
@@ -135,19 +134,20 @@ describe('root config read handle lifetime', () => {
 		const watcher = new OptionsWatcher('test-component', configFilePath, undefined, true);
 		openWatchers.push(watcher);
 		await watcher.ready;
-		watcher.on('error', () => {});
+		const errors = [];
+		watcher.on('error', (error) => errors.push(error));
 
-		// An unreadable file drains the budget on its own: each re-read fails and arms the next.
-		clearPartialReadWarning(configFilePath);
+		// An unreadable file drains the budget on its own: each re-read fails and arms the next,
+		// and the scope's `error` is what the exhausted ladder falls through to.
 		rmSync(configFilePath);
 		mkdirSync(configFilePath);
-		await watcher._handleChangeForTests();
-		await waitFor(() => isPartialReadWarned(configFilePath), { message: 'the error path never gave up' });
+		await watcher._refreshForTests();
+		await waitFor(() => errors.length > 0, { timeout: 10_000, message: 'the error path never gave up' });
 
 		// The repair can be observed mid-write too, so the budget has to be back.
 		rmSync(configFilePath, { recursive: true });
 		writeFileSync(configFilePath, '');
-		await watcher._handleChangeForTests();
+		await watcher._refreshForTests();
 		assert.strictEqual(watcher.get(['enabled']), true, 'the half-written repair must not be adopted');
 
 		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
@@ -161,7 +161,7 @@ describe('root config read handle lifetime', () => {
 		await watcher.ready;
 
 		writeFileSync(configFilePath, stringify({ 'test-component': { enabled: false } }));
-		watcher._handleChangeForTests();
+		watcher._refreshForTests();
 
 		assert.strictEqual(watcher.get(['enabled']), false);
 	});
@@ -178,7 +178,7 @@ describe('root config read handle lifetime', () => {
 		writeFileSync(appConfigPath, '');
 		// Awaited, or the assertions below would also pass against a build with no partial-read
 		// handling at all on this path, having asserted on a read that had not happened.
-		await watcher._handleChangeForTests();
+		await watcher._refreshForTests();
 		assert.deepStrictEqual(removes, [], 'a half-written read must not read as the scope being removed');
 		assert.strictEqual(watcher.get(['enabled']), true);
 
@@ -211,35 +211,10 @@ describe('root config read handle lifetime', () => {
 		const removes = [];
 		watcher.on('remove', () => removes.push(true));
 		writeFileSync(configFilePath, '');
-		await watcher._handleChangeForTests();
+		await watcher._refreshForTests();
 
 		assert.deepStrictEqual(removes, [], 'the env overlay must not stand in for the half-written file');
 		assert.strictEqual(watcher.get(['enabled']), true);
-	});
-
-	it('OptionsWatcher reports a file it gave up on once, not once per scope', async () => {
-		clearPartialReadWarning(configFilePath);
-		// Both scopes must be present in the file, or their `ready` never fires.
-		writeFileSync(
-			configFilePath,
-			stringify({ 'test-component': { enabled: true }, 'other-component': { enabled: true } })
-		);
-		const watchers = ['test-component', 'other-component'].map((name) => {
-			const watcher = new OptionsWatcher(name, configFilePath, undefined, true);
-			openWatchers.push(watcher);
-			return watcher;
-		});
-		await Promise.all(watchers.map((watcher) => watcher.ready));
-
-		writeFileSync(configFilePath, '');
-		for (const watcher of watchers) {
-			// Drive each watcher past its own retry budget, as a real unusable file would.
-			for (let attempt = 0; attempt <= 12; attempt++) await watcher._handleChangeForTests();
-			await waitFor(() => isPartialReadWarned(configFilePath), { message: 'the give-up was never reported' });
-		}
-		// The per-file gate that suppresses the duplicate report is pinned directly in
-		// unitTests/utility/partialReadRetry.test.js; this covers both scopes reaching it at all.
-		assert.strictEqual(isPartialReadWarned(configFilePath), true);
 	});
 
 	it('OptionsWatcher still reads an application config without blocking', async () => {
@@ -253,7 +228,7 @@ describe('root config read handle lifetime', () => {
 
 		writeFileSync(appConfigPath, stringify({ 'test-component': { enabled: false } }));
 		const changed = once(watcher, 'change');
-		watcher._handleChangeForTests();
+		watcher._refreshForTests();
 
 		assert.strictEqual(watcher.get(['enabled']), true, 'application config reads must not be synchronous');
 		await changed;

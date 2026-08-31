@@ -887,6 +887,165 @@ schema. Per-peer failures never reject: they come back as `{status: 'failed', re
 in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
 operators must inspect the array for per-node outcomes.
 
+## Root config watchers must read synchronously (`config/readConfigFileSync.ts`)
+
+`atomicWriteFile()` swaps the config file in with `renameSync` and, on Windows, retries the
+`EPERM`/`EACCES`/`EBUSY` a still-open destination handle produces — blocking the calling thread in
+`Atomics.wait`. The handle that blocks it belongs to the _process_, not to the thread that opened
+it: measured on `windows-latest`/Node 24 (harper#2313), a single Node **read** descriptor on the
+destination fails the rename, while `fs.watch` and chokidar's own handles do not.
+`set_configuration` reaches that loop from a live request thread, and every worker runs root config
+watchers over the same file, so an **async** read in a watcher is unsatisfiable by construction:
+libuv opens the descriptor on the threadpool but closes it from JS, which cannot run while the same
+thread is blocked in the retry loop. The worker then deadlocks against its own
+watcher and burns the entire budget before failing (harper#2191, reproduced by the Windows
+integration job). Both root watchers — `RootConfigWatcher.handleChange` and
+`OptionsWatcher.#handleChange` when `#synchronousRead` — therefore go through
+`readConfigFileSync()`, which holds no descriptor across a yield. Do not "modernize" either back to
+`fsPromises.readFile`.
+
+Three constraints follow from it. The reader gates its retry to win32 (`isSharingViolation`); the
+writer does not (`configUtils`' `isRetryableRenameError`, same three codes, any platform). That
+asymmetry is deliberate: a misclassified read falls through to the timer ladder below and still
+recovers, a rename has nothing to fall through to, and `process.platform` does not answer the
+question that matters — whether this filesystem can replace an open file. A Linux worker whose
+rootPath sits on WSL drvfs, a CIFS/SMB mount, or a Docker Desktop bind mount reports `linux` and
+still returns these codes transiently.
+
+The reader's 500ms budget is one deadline **per path shared by all callers on the thread**, not per
+call — a worker holds one `OptionsWatcher` per root-declared plugin (10+ on a stock install,
+`TRUSTED_RESOURCE_PLUGINS`) over the same file, all reacting to a single change event, so a per-call
+budget would serialize into N x 500ms of blocked event loop whenever a writer's lock outlives it.
+
+Both watchers parse through `parseConfigFile()` (`config/parseConfigFile.ts`) rather than calling
+`yaml.parse` directly: yaml's `prettyErrors` frames the offending source lines into the error's
+`message`, and the root config holds credentials, so a parse failure would otherwise ship that
+frame to the component log (`OptionsWatcher` → `Scope`) or the config log.
+
+And a lock that outlives even that emits no new watcher event when it clears, so both watchers hand
+the failure to `ConfigReadRetry` (`config/configReadRetry.ts`) rather than going stale: retrying from
+a timer holds no descriptor either, so it cannot re-enter the deadlock. A ladder rung passes
+`waitForLock: false` — the ladder already owns the retry, and letting each rung re-enter the
+blocking budget would multiply one lock incident into a stall per rung. The ladder is bounded by
+wall clock and its backoff is derived from elapsed time rather than from how many times it was
+armed, because watcher callbacks and timer callbacks share one entry point: a rename burst delivers
+several chokidar events in milliseconds and would otherwise both spend the ladder and push the next
+rung out to the maximum before the writer has let go.
+
+### An empty read is a writer mid-write, not an empty config
+
+A non-atomic writer — an operator's editor, a shell redirect, anything that is not
+`atomicWriteFile()`'s temp-file-and-rename — truncates the config before it writes it, and the
+synchronous read is fast enough to land in that window where the async read never was. chokidar
+throttles change events per path for 50ms and _drops_ the throttled ones, so the event carrying the
+content is routinely discarded as a duplicate of the truncate's: an empty read that is discarded is
+the last read that config gets, and the thread holds the pre-truncate value indefinitely
+(`RootConfigWatcher`) or reports the scope as removed (`OptionsWatcher`). Both therefore hand an
+empty read to `ConfigReadRetry`, the same ladder a lock takes and for the same reason — there is no
+further event to re-read on. `OptionsWatcher` applies it on both read paths, not only the
+synchronous one: the asynchronous read is far less likely to land in a truncate window, but the
+consequence there is a spurious `remove` that tears the scope down.
+
+A read that _parses_ to nothing is the same event and takes the same ladder: a truncated document,
+a lone `\n` and a file of nothing but comments all yield `null` from the parser rather than
+throwing. `OptionsWatcher` judges that on the file's own parse, **before** `overlayRootEnvConfig`,
+which returns a non-null object whenever a config env var is set — the norm in containers — and
+would otherwise launder a half-written file into a valid-looking env-only config and wipe the
+file's own options.
+
+Past the ladder the emptiness is believed, and what that costs depends on whether the scope has
+settled: a worker still booting starts on the defaults, while one already running keeps the config
+it has and only warns. The asymmetry is deliberate in both halves — a running worker must not let a
+truncate window that outlived the ladder reset every scope, and a booting one must not hold
+`Scope.ready` open waiting for a file that is genuinely empty — but it does mean an operator who
+empties `harper-config.yaml` at runtime gets divergence between workers until the next restart.
+
+### `ready` means the watcher is armed
+
+`RootConfigWatcher.ready` is a startup barrier — `harper_logger`'s `updateLogSettings()` attaches
+its `change` listener only after awaiting it — so it has to mean "watching", not merely "the first
+read landed". The synchronous read would otherwise emit `ready` from inside chokidar's initial `add`
+dispatch, and on darwin FSEvents has not armed its stream at that point: a write in that window is
+dropped with no later event to recover it (the async read used to defer past it by a threadpool
+round-trip, which is why this surfaced only when the read went synchronous). Measured on the
+harper#2191 review head, writing that far after `ready`: 0ms is lost, 5ms and beyond is delivered.
+
+So `ready` is gated on chokidar's own `ready` — its initial scan has established the native
+watches by then — plus a darwin-only grace over that measurement for the kernel-side warm-up
+chokidar cannot observe. Neither half is sufficient alone: chokidar's event still lands inside the
+warm-up, and a bare timer could elapse before the scan has created any watch. Config read before
+that gate opens is staged into `#config`, re-read once the gate opens — a write that landed while
+the watch was unarmed produced no event, so nothing else would ever deliver it — and then handed to
+`ready` itself rather than to a `change` that would precede it.
+
+`OptionsWatcher` shares the gate (`ArmGate`, `config/watcherArming.ts`) because it has the same
+unarmed window and, for the root config, many more of them: `componentLoader` gives every
+`TRUSTED_RESOURCE_PLUGINS` entry its own root-config `OptionsWatcher`, and those read synchronously.
+It shares the arming **re-read**, which is what recovers the otherwise-undeliverable write, but not
+the barrier: its `ready` still goes out on the first read, so it means "the config has been read",
+not "armed". The difference is only ordering, because unlike `harper_logger` its consumer (`Scope`)
+attaches `change`/`remove`/`ready` listeners in its constructor, before any read — so a write made
+in the unarmed window reaches the scope as a post-`ready` `change` (and, for a plugin that doesn't
+handle its own options, a restart) rather than being lost. Holding `OptionsWatcher.ready` behind
+arming as well would need every terminal outcome to open a second barrier, per scope, with a boot
+hang as the failure mode; the ordering is not worth that.
+
+Whether a scope is configured is tracked separately from its value, because neither truthiness nor
+`!== undefined` can answer it: `myPlugin:` with no body is a configured scope whose value is `null`,
+and a boot that found no config of its own holds `DEFAULT_CONFIG[name]` — a value the watcher gave
+itself. Reading either as "the file supplied this" costs a restart: for the six scopes
+`DEFAULT_CONFIG` names, the next read of an unchanged file looks like the block being deleted, and
+filling in an empty block looks like the unconfigured → configured transition `Scope` answers by
+restarting rather than the `change` it is.
+
+What the arming re-read must _not_ do is report a deletion. Its job is the write no event carried;
+a file that is gone is chokidar's `unlink` to report, and answering the re-read's `ENOENT` with
+`remove` announces it ahead of the event that would confirm it — where there is a grace, ahead of
+chokidar having finished tearing the watch down, so a config recreated on the strength of that
+early `remove` lands in a window where its `add` is not observed at all and the scope keeps the
+defaults with nothing further coming. Settling a barrier that has nothing applied yet is still the
+arming re-read's job: an absent file at boot is the install window, not a deletion.
+
+### Every terminal read outcome settles the barrier
+
+Both barriers — `RootConfigWatcher.ready` and, through `Scope`, `OptionsWatcher.ready` — are
+awaited with no timeout, so a read that ends without a config must still settle them or the worker
+hangs at boot rather than failing. Every terminal outcome therefore boots on defaults and logs what
+failed: a read the ladder could not complete, a file still empty when the ladder is spent, and a
+file that will not parse. Only a config that parses is a config; the alternative, failing the boot
+closed on an unreadable file, is a different policy than the one `OptionsWatcher` already applies to
+its ENOENT and read-failure paths, and the two watchers must not disagree about it. A file that
+becomes readable later still arrives, as a `change`.
+
+A missing file is not one of those outcomes to wait on: `ENOENT` is not a sharing violation, so
+neither watcher takes the retry ladder for it. `OptionsWatcher` has always settled it at once as
+the install window, and `RootConfigWatcher` does the same rather than spending the whole read
+budget inside `harper_logger.start()` on every boot that has no config file — an env-var-only
+deployment, or a rootPath mounted empty. A watcher error is terminal for the barrier too, and
+settling it is what removes the `error` listener `once(this, 'ready')` attached — so reporting the
+failure afterwards has to check for a listener rather than assume one, or an unlistened `error`
+throws out of chokidar's dispatch and takes the worker down over a fault it just decided to survive.
+
+What a scope does about a config that arrives late is the other half of settling early.
+`OptionsWatcher.ready` is not once-per-watcher: it fires whenever a scope goes from having no
+config of its own to having one, which is both the recreated-config-file path and a scope that
+booted while the file was unreadable. Nothing downstream re-runs on it — `componentLoader` is long
+past its `await scope.ready` — so `Scope` answers a repeat `ready` the same way it answers `remove`,
+by requesting a restart. Without that, one worker keeps serving the defaults while every worker
+that read the file cleanly serves the operator's config.
+
+Arming is a terminal outcome of its own: chokidar reports a scan that found no file by emitting
+`ready` and nothing else, so `RootConfigWatcher` always re-reads when the gate opens rather than
+publishing what an earlier read staged — a missing config file takes the ladder and settles on the
+defaults instead of holding the barrier open. `close()` settles it as well.
+
+What settles the barrier is not the same as what the settled value may be _used_ as. A read that
+carried no config settles it carrying nothing — not `{}`, which is a configuration that a consumer
+cannot tell apart from one the file really held, and `updateLogger` reads an absent `rotation` as
+rotation off and an absent `console` as console off. `updateLogSettings()` therefore keeps what
+`initLogSettings()` established until a real config arrives, rather than silently turning logging
+off on the very boot that could not read its configuration.
+
 ## Config is composed and memoized before any component runs (`config/configUtils.ts`)
 
 `getConfigObj()` composes the config once per thread (module-level memo) at its first call, which
@@ -1647,30 +1806,6 @@ absolute paths built from `cwd`, so its bases must be derived from the same spel
 paths are relative to `cwd` and reads stay on the configured `component.directory`. And a watcher
 that degrades to polling stays there for its lifetime, so a caller with no polling story of its own
 (`resources/blob.ts`) needs one — there it polls `readMore` on the existing no-progress deadline.
-
-## No descriptor on the root config may outlive a turn (`config/configUtils.ts`, `config/RootConfigWatcher.ts`, `components/OptionsWatcher.ts`)
-
-`atomicWriteFile` replaces `harper-config.yaml` by rename-over and retries `EPERM`/`EACCES` with a
-synchronous `Atomics.wait`. On Windows a rename over an open destination fails, and a descriptor
-belongs to the process, not the thread — measured on `windows-latest`/Node 24: a single Node read
-descriptor on the destination blocks it, while `fs.watch` and chokidar handles do not.
-
-That makes the retry unable to outlast a holder on the _calling_ thread, because the sleep blocks
-the event loop whose turn would close it: the holder's lifetime becomes exactly the retry budget
-and every attempt fails. This is why widening the budget (#1714, #2036) never fixed the
-`set_configuration` 500s it was aimed at, and why both root-config watchers read with
-`readFileSync`. Any future `fsPromises.readFile` of this file reintroduces harper#2313 — the rule
-is unenforced by anything but this note and the comment on `atomicWriteFile`.
-
-The synchronous read then sees writers mid-write, which promise-based reads mostly skipped. A read
-that is unusable — empty, or parsing to anything but an object — is retried by `PartialReadRetry`
-(`utility/watcherFallback.ts`) rather than adopted, because chokidar may emit nothing further for
-that write. Completeness is judged on the file's own parse, _before_ `overlayRootEnvConfig`, which
-returns a non-null object whenever a config env var is set and would otherwise launder a
-half-written file into a valid-looking env-only config. Its three outcomes are distinct and each
-one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
-restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
-report standing, since it is shared with every other watcher of that file; closing is terminal.
 
 ## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
 
