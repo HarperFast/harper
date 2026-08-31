@@ -17,7 +17,10 @@ const applyRuntimeEnvVarConfig = configUtils.__get__('applyRuntimeEnvVarConfig')
 
 describe('configUtils - applyRuntimeEnvVarConfig', function () {
 	let mockConfigDoc;
-	let applyRuntimeEnvConfigStub;
+	let prepareRuntimeEnvConfigStub;
+	let saveEnvConfigStateStub;
+	let confirmEnvConfigStateStub;
+	let commitEnvConfigStateStub;
 	let hasPersistedEnvConfigStateStub;
 	let fsWriteFileSyncStub;
 	let fsRenameSyncStub;
@@ -26,10 +29,10 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 	before(function () {
 		// Stub the dependencies on their shared module objects. configUtils calls
-		// harperConfigEnvVars.applyRuntimeEnvConfig / .hasPersistedEnvConfigState,
+		// harperConfigEnvVars.prepareRuntimeEnvConfig / .hasPersistedEnvConfigState,
 		// fs.writeFileSync / .renameSync, the logger methods, and YAML.parse/stringify
 		// via these same cached modules, so stubbing here intercepts those calls.
-		applyRuntimeEnvConfigStub = sinon.stub(harperConfigEnvVars, 'applyRuntimeEnvConfig');
+		prepareRuntimeEnvConfigStub = sinon.stub(harperConfigEnvVars, 'prepareRuntimeEnvConfig');
 		hasPersistedEnvConfigStateStub = sinon.stub(harperConfigEnvVars, 'hasPersistedEnvConfigState');
 		fsWriteFileSyncStub = sinon.stub(fs, 'writeFileSync');
 		fsRenameSyncStub = sinon.stub(fs, 'renameSync');
@@ -48,7 +51,16 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 	beforeEach(function () {
 		// Reset stubs
-		applyRuntimeEnvConfigStub.reset();
+		prepareRuntimeEnvConfigStub.reset();
+		saveEnvConfigStateStub = sinon.stub().returns(true);
+		confirmEnvConfigStateStub = sinon.stub().returns(true);
+		commitEnvConfigStateStub = sinon.stub().returns(true);
+		prepareRuntimeEnvConfigStub.returns({
+			config: { http: { port: 9925 } },
+			saveState: saveEnvConfigStateStub,
+			confirmConfigWritten: confirmEnvConfigStateStub,
+			commitState: commitEnvConfigStateStub,
+		});
 		hasPersistedEnvConfigStateStub.reset();
 		hasPersistedEnvConfigStateStub.returns(false); // default: no prior state
 		fsWriteFileSyncStub.reset();
@@ -87,13 +99,13 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, false);
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, false);
 		assert.strictEqual(fsWriteFileSyncStub.called, false);
 	});
 
 	it('should run cleanup when no env vars set but prior state exists (var removed)', function () {
 		// All three vars were applied on a prior boot and then removed: the wrapper must NOT
-		// short-circuit — applyRuntimeEnvConfig has to restore originals and clear the snapshot.
+		// short-circuit — prepareRuntimeEnvConfig has to restore originals and clear the snapshot.
 		delete process.env.HARPER_DEFAULT_CONFIG;
 		delete process.env.HARPER_CONFIG;
 		delete process.env.HARPER_SET_CONFIG;
@@ -101,8 +113,8 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, true, 'cleanup must run when state exists');
-		assert.strictEqual(applyRuntimeEnvConfigStub.firstCall.args[1], '/test/root');
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, true, 'cleanup must run when state exists');
+		assert.strictEqual(prepareRuntimeEnvConfigStub.firstCall.args[1], '/test/root');
 		assert.strictEqual(fsWriteFileSyncStub.called, true);
 	});
 
@@ -112,8 +124,8 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, true);
-		assert.strictEqual(applyRuntimeEnvConfigStub.firstCall.args[1], '/test/root');
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, true);
+		assert.strictEqual(prepareRuntimeEnvConfigStub.firstCall.args[1], '/test/root');
 		assert.strictEqual(fsWriteFileSyncStub.called, true);
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
@@ -125,7 +137,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, true);
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, true);
 		assert.strictEqual(fsWriteFileSyncStub.called, true);
 
 		delete process.env.HARPER_SET_CONFIG;
@@ -137,7 +149,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml');
 
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, true);
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, true);
 		assert.strictEqual(fsWriteFileSyncStub.called, true);
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
@@ -152,7 +164,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		assert.strictEqual(loggerStub.warn.called, true);
 		assert.match(loggerStub.warn.firstCall.args[0], /rootPath not found/);
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, false);
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, false);
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
@@ -171,6 +183,9 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		assert.deepStrictEqual(fsRenameSyncStub.firstCall.args, [writeTarget, '/test/config.yaml']);
 		assert.strictEqual(loggerStub.debug.called, true);
 		assert.match(loggerStub.debug.firstCall.args[0], /Config file updated/);
+		// The pending mark on the snapshot is only cleared once the file it describes is on disk.
+		assert.strictEqual(confirmEnvConfigStateStub.calledOnce, true, 'snapshot confirmed after the file write');
+		assert.strictEqual(fsRenameSyncStub.calledBefore(confirmEnvConfigStateStub), true);
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
@@ -197,6 +212,8 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 
 		assert.strictEqual(loggerStub.error.called, true);
 		assert.match(loggerStub.error.firstCall.args[0], /Failed to write config file/);
+		// A snapshot whose config file never landed stays marked pending, so the next boot discards it.
+		assert.strictEqual(confirmEnvConfigStateStub.called, false, 'snapshot not confirmed when the file write failed');
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
@@ -208,7 +225,7 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		applyRuntimeEnvVarConfig(mockConfigDoc, null);
 
 		// Should apply env vars
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, true);
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, true);
 		// But should NOT write to file
 		assert.strictEqual(fsWriteFileSyncStub.called, false);
 		// And should NOT log the "Config file updated" message
@@ -217,23 +234,23 @@ describe('configUtils - applyRuntimeEnvVarConfig', function () {
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
 
-	it('should pass options parameter to applyRuntimeEnvConfig', function () {
+	it('should pass options parameter to prepareRuntimeEnvConfig', function () {
 		process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":9999}}';
 		const options = { isInstall: true };
 
 		applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml', options);
 
-		assert.strictEqual(applyRuntimeEnvConfigStub.called, true);
-		assert.deepStrictEqual(applyRuntimeEnvConfigStub.firstCall.args[2], options);
+		assert.strictEqual(prepareRuntimeEnvConfigStub.called, true);
+		assert.deepStrictEqual(prepareRuntimeEnvConfigStub.firstCall.args[2], options);
 
 		delete process.env.HARPER_DEFAULT_CONFIG;
 	});
 
 	describe('error handling in YAML processing', function () {
-		it('should log error and rethrow when applyRuntimeEnvConfig throws (most likely scenario)', function () {
+		it('should log error and rethrow when prepareRuntimeEnvConfig throws (most likely scenario)', function () {
 			// This is the most realistic failure case - invalid env var values, state file issues, etc.
 			process.env.HARPER_DEFAULT_CONFIG = '{"http":{"port":"invalid"}}';
-			applyRuntimeEnvConfigStub.throws(new Error('Invalid port value'));
+			prepareRuntimeEnvConfigStub.throws(new Error('Invalid port value'));
 
 			assert.throws(() => applyRuntimeEnvVarConfig(mockConfigDoc, '/test/config.yaml'), /Invalid port value/);
 

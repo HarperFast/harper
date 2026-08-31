@@ -688,6 +688,71 @@ mirrors loader behaviors that must stay in sync if the loader changes: config fi
 (`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
 arrives via env var cannot redirect the scan.
 
+## Boot-path config persistence is best-effort, and its two artifacts commit as a unit (`config/configUtils.ts`, `config/harperConfigEnvVars.ts`)
+
+Every boot with a `HARPER_*_CONFIG` env var set re-derives the merged config and, historically, wrote
+it back unconditionally. On a full or quota-exhausted volume that write is refused and, being fatal,
+turned a full disk into a container restart loop nothing inside the container could break — the
+cleanup that frees space needs a started process (#847). Two rules follow.
+
+**Derived boot writes are best-effort; user-requested ones are not.** `persistConfigDuringBoot()`
+swallows exactly ENOSPC/EDQUOT (matching on `errno` as well as `code`, because Linux has no libuv
+mapping for EDQUOT and reports `Unknown system error -122`) and lets the boot proceed on the
+in-memory config. `updateConfig`/`set_configuration`, `addConfig`, `deleteConfigFromFile` and the
+install path keep persist-or-throw: a caller who asked to persist must not get a silent success, and
+an install has no last-known-good config to fall back on.
+
+**The env-config state and the config file must never disagree.** The state file records the
+_pre-env_ values, so it is the only copy of what the operator's config said before an env layer
+overwrote it — the config file itself holds the env-derived value. Both single-file orderings lose
+something: writing the state last means the file it would read originals from is already
+overwritten; writing it first leaves a state ahead of the file, which the next boot's
+`detectConfigDrift` reads as a manual user edit and _permanently_ reassigns those paths to `user`,
+silently disabling the env layer even after space is freed. So the commit is three steps —
+`saveState()` stages the new state in `.harper-config-state.pending.<pid>.json`, the config file is
+written, and `confirmConfigWritten()` **renames** the sidecar over the confirmed record. A rename
+needs no free space, which is the point: no write an exhausted volume can refuse ever stands between
+the confirmed originals and disk. A refused staging write leaves the config file alone; a refused
+config write unlinks the sidecar; a sidecar found at load means a commit was interrupted, so it is
+cleared and drift detection is skipped for that boot rather than mistaking the in-flight write for
+an edit. A boot that re-derives the same state writes nothing at all.
+
+Two details the name and the caller carry. The sidecar is **per-process**: every CLI invocation runs
+`initConfig`, and one shared name would let a starting server clear a running process's in-flight
+commit — the loser would then rewrite the config file with the confirmed state still describing the
+old values, which is the failure the protocol exists to prevent. Recovery therefore only clears a
+sidecar whose owning pid is gone. And only the **main thread** persists or runs recovery: workers
+derive the same merged config and would otherwise race over one pair of files for a result they
+already agree on — and since a worker shares its process's pid, a recovery scan from one would
+delete the main thread's in-flight sidecar as if it were the last boot's wreckage.
+
+A sidecar owned by a _live_ foreign process is not cleared — that process is mid-commit — but its
+presence still turns drift detection off for this boot: a pair someone else is halfway through is no
+more comparable than one an interruption left behind. That suspension is why a sidecar also ages
+out regardless of what its pid says: without it, a sidecar whose owner was killed and whose pid was
+later recycled would look mid-commit forever and suspend drift detection on every boot. The age-out
+is deliberately far longer than a commit could take — recovery from a recycled pid only has to be
+eventual, while deleting a slow-but-live writer's sidecar is the worse error, stranding its config
+file against an unpromoted state.
+
+Drift detection is main-thread-only for the same reason recovery is. A worker never owns the state:
+in the normal sequence the main thread has already classified and persisted before any worker runs,
+and inside the main thread's commit window a file that differs from the snapshot is as likely to be
+the write in flight as an operator edit. A worker that concluded "user edit" would drop the
+env-supplied value for itself alone and serve different config than its siblings.
+
+Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
+CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo
+serializes config writes across processes. Pre-existing — both artifacts were unordered before this
+protocol — and out of scope here, but the "commits as a unit" guarantee stops at the process
+boundary.
+
+Related: a log write must not be fatal either. `fs.appendFileSync` in `logQueuedData` throws from
+both inline and timer call sites, so on a full volume every log statement was a crash point. The
+fallback goes through `nativeStdWrite`, never `console` — `installStdioGuard` routes console output
+back into this same file logger when `logging.file` and `logging.console` are both on, so a console
+fallback recurses until the stack blows.
+
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
 Packaging uses `tar-fs.pack(dir, { dereference: true })` by default (`skip_symlinks` off).
