@@ -86,7 +86,10 @@ const SECTIONS: Section[] = [
 					['upgrade', 'Upgrade harperdb'],
 					['register', 'Register harperdb'],
 					['renew-certs', 'Generate a new set of self-signed certificates'],
-					['copy-db <source> <target>', 'Copies a database from source path to target path'],
+					[
+						'copy-db <source> <target>',
+						'Copies the database named <source> to the <target> environment path. File-backed blobs are copied to <target>-blobs; see its README before restoring.',
+					],
 					['version', 'Print the version'],
 					['help', 'Display this output'],
 				],

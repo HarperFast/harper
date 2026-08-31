@@ -117,7 +117,14 @@ export class RocksTransactionLogStore extends EventEmitter {
 			}
 			entryBinary = createAuditEntry(auditRecord, position);
 		}
-		if (this.listenerCount('aftercommit')) (options.transaction.logEntries ??= []).push(auditRecord);
+		if (this.listenerCount('aftercommit')) {
+			if (!(auditRecord instanceof Uint8Array)) {
+				const txnTimestamp = options.transaction.getTimestamp?.();
+				if (txnTimestamp != null) auditRecord.localTime = txnTimestamp;
+				auditRecord.recordVersion = auditRecord.version;
+			}
+			(options.transaction.logEntries ??= []).push(auditRecord);
+		}
 		// One commit hook per transaction handles both deferred side effects — the `aftercommit` emit and the
 		// per-(log, table) structureVersion watermark advances — so they apply only after a durable commit (never
 		// on an aborted/discarded transaction). This store is the sole setter of transaction.onCommit.
@@ -414,7 +421,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 					position += 8;
 				}
 				const auditRecord = readAuditEntry(data, position, undefined);
+				// version stays the log key (replication resume relies on version === log key);
+				// the record's own version survives as recordVersion
 				auditRecord.version = timestamp;
+				auditRecord.localTime = timestamp;
 				auditRecord.endTxn = endTxn;
 				auditRecord.previousResidencyId = previousResidencyId;
 				auditRecord.previousVersion = previousVersion;

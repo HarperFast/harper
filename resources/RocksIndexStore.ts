@@ -1,7 +1,7 @@
 import {
-	DBI,
 	type CountEstimate,
 	type CountEstimateOptions,
+	DBI,
 	type StoreIteratorOptions,
 	type StorePutOptions,
 	type StoreRemoveOptions,
@@ -17,6 +17,25 @@ declare module '@harperfast/rocksdb-js' {
 }
 
 /**
+ * Widen value-space bounds to `[value, MAXIMUM_KEY]` composite bounds. The base implementation's
+ * encoded-byte successor of the bare indexed value would exclude the wrong entries on composite
+ * `[indexedValue, primaryKey]` keys.
+ */
+function translateIndexBounds<
+	T extends { start?: any; end?: any; exclusiveStart?: boolean; inclusiveEnd?: boolean; reverse?: boolean },
+>(options: T): T {
+	let { start, end } = options;
+	const { exclusiveStart, inclusiveEnd, reverse } = options;
+	if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
+		start = [start, MAXIMUM_KEY];
+	}
+	if ((reverse ? !inclusiveEnd : inclusiveEnd) && end !== undefined) {
+		end = [end, MAXIMUM_KEY];
+	}
+	return { ...options, start, end };
+}
+
+/**
  * A specialized RocksDB-based index store that maintains indexed references to primary keys.
  * This store uses composite keys consisting of indexed values and primary keys, enabling
  * efficient range queries over indexed data. The actual data values are stored as null since
@@ -29,35 +48,17 @@ export class RocksIndexStore extends RocksDatabase {
 	 * @param options
 	 */
 	getRange(options: StoreIteratorOptions): Iterable<any> {
-		let { start, end, exclusiveStart, inclusiveEnd, reverse } = options;
-		if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
-			start = [start, MAXIMUM_KEY];
-		}
-		if ((reverse ? !inclusiveEnd : inclusiveEnd) && end !== undefined) {
-			end = [end, MAXIMUM_KEY];
-		}
-		const translatedOptions = { ...options, start, end };
-		return super.getRange(translatedOptions).map(({ key }) => {
+		return super.getRange(translateIndexBounds(options)).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
 	}
 
 	/**
-	 * Estimate the number of index entries in a range. The bounds are bare indexed values, so they get the
-	 * same composite-key rewrite as {@link getRange} — otherwise an inclusive end or exclusive start would
-	 * miss the value's `[value, primaryKey]` bucket, and the estimate would cover a different key range than
-	 * the scan it is meant to describe.
+	 * Estimate the entry count of a range of indexed values. Shares `getRange`'s bound translation
+	 * so a planner estimate always covers exactly the range execution would iterate.
 	 */
 	estimateCount(options?: CountEstimateOptions): CountEstimate {
-		if (!options) return super.estimateCount(options);
-		let { start, end, exclusiveStart, inclusiveEnd, reverse } = options;
-		if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
-			start = [start, MAXIMUM_KEY];
-		}
-		if ((reverse ? !inclusiveEnd : inclusiveEnd) && end !== undefined) {
-			end = [end, MAXIMUM_KEY];
-		}
-		return super.estimateCount({ ...options, start, end });
+		return super.estimateCount(translateIndexBounds(options ?? {}));
 	}
 
 	/**

@@ -1112,74 +1112,89 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	}
 }
 
-// Maps a range comparator + value to the key-range bounds (`{ start, end, inclusiveEnd, exclusiveStart }`)
-// that a scan would visit, in the exact shape `estimateCount()`/`getRange()` accept. Kept in sync with the
-// comparator switch in `searchByIndex` (the source of truth for how a scan is bounded) so a range estimate
-// covers precisely the keys the scan would. Returns undefined for anything that isn't a cleanly bounded
-// range (empty prefix, malformed between, or a full-scan comparator) so the caller keeps its heuristic.
-function rangeBoundsForEstimate(comparator, value) {
+/**
+ * Estimates a range comparator's entry count from the store's statistical estimate, blended with
+ * the table-fraction heuristic by the estimate's confidence so low-confidence estimates degrade
+ * to the old behavior. Returns undefined (caller falls back to the heuristic) when the store
+ * cannot estimate, the shape is unexpected, or the executed range wouldn't match this one.
+ */
+function estimateRangeCondition(table, condition, searchType, fraction) {
+	const attributeName = condition[0] ?? condition.attribute;
+	const isPrimaryKey = attributeName === table.primaryKey;
+	const store = isPrimaryKey ? table.primaryStore : table.indices[attributeName];
+	// LMDB-backed and custom index stores do not implement estimateCount
+	if (typeof store?.estimateCount !== 'function') return undefined;
+	let value = condition[1] ?? condition.value;
 	if (value instanceof Date) value = value.getTime();
-	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
+	let range;
+	switch (searchType) {
 		case 'lt':
-			return { end: value, inclusiveEnd: false };
+			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
+			// index's `[null, primaryKey]` entries are outside the executed range
+			range = { start: true, end: value };
+			break;
 		case 'le':
-			return { end: value, inclusiveEnd: true };
+			range = { start: true, end: value, inclusiveEnd: true };
+			break;
 		case 'gt':
-			return { start: value, exclusiveStart: true };
+			range = { start: value, exclusiveStart: true };
+			break;
 		case 'ge':
-			return { start: value, exclusiveStart: false };
+			range = { start: value };
+			break;
 		case 'between':
 		case 'gele':
 		case 'gelt':
 		case 'gtlt':
 		case 'gtle': {
-			if (!Array.isArray(value) || value.length < 2) return undefined;
-			let start = value[0];
+			if (!Array.isArray(value)) return undefined;
+			let [start, end] = value;
 			if (start instanceof Date) start = start.getTime();
-			let end = value[1];
 			if (end instanceof Date) end = end.getTime();
-			return {
+			range = {
 				start,
 				end,
-				inclusiveEnd: comparator === 'gele' || comparator === 'gtle' || comparator === 'between',
-				exclusiveStart: comparator === 'gtlt' || comparator === 'gtle',
+				inclusiveEnd: searchType === 'between' || searchType === 'gele' || searchType === 'gtle',
+				exclusiveStart: searchType === 'gtlt' || searchType === 'gtle',
 			};
+			break;
 		}
 		case 'starts_with': {
-			const start = value?.toString() ?? '';
-			if (start.length === 0) return undefined; // empty prefix is a full scan, not a range
-			return { start, end: getStringPrefixUpperBound(start), inclusiveEnd: false };
+			const prefix = value?.toString();
+			if (!prefix) return undefined;
+			range = { start: prefix, end: getStringPrefixUpperBound(prefix) };
+			break;
 		}
 		case 'prefix': {
-			// multi-part key prefix: [prefix, null] .. [prefix, MAXIMUM_KEY]
 			let start = Array.isArray(value) ? value : [value, null];
 			if (start[start.length - 1] != null) start = start.concat(null);
 			const end = start.slice(0);
 			end[end.length - 1] = MAXIMUM_KEY;
-			return { start, end, inclusiveEnd: true };
+			range = { start, end };
+			break;
 		}
 		default:
 			return undefined;
 	}
-}
-
-// A statistical key-count estimate over the range a range condition scans, from the storage engine's
-// range estimator (rocksdb-js `estimateCount`). Returns undefined when unavailable — the LMDB engine (no
-// range estimator), a non-indexed / custom-indexed attribute, an unbounded/degenerate range, or a
-// zero-confidence estimate (a failed statistics read) — so the caller falls back to a heuristic fraction.
-function estimateRangeCount(table, condition, comparator) {
-	const attribute_name = condition[0] ?? condition.attribute;
-	const isPrimaryKey = attribute_name == null || attribute_name === table.primaryKey;
-	const store = isPrimaryKey ? table.primaryStore : table.indices[attribute_name];
-	// estimateCount is a RocksDB-only capability. A custom index's store is a plain object store keyed by
-	// primary key (not [indexedValue, primaryKey]), so a value-range estimate over it would be meaningless —
-	// leave those (and LMDB stores) to the heuristic / the custom index's own estimation.
-	if (!(store instanceof RocksDatabase) || (store as any).customIndex) return undefined;
-	const bounds = rangeBoundsForEstimate(comparator, condition[1] ?? condition.value);
-	if (!bounds) return undefined;
-	const { count, confidence } = store.estimateCount(bounds);
-	// confidence 0 marks a failed/degenerate estimate — don't prefer it over the heuristic.
-	return confidence > 0 ? count : undefined;
+	// Long string bounds get truncated + filtered at execution (searchByIndex), so the
+	// executed range is wider than this one; don't estimate what won't be iterated.
+	if (
+		(typeof range.start === 'string' && range.start.length > MAX_SEARCH_KEY_LENGTH) ||
+		(typeof range.end === 'string' && range.end.length > MAX_SEARCH_KEY_LENGTH)
+	) {
+		return undefined;
+	}
+	let count, confidence;
+	try {
+		({ count, confidence } = store.estimateCount(range) ?? {});
+	} catch {
+		// a concurrently closing/dropped store must degrade the plan, not fail the query
+		return undefined;
+	}
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return undefined;
+	const heuristic = fraction * estimatedEntryCount(table.primaryStore) + 1;
+	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
 }
 
 export function estimateCondition(table) {
@@ -1211,7 +1226,14 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
+			if (condition.negated) {
+				// a negated condition always executes as a full scan (searchByIndex forces
+				// needFullScan), so follow the filter-only convention used by contains/ends_with:
+				// estimate Infinity so its positive-range estimate can never win the driving-condition
+				// ordering. Short-circuit here rather than computing (and discarding) a positive-range
+				// estimate that would cross the native FFI boundary for nothing.
+				condition.estimated_count = Infinity;
+			} else if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
@@ -1236,8 +1258,7 @@ export function estimateCondition(table) {
 								: estimate);
 					}
 				} else {
-					// Equals is an exact per-value index count on any engine; range comparators fall to the
-					// range branches below, which get a statistical estimate on RocksDB (see estimateRangeCount).
+					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 					const index = table.indices[attribute_name];
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
@@ -1261,15 +1282,13 @@ export function estimateCondition(table) {
 				} else if (Array.isArray(condition.value)) {
 					condition.estimated_count = Infinity;
 				} else condition.estimated_count = Infinity;
-				// Range queries (between, starts_with, greater/less, open ranges): ask the storage engine for a
-				// statistical range estimate; only fall back to an arbitrary fraction of the table when it can't.
 			} else if (searchType === 'starts_with' || searchType === 'prefix')
 				condition.estimated_count =
-					estimateRangeCount(table, condition, searchType) ??
+					estimateRangeCondition(table, condition, searchType, STARTS_WITH_ESTIMATE) ??
 					STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'between')
 				condition.estimated_count =
-					estimateRangeCount(table, condition, searchType) ??
+					estimateRangeCondition(table, condition, searchType, BETWEEN_ESTIMATE) ??
 					BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'sort') {
 				const attribute_name = condition[0] ?? condition.attribute;
@@ -1287,7 +1306,7 @@ export function estimateCondition(table) {
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);
 				else
 					condition.estimated_count =
-						estimateRangeCount(table, condition, searchType) ??
+						estimateRangeCondition(table, condition, searchType, OPEN_RANGE_ESTIMATE) ??
 						OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			}
 			// we give a condition significantly more weight/preference if we will be ordering by it
@@ -1474,6 +1493,7 @@ function parseBlock(query, expectedEnd) {
 						break;
 					case 'group-by':
 						recordError('group by is not implemented yet');
+						break;
 					case 'sort':
 						query.sort = toSortObject(args);
 						break;
@@ -1701,13 +1721,15 @@ export function flattenKey(key) {
 export function estimatedEntryCount(store) {
 	const now = Date.now();
 	if ((store.estimatedEntryCountExpires || 0) < now) {
-		// use getStats for LMDB because it is fast path, otherwise RocksDB can handle fast path on its own
-		store.estimatedEntryCount = store instanceof RocksDatabase ? store.getKeysCount() : store.getStats().entryCount;
+		// getStats is the LMDB fast path; for RocksDB, estimate-num-keys is O(1) where an exact
+		// getKeysCount() would iterate the entire store
+		store.estimatedEntryCount =
+			store instanceof RocksDatabase ? store.getEstimatedKeyCount() : store.getStats().entryCount;
 		store.estimatedEntryCountExpires = now + 10000;
 	}
 	return store.estimatedEntryCount;
 }
 
 export function intersectionEstimate(store, left, right) {
-	return (left * right) / estimatedEntryCount(store);
+	return (left * right) / Math.max(estimatedEntryCount(store), 1);
 }

@@ -385,6 +385,17 @@ module.exports = {
 	externalLogger,
 };
 
+// Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
+// text back into the file logger this is the fallback for, and swallows a broken pipe - there is
+// nowhere left to report it.
+function writeToStdioDirectly(stream, text) {
+	try {
+		nativeStdWrite.call(stream, text);
+	} catch {
+		// stdio is gone too
+	}
+}
+
 // A bare no-op would read as permanent backpressure to a pipe()'d source; this drains and
 // discards instead.
 function noopWrite(_chunk?: any, encoding?: any, callback?: any) {
@@ -727,6 +738,8 @@ export function createLogger(options: any = {} as any) {
 	return logger;
 }
 const LOG_TIME_USAGE_THRESHOLD = 100;
+// How long to write straight to stdio after the log file refuses an append.
+const APPEND_RETRY_COOLDOWN = 5000;
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
  * @param path
@@ -735,7 +748,7 @@ const LOG_TIME_USAGE_THRESHOLD = 100;
  */
 function getFileLogger(path, rotation, isExternalInstance) {
 	let logger = fileLoggers.get(path);
-	let logFD, loggedFDError, logTimer;
+	let logFD, loggedFDError, loggedAppendError, logTimer, retryAppendAfter;
 	let logBuffer;
 	let logTimeUsage = 0;
 	if (!logger) {
@@ -788,14 +801,37 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	// this is called on a timer, and will write the log buffer to the file
 	function logQueuedData(entry?: any) {
 		openLogFile(undefined);
-		if (logFD) {
+		const payload = logBuffer ? logBuffer.join('') : entry;
+		// A file that just refused a write will refuse the next one too, and every attempt costs a
+		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
+		// is the request path at full rate. Go straight to stdio until the cooldown expires.
+		if (logFD && !(retryAppendAfter > performance.now())) {
 			let startTime = performance.now();
-			fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry);
+			try {
+				fs.appendFileSync(logFD, payload);
+				// Both cleared, so a volume that fills again months later reports itself again
+				retryAppendAfter = undefined;
+				loggedAppendError = false;
+			} catch (error) {
+				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
+				// A log write must never take the process down: on an exhausted volume this throws from
+				// both inline and timer call sites, making every log statement a crash point (#847).
+				// The fallback goes through nativeStdWrite rather than console because
+				// installStdioGuard routes console output back into this same file logger when
+				// logging.file and logging.console are both on, which would recurse until the stack blew.
+				if (!loggedAppendError) {
+					loggedAppendError = true;
+					writeToStdioDirectly(process.stderr, `Harper cannot write to its log file: ${error}\n`);
+				}
+				writeToStdioDirectly(process.stdout, payload);
+				logBuffer = null;
+				return;
+			}
 			let endTime = performance.now();
 			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
 			// will start buffering
 			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
-		} else if (!loggedFDError) console.log(logBuffer ? logBuffer.join('') : entry);
+		} else writeToStdioDirectly(process.stdout, payload);
 		if (logBuffer) logBuffer = null;
 	}
 
@@ -815,8 +851,13 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			} catch (error) {
 				if (error.code === 'ENOENT' && !isRetry) {
 					// if the directory doesn't exist, create it
-					fs.mkdirpSync(pathModule.dirname(path));
-					return openLogFile(true);
+					try {
+						fs.mkdirpSync(pathModule.dirname(path));
+						return openLogFile(true);
+					} catch (mkdirError) {
+						// creating the log directory can fail for the same reason the log write can
+						error = mkdirError;
+					}
 				}
 				if (!loggedFDError) {
 					loggedFDError = true;
