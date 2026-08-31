@@ -233,6 +233,25 @@ impl Plane {
         vec![id as f64, level as f64]
     }
 
+    /// Query dimensionality must match the plane: the distance kernel streams
+    /// `query.len()` bytes from each slot's vector, so an oversized query would read past
+    /// it into adjacent slot bytes (or off the mapping entirely).
+    fn check_query_dims(&self, len: usize) -> Result<()> {
+        if len != self.graph.file.dims {
+            return Err(Error::from_reason(format!(
+                "query vector has {} dimensions; plane dims = {}",
+                len, self.graph.file.dims
+            )));
+        }
+        Ok(())
+    }
+
+    /// Vector dimensionality of this plane (fixed at create).
+    #[napi(getter)]
+    pub fn dims(&self) -> u32 {
+        self.graph.file.dims as u32
+    }
+
     /// Async k-NN search on the libuv thread pool. `filter` is an optional allow-bitset
     /// over node ids (bit i of byte i>>3); filtered searches are visit-bounded by
     /// ef * filterExpansion (default 24).
@@ -244,8 +263,9 @@ impl Plane {
         ef: u32,
         filter: Option<Uint8Array>,
         filter_expansion: Option<u32>,
-    ) -> AsyncTask<SearchTask> {
-        AsyncTask::new(SearchTask {
+    ) -> Result<AsyncTask<SearchTask>> {
+        self.check_query_dims(vector.len())?;
+        Ok(AsyncTask::new(SearchTask {
             graph: self.graph.clone(),
             pool: self.pool.clone(),
             query: vector.to_vec(),
@@ -253,7 +273,7 @@ impl Plane {
             ef: ef as usize,
             filter: filter.map(|f| f.to_vec()),
             filter_expansion: filter_expansion.unwrap_or(24) as usize,
-        })
+        }))
     }
 
     /// Async k-NN search with a JS predicate: `predicate(ids: number[]) => Uint8Array`
@@ -274,6 +294,7 @@ impl Plane {
         filter_expansion: Option<u32>,
         visit_budget: Option<f64>,
     ) -> Result<AsyncTask<PredicateSearchTask>> {
+        self.check_query_dims(vector.len())?;
         let tsfn: ThreadsafeFunction<Vec<u32>, ErrorStrategy::Fatal> = predicate
             .create_threadsafe_function(0, |ctx: napi::threadsafe_function::ThreadSafeCallContext<Vec<u32>>| {
                 let ids: Vec<f64> = ctx.value.iter().map(|&v| v as f64).collect();
@@ -295,12 +316,13 @@ impl Plane {
 
     /// Synchronous search (benchmarks/tests; blocks the calling thread).
     #[napi]
-    pub fn search_sync(&self, vector: Float32Array, k: u32, ef: u32) -> Vec<SearchHit> {
+    pub fn search_sync(&self, vector: Float32Array, k: u32, ef: u32) -> Result<Vec<SearchHit>> {
+        self.check_query_dims(vector.len())?;
         let mut scratch = self.pool.take();
         let query = Query::new(vector.to_vec());
         let (hits, _) = search_filtered(&self.graph, &query, k as usize, ef as usize, None, 24, &mut scratch);
         self.pool.put(scratch);
-        hits.into_iter().map(|(id, d)| SearchHit { id, distance: d as f64 }).collect()
+        Ok(hits.into_iter().map(|(id, d)| SearchHit { id, distance: d as f64 }).collect())
     }
 
     /// Lifetime id high-water (allocated ids, including freed ones awaiting reuse).
