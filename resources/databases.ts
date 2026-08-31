@@ -699,8 +699,14 @@ export function getDatabases(): Databases {
  * branch's table, and a target it did not branch is legitimately the shared one.
  */
 export function hydrateBranchRelationships(branch: BranchDatabase, branches: Map<string, BranchDatabase>): void {
-	const resolveTarget: ResolveRelationshipTarget = (target) =>
-		branches.get(target.database)?.tables?.[target.table] ?? databases[target.database]?.[target.table];
+	const resolveTarget: ResolveRelationshipTarget = (target) => {
+		const targetBranch = branches.get(target.database);
+		// A branched target resolves ONLY within that branch. A durable branch is a checkpoint frozen
+		// at creation while the base keeps evolving, so falling through to the base for a table the
+		// branch's own copy lacks would point a branched application's relationship reads at live base
+		// data -- the fallback belongs to a database the application did not branch, never to one it did.
+		return targetBranch ? targetBranch.tables?.[target.table] : databases[target.database]?.[target.table];
+	};
 	for (const hydration of branch.pendingRelationships.splice(0)) {
 		try {
 			hydrateTableRelationships(hydration, resolveTarget);

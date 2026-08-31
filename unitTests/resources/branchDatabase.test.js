@@ -521,3 +521,71 @@ describeUnlessLmdb('relationships inside a branch (harper#643)', () => {
 		assert.notStrictEqual(targetClass, databases.relbase.RelTarget, 'and never to the base’s');
 	});
 });
+
+describeUnlessLmdb(
+	"a branch's relationship never falls back to the base's own copy of a branched database (harper#643)",
+	() => {
+		before(function () {
+			setupTestDBPath();
+			setMainIsWorker(true);
+			table({
+				table: 'FallbackHost',
+				database: 'fallbackbase',
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'lateId', type: 'ID', indexed: {} },
+				],
+			});
+		});
+
+		afterEach(async function () {
+			await removeBranches();
+		});
+
+		it("resolves a relationship's target only within its own branch, never through the base", async function () {
+			this.timeout(30000);
+			const { prepareBranches } = require('#src/resources/branchDatabase');
+			const { hydrateBranchRelationships } = require('#src/resources/databases');
+
+			// A durable branch's own on-disk store can carry a persisted relationship whose target this
+			// SPECIFIC branch never received -- the table was added to the base only after this branch's
+			// checkpoint -- which is exactly what `hydrateBranchRelationships` is handed when a branch is
+			// reopened later. Constructing that queued record directly (rather than relying on the
+			// checkpoint-and-restart sequence that would normally produce it) is what makes this a unit test
+			// rather than an integration one; the resolver under test is the same either way.
+			const branches = await prepareBranches('fallbackApp', ['fallbackbase'], 'vm-current-context');
+			const branch = branches.get('fallbackbase');
+
+			// The base gains the target table -- the branch's own store never will.
+			table({
+				table: 'AfterCheckpoint',
+				database: 'fallbackbase',
+				attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+			});
+			assert.strictEqual(branch.tables.AfterCheckpoint, undefined, "sanity: the branch really doesn't have it");
+
+			branch.pendingRelationships.push({
+				table: branch.tables.FallbackHost,
+				databaseName: 'fallbackbase',
+				tableName: 'FallbackHost',
+				definitions: [
+					{
+						name: 'late',
+						type: 'AfterCheckpoint',
+						relationship: { from: 'lateId' },
+						target: { database: 'fallbackbase', table: 'AfterCheckpoint' },
+					},
+				],
+			});
+			hydrateBranchRelationships(branch, branches);
+
+			const attribute = branch.tables.FallbackHost.attributes.find((a) => a.name === 'late');
+			const targetClass = attribute && (attribute.definition || attribute.elements?.definition)?.tableClass;
+			assert.strictEqual(
+				targetClass,
+				undefined,
+				"a target the branch's own store does not have must resolve to nothing, never to the base's"
+			);
+		});
+	}
+);

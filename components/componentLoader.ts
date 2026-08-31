@@ -305,7 +305,10 @@ export async function loadComponentDirectories(
 					loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
 						isRoot: false,
 						autoReload: Boolean(process.env.DEV_MODE),
-						appName: hdbAppFolder,
+						// The directory arg above stays the absolute path -- that's a real filesystem
+						// location -- but `appName` here is the branch identity, and a branch path segment
+						// cannot contain `/`; use the same basename the config lookup on the next line uses.
+						appName: basename(hdbAppFolder),
 						mount: mountResult.mount,
 						branchedDatabases: rootConfigBranchedDatabases(basename(hdbAppFolder)),
 					})
