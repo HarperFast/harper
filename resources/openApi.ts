@@ -65,9 +65,9 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				url: serverHttpURL,
 			},
 		],
-		paths: {},
+		paths: Object.create(null),
 		components: {
-			schemas: {},
+			schemas: Object.create(null),
 			securitySchemes: {
 				basicAuth: {
 					type: 'http',
@@ -196,37 +196,9 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } }
 							: { $ref: SCHEMA_COMP_REF + def.type };
 				} else if (type === 'Any') {
-					props[name] = { format: type };
+					props[name] = description ? { format: type, description } : { format: type };
 				} else {
 					props[name] = attributeToOpenApiSchema(attr) ?? {};
-				}
-				if (props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
-					const prop = props[name] as {
-						description?: string;
-						enum?: unknown[];
-						type?: unknown;
-						format?: string;
-						const?: unknown;
-						nullable?: boolean;
-					};
-					if (description) prop.description = description;
-					if (attr.enum && prop.enum === undefined) prop.enum = attr.enum;
-					// An author-declared `format` outranks the Harper type name `Type()` stamps on.
-					if (attr.format) prop.format = attr.format;
-					// `const` is draft-06; this document declares 3.0.3 (the draft-04 subset), so emit the
-					// equivalent single-value `enum`. Intersect when both are declared, so OpenAPI never
-					// advertises a wider value set than MCP from the same declaration.
-					if (attr.const !== undefined) {
-						prop.enum = Array.isArray(prop.enum) ? prop.enum.filter((value) => value === attr.const) : [attr.const];
-					}
-					// Only a typed schema can be nullable — a bare `{ nullable: true }` says nothing in 3.0,
-					// matching the guard the shared emitter applies.
-					if (nullable && prop.nullable === undefined && prop.type !== undefined) prop.nullable = true;
-					// 3.0's `nullable` does not widen an `enum`; without `null` in the list a validator
-					// rejects it regardless of the flag.
-					if (prop.nullable && Array.isArray(prop.enum) && !prop.enum.includes(null)) {
-						prop.enum = [...prop.enum, null];
-					}
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}

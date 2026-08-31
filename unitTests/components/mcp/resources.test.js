@@ -466,7 +466,13 @@ describe('mcp/resources', () => {
 			PrivateFields.tableName = 'private_fields';
 			PrivateFields.properties = {
 				id: { type: 'string', primaryKey: true },
-				publicName: { type: 'string' },
+				publicProfile: {
+					type: 'object',
+					properties: {
+						publicName: { type: 'string' },
+						secretDetail: { type: 'string', hidden: true, description: 'internal only' },
+					},
+				},
 				secret: { type: 'string', hidden: true },
 			};
 			_setResourcesForTest(makeFakeResources([['PrivateFields', PrivateFields]]));
@@ -479,8 +485,15 @@ describe('mcp/resources', () => {
 			const body = JSON.parse(res.contents[0].text);
 			assert.deepEqual(
 				body.attributes.map((attribute) => attribute.name),
-				['id', 'publicName']
+				['id', 'publicProfile']
 			);
+			assert.deepEqual(
+				body.attributes
+					.find((attribute) => attribute.name === 'publicProfile')
+					.properties.map((attribute) => attribute.name),
+				['publicName']
+			);
+			assert.equal(JSON.stringify(body).includes('internal only'), false);
 		});
 	});
 

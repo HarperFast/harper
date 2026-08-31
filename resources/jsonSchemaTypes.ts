@@ -314,122 +314,146 @@ export function _resetUnknownTypeWarningsForTest(): void {
  * Returns `undefined` for a `hidden` attribute so callers skip it at every nesting level.
  */
 export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOptions): JsonSchemaFragment | undefined {
+	return emitAttributeSchema(attr, options, new WeakSet(), 0);
+}
+
+function emitAttributeSchema(
+	attr: AttributeLike,
+	options: SchemaEmitOptions,
+	ancestors: WeakSet<object>,
+	depth: number
+): JsonSchemaFragment | undefined {
 	if (attr.hidden && !options.ignoreHidden) return undefined;
-	const fragment: JsonSchemaFragment = {};
-	// `ignoreHidden` applies to this attribute only — a hidden sub-property of a surfaced primary key
-	// is still a hidden field and stays suppressed.
-	const childOptions = options.ignoreHidden ? { ...options, ignoreHidden: false } : options;
-	const unionTypes = attr.types?.filter((member) => member !== 'null');
-	const structuralUnionMember = (member: string): JsonSchemaFragment | undefined => {
-		if (member === 'object' && attr.properties) {
-			return attributeToSchema(
-				{
-					name: attr.name,
-					type: 'object',
-					properties: attr.properties,
-					required: attr.required,
-					additionalProperties: attr.additionalProperties,
-				},
-				childOptions
-			);
-		}
-		if (member === 'array' && attr.elements) {
-			return attributeToSchema({ name: attr.name, type: 'array', elements: attr.elements }, childOptions);
-		}
-		return options.mapPrimitive(member, attr);
-	};
+	if (depth > MAX_SCHEMA_DEPTH)
+		throw new RangeError(`Schema attribute "${attr.name}" exceeds ${MAX_SCHEMA_DEPTH} levels`);
+	if (ancestors.has(attr)) throw new TypeError(`Schema attribute "${attr.name}" contains a cycle`);
+	ancestors.add(attr);
+	try {
+		const fragment: JsonSchemaFragment = {};
+		// `ignoreHidden` applies to this attribute only — a hidden sub-property of a surfaced primary key
+		// is still a hidden field and stays suppressed.
+		const childOptions = options.ignoreHidden ? { ...options, ignoreHidden: false } : options;
+		const unionTypes = attr.types?.filter((member) => member !== 'null');
+		const structuralUnionMember = (member: string): JsonSchemaFragment | undefined => {
+			if (member === 'object' && attr.properties) {
+				return emitAttributeSchema(
+					{
+						name: attr.name,
+						type: 'object',
+						properties: attr.properties,
+						required: attr.required,
+						additionalProperties: attr.additionalProperties,
+					},
+					childOptions,
+					ancestors,
+					depth + 1
+				);
+			}
+			if (member === 'array' && attr.elements) {
+				return emitAttributeSchema(
+					{ name: attr.name, type: 'array', elements: attr.elements },
+					childOptions,
+					ancestors,
+					depth + 1
+				);
+			}
+			return options.mapPrimitive(member, attr);
+		};
 
-	if (unionTypes && unionTypes.length > 1) {
-		const mapped = [
-			...new Map(
-				unionTypes
-					.map(structuralUnionMember)
-					.filter((schema): schema is JsonSchemaFragment => Boolean(schema && Object.keys(schema).length > 0))
-					.map((schema) => [JSON.stringify(schema), schema])
-			).values(),
-		];
-		if (mapped.length === 1) {
-			Object.assign(fragment, mapped[0]);
-		} else if (mapped.length > 1) {
-			const onlyTypes = mapped.every((schema) => Object.keys(schema).length === 1 && schema.type !== undefined);
-			if (options.dialect === 'json-schema' && onlyTypes) {
-				fragment.type = [
-					...new Set(mapped.flatMap((schema) => (Array.isArray(schema.type) ? schema.type : [schema.type]))),
-				] as JsonSchemaType[];
-			} else {
-				fragment.anyOf = mapped;
+		if (unionTypes && unionTypes.length > 1) {
+			const mapped = [
+				...new Map(
+					unionTypes
+						.map(structuralUnionMember)
+						.filter((schema): schema is JsonSchemaFragment => Boolean(schema && Object.keys(schema).length > 0))
+						.map((schema) => [JSON.stringify(schema), schema])
+				).values(),
+			];
+			if (mapped.length === 1) {
+				Object.assign(fragment, mapped[0]);
+			} else if (mapped.length > 1) {
+				const onlyTypes = mapped.every((schema) => Object.keys(schema).length === 1 && schema.type !== undefined);
+				if (options.dialect === 'json-schema' && onlyTypes) {
+					fragment.type = [
+						...new Set(mapped.flatMap((schema) => (Array.isArray(schema.type) ? schema.type : [schema.type]))),
+					] as JsonSchemaType[];
+				} else {
+					fragment.anyOf = mapped;
+				}
 			}
-		}
-	} else if (attr.properties) {
-		fragment.type = 'object';
-		fragment.properties = Object.create(null);
-		const suppressedNames = new Set<string>();
-		for (const sub of attr.properties) {
-			const subSchema = attributeToSchema(sub, childOptions);
-			if (!subSchema) {
-				suppressedNames.add(sub.name);
-				continue;
+		} else if (attr.properties) {
+			fragment.type = 'object';
+			fragment.properties = Object.create(null);
+			const suppressedNames = new Set<string>();
+			for (const sub of attr.properties) {
+				const subSchema = emitAttributeSchema(sub, childOptions, ancestors, depth + 1);
+				if (!subSchema) {
+					suppressedNames.add(sub.name);
+					continue;
+				}
+				fragment.properties[sub.name] = subSchema;
 			}
-			fragment.properties[sub.name] = subSchema;
-		}
-		// Drop suppressed sub-properties from `required` too — advertising a required property the
-		// schema does not define makes the object unsatisfiable for any client that validates. Omit the
-		// key entirely when nothing survives: JSON Schema draft-04 (which OpenAPI 3.0.3 inherits)
-		// requires `required` to have at least one element, so `required: []` fails validators.
-		if (attr.required) {
-			const visibleRequired = attr.required.filter((name) => !suppressedNames.has(name));
-			if (visibleRequired.length > 0) fragment.required = visibleRequired;
-		}
-		if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
-	} else if (attr.type === 'array') {
-		fragment.type = 'array';
-		// `{ type: 'array' }` with no element schema is valid — an array of anything.
-		if (attr.elements) {
-			const items = attributeToSchema(attr.elements, childOptions);
-			if (items) fragment.items = items;
-		}
-	} else {
-		if (attr.types?.every((member) => member === 'null')) {
-			Object.assign(fragment, options.mapPrimitive('null', attr));
+			// Drop suppressed sub-properties from `required` too — advertising a required property the
+			// schema does not define makes the object unsatisfiable for any client that validates. Omit the
+			// key entirely when nothing survives: JSON Schema draft-04 (which OpenAPI 3.0.3 inherits)
+			// requires `required` to have at least one element, so `required: []` fails validators.
+			if (attr.required) {
+				const visibleRequired = attr.required.filter((name) => !suppressedNames.has(name));
+				if (visibleRequired.length > 0) fragment.required = visibleRequired;
+			}
+			if (attr.additionalProperties !== undefined) fragment.additionalProperties = attr.additionalProperties;
+		} else if (attr.type === 'array') {
+			fragment.type = 'array';
+			// `{ type: 'array' }` with no element schema is valid — an array of anything.
+			if (attr.elements) {
+				const items = emitAttributeSchema(attr.elements, childOptions, ancestors, depth + 1);
+				if (items) fragment.items = items;
+			}
 		} else {
-			Object.assign(fragment, options.mapPrimitive(attr.type, attr));
+			if (attr.types?.every((member) => member === 'null')) {
+				Object.assign(fragment, options.mapPrimitive('null', attr));
+			} else {
+				Object.assign(fragment, options.mapPrimitive(attr.type, attr));
+			}
 		}
-	}
 
-	const nullOnly = attr.types?.every((member) => member === 'null');
-	if (attr.nullable && !nullOnly) applyNullability(fragment, options.dialect);
-	// An explicitly declared `description`/`format` outranks whatever the primitive mapper supplied as a
-	// default — an author writing `{ type: 'Date', format: 'date-time' }` means `date-time`, not the
-	// Harper type name the mapper stamps on.
-	if (attr.description) fragment.description = attr.description;
-	if (attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;
-	if (attr.format) fragment.format = attr.format;
-	if (attr.const !== undefined) {
-		// `const` is JSON Schema draft-06. OpenAPI 3.0.3's Schema Object is the draft-04 subset, so it
-		// has no such keyword — emit the equivalent single-value `enum` for that dialect. MCP speaks
-		// current JSON Schema and takes `const` directly.
-		if (options.dialect === 'openapi-3.0.3') {
-			// Intersect rather than skip when both are declared: dropping the `const` would leave OpenAPI
-			// advertising a wider value set than MCP, from one declaration.
-			fragment.enum = fragment.enum
-				? (fragment.enum.filter((value) => value === attr.const) as never[])
-				: [attr.const as never];
-		} else if (fragment.const === undefined) {
-			fragment.const = attr.const;
+		const nullOnly = attr.types?.every((member) => member === 'null');
+		if (attr.nullable && !nullOnly) applyNullability(fragment, options.dialect);
+		// An explicitly declared `description`/`format` outranks whatever the primitive mapper supplied as a
+		// default — an author writing `{ type: 'Date', format: 'date-time' }` means `date-time`, not the
+		// Harper type name the mapper stamps on.
+		if (attr.description) fragment.description = attr.description;
+		if (attr.enum && fragment.enum === undefined) fragment.enum = attr.enum;
+		if (attr.format) fragment.format = attr.format;
+		if (attr.const !== undefined) {
+			// `const` is JSON Schema draft-06. OpenAPI 3.0.3's Schema Object is the draft-04 subset, so it
+			// has no such keyword — emit the equivalent single-value `enum` for that dialect. MCP speaks
+			// current JSON Schema and takes `const` directly.
+			if (options.dialect === 'openapi-3.0.3') {
+				// Intersect rather than skip when both are declared: dropping the `const` would leave OpenAPI
+				// advertising a wider value set than MCP, from one declaration.
+				fragment.enum = fragment.enum
+					? (fragment.enum.filter((value) => value === attr.const) as never[])
+					: [attr.const as never];
+			} else if (fragment.const === undefined) {
+				fragment.const = attr.const;
+			}
 		}
+		// Nullability does not widen an `enum` in either dialect — a validator still rejects `null` unless
+		// the value list contains it. Keep the type/null arm and the value constraint consistent.
+		const admitsNull =
+			fragment.nullable === true ||
+			(Array.isArray(fragment.type) && fragment.type.includes('null')) ||
+			fragment.anyOf?.some((arm) => arm.type === 'null' || arm.enum?.includes(null));
+		if (attr.const === undefined && admitsNull && fragment.enum && !fragment.enum.includes(null)) {
+			fragment.enum = [...fragment.enum, null];
+		}
+		// `hidden` / `primaryKey` / `assignCreatedTime` / `assignUpdatedTime` are Harper directives, not
+		// schema vocabulary — they never belong in an emitted document.
+		return fragment;
+	} finally {
+		ancestors.delete(attr);
 	}
-	// Nullability does not widen an `enum` in either dialect — a validator still rejects `null` unless
-	// the value list contains it. Keep the type/null arm and the value constraint consistent.
-	const admitsNull =
-		fragment.nullable === true ||
-		(Array.isArray(fragment.type) && fragment.type.includes('null')) ||
-		fragment.anyOf?.some((arm) => arm.type === 'null' || arm.enum?.includes(null));
-	if (admitsNull && fragment.enum && !fragment.enum.includes(null)) {
-		fragment.enum = [...fragment.enum, null];
-	}
-	// `hidden` / `primaryKey` / `assignCreatedTime` / `assignUpdatedTime` are Harper directives, not
-	// schema vocabulary — they never belong in an emitted document.
-	return fragment;
 }
 
 function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect): void {
@@ -457,9 +481,10 @@ function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect):
  */
 export function resolveAttributes(source?: {
 	attributes?: AttributeLike[];
-	properties?: Record<string, JsonSchemaFragment>;
+	properties?: Record<string, JsonSchemaFragment> | AttributeLike[];
 }): AttributeLike[] {
 	if (source?.attributes?.length) return source.attributes;
+	if (Array.isArray(source?.properties)) return source.properties;
 	if (source?.properties !== undefined) return projectPropertiesToAttributes(source.properties);
 	return [];
 }

@@ -827,7 +827,7 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 	} catch (error) {
 		return { ok: false, reason: `invalid schema for ${db}.${table}: ${(error as Error).message}` };
 	}
-	const visibleAttributes = attributes.filter((attribute) => !attribute.hidden);
+	const visibleAttributes = filterHiddenAttributes(attributes);
 	const filteredAttributes = filterAttributesByPermissions(visibleAttributes, perm?.attribute_permissions);
 	const body = {
 		database: db,
@@ -941,6 +941,21 @@ function filterAttributesByPermissions(attributes: any[], attributePermissions: 
 	}
 	if (denied.size === 0) return attributes;
 	return attributes.filter((a) => !denied.has(a?.name));
+}
+
+function filterHiddenAttributes(attributes: any[]): any[] {
+	return attributes
+		.filter((attribute) => !attribute?.hidden)
+		.map((attribute) => {
+			const visible = { ...attribute };
+			if (Array.isArray(attribute.properties)) visible.properties = filterHiddenAttributes(attribute.properties);
+			if (attribute.elements && typeof attribute.elements === 'object') {
+				const [elements] = filterHiddenAttributes([attribute.elements]);
+				if (elements) visible.elements = elements;
+				else delete visible.elements;
+			}
+			return visible;
+		});
 }
 
 /**
