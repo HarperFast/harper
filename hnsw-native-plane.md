@@ -263,8 +263,11 @@ Open:
   workload measurement, not a guess.
 - **f32 (quantization:"none") slot variant** — 3,072 B vectors → 3.4 KB slots; supported by the
   format (dims × mode in header) but int8 is the default and the optimization target.
-- **Upper-layer region persistence** — prototype keeps upper adjacency in memory (rebuilt at
-  open by scanning slots); the append-allocated file region is pending.
+- ~~Upper-layer region persistence~~ — done (format v2): fixed-entry region in the same file,
+  per-entry seqlocks, reserved for max_nodes/8. Upper entries leak on delete (bounded by the
+  2x-headroom reserve); an upper freelist is the remaining nicety.
+- **Reservation growth** — max_nodes is fixed at create; production needs either a generous
+  sparse reservation (Linux-fine; strict-overcommit hosts need care) or mremap-based growth.
 
 ## 11. Prototype measurements (kzyp Linux box, 768-d int8, ef 512, cap 64)
 
@@ -277,6 +280,7 @@ recall@10-set 0.997, ~3,110 visits.
 | 100K | 64 | 0.28 ms | 0.46 ms | 1,395 | 0.201 | 1.000 | 5,583 inserts/s |
 | 1M | 64 | 0.81 ms | 1.60 ms | 2,279 | 0.353 | 0.975 | 1,670 inserts/s |
 | 1M | 128 | 0.75 ms | 1.48 ms | 2,309 | 0.324 | **0.996** | 1,242 inserts/s |
+| 1M (fmt v2) | 128 | 0.83 ms | 1.61 ms | 2,309 | 0.359 | 0.996 | 1,346 inserts/s |
 | 1M JS anchor | 128 | 7.2 ms | 12.0 ms | ~3,110 | 4.34 | 0.997 | ~263 inserts/s |
 
 At the 1M anchor with cap 128: **9.6× p50, 12.9× per-visit, 4.7× build rate, at JS-equal
