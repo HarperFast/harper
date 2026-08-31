@@ -932,11 +932,11 @@ function readRocksMetaDb(
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
 			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
-			// A branch (`destination`) is a checkpoint and nothing more, deliberately. Replaying into one
-			// would make its content depend on which thread opened it — `replayLogs` is a no-op off the
-			// main thread, and applications load on workers — and it hands an un-awaited writer to a
-			// store the branch's owner may close moments later, which aborts the process rather than
-			// failing a load. See the contract note on `openBranchDatabase` (harper#643).
+			// A branch (`destination`) recovers its transaction-log tail in `openOrCreate`
+			// (branchDatabase.ts), not here: the branch claim elects exactly one replaying thread —
+			// applications load on workers, where this call would be a no-op — and awaits the replay
+			// before the branch is published to any reader. See the contract note on
+			// `openBranchDatabase` (harper#643).
 			if (!isReadOnlyMode() && !destination) {
 				replayLogs(rootStore, databases[databaseName]);
 			}
@@ -1401,19 +1401,20 @@ function assertLegalBranchName(name: string, description: string): void {
  * `closeBranchDatabases`, which `closeLoadedDatabases` runs at thread teardown so a branch left open
  * on an exiting worker does not leak its handles into the process-global RocksDB registry.
  *
- * NOT YET SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
+ * NOT SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
  * `dropTable()` or equivalent through one resolves against the global schema and would delete the
- * live base Table class. Nothing calls this yet; the scope wiring that first exposes a branch to
- * application code must gate schema operations before it does (harper#643).
+ * live base Table class — which is why schema operations through a branch are refused
+ * (branchGuard.ts).
  *
  * A branch's blob roots start empty, so a row whose blob was written before the checkpoint reads
  * back as a missing file until harper#644 links the base's blob tree into them. Non-blob rows are
  * unaffected, for reads and writes alike.
  *
- * A branch is the checkpoint's SST content plus, on the main thread only, its transaction-log tail:
- * `replayLogs` is a no-op off the main thread and nothing else will ever replay a private store. It
- * is also not awaited, so `close()` can race a replay still writing — neither is a problem while
- * nothing calls this, and both are decisions the scope wiring has to settle (harper#643).
+ * A branch is the checkpoint's SST content plus its own transaction-log tail. This function opens
+ * only the stores; replaying the tail is `openOrCreate`'s job (branchDatabase.ts), where the
+ * cross-thread claim elects exactly one replayer and awaits it before any thread may open the
+ * branch — the same recovery contract a base database gets at boot, without which a process that
+ * died unflushed silently rewinds the branch to its last memtable flush (harper#643).
  */
 export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
 	assertLegalBranchName(databaseName, 'logical database name');

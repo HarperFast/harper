@@ -1,9 +1,13 @@
 require('../testUtils');
 const assert = require('assert');
 const { existsSync } = require('node:fs');
+const { mkdir, rename, rm, writeFile } = require('node:fs/promises');
+const { join } = require('node:path');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
-const { table, databases, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
+const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
 const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
+const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -109,6 +113,100 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	it('rejects a path segment that would escape the reserved root', function () {
 		assert.throws(() => resolveBranchPath('lifebase', '..'), /Invalid application name/);
 		assert.throws(() => resolveBranchPath('a/b', 'appA'), /Invalid database name/);
+	});
+
+	it('settles an elected replay instead of hanging: resolve on completion, reject on a held lock', async function () {
+		// The elected replay promise is awaited inside the branch claim's CREATING window, so it must
+		// always settle — an unresolved promise would wedge the claim and every waiting thread. Uses
+		// its own database: the replay permanently takes the store's replay lock and applies its log
+		// tail, which must not become shared suite state on lifebase.
+		table({
+			table: 'ReplayProbe',
+			database: 'replaybase',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = database({ database: 'replaybase', table: undefined });
+		await replayLogs(rootStore, databases.replaybase, true);
+		// The completed replay holds the store's replay lock forever (by design: replay runs once per
+		// store per process), so a second elected call must reject rather than hang or run again.
+		await assert.rejects(() => replayLogs(rootStore, databases.replaybase, true), /replay lock/);
+	});
+
+	it('a mid-flight strict replay failure rejects — and still rejects after releasing the lock', async function () {
+		// Releasing the lock wakes tryLock callbacks, including the holder's own resolve(); the
+		// rejection must win the settle or a failed replay reads as success and READY publishes an
+		// incomplete store. A stub store drives the real replay loop into its per-entry failure path.
+		let unlocked = false;
+		const queued = [];
+		const poisonedTable = {
+			tableId: 7,
+			getResource() {
+				throw new Error('poisoned resource');
+			},
+		};
+		const stubStore = {
+			databaseName: 'stub',
+			tryLock(key, onUnlocked) {
+				queued.push(onUnlocked);
+				return true;
+			},
+			unlock() {
+				unlocked = true;
+				for (const onUnlocked of queued) onUnlocked();
+				return true;
+			},
+			auditStore: {
+				getRange() {
+					return [{ type: 'put', tableId: 7, version: 1, extendedType: 17, getValue: () => ({ id: 1 }) }];
+				},
+			},
+		};
+		await assert.rejects(() => replayLogs(stubStore, { Poisoned: poisonedTable }, true), /poisoned resource/);
+		assert.strictEqual(unlocked, true, 'a failed strict replay must release the lock for the retry');
+	});
+
+	it('fails the load when the adopted branch cannot replay, then adopts cleanly once it can', async function () {
+		// Materialize by hand what a previous boot leaves behind, so this boot's first sight of the
+		// branch is the adopt path.
+		const branchPath = resolveBranchPath('lifebase', 'appAdopt');
+		const staging = `${branchPath}.staging`;
+		await rm(staging, { recursive: true, force: true });
+		await mkdir(join(branchPath, '..'), { recursive: true });
+		await database({ database: 'lifebase', table: undefined }).createCheckpoint(staging);
+		await rename(staging, branchPath);
+
+		// Hold the branch store's replay lock from a second handle on the same directory (handles on
+		// one path share the native store, and the lock table lives on it): the elected replay must
+		// reject — a strict failure after the winner has already opened the branch.
+		const raw = RocksDatabase.open(branchPath);
+		try {
+			assert.ok(
+				raw.tryLock('replayLogs', () => {}),
+				'the probe handle must be able to take the lock'
+			);
+			await assert.rejects(() => getOrCreateBranch('lifebase', 'appAdopt'), /replay lock/);
+
+			// The failed winner must have closed what it opened and released the claim: after the
+			// blocker clears, the same process must be able to adopt the same directory.
+			raw.unlock('replayLogs');
+			const branch = await getOrCreateBranch('lifebase', 'appAdopt');
+			assert.ok(await branch.tables.LifecycleSource.get('a'), 'the adopted branch serves the base rows');
+		} finally {
+			raw.close();
+		}
+	});
+
+	it('releases the claim when the winner cannot open the branch, so a repaired retry works', async function () {
+		// A directory that exists is adopted, so plant one that cannot be opened: the winner must
+		// close whatever it opened and release the claim, not leave it wedged in CREATING or READY.
+		const path = resolveBranchPath('lifebase', 'appBroken');
+		await mkdir(path, { recursive: true });
+		await writeFile(join(path, 'CURRENT'), 'not a database\n');
+		await assert.rejects(() => getOrCreateBranch('lifebase', 'appBroken'));
+
+		await rm(path, { recursive: true, force: true });
+		const branch = await getOrCreateBranch('lifebase', 'appBroken');
+		assert.ok(await branch.tables.LifecycleSource.get('a'), 'the retry after repair must serve the base rows');
 	});
 });
 
