@@ -175,6 +175,23 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			assert.strictEqual(byName.size.nullable, true);
 		});
 
+		it('preserves explicit non-nullability', () => {
+			const [required] = projectPropertiesToAttributes({ required: { type: 'string', nullable: false } });
+			assert.strictEqual(required.nullable, false);
+		});
+
+		it('rejects an Array-shaped properties declaration and cyclic fragments', () => {
+			assert.throws(() => projectPropertiesToAttributes([]), /properties must be an object/);
+			assert.throws(() => projectPropertiesToAttributes(null), /properties must be an object/);
+			assert.throws(
+				() => projectPropertiesToAttributes({ nested: { type: 'object', properties: null } }),
+				/nested\.properties.*must be an object/
+			);
+			const cyclic = { type: 'object', properties: {} };
+			cyclic.properties.self = cyclic;
+			assert.throws(() => projectPropertiesToAttributes({ cyclic }), /contains a cycle/);
+		});
+
 		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {
 			// The `.properties` projection is front-end-neutral: type, description, primaryKey,
 			// nested/array shapes, and nested object-level constraints (required/additionalProperties)

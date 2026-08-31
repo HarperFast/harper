@@ -11,60 +11,44 @@
  */
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
-import { startHarper, teardownHarper } from '@harperfast/integration-testing';
+import { resolve } from 'node:path';
+import { setupHarperWithFixture, teardownHarper } from '@harperfast/integration-testing';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createApiClient } from '../apiTests/utils/client.mjs';
-import { installAppComponent } from '../apiTests/utils/components.mjs';
 
-const RESOURCES_JS = `export class OrderSummary extends Resource {
-\tstatic description = 'Rolled-up order totals.';
-\tstatic primaryKey = 'orderId';
-\tstatic properties = {
-\t\torderId: { type: 'string', primaryKey: true, description: 'Order id.' },
-\t\tstatus: { type: 'string', enum: ['open', 'closed'], description: 'Fulfillment state.' },
-\t\tnote: { type: ['string', 'null'], description: 'Nullable note.' },
-\t\tprofile: {
-\t\t\ttype: 'object',
-\t\t\tproperties: {
-\t\t\t\tname: { type: 'string', description: 'Visible name.' },
-\t\t\t\tcreditScore: { type: 'integer', hidden: true, description: 'INTERNAL-ONLY-MARKER' },
-\t\t\t},
-\t\t\trequired: ['name', 'creditScore'],
-\t\t},
-\t\tallHidden: { type: 'object', properties: { secret: { type: 'string', hidden: true } }, required: ['secret'] },
-\t\ttags: { type: 'array', items: { type: 'string', enum: ['x', 'y'], description: 'Tag.' } },
-\t};
-\tget() {
-\t\treturn { orderId: 'o1' };
-\t}
-}
-`;
-
-const CONFIG_YAML = `rest: true
-jsResource:
-  files: resources.js
-`;
+const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/mcp-static-properties');
 
 const skipSuite = process.platform === 'win32';
 
 suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 	let client;
 	let schema;
+	let mcpClient;
+	let mcpTransport;
 
 	before(async () => {
-		await startHarper(ctx, { config: {}, env: {} });
-		client = createApiClient(ctx.harper);
-		await installAppComponent(client, {
-			project: 'staticPropsApp',
-			files: { 'resources.js': RESOURCES_JS, 'config.yaml': CONFIG_YAML },
-			probePath: '/OrderSummary/',
-			restartTimeoutMs: 120000,
+		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+			config: { mcp: { application: { mountPath: '/mcp' } } },
+			env: {},
 		});
+		client = createApiClient(ctx.harper);
 		const r = await client.reqRest('/openapi').expect(200);
 		schema = r.body.components.schemas.OrderSummary;
 		assert.ok(schema, `OrderSummary schema missing from the document: ${r.text.slice(0, 400)}`);
+		mcpTransport = new StreamableHTTPClientTransport(new URL('/mcp', ctx.harper.httpURL), {
+			requestInit: {
+				headers: {
+					Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+				},
+			},
+		});
+		mcpClient = new Client({ name: 'static-properties-e2e', version: '1.0.0' }, { capabilities: {} });
+		await mcpClient.connect(mcpTransport);
 	});
 
 	after(async () => {
+		await mcpTransport?.close();
 		await teardownHarper(ctx);
 	});
 
@@ -72,6 +56,20 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		assert.equal(schema.properties.status.type, 'string');
 		assert.equal(schema.properties.status.description, 'Fulfillment state.');
 		assert.deepEqual(schema.properties.status.enum, ['open', 'closed']);
+	});
+
+	test('publishes the same static-properties shape through MCP tools/list', async () => {
+		const { tools } = await mcpClient.listTools();
+		const create = tools.find((tool) => tool.name === 'create_OrderSummary');
+		assert.ok(create, `create_OrderSummary missing from tools/list: ${tools.map((tool) => tool.name).join(', ')}`);
+		assert.deepEqual(create.inputSchema.properties.status, {
+			type: 'string',
+			description: 'Fulfillment state.',
+			enum: ['open', 'closed'],
+		});
+		assert.deepEqual(create.inputSchema.properties.note.type, ['string', 'null']);
+		assert.equal(create.inputSchema.properties.profile.properties.creditScore, undefined);
+		assert.deepEqual(create.inputSchema.required, ['status']);
 	});
 
 	test('emits OpenAPI `nullable` for a top-level nullable property', () => {
@@ -96,7 +94,7 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		// `required: []` is invalid under draft-04 (which OpenAPI 3.0.3 inherits).
 		assert.deepEqual(schema.properties.profile.required, ['name']);
 		assert.equal('required' in schema.properties.allHidden, false, 'empty required must be omitted');
-		assert.equal('required' in schema, false, 'top-level empty required must be omitted');
+		assert.deepEqual(schema.required, ['status']);
 	});
 
 	test('carries enum and description into array items', () => {

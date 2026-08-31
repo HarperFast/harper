@@ -1349,4 +1349,35 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 			'child should derive its schema from the inherited static properties'
 		);
 	});
+
+	it('isolates a malformed static-properties schema and warns only once', () => {
+		const Good = makeProgrammaticResource({
+			path: 'Good',
+			tableName: 'good',
+			properties: { id: { type: 'string', primaryKey: true } },
+		});
+		const Bad = makeProgrammaticResource({ path: 'Bad', tableName: 'bad', properties: {} });
+		const cyclic = { type: 'object', properties: {} };
+		cyclic.properties.self = cyclic;
+		Bad.Resource.properties = { cyclic };
+		_setResourcesForTest(
+			makeRegistry([
+				['Good', { Resource: Good.Resource }],
+				['Bad', { Resource: Bad.Resource }],
+			])
+		);
+		const harperLogger = require('#src/utility/logging/harper_logger');
+		const warnings = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (message) => warnings.push(String(message));
+		try {
+			registerApplicationTools();
+			refreshApplicationTools();
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
+		assert.ok(getTool('get_Good'), 'a valid sibling resource remains available');
+		assert.equal(getTool('get_Bad'), undefined, 'the malformed resource is omitted');
+		assert.equal(warnings.filter((message) => message.includes("resource '/Bad'")).length, 1);
+	});
 });

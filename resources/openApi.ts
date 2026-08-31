@@ -1,4 +1,5 @@
 import { packageJson } from '../utility/packageUtils.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
 import {
@@ -6,11 +7,20 @@ import {
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
-	projectPropertiesToAttributes,
+	resolveAttributes,
 	resolveDeclaredType,
 } from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
+const warnedInvalidResourceSchemas = new WeakSet<object>();
+
+function warnInvalidResourceSchema(resource: unknown, path: string, error: unknown): void {
+	if ((typeof resource === 'object' && resource !== null) || typeof resource === 'function') {
+		if (warnedInvalidResourceSchemas.has(resource)) return;
+		warnedInvalidResourceSchemas.add(resource);
+	}
+	harperLogger.warn(`OpenAPI skipped invalid schema for resource "${path}": ${(error as Error).message}`);
+}
 
 /**
  * Emit an attribute as an OpenAPI 3.0.3 property schema. Shares its traversal with the MCP deriver so
@@ -34,7 +44,7 @@ function openApiPrimitive(type: string | undefined, attributeName: string | unde
 	if (!resolved) return {};
 	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
 	// becomes an untyped nullable schema rather than a type the dialect can't express.
-	if (resolved === 'null') return {}; // 3.0 has no null type; a bare `nullable` on an untyped schema says nothing
+	if (resolved === 'null') return { nullable: true, enum: [null] };
 	// Preserve the Harper type name as `format` for the types where it adds information, matching the
 	// top-level `Type()` emitter.
 	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
@@ -144,7 +154,8 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 
 		const { path } = resource;
 		const strippedPath = path.split('/').pop(); // strip any namespace from path
-		let { attributes, sealed } = resource.Resource;
+		let { sealed } = resource.Resource;
+		let attributes;
 		const { prototype, primaryKey = 'id' } = resource.Resource;
 		// Class-level description from @table docstring or programmatic `static description`.
 		// Used as both the schema-level `description` (in components.schemas) and as a prefix
@@ -152,13 +163,16 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		const tableDoc: string | undefined = resource.Resource.description;
 		// A programmatic Resource may declare `static properties` (Record) without an `attributes`
 		// Array; project it so per-property schemas are emitted instead of a skeletal object.
-		if (!attributes?.length && resource.Resource.properties) {
-			attributes = projectPropertiesToAttributes(resource.Resource.properties);
-		}
-		if (!attributes?.length && resources.allTypes.has(resource.path)) {
-			const possibleType = resources.allTypes.get(resource.path);
-			sealed = possibleType.sealed;
-			attributes = possibleType.attributes ?? projectPropertiesToAttributes(possibleType.properties ?? {});
+		try {
+			attributes = resolveAttributes(resource.Resource);
+			if (!attributes.length && resources.allTypes.has(resource.path)) {
+				const possibleType = resources.allTypes.get(resource.path);
+				sealed = possibleType.sealed;
+				attributes = resolveAttributes(possibleType);
+			}
+		} catch (error) {
+			warnInvalidResourceSchema(resource.Resource, resource.path, error);
+			continue;
 		}
 		if (!primaryKey) continue;
 		const props = {};

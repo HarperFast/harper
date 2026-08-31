@@ -328,6 +328,14 @@ type RequestTargetCtor = new () => Record<string, unknown> & {
 // Test seams: avoid Harper's eager graph init in unit tests.
 let _resourcesOverride: ResourcesRegistry | undefined;
 let _requestTargetCtorOverride: RequestTargetCtor | undefined;
+const warnedInvalidResourceSchemas = new WeakSet<object>();
+
+function warnInvalidResourceSchema(resource: ResourceClassLike, path: string, error: unknown): void {
+	if (warnedInvalidResourceSchemas.has(resource)) return;
+	warnedInvalidResourceSchemas.add(resource);
+	harperLogger.warn(`MCP application skipped invalid schema for resource '/${path}': ${(error as Error).message}`);
+}
+
 export function _setResourcesForTest(r: ResourcesRegistry | undefined): void {
 	_resourcesOverride = r;
 }
@@ -1370,7 +1378,13 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		claimedSuffixes.add(suffix);
 		// A programmatic Resource may declare `static properties` without an `attributes` Array; resolve
 		// the effective attributes so its verb tools get a rich inputSchema instead of a skeletal one.
-		const attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
+		let attributes: HarperAttribute[];
+		try {
+			attributes = resolveAttributes(ResourceClass) as HarperAttribute[];
+		} catch (error) {
+			warnInvalidResourceSchema(ResourceClass, path, error);
+			return;
+		}
 		if (hasVerbs) {
 			toolsRegistered += registerVerbTools({
 				path,

@@ -161,39 +161,63 @@ export function projectAttributesToProperties(attributes: AttributeLike[]): Reco
  * bare declaration would otherwise yield a skeletal schema. Projecting the fragments back into
  * attributes lets those paths produce the same rich schema they build for table-backed resources.
  */
-function fragmentToAttribute(name: string, fragment: JsonSchemaFragment): AttributeLike {
-	const attr: AttributeLike = { name };
-	if (fragment.properties) {
-		attr.properties = Object.entries(fragment.properties).map(([subName, sub]) => fragmentToAttribute(subName, sub));
-		if (fragment.required) attr.required = fragment.required;
-		if (fragment.additionalProperties !== undefined) attr.additionalProperties = fragment.additionalProperties;
-	} else if (fragment.type === 'array' && fragment.items) {
-		attr.type = 'array';
-		// The element attribute's name is unused (attributeToFragment ignores it); keep it empty rather
-		// than misleadingly reusing the array field's own name.
-		attr.elements = fragmentToAttribute('', fragment.items);
-	} else if (Array.isArray(fragment.type)) {
-		// JSON-Schema union type. Keep the source union on `types` so surfaces that can express one
-		// (MCP natively, OpenAPI 3.0 via `oneOf`) don't have to reconstruct it, and fold a `'null'`
-		// member into `nullable` as well since that is the form OpenAPI needs. `type` carries the first
-		// non-null member for the single-type consumers (validation, query coercion) that read it.
-		attr.types = fragment.type;
-		const members = fragment.type.filter((t) => t !== 'null');
-		if (members.length !== fragment.type.length) attr.nullable = true;
-		if (members.length > 0) attr.type = members[0];
-	} else if (fragment.type != null) {
-		attr.type = fragment.type;
+const MAX_SCHEMA_DEPTH = 100;
+
+function fragmentToAttribute(
+	name: string,
+	fragment: JsonSchemaFragment,
+	ancestors: WeakSet<object>,
+	depth: number
+): AttributeLike {
+	if (fragment === null || typeof fragment !== 'object' || Array.isArray(fragment)) {
+		throw new TypeError(`Schema property "${name}" must be an object`);
 	}
-	if (fragment.description) attr.description = fragment.description;
-	if (fragment.primaryKey) attr.isPrimaryKey = true;
-	if (fragment.assignCreatedTime) attr.assignCreatedTime = true;
-	if (fragment.assignUpdatedTime) attr.assignUpdatedTime = true;
-	if (fragment.hidden) attr.hidden = true;
-	if (fragment.nullable) attr.nullable = true;
-	if (fragment.enum) attr.enum = fragment.enum;
-	if (fragment.format) attr.format = fragment.format;
-	if (fragment.const !== undefined) attr.const = fragment.const;
-	return attr;
+	if (depth > MAX_SCHEMA_DEPTH) throw new RangeError(`Schema property "${name}" exceeds ${MAX_SCHEMA_DEPTH} levels`);
+	if (ancestors.has(fragment)) throw new TypeError(`Schema property "${name}" contains a cycle`);
+	ancestors.add(fragment);
+	const attr: AttributeLike = { name };
+	try {
+		if (fragment.properties !== undefined) {
+			if (
+				fragment.properties === null ||
+				typeof fragment.properties !== 'object' ||
+				Array.isArray(fragment.properties)
+			) {
+				throw new TypeError(`Schema property "${name}.properties" must be an object`);
+			}
+			attr.properties = Object.entries(fragment.properties).map(([subName, sub]) =>
+				fragmentToAttribute(subName, sub, ancestors, depth + 1)
+			);
+			if (fragment.required) attr.required = fragment.required;
+			if (fragment.additionalProperties !== undefined) attr.additionalProperties = fragment.additionalProperties;
+		} else if (fragment.type === 'array' && fragment.items !== undefined) {
+			attr.type = 'array';
+			attr.elements = fragmentToAttribute('', fragment.items, ancestors, depth + 1);
+		} else if (Array.isArray(fragment.type)) {
+			if (!fragment.type.every((type) => typeof type === 'string')) {
+				throw new TypeError(`Schema property "${name}.type" must contain only strings`);
+			}
+			attr.types = fragment.type;
+			const members = fragment.type.filter((type) => type !== 'null');
+			if (members.length !== fragment.type.length) attr.nullable = true;
+			if (members.length > 0) attr.type = members[0];
+		} else if (fragment.type != null) {
+			if (typeof fragment.type !== 'string') throw new TypeError(`Schema property "${name}.type" must be a string`);
+			attr.type = fragment.type;
+		}
+		if (fragment.description) attr.description = fragment.description;
+		if (fragment.primaryKey) attr.isPrimaryKey = true;
+		if (fragment.assignCreatedTime) attr.assignCreatedTime = true;
+		if (fragment.assignUpdatedTime) attr.assignUpdatedTime = true;
+		if (fragment.hidden) attr.hidden = true;
+		if (fragment.nullable !== undefined) attr.nullable = fragment.nullable;
+		if (fragment.enum) attr.enum = fragment.enum;
+		if (fragment.format) attr.format = fragment.format;
+		if (fragment.const !== undefined) attr.const = fragment.const;
+		return attr;
+	} finally {
+		ancestors.delete(fragment);
+	}
 }
 
 /**
@@ -201,7 +225,11 @@ function fragmentToAttribute(name: string, fragment: JsonSchemaFragment): Attrib
  * `Attribute[]` Array the schema-derivation paths consume. Inverse of `projectAttributesToProperties`.
  */
 export function projectPropertiesToAttributes(properties: Record<string, JsonSchemaFragment>): AttributeLike[] {
-	return Object.entries(properties).map(([name, fragment]) => fragmentToAttribute(name, fragment));
+	if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
+		throw new TypeError('Resource properties must be an object');
+	}
+	const ancestors = new WeakSet<object>();
+	return Object.entries(properties).map(([name, fragment]) => fragmentToAttribute(name, fragment, ancestors, 1));
 }
 
 /**
@@ -265,6 +293,12 @@ export function resolveDeclaredType(type: string | undefined, context?: string):
 	return undefined;
 }
 
+export function unionMembers(attr: { types?: readonly string[] }): string[] | undefined {
+	if (!attr.types) return undefined;
+	const members = attr.types.filter((member) => member !== 'null');
+	return members.length > 1 ? members : undefined;
+}
+
 /** Test hook: the unknown-type warning is once-per-process, which would leak across test cases. */
 export function _resetUnknownTypeWarningsForTest(): void {
 	warnedUnknownTypes.clear();
@@ -317,15 +351,21 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 			const items = attributeToSchema(attr.elements, childOptions);
 			if (items) fragment.items = items;
 		}
+	} else if (attr.types && options.dialect === 'json-schema') {
+		fragment.type = [...attr.types] as JsonSchemaType[];
 	} else {
-		// Copy the mapper's result field by field rather than merging it wholesale: the set of keys a
-		// surface may contribute to a leaf schema is fixed, and spreading an arbitrary object here would
-		// let a mapper put anything into an emitted document.
-		const primitive = options.mapPrimitive(attr.type, attr);
-		if (primitive.type !== undefined) fragment.type = primitive.type;
-		if (primitive.description !== undefined) fragment.description = primitive.description;
-		if (primitive.format !== undefined) fragment.format = primitive.format;
-		if (primitive.contentEncoding !== undefined) fragment.contentEncoding = primitive.contentEncoding;
+		const union = unionMembers(attr);
+		if (union) {
+			fragment.oneOf = union.map((member) => options.mapPrimitive(member, attr));
+		} else {
+			const primitive = options.mapPrimitive(attr.type, attr);
+			if (primitive.type !== undefined) fragment.type = primitive.type;
+			if (primitive.description !== undefined) fragment.description = primitive.description;
+			if (primitive.format !== undefined) fragment.format = primitive.format;
+			if (primitive.contentEncoding !== undefined) fragment.contentEncoding = primitive.contentEncoding;
+			if (primitive.nullable !== undefined) fragment.nullable = primitive.nullable;
+			if (primitive.enum !== undefined) fragment.enum = primitive.enum;
+		}
 	}
 
 	if (attr.nullable) applyNullability(fragment, options.dialect);
@@ -361,9 +401,12 @@ export function attributeToSchema(attr: AttributeLike, options: SchemaEmitOption
 }
 
 function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect): void {
-	// Both dialects express nullability as a modification of `type`, so neither has anything to say
-	// about a fragment that never resolved one.
-	if (!('type' in fragment) || fragment.type === undefined) return;
+	if ((!('type' in fragment) || fragment.type === undefined) && fragment.oneOf === undefined) return;
+	if (fragment.type === undefined) {
+		if (dialect === 'openapi-3.0.3') fragment.nullable = true;
+		else fragment.oneOf = [...fragment.oneOf, { type: 'null' }];
+		return;
+	}
 	if (dialect === 'openapi-3.0.3') {
 		// OpenAPI 3.0.3 has no union types; `nullable` is the spec-provided expression.
 		fragment.nullable = true;
@@ -383,6 +426,6 @@ export function resolveAttributes(source?: {
 	properties?: Record<string, JsonSchemaFragment>;
 }): AttributeLike[] {
 	if (source?.attributes?.length) return source.attributes;
-	if (source?.properties) return projectPropertiesToAttributes(source.properties);
+	if (source?.properties !== undefined) return projectPropertiesToAttributes(source.properties);
 	return [];
 }
