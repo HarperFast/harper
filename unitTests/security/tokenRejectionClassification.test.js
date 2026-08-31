@@ -28,30 +28,7 @@ const {
 } = require('#src/security/tokenAuthentication');
 const { setUsersWithRolesCache } = require('#src/security/user');
 
-const keysDir = path.join(env.getHdbBasePath(), LICENSE_KEY_DIR_NAME);
-
-const { publicKey, privateKey } = generateKeyPairSync('rsa', {
-	modulusLength: 2048,
-	publicKeyEncoding: { type: 'spki', format: 'pem' },
-	privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-});
-const otherKeyPair = generateKeyPairSync('rsa', {
-	modulusLength: 2048,
-	publicKeyEncoding: { type: 'spki', format: 'pem' },
-	privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-});
-
-function sign(claims, options = {}, key = privateKey) {
-	return jwt.sign(claims, key, { algorithm: 'RS256', ...options });
-}
-
-function writeKeys(publicKeyMaterial) {
-	fs.mkdirSync(keysDir, { recursive: true });
-	fs.writeFileSync(path.join(keysDir, JWT_ENUM.JWT_PASSPHRASE_NAME), 'unused-for-verification');
-	fs.writeFileSync(path.join(keysDir, JWT_ENUM.JWT_PRIVATE_KEY_NAME), privateKey);
-	fs.writeFileSync(path.join(keysDir, JWT_ENUM.JWT_PUBLIC_KEY_NAME), publicKeyMaterial);
-	clearJWTRSAKeysCache();
-}
+const KNOWN_USER = new Map([['known_user', { username: 'known_user', active: true, role: { permission: {} } }]]);
 
 /** Captures the error `fn()` raises, so a resolving call fails loudly instead of silently passing. */
 async function raisedBy(fn) {
@@ -64,20 +41,57 @@ async function raisedBy(fn) {
 }
 
 describe('token rejection versus internal authentication fault', () => {
+	let removeJwtKeys;
+	let signingKey;
+	let publicKeyPath;
+	let installedPublicKey;
+	let otherKeyPair;
+
 	before(async () => {
-		writeKeys(publicKey);
-		await setUsersWithRolesCache(
-			new Map([['known_user', { username: 'known_user', active: true, role: { permission: {} } }]])
-		);
+		// The keys land in a directory another suite asserts is empty, so they must come back out —
+		// see testUtils.installTestJwtKeys. It also resolves the keys directory from the base path
+		// current at call time, which is what makes this suite order-independent in the full run.
+		removeJwtKeys = testUtils.installTestJwtKeys();
+		clearJWTRSAKeysCache();
+
+		const keysDir = path.join(env.getHdbBasePath(), LICENSE_KEY_DIR_NAME);
+		publicKeyPath = path.join(keysDir, JWT_ENUM.JWT_PUBLIC_KEY_NAME);
+		installedPublicKey = fs.readFileSync(publicKeyPath, 'utf8');
+		// Sign with the exact keys validateOperationToken will verify against.
+		signingKey = {
+			key: fs.readFileSync(path.join(keysDir, JWT_ENUM.JWT_PRIVATE_KEY_NAME), 'utf8'),
+			passphrase: fs.readFileSync(path.join(keysDir, JWT_ENUM.JWT_PASSPHRASE_NAME), 'utf8'),
+		};
+		otherKeyPair = generateKeyPairSync('rsa', {
+			modulusLength: 2048,
+			publicKeyEncoding: { type: 'spki', format: 'pem' },
+			privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+		});
+
+		await setUsersWithRolesCache(new Map(KNOWN_USER));
 	});
 
 	after(async () => {
-		fs.rmSync(keysDir, { recursive: true, force: true });
+		removeJwtKeys();
 		clearJWTRSAKeysCache();
 		await setUsersWithRolesCache(new Map());
 	});
 
-	beforeEach(() => writeKeys(publicKey));
+	// The internal-fault cases replace the installed public key in place; restore it so each case
+	// starts from usable key material without touching any file installTestJwtKeys does not own.
+	beforeEach(() => {
+		fs.writeFileSync(publicKeyPath, installedPublicKey);
+		clearJWTRSAKeysCache();
+	});
+
+	function sign(claims, options = {}, key = signingKey) {
+		return jwt.sign(claims, key, { algorithm: 'RS256', ...options });
+	}
+
+	function replacePublicKey(publicKeyMaterial) {
+		fs.writeFileSync(publicKeyPath, publicKeyMaterial);
+		clearJWTRSAKeysCache();
+	}
 
 	describe('tagged credential rejections', () => {
 		it('classifies a syntactically malformed token as a rejection', async () => {
@@ -137,9 +151,7 @@ describe('token rejection versus internal authentication fault', () => {
 
 				assert.strictEqual(isCredentialRejection(error), true);
 			} finally {
-				await setUsersWithRolesCache(
-					new Map([['known_user', { username: 'known_user', active: true, role: { permission: {} } }]])
-				);
+				await setUsersWithRolesCache(new Map(KNOWN_USER));
 			}
 		});
 
@@ -163,8 +175,8 @@ describe('token rejection versus internal authentication fault', () => {
 
 	describe('internal faults', () => {
 		it('fails a non-PEM public key closed instead of reporting an invalid token', async () => {
-			writeKeys('this is not key material');
 			const valid = sign({ username: 'known_user' }, { subject: 'operation' });
+			replacePublicKey('this is not key material');
 
 			const error = await raisedBy(() => validateOperationToken(valid));
 
@@ -176,8 +188,8 @@ describe('token rejection versus internal authentication fault', () => {
 		it('fails a PEM-shaped but corrupt public key closed', async () => {
 			// The decisive case: `jsonwebtoken` reports unusable key material through the very same
 			// `JsonWebTokenError` type it uses for a forged token, so the name alone cannot classify it.
-			writeKeys('-----BEGIN PUBLIC KEY-----\nbm90LWEtcmVhbC1rZXk=\n-----END PUBLIC KEY-----\n');
 			const valid = sign({ username: 'known_user' }, { subject: 'operation' });
+			replacePublicKey('-----BEGIN PUBLIC KEY-----\nbm90LWEtcmVhbC1rZXk=\n-----END PUBLIC KEY-----\n');
 
 			const error = await raisedBy(() => validateOperationToken(valid));
 
@@ -204,9 +216,7 @@ describe('token rejection versus internal authentication fault', () => {
 				assert.strictEqual(isCredentialRejection(error), false);
 				assert.strictEqual(error.message, 'Table system.hdb_user not found');
 			} finally {
-				await setUsersWithRolesCache(
-					new Map([['known_user', { username: 'known_user', active: true, role: { permission: {} } }]])
-				);
+				await setUsersWithRolesCache(new Map(KNOWN_USER));
 			}
 		});
 	});
