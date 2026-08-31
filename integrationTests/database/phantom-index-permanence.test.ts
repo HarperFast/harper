@@ -174,6 +174,7 @@ suite(
 
 				const deadline = Date.now() + 120_000;
 				let ready = false;
+				let lastProbeFailure = 'no attempt completed';
 				while (!ready && Date.now() < deadline) {
 					try {
 						const probe = await fetch(`${httpURL}/Probe/`, {
@@ -183,12 +184,15 @@ suite(
 						// An unconsumed undici body holds its socket out of the pool for the whole poll.
 						await probe.text();
 						ready = probe.status === 200;
-					} catch {
-						/* worker routes not registered yet */
+						if (!ready) lastProbeFailure = `HTTP ${probe.status}`;
+					} catch (error) {
+						// Carried into the failure message: a malformed httpURL throws every iteration and
+						// would otherwise read as a plain registration timeout.
+						lastProbeFailure = String(error);
 					}
 					if (!ready) await sleep(250);
 				}
-				ok(ready, 'fixture routes never registered; every assertion below would fail as a confusing 404');
+				ok(ready, `fixture routes never became ready; last probe result: ${lastProbeFailure}`);
 
 				for (let wave = 0; wave < WAVES; wave++) {
 					for (const table of ['Host', 'Companion']) {
