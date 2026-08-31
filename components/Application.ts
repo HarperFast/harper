@@ -1591,16 +1591,26 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			// has no journal yet, because the journal is written after build and validation — so an unlocked
 			// delete here removes a live build out from under it.
 			let owner: string | undefined;
-			// Set only if a journal turns up under the lock. That is the one thing in this branch that IS an
-			// activation, so it is the only thing whose failure may be recorded as an unsettled one.
-			let appearedJournal: ActivationJournal | undefined;
+			// Who to fail, if what went wrong under the lock turns out to concern an ACTIVATION rather than
+			// this branch's opportunistic cleanup. Left unset for a sweep that could not remove a settled
+			// directory and for a lock a live deploy is holding: neither is an unsettled activation.
+			let activationToFail: string | undefined;
 			const removeResidue = async () => {
 				// Re-read UNDER the lock, and do not swallow: the first scan raced a deploy that can publish a
 				// journal before releasing the lock, so a journal found now must be settled rather than deleted.
 				// Treating a read error as "no journal" would delete the evidence instead.
-				const appeared = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
+				let appeared;
+				try {
+					appeared = await readActivationJournal(join(deploymentDirPath, ACTIVATION_JOURNAL));
+				} catch (error) {
+					// A journal published between the scan's read and this one, which then cannot be READ, is an
+					// activation whose intent is unknowable — the one thing in this branch that has to fail
+					// closed. Attributed to the sidecar's owner, since the journal cannot name itself.
+					activationToFail = owner ?? deployment.name;
+					throw error;
+				}
 				if (appeared) {
-					appearedJournal = appeared;
+					activationToFail = appeared.component;
 					await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared);
 					return;
 				}
@@ -1647,9 +1657,9 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					logger.trace?.(`Leaving unowned deploy staging ${deploymentDirPath} in place: no component names it`);
 				}
 			} catch (error) {
-				// A verdict only for a journal that appeared under the lock. A lock a live deploy is holding,
-				// or a directory that cannot be swept, is not an unsettled activation.
-				if (appearedJournal) await fail(appearedJournal.component, error);
+				// A verdict only when an activation was actually involved. A lock a live deploy is holding, or a
+				// directory that cannot be swept, is not one.
+				if (activationToFail) await fail(activationToFail, error);
 				else
 					logger.warn(
 						`Could not settle deploy staging ${deploymentDirPath}, which holds no activation journal:`,
