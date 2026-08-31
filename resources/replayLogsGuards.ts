@@ -148,13 +148,32 @@ export type CorruptFrameError = RangeError & {
  *
  * `truncatedVersions` is what a consumer has to act on: a break destroys the framing after the last
  * entry the broken log yielded, and whether the entries it swallowed continued that entry's version
- * is exactly what can no longer be read. That version's transaction is therefore incomplete, and
- * replay must discard it rather than commit the part of it that was still readable. A log that
- * broke before yielding anything truncates no transaction.
+ * is exactly what can no longer be read — UNLESS that last entry's own `endTxn` already closed its
+ * transaction, in which case nothing of it was left open to swallow. That version's transaction is
+ * therefore incomplete only when it wasn't already known-closed, and replay must discard it rather
+ * than commit the part of it that was still readable. A log that broke before yielding anything
+ * truncates no transaction.
+ *
+ * `midLogBreak` is coarser: true once any break in this range left intact entries unreadable behind
+ * it (see {@link isMidLogBreak}), regardless of which version they belonged to. A consumer that must
+ * never serve a range with lost entries — an elected branch replay publishing itself as a trustworthy
+ * point-in-time copy — rejects on this rather than on `truncatedVersions`, since a mid-log break can
+ * strand entries whose version this range never even attributes to one log (harper#2016, #2063).
  */
 export interface CorruptFrameStop {
 	breaks: number;
 	truncatedVersions: Set<number>;
+	midLogBreak: boolean;
+}
+
+/**
+ * Whether a corrupt frame is a mid-log break — intact entries followed it, so entries were lost
+ * rather than the log merely being torn at its tail. Shared by the reporter below and by
+ * `RocksTransactionLogStore.getRange`'s `CorruptFrameStop.midLogBreak`, so the two can't drift on
+ * what counts as a mid-log break.
+ */
+export function isMidLogBreak(error: CorruptFrameError): boolean {
+	return error.resyncPosition != null;
 }
 
 /**
@@ -278,7 +297,7 @@ export function createCorruptFrameReporter(logger: {
 	error: (message: string, error?: unknown) => void;
 }) {
 	return (logName: string) => (error: CorruptFrameError) => {
-		const midLog = error.resyncPosition != null;
+		const midLog = isMidLogBreak(error);
 		const unreadableBytes = error.unreadableBytes ?? 0;
 		const now = Date.now();
 		const key = corruptFrameKey(logName, error);

@@ -3,7 +3,12 @@ import { ExtendedIterable } from '@harperfast/extended-iterable';
 import { getIdOfRemoteNode } from './nodeIdMapping.ts';
 import { Decoder, readAuditEntry, ENTRY_DATAVIEW, AuditRecord, createAuditEntry } from './auditStore.ts';
 import { HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
-import { createCorruptFrameReporter, endIteratorOnCorruptFrame, type CorruptFrameStop } from './replayLogsGuards.ts';
+import {
+	createCorruptFrameReporter,
+	endIteratorOnCorruptFrame,
+	isMidLogBreak,
+	type CorruptFrameStop,
+} from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { asBinary } from 'lmdb';
@@ -23,7 +28,7 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	removeLog(logName: string);
 };
 
-type TrackedIterator = IterableIterator<TransactionEntry> & { lastVersion?: number };
+type TrackedIterator = IterableIterator<TransactionEntry> & { lastVersion?: number; lastEndTxn?: boolean };
 
 export type TransactionLogIterable = Iterable<AuditRecord> & {
 	/** Corrupt frames that ended a log's iteration during this range. */
@@ -248,18 +253,22 @@ export class RocksTransactionLogStore extends EventEmitter {
 	}): TransactionLogIterable {
 		let iterable = new ExtendedIterable<TransactionEntry>();
 		let aggregateIterator: TransactionLogIterator;
-		// Set only for a single-log range, where every entry comes from the same log.
 		let singleLogIterator: TrackedIterator;
-		const corruptFrameStop: CorruptFrameStop = { breaks: 0, truncatedVersions: new Set() };
-		// Each log's iterator carries the version of the last entry it yielded, so a break can be
-		// attributed to the source transaction whose remaining entries it swallowed. On the iterator
-		// itself, not in a map keyed by log: this is written per entry on the replay/broadcast path,
-		// and it stays attached when a removed log is spliced out of the aggregate.
+		const corruptFrameStop: CorruptFrameStop = { breaks: 0, truncatedVersions: new Set(), midLogBreak: false };
+		// Each log's iterator carries the version and endTxn of the last entry it yielded, so a break
+		// can be attributed to the source transaction whose remaining entries it swallowed — unless
+		// that entry's own endTxn already closed the transaction, in which case the break fell after
+		// it, not inside it. On the iterator itself, not in a map keyed by log: this is written per
+		// entry on the replay/broadcast path, and it stays attached when a removed log is spliced out
+		// of the aggregate.
 		const trackCorruptFrames = (log: TransactionLog, queryOptions: typeof options): TrackedIterator => {
 			const report = reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`);
 			const iterator: TrackedIterator = endIteratorOnCorruptFrame(log.query(queryOptions), (error) => {
 				corruptFrameStop.breaks++;
-				if (iterator.lastVersion !== undefined) corruptFrameStop.truncatedVersions.add(iterator.lastVersion);
+				if (iterator.lastVersion !== undefined && iterator.lastEndTxn !== true) {
+					corruptFrameStop.truncatedVersions.add(iterator.lastVersion);
+				}
+				if (isMidLogBreak(error)) corruptFrameStop.midLogBreak = true;
 				report(error);
 			});
 			return iterator;
@@ -388,6 +397,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 						if (earliestIndex >= 0) {
 							// before the refill, which is where a break surfaces and needs this entry's version
 							iterators[earliestIndex].lastVersion = earliest.timestamp;
+							iterators[earliestIndex].lastEndTxn = earliest.endTxn;
 							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
 							return {
 								value: onlyKeys ? earliest.timestamp : earliest,
@@ -424,7 +434,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// A break surfaces on the pull after this entry, so recording it here is in time to attribute
 			// that break to this entry's transaction. The aggregate branch records its own, per source
 			// log, because there this callback cannot tell which log an entry came from.
-			if (singleLogIterator) singleLogIterator.lastVersion = timestamp;
+			if (singleLogIterator) {
+				singleLogIterator.lastVersion = timestamp;
+				singleLogIterator.lastEndTxn = endTxn;
+			}
 			// Per-entry try/catch: a corrupt rocks prelude (first 4-16 bytes) would otherwise
 			// throw a raw `RangeError: Offset is outside the bounds of the DataView` out
 			// through `iterable.map`, escape the for-of consumer, and land as an

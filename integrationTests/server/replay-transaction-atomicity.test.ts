@@ -145,3 +145,62 @@ suite('Replay transaction atomicity across a corrupt frame', (ctx: ContextWithHa
 		equal(await countInRange(ctx.harper, 1, EARLIER_IDS), EARLIER_IDS);
 	});
 });
+
+// A separate instance from the suite above: tearLastTransaction parses a log file from its start
+// and stops at the first corrupt entry it meets, so replaying that suite's own already-corrupted
+// file here would just rediscover its stale break rather than tearing this scenario's fresh one.
+suite('Replay transaction atomicity at a closed/unreadable transaction boundary', (ctx: ContextWithHarper) => {
+	const CLOSED_IDS = 1;
+	const UNREADABLE_IDS = 1001;
+
+	before(async () => {
+		await startHarper(ctx, { env: { HARPER_NO_FLUSH_ON_EXIT: true } });
+		await op(ctx.harper, { operation: 'create_database', database: DB });
+		await op(ctx.harper, { operation: 'create_table', database: DB, table: TABLE, primary_key: 'id' });
+	});
+	after(async () => teardownHarper(ctx));
+
+	test('does not discard a transaction that already closed merely because the NEXT one is unreadable', async () => {
+		// Distinct from the suite above: there the break lands INSIDE the last transaction, so the
+		// version replay marks truncated is genuinely still open. Here the break destroys the NEXT
+		// transaction's first frame entirely (readableBefore=0), so the last entry replay actually read
+		// is the CLOSED transaction's own endTxn entry — attribution must key off that, not off "whichever
+		// version was last seen before a break."
+		await op(ctx.harper, {
+			operation: 'insert',
+			database: DB,
+			table: TABLE,
+			records: records(CLOSED_IDS, EARLIER_IDS),
+		});
+		await op(ctx.harper, {
+			operation: 'insert',
+			database: DB,
+			table: TABLE,
+			records: records(UNREADABLE_IDS, TORN_IDS),
+		});
+
+		const dataRootDir = ctx.harper.dataRootDir;
+		await new Promise<void>((resolve) => {
+			ctx.harper.process.once('exit', () => resolve());
+			ctx.harper.process.kill('SIGKILL');
+		});
+		let torn = 0;
+		for (const file of userTxnLogFiles(dataRootDir)) {
+			torn = Math.max(torn, tearLastTransaction(file, 0));
+		}
+		ok(torn > 0, `expected to tear the boundary transaction's first frame, tore ${torn} entries`);
+
+		await startHarper(ctx);
+
+		// Nothing of the unreadable transaction is readable, so none of it applies.
+		equal(await countInRange(ctx.harper, UNREADABLE_IDS, TORN_IDS), 0);
+		// The prior transaction already closed (its last entry's endTxn was true) before the break, so
+		// it must survive in full — it is not "the transaction the break landed in" merely because it
+		// was the last thing replay had read.
+		equal(
+			await countInRange(ctx.harper, CLOSED_IDS, EARLIER_IDS),
+			EARLIER_IDS,
+			'a transaction that already closed must not be discarded merely because the next one is unreadable'
+		);
+	});
+});

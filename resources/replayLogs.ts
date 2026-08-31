@@ -51,8 +51,11 @@ export function replayTimeBudgetMs(): number {
  * the branch claim (branchDatabase.ts) — and so may replay off the main thread. It also makes the
  * replay strict: the promise settles (never hangs), and a failure to apply the tail — a commit or
  * write error, a stall or wall-clock abort — rejects instead of quietly serving a rewound store.
- * Undecodable/torn entries stay tolerated in both modes: a crash tears the last frame of a log by
- * construction, and end-of-log is the designed reading of it (see replayLogsGuards.ts).
+ * Undecodable entries and a torn tail stay tolerated in both modes: a crash tears the last frame of
+ * a log by construction, and end-of-log is the designed reading of it (see replayLogsGuards.ts). A
+ * **mid-log** break is different — entries behind it were acknowledged and are now quarantined — so
+ * an elected replay rejects on one rather than publish a branch as a trustworthy point-in-time copy
+ * over known lost writes; boot replay still logs it and continues (harper#2016, harper#2063).
  */
 export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplayer?: boolean): Promise<void> {
 	if (!isMainThread && !electedReplayer) return Promise.resolve(); // ideally we don't do it like this, but for now this is predictable
@@ -362,6 +365,14 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 			logger.error(
 				`Transaction-log replay in ${(rootStore as any).databaseName} database stopped at a corrupt entry after replaying ${writes} records. Every entry after the break is quarantined — neither replayed nor replicated — and ${discardedWrites} record(s) of the transaction the break truncated were discarded rather than applied in part. Repair the transaction log or re-clone this node to recover them.`
 			);
+			// A mid-log break loses entries, not just a torn tail — see the electedReplayer doc comment
+			// above. Set even when strictFailure is already set (a different cause), so this database
+			// name's diagnostic never gets shadowed by an unrelated commit/write error.
+			if (electedReplayer && !strictFailure && entries.corruptFrameStop.midLogBreak) {
+				strictFailure = new Error(
+					`Elected replay in ${(rootStore as any).databaseName} database stopped at a mid-log corrupt transaction-log frame; entries behind the break were acknowledged and are now quarantined. Refusing to publish a branch over known lost writes — repair the transaction log or re-clone this node.`
+				);
+			}
 		}
 		if (writes > 0) logger.warn(`Replayed ${writes} records in ${(rootStore as any).databaseName} database`);
 		if (skipped > 0)
