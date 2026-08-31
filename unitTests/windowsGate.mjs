@@ -39,16 +39,18 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
-/** One mocha process per entry. Whole directories, so new suites are picked up. */
+// One mocha process per entry. Whole directories, so new suites are picked up, and the same
+// filename shape `test:unit:main` collects, so a `.test.mjs` suite cannot run on Ubuntu while
+// this gate reports its group green having never opened the file.
 const GROUPS = [
-	'unitTests/agent/**/*.test.js',
-	'unitTests/buildTools/**/*.test.js',
-	'unitTests/components/**/*.test.js',
-	'unitTests/config/**/*.test.js',
-	'unitTests/server/**/*.test.js',
-	'unitTests/sqlEngine/**/*.test.js',
-	'unitTests/utility/**/*.test.js',
-	'unitTests/validation/**/*.test.js',
+	'unitTests/agent/**/*test.*js',
+	'unitTests/buildTools/**/*test.*js',
+	'unitTests/components/**/*test.*js',
+	'unitTests/config/**/*test.*js',
+	'unitTests/server/**/*test.*js',
+	'unitTests/sqlEngine/**/*test.*js',
+	'unitTests/utility/**/*test.*js',
+	'unitTests/validation/**/*test.*js',
 	// Individually verified files from directories not yet covered wholesale.
 	'unitTests/resources/blob.test.js',
 ];
