@@ -371,6 +371,8 @@ This command regenerates the self-signed SSL/TLS certificates used by Harper.
 
 Available since: v4.1.0
 
+<VersionBadge type="changed" version="v5.3.0" /> <EngineBadge engines="LMDB" />
+
 Copy a Harper database with compaction to eliminate free-space and fragmentation.
 
 ```bash
@@ -379,8 +381,8 @@ harper copy-db <source-database> <target-database-path>
 
 **Parameters**:
 
-- `<source-database>` - Name of the source database
-- `<target-database-path>` - Full path to the target database file
+- `<source-database>` - Name of the source database (a name, not a file path)
+- `<target-database-path>` - Full path to the target database file; neither it nor its `<target-database-path>-blobs` companion directory may already exist. A failed copy makes a best-effort attempt to remove what it created, so a retry is usually not blocked by it; remove both by hand if a retry is refused, as it is after a previous successful copy to the same path.
 
 **Example**:
 
@@ -389,6 +391,8 @@ harper copy-db data /home/user/hdb/database/copy.mdb
 ```
 
 This copies the default `data` database to a new location with compaction applied.
+
+As of v5.3.0 the database's `Blob` files are copied to `<target-database-path>-blobs/<rootIndex>/`, since blob files live outside the database file and are addressed by database name. If the database holds `Blob` values, the copy is not restorable without that companion directory — see [Database Compaction](../database/compaction.md#file-backed-blobs-copied-separately) for the restore steps. LMDB databases only — `copy-db` fails if the source database is stored in RocksDB, which compacts itself. It also fails, rather than copying part of the database, if the source database's tables span more than one storage environment (per-table `path` settings).
 
 **Use Cases**:
 
