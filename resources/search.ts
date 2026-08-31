@@ -512,21 +512,23 @@ export function searchByIndex(
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
 			const searched = index.customIndex.search(searchCondition, context, recordFilter, minResults);
 			const processEntries = (entries: any[]) => {
-				const loaded = entries.map((entry) => {
-					// if the custom index returns an entry with metadata, merge it with the loaded entry
-					if (typeof entry === 'object' && entry) {
-						const { key, ...otherProps } = entry;
-						if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-						const loadedEntry = Table.primaryStore.getEntry(key, {
-							transaction: context && Table._readTxnForContext(context),
-						});
-						if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
-						freezeRecord(loadedEntry?.value);
-						recordRead(loadedEntry);
-						return { ...otherProps, ...loadedEntry };
-					}
-					return entry;
-				});
+				const loaded = entries
+					.map((entry) => {
+						// if the custom index returns an entry with metadata, merge it with the loaded entry
+						if (typeof entry === 'object' && entry) {
+							const { key, ...otherProps } = entry;
+							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+							const loadedEntry = Table.primaryStore.getEntry(key, {
+								transaction: context && Table._readTxnForContext(context),
+							});
+							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
+							freezeRecord(loadedEntry?.value);
+							recordRead(loadedEntry);
+							return { ...otherProps, ...loadedEntry };
+						}
+						return entry;
+					})
+					.filter((entry) => entry !== SKIP);
 				if (index.customIndex.rescoreResults) {
 					const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
 					if (rescored != null) return rescored as any;
@@ -540,7 +542,14 @@ export function searchByIndex(
 				// iteration only, like the promise-entry filter paths above.
 				const pending = (searched as Promise<any[]>).then(processEntries);
 				const results: any = new ExtendedIterable();
-				results.iterate = () => {
+				results.iterate = (options?: { async?: boolean }) => {
+					// fail loudly rather than hand a synchronous consumer promise-shaped iterator
+					// results (which a bare for-of would spin on forever)
+					if (!options?.async) {
+						throw new Error(
+							'This index resolves search results asynchronously; the results must be consumed with async iteration'
+						);
+					}
 					let inner: Iterator<any> | null = null;
 					return {
 						next() {

@@ -2872,7 +2872,9 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 				try {
 					unlinkSync(planeFilePathFor(rootStore.path, columnName));
 				} catch (error: any) {
-					if (error?.code !== 'ENOENT') logger.debug(`could not delete plane file for ${columnName}`, error);
+					// a stale plane left behind (e.g. Windows EBUSY while still mapped) would be
+					// opened over a fresh same-name CF, so a failed delete must be visible
+					if (error?.code !== 'ENOENT') logger.warn(`could not delete the HNSW plane file for ${columnName}`, error);
 				}
 			}
 		}
