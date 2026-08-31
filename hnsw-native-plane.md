@@ -281,6 +281,15 @@ recall@10-set 0.997, ~3,110 visits.
 | 1M | 64 | 0.81 ms | 1.60 ms | 2,279 | 0.353 | 0.975 | 1,670 inserts/s |
 | 1M | 128 | 0.75 ms | 1.48 ms | 2,309 | 0.324 | **0.996** | 1,242 inserts/s |
 | 1M (fmt v2) | 128 | 0.83 ms | 1.61 ms | 2,309 | 0.359 | 0.996 | 1,346 inserts/s |
+| 1M (coverage prune) | 128 | 0.75 ms | 1.52 ms | 2,279 | 0.327 | **0.999** | 1,359 inserts/s |
+
+Concurrency (same 1M graph): **6,345 QPS aggregate** across 8 searcher threads (p50 1.03 ms,
+worst-thread p99 3.84 ms) while a background writer sustained **1,102 inserts/s** — the QPS
+input §9 of the Reflex study lacked. Reverse-edge overflow eviction is coverage-aware
+(evict the far member provably reachable via a kept nearer one; bounded 16×16 checks): the
+concurrent torture test caught closest-keep eviction orphaning nodes in near-duplicate
+clusters (~1-in-4 runs), and the fix also raised 1M recall from 0.996 to 0.999 at equal
+build cost.
 | 1M JS anchor | 128 | 7.2 ms | 12.0 ms | ~3,110 | 4.34 | 0.997 | ~263 inserts/s |
 
 At the 1M anchor with cap 128: **9.6× p50, 12.9× per-visit, 4.7× build rate, at JS-equal
