@@ -250,6 +250,9 @@ export async function prepareBranches(
 				`which cannot carry a scoped databases binding; use the default loader or remove branchedDatabases`
 		);
 	}
+	// An explicitly empty list branches nothing, so it needs no engine capability.
+	if (branchedDatabases !== true && !branchedDatabases.length) return branches;
+
 	if ((process.env.HARPER_STORAGE_ENGINE || env.get(CONFIG_PARAMS.STORAGE_ENGINE)) === 'lmdb') {
 		throw new Error(`Application '${appName}' declares branchedDatabases, which requires the RocksDB storage engine`);
 	}
