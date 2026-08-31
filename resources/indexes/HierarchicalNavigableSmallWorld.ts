@@ -550,6 +550,7 @@ export class HierarchicalNavigableSmallWorld {
 	private async buildPlaneMirror(plane: HnswPlane): Promise<void> {
 		let mirrored = 0;
 		let nextStart = 0;
+		let yielded = false;
 		for (;;) {
 			let inChunk = 0;
 			let lastKey = -1;
@@ -565,6 +566,7 @@ export class HierarchicalNavigableSmallWorld {
 			if (inChunk < PLANE_BUILD_CHUNK || lastKey < 0) break;
 			nextStart = lastKey + 1;
 			// each chunk re-reads current committed state after yielding the event loop
+			yielded = true;
 			await new Promise((resolve) => setImmediate(resolve));
 			if (this.plane !== plane) return; // disabled, reset, or replaced while building
 		}
@@ -574,10 +576,16 @@ export class HierarchicalNavigableSmallWorld {
 			plane.setEntryPoint(entryPointId, this.safeGetSync(entryPointId)?.level ?? 0);
 		}
 		// flush(watermark) is a durability barrier: all slots reach disk before the watermark
-		// does, so a crash can only under-claim, never adopt a torn mirror as complete; async
-		// because a whole-map msync would stall the event loop
-		await plane.flushAsync(PLANE_MIRRORED);
-		if (this.plane !== plane) return;
+		// does, so a crash can only under-claim, never adopt a torn mirror as complete. A
+		// build that fit in one chunk stays fully synchronous (few dirty pages, cheap msync;
+		// callers see the plane ready immediately); a chunked build already yielded and takes
+		// the barrier on the libuv pool
+		if (yielded) {
+			await plane.flushAsync(PLANE_MIRRORED);
+			if (this.plane !== plane) return;
+		} else {
+			plane.flush(PLANE_MIRRORED);
+		}
 		this.planeReady = true;
 		if (mirrored > 0) logger.info?.(`built the HNSW plane file from ${mirrored} existing graph nodes`);
 	}
