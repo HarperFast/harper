@@ -586,6 +586,43 @@ describe('Caching', () => {
 		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, reportedVersion);
 	});
 
+	it('delivers a subscription event for a fill whose source-reported version predates the log position', async function () {
+		// A dedicated table: ConflictCachingTable's history carries deliberately future-stamped
+		// writes, and a fresh subscriber's catch-up cursor raises startTime to the newest record
+		// time it sees, which would gate off real-time events until wall-clock catches up.
+		const id = 645;
+		let reportedVersion;
+		const ReportedVersionTable = table({
+			table: 'ReportedVersionTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		ReportedVersionTable.sourcedFrom(
+			class extends Resource {
+				get() {
+					reportedVersion = Date.now() - 1000;
+					this.getContext().lastModified = reportedVersion;
+					return { id: this.getId(), name: 'reported-version-event' };
+				}
+			}
+		);
+		const subscription = await ReportedVersionTable.subscribe({});
+		const events = [];
+		subscription.on('data', (event) => events.push(event));
+		try {
+			await ReportedVersionTable.get(id);
+			await waitFor(() => !ReportedVersionTable.primaryStore.hasLock(id), {
+				message: 'the reported-version fill should finish committing',
+			});
+			assert.equal(ReportedVersionTable.primaryStore.getEntry(id).version, reportedVersion);
+			await waitFor(() => events.some((event) => event.id === id && event.type === 'put'), {
+				message: 'a backdated source-reported fill should still reach the subscription',
+			});
+		} finally {
+			subscription.close();
+		}
+	});
+
 	it('clamps an older source-reported revalidation version instead of using the request timestamp', async function () {
 		const id = 620;
 		await ConflictCachingTable.put(id, { id, name: 'seed-reported-version' });
