@@ -1919,6 +1919,9 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
 		if (CustomIndex) {
 			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
+			// derived state whose maintaining option is now off must not linger to be adopted
+			// stale on a later re-enable
+			dbi.customIndex.cleanupDisabledPlane?.();
 		} else {
 			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
