@@ -179,7 +179,7 @@ function buildPropertiesObject(
 		const schema = attributeToProperty(attr);
 		if (!schema) continue;
 		properties[attr.name] = schema;
-		if (mode === 'insert' && !attr.nullable && !attr.isPrimaryKey) {
+		if (mode === 'insert' && attr.nullable === false && !attr.isPrimaryKey) {
 			required.push(attr.name);
 		}
 	}

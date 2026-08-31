@@ -2,6 +2,7 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import { resolveAttributes } from './jsonSchemaTypes.ts';
 
 function getChanges(target) {
 	let changes = target.getChanges();
@@ -25,16 +26,7 @@ function getChanges(target) {
 export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
 	const prototype = Target.prototype;
 	const descriptors = {};
-	// Read the Array form. `typeDef.properties` is now a Record<string, JsonSchemaFragment>
-	// after the schema-metadata alignment; iterating it with for...of would throw.
-	// For typeDefs that only carry the Record (e.g. a programmatic Resource that declared
-	// `static properties` without populating `attributes`), synthesize a minimal Array by
-	// projecting the Record keys so the tracked accessors still bind something.
-	const attributes =
-		typeDef.attributes ||
-		(typeDef.properties
-			? Object.entries(typeDef.properties).map(([name, frag]) => ({ name, ...(frag as object) }))
-			: []);
+	const attributes: any[] = Array.isArray(typeDef.properties) ? typeDef.properties : resolveAttributes(typeDef);
 	for (const attribute of attributes) {
 		const name = attribute.name;
 		let set;

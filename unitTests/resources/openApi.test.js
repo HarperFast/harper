@@ -320,6 +320,20 @@ describe('test openApi module', () => {
 			// array with no items: emitted as a bare array (no crash on undefined elements)
 			expect(schema.properties.anything).to.deep.equal({ type: 'array' });
 		});
+
+		it('omits a malformed resource without suppressing valid siblings', () => {
+			const r = programmaticResources();
+			const cyclic = { type: 'object', properties: {} };
+			cyclic.properties.self = cyclic;
+			r.set('Bad', {
+				path: 'Bad',
+				Resource: { prototype: { get: () => [] }, properties: { cyclic } },
+			});
+			const api = generateJsonApi(r, serverURL);
+			expect(api.components.schemas).to.have.property('Widget');
+			expect(api.components.schemas).not.to.have.property('Bad');
+			expect(api.paths).not.to.have.property('/Bad/');
+		});
 	});
 });
 
@@ -477,7 +491,7 @@ describe('openApi — declared dialect compliance (3.0.3)', () => {
 		]) {
 			expect(props, `fixture property ${key} missing — walk assertions would pass vacuously`).to.have.property(key);
 		}
- 	});
+	});
 });
 
 // #1942 follow-up: `required: []` is invalid under JSON Schema draft-04, which OpenAPI 3.0.3

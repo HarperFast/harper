@@ -14,9 +14,9 @@ const {
 
 const PRODUCT_ATTRS = [
 	{ name: 'id', type: 'ID', isPrimaryKey: true },
-	{ name: 'name', type: 'String' },
+	{ name: 'name', type: 'String', nullable: false },
 	{ name: 'price', type: 'Float', nullable: true },
-	{ name: 'count', type: 'Int' },
+	{ name: 'count', type: 'Int', nullable: false },
 	{ name: 'created', type: 'Date', assignCreatedTime: true },
 	{ name: 'updated', type: 'Date', assignUpdatedTime: true },
 ];
@@ -92,6 +92,15 @@ describe('mcp/tools/schemas/derive', () => {
 			const schema = deriveCreateSchema(PRODUCT_ATTRS, perms);
 			assert.ok('name' in schema.properties);
 			assert.equal(schema.properties.count, undefined);
+		});
+
+		it('requires only fields explicitly declared non-nullable', () => {
+			const schema = deriveCreateSchema([
+				{ name: 'required', type: 'String', nullable: false },
+				{ name: 'unspecified', type: 'String' },
+				{ name: 'nullable', type: 'String', nullable: true },
+			]);
+			assert.deepEqual(schema.required, ['required']);
 		});
 	});
 
