@@ -193,6 +193,67 @@ impl Graph {
         idx
     }
 
+    /// Rewrite an existing upper entry in place (full state). Used by the raw mirroring
+    /// path so repeated updates to a high-level node reuse its entry instead of leaking one
+    /// per rewrite.
+    pub fn rewrite_upper(&self, idx: u32, levels: &[Vec<u32>]) {
+        let seq = self.file.upper_seq_atomic(idx);
+        let _guard = seqlock::write_lock(seq);
+        let p = self.file.upper_ptr_mut(idx);
+        unsafe {
+            let n = levels.len().min(MAX_UPPER_LEVELS);
+            *p.add(U_LEVELS) = n as u8;
+            for (l, list) in levels.iter().take(n).enumerate() {
+                let lp = p.add(U_LISTS + l * UPPER_LEVEL_STRIDE);
+                let deg = list.len().min(UPPER_CAP);
+                (lp as *mut u16).write_unaligned((deg as u16).to_le());
+                let base = lp.add(2) as *mut u32;
+                for (i, id) in list.iter().take(deg).enumerate() {
+                    base.add(i).write_unaligned(id.to_le());
+                }
+            }
+        }
+    }
+
+    /// Mirror a host-maintained node into the plane: full state per call, host-allocated id
+    /// (high-water is raised, the plane allocator is bypassed), upper entry reused in place
+    /// when present. This is the dual-write phase-1 write path.
+    pub fn write_node_raw(
+        &self,
+        id: u32,
+        level: u8,
+        vector: &[i8],
+        scale: f32,
+        inv_mag: f32,
+        neighbors: &[u32],
+        upper_levels: &[Vec<u32>],
+    ) {
+        self.file.ensure_high_water(id);
+        let existing = self.upper_idx_of(id);
+        let upper_idx = if upper_levels.is_empty() {
+            existing // keep an existing entry bound (level never shrinks in practice)
+        } else if existing != NO_UPPER {
+            self.rewrite_upper(existing, upper_levels);
+            existing
+        } else {
+            self.write_upper(upper_levels)
+        };
+        let mut l0 = neighbors.to_vec();
+        l0.truncate(self.file.layer0_cap);
+        self.write_node(id, level, vector, scale, inv_mag, &l0, upper_idx);
+    }
+
+    /// Mark deleted WITHOUT returning the id to the plane freelist — dual-write mode, where
+    /// the host owns id allocation and may re-mint or reuse ids on its own schedule.
+    pub fn clear_node(&self, id: u32) {
+        if !self.in_range(id) {
+            return;
+        }
+        let seq = self.file.seq_atomic(id);
+        let _guard = seqlock::write_lock(seq);
+        unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = FLAG_DELETED };
+    }
+
     /// Atomic read-modify-write of `id`'s upper adjacency at `level` (1-based). Returns
     /// false when the node has no entry or level. `f` may read other slots.
     pub fn update_upper_level<F: FnOnce(&mut Vec<u32>)>(&self, id: u32, level: u8, f: F) -> bool {
