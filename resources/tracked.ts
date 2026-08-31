@@ -48,6 +48,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 		} else {
 			switch (attribute.type) {
 				case 'String':
+				case 'string':
 					set = function (value) {
 						if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
@@ -67,10 +68,19 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					break;
 				case 'Float':
 				case 'Number':
+				case 'number':
 					set = function (value) {
 						const scalarValue = value?.__op__ ? value.value : value;
 						if (!(typeof scalarValue === 'number' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a number, attempt to assign ${scalarValue}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'integer':
+					set = function (value) {
+						const scalarValue = value?.__op__ ? value.value : value;
+						if (!(Number.isInteger(scalarValue) || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be an integer, attempt to assign ${scalarValue}`);
 						getChanges(this)[name] = value;
 					};
 					break;
@@ -125,9 +135,27 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					};
 					break;
 				case 'Boolean':
+				case 'boolean':
 					set = function (value) {
 						if (!(typeof value === 'boolean' || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a boolean, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'array':
+					set = function (value) {
+						if (!(Array.isArray(value) || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be an array, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'object':
+					set = function (value) {
+						if (!(
+							(value !== null && typeof value === 'object' && !Array.isArray(value)) ||
+							(value == null && attribute.nullable !== false)
+						))
+							throw new ClientError(`${name} must be an object, attempt to assign ${value}`);
 						getChanges(this)[name] = value;
 					};
 					break;

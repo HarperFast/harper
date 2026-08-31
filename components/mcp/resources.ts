@@ -821,9 +821,12 @@ function readTableSchema(db: string, table: string, user: AuthedUser, href: stri
 		}
 	}
 	if (!resource) return { ok: false, reason: `table not found: ${db}.${table}` };
-	// Fall back to a programmatic Resource's `static properties` when it declares no attributes Array,
-	// so schema introspection matches the tool/OpenAPI surfaces.
-	const attributes = resolveAttributes(resource);
+	let attributes;
+	try {
+		attributes = resolveAttributes(resource);
+	} catch (error) {
+		return { ok: false, reason: `invalid schema for ${db}.${table}: ${(error as Error).message}` };
+	}
 	const filteredAttributes = filterAttributesByPermissions(attributes, perm?.attribute_permissions);
 	const body = {
 		database: db,

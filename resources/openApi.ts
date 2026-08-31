@@ -7,6 +7,7 @@ import {
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
+	projectPropertiesToAttributes,
 	resolveAttributes,
 	resolveDeclaredType,
 } from './jsonSchemaTypes.ts';
@@ -31,8 +32,6 @@ function warnInvalidResourceSchema(resource: unknown, path: string, error: unkno
 function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | undefined {
 	return attributeToSchema(attr, {
 		dialect: 'openapi-3.0.3',
-		// `mapped` is the attribute the recursion actually reached, not the one it started from — a bad
-		// type on `profile.creditScore` has to name that, not `profile`.
 		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name),
 	});
 }
@@ -638,40 +637,8 @@ function Parameter(name, i, type) {
  */
 function fragmentToOpenApiSchema(fragment: any): any {
 	if (!fragment || typeof fragment !== 'object') return { type: 'object' };
-	const schema: any = {};
-	// Request contracts are author-written JSON Schema, so the same 3.0.3 dialect rules apply here as
-	// on the table path: no `'null'` type, no type unions, no `const`. This function feeds every
-	// request body, response, and contract query parameter, so a fragment reaching it unfiltered is a
-	// non-conformant document even though the table-derived paths are clean.
-	if (Array.isArray(fragment.type)) {
-		const members = fragment.type.filter((t: unknown) => t !== 'null');
-		if (members.length !== fragment.type.length) schema.nullable = true;
-		if (members.length > 0) schema.type = members[0];
-	} else if (fragment.type != null && fragment.type !== 'null') {
-		schema.type = fragment.type;
-	}
-	if (fragment.format) schema.format = fragment.format;
-	if (fragment.description) schema.description = fragment.description;
-	if (fragment.enum) schema.enum = fragment.enum;
-	if (fragment.nullable) schema.nullable = true;
-	// `const` is draft-06; emit the equivalent single-value `enum`, intersecting when both are declared.
-	if (fragment.const !== undefined) {
-		schema.enum = Array.isArray(schema.enum)
-			? schema.enum.filter((value: unknown) => value === fragment.const)
-			: [fragment.const];
-	}
-	// 3.0's `nullable` does not widen an `enum` — without `null` in the list a validator rejects it.
-	if (schema.nullable && Array.isArray(schema.enum) && !schema.enum.includes(null)) {
-		schema.enum = [...schema.enum, null];
-	}
-	if (fragment.items) schema.items = fragmentToOpenApiSchema(fragment.items);
-	if (fragment.properties) {
-		schema.properties = {};
-		for (const [key, sub] of Object.entries(fragment.properties)) schema.properties[key] = fragmentToOpenApiSchema(sub);
-		if (fragment.required) schema.required = fragment.required;
-		if (fragment.additionalProperties !== undefined) schema.additionalProperties = fragment.additionalProperties;
-	}
-	return schema;
+	const [attribute] = projectPropertiesToAttributes({ value: fragment });
+	return attributeToOpenApiSchema(attribute) ?? {};
 }
 
 /** Build OpenAPI query `Parameter`s from a contract verb's query fragment (`{ type:'object', properties }`). */

@@ -5,6 +5,7 @@ const {
 	_setResourcesForTest,
 	_setRequestTargetForTest,
 	_resetCustomToolWarningsForTest,
+	_resetInvalidSchemaWarningsForTest,
 	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
 const { Resource } = require('#src/resources/Resource');
@@ -85,6 +86,7 @@ describe('mcp/tools/application — registration', () => {
 		_setResourcesForTest(undefined);
 		_setRequestTargetForTest(undefined);
 		_resetApplicationToolsRegisteredForTest();
+		_resetInvalidSchemaWarningsForTest();
 	});
 
 	it('rebuilds the tool set when a table appears after initial registration (#1317)', () => {
@@ -1209,6 +1211,7 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		_setResourcesForTest(undefined);
 		_setRequestTargetForTest(undefined);
 		_resetApplicationToolsRegisteredForTest();
+		_resetInvalidSchemaWarningsForTest();
 	});
 
 	// A programmatic Resource: declares `static properties` (Record) and NO `attributes` Array.
@@ -1360,13 +1363,18 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		const cyclic = { type: 'object', properties: {} };
 		cyclic.properties.self = cyclic;
 		Bad.Resource.properties = { cyclic };
+		Bad.Resource.prototype.custom = async function () {
+			return { ok: true };
+		};
+		Bad.Resource.mcpTools = [{ name: 'bad_custom', method: 'custom', description: 'Independent custom tool' }];
 		_setResourcesForTest(
 			makeRegistry([
 				['Good', { Resource: Good.Resource }],
 				['Bad', { Resource: Bad.Resource }],
 			])
 		);
-		const harperLogger = require('#src/utility/logging/harper_logger');
+		const loggerModule = require('#src/utility/logging/harper_logger');
+		const harperLogger = loggerModule.default || loggerModule;
 		const warnings = [];
 		const originalWarn = harperLogger.warn;
 		harperLogger.warn = (message) => warnings.push(String(message));
@@ -1378,6 +1386,7 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		}
 		assert.ok(getTool('get_Good'), 'a valid sibling resource remains available');
 		assert.equal(getTool('get_Bad'), undefined, 'the malformed resource is omitted');
+		assert.ok(getTool('bad_custom'), 'custom tools do not depend on the malformed derived schema');
 		assert.equal(warnings.filter((message) => message.includes("resource '/Bad'")).length, 1);
 	});
 });

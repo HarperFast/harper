@@ -25,6 +25,10 @@ function makeResources() {
 		id: { type: 'string', primaryKey: true },
 		label: { type: 'string', description: 'Human-readable label' },
 		mixed: { type: ['string', 'number'] },
+		when: { type: ['Date', 'null'] },
+		value: { type: ['String', 'Int'] },
+		tags: { type: ['array', 'null'], items: { type: 'string' } },
+		nothing: { type: ['null'] },
 	};
 	for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Widget.prototype[v] = function () {};
 	Widget.get = async (t) => ({ id: t.id });
@@ -91,6 +95,31 @@ describe('mcp/openapi — #1920 description convergence across surfaces', () => 
 		const schema = generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget;
 		assert.deepEqual(schema.properties.mixed.oneOf, [{ type: 'string' }, { type: 'number' }]);
 		assert.equal(schema.properties.mixed.type, undefined);
+	});
+
+	it('normalizes Harper type names inside unions on both surfaces', () => {
+		const resources = makeResources();
+		_setResourcesForTest(resources);
+		registerApplicationTools();
+		const mcp = getTool('create_Widget').inputSchema.properties;
+		const openapi = generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget.properties;
+		assert.deepEqual(mcp.when.type, ['string', 'number', 'null']);
+		assert.deepEqual(mcp.value.type, ['string', 'integer']);
+		assert.deepEqual(openapi.when, { type: 'string', format: 'Date', nullable: true });
+		assert.deepEqual(openapi.value.oneOf, [{ type: 'string' }, { type: 'integer', format: 'Int' }]);
+	});
+
+	it('retains array items and null-only constraints through dialect projection', () => {
+		const resources = makeResources();
+		_setResourcesForTest(resources);
+		registerApplicationTools();
+		const mcp = getTool('create_Widget').inputSchema.properties;
+		const openapi = generateJsonApi(resources, 'https://harper.fast').components.schemas.Widget.properties;
+		assert.deepEqual(mcp.tags.type, ['array', 'null']);
+		assert.deepEqual(mcp.tags.items, { type: 'string' });
+		assert.deepEqual(openapi.tags, { type: 'array', items: { type: 'string' }, nullable: true });
+		assert.deepEqual(mcp.nothing, { type: 'null' });
+		assert.deepEqual(openapi.nothing, { nullable: true, enum: [null] });
 	});
 });
 
@@ -287,7 +316,8 @@ describe('attributeToSchema — emitter edge cases (#1941, #1942)', () => {
 	});
 
 	it('warns once per unrecognized type name, and names the property', () => {
-		const logger = require('#src/utility/logging/harper_logger');
+		const loggerModule = require('#src/utility/logging/harper_logger');
+		const logger = loggerModule.default || loggerModule;
 		const warnings = [];
 		const original = logger.warn;
 		logger.warn = (m) => warnings.push(String(m));
