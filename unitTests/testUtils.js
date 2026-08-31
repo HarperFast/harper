@@ -75,9 +75,14 @@ function preTestPrep(testConfigObj) {
 		throw reason;
 	});
 
+	// Set the code rather than calling process.exit() from inside an 'exit' listener: that
+	// re-enters exit and terminates immediately, which skips every listener still queued behind
+	// this one (including mocha.init.js's did-the-run-finish check) and, on Windows, discards
+	// whatever is still pending on the stdout pipe. Assigning process.exitCode here has the same
+	// effect on the process's exit status.
 	process.prependListener('exit', (code) => {
 		if (code === 0) {
-			process.exit(unhandledRejectionExitCode);
+			process.exitCode = unhandledRejectionExitCode;
 		}
 	});
 	// Try to change to bin

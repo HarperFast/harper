@@ -9,6 +9,7 @@ const { readFileSync } = require('fs');
 const hdb_logger = require('#src/utility/logging/harper_logger');
 const { logRotator: log_rotator } = require('#src/utility/logging/logRotator');
 const assert = require('assert');
+const { pinLogConfig } = require('../../logConfigFixture.js');
 const LOG_DIR_NAME_TEST = 'testLogger';
 const LOG_NAME_TEST = 'hdb.log';
 const LOG_DIR_TEST = path.join(__dirname, LOG_DIR_NAME_TEST);
@@ -17,6 +18,7 @@ const TEST_TIMEOUT = 10000;
 
 describe('Test logRotator module', () => {
 	let logger;
+	let restoreLogConfig;
 	async function callLogger() {
 		for (let i = 1; i < 21; i++) {
 			logger.error('This log is coming from the logRotator unit test. Log number:', i);
@@ -27,6 +29,11 @@ describe('Test logRotator module', () => {
 	}
 
 	before(() => {
+		// Every assertion here reads the log file back, and createLogger() only writes one when the
+		// logger's config says logging.file is on. Without this the suite depends on the machine
+		// having Harper installed: green on a developer box, ENOENT on the log it just wrote
+		// everywhere else.
+		restoreLogConfig = pinLogConfig({ level: 'error' });
 		fs.mkdirpSync(LOG_DIR_TEST);
 		logger = hdb_logger.createLogger({
 			stdStreams: false,
@@ -41,6 +48,7 @@ describe('Test logRotator module', () => {
 	});
 
 	after(() => {
+		restoreLogConfig?.();
 		try {
 			fs.removeSync(LOG_DIR_TEST);
 		} catch {}

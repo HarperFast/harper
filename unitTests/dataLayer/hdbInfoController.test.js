@@ -51,7 +51,10 @@ describe.skip('Test hdbInfoController module ', function () {
 		sandbox = sinon.createSandbox();
 		search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
 		hdb_info_controller_rw.__set__('pSearchSearchByValue', search_stub);
-		insert_stub = sandbox.stub(insert, 'insert').resolves();
+		insert_stub = sandbox.stub(insert, 'insert').callsFake(async (insertObject) => ({
+			inserted_hashes: insertObject.records.map((record) => record.info_id),
+			skipped_hashes: [],
+		}));
 		consoleLog_stub = sandbox.stub(console, 'log').returns();
 		consoleError_stub = sandbox.stub(console, 'error').returns();
 		log_info_stub = sandbox.stub(harper_logger, 'info').returns();

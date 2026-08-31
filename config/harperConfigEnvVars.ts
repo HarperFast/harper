@@ -25,13 +25,26 @@
 import type { Logger } from '../utility/logging/logger.ts';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
-import { atomicWriteFile } from './configUtils.ts';
+import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
+// Staged beside the confirmed state while a config-file write is in flight, then renamed over it.
+// Per-process, because every CLI invocation and worker runs this and one shared name would let one
+// clear another's in-flight commit. See DESIGN.md, boot-path config persistence.
+const PENDING_STATE_PREFIX = '.harper-config-state.pending.';
+const PENDING_STATE_SUFFIX = '.json';
+const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDING_STATE_SUFFIX}`;
+// Recovery from a recycled pid only has to be eventual, and deleting a slow-but-live writer's
+// sidecar is the worse error - it strands that writer's config file against an unpromoted state. So
+// the age-out is far longer than a commit (three synchronous steps) could ever legitimately take:
+// long enough that a stalled writer or clock skew between containers sharing a volume cannot reach
+// it, short enough that leaked wreckage does not suspend drift detection indefinitely.
+const PENDING_STATE_STALE_MS = 60 * 60 * 1000;
 
 /**
  * Get logger instance with tag - lazy loaded to avoid circular dependencies
@@ -546,15 +559,7 @@ function parseConfigEnvVar(envVarValue: string | undefined, envVarName: string):
 function loadConfigState(rootPath: string): ConfigState {
 	const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
 
-	if (!fs.existsSync(statePath)) {
-		return {
-			version: '1.0',
-			sources: {},
-			originalValues: {},
-			emptyScopeOriginals: {},
-			snapshots: {},
-		};
-	}
+	if (!fs.existsSync(statePath)) return freshConfigState();
 
 	try {
 		const state = fs.readJsonSync(statePath) as ConfigState;
@@ -573,20 +578,85 @@ function loadConfigState(rootPath: string): ConfigState {
 		// If state file is corrupted, start fresh
 		const logger = getLogger();
 		logger.warn(`Failed to load config state file, starting fresh: ${(error as Error).message}`);
-		return {
-			version: '1.0',
-			sources: {},
-			originalValues: {},
-			emptyScopeOriginals: {},
-			snapshots: {},
-		};
+		return freshConfigState();
 	}
+}
+
+/**
+ * Clear a sidecar left by an interrupted commit, reporting whether one was there. The caller skips
+ * drift detection for that boot: it cannot tell a manual user edit from the write that was in
+ * flight, and calling it an edit hands those paths to 'user' for good.
+ */
+function takeInterruptedCommit(rootPath: string): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(backupDir);
+	} catch {
+		return false;
+	}
+	let interrupted = false;
+	for (const entry of entries) {
+		if (!entry.startsWith(PENDING_STATE_PREFIX) || !entry.endsWith(PENDING_STATE_SUFFIX)) continue;
+		const pid = Number(entry.slice(PENDING_STATE_PREFIX.length, -PENDING_STATE_SUFFIX.length));
+		const entryPath = path.join(backupDir, entry);
+		if (pid !== process.pid && isProcessAlive(pid) && !isStale(entryPath)) {
+			// A live owner is mid-commit, so its sidecar is not wreckage to clear - but the pair it is
+			// halfway through is no more comparable than an interrupted one, so drift detection is off
+			// for this boot either way.
+			interrupted = true;
+			continue;
+		}
+		try {
+			fs.removeSync(entryPath);
+		} catch (error) {
+			// Keep drift detection on rather than disabling it every boot over a sidecar we cannot clear
+			getLogger().warn(`Could not remove an interrupted env config commit (${entry}): ${(error as Error).message}`);
+			continue;
+		}
+		interrupted = true;
+	}
+	if (interrupted) getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
+	return interrupted;
+}
+
+function isStale(entryPath: string): boolean {
+	try {
+		return Date.now() - fs.statSync(entryPath).mtimeMs > PENDING_STATE_STALE_MS;
+	} catch {
+		return false;
+	}
+}
+
+function isProcessAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'EPERM';
+	}
+}
+
+function freshConfigState(): ConfigState {
+	return {
+		version: '1.0',
+		sources: {},
+		originalValues: {},
+		emptyScopeOriginals: {},
+		snapshots: {},
+	};
 }
 
 /**
  * Save configuration state to file
  */
-function saveConfigState(rootPath: string, state: ConfigState): void {
+function serializeConfigState(state: ConfigState): string {
+	return JSON.stringify(state, null, 2) + '\n';
+}
+
+// Returns true when the file was rewritten, false when it already held this state.
+function saveConfigState(rootPath: string, state: ConfigState): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	const statePath = path.join(backupDir, STATE_FILE_NAME);
 
@@ -595,7 +665,49 @@ function saveConfigState(rootPath: string, state: ConfigState): void {
 
 	// Atomic write: a torn state file resets to fresh on the next load, losing every
 	// restoration record — the blast radius is user config-file content
-	atomicWriteFile(statePath, JSON.stringify(state, null, 2) + '\n');
+	return atomicWriteFile(statePath, serializeConfigState(state), { skipIfUnchanged: true });
+}
+
+function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
+	try {
+		const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
+		return fs.readFileSync(statePath, 'utf8') === serializeConfigState(state);
+	} catch {
+		return false;
+	}
+}
+
+function stageConfigState(rootPath: string, state: ConfigState): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	fs.ensureDirSync(backupDir);
+	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state));
+}
+
+// A rename, so an exhausted volume cannot refuse it and leave the config file described by nothing.
+
+export function commitStagedConfigState(rootPath: string): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	const pendingPath = path.join(backupDir, pendingStateFileName());
+	try {
+		renameWithRetry(pendingPath, path.join(backupDir, STATE_FILE_NAME));
+		return true;
+	} catch (error) {
+		// Loud: the config file is already on disk, so the confirmed state now describes values it no
+		// longer has, and the next boot reads that difference as a manual user edit.
+		getLogger().error(`Could not promote the staged env config state at ${pendingPath}: ${(error as Error).message}`);
+		return false;
+	}
+}
+
+// Drops the staged state for a config-file write that did not happen; the confirmed record stays.
+
+export function discardConfigState(rootPath: string): void {
+	const pendingPath = path.join(getBackupDirPath(rootPath), pendingStateFileName());
+	try {
+		fs.removeSync(pendingPath);
+	} catch (error) {
+		getLogger().warn(`Could not remove the staged env config state at ${pendingPath}: ${(error as Error).message}`);
+	}
 }
 
 /**
@@ -957,20 +1069,49 @@ export function applyRuntimeEnvConfig(
 	rootPath: string,
 	options: { isInstall?: boolean } = {}
 ): ConfigObject {
+	const { config, commitState } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
+	commitState();
+	return config;
+}
+
+/**
+ * Apply the env layers and hand the state writes back to the caller, so a caller that also persists
+ * the merged config file can commit the pair as a unit (#847): saveState() stages the new state
+ * beside the confirmed one, confirmConfigWritten() renames it over the confirmed one after the
+ * config file lands, and discardConfigState() drops the staged copy if that write never happens.
+ */
+export function prepareRuntimeEnvConfig(
+	fileConfig: ConfigObject,
+	rootPath: string,
+	options: { isInstall?: boolean } = {}
+): {
+	config: ConfigObject;
+	saveState: () => boolean;
+	confirmConfigWritten: () => boolean;
+	commitState: () => boolean;
+} {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
-	// Load existing state
+	// Load existing state. Only the main thread persists, so only the main thread has wreckage to
+	// clear - and a worker shares its pid, so letting one scan would delete the main thread's
+	// in-flight sidecar as if it were last boot's.
+	const interruptedCommit = isMainThread && takeInterruptedCommit(rootPath);
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
 	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
-		return fileConfig;
+		return { config: fileConfig, saveState: () => false, confirmConfigWritten: () => false, commitState: () => false };
 	}
 
-	// Detect drift (user manual edits) - only at runtime, not install
-	if (!options.isInstall) {
+	// Detect drift (user manual edits) - only at runtime, not install, not on a boot that found an
+	// interrupted commit (where a difference could equally be the write that was in flight), and only
+	// on the main thread: a worker never owns the state, and one re-deriving inside the main thread's
+	// commit window would call its half-written config file a user edit and drop the env-supplied
+	// value for itself alone - serving different config than its siblings, with nothing on disk to
+	// show why.
+	if (!options.isInstall && !interruptedCommit && isMainThread) {
 		const driftedPaths = detectConfigDrift(fileConfig, state);
 		for (const path of driftedPaths) {
 			state.sources[path] = 'user';
@@ -998,8 +1139,10 @@ export function applyRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
-	// Save updated state
-	saveConfigState(rootPath, state);
-
-	return fileConfig;
+	return {
+		config: fileConfig,
+		saveState: () => (configStateMatchesDisk(rootPath, state) ? false : stageConfigState(rootPath, state)),
+		confirmConfigWritten: () => commitStagedConfigState(rootPath),
+		commitState: () => saveConfigState(rootPath, state),
+	};
 }

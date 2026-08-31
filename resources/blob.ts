@@ -64,7 +64,7 @@ type StorageInfo = {
 	store?: any;
 	filePath?: string;
 	recordId?: number;
-	contentBuffer?: any;
+	contentBuffer?: Buffer;
 	source?: Readable;
 	compress?: boolean;
 	flush?: boolean;
@@ -1424,6 +1424,13 @@ export type BlobCreationOptions = {
 	saveBeforeCommit?: boolean; // save the blob before the transaction is committed
 };
 /**
+ * `StorageInfo.contentBuffer` must always hold a `Buffer`: `Buffer.prototype.toString()` decodes
+ * UTF-8, while the inherited `Uint8Array.prototype.toString()` joins the byte values with commas.
+ */
+function asBuffer(bytes: Uint8Array): Buffer {
+	return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+/**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
  * can be saved/stored.
  * @param source
@@ -1442,7 +1449,7 @@ export function createBlob(
 	storageInfoForBlob.set(blob, storageInfo);
 	if (source instanceof Uint8Array) {
 		blob.size = source.length;
-		storageInfo.contentBuffer = source;
+		storageInfo.contentBuffer = asBuffer(source);
 	} else if (source instanceof Readable) {
 		storageInfo.source = source;
 	} else if (typeof source === 'string') storageInfo.contentBuffer = Buffer.from(source);
@@ -2647,7 +2654,7 @@ addExtension({
 			storageInfoForBlob.set(blob, {
 				storageIndex: 0,
 				fileId: null,
-				contentBuffer: blobInfo[1] as any,
+				contentBuffer: asBuffer(blobInfo[1] as Uint8Array),
 			});
 			blob.size = blobInfo[1]?.length;
 		}
