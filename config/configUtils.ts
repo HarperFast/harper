@@ -87,21 +87,55 @@ export function getConfigPath(param: string) {
 	return path.resolve(rootPath, value);
 }
 
-// Write atomically via temp file + rename so readers don't observe a truncated/empty file.
-// Temp path includes randomness so two worker threads in the same process (same pid) writing
-// in the same millisecond can't collide on the temp name and then race the rename.
-//
+// Write atomically via a randomized temp file + rename so readers do not observe partial content
+// and concurrent workers, which share process.pid, do not collide on a temp path.
 // Windows has no POSIX-style "replace an open file" semantics: rename() fails with
-// EPERM/EACCES while another descriptor is open on the destination. The sleep below blocks the
-// calling thread, so this can only ride out a holder that releases without needing that
-// thread's event loop. A holder on the calling thread would live exactly as long as the budget,
-// which is why config readers must not keep a descriptor on this file open across an event-loop
-// turn (RootConfigWatcher.handleChange, OptionsWatcher#handleChange).
-const RENAME_RETRY_MAX_ATTEMPTS = 12;
+// EPERM/EACCES/EBUSY while another worker or AV holds the destination open. Root config watchers use
+// readConfigFileSync so this blocking retry cannot wait on a read owned by its own worker.
+// The budget is the wall-clock window of the 12-attempt schedule it replaced
+// (10+20+40+80+160+320+500*6), so it stays a deadline rather than an attempt count without
+// widening the stall: this loop blocks the calling worker's event loop, and `set_configuration`
+// reaches it from a live request thread.
+const RENAME_RETRY_BUDGET_MS = 3_630;
+// Secondary guard only: stops a degenerate zero-delay option set from spinning the whole budget.
+const RENAME_RETRY_MAX_ATTEMPTS = 25;
 const RENAME_RETRY_INITIAL_DELAY_MS = 10;
 const RENAME_RETRY_MAX_DELAY_MS = 500;
-// Never notified; exists only so Atomics.wait can time out (a synchronous, CPU-idle sleep).
+// Never notified; Atomics.wait uses this only as a CPU-idle synchronous sleep.
 const renameRetrySleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+// Classified by code alone rather than gated to win32 like the read side: `process.platform` does
+// not answer whether this filesystem can replace an open file — WSL drvfs, CIFS/SMB and Docker
+// Desktop bind mounts all report `linux` and return these codes transiently.
+function isRetryableRenameError(code: string): boolean {
+	return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
+type RenameRetryOptions = {
+	retryBudgetMs?: number;
+	maxRetries?: number;
+	initialDelayMs?: number;
+	maxDelayMs?: number;
+};
+
+type AtomicWriteOptions = RenameRetryOptions & {
+	skipIfUnchanged?: boolean;
+};
+
+function validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs }: RenameRetryOptions) {
+	const invalidOption =
+		!Number.isFinite(retryBudgetMs) ||
+		retryBudgetMs < 0 ||
+		(!Number.isFinite(maxRetries) && maxRetries !== Infinity) ||
+		maxRetries < 0 ||
+		!Number.isFinite(initialDelayMs) ||
+		initialDelayMs < 0 ||
+		!Number.isFinite(maxDelayMs) ||
+		maxDelayMs < 0;
+	if (invalidOption) {
+		throw new RangeError('rename retry options must be non-negative numbers');
+	}
+}
 
 // Linux has no libuv mapping for EDQUOT, so a quota-exhausted write surfaces as
 // `Unknown system error -122` with an unusable `code`; the numeric errno is the portable signal
@@ -137,12 +171,15 @@ export function atomicWriteFile(
 	filePath,
 	content,
 	{
+		retryBudgetMs = RENAME_RETRY_BUDGET_MS,
 		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
 		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
 		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
 		skipIfUnchanged = false,
-	} = {}
+	}: AtomicWriteOptions = {}
 ) {
+	// Before the temp write, so an option set that can never rename leaves no file behind.
+	validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
 	// Opt-in: skipping means no mtime bump, so no watcher event. Only callers that re-derive the
 	// same file every boot want that.
 	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;
@@ -155,8 +192,10 @@ export function atomicWriteFile(
 		throw err;
 	}
 	try {
-		renameWithRetry(tempPath, filePath, { maxRetries, initialDelayMs, maxDelayMs });
+		renameWithRetry(tempPath, filePath, { retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
 	} catch (err) {
+		// The temp name carries fresh randomness on every call, so a spent budget would otherwise
+		// leave a file nothing else will ever collect.
 		removeTempFile(tempPath);
 		throw err;
 	}
@@ -167,35 +206,48 @@ export function renameWithRetry(
 	fromPath,
 	toPath,
 	{
+		retryBudgetMs = RENAME_RETRY_BUDGET_MS,
 		maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
 		initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MS,
 		maxDelayMs = RENAME_RETRY_MAX_DELAY_MS,
-	} = {}
+	}: RenameRetryOptions = {}
 ) {
+	validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
 	let retries = maxRetries;
 	let delayMs = initialDelayMs;
+	let retryDeadline;
+	let finalAttempt = false;
 	let attempts = 0;
-	const startedAt = Date.now();
+	const startedAt = performance.now();
 	while (true) {
 		try {
 			attempts++;
 			fs.renameSync(fromPath, toPath);
 			return;
 		} catch (err) {
-			if (retries > 0 && (err.code === 'EPERM' || err.code === 'EACCES')) {
+			if (!finalAttempt && retries > 0 && isRetryableRenameError(err.code)) {
 				retries--;
-				// Sleep synchronously (all call sites are sync) to allow the holder to close the
-				// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
-				// which is what makes a multi-second worst-case budget affordable.
-				if (delayMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, delayMs);
-				delayMs = Math.min(delayMs * 2, maxDelayMs);
-				continue;
+				if (retryDeadline === undefined) {
+					retryDeadline = performance.now() + retryBudgetMs;
+				}
+				const remainingBudgetMs = retryDeadline - performance.now();
+				if (remainingBudgetMs > 0) {
+					// Sleep synchronously (all call sites are sync) to allow the holder to close the
+					// file. Atomics.wait yields the thread to the OS instead of spinning the CPU,
+					// which is what makes a multi-second worst-case budget affordable.
+					const sleepMs = Math.min(delayMs, remainingBudgetMs);
+					finalAttempt = sleepMs === remainingBudgetMs;
+					if (sleepMs > 0) Atomics.wait(renameRetrySleepBuffer, 0, 0, sleepMs);
+					delayMs = Math.min(Math.max(delayMs * 2, RENAME_RETRY_INITIAL_DELAY_MS), maxDelayMs);
+					continue;
+				}
 			}
-			// Attempts and elapsed distinguish a holder that never released from one that lost
-			// a race, and neither survives on the rethrown error.
-			if (err.code === 'EPERM' || err.code === 'EACCES') {
+			// Whether the budget was spent or the code was never retryable is the difference
+			// between a holder that never released and a one-off failure, and neither survives on
+			// the rethrown error.
+			if (isRetryableRenameError(err.code)) {
 				logger.warn(
-					`Could not replace ${toPath}: ${err.code} after ${attempts} attempts over ${Date.now() - startedAt}ms`
+					`Could not replace ${toPath}: ${err.code} after ${attempts} attempts over ${Math.round(performance.now() - startedAt)}ms`
 				);
 			}
 			throw err;
