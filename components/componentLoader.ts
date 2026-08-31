@@ -11,6 +11,8 @@ import {
 } from 'node:fs';
 import { join, basename, dirname, sep } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
+
+import { isDeployValidating } from '../server/serverHelpers/deployValidationState.ts';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
@@ -1092,13 +1094,17 @@ export async function loadComponent(
 							resources,
 							...componentConfig,
 						})) || extensionModule;
-				// Only what THIS load added. A shared extension module — `rest`, `graphql` — can already be
-				// live from an ordinary load, and collecting it would have validation evict it from the
-				// registry during cleanup, so the next reload cycle no longer sees it as loaded.
-				if (!loadedComponents.has(extensionModule)) collectLoadedModules?.add(extensionModule);
-				// An ordinary load claims the entry outright, which is what releases it from a validation that
-				// registered it first and is still running.
-				loadedComponents.set(extensionModule, collectLoadedModules ? VALIDATION_OWNED : true);
+				// `collectLoadedModules` serves two different purposes, so the two decisions below are made
+				// separately. A deferred ORDINARY load passes one too, to await readiness — for that it has to
+				// collect what it loaded whether or not the module was already registered. Only a VALIDATION
+				// restricts its set, because there the set doubles as the cleanup list and a shared
+				// `rest`/`graphql` module already live from a real load must not go on it.
+				const validating = isDeployValidating();
+				if (!validating || !loadedComponents.has(extensionModule)) collectLoadedModules?.add(extensionModule);
+				// Ownership follows the validation CONTEXT, not the presence of a collect set. Keying it on the
+				// set labelled a deferred ordinary load's registrations validation-owned, which would let the
+				// next validation that collects that module delete a live one.
+				loadedComponents.set(extensionModule, validating ? VALIDATION_OWNED : true);
 
 				if (
 					(extensionModule.handleFile ||

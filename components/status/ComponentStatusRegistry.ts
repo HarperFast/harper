@@ -39,7 +39,16 @@ function detachError(error: Error | string | undefined): Error | string | undefi
 	detached.stack = error.stack;
 	for (const [key, value] of Object.entries(error)) {
 		if (key === 'cause') continue;
-		(detached as unknown as Record<string, unknown>)[key] = value;
+		// Detached too where it can be: copying an object property by reference would leave the candidate a
+		// mutable handle into the live error after all. Anything unclonable (a function, a class instance) is
+		// replaced by its string form rather than shared.
+		let detachedValue: unknown;
+		try {
+			detachedValue = structuredClone(value);
+		} catch {
+			detachedValue = typeof value === 'object' && value !== null ? String(value) : value;
+		}
+		(detached as unknown as Record<string, unknown>)[key] = detachedValue;
 	}
 	if (error.cause !== undefined) {
 		detached.cause = error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : error.cause;

@@ -1436,6 +1436,17 @@ async function settleJournaledActivationsForComponent(
 			// have cleared. A journal naming a sibling is still none of our business; a deployment neither
 			// source can attribute fails closed, because we cannot rule out that it is ours.
 			if (!journal) {
+				// Re-checked, because both reads can lose a race with a concurrent settle: the deployment
+				// directory being GONE is not an unattributable deployment, it is one somebody else already
+				// cleaned up, and failing this deploy closed over it would be a false rejection.
+				const stillThere = await lstat(deploymentDirPath).then(
+					() => true,
+					(error) => {
+						if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+						throw error;
+					}
+				);
+				if (!stillThere) continue;
 				throw new Error(
 					`Cannot settle deploy staging ${deploymentDirPath} before deploying ${componentName}: neither ` +
 						`its ownership sidecar nor an activation journal says which component it belongs to`

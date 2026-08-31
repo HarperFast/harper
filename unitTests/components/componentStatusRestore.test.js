@@ -122,6 +122,7 @@ describe('component status during throwaway validation', () => {
 		const live = new Error('database connection lost');
 		live.cause = cause;
 		live.code = 'ECONNRESET';
+		live.detail = { host: 'db-1', port: 5432 };
 		statusForComponent('error-probe').error('database connection lost', live);
 
 		await runWithDeployValidationGuard(async () => {
@@ -133,10 +134,14 @@ describe('component status during throwaway validation', () => {
 			// edit the serving component's own error object.
 			seen.message = 'mutated by candidate code';
 			seen.code = 'MUTATED';
+			// Nested state too: an object property copied by reference would leave a mutable handle into the
+			// live error after all.
+			seen.detail.host = 'mutated';
 		});
 
 		assert.strictEqual(registry.getStatus('error-probe').error.message, 'database connection lost');
 		assert.strictEqual(registry.getStatus('error-probe').error.code, 'ECONNRESET');
+		assert.strictEqual(registry.getStatus('error-probe').error.detail.host, 'db-1', 'nested state survived too');
 		assert.strictEqual(live.cause, cause, 'and the live error still holds its own cause');
 	});
 });
