@@ -162,28 +162,37 @@ export function claimLostNativeWatchError(error: unknown): boolean {
 	// Already claimed. Counting the same instance twice would inflate the tally and trip the
 	// decade warning early, so report it as claimed and stop.
 	if (claimed.isHandled) return true;
-	// server/threads/threadServer.js and server/threads/socketRouter.ts skip errors already
-	// marked handled, so the benign case doesn't also get logged there as an uncaughtException.
-	claimed.isHandled = true;
 	lostNativeWatchCount++;
-	fallbackLogger.trace?.(`Lost native file watch handle (occurrence ${lostNativeWatchCount}):`, error);
-	// Never go fully silent. Node gives this error no path, so it cannot be attributed to the
-	// watcher that raised it — ours or a dependency's — and a subsystem that has quietly stopped
-	// being watched is exactly what an operator needs to see. The default log level is `warn`, so
-	// trace alone would make every occurrence after the first invisible. Warn on the first and
-	// then at each decade, which keeps a delete storm (one error per directory in a removed tree)
-	// bounded without ever suppressing the signal outright.
-	if (lostNativeWatchCount >= lostNativeWatchWarnThreshold) {
-		lostNativeWatchWarnThreshold *= 10;
-		fallbackLogger.warn?.(
-			`A native file watch handle failed asynchronously (EPERM, syscall=watch) and was suppressed to ` +
-				`keep the thread alive; occurrence ${lostNativeWatchCount}. Node reports no path for this error, ` +
-				`so it cannot be attributed to a specific watcher — whatever was watching that path has stopped ` +
-				`reporting changes until it is re-established. On Windows this is usually a watched directory ` +
-				`being deleted or replaced (a component redeploy, a package install, a test teardown). If file ` +
-				`changes stop being picked up somewhere, this is why. Subsequent occurrences log at trace, with ` +
-				`a warning at each tenfold increase.`
-		);
+	// The claim is the classification above; everything from here is bookkeeping, and bookkeeping
+	// must not throw. This runs from a watcher's own 'error' route as well as from the process
+	// guard, so a frozen error (`isHandled` unassignable) or a logger that throws would otherwise
+	// turn a failure we just decided was benign into a fatal one.
+	try {
+		fallbackLogger.trace?.(`Lost native file watch handle (occurrence ${lostNativeWatchCount}):`, error);
+		// Never go fully silent. Node gives this error no path, so it cannot be attributed to the
+		// watcher that raised it — ours or a dependency's — and a subsystem that has quietly stopped
+		// being watched is exactly what an operator needs to see. The default log level is `warn`, so
+		// trace alone would make every occurrence after the first invisible. Warn on the first and
+		// then at each decade, which keeps a delete storm (one error per directory in a removed tree)
+		// bounded without ever suppressing the signal outright.
+		if (lostNativeWatchCount >= lostNativeWatchWarnThreshold) {
+			lostNativeWatchWarnThreshold *= 10;
+			fallbackLogger.warn?.(
+				`A native file watch handle failed asynchronously (EPERM, syscall=watch) and was suppressed to ` +
+					`keep the thread alive; occurrence ${lostNativeWatchCount}. Node reports no path for this error, ` +
+					`so it cannot be attributed to a specific watcher — whatever was watching that path has stopped ` +
+					`reporting changes until it is re-established. On Windows this is usually a watched directory ` +
+					`being deleted or replaced (a component redeploy, a package install, a test teardown). If file ` +
+					`changes stop being picked up somewhere, this is why. Subsequent occurrences log at trace, with ` +
+					`a warning at each tenfold increase.`
+			);
+		}
+		// Last, because it is the only step whose failure costs nothing that has not already
+		// happened: server/threads/threadServer.js and server/threads/socketRouter.ts skip errors
+		// already marked handled, so this only keeps the benign case from being logged twice.
+		claimed.isHandled = true;
+	} catch {
+		// Marked or not, logged or not, the error stays claimed.
 	}
 	return true;
 }
@@ -195,11 +204,11 @@ function handleUncaughtException(error: unknown): void {
 	try {
 		claimed = claimLostNativeWatchError(error);
 	} catch {
-		// Classifying must never be the thing that kills the process. A throw from inside an
-		// 'uncaughtException' listener replaces Node's report with this one and exits 7, and this
-		// listener runs first, so it would also cost the thread-level handlers their turn. A frozen
-		// error (`isHandled` unassignable) or a throwing property getter lands here; "not ours" is
-		// the safe reading, leaving the original exception fatal exactly as it would have been.
+		// Only classification can still throw here (a property getter that does), and it must not
+		// be what kills the process: a throw from inside an 'uncaughtException' listener replaces
+		// Node's report with this one and exits 7, and this listener runs first, so it would also
+		// cost the thread-level handlers their turn. An error we could not classify is not ours,
+		// and stays fatal exactly as it would have been unguarded.
 		claimed = false;
 	}
 	if (claimed) return;

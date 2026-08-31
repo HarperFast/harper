@@ -132,6 +132,15 @@ describe('watcherFallback', () => {
 			assert.equal(claimLostNativeWatchError(error), false);
 			assert.equal(error.isHandled, undefined);
 		});
+
+		// The watcher 'error' routes in EntryHandler, OptionsWatcher, RootConfigWatcher, keys.ts and
+		// manageThreads.js call this directly, outside the process guard's own try/catch, so marking
+		// an error it cannot mark has to be survivable here rather than only there.
+		it('claims an error it cannot mark handled instead of throwing', () => {
+			const error = Object.freeze(Object.assign(new Error('EPERM: watch'), { code: 'EPERM', syscall: 'watch' }));
+			assert.equal(claimLostNativeWatchError(error), true);
+			assert.equal(error.isHandled, undefined);
+		});
 	});
 
 	// chokidar never attaches an 'error' listener to the underlying Node
@@ -204,17 +213,25 @@ describe('watcherFallback', () => {
 			assert.match(stderr, /ENOENT/);
 		});
 
-		// The guard runs before every other uncaughtException listener, so a throw out of its own
-		// classification would cost the process both the original error's report (exit 7, with the
-		// guard's TypeError in its place) and the thread-level handlers' turn. A frozen error of
-		// exactly the claimed shape is the reachable version of that: reading it succeeds, marking
-		// it handled does not.
-		it('stays out of the way when it cannot mark an error handled', async function () {
+		// The guard runs before every other uncaughtException listener, so a throw out of the guard
+		// itself costs the process both the original error's report (exit 7, with the guard's own
+		// TypeError in its place) and the thread-level handlers' turn. These two pin the boundary
+		// either side of the classification: bookkeeping that fails must not un-claim a benign
+		// error, and a shape the guard cannot read is not its error to claim.
+		it('still claims a lost watch it cannot mark handled', async function () {
 			this.timeout(30000);
-			const { code, stderr } = await runHarness('frozen-claim');
-			assert.equal(code, 1, `expected the original error to stay fatal, got exit ${code}: ${stderr}`);
-			assert.match(stderr, /frozen lost watch/);
+			const { code, stdout, stderr } = await runHarness('frozen-claim');
+			assert.equal(code, 0, `harness exited ${code}: ${stderr}`);
+			assert.match(stdout, /survived lostWatchCount=1/);
 			assert.doesNotMatch(stderr, /not extensible/);
+		});
+
+		it('leaves an error it cannot classify fatal', async function () {
+			this.timeout(30000);
+			const { code, stderr } = await runHarness('unclassifiable-throw');
+			assert.equal(code, 1, `expected the original throw to stay fatal, got exit ${code}: ${stderr}`);
+			assert.match(stderr, /EPERM/);
+			assert.doesNotMatch(stderr, /probe getter/); // the guard's own throw, had it not caught
 		});
 	});
 });

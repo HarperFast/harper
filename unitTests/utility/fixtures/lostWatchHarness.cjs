@@ -76,14 +76,34 @@ watcher.on('ready', () => {
 	}
 
 	if (mode === 'frozen-claim') {
-		// A lost-watch-shaped error the guard cannot mark handled: `isHandled` is unassignable on a
-		// frozen object, so classifying it throws. That throw happens inside the guard's
-		// 'uncaughtException' listener, which runs first, so an unprotected guard would replace this
-		// error's report with a TypeError and exit 7 instead of leaving it fatal on its own terms.
+		// A lost-watch-shaped error the guard cannot mark handled, because `isHandled` is
+		// unassignable on a frozen object. Marking is bookkeeping, so the claim still stands and the
+		// process lives; an unprotected guard would instead throw from inside its own
+		// 'uncaughtException' listener, replacing the report with a TypeError and exiting 7.
 		setTimeout(() => {
 			throw Object.freeze(
 				Object.assign(new Error('frozen lost watch'), { code: 'EPERM', syscall: 'watch', filename: null })
 			);
+		}, 10);
+		setTimeout(() => {
+			process.stdout.write(`survived lostWatchCount=${_lostNativeWatchCountForTests()}\n`);
+			process.exit(0);
+		}, 200);
+		return;
+	}
+
+	if (mode === 'unclassifiable-throw') {
+		// Classification is the one step left that can throw: reading the shape runs this getter.
+		// An error the guard cannot classify is not its to claim, so it has to stay fatal rather
+		// than take the process down with a TypeError from inside the guard's own listener.
+		setTimeout(() => {
+			throw {
+				syscall: 'watch',
+				code: 'EPERM',
+				get path() {
+					throw new Error('probe getter');
+				},
+			};
 		}, 10);
 		return;
 	}
