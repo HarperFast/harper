@@ -1352,6 +1352,18 @@ const openBranches = new Map<string, BranchDatabase | undefined>();
 const openBranchIdentities = new Set<string>();
 
 /**
+ * Materialization renames its clone in from `<blobRoot>.staging`, so a branch owns two database
+ * names rather than one: a database legally called `<storeName>.staging` resolves its own blob root
+ * to exactly the path the clone removes and renames over. Every check, reservation and release
+ * covers the pair, so the name cannot be claimed at any point where a branch operation may still
+ * delete what it resolves to.
+ */
+const BRANCH_STAGING_SUFFIX = '.staging';
+function branchIdentityPair(storeName: string): string[] {
+	return [storeName, storeName + BRANCH_STAGING_SUFFIX];
+}
+
+/**
  * True when `dbPath` is a directory an open branch owns. The database scan opens any directory that
  * holds CURRENT + MANIFEST-*, and harper#643 places a branch inside the directory it walks, so
  * without this a rescan would rebuild the branch's tables into the global map, overwrite the store
@@ -1430,7 +1442,7 @@ export function assertBranchIdentityAvailable(storeName: string): void {
 	// The on-disk scan, not just the in-memory maps: a database that exists on disk but has not been
 	// loaded is absent from both, and it owns the blob root this identity would destroy.
 	getDatabases();
-	for (const name of [storeName, `${storeName}.staging`]) {
+	for (const name of branchIdentityPair(storeName)) {
 		// The directory as well as the maps. `getDatabases` skips a database blocked by restore, so an
 		// in-memory check alone reports its name as free while its blob root is very much real -- and
 		// materialization would then remove and replace it.
@@ -1452,11 +1464,21 @@ export function assertBranchIdentityAvailable(storeName: string): void {
  */
 export function reserveBranchIdentity(storeName: string): void {
 	assertBranchIdentityAvailable(storeName);
-	openBranchIdentities.add(storeName);
+	retakeBranchIdentity(storeName);
+}
+
+/**
+ * Take the pair back for an operation that owned it a statement ago -- cleanup, which has to keep
+ * holding the names through the deletions its `close()` just released them for. Deliberately without
+ * the availability check: nothing can have taken a name the caller held until now, and the check runs
+ * the database scan, which at that exact moment would find the branch directory unowned.
+ */
+export function retakeBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) openBranchIdentities.add(name);
 }
 
 export function releaseBranchIdentity(storeName: string): void {
-	openBranchIdentities.delete(storeName);
+	for (const name of branchIdentityPair(storeName)) openBranchIdentities.delete(name);
 }
 
 /** Is this name spoken for by a branch? Database creation has to refuse it -- they share a blob root. */
@@ -1464,18 +1486,20 @@ export function isBranchIdentity(name: string): boolean {
 	if (openBranchIdentities.has(name)) return true;
 	// The in-memory set covers only branches open in THIS process, so after a restart -- or for an
 	// application that is simply not loaded -- a database could take the name of an on-disk branch and
-	// share its blob root. The identity carries the application name's length precisely so it can be
-	// taken apart again without guessing where the name ends.
-	const prefix = /^(\d+)_/.exec(name);
+	// share its blob root. The staging sibling goes through the same route, because it names the path
+	// materialization renames over. The identity carries the application name's length precisely so it
+	// can be taken apart again without guessing where the name ends.
+	const storeName = name.endsWith(BRANCH_STAGING_SUFFIX) ? name.slice(0, -BRANCH_STAGING_SUFFIX.length) : name;
+	const prefix = /^(\d+)_/.exec(storeName);
 	if (!prefix) return false;
 	const appLength = Number(prefix[1]);
-	const appName = name.slice(prefix[0].length, prefix[0].length + appLength);
+	const appName = storeName.slice(prefix[0].length, prefix[0].length + appLength);
 	if (
 		appName.length !== appLength ||
-		name.slice(prefix[0].length + appLength, prefix[0].length + appLength + 2) !== '__'
+		storeName.slice(prefix[0].length + appLength, prefix[0].length + appLength + 2) !== '__'
 	)
 		return false;
-	const baseName = name.slice(prefix[0].length + appLength + 2);
+	const baseName = storeName.slice(prefix[0].length + appLength + 2);
 	if (!baseName) return false;
 	try {
 		return existsSync(resolveBranchPath(baseName, appName));
@@ -1485,7 +1509,12 @@ export function isBranchIdentity(name: string): boolean {
 	}
 }
 
-export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
+export function openBranchDatabase(
+	path: string,
+	databaseName: string,
+	storeName: string,
+	blobRoots?: string[]
+): BranchDatabase {
 	assertLegalBranchName(databaseName, 'logical database name');
 	assertLegalBranchName(storeName, 'store identity');
 	if (!existsSync(path)) throw new Error(`Cannot open branch database: no directory at ${path}`);
@@ -1516,12 +1545,18 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// `rocksdbDatabaseEnvs` partway through, so anything re-entering `database()` during initStores
 	// would otherwise find the branch's store on an unowned path
 	openBranches.set(path, undefined);
-	openBranchIdentities.add(storeName);
+	retakeBranchIdentity(storeName);
 	try {
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
+		// Pin the handle to the roots the caller proved this branch was published with, before it is
+		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
+		// configuration instead would let an appended volume take writes at an index the branch's own
+		// completion marker never recorded -- and a later change at that index would then silently
+		// re-address them. `closeBranchHandles` clears the entry with the rest of the handle.
+		if (blobRoots) databasePaths.set(rootStore as unknown as RootDatabase, blobRoots);
 	} catch (error) {
 		openBranches.delete(path);
-		openBranchIdentities.delete(storeName);
+		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
 		closeBranchHandles(path, stranded, openedStores);
@@ -1538,7 +1573,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 			if (closed) return;
 			closed = true;
 			openBranches.delete(path);
-			openBranchIdentities.delete(storeName);
+			releaseBranchIdentity(storeName);
 			rocksdbDatabaseEnvs.delete(path);
 			closeBranchHandles(path, rootStore, openedStores);
 		},

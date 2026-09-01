@@ -19,6 +19,7 @@ import {
 	releaseBranchIdentity,
 	reserveBranchIdentity,
 	resolveBranchPath,
+	retakeBranchIdentity,
 } from './databases.ts';
 import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
 
@@ -87,9 +88,8 @@ function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
  * stamps PENDING onto that inode IN PLACE -- through the branch's link as well, since it is the same
  * inode. The marker makes that blob fail loudly in the branch instead.
  */
-async function cloneBlobRoots(baseName: string, storeName: string): Promise<void> {
+async function cloneBlobRoots(baseName: string, branchRoots: string[]): Promise<void> {
 	const baseRoots = getBlobPathsForDatabaseName(baseName);
-	const branchRoots = getBlobPathsForDatabaseName(storeName);
 	let substituted = 0;
 	for (let index = 0; index < baseRoots.length; index++) {
 		const staging = `${branchRoots[index]}.staging`;
@@ -115,15 +115,27 @@ async function cloneBlobRoots(baseName: string, storeName: string): Promise<void
 	}
 }
 
-/** Remove a branch's blob roots and any staging siblings left by an interrupted clone. */
-async function removeBlobRootsFor(storeName: string): Promise<void> {
-	for (const root of getBlobPathsForDatabaseName(storeName)) {
+/**
+ * Remove the given blob roots and any staging siblings left by an interrupted clone. The roots are
+ * passed in rather than re-derived, because a published branch owns exactly what its completion
+ * marker recorded: deriving them from current configuration would let a `storage.blobPaths` entry
+ * added since -- one that may already hold a `<storeName>` directory restored from elsewhere --
+ * be deleted by a branch that never wrote it.
+ *
+ * Reports whether every removal succeeded, because a root left behind still belongs to this
+ * identity and the caller must not hand the name back while it does.
+ */
+async function removeBlobRoots(roots: string[]): Promise<boolean> {
+	let removed = true;
+	for (const root of roots) {
 		for (const target of [root, `${root}.staging`]) {
-			await rm(target, { recursive: true, force: true }).catch((error) =>
-				logger.warn?.(`Could not remove branch blob root ${target}`, error)
-			);
+			await rm(target, { recursive: true, force: true }).catch((error) => {
+				removed = false;
+				logger.warn?.(`Could not remove branch blob root ${target}`, error);
+			});
 		}
 	}
+	return removed;
 }
 
 const COMPLETION_MARKER = '.branch-complete';
@@ -143,7 +155,8 @@ type BranchState =
 	| { state: 'debris' }
 	/** A real store with no usable marker: pre-dates the marker, or lost it. Data-bearing either way. */
 	| { state: 'unmarked'; why: string }
-	| { state: 'complete' }
+	/** `blobRoots` is what was published with it, and what the branch stays pinned to while it is open. */
+	| { state: 'complete'; blobRoots: string[] }
 	/** Was published complete; part of what it recorded is gone or no longer matches the config. */
 	| { state: 'damaged'; problem: string };
 
@@ -194,8 +207,11 @@ function readBranchState(branchPath: string, storeName: string): BranchState {
 	}
 	const configured = getBlobPathsForDatabaseName(storeName);
 	// By index, not by set: `storageIndex` on a row is a position in this list, so a reordered
-	// `storage.blobPaths` would silently resolve every row through the wrong root.
-	if (recorded.blobRoots.length !== configured.length || recorded.blobRoots.some((root, i) => root !== configured[i])) {
+	// `storage.blobPaths` would silently resolve every row through the wrong root. A configured list
+	// that only GREW leaves every recorded index exactly where it was, which is why an appended volume
+	// is compatible where a removed, reordered or replaced one is not -- the branch goes on resolving
+	// through what it recorded, so the appended root is simply never its.
+	if (recorded.blobRoots.length > configured.length || recorded.blobRoots.some((root, i) => root !== configured[i])) {
 		return {
 			state: 'damaged',
 			problem:
@@ -206,28 +222,28 @@ function readBranchState(branchPath: string, storeName: string): BranchState {
 	const missing = recorded.blobRoots.filter((root) => !existsSync(root));
 	return missing.length
 		? { state: 'damaged', problem: `blob root(s) are missing: ${missing.join(', ')}` }
-		: { state: 'complete' };
+		: { state: 'complete', blobRoots: recorded.blobRoots };
 }
 
-async function materializeBranch(baseName: string, branchPath: string, storeName: string): Promise<void> {
+/** Publishes the branch and reports the blob roots its marker records, which is what it is pinned to. */
+async function materializeBranch(baseName: string, branchPath: string, storeName: string): Promise<string[]> {
 	const staging = `${branchPath}.staging`;
+	const blobRoots = getBlobPathsForDatabaseName(storeName);
 	await rm(staging, { recursive: true, force: true });
 	await mkdir(dirname(branchPath), { recursive: true });
 	try {
 		await database({ database: baseName, table: undefined }).createCheckpoint(staging);
-		await cloneBlobRoots(baseName, storeName);
-		await writeFile(
-			join(staging, COMPLETION_MARKER),
-			JSON.stringify({ blobRoots: getBlobPathsForDatabaseName(storeName) } satisfies BranchCompletion)
-		);
+		await cloneBlobRoots(baseName, blobRoots);
+		await writeFile(join(staging, COMPLETION_MARKER), JSON.stringify({ blobRoots } satisfies BranchCompletion));
 		await rename(staging, branchPath);
+		return blobRoots;
 	} catch (error) {
 		await rm(staging, { recursive: true, force: true }).catch(() => {});
 		// The blob roots too, staging siblings included: a clone that failed partway leaves the roots it
 		// already published and nothing owns them once this attempt is abandoned. Only safe because this
 		// branch never became complete -- one that did is never rebuilt, so this cannot remove the last
 		// copy of anything.
-		await removeBlobRootsFor(storeName);
+		await removeBlobRoots(blobRoots);
 		throw error;
 	}
 }
@@ -327,13 +343,26 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 								`have it recreated from the base on the next load.`
 						);
 					}
-					if (existing.state !== 'complete') {
+					let blobRoots: string[];
+					if (existing.state === 'complete') {
+						blobRoots = existing.blobRoots;
+						const configured = getBlobPathsForDatabaseName(storeName);
+						// Once per process per branch: only the thread that won the claim reaches this.
+						if (blobRoots.length < configured.length) {
+							logger.warn?.(
+								`Branch database at ${branchPath} keeps the ${blobRoots.length} blob root(s) it was published ` +
+									`with; the ${configured.length - blobRoots.length} storage.blobPaths entry(ies) added since are ` +
+									`not used by it. Its rows address roots by position, so only a branch rebuilt from the base ` +
+									`can take the added capacity.`
+							);
+						}
+					} else {
 						// Absent, or leftovers that are not a store: nothing here can be lost.
 						await rm(branchPath, { recursive: true, force: true });
-						await materializeBranch(baseName, branchPath, storeName);
+						blobRoots = await materializeBranch(baseName, branchPath, storeName);
 					}
 					releaseBranchIdentity(storeName);
-					branch = openBranchDatabase(branchPath, baseName, storeName);
+					branch = openBranchDatabase(branchPath, baseName, storeName, blobRoots);
 					// The branch's column families write with the WAL disabled, so writes since its last
 					// memtable flush exist only in its own transaction log — which a process that died
 					// without the exit-time flush (a crash, a Windows hard kill) always leaves behind.
@@ -366,11 +395,21 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 			// take another turn at being the one who creates it.
 			if ((await awaitClaim(claimState, branchPath, deadline)) === READY) break;
 		}
+		// This thread never read the branch it is adopting, and a branch resolves blob ids through the
+		// roots its marker names, so the marker has to be read here too rather than pinned only on the
+		// thread that won the claim.
+		const published = readBranchState(branchPath, storeName);
+		if (published.state !== 'complete') {
+			throw new Error(
+				`Branch database at ${branchPath} was published by another thread but no longer reads as ` +
+					`complete: ${published.state === 'damaged' ? published.problem : published.state === 'unmarked' ? published.why : published.state}`
+			);
+		}
 		// Released immediately before the open, with no `await` in between, so nothing can slip into the
 		// gap -- and so `openBranchDatabase`'s check stays strict rather than being taught to ignore a
 		// reservation, which would also make it ignore a DIFFERENT branch holding the same name.
 		releaseBranchIdentity(storeName);
-		const adopted = openBranchDatabase(branchPath, baseName, storeName);
+		const adopted = openBranchDatabase(branchPath, baseName, storeName, published.blobRoots);
 		handedOver = true;
 		return { branch: adopted, claimState };
 	} finally {
@@ -419,22 +458,57 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
+	const storeName = branchStoreNameFor(branchPath);
+	// Read while the marker is still on disk: what this branch owns is what it published, which for a
+	// branch that predates an appended `storage.blobPaths` entry is a prefix of the configured list.
+	const published = readBranchState(branchPath, storeName);
+	const blobRoots = published.state === 'complete' ? published.blobRoots : getBlobPathsForDatabaseName(storeName);
+	// The identity has to be held for every deletion below, not just checked before them:
+	// `isBranchIdentity` is what stops `table()` claiming this name, and once the directory is gone its
+	// on-disk half sees nothing either, so the reservation is the only thing left holding the name while
+	// the blob roots are still being removed.
+	let releaseAfterCleanup = true;
 	if (opened) {
 		opened.branch.close();
+		// Same turn as the close that released it, so nothing can slip into the gap.
+		retakeBranchIdentity(storeName);
 		Atomics.store(opened.claimState, 0, UNCLAIMED);
 		wakeWaiters(opened.claimState);
+	} else {
+		// Never opened here, so the name has to be claimed outright. Failing means something else already
+		// answers to it, and then the blob root it resolves to is not ours to delete.
+		try {
+			reserveBranchIdentity(storeName);
+		} catch (error) {
+			releaseAfterCleanup = false;
+			logger.warn?.(`Leaving the blob roots of the branch at ${branchPath} in place: its identity is in use`, error);
+		}
 	}
-	await rm(branchPath, { recursive: true, force: true }).catch((error) =>
-		logger.warn?.(`Could not remove branch directory ${branchPath}`, error)
-	);
-	// The clone gives a branch blob roots of its own, outside its directory, so removing only the
-	// directory strands them -- and because they are hard links, the bytes survive the base deleting
-	// its own copies. Only once the directory is actually gone: removing them while it survives (a
-	// held handle, permissions) would leave a branch that still looks adoptable but whose allocator
-	// restarts from an empty root and remints ids its own rows hold. Leaking them the other way round
-	// is recoverable; that is not. Derived from the path, so a branch that never opened is cleaned up.
-	if (!existsSync(branchPath)) await removeBlobRootsFor(branchStoreNameFor(branchPath));
-	await pruneEmptyParents(branchRootOf(branchPath), branchPath);
+	try {
+		await rm(branchPath, { recursive: true, force: true }).catch((error) =>
+			logger.warn?.(`Could not remove branch directory ${branchPath}`, error)
+		);
+		// The clone gives a branch blob roots of its own, outside its directory, so removing only the
+		// directory strands them -- and because they are hard links, the bytes survive the base deleting
+		// its own copies. Only once the directory is actually gone: removing them while it survives (a
+		// held handle, permissions) would leave a branch that still looks adoptable but whose allocator
+		// restarts from an empty root and remints ids its own rows hold. Leaking them the other way round
+		// is recoverable; that is not.
+		if (releaseAfterCleanup && !existsSync(branchPath)) {
+			// A root that survived still holds this branch's blob files, so the identity is never handed
+			// back: a database taking the name would resolve its own new file ids onto them.
+			if (!(await removeBlobRoots(blobRoots))) {
+				releaseAfterCleanup = false;
+				logger.warn?.(
+					`Keeping '${storeName}' reserved for the life of this process: the branch at ${branchPath} ` +
+						`left blob files behind and a database under that name would resolve onto them`
+				);
+			}
+		}
+		await pruneEmptyParents(branchRootOf(branchPath), branchPath);
+	} finally {
+		if (releaseAfterCleanup) releaseBranchIdentity(storeName);
+	}
 }
 
 /** `<storage>/`branches`/<app>/<db>` — the same identity `branchStoreName` composed on the way in. */

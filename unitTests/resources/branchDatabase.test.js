@@ -911,6 +911,58 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 		assert.strictEqual(statSync(branchFile).ino, statSync(baseFile).ino, 'same inode');
 		assert.ok(statSync(branchFile).nlink >= 2, 'and more than one link to it');
 	});
+
+	it('refuses a database named after the identity the clone renames from', async function () {
+		this.timeout(30000);
+		await getOrCreateBranch('safebase', 'safeApp');
+
+		// `cloneBlobRoots` populates `<root>.staging` and renames it over `<root>`, and a blob root is
+		// `<blobs>/<database>`, so a database legally called `<identity>.staging` resolves its own root
+		// to the very path materialization removes and replaces.
+		assert.throws(
+			() =>
+				table({
+					table: 'Sneak',
+					database: `${STORE}.staging`,
+					attributes: [{ name: 'id', isPrimaryKey: true }],
+				}),
+			/branch store identity/
+		);
+	});
+
+	it('keeps the identity reserved until the blob roots are gone, not just the directory', async function () {
+		this.timeout(30000);
+		const branch = await getOrCreateBranch('safebase', 'safeApp');
+		// Real files to delete, so removal spans several turns of the event loop rather than none.
+		for (let i = 0; i < 8; i++) {
+			await branch.tables.Safe.put({ id: `blob-${i}`, payload: await createBlob(Buffer.alloc(64 * 1024, `${i}`)) });
+		}
+		const branchPath = resolveBranchPath('safebase', 'safeApp');
+		const [root] = getBlobPathsForDatabaseName(STORE);
+
+		let sawTheWindow = false;
+		const removal = removeBranches();
+		for (;;) {
+			const settled = await Promise.race([
+				removal.then(() => true),
+				new Promise((resolve) => setImmediate(() => resolve(false))),
+			]);
+			// Once the directory is gone the on-disk half of `isBranchIdentity` sees nothing either, so
+			// the held reservation is all that stops a database claiming the name — and having its own
+			// fresh blob files deleted by the removal still running.
+			if (!existsSync(branchPath) && existsSync(root)) {
+				sawTheWindow = true;
+				assert.throws(
+					() => table({ table: 'Racer', database: STORE, attributes: [{ name: 'id', isPrimaryKey: true }] }),
+					/branch store identity/,
+					'the identity must stay reserved for every turn of cleanup'
+				);
+			}
+			if (settled) break;
+		}
+		await removal;
+		assert.ok(sawTheWindow, 'sanity: the test must observe the window it guards');
+	});
 });
 
 describeUnlessLmdb('branch identity is unavailable across restarts and restores (harper#644)', () => {
@@ -944,6 +996,19 @@ describeUnlessLmdb('branch identity is unavailable across restarts and restores 
 		assert.strictEqual(isBranchIdentity(identity), true, 'the on-disk branch still owns its identity');
 	});
 
+	it('recognises the staging sibling of an on-disk branch identity too', async function () {
+		this.timeout(30000);
+		const identity = `${'identApp'.length}_identApp__identbase`;
+
+		await getOrCreateBranch('identbase', 'identApp');
+		await removeBranches(); // drops the in-memory set, as a restart would
+		mkdirSync(resolveBranchPath('identbase', 'identApp'), { recursive: true });
+
+		// A rebuild of this branch renames `<root>.staging` over `<root>`, so the sibling name has to be
+		// unavailable across a restart for the same reason the identity itself is.
+		assert.strictEqual(isBranchIdentity(`${identity}.staging`), true, 'the sibling is spoken for as well');
+	});
+
 	it('refuses an identity whose database exists on disk but is not loaded', async function () {
 		this.timeout(30000);
 		const { assertBranchIdentityAvailable } = require('#src/resources/databases');
@@ -960,5 +1025,180 @@ describeUnlessLmdb('branch identity is unavailable across restarts and restores 
 		} finally {
 			rmSync(planted, { recursive: true, force: true });
 		}
+	});
+});
+
+describeUnlessLmdb('appended blob volumes (harper#644)', () => {
+	const { mkdirSync, writeFileSync, rmSync, cpSync } = require('node:fs');
+	const { join } = require('node:path');
+	const { getBlobPathsForDatabaseName, createBlob, getFilePathForBlob } = require('#src/resources/blob');
+	const environment = require('#src/utility/environment/environmentManager');
+	const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
+	const { prepareBranches } = require('#src/resources/branchDatabase');
+	const STORE = `${'volApp'.length}_volApp__volbase`;
+	const PAYLOAD = Buffer.alloc(64 * 1024, 'volume payload ');
+	let firstVolume, secondVolume, configuredBefore;
+
+	/** Where a run of new branch blobs actually landed. Blobs are spread across the configured roots by
+	 *  free space, so a pinned branch has to be proven over several writes rather than one. */
+	async function writeBlobs(branch, prefix) {
+		const paths = [];
+		for (let i = 0; i < 8; i++) {
+			const id = `${prefix}-${i}`;
+			await branch.tables.Vol.put({ id, payload: await createBlob(Buffer.alloc(64 * 1024, id)) });
+			const path = getFilePathForBlob((await branch.tables.Vol.get(id)).payload);
+			assert.ok(path, `sanity: ${id} must be file-backed`);
+			paths.push(path);
+		}
+		return paths;
+	}
+
+	/**
+	 * Give up this process's handle on a branch without touching its storage, the way a restart does.
+	 * `removeBranches` is the only exported release and it deletes, so what is on disk is set aside
+	 * and put back around it.
+	 */
+	async function reloadFromDisk(branchPath, blobRoots) {
+		const aside = [branchPath, ...blobRoots].map((path) => [path, `${path}.savedforTest`]);
+		for (const [live, saved] of aside) cpSync(live, saved, { recursive: true });
+		await removeBranches();
+		for (const [live, saved] of aside) {
+			cpSync(saved, live, { recursive: true });
+			rmSync(saved, { recursive: true, force: true });
+		}
+	}
+
+	before(async function () {
+		this.timeout(30000);
+		const dbPath = setupTestDBPath();
+		setMainIsWorker(true);
+		configuredBefore = environment.get(CONFIG_PARAMS.STORAGE_BLOBPATHS);
+		firstVolume = join(dbPath, 'blob-volume-1');
+		secondVolume = join(dbPath, 'blob-volume-2');
+		for (const volume of [firstVolume, secondVolume]) mkdirSync(volume, { recursive: true });
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
+		for (const db of ['volbase', 'volbase2']) {
+			table({
+				table: 'Vol',
+				database: db,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'payload', type: 'Blob' },
+				],
+			});
+		}
+		await databases.volbase.Vol.put({ id: 'seed', payload: await createBlob(PAYLOAD) });
+	});
+
+	beforeEach(function () {
+		// One volume to begin with, so appending the second is the operator action under test.
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
+		for (const appName of ['volApp']) {
+			for (const baseName of ['volbase', 'volbase2']) {
+				rmSync(resolveBranchPath(baseName, appName), { recursive: true, force: true });
+				for (const volume of [firstVolume, secondVolume]) {
+					rmSync(join(volume, `${appName.length}_${appName}__${baseName}`), { recursive: true, force: true });
+				}
+			}
+		}
+	});
+
+	after(function () {
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, configuredBefore);
+	});
+
+	it('stays loadable when a volume is appended, and keeps resolving through the roots it recorded', async function () {
+		this.timeout(30000);
+		const created = await getOrCreateBranch('volbase', 'volApp');
+		assert.ok(await created.tables.Vol.get('seed'), 'sanity: the branch carries the base row');
+		const branchPath = resolveBranchPath('volbase', 'volApp');
+		const recorded = getBlobPathsForDatabaseName(STORE);
+		await reloadFromDisk(branchPath, recorded);
+
+		// Every recorded root keeps its index, so every `storageIndex` a row already holds still means
+		// what it meant. Refusing the branch here would take an application offline for a configuration
+		// change that cannot have invalidated a single reference.
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
+		const reopened = await getOrCreateBranch('volbase', 'volApp');
+		const seeded = await reopened.tables.Vol.get('seed');
+		assert.ok(PAYLOAD.equals(Buffer.from(await seeded.payload.bytes())), 'and it still reads its blobs');
+
+		// Pinned, not merely tolerated: a write into the appended volume would sit at an index the
+		// completion marker never recorded, so a later change at that index would silently re-address it.
+		// Several of them, because unpinned writes are spread over the volumes by free space, so one
+		// landing in the recorded root proves nothing.
+		for (const written of await writeBlobs(reopened, 'after')) {
+			assert.ok(written.startsWith(recorded[0]), `expected ${written} under the recorded root ${recorded[0]}`);
+		}
+		assert.strictEqual(existsSync(join(secondVolume, STORE)), false, 'the appended volume is not this branch’s');
+	});
+
+	it('pins a branch adopted on the waiter path, not only one this thread published', async function () {
+		this.timeout(30000);
+		await getOrCreateBranch('volbase', 'volApp');
+		const recorded = getBlobPathsForDatabaseName(STORE);
+
+		// A failed application load releases its handles without resetting the claim word, which is the
+		// state every thread that did not win the claim sees: the branch is READY and this thread has
+		// never read it. Plant a complete-looking branch that is not a database to make the load fail.
+		const failing = resolveBranchPath('volbase2', 'volApp');
+		mkdirSync(failing, { recursive: true });
+		writeFileSync(join(failing, 'CURRENT'), 'not a database');
+		publishHandBuiltBranch(failing, 'volApp', 'volbase2');
+		await assert.rejects(() => prepareBranches('volApp', ['volbase', 'volbase2'], undefined));
+		rmSync(failing, { recursive: true, force: true });
+
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
+		const adopted = await getOrCreateBranch('volbase', 'volApp');
+		for (const written of await writeBlobs(adopted, 'waiter')) {
+			assert.ok(written.startsWith(recorded[0]), `expected ${written} under the recorded root ${recorded[0]}`);
+		}
+	});
+
+	it('removes only the roots it recorded, leaving a like-named directory on a volume it never used', async function () {
+		this.timeout(30000);
+		await getOrCreateBranch('volbase', 'volApp');
+		const [recordedRoot] = getBlobPathsForDatabaseName(STORE);
+
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
+		// A directory that happens to carry this identity's name on the appended volume — restored from
+		// a backup, copied from another node — was never part of this branch and is not its to delete.
+		const stranger = join(secondVolume, STORE);
+		mkdirSync(stranger, { recursive: true });
+		writeFileSync(join(stranger, 'precious'), 'this branch never wrote here');
+
+		await removeBranches();
+
+		assert.strictEqual(existsSync(recordedRoot), false, 'the recorded root goes with the branch');
+		assert.ok(existsSync(join(stranger, 'precious')), 'the unrecorded one is left alone');
+	});
+
+	it('still refuses a branch whose recorded roots were dropped from the configuration', async function () {
+		this.timeout(30000);
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
+		await getOrCreateBranch('volbase', 'volApp');
+		const branchPath = resolveBranchPath('volbase', 'volApp');
+		await reloadFromDisk(branchPath, getBlobPathsForDatabaseName(STORE));
+
+		// Growth is compatible because it moves no index; shrinking removes root 1 outright, and every
+		// row whose `storageIndex` is 1 would resolve through nothing.
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
+		await assert.rejects(() => getOrCreateBranch('volbase', 'volApp'), /no longer match the configured/);
+	});
+
+	it('still refuses a branch whose recorded roots were reordered', async function () {
+		this.timeout(30000);
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
+		await getOrCreateBranch('volbase', 'volApp');
+		const branchPath = resolveBranchPath('volbase', 'volApp');
+		await reloadFromDisk(branchPath, getBlobPathsForDatabaseName(STORE));
+
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [secondVolume, firstVolume]);
+		await assert.rejects(() => getOrCreateBranch('volbase', 'volApp'), /no longer match the configured/);
 	});
 });
