@@ -133,13 +133,13 @@ function countPendingForSession(sessionId: string): number {
 
 function subscriptionUser(user: AuthedUser): AuthedUser {
 	return {
-		...(user.username ? { username: user.username } : {}),
+		...(user.username !== undefined ? { username: user.username } : {}),
 		...(user.authExpiresAt !== undefined ? { authExpiresAt: user.authExpiresAt } : {}),
 		...(user._scopedToken ? { _scopedToken: true } : {}),
 		...(user.role
 			? {
 					role: {
-						...(user.role.role ? { role: user.role.role } : {}),
+						...(user.role.role !== undefined ? { role: user.role.role } : {}),
 						...(user.role.permission ? { permission: user.role.permission } : {}),
 					},
 				}

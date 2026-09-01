@@ -74,7 +74,9 @@ describe('mcp/subscriptionRouting', () => {
 	it('accepts a correlated response only from the expected owner thread', async () => {
 		const bridge = fakeBridge((_target, event, listeners) => {
 			assert.equal(event.message.user.password, undefined, 'credentials must not cross the worker boundary');
+			assert.equal(event.message.user.username, '');
 			assert.equal(event.message.user.authExpiresAt, 12345);
+			assert.equal(event.message.user.role.role, '');
 			const requestId = event.message.requestId;
 			setImmediate(() => {
 				listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE)({
@@ -91,7 +93,13 @@ describe('mcp/subscriptionRouting', () => {
 			session: await remoteSession(),
 			operation: 'subscribe',
 			uri: 'https://app.test/Product/1',
-			user: { ...USER, authExpiresAt: 12345, password: 'do-not-forward' },
+			user: {
+				...USER,
+				username: '',
+				authExpiresAt: 12345,
+				role: { ...USER.role, role: '' },
+				password: 'do-not-forward',
+			},
 		});
 		assert.equal(result, 'success');
 		assert.equal(_pendingSubscriptionRouteCount(), 0);
