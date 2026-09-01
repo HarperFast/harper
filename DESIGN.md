@@ -324,6 +324,25 @@ tracked as HarperFast/rocksdb-js#805. Continuous retention is what moves it from
 to routine: a peer offline longer than `logging.auditRetention` now resumes into a purged prefix and is
 recorded as caught up, and `txnlogReplayGapBytes` observes the gap without escalating on it.
 
+Retirement is two things, and teardown needs both. `stopAuditCleanup()` latches the loop closed and
+cancels the pending timer, and it **returns a drain barrier** — a promise that settles once the pass
+already running has finished. The barrier is what makes closing stores safe: lmdb-js stamps the DBI
+number into its write instruction synchronously and the native writer consumes it later
+(`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
+delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
+transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
+`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
+environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
+re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
+stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
+`resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
+path rather than a defensive one.
+
+The last-removed marker is retained until it commits. A rejected write is logged and carried to the
+next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
+transient failure would otherwise leave the recorded boundary permanently behind the entries that
+were already removed.
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.

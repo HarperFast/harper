@@ -133,7 +133,10 @@ export function openAuditStore(rootStore) {
 		if (!auditStore) {
 			// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
 			auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
-			updateLastRemoved(auditStore, 1);
+			// this open path is synchronous, so nothing downstream can own the write's rejection
+			updateLastRemoved(auditStore, 1)?.catch?.((error) =>
+				harperLogger.warn('Error initializing the audit log last-removed marker', error)
+			);
 		}
 		const superGetRange = auditStore.getRange.bind(auditStore);
 		auditStore.getRange = function (options) {
@@ -166,7 +169,13 @@ export function openAuditStore(rootStore) {
 	let cleanupPriority = 0;
 	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
 	let cleanupStopped = false;
+	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
+	// getLastRemoved() reporting a boundary the entries behind it have already been deleted past
+	let pendingLastRemoved: number | undefined;
 	const isRocksAuditStore = auditStore instanceof RocksTransactionLogStore;
+	// A pass yields, so the store can be closed underneath it. Every touch of the environment after a
+	// resume — cursor advance, cursor release, marker write, re-arm — has to re-check.
+	const storeClosing = () => auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing';
 	onStorageReclamation(rootStore.path, (priority) => {
 		cleanupPriority = priority; // update the priority
 		if (priority) {
@@ -192,7 +201,7 @@ export function openAuditStore(rootStore) {
 		clearTimeout(pendingCleanup);
 		const resolution = new Promise<void>((resolve) => {
 			pendingCleanupResolve = resolve;
-			pendingCleanup = setTimeout(async () => {
+			const runCleanupPass = async () => {
 				pendingCleanup = null;
 				pendingCleanupResolve = null; // started, so a later schedule can no longer cancel this pass
 				// claim the serialization slot before yielding: assigning it after the await lets every
@@ -201,7 +210,7 @@ export function openAuditStore(rootStore) {
 				lastCleanupResolution = resolution;
 				await previousCleanup;
 				// query for audit entries that are old
-				if (cleanupStopped || auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
+				if (cleanupStopped || storeClosing()) {
 					// nothing to clean up and nothing to reschedule, but leaving `resolution` pending would
 					// wedge the loop permanently: it is now the resolution every later pass awaits
 					resolve();
@@ -227,7 +236,7 @@ export function openAuditStore(rootStore) {
 							})
 							[Symbol.iterator]();
 						try {
-							while (!cleanupStopped) {
+							while (!cleanupStopped && !storeClosing()) {
 								const entry = entries.next();
 								if (entry.done) break;
 								const auditRecord = entry.value;
@@ -247,51 +256,83 @@ export function openAuditStore(rootStore) {
 								}
 							}
 						} finally {
-							// for-of released the underlying cursor on break; an explicit loop owes that itself
-							entries.return?.();
+							// for-of released the underlying cursor on break; an explicit loop owes that itself.
+							// Skipped only once the root is closing: releasing a cursor into a closed env reaches
+							// native code, while a retirement that leaves the env open still owes the release.
+							if (!storeClosing()) entries.return?.();
 						}
 					}
 				} catch (error) {
-					// the timer callback is detached, so anything escaping here lands as an unhandled
-					// rejection instead of a log line — and skips the reschedule below with it
+					// a failed scan is a log line, not a retired loop: the bookkeeping and reschedule below
+					// still run
 					harperLogger.warn('Error during audit log cleanup', error);
 				} finally {
-					// resolve() first and unconditionally: updateLastRemoved() below can throw
-					// synchronously if the store transitions to closing/closed mid-pass, and a throw
-					// from the rest of this block must not skip settling `resolution` — that's the
-					// serialization barrier every later pass awaits, and never settling it wedges the
-					// cleanup loop for the life of the store.
-					resolve();
-					if (isRocksAuditStore) {
-						// eligibility only changes on rotation/flush, so the LMDB backoff — keyed on a per-entry
-						// delete count — would only rescan the same segments
-						auditCleanupDelay = Math.max(
-							DEFAULT_AUDIT_CLEANUP_DELAY,
-							Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
-						);
-					} else if (deleted === 0) {
-						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
-						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
-						// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
-						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
-						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
-					} else {
-						// skipped when the store was retired mid-pass: this writes to the audit store, which
-						// closeDatabase has already closed by the time a stopped pass reaches here
-						if (!cleanupStopped) updateLastRemoved(auditStore, lastKey);
-						// and do updates faster
-						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
-					}
-					// both conjuncts are backstops, not the ownership rule — see DESIGN.md: the arming sites
-					// already restrict Rocks to the last worker
-					if (
-						!cleanupStopped &&
-						(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))
-					) {
-						scheduleAuditCleanup();
+					try {
+						if (isRocksAuditStore) {
+							// eligibility only changes on rotation/flush, so the LMDB backoff — keyed on a per-entry
+							// delete count — would only rescan the same segments
+							auditCleanupDelay = Math.max(
+								DEFAULT_AUDIT_CLEANUP_DELAY,
+								Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
+							);
+						} else {
+							if (deleted === 0) {
+								// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
+								// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
+								// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
+								// retention over ~248 days grows it past 2^31 where halving it wraps negative.
+								auditCleanupDelay = Math.max(
+									1,
+									Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY)
+								);
+							} else {
+								pendingLastRemoved = lastKey;
+								// and do updates faster
+								if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
+							}
+							// skipped when the store was retired or closed mid-pass — this writes to the audit
+							// store — and carried to the next pass instead, so a failed write is not lost
+							if (pendingLastRemoved !== undefined && !cleanupStopped && !storeClosing()) {
+								const marker = pendingLastRemoved;
+								try {
+									// awaited so the barrier below covers the write, and so a rejection is logged
+									// here rather than escaping the detached timer callback
+									await updateLastRemoved(auditStore, marker);
+									if (pendingLastRemoved === marker) pendingLastRemoved = undefined;
+								} catch (error) {
+									harperLogger.warn('Error recording the last removed audit entry', error);
+								}
+							}
+						}
+					} finally {
+						// settled unconditionally, whatever the bookkeeping above did: this is the
+						// serialization barrier every later pass awaits, and the drain barrier
+						// stopAuditCleanup() hands its callers, so never settling it wedges both.
+						// Re-armed unconditionally for the same reason — a throw from the bookkeeping
+						// (a failing log sink is the realistic one) must not retire the loop for good.
+						resolve();
+						// both conjuncts are backstops, not the ownership rule — see DESIGN.md: the arming
+						// sites already restrict Rocks to the last worker
+						if (
+							!cleanupStopped &&
+							!storeClosing() &&
+							(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))
+						) {
+							scheduleAuditCleanup();
+						}
 					}
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
+			};
+			pendingCleanup = setTimeout(() => {
+				// nothing owns the timer callback's promise, so anything the pass lets escape — including a
+				// throw from the logging inside its own containment — would land as an unhandled rejection
+				runCleanupPass().catch((error) => {
+					try {
+						harperLogger.warn('Error during audit log cleanup', error);
+					} catch {}
+					resolve();
+				});
 			}, auditCleanupDelay).unref();
 		});
 		if (supersededResolve) resolution.then(supersededResolve);
@@ -299,15 +340,19 @@ export function openAuditStore(rootStore) {
 	}
 	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
 	/**
-	 * Retires the cleanup loop for good. The in-pass status check declines to re-arm on a closing store,
-	 * but a pass already on the timer has to fire to reach it.
+	 * Retires the cleanup loop for good, and returns a drain barrier: the promise settles once the pass
+	 * that was already running has finished. Retirement alone only stops the loop admitting more work —
+	 * a pass suspended inside `await removeAuditEntry()` still has a write queued whose DBI the native
+	 * writer consumes later, so a caller that closes or unlinks stores must await this first. The
+	 * synchronous teardown paths cannot; the in-pass status checks are what covers them.
 	 */
-	auditStore.stopAuditCleanup = function () {
+	auditStore.stopAuditCleanup = function (): Promise<void> {
 		cleanupStopped = true;
 		clearTimeout(pendingCleanup);
 		pendingCleanup = null;
 		pendingCleanupResolve?.();
 		pendingCleanupResolve = null;
+		return lastCleanupResolution ?? Promise.resolve();
 	};
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup();
@@ -348,7 +393,7 @@ export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Pro
 
 function updateLastRemoved(auditStore, lastKey) {
 	FLOAT_TARGET[0] = lastKey;
-	auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+	return auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
 }
 
 export function getLastRemoved(auditStore) {

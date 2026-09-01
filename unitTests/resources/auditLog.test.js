@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { open } = require('lmdb');
 const {
 	setAuditRetention,
 	openAuditStore,
@@ -1398,4 +1399,179 @@ describe('Audit log', () => {
 			assert.equal(events[i].length, 1);
 		}
 	});
+});
+
+// Retirement has to stop a pass that is already suspended inside removeAuditEntry, not just decline
+// to start another one: lmdb-js stamps the DBI number into the write instruction synchronously
+// (node_modules/lmdb/write.js) and the native writer consumes it later, so the promise the pass
+// awaits is exactly the window in which those handles must stay open.
+describe('Audit cleanup retirement', () => {
+	const scratchDirs = [];
+	const openScratchStore = () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-audit-retire-'));
+		scratchDirs.push(directory);
+		return open({ path: join(directory, 'retire.mdb') });
+	};
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+	afterEach(function () {
+		setAuditRetention(60_000, 10_000);
+	});
+	after(function () {
+		for (const directory of scratchDirs) rmSync(directory, { recursive: true, force: true });
+	});
+
+	/**
+	 * Arms a real audit store over a real LMDB environment with a controllable range, so a pass can be
+	 * suspended at the exact point teardown lands on it in production: inside the awaited removal.
+	 * `entries` bounds how many records the range yields across all passes.
+	 */
+	function armGatedPass(rootStore, { entries = Infinity } = {}) {
+		const auditStore = openAuditStore(rootStore);
+		const counts = { advances: 0, releases: 0, removals: 0, markerWrites: 0 };
+		const markerValues = [];
+		auditStore.getRange = () => ({
+			[Symbol.iterator]: () => ({
+				next() {
+					if (counts.advances++ >= entries) return { done: true, value: undefined };
+					return { done: false, value: { key: 1000 + counts.advances, type: 'put' } };
+				},
+				return() {
+					counts.releases++;
+					return { done: true, value: undefined };
+				},
+			}),
+		});
+		let releaseRemoval;
+		const removalGate = new Promise((resolve) => (releaseRemoval = resolve));
+		auditStore.remove = () => {
+			counts.removals++;
+			return removalGate;
+		};
+		const realPut = auditStore.put.bind(auditStore);
+		auditStore.put = (key, value) => {
+			counts.markerWrites++;
+			// the marker buffer is reused across writes, so record the value rather than the reference
+			markerValues.push(new Float64Array(value.slice().buffer)[0]);
+			return realPut(key, value);
+		};
+		return { auditStore, counts, markerValues, releaseRemoval };
+	}
+
+	it('drains the in-flight removal before stopAuditCleanup() reports the pass retired', async function () {
+		const rootStore = openScratchStore();
+		try {
+			const { auditStore, counts, releaseRemoval } = armGatedPass(rootStore);
+			const pass = auditStore.scheduleAuditCleanup(1);
+			await waitFor(() => counts.removals === 1, { timeout: 1000, message: 'the gated pass never started' });
+
+			const barrier = auditStore.stopAuditCleanup();
+			let drained = false;
+			barrier.then(() => (drained = true));
+			await delay(20);
+			assert.equal(drained, false, 'the barrier must not settle while a removal is still in flight');
+
+			releaseRemoval();
+			await barrier;
+			await pass;
+			assert.equal(counts.advances, 1, 'a retired pass must not advance the cursor again');
+			assert.equal(counts.releases, 1, 'a retirement that leaves the environment open still owes the cursor release');
+			assert.equal(counts.markerWrites, 0, 'a retired pass must not write the last-removed marker');
+			await delay(20);
+			assert.equal(counts.advances, 1, 'a retired pass must not re-arm');
+		} finally {
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
+
+	it('touches nothing further once the root store closes under a suspended pass', async function () {
+		const rootStore = openScratchStore();
+		let unhandledRejection;
+		const onUnhandledRejection = (reason) => (unhandledRejection = reason);
+		process.on('unhandledRejection', onUnhandledRejection);
+		try {
+			const { auditStore, counts, releaseRemoval } = armGatedPass(rootStore);
+			const pass = auditStore.scheduleAuditCleanup(1);
+			await waitFor(() => counts.removals === 1, { timeout: 1000, message: 'the gated pass never started' });
+
+			// the resetDatabases() shape: the root closes with no stopAuditCleanup() call at all
+			const closed = rootStore.close();
+			releaseRemoval();
+			await pass;
+			await closed;
+
+			assert.equal(counts.advances, 1, 'a pass resuming onto a closing environment must not advance the cursor');
+			assert.equal(counts.releases, 0, 'releasing a cursor into a closing environment reaches native code');
+			assert.equal(counts.markerWrites, 0, 'a pass resuming onto a closing environment must not write the marker');
+			await delay(20);
+			assert.equal(counts.advances, 1, 'a pass must not re-arm onto a closed store');
+			assert.equal(unhandledRejection, undefined, 'the detached timer callback must not reject');
+		} finally {
+			process.off('unhandledRejection', onUnhandledRejection);
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
+
+	// Both logger shapes: a throwing sink is what a try/catch around the marker write alone does not
+	// contain, and this file's deleteHistory regressions establish it as a real failure model.
+	for (const loggingThrows of [true, false]) {
+		it(`contains and retries a failed last-removed write (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async function () {
+			const rootStore = openScratchStore();
+			const originalWarn = harperLogger.warn;
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => (unhandledRejection = reason);
+			process.on('unhandledRejection', onUnhandledRejection);
+			const { auditStore, counts, markerValues, releaseRemoval } = armGatedPass(rootStore, { entries: 1 });
+			try {
+				releaseRemoval(); // this test is about the marker write, so let the removal settle at once
+				let markerRejects = true;
+				const countingPut = auditStore.put;
+				auditStore.put = (key, value) => {
+					// still issued, so the failure under test is the rejection rather than a skipped write
+					const write = countingPut(key, value);
+					return markerRejects ? write.then(() => Promise.reject(new Error('simulated marker write failure'))) : write;
+				};
+				const warnings = [];
+				harperLogger.warn = (...args) => {
+					warnings.push(args);
+					if (loggingThrows) throw new Error('simulated logging failure');
+				};
+
+				await auditStore.scheduleAuditCleanup(1);
+				assert.equal(counts.markerWrites, 1, 'the pass should have attempted the marker write');
+				assert.equal(
+					warnings[0]?.[0],
+					'Error recording the last removed audit entry',
+					'a rejected marker write must be logged, not dropped'
+				);
+				assert.equal(warnings[0]?.[1]?.message, 'simulated marker write failure');
+
+				// A later pass deletes nothing, so without a retained watermark it never writes the marker
+				// again and the recorded boundary stays behind the entries that were already removed.
+				markerRejects = false;
+				harperLogger.warn = originalWarn;
+				await waitFor(() => counts.markerWrites >= 2, {
+					timeout: 2000,
+					message: 'the failed last-removed marker was never retried',
+				});
+				assert.deepEqual(markerValues, [1001, 1001], 'the retry must carry the watermark the failed write had');
+				await delay(20);
+				assert.equal(counts.markerWrites, 2, 'a committed marker must not be rewritten by later empty passes');
+				assert.equal(unhandledRejection, undefined, 'the detached timer callback must not reject');
+			} finally {
+				harperLogger.warn = originalWarn;
+				process.off('unhandledRejection', onUnhandledRejection);
+				auditStore.stopAuditCleanup();
+				removeStorageReclamation(rootStore.path);
+				if (rootStore.status !== 'closed') await rootStore.close();
+			}
+		});
+	}
 });

@@ -1674,8 +1674,11 @@ export function makeTable(options) {
 					if (removeTombstonedCatalog()) await dbisDb.committed;
 				}
 			} else {
-				// legacy table per database
-				primaryStore.auditStore?.stopAuditCleanup?.();
+				// legacy table per database. The store to retire is this table's own audit store: nothing
+				// assigns `primaryStore.auditStore` — openAuditStore() assigns `rootStore.auditStore`, and
+				// this is the reference makeTable() was handed. Awaited so a pass suspended mid-removal has
+				// released the primary DBI before it is closed and unlinked.
+				await auditStore?.stopAuditCleanup?.();
 				removeStorageReclamation(primaryStore.path);
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);

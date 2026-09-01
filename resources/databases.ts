@@ -1778,7 +1778,9 @@ export async function dropDatabase(databaseName) {
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
 		if (rootStore) {
-			rootStore.auditStore?.stopAuditCleanup?.();
+			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
+			// already running has released the stores this is about to close and unlink
+			await rootStore.auditStore?.stopAuditCleanup?.();
 			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
@@ -1794,7 +1796,7 @@ export async function dropDatabase(databaseName) {
 			// a tableless database resolves its root store here rather than in the loop above, so take
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			rootStore.auditStore?.stopAuditCleanup?.();
+			await rootStore.auditStore?.stopAuditCleanup?.();
 			removeStorageReclamation(rootStore.path);
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
@@ -1839,8 +1841,10 @@ export function closeDatabase(databaseName: string): boolean {
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
-	// before any table store closes: an LMDB pass suspended inside removeAuditEntry would otherwise
-	// resume onto a closed primary store
+	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
+	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
+	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
+	// synchronous purgeLogs() call with nothing suspended mid-removal.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	for (const tableName in dbTables) {
 		const table: any = dbTables[tableName];
