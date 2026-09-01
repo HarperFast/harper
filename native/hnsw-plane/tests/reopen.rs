@@ -552,6 +552,38 @@ fn search_repairs_an_entry_point_whose_hint_is_dead_too() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// Harper allocates node ids monotonically and never reuses them, so a table that has churned
+/// has its whole low prefix tombstoned and only the newest ids live. A repair that probed a
+/// fixed prefix would find nothing there and every search would return empty forever.
+#[test]
+fn search_repairs_an_entry_point_in_a_churned_graph_whose_low_ids_are_all_dead() {
+    let dims = 32;
+    let path = tmp("entryhealchurn");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 4_096).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..1_200 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    // every id a prefix probe would reach is gone, as it is for any long-lived churned table
+    for id in 0..1_100u32 {
+        let _ = graph.clear_node(id);
+    }
+    let (entry, _) = graph.file.entry_point();
+    let hint = graph.file.previous_entry_point();
+    let _ = graph.clear_node(entry);
+    if hint != hnsw_plane::format::NO_ID {
+        let _ = graph.clear_node(hint);
+    }
+
+    let (hits, _) = search(&graph, &Query::new(vector_for(1_150, dims)), 5, 64, &mut scratch);
+    assert!(!hits.is_empty(), "the probe must reach the live tail, not only a dead low prefix");
+    let repaired = graph.file.entry_point().0;
+    assert!(graph.read_node(repaired).is_some(), "the repair must publish a live node");
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A repair publishes with a strict CAS on the entry it observed dead. A first insert that
 /// claims the header in between owns the graph, and a higher-level repair candidate must lose to
 /// it — installing the candidate would leave that insert's node with nothing pointing at it.

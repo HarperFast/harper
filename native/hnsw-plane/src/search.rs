@@ -229,14 +229,10 @@ const REPAIR_PROBE_LIMIT: u32 = 1024;
 /// read-mostly table nothing ever repairs it: write-path re-election only runs on delete, and
 /// a slot a reader sanitized after its writer died had no delete at all.
 ///
-/// The candidate is the O(1) previous-entry hint, then a bounded probe. The hint is a single
-/// slot and can itself be dead — promote B over C, delete B, then lose C to a dead writer, and
-/// the hint names a deleted node — so falling back is what keeps that from returning empty
-/// forever. The probe is capped at `REPAIR_PROBE_LIMIT` because
-/// `reelect_entry_point_replacing`'s scan runs to the high-water mark, and every search paying
-/// that would stampede the pool thread they all share; ids are dense from 0, so a live graph
-/// resolves in the first few slots, and the repair publishes, so only the first search after a
-/// wedge pays even that.
+/// The candidate is the O(1) previous-entry hint, then a probe capped at `REPAIR_PROBE_LIMIT` —
+/// the hint is a single slot and can be dead itself. The cap is what keeps a read off the write
+/// path's O(high-water) scan on the pool thread every search shares, and the repair publishes,
+/// so only the first search after a wedge pays even the probe.
 fn resolve_entry(graph: &Graph, query: &Query, stats: &mut SearchStats) -> Option<(u32, u32, f32)> {
     let (entry_id, entry_level) = graph.file.entry_point();
     if entry_id != NO_ID {
@@ -253,9 +249,8 @@ fn resolve_entry(graph: &Graph, query: &Query, stats: &mut SearchStats) -> Optio
     let (id, level) = candidate?;
     let d = graph.distance_to(id, query)?;
     stats.visits += 1;
-    // Strict on the entry we observed dead, NOT a not-worse install: between the read above and
-    // here a first insert can have claimed the header with its own live level-0 root, and
-    // replacing that with a higher-level candidate would orphan a node nothing else points at.
+    // Strict on the entry we observed dead, not a not-worse install: a live level-0 root claimed
+    // since the read above must win, or it is orphaned with nothing pointing at it.
     graph.file.replace_entry_if(entry_id, id, level as u32);
     Some((id, level as u32, d))
 }

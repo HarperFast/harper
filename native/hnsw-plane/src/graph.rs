@@ -588,33 +588,49 @@ impl Graph {
         }, self.slot_sanitizer(id), || None, self.owner_dead())
     }
 
+    /// Highest-level live node among at most `limit` probes, skipping `skip`. The read-side
+    /// repair's last resort: `reelect_entry_point_replacing` scans to the high-water mark, which
+    /// a search on the shared pool thread cannot afford.
+    ///
+    /// It walks DOWN from the newest id with a stride that spans the whole range, so it makes no
+    /// assumption about where the live nodes are. Both directions matter: Harper allocates node
+    /// ids monotonically and never reuses them, so a churned table has its whole low prefix
+    /// tombstoned and only the newest ids are live — while the crate's own freelist does reuse
+    /// ids, which keeps live nodes low. Striding covers both, and a graph with any appreciable
+    /// live fraction is found in the first few probes either way.
+    ///
+    /// Best-level rather than first-live, because a level-0 entry degrades every later search to
+    /// a layer-0-only beam.
+    pub(crate) fn probe_for_entry(&self, limit: u32, skip: u32) -> Option<(u32, u8)> {
+        let hw = self.file.id_high_water().min(self.file.max_nodes) as u32;
+        if hw == 0 || limit == 0 {
+            return None;
+        }
+        let stride = (hw / limit).max(1);
+        let mut best: Option<(u32, u8)> = None;
+        let mut cand = hw - 1;
+        for _ in 0..limit {
+            if cand != skip {
+                if let Some(level) = self.node_level(cand) {
+                    if best.map(|(_, l)| level > l).unwrap_or(true) {
+                        best = Some((cand, level));
+                    }
+                }
+            }
+            if cand < stride {
+                break;
+            }
+            cand -= stride;
+        }
+        best
+    }
+
     /// Pick a new entry point: the highest-level live node among `preferred`, else the
     /// highest-level live node found scanning the id range (level reads only — no per-node
     /// vector copies; still O(high-water), which only runs when an entry point vanished
     /// with no live neighborhood). Preferring level keeps the hierarchy navigable — a
     /// level-0 entry degrades every search to a layer-0-only beam. An empty graph clears
     /// the entry.
-    /// Highest-level live node among the first `limit` ids, skipping `skip`. The read-side
-    /// repair's last resort: `reelect_entry_point_replacing` scans to the high-water mark, which
-    /// a search on the shared pool thread cannot afford, but ids are allocated densely from 0 so
-    /// a bounded prefix is where a live graph's nodes are. Best-level rather than first-live,
-    /// because a level-0 entry degrades every later search to a layer-0-only beam.
-    pub(crate) fn probe_for_entry(&self, limit: u32, skip: u32) -> Option<(u32, u8)> {
-        let hw = self.file.id_high_water().min(self.file.max_nodes) as u32;
-        let mut best: Option<(u32, u8)> = None;
-        for cand in 0..hw.min(limit) {
-            if cand == skip {
-                continue;
-            }
-            if let Some(level) = self.node_level(cand) {
-                if best.map(|(_, l)| level > l).unwrap_or(true) {
-                    best = Some((cand, level));
-                }
-            }
-        }
-        best
-    }
-
     pub(crate) fn reelect_entry_point_replacing(&self, preferred: &[u32], replacing: u32) {
         let mut best: Option<(u32, u8)> = None;
         // the most recently replaced entry point is the best cheap candidate: usually alive,

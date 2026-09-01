@@ -441,9 +441,14 @@ impl PlaneFile {
 
     /// Install `(id, level)` ONLY while the entry still names `expected_id`. The read-side
     /// repair publishes through this rather than `set_entry_point_if_not_better`: the entry it
-    /// is replacing is dead, so "not worse" is the wrong test — a concurrent first insert that
-    /// just claimed the header with a level-0 root would lose to a higher-level repair
-    /// candidate and be orphaned with nothing pointing at it.
+    /// is replacing is dead, so "not worse" is the wrong test — a level-0 root installed while
+    /// the repair ran would lose to a higher-level candidate and be orphaned.
+    ///
+    /// It compares the id, not the incarnation, so under the crate's own freelist reuse it can
+    /// match a different node that took the same slot. That is a routing-quality window, not a
+    /// lost node: the value it could displace is a live edged node, never the edgeless claimer
+    /// (`claim_entry_if_empty` fires only from NO_ID, which no reuse can produce). Harper's host
+    /// ids are monotonic and never reused, so this cannot arise there at all.
     pub fn replace_entry_if(&self, expected_id: u32, id: u32, level: u32) -> bool {
         let cell = self.header_atomic_u64(H_ENTRY);
         let new = (id as u64) | ((level as u64) << 32);
