@@ -1,64 +1,41 @@
 /**
- * QA-877 — anchor for the cert-table object-swap gap described in #2004, and the narrowing of
- * which triggers can actually reach it.
+ * QA-877 — anchor for the cert-table object-swap gap in #2004, and for how narrow its triggers are.
  *
- * #2004: `createTLSSelector`'s `updateTLS()` (security/keys.ts) binds its `hdb_certificate`
- * subscription to a specific table OBJECT. Paths that replace `databases.system.hdb_certificate`
- * with a NEW object — `resetDatabases()` (copy_db, ITC restart handling) and the LMDB→RocksDB
- * engine migration — orphan that subscription. #1999 made `updateTLS()` detect the swap
- * (`subscribedTable !== databases.system.hdb_certificate`) and re-subscribe, but that comparison
- * only runs when something re-enters `updateTLS()`. After a swap the only re-entry triggers are the
- * now-orphaned subscription (dead — bound to the OLD object), the zero-certs retry timer (armed
- * only when the last pass resolved empty, the #1998 path), and a private-key hot reload. So a swap
- * while `secureContexts` is NON-EMPTY would leave no pending trigger and the selector would keep
- * serving stale contexts.
+ * `createTLSSelector`'s `updateTLS()` (security/keys.ts) binds its `hdb_certificate` subscription to
+ * a specific table OBJECT, so a path that replaces `databases.system.hdb_certificate` with a new
+ * object orphans it. #1999 made `updateTLS()` detect the swap and re-subscribe, but that check only
+ * runs when something re-enters `updateTLS()` — and after a swap the only re-entry triggers are the
+ * orphaned subscription itself, the zero-certs retry timer (#1998), and a private-key hot reload. A
+ * swap while `secureContexts` is non-empty would therefore leave no pending trigger at all.
  *
- * WHAT THIS FILE PINS
+ * #2004 names `resetDatabases()` among the swapping paths. What this file pins is that an ordinary,
+ * ops-API-reachable schema change does not get there: `create_attribute` on an unrelated table fans
+ * the schema broadcast to every worker, yet a rotation immediately afterwards still reaches every
+ * worker with zero stale certificates across 30 fresh handshakes. The reason is in
+ * resources/databases.ts — the reconciliation loop `resetDatabases()` re-runs mutates the existing
+ * Table wrapper in place unless the storage ENGINE changed for that database, which an attribute
+ * add never does. A rotation with no schema change runs as the control, since the schema-change leg
+ * means nothing if plain rotation is broken, and both run at threads 1 and 4 because the #586-class
+ * failure signature is per-worker divergence.
  *
- * The invariant asserted here is that an ordinary, ops-API-reachable schema change does NOT reach
- * that precondition: `create_attribute` on an unrelated table fans a schema broadcast out to every
- * worker and each runs `resetDatabases()`, yet a cert rotation performed immediately afterwards
- * still propagates to every worker, with zero stale certificates across 30 fresh handshakes per
- * thread count. The reason is in resources/databases.ts: the reconciliation loop `resetDatabases()`
- * re-runs (`getDatabases()` → `initStores()`) mutates the EXISTING Table wrapper in place unless
- * the storage ENGINE changed for that database, and an attribute add never flips that. This
- * narrows #2004's own phrasing for this ITC path — the schema broadcast alone is not sufficient;
- * something must additionally force a table recreate.
+ * A red run on the schema-change leg means an ordinary schema change started forcing a real
+ * table-object swap, making #2004 reachable from a far more common trigger. Escalate, do not adjust.
  *
- * If this file ever goes red on the "rotation after a schema change" leg, an ordinary schema change
- * has started forcing a real table-object swap, which makes #2004 reachable from a far more common
- * trigger than currently understood. That is an escalation, not a flake.
+ * Proof boundary: the vulnerable precondition — a swap while `secureContexts` is non-empty — is NOT
+ * reproduced here, and no safe in-process route to it was found. The LMDB→RocksDB migration runs in
+ * `migrateOnStart()` before the HTTP listeners exist, so the first `updateTLS()` pass necessarily
+ * populates from the post-migration table rather than being swapped out from under a populated one;
+ * `harper copydb system <path>` would mean a second process opening the same live store files; and
+ * forcing the swap from a jsResource is blocked by the component loader confining module resolution
+ * to the component's own directory. The broadcast itself is not asserted from here either —
+ * `create_attribute` is read back through `describe_table`, and that the broadcast drives
+ * `resetDatabases()` on every worker is established by resources/databases.ts and
+ * unitTests/security/keys.test.js.
  *
- * The broadcast itself is not asserted from here — `create_attribute`'s own success is the
- * confirmation the schema change landed, and that the broadcast is what drives `resetDatabases()`
- * on every worker is established by resources/databases.ts and unitTests/security/keys.test.js.
- *
- * A rotation with no schema change in between is included as an in-suite control (it must keep
- * working for the schema-change leg to mean anything), and both legs run at `threads: 1` and
- * `threads: 4` because the #586-class failure signature is per-worker divergence, invisible to a
- * single-worker run.
- *
- * PROOF BOUNDARY
- *
- * This file does NOT reproduce the "swap while secureContexts is non-empty" precondition, and no
- * safe in-process route to it was found. The other paths #2004 names are boot-time or out of band:
- * the LMDB→RocksDB migration runs in `migrateOnStart()` before the HTTP listeners exist, so in any
- * one process's lifetime the first `updateTLS()` pass necessarily populates FROM the post-migration
- * table rather than being swapped out from under an already-populated one (and a worker-only
- * restart hands the new thread a fresh `createTLSSelector()` closure with empty contexts too); the
- * CLI `harper copydb system <path>` would mean a second process opening the same live store files,
- * which is not something a test should do to a running instance. Forcing the swap in-process from a
- * jsResource is also not available: the component loader confines a component's module resolution
- * to its own installed directory, and that boundary is a deliberate security control.
- *
- * Prior art, not restated here:
- *   - integrationTests/security/cert-reload.test.ts (#586) — plain on-disk renewal, no swap, must
- *     reach every worker.
- *   - integrationTests/security/cert-key-reload.test.ts — cert+key race, orthogonal to this bug.
- *   - unitTests/security/keys.test.js ("createTLSSelector when the hdb_certificate table object is
- *     swapped out") — whitebox proof that the #1999 fix works once SOMETHING re-enters
- *     `updateTLS()`; it manufactures that re-entry through the OLD table, which is precisely the
- *     gap #2004 flags as uncovered.
+ * Prior art: integrationTests/security/cert-reload.test.ts (#586, plain renewal reaching every
+ * worker), cert-key-reload.test.ts (cert+key race), and unitTests/security/keys.test.js, whose
+ * swap suite proves the #1999 fix works once something re-enters `updateTLS()` — manufacturing that
+ * re-entry through the OLD table, which is the gap #2004 flags as uncovered.
  *
  * Reproduction:
  *   npm run build && npm run test:integration -- "integrationTests/security/qa877-tls-cert-swap.test.ts"
@@ -118,8 +95,8 @@ async function makeServerCertPem(keyPair: Ed25519KeyPair, serialNumber: number):
 }
 
 interface ServedCert {
-	/** Decimal serial (Node reports serialNumber as hex; normalized once here via parseInt(.., 16)
-	 * so every comparison downstream is a plain decimal `===`, avoiding hex-case footguns). */
+	/** Normalized from Node's hex `serialNumber` once here, so comparisons downstream are plain
+	 * decimal `===` and cannot trip over hex casing. */
 	serial: number;
 	fingerprint256: string;
 	subjectCN?: string;
@@ -158,7 +135,7 @@ function servedCert(hostname: string): Promise<ServedCert> {
 	});
 }
 
-/** Fan out N fresh handshakes (SO_REUSEPORT spreads them across workers) and tabulate served serials. */
+/** N fresh handshakes at once; SO_REUSEPORT is what spreads them across workers. */
 async function fanOut(hostname: string, attempts: number): Promise<{ serials: number[]; errors: number }> {
 	const results = await Promise.allSettled(Array.from({ length: attempts }, () => servedCert(hostname)));
 	const serials = results

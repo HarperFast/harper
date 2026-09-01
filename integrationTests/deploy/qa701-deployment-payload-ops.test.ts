@@ -1,43 +1,28 @@
 /**
  * QA-701 — anchor for `get_deployment_payload` / `delete_deployment_payload` (#1898), which shipped
- * with unit coverage only.
+ * with unit coverage only. Two contracts are pinned.
  *
- * Two contracts are pinned here.
+ * (1) The delete reclaims disk, it does not just flip a flag. Nulling `payload_blob` and committing
+ * the row is expected to unlink the blob file through RecordEncoder's retained-blob check. Harper
+ * has a history on this axis (#595; drop_attribute/drop_table drop metadata only), so both delete
+ * legs assert against the on-disk blob store at ~4 KB and again at 12 MB, and require `freed_bytes`
+ * to equal `payload_size` exactly.
  *
- * (1) DELETE REALLY RECLAIMS DISK. `delete_deployment_payload` nulls `payload_blob` and commits the
- * row, which is expected to unlink the blob file through RecordEncoder's retained-blob check — not
- * merely flip a flag. Harper has a history on this axis (#595, "dropping a table leaves orphan
- * blobs", and the metadata-only behavior confirmed for drop_attribute/drop_table), so every delete
- * probe asserts against the actual on-disk blob store, at ~4 KB and again at 12 MB, and checks that
- * `freed_bytes` equals the row's `payload_size` exactly. The disk check polls for the file to
- * disappear rather than sleeping, so a slow-but-real unlink is not misread as a leak.
+ * (2) The authorization asymmetry is deliberate. A non-super_user role explicitly granted both
+ * operations can delete but is still 403 on get, because `components/deploymentOperations.ts`'s
+ * `requireSuperUser` runs inside the get handler on top of the registered permission — the payload
+ * is the raw tarball and can embed secrets, unlike `get_deployment`'s stripped metadata. Pinning it
+ * means a later "consistency" cleanup that lets a role grant unlock the download goes red rather
+ * than quietly widening secret exposure.
  *
- * (2) THE AUTHORIZATION ASYMMETRY IS DELIBERATE. A non-super_user role with no `operations` grant is
- * 403 on both ops. A non-super_user role explicitly granted BOTH operations can call
- * `delete_deployment_payload` — that gate-2 delegation is the intended way to hand cleanup
- * automation to a non-SU role — but is STILL 403 on `get_deployment_payload`, because that handler
- * self-enforces super_user in addition to the registered permission (components/deploymentOperations.ts's
- * `requireSuperUser`, and the note beside it in utility/operation_authorization.ts): the payload is
- * the raw tarball and can embed secrets, unlike `get_deployment`'s stripped metadata. This file
- * pins that asymmetry as the contract, so a future "consistency" cleanup that lets a role grant
- * unlock the download goes red instead of quietly widening secret exposure.
+ * Not the mechanism covered by integrationTests/deploy/deploy-payload-reclaim.test.ts, which is the
+ * AUTOMATIC post-deploy drop of a payload over `deployment.payloadRetention.maxSize` (#1496) and
+ * never calls either operation. `maxSize` is forced to 200 MiB here so that drop can never fire,
+ * which is what makes any blob disappearance attributable to an explicit delete.
  *
- * Boundaries also covered: unknown deployment_id → 404 with a JSON error body and no download
- * headers leaking from the error path; delete on a non-terminal deployment → 409; get after delete
- * → 404, not 500; a second delete → 200 with `freed_bytes: 0`; deleting a running component's
- * payload leaves the live route serving (the blob is the historical tarball, not the installed
- * copy); and a redeploy after a delete mints an independent deployment_id whose own blob is
- * retained while the old row stays payload-less.
- *
- * Not the same mechanism as integrationTests/deploy/deploy-payload-reclaim.test.ts, which covers the
- * AUTOMATIC post-deploy drop of a payload exceeding `deployment.payloadRetention.maxSize` (#1496)
- * and never calls either of these operations. This suite forces `maxSize` to 200 MiB precisely so
- * that automatic drop can never fire, which makes any blob disappearance here attributable only to
- * an explicit `delete_deployment_payload` call.
- *
- * Proof boundary: the 409 leg races a real deploy to its terminal status. When the deploy settles
- * first the 409 assertion is skipped (and says so on stdout) rather than false-failing; the guard's
- * unconditional coverage is unitTests/components/deploymentOperations.test.js's, not this file's.
+ * Proof boundary: nothing here covers replication. `delete_deployment_payload` replicates the
+ * nulled blob so peers drop their copies too; this is a single-node suite and asserts only the
+ * local unlink.
  *
  * Reproduction:
  *   npm run build && npm run test:integration -- "integrationTests/deploy/qa701-deployment-payload-ops.test.ts"
@@ -70,11 +55,15 @@ const FORCED_RETENTION_MAX_SIZE = 200 * 1024 * 1024; // 200 MiB
 const SMALL_FIXTURE_KB = 4;
 const REDEPLOY_FIXTURE_KB = 16;
 const DELEGATION_FIXTURE_KB = 64;
-const NONTERMINAL_FIXTURE_KB = 6 * 1024;
+const NONTERMINAL_FIXTURE_KB = 256;
 const LARGE_FIXTURE_KB = 12 * 1024;
 
 // Mirrors TERMINAL_STATUSES in components/deploymentOperations.ts -- the set the 409 guard keys on.
 const TERMINAL_STATUSES = ['success', 'failed', 'rolled_back'];
+
+// ~2s of upload for the one probe that needs the deployment to still be installing while it runs.
+const UPLOAD_PACING_CHUNKS = 20;
+const UPLOAD_PACING_DELAY_MS = 100;
 
 function postMultipart(
 	url: URL,
@@ -158,8 +147,7 @@ async function getDeploymentWhenTerminal(
 	return last;
 }
 
-// Full listing (relative path, size, mtime) -- diagnostic only, so a leak report names the
-// actual residual file(s) rather than just an aggregate byte delta.
+// Listed in full so a failure names the residual file rather than an aggregate byte delta.
 function listBlobFiles(blobsRoot: string): Array<{ path: string; size: number; mtimeMs: number }> {
 	if (!existsSync(blobsRoot)) return [];
 	const out: Array<{ path: string; size: number; mtimeMs: number }> = [];
@@ -199,8 +187,7 @@ function countFilesNearSize(listing: Array<{ size: number }>, targetSize: number
 	return listing.filter((f) => Math.abs(f.size - targetSize) <= toleranceBytes).length;
 }
 
-// Polls until no blob file of ~`targetSize` bytes remains, or `timeoutMs` elapses. Distinguishes
-// a slow-but-real async unlink from a genuine leak.
+// Polls rather than sleeping so a slow-but-real async unlink is not reported as a leak.
 async function pollUntilSizeGone(
 	blobsRoot: string,
 	targetSize: number,
@@ -217,12 +204,9 @@ async function pollUntilSizeGone(
 
 const tempFixtureDirs: string[] = [];
 
-// Builds a payload-only fixture: no HTTP routes registered at all, just `kb` KB of genuinely
-// random (non-repeating, gzip-incompressible) padding. Used for every probe that only cares
-// about the payload_blob bytes, not live serving -- deliberately routeless so N of these
-// deployed side-by-side in the same instance never collide over "/". The buffer is filled in one
-// randomFillSync call rather than tiled from a smaller block: a tile below gzip's 32 KiB window
-// compresses away to near-nothing, and the payload size is the thing under measurement here.
+// Routeless on purpose, so any number of these can coexist without colliding over "/". The
+// padding is filled in one randomFillSync call rather than tiled: a tile below gzip's 32 KiB
+// window compresses away, and the payload SIZE is what every disk assertion keys on.
 function buildFixture(kb: number, marker: string): string {
 	const dir = mkdtempSync(join(tmpdir(), 'qa701-fixture-'));
 	tempFixtureDirs.push(dir);
@@ -235,9 +219,8 @@ function buildFixture(kb: number, marker: string): string {
 	return dir;
 }
 
-// Builds a fixture that DOES register a root static route -- used only by the single
-// "deployed and running" probe, which needs a live HTTP route to hit. Only ONE of these may be
-// active (restart:true'd) at a time in this suite, or root-path routes would collide.
+// Registers a root static route. Only ONE of these may be restart:true'd at a time, or the
+// root-path routes collide.
 function buildLiveFixture(marker: string): string {
 	const dir = mkdtempSync(join(tmpdir(), 'qa701-live-fixture-'));
 	tempFixtureDirs.push(dir);
@@ -259,12 +242,29 @@ async function packageToBuffer(fixtureDir: string): Promise<{ buffer: Buffer; sh
 	return { buffer, sha256 };
 }
 
+// Emits `buffer` as `chunks` pieces spaced `delayMs` apart. deploy_component creates the
+// deployment row before it ingests the payload stream (components/operations.js), so pacing the
+// upload holds the row in a non-terminal status for a known, host-speed-independent duration --
+// which is what lets the 409 probe below assert unconditionally instead of racing local I/O.
+function pacedStream(buffer: Buffer, chunks: number, delayMs: number): Readable {
+	const chunkSize = Math.ceil(buffer.length / chunks);
+	return Readable.from(
+		(async function* () {
+			for (let offset = 0; offset < buffer.length; offset += chunkSize) {
+				yield buffer.subarray(offset, offset + chunkSize);
+				await sleep(delayMs);
+			}
+		})()
+	);
+}
+
 async function deployBuffer(
 	ctx: ContextWithHarper,
 	project: string,
 	buffer: Buffer,
 	restart: boolean,
-	auth = ctx.harper.admin
+	auth = ctx.harper.admin,
+	pacing?: { chunks: number; delayMs: number }
 ): Promise<{ status: number; deploymentId: string | undefined; raw: Buffer }> {
 	const multipart = buildMultipartBody(
 		{ operation: 'deploy_component', project, restart },
@@ -272,7 +272,7 @@ async function deployBuffer(
 			name: 'payload',
 			filename: 'package.tar.gz',
 			contentType: 'application/gzip',
-			stream: Readable.from(buffer),
+			stream: pacing ? pacedStream(buffer, pacing.chunks, pacing.delayMs) : Readable.from(buffer),
 		}
 	);
 	const url = new URL(ctx.harper.operationsAPIURL);
@@ -306,6 +306,7 @@ suite(
 			// Poll the probe route directly until it stops 404-ing; do NOT call restartHttpWorkers()
 			// against a pre-installed fixture (races and flakes on CI).
 			const deadline = Date.now() + 120_000;
+			let ready = false;
 			while (Date.now() < deadline) {
 				try {
 					const probe = await fetch(`${ctx.harper.httpURL}/Beacon/`, {
@@ -315,12 +316,16 @@ suite(
 						},
 					});
 					// A 5xx means mounted but unhealthy, which is not ready either.
-					if (probe.status !== 404 && probe.status < 500) break;
+					if (probe.status !== 404 && probe.status < 500) {
+						ready = true;
+						break;
+					}
 				} catch {
 					/* not ready yet */
 				}
 				await sleep(250);
 			}
+			ok(ready, 'the Beacon route never became ready — the suite would run against an unrouted instance');
 		});
 
 		after(async () => {
@@ -443,49 +448,52 @@ suite(
 		});
 
 		test('3: delete_deployment_payload on a non-terminal deployment -> 409, blob untouched', async () => {
-			// deploy_component only responds once the row has reached a terminal status, so awaiting
-			// the deploy and then deleting can never reach the guard -- it deletes against a row that
-			// is already terminal. The recorder writes the row as 'pending' before the payload is
-			// ingested (components/deploymentRecorder.ts's create()), so the in-flight row is visible
-			// through list_deployments for the whole upload+install window. Deploy without awaiting,
-			// catch the row there, and delete against it. NONTERMINAL_FIXTURE_KB is multi-MB to keep
-			// that window comfortably wider than the poll interval.
+			// deploy_component only responds once the row is terminal, so awaiting the deploy and then
+			// deleting can never reach the guard. The row is written before the payload is ingested,
+			// so uploading in paced chunks holds it non-terminal for a known duration regardless of
+			// how fast the host is -- without that, a quick loopback upload closes the window and the
+			// assertion silently skips, which is how this probe used to pass without ever running.
 			const fixtureDir = buildFixture(NONTERMINAL_FIXTURE_KB, 'QA-701 nonterminal');
 			const packaged = await packageToBuffer(fixtureDir);
-			const deployPromise = deployBuffer(ctx, 'qa701-nonterminal-app', packaged.buffer, false);
+			const deployPromise = deployBuffer(ctx, 'qa701-nonterminal-app', packaged.buffer, false, ctx.harper.admin, {
+				chunks: UPLOAD_PACING_CHUNKS,
+				delayMs: UPLOAD_PACING_DELAY_MS,
+			});
 
 			let inFlightId: string | undefined;
 			let inFlightStatus: string | undefined;
-			const windowDeadline = Date.now() + 20000;
+			const windowDeadline = Date.now() + 20_000;
 			while (Date.now() < windowDeadline) {
+				// A failed or malformed list response falls through to the next poll rather than ending
+				// the loop: a transient error must not quietly turn into a skipped assertion.
 				const listed = await callOperation(ctx, { operation: 'list_deployments' });
 				const row = (listed.body?.deployments ?? []).find(
-					(d: any) => d.project === 'qa701-nonterminal-app' && !TERMINAL_STATUSES.includes(d.status)
+					(d: { project?: string; status?: string }) =>
+						d.project === 'qa701-nonterminal-app' && !TERMINAL_STATUSES.includes(d.status ?? '')
 				);
 				if (row) {
 					inFlightId = row.deployment_id;
 					inFlightStatus = row.status;
 					break;
 				}
-				// Deliberately no early exit on a malformed/failed list response: a transient error
-				// under load would otherwise end the poll and silently skip the 409 assertion.
+				await sleep(25);
 			}
 
-			if (inFlightId) {
-				const delResp = await callOperation(ctx, {
-					operation: 'delete_deployment_payload',
-					deployment_id: inFlightId,
-				});
-				strictEqual(
-					delResp.status,
-					409,
-					`delete on a non-terminal deployment (status='${inFlightStatus}') should 409, got ${delResp.status}: ${JSON.stringify(delResp.body)}`
-				);
-			} else {
-				console.log(
-					'[QA-701] 3: the deployment reached a terminal status before any poll observed it -- 409 window missed, not a defect.'
-				);
-			}
+			ok(
+				inFlightId,
+				`the deployment never appeared in a non-terminal state despite a paced upload of ` +
+					`~${(UPLOAD_PACING_CHUNKS * UPLOAD_PACING_DELAY_MS) / 1000}s — either the row is no longer ` +
+					`written before payload ingest, or deploy_component stopped streaming its payload`
+			);
+			const delResp = await callOperation(ctx, {
+				operation: 'delete_deployment_payload',
+				deployment_id: inFlightId,
+			});
+			strictEqual(
+				delResp.status,
+				409,
+				`delete on a non-terminal deployment (status='${inFlightStatus}') should 409, got ${delResp.status}: ${JSON.stringify(delResp.body)}`
+			);
 
 			const deployed = await deployPromise;
 			strictEqual(
@@ -496,7 +504,6 @@ suite(
 			ok(deployed.deploymentId);
 			const settled = await getDeploymentWhenTerminal(ctx, deployed.deploymentId!);
 			strictEqual(settled.body.status, 'success', `deploy should succeed: ${JSON.stringify(settled.body.error)}`);
-			// The refused delete must not have touched the blob: it is still there once terminal.
 			strictEqual(settled.body.payload_blob_present, true, 'a 409-refused delete must leave payload_blob in place');
 		});
 
@@ -581,6 +588,8 @@ suite(
 			strictEqual(delResp.body.deployment_id, smallDeploymentId);
 		});
 
+		let redeployedDeploymentId: string;
+
 		test('7: redeploy after delete produces an independent new deployment_id + fresh payload_blob', async () => {
 			const fixtureDir = buildFixture(REDEPLOY_FIXTURE_KB, 'QA-701 redeploy');
 			const packaged = await packageToBuffer(fixtureDir);
@@ -594,6 +603,7 @@ suite(
 				deployed.deploymentId && deployed.deploymentId !== smallDeploymentId,
 				'redeploy should mint a new deployment_id'
 			);
+			redeployedDeploymentId = deployed.deploymentId!;
 
 			const got = await getDeploymentWhenTerminal(ctx, deployed.deploymentId!);
 			strictEqual(got.body.status, 'success');
@@ -655,8 +665,7 @@ suite(
 				`delete on the running component's payload expected 200, got ${delResp.status}: ${JSON.stringify(delResp.body)}`
 			);
 
-			// The live route must be entirely unaffected -- payload_blob is the historical tarball
-			// artifact, not the installed component copy the running worker actually serves from.
+			// payload_blob is the historical tarball, not the installed copy the worker serves from.
 			const r2 = await fetch(ctx.harper.httpURL);
 			const body2 = await r2.text();
 			strictEqual(r2.status, 200);
@@ -838,10 +847,20 @@ suite(
 			});
 			strictEqual(gotAfter.body.payload_blob_present, false);
 
-			// SU caller can still get a byte-identical download for a DIFFERENT, still-present blob
-			// (sanity: the SU gate itself isn't broken by the presence of a delegated role).
-			const suCheck = await callOperation(ctx, { operation: 'get_deployment', deployment_id: smallDeploymentId });
-			ok(suCheck.status === 200, 'SU caller should still be able to read deployment metadata normally');
+			// The SU download path must still work with a delegated role in place. This has to target a
+			// deployment whose payload is still present -- the redeploy from probe 7 -- because every
+			// other row in this suite has had its payload deleted by now.
+			const suDownload = await callOperationAs(
+				ctx,
+				{ operation: 'get_deployment_payload', deployment_id: redeployedDeploymentId },
+				ctx.harper.admin
+			);
+			strictEqual(
+				suDownload.status,
+				200,
+				`a super_user download must still succeed alongside a delegated role, got ${suDownload.status}: ${suDownload.raw.toString('utf8').slice(0, 200)}`
+			);
+			ok(suDownload.raw.length > 0, 'the super_user download should return the payload bytes');
 		});
 	}
 );
