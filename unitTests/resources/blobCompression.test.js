@@ -17,7 +17,8 @@ const {
 const { Readable } = require('node:stream');
 const zlib = require('node:zlib');
 const { deflateSync } = zlib;
-const { readFileSync, statSync, openSync, writeSync, closeSync, truncateSync } = require('fs');
+const fs = require('node:fs');
+const { readFileSync, statSync, openSync, writeSync, closeSync, truncateSync, renameSync, writeFileSync, rmSync } = fs;
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
@@ -251,6 +252,12 @@ describe('Blob compression (harper#2443)', () => {
 		assert.equal(readFileSync(getFilePathForBlob(empty))[1], DEFLATE_TYPE);
 		assert.deepEqual(await empty.bytes(), Buffer.alloc(0));
 		assert.deepEqual(await streamToBuffer(empty.stream()), Buffer.alloc(0));
+
+		// none of these saves was put into a record: remove their files so the orphan-sweep test in
+		// blob.test.js (which asserts zero orphans) stays independent of file ordering
+		for (const unreferenced of [torn, wrongSize, trailing, sizeless, empty]) {
+			rmSync(getFilePathForBlob(unreferenced), { force: true });
+		}
 	});
 
 	it('bounds the output of a compressed blob whose header understates its size', async () => {
@@ -302,18 +309,23 @@ describe('Blob compression (harper#2443)', () => {
 		const filePath = getFilePathForBlob(blob);
 		assert(statSync(filePath).size < 256 * 1024, 'precondition: a tiny body inflating to 64 MiB');
 		let peakInflated = 0;
-		const originalInflate = zlib.createInflate;
-		zlib.createInflate = (...args) => {
-			const inflater = originalInflate.apply(zlib, args);
-			inflater.on('data', (chunk) => (peakInflated += chunk.length));
-			return inflater;
-		};
+		// zlib's exports are non-writable (a plain assignment is silently ignored), so redefine
+		const originalInflate = Object.getOwnPropertyDescriptor(zlib, 'createInflate');
+		Object.defineProperty(zlib, 'createInflate', {
+			...originalInflate,
+			value: (...args) => {
+				const inflater = originalInflate.value.apply(zlib, args);
+				inflater.on('data', (chunk) => (peakInflated += chunk.length));
+				return inflater;
+			},
+		});
 		try {
 			assert.equal(await inflatesToExactly(filePath, 1000), false);
 			assert.equal(await inflatesToExactly(filePath, bombSize), true);
 		} finally {
-			zlib.createInflate = originalInflate;
+			Object.defineProperty(zlib, 'createInflate', originalInflate);
 		}
+		assert(peakInflated >= bombSize, `the exact expectation must inflate the whole body (saw ${peakInflated})`);
 		assert(
 			peakInflated < bombSize + 4 * 1024 * 1024,
 			`the short expectation must abandon the inflate early (saw ${peakInflated})`
@@ -324,10 +336,48 @@ describe('Blob compression (harper#2443)', () => {
 		setCompressionConfig({ default: { codec: 'deflate' } });
 		const compressedBlob = await putBlob(155, Buffer.from('hinted payload '.repeat(2000)), { type: 'text/plain' });
 		assert.equal(headerTypeOf(compressedBlob), DEFLATE_TYPE);
-		assert.equal((await CompressionTest.get(155)).blob.codec, 'deflate', 'compressed refs must carry the hint');
+		assert.equal((await CompressionTest.get(155)).blob.storedCodec, 'deflate', 'compressed refs must carry the hint');
 		setCompressionConfig(undefined);
 		await putBlob(156, Buffer.from('unhinted payload '.repeat(2000)), { type: 'text/plain' });
-		assert.equal((await CompressionTest.get(156)).blob.codec, undefined, 'uncompressed refs must carry none');
+		assert.equal((await CompressionTest.get(156)).blob.storedCodec, undefined, 'uncompressed refs must carry none');
+	});
+
+	it('the hint does not touch a blob property named codec', async () => {
+		setCompressionConfig({ default: { codec: 'deflate' } });
+		const blob = await createBlob(Buffer.from('media payload '.repeat(2000)), { type: 'text/plain' });
+		blob.codec = 'h264';
+		await CompressionTest.put({ id: 157, blob });
+		await blob.written;
+		assert.equal(headerTypeOf(blob), DEFLATE_TYPE);
+		const stored = (await CompressionTest.get(157)).blob;
+		assert.equal(stored.codec, 'h264', 'a user codec property must survive compression');
+		assert.equal(stored.storedCodec, 'deflate');
+	});
+
+	it('a compressed stream() reads through the descriptor it opened, without reopening the file', async () => {
+		const payload = Buffer.alloc(3 * 1024 * 1024, 'single open ');
+		await putBlob(158, payload, { compress: true, type: 'text/plain' });
+		const record = await CompressionTest.get(158);
+		const opens = [];
+		const originalOpen = fs.open;
+		fs.open = function (path, ...rest) {
+			opens.push(path);
+			return originalOpen.call(fs, path, ...rest);
+		};
+		const originalCreateReadStream = fs.createReadStream;
+		let streamOpenedByPath = false;
+		fs.createReadStream = function (path, options) {
+			if (options?.fd === undefined) streamOpenedByPath = true;
+			return originalCreateReadStream.call(fs, path, options);
+		};
+		try {
+			assert((await streamToBuffer(record.blob.stream())).equals(payload));
+		} finally {
+			fs.open = originalOpen;
+			fs.createReadStream = originalCreateReadStream;
+		}
+		assert.equal(opens.length, 1, `the read must open the file exactly once (saw ${opens.length})`);
+		assert.equal(streamOpenedByPath, false, 'the inflate source must reuse the descriptor of the first read');
 	});
 
 	it('a compressed read waits for the writer and times out with a retryable 503', async function () {
@@ -390,8 +440,7 @@ describe('Blob compression (harper#2443)', () => {
 		const uncompressed = await putBlob(181, payload, { type: 'text/plain' });
 		assert.equal(openStoredBlobBody(uncompressed), undefined);
 
-		// a slice cannot be represented as a raw body
-		assert.equal(openStoredBlobBody(record180Slice(blob)), undefined);
+		assert.equal(openStoredBlobBody(blob.slice(100, 200)), undefined, 'a slice has no raw body');
 
 		// a writer holding the lock means the body may still be streaming: decline
 		const lockKey = getFileId(blob) + ':blob';
@@ -401,6 +450,30 @@ describe('Blob compression (harper#2443)', () => {
 		} finally {
 			store.unlock(lockKey);
 		}
+
+		// closing without streaming releases the reader; a later stream() is refused
+		const closed = openStoredBlobBody(blob);
+		closed.close();
+		await assert.rejects(closed.stream().next(), /already consumed or closed/);
+
+		// the file replaced between the decision and the stream (an in-place repair publishing an
+		// uncompressed result over the path) is refused as transient, not streamed as a torn deflate body
+		const opened = openStoredBlobBody(blob);
+		const original = readFileSync(filePath);
+		const repaired = Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 0, 0]), payload]);
+		repaired.writeUIntBE(payload.length, 2, 6);
+		writeFileSync(filePath + '.replacement', repaired);
+		renameSync(filePath + '.replacement', filePath);
+		try {
+			await assert.rejects(opened.stream().next(), (error) => {
+				assert.equal(error.statusCode, 503, 'a replaced stored body must be retryable (503)');
+				assert.match(error.message, /replaced before it was streamed/);
+				return true;
+			});
+		} finally {
+			writeFileSync(filePath, original);
+		}
+		assert((await streamToBuffer((await CompressionTest.get(180)).blob.stream())).equals(payload));
 
 		// a torn body passes the header sniff but must fail verification before the stream ends cleanly
 		truncateSync(filePath, statSync(filePath).size - 10);
@@ -417,10 +490,6 @@ describe('Blob compression (harper#2443)', () => {
 				return true;
 			}
 		);
-
-		function record180Slice(fullBlob) {
-			return fullBlob.slice(100, 200);
-		}
 	});
 
 	it('a stored-body write round-trips through openStoredBlobBody (receiver becomes a faithful relay)', async () => {
