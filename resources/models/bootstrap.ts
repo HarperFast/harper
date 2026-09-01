@@ -407,6 +407,10 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 		publishEntry(desiredEntry, backend, extras, isBoot);
 	}
 	const desiredKeys = new Set(desired.map((d) => slotKey(d.kind, d.logicalName)));
+	// Module-backed slots retained across a removal are absent from both `desiredKeys` and `presentKeys`,
+	// so neither routing loop below would restore them after the clear; track them so their recorded
+	// fallback survives — else the primary keeps serving while its failover is silently dropped.
+	const retainedModuleKeys = new Set<string>();
 	for (const [key, slot] of [...installedSlots]) {
 		if (presentKeys.has(key)) continue;
 		// Module-backed entries are restart-managed on reload in BOTH directions: refusing an added
@@ -415,6 +419,7 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 			harperLogger.warn(
 				`models.${slot.kind}.${slot.logicalName}: module-backed entries require a restart to remove; keeping it`
 			);
+			retainedModuleKeys.add(key);
 			continue;
 		}
 		if (slot.backend) removeIfCurrent(slot.kind, slot.logicalName, slot.backend);
@@ -441,6 +446,14 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 	for (const [key, slot] of installedSlots) {
 		if (desiredKeys.has(key) || !presentKeys.has(key)) continue;
 		if (slot.fallback?.length && getBackend(slot.kind, slot.logicalName)) {
+			setFallbackGroup(slot.kind, slot.logicalName, slot.fallback);
+		}
+	}
+	// Retained module-backed slots keep serving under their old name, so they keep the fallback group
+	// they were built with — a restart-managed removal must not half-apply as a silent failover loss.
+	for (const key of retainedModuleKeys) {
+		const slot = installedSlots.get(key);
+		if (slot?.fallback?.length && getBackend(slot.kind, slot.logicalName)) {
 			setFallbackGroup(slot.kind, slot.logicalName, slot.fallback);
 		}
 	}

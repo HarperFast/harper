@@ -186,6 +186,33 @@ describe('models config hot reload (#2344)', () => {
 			assert.equal(getBackend('embedding', 'renamed'), undefined, 'new name waits for a restart');
 		});
 
+		it('a removed module-backed primary keeps serving AND keeps its fallback routing', async () => {
+			// A module-backed entry is restart-managed on removal, so the primary keeps serving. Its
+			// fallback group must survive the routing rebuild too, or removing/renaming it silently
+			// disables failover while the primary still answers — the half-apply this path prevents.
+			const counting = join(__dirname, 'fixtures', 'counting-backend-module.cjs');
+			await bootstrapModels({
+				models: block({
+					default: { backend: counting, model: 'm1', fallback: ['backup'] },
+					backup: openaiEntry('sk-backup'),
+				}),
+			});
+			const primary = getBackend('embedding', 'default');
+			assert.ok(primary, 'module-backed primary installed at boot');
+
+			await applyModelsConfig(block({ backup: openaiEntry('sk-backup') }));
+
+			assert.equal(getBackend('embedding', 'default'), primary, 'module-backed primary keeps serving');
+			const candidates = getRouter().route({ kind: 'embedding', logicalName: 'default', requires: [] });
+			assert.strictEqual(candidates.length, 2, 'fallback routing survives the restart-managed removal');
+			assert.strictEqual(candidates[0], primary, 'the retained primary still leads');
+			assert.strictEqual(
+				candidates[1],
+				getBackend('embedding', 'backup'),
+				'router still returns the previous fallback candidate'
+			);
+		});
+
 		it('refuses to run a module factory on reload, retaining the previous projection', async () => {
 			// A module factory may compose with other entries; staged reload construction cannot
 			// honor that ordering, so changing one keeps restart semantics (review decision).
