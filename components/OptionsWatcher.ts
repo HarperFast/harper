@@ -530,10 +530,6 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			this.#emitChange([], next);
 			return;
 		}
-		if (this.#readyEmitted && isDeepStrictEqual(next, this.#scopedConfig)) {
-			this.#scopeConfigured = true;
-			return;
-		}
 		this.#scopeConfigured = true;
 		this.#scopedConfig = next;
 		this.#emitReady(this.#scopedConfig);

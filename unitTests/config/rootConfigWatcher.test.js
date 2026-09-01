@@ -82,6 +82,21 @@ describe('RootConfigWatcher', function () {
 		configWatcher.close();
 	});
 
+	it('does not publish config staged before an arming fallback', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'staged' }));
+		const configWatcher = new RootConfigWatcher();
+
+		configWatcher.handleChange();
+		assert.deepEqual(configWatcher.config, { foo: 'staged' }, 'the pre-arm read must stage the first config');
+		rmSync(this.configFilePath);
+
+		const [value] = await configWatcher.ready;
+
+		assert.strictEqual(value, undefined, 'an arming fallback must not publish the superseded staged config');
+		assert.strictEqual(configWatcher.config, undefined, 'the watcher must settle without a loaded config');
+		configWatcher.close();
+	});
+
 	it('should detect changes written via temp-file + rename (atomic write)', async () => {
 		const initial = { foo: 'bar' };
 		writeFileSync(this.configFilePath, stringify(initial));
