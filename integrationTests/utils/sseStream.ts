@@ -1,20 +1,11 @@
 /**
  * Shared helpers for the SSE streaming regression suites in `integrationTests/server/`
- * (`sse-finite-generator.test.ts`, `sse-throw-midstream.test.ts`).
+ * (`sse-finite-generator.test.ts`, `sse-throw-midstream.test.ts`): a bounded SSE consumer, a
+ * `/Probe/` reader for the lifecycle counters those fixtures keep, and an `hdb.log`
+ * uncaughtException counter — the bugs these suites anchor surfaced as an uncaught throw inside
+ * the worker rather than as a bad response.
  *
- * These suites all need the same three things, and each grew its own copy before this module
- * existed:
- *
- *  - an SSE consumer bounded by an AbortController, so a regressed hang fails the test in
- *    bounded time instead of wedging the whole run;
- *  - a `/Probe/` reader for the per-resource open/close lifecycle counters the fixtures keep,
- *    with a polling form for the counters that settle asynchronously after a response ends;
- *  - an `hdb.log` reader that counts `uncaughtException` lines, since the bugs these suites
- *    anchor (#1628, #1789) manifested as an uncaught throw inside the worker rather than as a
- *    bad response.
- *
- * Nothing here is Harper-specific beyond the `/Probe/` path convention and the log layout; the
- * raw-socket capture used by `stream-error-contract.test.ts` is a deliberately different
+ * The raw-socket capture in `stream-error-contract.test.ts` is a deliberately different
  * technique (it inspects chunk framing and the exact close mechanism) and is not shared.
  */
 import { readFileSync } from 'node:fs';
@@ -28,11 +19,10 @@ import { URL } from 'node:url';
 export interface SseResult {
 	status: number;
 	raw: string;
-	/** parsed `data: ...` payloads, in order */
 	events: string[];
-	/** which response event resolved the request, or null if our own timeout fired first */
+	/** which response event resolved the request; null when our own timeout fired instead */
 	terminatedBy: 'end' | 'error' | 'close' | null;
-	/** did our own timeout abort fire (i.e. the response hung)? */
+	/** did our own timeout abort fire — i.e. the response hung? */
 	aborted: boolean;
 	errored: Error | null;
 	elapsedMs: number;
@@ -51,6 +41,10 @@ function parseEvents(raw: string): string[] {
  * Resolves on whichever of 'end' / 'error' / 'close' fires first: the pipeline()-based teardown
  * introduced by #1789 closes the response abruptly rather than via a clean 'end' when the source
  * generator rejects, so waiting only for 'end' would read a correct abrupt close as a hang.
+ *
+ * `aborted` is decided by our own timer rather than by which event won the race to settle. An
+ * abort destroys the response, so a hung stream emits 'close' too — attributing the settle to
+ * that event would report a genuine hang as a bounded termination.
  */
 export function consumeSse(
 	urlStr: string,
@@ -82,7 +76,8 @@ export function consumeSse(
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			result.terminatedBy = terminatedBy;
+			result.aborted = timedOut;
+			result.terminatedBy = timedOut ? null : terminatedBy;
 			result.errored = err ?? null;
 			result.elapsedMs = Date.now() - start;
 			result.events = parseEvents(result.raw);
@@ -98,8 +93,8 @@ export function consumeSse(
 			} as any,
 			(res) => {
 				result.status = res.statusCode ?? 0;
-				// Decode incrementally: a bare d.toString('utf8') per chunk corrupts any multi-byte
-				// character that straddles a TCP chunk boundary into U+FFFD.
+				// A bare d.toString('utf8') per chunk corrupts any multi-byte character that straddles
+				// a TCP chunk boundary into U+FFFD.
 				const decoder = new StringDecoder('utf8');
 				res.on('data', (d: Buffer) => {
 					result.raw += decoder.write(d);
@@ -113,23 +108,13 @@ export function consumeSse(
 			}
 		);
 		req.on('error', (e: any) => {
-			if (timedOut || e?.name === 'AbortError') {
-				if (settled) return;
-				settled = true;
-				clearTimeout(timer);
-				result.aborted = true;
-				result.elapsedMs = Date.now() - start;
-				result.events = parseEvents(result.raw);
-				resolvePromise(result);
-			} else {
-				finish('error', e);
-			}
+			if (timedOut || e?.name === 'AbortError') finish(null);
+			else finish('error', e);
 		});
 		req.end();
 	});
 }
 
-/** Read the fixture's `/Probe/` resource: readiness plus its open/close lifecycle counters. */
 export function getProbe<T>(restBase: string, authHeaders: Record<string, string>, timeoutMs = 3_000): Promise<T> {
 	const url = new URL(`${restBase}/Probe/`);
 	const lib = url.protocol === 'https:' ? https : http;
@@ -174,16 +159,36 @@ export async function waitForProbe<T>(
 	const deadline = Date.now() + timeoutMs;
 	let probe: T | null = null;
 	while (Date.now() < deadline) {
-		probe = await getProbe<T>(restBase, authHeaders).catch(() => null);
+		probe = await getProbe<T>(restBase, authHeaders, Math.max(1, deadline - Date.now())).catch(() => null);
 		if (probe && predicate(probe)) return probe;
 		await sleep(50);
 	}
 	return probe;
 }
 
-/** Where the test instance writes hdb.log, across framework versions that expose either field. */
-export function resolveHdbLogPath(harper: { logDir?: string; dataRootDir?: string }): string {
-	return harper.logDir ? join(harper.logDir, 'hdb.log') : join(harper.dataRootDir as string, 'log', 'hdb.log');
+/**
+ * Wait for a freshly installed SSE fixture's `/Probe/` route, and take the suite's baseline
+ * uncaughtException count.
+ *
+ * The baseline is read with `readFileSync`, not `readLogSafe`: an hdb.log this suite cannot read
+ * (a changed harness layout, a log not yet created) would otherwise turn every uncaughtException
+ * assertion downstream into a vacuous pass, since a missing file counts zero both before and
+ * after. Failing setup is the only way that stays visible.
+ */
+export async function awaitFixtureReady(
+	harper: { logDir?: string; dataRootDir?: string },
+	restBase: string,
+	authHeaders: Record<string, string>,
+	timeoutMs = 30_000
+): Promise<{ logPath: string; uncaughtBaseline: number }> {
+	const logPath = harper.logDir ? join(harper.logDir, 'hdb.log') : join(harper.dataRootDir as string, 'log', 'hdb.log');
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const probe = await getProbe<{ ok?: boolean }>(restBase, authHeaders).catch(() => null);
+		if (probe?.ok !== undefined) return { logPath, uncaughtBaseline: countUncaught(readFileSync(logPath, 'utf8')) };
+		await sleep(250);
+	}
+	throw new Error(`Probe route did not become ready within ${timeoutMs}ms at ${restBase}/Probe/`);
 }
 
 export function readLogSafe(logPath: string): string {
@@ -194,8 +199,12 @@ export function readLogSafe(logPath: string): string {
 	}
 }
 
+export function uncaughtLines(log: string): string[] {
+	return log.split('\n').filter((line) => line.includes('uncaughtException'));
+}
+
 export function countUncaught(log: string): number {
-	return log.split('\n').filter((line) => line.includes('uncaughtException')).length;
+	return uncaughtLines(log).length;
 }
 
 /**

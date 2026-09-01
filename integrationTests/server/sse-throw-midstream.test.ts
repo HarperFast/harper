@@ -45,16 +45,15 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import {
+	awaitFixtureReady,
 	consumeSse,
 	countUncaught,
-	getProbe,
 	readLogSafe,
-	resolveHdbLogPath,
 	uncaughtAfterSettle,
+	uncaughtLines,
 	waitForProbe,
 } from '../utils/sseStream.ts';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
@@ -82,6 +81,7 @@ suite(
 		let restBase = '';
 		let authHeaders: Record<string, string> = {};
 		let logPath = '';
+		let uncaughtBaseline = 0;
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
@@ -91,24 +91,7 @@ suite(
 			client = createApiClient(ctx.harper);
 			restBase = client.restURL;
 			authHeaders = { Authorization: client.headers.Authorization as string };
-			logPath = resolveHdbLogPath(ctx.harper as any);
-
-			const deadline = Date.now() + 30_000;
-			let ready = false;
-			while (Date.now() < deadline) {
-				try {
-					const p = await getProbe<ProbeSnap>(restBase, authHeaders);
-					if (p?.ok !== undefined) {
-						ready = true;
-						break;
-					}
-				} catch {
-					/* not ready */
-				}
-				await sleep(250);
-			}
-			ok(ready, 'Probe route did not become ready within 30 seconds');
-			readFileSync(logPath, 'utf8');
+			({ logPath, uncaughtBaseline } = await awaitFixtureReady(ctx.harper as any, restBase, authHeaders));
 		});
 
 		after(async () => {
@@ -220,7 +203,6 @@ suite(
 			'Z: liveness canary -- server survived all throw-mid-stream probes, no new uncaughtException',
 			{ timeout: 30_000 },
 			async () => {
-				const logBefore = readLogSafe(logPath);
 				const p = await waitForProbe<ProbeSnap>(
 					restBase,
 					authHeaders,
@@ -241,19 +223,18 @@ suite(
 				);
 				ok(p!.clean.opened >= 1 && p!.clean.closed >= 1, 'CleanGen should show a matched open/close pair');
 
-				await sleep(1_000); // same non-event settle as the per-case sweeps above
-				const logAfter = readLogSafe(logPath);
-				const newLines = logAfter.slice(logBefore.length);
-				const newUncaught = newLines.split('\n').filter((l) => l.includes('uncaughtException')).length;
-				if (newUncaught > 0) {
-					console.log(
-						`[QA-559][Z] NEW uncaughtException lines found:\n${newLines
-							.split('\n')
-							.filter((l) => l.includes('uncaughtException'))
-							.join('\n')}`
-					);
+				// Measured against the baseline taken in before(), so a case whose own delta check was
+				// outrun by the log flush is still caught here.
+				await sleep(1_000);
+				const offenders = uncaughtLines(readLogSafe(logPath));
+				if (offenders.length > uncaughtBaseline) {
+					console.log(`[QA-559][Z] NEW uncaughtException lines:\n${offenders.slice(uncaughtBaseline).join('\n')}`);
 				}
-				strictEqual(newUncaught, 0, 'no uncaughtException should have appeared anywhere across the whole suite');
+				strictEqual(
+					offenders.length - uncaughtBaseline,
+					0,
+					'no uncaughtException should have appeared anywhere across the whole suite'
+				);
 			}
 		);
 	}
