@@ -128,7 +128,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// Application scopes watch their own config.yaml and are never overlaid.
 		const rootConfigFile = isRootConfigFilename(filePath);
 		this.#isRootConfig = isRootConfig ?? rootConfigFile;
-		this.#synchronousRead = this.#isRootConfig || rootConfigFile;
+		this.#synchronousRead = this.#isRootConfig;
 		this.#logger = logger || loggerWithTag(name);
 		this.#usingPolling = watchTarget.mustPoll;
 		this.#closed = false;

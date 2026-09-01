@@ -181,7 +181,7 @@ describe('OptionsWatcher', () => {
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
-		const options = new OptionsWatcher(NAME, configFilePath, undefined, false);
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
 		await options.ready;
 
 		const updated = { ...CONFIG, [NAME]: { ...OPTIONS, str: 'updated' } };
@@ -771,7 +771,7 @@ describe('OptionsWatcher', () => {
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
-		const options = new OptionsWatcher(NAME, configFilePath, undefined, false);
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
 		await options.ready;
 
 		const listenerError = Object.assign(new Error('listener file missing'), { code: 'ENOENT' });

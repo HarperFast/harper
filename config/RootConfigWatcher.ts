@@ -96,16 +96,16 @@ export class RootConfigWatcher extends EventEmitter {
 		}
 	}
 
-	// `harper_logger.start()` awaits `ready` with no timeout, so a read that ends without a config —
-	// exhausted, empty past the ladder, or unparseable — has to settle the barrier and let the
-	// logger boot on its defaults. It settles with no config rather than with `{}`: an empty
-	// object is a configuration that turns logging off, and a consumer cannot tell it apart from
-	// one the file really carried. The warning that precedes each call is the record of what
-	// failed; a later watcher event still delivers the real config as a `change`.
-	#stageBootFallback() {
+	// `harper_logger.start()` awaits `ready` with no timeout, so every terminal outcome has to
+	// settle the barrier. A failed read discards an earlier staged value, but a watcher error keeps
+	// it because no later read superseded it. No config is represented by `undefined`, not `{}`:
+	// an empty object is a configuration that turns logging off.
+	#stageBootFallback(discardStaged = true) {
 		if (this.#readyEmitted) return;
-		this.#config = undefined;
-		this.#configLoaded = false;
+		if (discardStaged) {
+			this.#config = undefined;
+			this.#configLoaded = false;
+		}
 		this.#readyStaged = true;
 		this.#emitReady();
 	}
@@ -171,7 +171,7 @@ export class RootConfigWatcher extends EventEmitter {
 				// above reopens only once, so this is the watch's terminal outcome and the barrier
 				// has to settle or `harper_logger.start()` awaits it forever.
 				this.#barrierOpen = true;
-				this.#stageBootFallback();
+				this.#stageBootFallback(false);
 			}
 			return;
 		}
@@ -179,7 +179,7 @@ export class RootConfigWatcher extends EventEmitter {
 		// settle the barrier: the error is this read's terminal outcome. The scan is not over
 		// though, so the arm gate stays closed and a later `ready` still takes the arming re-read.
 		this.#barrierOpen = true;
-		this.#stageBootFallback();
+		this.#stageBootFallback(false);
 		// Settling the barrier removed the `error` listener `once(this, 'ready')` attached, and an
 		// emit with none left throws the error back into chokidar's dispatch — as does a consumer
 		// that throws from its own handler.

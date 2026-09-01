@@ -899,10 +899,11 @@ watchers over the same file, so an **async** read in a watcher is unsatisfiable 
 libuv opens the descriptor on the threadpool but closes it from JS, which cannot run while the same
 thread is blocked in the retry loop. The worker then deadlocks against its own
 watcher and burns the entire budget before failing (harper#2191, reproduced by the Windows
-integration job). Both root watchers — `RootConfigWatcher.handleChange` and
-`OptionsWatcher.#handleChange` when `#synchronousRead` — therefore go through
-`readConfigFileSync()`, which holds no descriptor across a yield. Do not "modernize" either back to
-`fsPromises.readFile`.
+integration job). Both root watchers — `RootConfigWatcher.handleChange` and an `OptionsWatcher`
+explicitly identified as a root-config watcher — therefore go through `readConfigFileSync()`, which
+holds no descriptor across a yield. A component's own config remains asynchronous even if the
+component names it `harper-config.yaml` or `harperdb-config.yaml`. Do not "modernize" root-config
+reads back to `fsPromises.readFile`.
 
 Three constraints follow from it. The reader gates its retry to win32 (`isSharingViolation`); the
 writer does not (`configUtils`' `isRetryableRenameError`, same three codes, any platform). That
@@ -1039,8 +1040,9 @@ Arming is a terminal outcome of its own: chokidar reports a scan that found no f
 publishing what an earlier read staged — a missing config file takes the ladder and settles on the
 defaults instead of holding the barrier open. That fallback must also discard the staged value:
 the arming re-read is authoritative precisely because a write in the unarmed window may have
-superseded it, including by replacing the file with an unusable or missing one. `close()` settles
-the barrier as well.
+superseded it, including by replacing the file with an unusable or missing one. A watcher scan error
+also settles the barrier, but preserves a successfully staged value because no read superseded it.
+`close()` settles the barrier as well.
 
 What settles the barrier is not the same as what the settled value may be _used_ as. A read that
 carried no config settles it carrying nothing — not `{}`, which is a configuration that a consumer

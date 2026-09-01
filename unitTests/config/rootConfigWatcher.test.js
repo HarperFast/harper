@@ -97,6 +97,21 @@ describe('RootConfigWatcher', function () {
 		configWatcher.close();
 	});
 
+	it('keeps config staged before a watcher error settles ready', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'staged' }));
+		const configWatcher = new RootConfigWatcher();
+
+		configWatcher.handleChange();
+		assert.deepEqual(configWatcher.config, { foo: 'staged' }, 'the pre-arm read must stage the first config');
+		configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+		const [value] = await configWatcher.ready;
+
+		assert.deepEqual(value, { foo: 'staged' }, 'a watcher error must settle with the successfully staged config');
+		assert.deepEqual(configWatcher.config, { foo: 'staged' }, 'the watcher must retain the loaded config');
+		configWatcher.close();
+	});
+
 	it('should detect changes written via temp-file + rename (atomic write)', async () => {
 		const initial = { foo: 'bar' };
 		writeFileSync(this.configFilePath, stringify(initial));
