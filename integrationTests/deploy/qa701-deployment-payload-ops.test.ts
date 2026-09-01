@@ -117,11 +117,16 @@ async function callOperationAs(
 		body: JSON.stringify(op),
 	});
 	const raw = Buffer.from(await res.arrayBuffer());
-	let parsed: any = raw.toString('utf8');
-	try {
-		parsed = JSON.parse(parsed);
-	} catch {
-		// leave as text/binary (payload stream case)
+	// A successful get_deployment_payload streams octet-stream bytes; decoding those as UTF-8 would
+	// replace anything non-textual, so binary responses are left to `raw` and `body` stays undefined.
+	let parsed: any;
+	if (!(res.headers.get('content-type') ?? '').includes('application/octet-stream')) {
+		parsed = raw.toString('utf8');
+		try {
+			parsed = JSON.parse(parsed);
+		} catch {
+			// a non-JSON text body is still useful in an assertion message
+		}
 	}
 	return { status: res.status, headers: res.headers, body: parsed, raw };
 }
