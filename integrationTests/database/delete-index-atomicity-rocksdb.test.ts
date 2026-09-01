@@ -214,12 +214,13 @@ suite(
 			const res = await postJSON('/Snapshot/', { seq: ++snapshotSeq });
 			const body = await res.text();
 			strictEqual(res.status, 200, `snapshot control should succeed; got ${res.status} ${body.slice(0, 300)}`);
+			const published = JSON.parse(body).path;
 			strictEqual(
-				JSON.parse(body).path,
+				published,
 				join(ctx.harper.dataRootDir, SNAPSHOT_DIR, String(snapshotSeq)),
 				'the oracle must only ever open a checkpoint at the path the fixture derives for this sequence'
 			);
-			snapshotPath = JSON.parse(body).path;
+			snapshotPath = published;
 		}
 		function openDbi(name: string): RocksDatabase {
 			// Reading the live directory instead would reintroduce the compaction race the checkpoint

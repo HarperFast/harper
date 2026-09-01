@@ -68,8 +68,9 @@ export class Snapshot extends Resource {
 	static loadAsInstance = false;
 	async post(query, body) {
 		const b = body || query || {};
-		const seq = Number(b.seq);
-		if (!Number.isInteger(seq) || seq < 0)
+		const seq = b.seq;
+		// Not Number(b.seq): that coerces true, null and [] to a valid-looking 1 or 0.
+		if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0)
 			throw new Error(`Snapshot control invalid: seq must be a non-negative integer, got ${JSON.stringify(b.seq)}`);
 		const rootStore = getTable('ItemF').primaryStore.rootStore;
 		if (typeof rootStore?.createCheckpoint !== 'function')
