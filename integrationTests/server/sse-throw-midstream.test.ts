@@ -129,7 +129,10 @@ suite(
 					authHeaders,
 					(snapshot) => snapshot.throwFirst.closed >= 1
 				);
-				ok(probe && probe.throwFirst.closed >= 1, 'ThrowFirst generator should have completed cleanup');
+				ok(
+					(probe?.throwFirst?.closed ?? 0) >= 1,
+					`ThrowFirst generator should have completed cleanup; probe: ${JSON.stringify(probe)}`
+				);
 				const uncaughtAfter = await uncaughtAfterSettle(logPath);
 				strictEqual(
 					uncaughtAfter - uncaughtBefore,
@@ -167,7 +170,10 @@ suite(
 				}
 
 				const probe = await waitForProbe<ProbeSnap>(restBase, authHeaders, (snapshot) => snapshot.throwMid.closed >= 1);
-				ok(probe && probe.throwMid.closed >= 1, 'ThrowMid generator should have completed cleanup');
+				ok(
+					(probe?.throwMid?.closed ?? 0) >= 1,
+					`ThrowMid generator should have completed cleanup; probe: ${JSON.stringify(probe)}`
+				);
 				const uncaughtAfter = await uncaughtAfterSettle(logPath);
 				strictEqual(
 					uncaughtAfter - uncaughtBefore,
