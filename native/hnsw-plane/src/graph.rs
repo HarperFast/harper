@@ -39,7 +39,13 @@ impl Graph {
     /// so the slot must read as deleted until something rewrites it (heal-on-touch contract;
     /// FLAG_DELETED rather than 0 so hosts can still free/reuse the id).
     fn slot_sanitizer(&self, id: u32) -> impl Fn() + '_ {
-        move || unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = FLAG_DELETED }
+        move || unsafe {
+            let p = self.file.slot_ptr_mut(id);
+            // a dead writer's slot may hold a garbage (or zero-initialized) upper index; a
+            // later raw rewrite would reuse it and clobber another node's hierarchy
+            (p.add(S_UPPER_IDX) as *mut u32).write_unaligned(NO_UPPER);
+            *p.add(S_FLAGS) = FLAG_DELETED;
+        }
     }
 
     fn owner_dead(&self) -> impl Fn(u32) -> bool + '_ {
