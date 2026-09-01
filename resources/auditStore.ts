@@ -10,6 +10,7 @@ import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { asBinary } from 'lmdb';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isReadOnlyMode } from './databases.ts';
 
@@ -118,10 +119,23 @@ const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
+/**
+ * Key of this database's audit retention floor. Its *presence* is what marks the floor trustworthy,
+ * which is why this is not the retired `last-removed` key: values stored there were written by a
+ * path that removed entries first and recorded them afterwards, and were not written by three of the
+ * four other prune paths at all, so a legacy value cannot be told apart from one that carries the
+ * write-ahead and monotonicity guarantees `raiseAuditFloor` now provides.
+ */
+const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
+/** No trustworthy floor: the highest possible floor, so every cursor compares as stale. */
+const AUDIT_FLOOR_UNKNOWN = Infinity;
+/** Floor for a database that has provably removed nothing: below every real audit time. */
+const INITIAL_AUDIT_FLOOR = 1;
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
 let timestampErrored = false;
 export function openAuditStore(rootStore) {
 	let auditStore;
+	let createdStore = false;
 	if (rootStore instanceof RocksDatabase) {
 		auditStore = new RocksTransactionLogStore(rootStore);
 		auditStore.env = {};
@@ -131,9 +145,8 @@ export function openAuditStore(rootStore) {
 			...AUDIT_STORE_OPTIONS,
 		});
 		if (!auditStore) {
-			// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
 			auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
-			updateLastRemoved(auditStore, 1);
+			createdStore = true;
 		}
 		const superGetRange = auditStore.getRange.bind(auditStore);
 		auditStore.getRange = function (options) {
@@ -146,6 +159,7 @@ export function openAuditStore(rootStore) {
 	}
 	rootStore.auditStore = auditStore;
 	auditStore.rootStore = rootStore;
+	establishAuditFloor(auditStore, createdStore);
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
 	auditStore.addDeleteRemovalCallback = function (tableId, table, callback) {
@@ -184,9 +198,13 @@ export function openAuditStore(rootStore) {
 		// Skip audit cleanup/purge in read-only mode
 		if (isReadOnlyMode()) return Promise.resolve();
 		if (auditStore instanceof RocksTransactionLogStore) {
-			auditStore.rootStore.purgeLogs({
-				before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
-			});
+			const before = Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority);
+			// Before the purge, not after: see raiseAuditFloor. RocksDB drops only whole log files, so
+			// most passes purge nothing and this advances the floor to a window edge that still holds
+			// every entry — the conservative direction, and the only one that survives a crash between
+			// the two calls.
+			raiseAuditFloor(auditStore, before);
+			auditStore.rootStore.purgeLogs({ before });
 			return Promise.resolve();
 		}
 
@@ -211,12 +229,17 @@ export function openAuditStore(rootStore) {
 					return;
 				}
 				let deleted = 0;
-				let lastKey: any;
 				try {
+					// remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+					const end = Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority);
+					// Before any removal, so a crash mid-pass cannot leave a floor below entries this pass
+					// already removed. A pass that stops early at MAX_DELETES_PER_CLEANUP leaves the floor
+					// covering more than it removed, which only over-reports staleness. See raiseAuditFloor.
+					raiseAuditFloor(auditStore, end);
 					for (const auditRecord of auditStore.getRange({
 						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 						snapshot: false,
-						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+						end,
 					})) {
 						try {
 							// awaited so a rejection (not just a synchronous throw) is caught here instead of
@@ -225,7 +248,6 @@ export function openAuditStore(rootStore) {
 						} catch (error) {
 							harperLogger.warn('Error removing audit entry', error);
 						}
-						lastKey = auditRecord.key;
 						await new Promise(setImmediate);
 						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
@@ -238,11 +260,9 @@ export function openAuditStore(rootStore) {
 					// rejection instead of a log line — and skips the reschedule below with it
 					harperLogger.warn('Error during audit log cleanup', error);
 				} finally {
-					// resolve() first and unconditionally: updateLastRemoved() below can throw
-					// synchronously if the store transitions to closing/closed mid-pass, and a throw
-					// from the rest of this block must not skip settling `resolution` — that's the
-					// serialization barrier every later pass awaits, and never settling it wedges the
-					// cleanup loop for the life of the store.
+					// resolve() first and unconditionally: a throw from the rest of this block must not
+					// skip settling `resolution` — that's the serialization barrier every later pass
+					// awaits, and never settling it wedges the cleanup loop for the life of the store.
 					resolve();
 					if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
@@ -251,9 +271,7 @@ export function openAuditStore(rootStore) {
 						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
 						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
 					} else {
-						// if we did delete something, update our updates since timestamp
-						updateLastRemoved(auditStore, lastKey);
-						// and do updates faster
+						// if we did delete something, do updates faster
 						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
 					}
 					scheduleAuditCleanup();
@@ -302,17 +320,121 @@ export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Pro
 	return tombstoneRemoval ? Promise.all([tombstoneRemoval, auditRemoval]).then(() => undefined) : auditRemoval;
 }
 
-function updateLastRemoved(auditStore, lastKey) {
-	FLOAT_TARGET[0] = lastKey;
-	auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+/**
+ * Read the recorded floor, normalizing anything we cannot trust to AUDIT_FLOOR_UNKNOWN. Reads bytes
+ * rather than going through the store's value decoder, which would read these eight raw float bytes
+ * as an audit entry (and as msgpack on RocksDB). Callers get a number in every case: a NaN or
+ * negative floor read as a number would make one of `cursor >= floor` / `cursor < floor` report
+ * safety, and which of the two a consumer writes must not decide whether corrupt metadata fails
+ * closed.
+ */
+function decodeAuditFloor(stored: any): number {
+	// RocksDB's getBinarySync is typed to also return a length; anything that is not exactly the
+	// eight bytes we write is metadata written by something else.
+	if (stored?.byteLength !== 8) return AUDIT_FLOOR_UNKNOWN;
+	FLOAT_BUFFER.set(stored);
+	const floor = FLOAT_TARGET[0];
+	return Number.isFinite(floor) && floor >= 0 ? floor : AUDIT_FLOOR_UNKNOWN;
 }
 
-export function getLastRemoved(auditStore) {
-	const lastRemoved = auditStore.get(Symbol.for('last-removed'));
-	if (lastRemoved) {
-		FLOAT_BUFFER.set(lastRemoved);
-		return FLOAT_TARGET[0];
+/**
+ * Read-modify-write the floor under one store transaction. `resolve` receives the recorded floor
+ * (AUDIT_FLOOR_UNKNOWN when there is none) and returns the value to store, or undefined to leave it
+ * alone. The transaction is the point: pruning is not confined to one worker — the retention loop,
+ * a boot purge, `deleteHistory` and `delete_transaction_logs_before` can all advance the floor — and
+ * two unsynchronized read-then-writes can interleave so the lower cutoff lands last, leaving a floor
+ * below history the higher one already removed. In read-only mode nothing is written, which is
+ * consistent because nothing is pruned there either.
+ */
+function updateAuditFloor(auditStore: any, resolve: (current: number) => number | undefined): void {
+	if (isReadOnlyMode()) return;
+	const rootStore = auditStore.rootStore;
+	if (auditStore instanceof RocksTransactionLogStore) {
+		rootStore.transactionSync(
+			(txn) => {
+				const floor = resolve(decodeAuditFloor(txn.getBinarySync(AUDIT_FLOOR_KEY)));
+				if (floor === undefined) return;
+				FLOAT_TARGET[0] = floor;
+				txn.putSync(AUDIT_FLOOR_KEY, asBinary(FLOAT_BUFFER));
+			},
+			{ retryOnBusy: true }
+		);
+	} else {
+		rootStore.transactionSync(() => {
+			const floor = resolve(decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY)));
+			if (floor === undefined) return;
+			FLOAT_TARGET[0] = floor;
+			auditStore.putSync(AUDIT_FLOOR_KEY, FLOAT_BUFFER);
+		});
 	}
+}
+
+/**
+ * Raise the floor to `cutoff`, the exclusive lower bound of the history a prune is about to make
+ * unreachable.
+ *
+ * **Call this before removing anything.** A floor written after the removal is lost if the process
+ * dies in between, and the surviving lower floor then certifies a cursor whose history is gone.
+ * Ordering it first also means it covers a prune that removes less than `cutoff` spans (a RocksDB
+ * purge that finds no whole droppable file, a retention pass that stops at MAX_DELETES_PER_CLEANUP):
+ * over-reporting costs a consumer one unnecessary resync, under-reporting loses its data silently.
+ *
+ * Throws if the floor cannot be persisted, which is why it is called first — the throw is what stops
+ * the prune from proceeding unrecorded. Never lowers the floor, so a narrower prune cannot undo a
+ * wider one, and a store whose floor is unknown stays unknown rather than being talked down to a
+ * cutoff that says nothing about the history it has already lost.
+ */
+export function raiseAuditFloor(auditStore: any, cutoff: number): void {
+	updateAuditFloor(auditStore, (current) => (Number.isFinite(cutoff) && cutoff > current ? cutoff : undefined));
+}
+
+/**
+ * Give a database a trustworthy floor if it has none.
+ *
+ * The floor record's *presence* is the trust marker, so a store without one is a store whose
+ * retention history we cannot account for: it may have been pruned by a version that recorded no
+ * floor, or be the empty audit store an LMDB→RocksDB migration deliberately leaves behind
+ * (`bin/copyDb.ts` does not migrate the audit store, so the records and their resumable cursors
+ * outlive their history). Stamping the current time makes that a one-time resync epoch — cursors
+ * from before this moment are treated as stale because we genuinely do not know whether they are —
+ * where a permissive baseline would certify every one of them.
+ *
+ * `createdStore` is the one case we can prove: a store created in this call has removed nothing, so
+ * it gets the permissive baseline. In read-only mode nothing is written and the floor stays unknown,
+ * which is the fail-closed answer for a process that cannot record what it does not know.
+ */
+function establishAuditFloor(auditStore: any, createdStore: boolean): void {
+	updateAuditFloor(auditStore, (current) =>
+		current === AUDIT_FLOOR_UNKNOWN ? (createdStore ? INITIAL_AUDIT_FLOOR : Date.now()) : undefined
+	);
+}
+
+/**
+ * The floor of this database's retained audit history: every audit entry at or after the returned
+ * time is still retained, so a consumer whose last-processed cursor is `>=` it can resume
+ * incrementally, and one below it has lost history it needs and must resync. Returns `Infinity` when
+ * the floor is unknown, which fails closed — no cursor compares as safe.
+ *
+ * The time domain is the audit-log key (`localTime`), the same domain as subscription events and
+ * MQTT durable-session `startTime`, so consumers compare cursors directly.
+ *
+ * **Database-scoped**, and deliberately conservative: the audit store is per-database and its
+ * entries carry a `tableId`, so a per-table floor would need a scan for the first entry matching
+ * that table. `cursor >= floor` therefore means no entry of *any* table in the database was removed
+ * below the cursor. `Table.deleteHistory` prunes one table out of that shared log and raises the
+ * whole database's floor, which can overstate the floor for its siblings.
+ *
+ * **A moment-in-time observation.** Retention can advance between this call and whatever the caller
+ * does with the answer, so a check-then-resume sequence has a window where the floor moves under it.
+ * Closing that requires validating the cursor inside the resume itself (harper#2448); until then a
+ * lost race degrades to the truncation that happens today, never to anything worse.
+ *
+ * Under the storage-pressure retention shrink (`auditRetention / (1 + priority²)`) this reports
+ * post-hoc reality rather than the configured window — that is the contract, not an approximation
+ * of it.
+ */
+export function getAuditFloor(auditStore: any): number {
+	return decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY));
 }
 export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CLEANUP_DELAY) {
 	auditRetention = retentionTime;
@@ -331,7 +453,11 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
 export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
 	if (isReadOnlyMode()) return [];
-	return rootStore.purgeLogs({ before: Date.now() - auditRetention });
+	const before = Date.now() - auditRetention;
+	// Ahead of the purge (see raiseAuditFloor) — and safe to reach the audit store here, because
+	// initStores opens it before replayLogs runs this.
+	raiseAuditFloor((rootStore as any).auditStore, before);
+	return rootStore.purgeLogs({ before });
 }
 
 const HAS_RECORD = 16;

@@ -90,4 +90,13 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 		assert.strictEqual(typeof results.entries_deleted, 'number');
 		assert.strictEqual(typeof results.log_files_deleted, 'number');
 	});
+
+	it('raises the audit staleness floor to the purge cutoff (harper#2447)', async () => {
+		// This is a prune path like any other: a consumer resuming from a cursor below `timestamp` has
+		// to be told to resync rather than handed a silently short replay.
+		const timestamp = Date.now() + 2000;
+		await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp });
+		assert.strictEqual(TableA.oldestRetainedAuditTime(), timestamp);
+		assert.strictEqual(TableB.oldestRetainedAuditTime(), timestamp, 'the floor is database-scoped');
+	});
 });

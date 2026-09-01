@@ -72,7 +72,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { HAS_BLOBS, auditRetention, removeAuditEntry, raiseAuditFloor, getAuditFloor } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -5538,9 +5538,15 @@ export function makeTable(options) {
 			}
 			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
+			// Before removing anything (see raiseAuditFloor). This is the prune the floor cannot be
+			// derived from the surviving log for: it takes ONE table out of a database-scoped log, so
+			// siblings' entries below `endTime` remain and the oldest surviving entry can sit below the
+			// newest removed one. LMDB only — RocksTransactionLogStore.remove() is a no-op, so a RocksDB
+			// deleteHistory removes nothing and must not claim it did.
+			if (!isRocksDB) raiseAuditFloor(auditStore, endTime);
 			try {
 				for (const auditRecord of auditStore.getRange({
-					start: 0,
+					start: 1, // as in getHistory: 0 encodes to all zero bytes and overlaps the symbol keys
 					end: endTime,
 				})) {
 					await rest(); // yield to other async operations
@@ -5582,6 +5588,24 @@ export function makeTable(options) {
 				throw firstRemovalError ?? new Error('Every removal attempted during deleteHistory failed');
 			}
 			return entriesDeleted;
+		}
+		/**
+		 * The floor of retained audit history, in the same time domain as `subscribe`'s `startTime`:
+		 * a consumer whose last-processed cursor is `>=` the returned value can resume incrementally,
+		 * and one below it has lost history it needs and must resync from a full read. `Infinity` means
+		 * the floor is unknown — including on any database opened for the first time by a version that
+		 * did not record one — and fails closed, so no cursor reads as safe.
+		 *
+		 * Database-scoped, a moment-in-time observation, and conservative in one direction only: it can
+		 * ask for a resync that was not strictly necessary, never certify a cursor whose history is
+		 * gone. See `getAuditFloor` in auditStore.ts for the full contract.
+		 */
+		static oldestRetainedAuditTime(): number {
+			if (!auditStore)
+				throw new Error(
+					`The database holding ${tableName} has no audit log, so it has no retained audit history to report`
+				);
+			return getAuditFloor(auditStore);
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
 			for (const auditRecord of auditStore.getRange({

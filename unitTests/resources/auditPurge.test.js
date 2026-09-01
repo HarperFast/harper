@@ -20,15 +20,41 @@ describe('purgeAgedLogs', () => {
 		setAuditRetention(originalRetention);
 	});
 
+	// purgeAgedLogs raises the database's audit staleness floor before purging (harper#2447), so the
+	// stand-in needs the audit store that write goes through. `order` records both steps: the floor
+	// write has to come first, or a crash between them leaves a floor certifying purged history.
 	function fakeStore(purgedFiles = ['000001.txnlog', '000002.txnlog']) {
 		const calls = [];
-		return {
+		const order = [];
+		const store = {
 			calls,
+			order,
+			floorWrites: [],
 			purgeLogs(options) {
 				calls.push(options);
+				order.push('purge');
 				return purgedFiles;
 			},
 		};
+		store.auditStore = {
+			// Stands in for the store transaction the real read-modify-write runs inside.
+			rootStore: {
+				transactionSync(callback) {
+					order.push('floor');
+					callback();
+				},
+			},
+			// A real store always has a floor by this point — openAuditStore establishes one — and the
+			// baseline is what a database that has provably pruned nothing carries. An absent floor would
+			// instead mean "unknown", which a prune deliberately leaves alone.
+			getBinary: () => new Uint8Array(Float64Array.of(1).buffer),
+			putSync(_key, value) {
+				// `value` is a live view over a reused module buffer, so copy before decoding it.
+				const copy = new Uint8Array(value);
+				store.floorWrites.push(new Float64Array(copy.buffer)[0]);
+			},
+		};
+		return store;
 	}
 
 	it('purges log files older than the configured audit retention window', () => {
@@ -46,6 +72,22 @@ describe('purgeAgedLogs', () => {
 			`cutoff ${cutoff} should be ~Date.now() - 60000 (in [${before - 60_000}, ${after - 60_000}])`
 		);
 		assert.deepEqual(purged, ['000001.txnlog', '000002.txnlog'], 'returns the purged file list');
+	});
+
+	it('records the staleness floor at the same cutoff, before purging anything', () => {
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		const before = Date.now();
+		purgeAgedLogs(store);
+
+		assert.deepEqual(store.order, ['floor', 'purge'], 'the floor must be recorded before the purge runs');
+		assert.deepEqual(store.floorWrites.length, 1, 'exactly one floor write');
+		assert.equal(
+			store.floorWrites[0],
+			store.calls[0].before,
+			'the floor and the purge cutoff must be the same instant'
+		);
+		assert.ok(store.floorWrites[0] >= before - 60_000, 'floor should track the retention window');
 	});
 
 	it('tracks the retention window when it changes', () => {
