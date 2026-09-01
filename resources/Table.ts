@@ -15,7 +15,7 @@ import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
@@ -60,6 +60,7 @@ import {
 	searchByIndex,
 	findAttribute,
 	estimateCondition,
+	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
 	executeConditions,
@@ -82,13 +83,18 @@ import {
 	type Entry,
 	type StructureCounts,
 	entryMap,
+	storedFieldsOnly,
 } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
+import {
+	onStorageReclamation,
+	getStorageSpaceStats,
+	removeStorageReclamationHandler,
+} from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
@@ -132,6 +138,7 @@ type MaybePromise<T> = T | Promise<T>;
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
+const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const MAX_CONCURRENT_HISTORY_REMOVALS = 10;
 const MAX_CONCURRENT_LMDB_HISTORY_REMOVALS = 1000;
@@ -143,6 +150,20 @@ const EVICTION_BATCH_SIZE = 100;
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
+// Guardrails for `Prefer: count=exact`: once the requested page has been collected, counting the rest
+// of the match set is bounded by BOTH a row cap and a wall-clock budget, so a paginated read can't turn
+// into an unbounded scan. Exceeding either reports an unknown total (Content-Range `.../*`) rather than
+// truncating the page. These bound the count tail, not the page itself; a genuinely expensive query
+// (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
+const MAX_EXACT_COUNT_SCAN = 1_000_000;
+const MAX_EXACT_COUNT_MS = 1_000;
+// Largest page a `Prefer: count=` request will materialize. A request whose limit exceeds this (or is
+// not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
+// streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
+const MAX_COUNT_PAGE = 10_000;
+// How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
+// check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
+const COUNT_YIELD_INTERVAL = 2_048;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -472,6 +493,7 @@ export function makeTable(options) {
 		description,
 		hidden,
 		cacheControl,
+		isBranch,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	evictionMs ??= 0;
@@ -484,6 +506,7 @@ export function makeTable(options) {
 	if (!properties) properties = projectAttributesToProperties(attributes);
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
+	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
@@ -515,6 +538,10 @@ export function makeTable(options) {
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
 	let cleanupTimer: NodeJS.Timeout;
+	let recordExpirationInterval: NodeJS.Timeout;
+	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
+	const pendingCleanupResolvers = new Set<() => void>();
+	let disposed = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
@@ -535,6 +562,18 @@ export function makeTable(options) {
 	// it, so such a table takes the guarded serialization path rather than the raw fast path.
 	let hasSurfacedComputed = false;
 	let runningRecordExpiration: boolean;
+	const reportedResolverCollisions = new Set<string>();
+	// Reached from record materialization, so it can never be the reason a record fails to load: the
+	// name is marked before the log call, and a throwing log sink is swallowed.
+	function reportResolverCollision(name: string) {
+		if (reportedResolverCollisions.has(name)) return;
+		reportedResolverCollisions.add(name);
+		try {
+			logger.warn?.(
+				`Table "${tableName}" has a stored value under "${name}", which is a computed attribute; the stored value is being discarded and the computed value used instead`
+			);
+		} catch {}
+	}
 	const isRocksDB = primaryStore instanceof RocksDatabase;
 	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
 	let idIncrementer: BigInt64ArrayAndMaxSafeId;
@@ -551,9 +590,10 @@ export function makeTable(options) {
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
-	onStorageReclamation(primaryStore.path, (priority: number) => {
+	const reclamationHandler = (priority: number) => {
 		if (hasSourceGet) return scheduleCleanup(priority);
-	});
+	};
+	onStorageReclamation(primaryStore.path, reclamationHandler);
 
 	class Updatable extends GenericTrackedObject implements RecordObject {
 		declare set: (property: string, value: any) => void;
@@ -1476,7 +1516,25 @@ export function makeTable(options) {
 			return coerceType(id, primaryKeyAttribute);
 		}
 
+		/**
+		 * A branch's Table classes deliberately carry the BASE's logical database name so an
+		 * application's schema and code resolve unchanged (harper#643). That makes every schema
+		 * mutation resolve against the global catalog — a `dropTable()` through a branch would delete
+		 * the live base table. Reads and writes are per-branch and unaffected; DDL is refused until a
+		 * branch owns a schema identity of its own.
+		 */
+		static assertSchemaMutable(operation: string) {
+			if (!isBranch) return;
+			const error: any = new Error(
+				`Cannot ${operation} through a branched database: '${tableName}' resolves to the schema of base ` +
+					`database '${databaseName}', so the change would apply to the base rather than the branch`
+			);
+			error.statusCode = 400;
+			throw error;
+		}
+
 		static async dropTable() {
+			TableResource.assertSchemaMutable('drop a table');
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
@@ -3585,6 +3643,10 @@ export function makeTable(options) {
 				}
 			}
 			const select = target.select;
+			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
+			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
+			// injected full-scan condition). Used to pick the count-estimate source below.
+			const hasUserConditions = Array.isArray(target.conditions) && target.conditions.length > 0;
 			if (conditions.length === 0) {
 				conditions = [{ attribute: primaryKey, comparator: 'greater_than', value: true }];
 			}
@@ -3668,12 +3730,117 @@ export function makeTable(options) {
 				readTxn,
 				transformToRecord
 			);
+			const offset = target.offset || 0;
+			const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
+			// `Prefer: count=` (REST pagination): materialize the requested page and attach a total record
+			// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
+			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
+			// table estimate. Opt-in only — the default streaming path below is untouched.
+			//
+			// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
+			// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
+			// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
+			// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
+			// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
+			// normal streaming path with no count. This bounds the offset too: without it a huge offset would
+			// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
+			const pageLimit = target.limit as number;
+			if (
+				target.count &&
+				Number.isInteger(pageLimit) &&
+				pageLimit >= 0 &&
+				pageLimit <= MAX_COUNT_PAGE &&
+				Number.isInteger(offset) &&
+				offset >= 0 &&
+				offset + pageLimit <= MAX_EXACT_COUNT_SCAN
+			) {
+				const wantExact = target.count === 'exact';
+				const pageEnd = offset + pageLimit;
+				const countStart = performance.now();
+				// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
+				// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
+				// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
+				// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
+				// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
+				// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
+				// filter. Report the total as unavailable for those rather than advertising it as count=exact
+				// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
+				// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
+				const touchesCustomIndex = (conds: any[]): boolean =>
+					conds.some((c: any) => {
+						if (!c) return false;
+						if (c.conditions) return touchesCustomIndex(c.conditions);
+						const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
+						return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+					});
+				const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
+				return (async () => {
+					const page: any = [];
+					let scanned = 0;
+					let exact = true;
+					try {
+						for await (const record of results) {
+							if (scanned >= offset && scanned < pageEnd) page.push(record);
+							scanned++;
+							// A store whose async iterator settles synchronously (the common indexed-scan case) would
+							// otherwise let this drain spin as one uninterrupted microtask run, blocking the event loop
+							// for the whole count. Yield to the macrotask queue periodically so concurrent requests and
+							// I/O still make progress during a large exact scan.
+							if ((scanned & (COUNT_YIELD_INTERVAL - 1)) === 0) await new Promise((resolve) => setImmediate(resolve));
+							// The page window [offset, pageEnd) is always collected in full first — the guardrail
+							// only ever abandons the running TOTAL, never truncates the page body.
+							if (scanned >= pageEnd) {
+								// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
+								// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
+								if (!wantExact || approximateResultSet) break;
+								// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
+								// large match set can't turn a bounded page fetch into an unbounded scan.
+								if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
+									exact = false;
+									break;
+								}
+							}
+						}
+					} finally {
+						// We own the iteration here (no results.onDone consumer), so release the read
+						// transaction unconditionally — including when the drain throws — or the snapshot leaks.
+						txn.doneReadTxn();
+					}
+					let total: number | null;
+					if (wantExact) {
+						// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
+						// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
+						total = exact && !approximateResultSet ? scanned : null;
+					} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
+						// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
+						// estimate; guessing would both mislead and disclose cardinality the filter hides.
+						total = null;
+					} else if (!hasUserConditions) {
+						total = estimatedEntryCount(primaryStore);
+					} else {
+						// Estimate from the real conditions only — drop the planner's synthetic `sort`
+						// pseudo-condition, which otherwise contributes a bogus (entryCount/2) cardinality.
+						const est = estimateCondition(TableResource)({
+							conditions: conditions.filter((c: any) => c.comparator !== 'sort'),
+							operator: operator ? String(operator).toLowerCase() : 'and',
+						});
+						total = isFinite(est) ? Math.round(est) : null;
+					}
+					// For an estimate, never report a total below the last row actually returned — keeps the
+					// Content-Range valid (start-end/total) when an estimate undershoots a non-empty page.
+					// Exact totals are authoritative (and an empty page past the end must not be clamped up).
+					if (!wantExact && total != null && page.length > 0 && total < offset + page.length) {
+						total = offset + page.length;
+					}
+					page.recordCount = total;
+					page.recordCountExact = wantExact && exact && !approximateResultSet;
+					page.selectApplied = true;
+					page.getColumns = getColumns;
+					return page;
+				})() as any;
+			}
 			// apply any offset/limit after all the sorting and filtering
-			if (target.offset || target.limit !== undefined)
-				results = results.slice(
-					target.offset,
-					target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
-				);
+			if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
@@ -4132,6 +4299,10 @@ export function makeTable(options) {
 			}
 			if (!auditStore) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {
+				// Turning auditing on is a schema write, and a branch's Table classes carry the base's
+				// logical name: without this a subscribe through a branched application would enable
+				// auditing on the live base table for every other consumer, with no DDL call involved.
+				TableResource.assertSchemaMutable('enable auditing for a subscription');
 				table({ table: tableName, database: databaseName, schemaDefined, attributes, audit: true });
 			}
 			const getFullRecord = !request.rawEvents;
@@ -4209,7 +4380,8 @@ export function makeTable(options) {
 							// been written, so are fresh in memory.
 							const entry: Entry = primaryStore.getEntry(id);
 							if (entry) {
-								if (entry.version !== auditRecord.version) return; // out of order event, with old update, don't send anything
+								// staleness is a record-version comparison; auditRecord.version is the log key on RocksDB
+								if (entry.version !== (auditRecord.recordVersion ?? auditRecord.version)) return; // out of order event, with old update, don't send anything
 								value = entry.value;
 								type = entry.metadataFlags & INVALIDATED ? 'invalidate' : value ? 'put' : 'delete';
 							} else {
@@ -4905,6 +5077,7 @@ export function makeTable(options) {
 			return this.#version;
 		}
 		static async addAttributes(attributesToAdd: Attribute[]) {
+			TableResource.assertSchemaMutable('add attributes');
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributesToAdd) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
@@ -4922,6 +5095,7 @@ export function makeTable(options) {
 			return (TableResource as any).indexingOperation;
 		}
 		static async removeAttributes(names: string[]) {
+			TableResource.assertSchemaMutable('remove attributes');
 			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
@@ -5090,6 +5264,9 @@ export function makeTable(options) {
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
 				attribute.resolve = null; // reset this
+				// Also the setter, or a reload that turns a @relationship into a @computed keeps the
+				// relationship's setter and writes a foreign key from a computed assignment.
+				attribute.set = null;
 				const relationship = attribute.relationship;
 				const computed = attribute.computed;
 				// Register the default embedder unless an author override is set. Sits outside
@@ -5251,14 +5428,19 @@ export function makeTable(options) {
 			enumerableAttributeNames = [];
 			enumerableRelationDefs.clear();
 			hasSurfacedComputed = false;
+			const resolvedAttributeNames: string[] = [];
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {
+					resolvedAttributeNames.push(name);
 					Object.defineProperty(primaryStore.encoder.structPrototype, name, {
 						get() {
 							return attribute.resolve(this, contextStorage.getStore()); // it is only possible to get the context from ALS, we don't have a direct reference to the current context
 						},
 						set(related) {
+							// A read-only resolver must never be the reason a record fails to materialize — the
+							// same reason the one-to-many branch above installs a no-op.
+							if (!attribute.set) return reportResolverCollision(name);
 							return attribute.set(this, related);
 						},
 						configurable: true,
@@ -5284,6 +5466,12 @@ export function makeTable(options) {
 			if (enumerableAttributeNames.length > 0)
 				installEnumerableToJSON(primaryStore.encoder.structPrototype, this, hasSurfacedComputed);
 			else if (primaryStore.encoder.structPrototype.toJSON) delete primaryStore.encoder.structPrototype.toJSON;
+			// Undefined rather than an empty set for a table with no resolved attributes: that is the
+			// check which keeps the projection off an unaffected store's write path.
+			primaryStore.encoder.resolvedAttributeNames =
+				resolvedAttributeNames.length > 0 ? new Set(resolvedAttributeNames) : undefined;
+			primaryStore.encoder.resolvedAttributeNamesList = resolvedAttributeNames;
+			primaryStore.encoder.surfacedToJSON = primaryStore.encoder.structPrototype.toJSON;
 		}
 		// #section: computed-history
 		static setComputedAttribute(attribute_name, resolver) {
@@ -5469,8 +5657,14 @@ export function makeTable(options) {
 			}
 			return Promise.all(promises);
 		}
+		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
+			disposed = true;
+			clearTimeout(cleanupTimer);
+			settlePendingCleanup();
+			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
+			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
@@ -5492,9 +5686,14 @@ export function makeTable(options) {
 		}
 	);
 
-	TableResource.updatedAttributes(); // on creation, update accessors as well
-	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
-	if (expiresAtProperty) runRecordExpirationEviction();
+	try {
+		TableResource.updatedAttributes(); // on creation, update accessors as well
+		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
+		if (expiresAtProperty) runRecordExpirationEviction();
+	} catch (error) {
+		TableResource.cleanup();
+		throw error;
+	}
 	return TableResource;
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
 		let hasChanges;
@@ -6018,6 +6217,11 @@ export function makeTable(options) {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
+		const existingRecord = existingEntry?.value;
+		const inheritedTimestamp = context?.timestamp || context?.transaction?.timestamp;
+		const sourceTimestamp =
+			inheritedTimestamp ||
+			(isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime());
 		let whenResolved, timer;
 		// We start by locking the record so that there is only one resolution happening at once;
 		// if there is already a resolution in process, we want to use the results of that resolution
@@ -6056,10 +6260,8 @@ export function makeTable(options) {
 		// lock acquired — this request will actually load from source
 		setLoadedFromSource(target, true);
 
-		const existingRecord = existingEntry?.value;
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
-		// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
-		// want a timestamp later than the current transaction
+		// with the canonical data, we are simply fulfilling our local copy of the canonical data.
 		// we create a new context for the source, we want to determine the timestamp and don't want to
 		// attribute this to the current user
 		const sourceContext = {
@@ -6095,13 +6297,37 @@ export function makeTable(options) {
 			// before the drain's fail-closed timeout below.
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
-				let updatedRecord;
+				let updatedRecord, assignCreatedTime, sourceVersion;
 				let hasChanges, invalidated;
 				try {
 					updatedRecord = await throttledCallToSource(source, id, sourceContext, existingEntry);
 					invalidated = metadataFlags & INVALIDATED;
-					let version = sourceContext.lastModified || (invalidated && existingVersion);
-					hasChanges = invalidated || version > existingVersion || !existingRecord;
+					const reportedVersion = sourceContext.lastModified;
+					const validReportedVersion =
+						typeof reportedVersion === 'number' &&
+						Number.isFinite(reportedVersion) &&
+						reportedVersion > 0 &&
+						reportedVersion <= MAX_DATE_TIMESTAMP;
+					if (validReportedVersion) {
+						// A record version is also this node's ordering token (precedesExistingVersion), so a
+						// source-reported version ahead of local time would make every subsequent local write look
+						// out-of-order and be discarded until wall-clock caught up — freezing the row. Honor what
+						// the source reports, but never beyond now.
+						const versionCeiling = Math.max(sourceTimestamp, Date.now());
+						sourceVersion = Math.min(reportedVersion, versionCeiling);
+						if (sourceVersion !== reportedVersion) {
+							logger.trace?.(
+								`Capping future source version for ${tableName} id ${id}: ${reportedVersion} -> ${sourceVersion}`
+							);
+							if (!warnedFutureSourceVersion) {
+								warnedFutureSourceVersion = true;
+								logger.warn?.(
+									`The source for ${tableName} reported a lastModified ahead of local time (${new Date(reportedVersion).toISOString()}) for id ${id}; capping cached record versions at local time`
+								);
+							}
+						}
+					} else sourceVersion = sourceTimestamp;
+					hasChanges = invalidated || (validReportedVersion && reportedVersion > existingVersion) || !existingRecord;
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'success');
 					if (responseHeaders)
@@ -6115,7 +6341,7 @@ export function makeTable(options) {
 							if (status === 304) {
 								// revalidation of our current cached record
 								updatedRecord = existingRecord;
-								version = existingVersion;
+								sourceVersion = existingVersion;
 							} else if (!CACHEABLE_STATUS_CODES.has(status)) {
 								// non-cacheable status - propagate to client without caching
 								throw new ServerError(updatedRecord.body || 'Error from source', status);
@@ -6158,12 +6384,42 @@ export function makeTable(options) {
 						// before stamping the primary key and created/updated times below (records are immutable —
 						// 5.2 record caching relies on it — so we must not write through the frozen object).
 						if (isFrozenRecordObject(updatedRecord)) updatedRecord = { ...updatedRecord };
+						// A writable resolver (a relationship) keeps its meaning for source payloads: a source
+						// returning the related object instead of the foreign key gets the key derived, the way
+						// the promotion setter used to. Derivation runs against a probe first — a malformed
+						// value (a scalar, an object without the related primary key) derives undefined, and
+						// applying that would durably wipe the foreign key. The projection then drops the
+						// resolver-owned key itself, so the cache-fill response cannot be the one read
+						// reporting the source's value.
+						const resolvedNames = primaryStore.encoder.resolvedAttributeNamesList;
+						if (resolvedNames) {
+							for (const name of resolvedNames) {
+								if (Object.hasOwn(updatedRecord, name)) {
+									const resolvedAttribute = findAttribute(attributes, name);
+									if (resolvedAttribute?.set && updatedRecord[name] != null) {
+										const probe = {};
+										resolvedAttribute.set(probe, updatedRecord[name]);
+										for (const key in probe) {
+											const derived = probe[key];
+											const usable = Array.isArray(derived) ? derived.every((one) => one != null) : derived != null;
+											if (usable) updatedRecord[key] = derived;
+										}
+									}
+								}
+							}
+						}
+						updatedRecord = storedFieldsOnly(primaryStore.encoder, updatedRecord);
 						if (primaryKey && updatedRecord[primaryKey] !== id) updatedRecord[primaryKey] = id;
 					}
+					assignCreatedTime = createdTimeProperty && updatedRecord?.[createdTimeProperty.name] == null;
 					resolved = true;
+					const resolvedVersion =
+						isRocksDB && updatedRecord && existingVersion != null
+							? Math.max(sourceVersion, existingVersion)
+							: sourceVersion;
 					const resolvedEntry: Entry = {
 						key: id,
-						version,
+						version: resolvedVersion,
 						value: updatedRecord,
 						expiresAt: sourceContext.expiresAt,
 						metadataFlags: 0,
@@ -6220,16 +6476,32 @@ export function makeTable(options) {
 				const sourceWrite: any = {
 					key: id,
 					store: primaryStore,
-					entry: existingEntry,
+					entry: undefined,
 					nodeName: 'source',
-					commit: (txnTime, existingEntry, _retry, transaction: any) => {
+					commit: (_txnTime, existingEntry, _retry, transaction: any) => {
 						sourceWrite.skipped = false; // reset on each retry; cleanup happens after commit if still true
-						if (existingEntry?.version !== existingVersion) {
-							// don't do anything if the version has changed
+						const racedVersion = existingEntry?.version;
+						// A first fill may replace a record that raced it only when its candidate version strictly
+						// orders after that record. The comparison has to be replica-independent, so a tie leaves the
+						// raced record in place: precedesExistingVersion() would break the tie with *this* node's
+						// name, and a fill from a shared source has no node identity of its own, so two replicas
+						// resolving the same tie could keep different values at the same version.
+						const replacesRacedRecord = racedVersion == null || sourceVersion > racedVersion;
+						if (
+							racedVersion !== existingVersion &&
+							// Revalidations retain exact-CAS semantics; first fills use deterministic ordering.
+							(existingVersion != null || !updatedRecord || !replacesRacedRecord)
+						) {
+							logger.trace?.(
+								`Discarding resolved record from source with id: ${id}, source version: ${sourceVersion}, current version: ${racedVersion}`
+							);
 							sourceWrite.skipped = true;
 							return;
 						}
-						updateIndices(id, existingRecord, updatedRecord, transaction && { transaction });
+						const currentRecord = existingEntry?.value;
+						const recordVersion =
+							isRocksDB && racedVersion != null ? Math.max(sourceVersion, racedVersion) : sourceVersion;
+						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
 						if (updatedRecord) {
 							if (existingEntry) {
 								context.previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
@@ -6240,22 +6512,22 @@ export function makeTable(options) {
 							if (updatedTimeProperty) {
 								updatedRecord[updatedTimeProperty.name] =
 									updatedTimeProperty.type === 'Date'
-										? new Date(txnTime)
+										? new Date(recordVersion)
 										: updatedTimeProperty.type === 'String'
-											? new Date(txnTime).toISOString()
-											: txnTime;
+											? new Date(recordVersion).toISOString()
+											: recordVersion;
 							}
-							if (createdTimeProperty && updatedRecord[createdTimeProperty.name] == null) {
-								const existingCreatedTime = existingEntry?.value?.[createdTimeProperty.name];
+							if (assignCreatedTime) {
+								const existingCreatedTime = currentRecord?.[createdTimeProperty.name];
 								if (existingCreatedTime != null) {
 									updatedRecord[createdTimeProperty.name] = existingCreatedTime;
 								} else {
 									updatedRecord[createdTimeProperty.name] =
 										createdTimeProperty.type === 'Date'
-											? new Date(txnTime)
+											? new Date(recordVersion)
 											: createdTimeProperty.type === 'String'
-												? new Date(txnTime).toISOString()
-												: txnTime;
+												? new Date(recordVersion).toISOString()
+												: recordVersion;
 								}
 							}
 							const residency = residencyFromFunction(TableResource.getResidency(updatedRecord, context));
@@ -6287,14 +6559,14 @@ export function makeTable(options) {
 								residencyId = getResidencyId(residency);
 							}
 							logger.trace?.(
-								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
+								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
 							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 							updateRecord(
 								id,
 								updatedRecord,
 								existingEntry,
-								txnTime,
+								recordVersion,
 								omitLocalRecord ? INVALIDATED : 0,
 								(audit && (hasChanges || omitLocalRecord)) || null,
 								{
@@ -6312,14 +6584,14 @@ export function makeTable(options) {
 							if (sourceContext.expiresAt) scheduleCleanup();
 						} else if (existingEntry) {
 							logger.trace?.(
-								`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`
+								`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
 							if (audit || trackDeletes) {
 								updateRecord(
 									id,
 									null,
 									existingEntry,
-									txnTime,
+									recordVersion,
 									0,
 									(audit && hasChanges) || null,
 									{ user: (sourceContext as any)?.user, transaction, tableToTrack: tableName },
@@ -6485,7 +6757,13 @@ export function makeTable(options) {
 			},
 		};
 	}
+	function settlePendingCleanup() {
+		for (const resolve of pendingCleanupResolvers) resolve();
+		pendingCleanupResolvers.clear();
+	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
+		// a reclamation run may still hold this class's handler after cleanup(); a promise here would never settle
+		if (disposed) return;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority
@@ -6498,8 +6776,18 @@ export function makeTable(options) {
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
-			if (!cleanupInterval) return;
-			return new Promise((resolve) => {
+			if (!cleanupInterval) {
+				// no replacement pass is being scheduled, so nothing is left to settle a superseded one
+				settlePendingCleanup();
+				return;
+			}
+			// This pass adopts the awaiters of the pass whose timer it just cleared: they settle when
+			// this pass's scan completes, so a reclamation run is never told the storage was reclaimed
+			// before any scan ran. It has to run now, though — that run blocks its whole path on the
+			// promise, and the replacement's own slot can be a full interval out.
+			if (pendingCleanupResolvers.size > 0) runImmediately = true;
+			return new Promise<void>((resolve) => {
+				pendingCleanupResolvers.add(resolve);
 				const startOfYear = new Date();
 				startOfYear.setMonth(0);
 				startOfYear.setDate(1);
@@ -6512,6 +6800,7 @@ export function makeTable(options) {
 					? Date.now()
 					: Math.ceil((Date.now() - startOfYear.getTime()) / nextInterval) * nextInterval + startOfYear.getTime();
 				const startNextTimer = (nextScheduled) => {
+					if (disposed) return;
 					logger.trace?.(`Scheduled next cleanup scan at ${new Date(nextScheduled)}`);
 					// noinspection JSVoidFunctionReturnValueUsed
 					cleanupTimer = setTimeout(
@@ -6522,8 +6811,11 @@ export function makeTable(options) {
 								const rootStore = primaryStore.rootStore;
 								if (rootStore.status !== 'open') {
 									clearTimeout(cleanupTimer);
+									settlePendingCleanup();
 									return;
 								}
+								// snapshot: an awaiter that arrives during this scan belongs to the pass that supersedes it
+								const settling = [...pendingCleanupResolvers];
 								const MAX_CLEANUP_CONCURRENCY = 50;
 								const outstandingCleanupOperations = new Array(MAX_CLEANUP_CONCURRENCY);
 								let cleanupIndex = 0;
@@ -6603,7 +6895,10 @@ export function makeTable(options) {
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
-								resolve(undefined);
+								for (const settle of settling) {
+									pendingCleanupResolvers.delete(settle);
+									settle();
+								}
 								cleanupPriority = 0; // reset the priority
 							})),
 						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number
@@ -6622,10 +6917,10 @@ export function makeTable(options) {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (getWorkerIndex() === 0) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
-			setInterval(async () => {
+			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (runningRecordExpiration) return;
+				if (disposed || runningRecordExpiration) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;

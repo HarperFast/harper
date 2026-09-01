@@ -100,25 +100,48 @@ let hdbProperties;
 
 let rootConfig;
 
-function updateLogger(logger: any, logOptions: any, name?: string) {
-	logger.rotation = logOptions.rotation;
+// `mainLoggerRef` defaults to the module's private `mainLogger` singleton (the real production
+// behavior) but can be overridden by callers (currently just tests) so the inheritance decision
+// below can be exercised against a throwaway logger without reaching into module-private state.
+export function updateLogger(logger: any, logOptions: any, name?: string, mainLoggerRef: any = mainLogger) {
+	// Fall back to the main logger's rotation (like level/path below) so an external/component
+	// logger with no rotation block of its own inherits maxSize/interval/etc rather than losing
+	// rotation entirely (#1877). Excluded when `logger` IS mainLoggerRef: the fallback would just
+	// reassign mainLogger.rotation to itself, making it impossible to ever clear main's rotation.
+	const inheritedRotation = logOptions.rotation ?? (logger === mainLoggerRef ? undefined : mainLoggerRef?.rotation);
+	if (inheritedRotation && inheritedRotation === mainLoggerRef?.rotation) {
+		// This logger has no rotation block of its own and is inheriting main's wholesale — but
+		// inheriting `rotation.path` too would point this logger's archives at wherever main
+		// archives to. If this logger's file lives on a different filesystem/volume than that
+		// directory, the rotator's fs.rename() there fails with EXDEV and the tick error leaks
+		// (contained in logRotator.ts) without ever rotating this log. Strip the inherited path so
+		// rotation instead defaults beside this logger's own path (logRotator's own <log dir>/rotated
+		// fallback); an explicit `rotation.path` in this logger's own config still wins, since that
+		// goes through `logOptions.rotation` above, not this fallback. Clone rather than mutate:
+		// `inheritedRotation` is the literal object shared by mainLogger.rotation and every other
+		// component that inherited it.
+		const { path: _inheritedPath, ...rotationWithoutPath } = inheritedRotation;
+		logger.rotation = rotationWithoutPath;
+	} else {
+		logger.rotation = inheritedRotation;
+	}
 	let path = logOptions.path;
 	if (path) {
 		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
 	} else if (logOptions.root) {
 		path = join(logOptions.root, logName);
 	} else {
-		path = mainLogger.path;
+		path = mainLoggerRef.path;
 		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
 	}
 	if (path) logger.path = path;
 	else console.error('No path for logger', logOptions);
-	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLogger?.level ?? LOG_LEVEL_HIERARCHY.info;
+	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLoggerRef?.level ?? LOG_LEVEL_HIERARCHY.info;
 	updateConditional(logger);
 	logger.logToStdstreams = logOptions.stdStreams ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
-	logger.tag = logOptions.tag ?? ((mainLogger.path === logger.path || externalLogger.path === logger.path) && name);
+	logger.tag = logOptions.tag ?? ((mainLoggerRef.path === logger.path || externalLogger.path === logger.path) && name);
 }
 // creates a logger where the methods are only defined if they are within the log level.
 // Using this conditional logger means that every method call must be optional like log.trace?.('message),
@@ -383,7 +406,19 @@ module.exports = {
 	disableStdio,
 	isStdioBrokenError,
 	externalLogger,
+	updateLogger,
 };
+
+// Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
+// text back into the file logger this is the fallback for, and swallows a broken pipe - there is
+// nowhere left to report it.
+function writeToStdioDirectly(stream, text) {
+	try {
+		nativeStdWrite.call(stream, text);
+	} catch {
+		// stdio is gone too
+	}
+}
 
 // A bare no-op would read as permanent backpressure to a pipe()'d source; this drains and
 // discards instead.
@@ -727,6 +762,8 @@ export function createLogger(options: any = {} as any) {
 	return logger;
 }
 const LOG_TIME_USAGE_THRESHOLD = 100;
+// How long to write straight to stdio after the log file refuses an append.
+const APPEND_RETRY_COOLDOWN = 5000;
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
  * @param path
@@ -735,7 +772,7 @@ const LOG_TIME_USAGE_THRESHOLD = 100;
  */
 function getFileLogger(path, rotation, isExternalInstance) {
 	let logger = fileLoggers.get(path);
-	let logFD, loggedFDError, logTimer;
+	let logFD, loggedFDError, loggedAppendError, logTimer, retryAppendAfter;
 	let logBuffer;
 	let logTimeUsage = 0;
 	if (!logger) {
@@ -788,14 +825,37 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	// this is called on a timer, and will write the log buffer to the file
 	function logQueuedData(entry?: any) {
 		openLogFile(undefined);
-		if (logFD) {
+		const payload = logBuffer ? logBuffer.join('') : entry;
+		// A file that just refused a write will refuse the next one too, and every attempt costs a
+		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
+		// is the request path at full rate. Go straight to stdio until the cooldown expires.
+		if (logFD && !(retryAppendAfter > performance.now())) {
 			let startTime = performance.now();
-			fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry);
+			try {
+				fs.appendFileSync(logFD, payload);
+				// Both cleared, so a volume that fills again months later reports itself again
+				retryAppendAfter = undefined;
+				loggedAppendError = false;
+			} catch (error) {
+				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
+				// A log write must never take the process down: on an exhausted volume this throws from
+				// both inline and timer call sites, making every log statement a crash point (#847).
+				// The fallback goes through nativeStdWrite rather than console because
+				// installStdioGuard routes console output back into this same file logger when
+				// logging.file and logging.console are both on, which would recurse until the stack blew.
+				if (!loggedAppendError) {
+					loggedAppendError = true;
+					writeToStdioDirectly(process.stderr, `Harper cannot write to its log file: ${error}\n`);
+				}
+				writeToStdioDirectly(process.stdout, payload);
+				logBuffer = null;
+				return;
+			}
 			let endTime = performance.now();
 			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
 			// will start buffering
 			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
-		} else if (!loggedFDError) console.log(logBuffer ? logBuffer.join('') : entry);
+		} else writeToStdioDirectly(process.stdout, payload);
 		if (logBuffer) logBuffer = null;
 	}
 
@@ -815,8 +875,13 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			} catch (error) {
 				if (error.code === 'ENOENT' && !isRetry) {
 					// if the directory doesn't exist, create it
-					fs.mkdirpSync(pathModule.dirname(path));
-					return openLogFile(true);
+					try {
+						fs.mkdirpSync(pathModule.dirname(path));
+						return openLogFile(true);
+					} catch (mkdirError) {
+						// creating the log directory can fail for the same reason the log write can
+						error = mkdirError;
+					}
 				}
 				if (!loggedFDError) {
 					loggedFDError = true;
@@ -1846,4 +1911,5 @@ export default {
 	errorForLog,
 	inspectForLog,
 	isErrorLike,
+	updateLogger,
 };

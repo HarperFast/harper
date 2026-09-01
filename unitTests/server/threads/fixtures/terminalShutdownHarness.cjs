@@ -1,11 +1,46 @@
 'use strict';
 
+const { mkdtempSync, rmSync, writeFileSync, writeSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { once } = require('node:events');
 const { waitFor } = require('../../../waitFor.js');
+const { HARPER_CONFIG_FILE } = require('#src/utility/hdbTerms');
 process.env.HARPER_SAFE_MODE = 'true';
+
+// restartWorkers() loads the root components, and loadCertificates() reads the config FILE rather
+// than the in-memory config initTestEnvironment() sets up — with no Harper installed there is none
+// and the restart rejects with ENOENT. ROOTPATH is the lever `harper --ROOTPATH` uses to run
+// without boot properties.
+const rootPath = mkdtempSync(join(tmpdir(), 'harper-terminal-shutdown-'));
+writeFileSync(join(rootPath, HARPER_CONFIG_FILE), `rootPath: ${JSON.stringify(rootPath)}\n`);
+process.env.ROOTPATH = rootPath;
+process.on('exit', () => {
+	// Throwing here would exit the harness non-zero with an irrelevant stack, and the caller reads
+	// any non-zero exit as the mode failing. Windows refuses to remove a tree while anything still
+	// holds a handle under it, and the logger closes its fd on a timer.
+	try {
+		rmSync(rootPath, { force: true, recursive: true });
+	} catch {}
+});
+
 require('#src/utility/environment/environmentManager').initTestEnvironment();
 const manageThreads = require('#js/server/threads/manageThreads');
 const { beginProcessShutdown, restartWorkers, shutdownWorkersNow, startWorker, workers } = manageThreads;
+
+// Bounds a hang rather than asserting how fast a restart is: these waits run in a freshly spawned
+// process on a CI runner that may be doing anything else at the time.
+const WAIT_TIMEOUT_MS = 20_000;
+
+/**
+ * The restart modes race a wait against a restartWorkers() call they do not await until afterwards.
+ * A rejection from it would otherwise sit unhandled while the wait spins to its deadline and then
+ * reports the condition it was watching — "replacement worker was not created" instead of the
+ * ENOENT that actually stopped the restart.
+ */
+function rejectionOf(promise) {
+	return new Promise((resolve, reject) => promise.catch(reject));
+}
 
 async function terminalShutdown() {
 	let starts = 0;
@@ -17,7 +52,10 @@ async function terminalShutdown() {
 	});
 	await once(worker, 'message');
 	const restart = restartWorkers('http');
-	await waitFor(() => workers.length === 2, { timeout: 5000, message: 'replacement worker was not created' });
+	await Promise.race([
+		rejectionOf(restart),
+		waitFor(() => workers.length === 2, { timeout: WAIT_TIMEOUT_MS, message: 'replacement worker was not created' }),
+	]);
 	await shutdownWorkersNow();
 	await restart;
 
@@ -50,7 +88,10 @@ async function unexpectedExit() {
 	await once(worker, 'message');
 	beginProcessShutdown();
 	worker.postMessage('exit');
-	await waitFor(() => workers.length === 0, { timeout: 5000, message: 'unexpected worker exit did not settle' });
+	await waitFor(() => workers.length === 0, {
+		timeout: WAIT_TIMEOUT_MS,
+		message: 'unexpected worker exit did not settle',
+	});
 	process.stdout.write(`${JSON.stringify({ starts, workersAfterExit: workers.length })}\n`);
 }
 
@@ -64,7 +105,10 @@ async function nonOverlappingRestart() {
 	});
 	await once(worker, 'message');
 	const restart = restartWorkers('non-overlapping-test');
-	await waitFor(() => worker.wasShutdown, { timeout: 5000, message: 'worker restart did not begin' });
+	await Promise.race([
+		rejectionOf(restart),
+		waitFor(() => worker.wasShutdown, { timeout: WAIT_TIMEOUT_MS, message: 'worker restart did not begin' }),
+	]);
 	await shutdownWorkersNow();
 	await restart;
 	process.stdout.write(`${JSON.stringify({ starts, workersAfterShutdown: workers.length })}\n`);
@@ -126,6 +170,10 @@ const modes = {
 };
 const run = modes[mode] ?? terminalShutdown;
 run().catch((error) => {
-	console.error(error);
-	process.exitCode = 1;
+	// A worker the failed mode left running holds the event loop open forever, so an exit code
+	// alone never applies and the caller reports a mocha timeout carrying none of this. stdout
+	// because the caller captures it into the assertion message; writeSync because process.exit()
+	// drops a queued write to a pipe.
+	writeSync(1, `${error?.stack ?? error}\n`);
+	process.exit(1);
 });

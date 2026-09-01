@@ -476,39 +476,6 @@ describe('Scope', () => {
 		await scope.close();
 	});
 
-	it('reports an async entry handler failure once, through waitForInitialLoads, not as an unhandled rejection', async () => {
-		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files: 'test.js' } }));
-
-		const scope = new Scope(
-			this.appName,
-			this.pluginName,
-			this.directory,
-			this.configFilePath,
-			new ApplicationScope('test', this.resources, this.server)
-		);
-		await scope.ready;
-
-		const unhandled = [];
-		const collectUnhandled = (reason) => unhandled.push(reason);
-		process.on('unhandledRejection', collectUnhandled);
-		const scopeErrors = [];
-		scope.on('error', (error) => scopeErrors.push(error));
-		try {
-			const failure = new Error('entry handler failed');
-			scope.handleEntry(async () => {
-				throw failure;
-			});
-			await assert.rejects(scope.waitForInitialLoads(), (error) => error === failure);
-			// Node reports a rejection nobody handled at the end of the turn it was rejected in.
-			await new Promise((resolve) => setTimeout(resolve, 20));
-			assert.deepEqual(scopeErrors, [failure], 'the failure is reported to the scope once');
-			assert.deepEqual(unhandled, [], 'the failure must not also escape as an unhandled rejection');
-		} finally {
-			process.off('unhandledRejection', collectUnhandled);
-			await scope.close();
-		}
-	});
-
 	describe('deploy lifecycle integration', () => {
 		// These cases ensure that when a deploy is in flight for the parent
 		// component, file changes from the deploy itself (extract + npm install)
@@ -926,6 +893,140 @@ describe('Scope', () => {
 			const hostOnly = await scopeWithMount({ host: 'api.example.com' });
 			assert.equal(hostOnly.externalBasePath('/assets/'), '/assets/');
 			await hostOnly.close();
+		});
+	});
+
+	describe('initial load failure (#1917)', () => {
+		let openScopes;
+
+		beforeEach(() => {
+			openScopes = [];
+		});
+
+		// Closed here rather than at the end of each test so a failed assertion cannot leave a chokidar
+		// watcher running over the directory afterEach is about to delete.
+		afterEach(async () => {
+			await Promise.all(openScopes.map((scope) => scope.close()));
+		});
+
+		const scopeForFiles = async (files) => {
+			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files } }));
+			const scope = new Scope(
+				this.appName,
+				this.pluginName,
+				this.directory,
+				this.configFilePath,
+				new ApplicationScope('test', this.resources, this.server)
+			);
+			openScopes.push(scope);
+			await scope.ready;
+			return scope;
+		};
+
+		it("settles waitForInitialLoads with the entry handler's own error", async () => {
+			const scope = await scopeForFiles('test.js');
+			const failure = new Error('invalid schema');
+			scope.handleEntry(async () => {
+				throw failure;
+			});
+
+			const initialLoad = scope.waitForInitialLoads();
+			await assert.rejects(initialLoad, (error) => error === failure);
+
+			// The settled load is dropped from the pending set, so a later wait has nothing to await.
+			await new Promise((resolve) => setImmediate(resolve));
+			await scope.waitForInitialLoads();
+		});
+
+		it('settles waitForInitialLoads when the entry handler throws synchronously', async () => {
+			const scope = await scopeForFiles('test.js');
+			const failure = new Error('synchronous schema failure');
+			scope.handleEntry(() => {
+				throw failure;
+			});
+
+			await assert.rejects(scope.waitForInitialLoads(), (error) => error === failure);
+		});
+
+		it('raises no unhandled rejection when the initial load fails', async () => {
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			let scope;
+			try {
+				scope = await scopeForFiles('test.js');
+				scope.handleEntry(async () => {
+					throw new Error('invalid schema');
+				});
+				await assert.rejects(scope.waitForInitialLoads());
+				// Node reports an unhandled rejection at the end of a macrotask, so give it two.
+				await new Promise((resolve) => setImmediate(resolve));
+				await new Promise((resolve) => setImmediate(resolve));
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+			assert.deepStrictEqual(unhandled, [], 'a failed initial load must not leak an unhandled rejection');
+		});
+
+		it('reports a handler rejection after the initial load without leaking an unhandled rejection', async () => {
+			const scope = await scopeForFiles('test.js');
+			let calls = 0;
+			scope.handleEntry(async () => {
+				if (++calls > 1) throw new Error('reload failed');
+			});
+			await scope.waitForInitialLoads();
+
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				await writeFile(this.testFilePath, '"changed";');
+				await waitFor(() => calls > 1, { timeout: 5000, message: 'the change must reach the entry handler' });
+				for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+			assert.deepStrictEqual(unhandled, [], 'a post-initial-load handler rejection must not leak');
+		});
+
+		it('drains sibling initial-load operations before surfacing the failure', async () => {
+			writeFileSync(join(this.directory, 'broken.js'), '"broken";');
+			writeFileSync(join(this.directory, 'slow.js'), '"slow";');
+			const scope = await scopeForFiles('*.js');
+
+			let releaseSlow;
+			const slow = new Promise((resolve) => {
+				releaseSlow = resolve;
+			});
+			let slowFinished = false;
+			const entryHandler = scope.handleEntry(async (entry) => {
+				if (entry.absolutePath.endsWith('broken.js')) throw new Error('broken.js is invalid');
+				if (!entry.absolutePath.endsWith('slow.js')) return;
+				await slow;
+				slowFinished = true;
+			});
+
+			const initialLoad = scope.waitForInitialLoads();
+			let settled = false;
+			const markSettled = () => {
+				settled = true;
+			};
+			initialLoad.then(markSettled, markSettled);
+
+			// Draining only begins once the initial scan reports ready; before that a fail-fast
+			// implementation and a draining one are indistinguishable. A fail-fast drain settles within
+			// microtasks of `ready`, so turns of the event loop separate the two without a wall clock.
+			await entryHandler.ready;
+			for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(
+				settled,
+				false,
+				'the load must not report the failure while a sibling operation still holds the load lock'
+			);
+
+			releaseSlow();
+			await assert.rejects(initialLoad, /broken\.js is invalid/);
+			assert.strictEqual(slowFinished, true, 'the sibling operation must have run to completion');
 		});
 	});
 });

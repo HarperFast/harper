@@ -34,7 +34,8 @@ initSync();
 
 export type AuditRecord = {
 	version: number;
-	localTime: number; // only to be used by LMDB (from the key)
+	recordVersion?: number; // the record's own version; on RocksDB reads `version` becomes the log key, so record identity uses this
+	localTime: number; // log position: LMDB audit-store key; RocksDB transaction-log timestamp
 	type: string;
 	encodedRecord?: Buffer;
 	extendedType?: number;
@@ -154,6 +155,7 @@ export function openAuditStore(rootStore) {
 		return {
 			remove() {
 				delete deleteCallbacks[tableId];
+				if (auditStore.tableStores[tableId] === table) delete auditStore.tableStores[tableId];
 			},
 		};
 	};
@@ -635,6 +637,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				return buffer.subarray(recordIdStart, recordIdEnd);
 			},
 			version,
+			recordVersion: version,
 			previousVersion,
 			get user() {
 				try {

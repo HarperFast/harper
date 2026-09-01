@@ -20,7 +20,7 @@ import {
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, win32 } from 'node:path';
 import {
 	access,
 	chmod,
@@ -62,6 +62,25 @@ interface ApplicationConfig {
 	// Recorded by deploy_component so every (cold) install — reboot, new peer, rollback — re-resolves
 	// the credential from the store rather than needing it re-supplied.
 	credentials?: CredentialReference[];
+	/**
+	 * Databases this application gets a private fork of (harper#642), declared HERE — on the
+	 * application's root-config entry, alongside `host` and `urlPath` — because which databases an
+	 * application forks is a deployment decision, not something the application checks in. Declaring
+	 * it in the application's own config.yaml is refused rather than ignored.
+	 *
+	 * `true` forks every database on the instance except `system` -- a snapshot of what exists when
+	 * this application loads, not a standing subscription: a database created afterward is not
+	 * retroactively branched.
+	 *
+	 * The fork is durable: it lives at a path derived from the application and database names, is
+	 * adopted again on restart, and is invisible to other applications.
+	 *
+	 * The application must reach its data through `import { databases } from 'harper'`. The bare
+	 * `databases`/`tables` globals are shared process-wide by the default `vm-current-context` loader
+	 * and cannot be scoped, so an application that uses them reads and writes the BASE — silently.
+	 * Per-application globals are a property of thread-level isolation, not of branching.
+	 */
+	branchedDatabases?: string[] | true;
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -103,6 +122,12 @@ export class InvalidCredentialsPropertyError extends TypeError {
 		super(
 			`Invalid 'credentials' property for application ${applicationName}: expected array, got ${typeof credentials}`
 		);
+	}
+}
+
+export class InvalidBranchedDatabasesError extends TypeError {
+	constructor(applicationName: string, detail: string) {
+		super(`Invalid 'branchedDatabases' for application ${applicationName}: ${detail}`);
 	}
 }
 
@@ -176,6 +201,38 @@ export function assertApplicationConfig(
 				throw new InvalidCredentialEntryError(applicationName);
 			}
 		}
+	}
+	assertBranchedDatabases(applicationName, applicationConfig.branchedDatabases);
+}
+
+/**
+ * A branch that cannot be honoured fails the application's load: falling back would hand it the
+ * shared database it asked not to have, with no signal that it happened.
+ */
+export function assertBranchedDatabases(applicationName: string, value: unknown): void {
+	if (value === undefined || value === true) return;
+	if (!Array.isArray(value)) {
+		throw new InvalidBranchedDatabasesError(applicationName, `expected an array or true, got ${typeof value}`);
+	}
+	const seen = new Set<string>();
+	for (const name of value) {
+		if (typeof name !== 'string' || name === '') {
+			throw new InvalidBranchedDatabasesError(applicationName, `expected database names, got ${typeof name}`);
+		}
+		// A branch is a directory named by this value; a separator or traversal segment would escape
+		// the reserved branch root.
+		if (name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
+			throw new InvalidBranchedDatabasesError(applicationName, `'${name}' is not a usable database name`);
+		}
+		// `system` carries the instance's own catalog, users and jobs; a private fork of it would give
+		// the application a divergent view of the instance rather than of its data.
+		if (name === 'system') {
+			throw new InvalidBranchedDatabasesError(applicationName, `the 'system' database cannot be branched`);
+		}
+		if (seen.has(name)) {
+			throw new InvalidBranchedDatabasesError(applicationName, `'${name}' is listed more than once`);
+		}
+		seen.add(name);
 	}
 }
 
@@ -495,6 +552,17 @@ const COMPONENT_RECOVERY_TRY_TIMEOUT_MS = 250;
 const COMPONENT_RECOVERY_LOCK_PURPOSE = 'component-recovery';
 const MAX_GIT_EXTRACTION_COMMANDS = 4;
 const MAX_INSTALL_COMMANDS = 2;
+const PRODUCTION_DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const;
+const INSTALL_LIFECYCLE_SCRIPTS = new Set([
+	'preinstall',
+	'install',
+	'postinstall',
+	'prepublish',
+	'preprepare',
+	'prepare',
+	'postprepare',
+	'dependencies',
+]);
 
 type ExtractionTransaction = {
 	commit(): Promise<void>;
@@ -522,6 +590,42 @@ type InstalledPackageMetadata = {
 	hasLockfile: boolean;
 	hasInstallableDependencies: boolean;
 };
+
+function dependencyFieldHasWork(packageJSON: any, field: string): boolean {
+	if (!packageJSON || typeof packageJSON !== 'object' || !Object.hasOwn(packageJSON, field)) return false;
+	const value = packageJSON[field];
+	return !value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length > 0;
+}
+
+export function packageHasProductionInstallWork(packageJSON: any): boolean {
+	if (packageJSON === undefined) return false;
+	if (!packageJSON || typeof packageJSON !== 'object' || Array.isArray(packageJSON)) return true;
+	if (PRODUCTION_DEPENDENCY_FIELDS.some((field) => dependencyFieldHasWork(packageJSON, field))) return true;
+	if (!Object.hasOwn(packageJSON, 'workspaces')) return false;
+	const workspaces = packageJSON.workspaces;
+	if (Array.isArray(workspaces)) return workspaces.length > 0;
+	if (!workspaces || typeof workspaces !== 'object' || !Object.hasOwn(workspaces, 'packages')) return true;
+	return !Array.isArray(workspaces.packages) || workspaces.packages.length > 0;
+}
+
+function packageHasExplicitNonNpmManager(packageJSON: any): boolean {
+	const packageManager = packageJSON?.devEngines?.packageManager;
+	return !!packageManager && packageManager.name !== 'npm';
+}
+
+export function packageHasAutomaticInstallWork(packageJSON: any): boolean {
+	return packageHasProductionInstallWork(packageJSON) || packageHasExplicitNonNpmManager(packageJSON);
+}
+
+function packageHasAllowedInstallLifecycleWork(packageJSON: any): boolean {
+	if (!packageJSON || typeof packageJSON !== 'object' || !Object.hasOwn(packageJSON, 'scripts')) return false;
+	const scripts = packageJSON.scripts;
+	if (!scripts || typeof scripts !== 'object' || Array.isArray(scripts)) return true;
+	return [...INSTALL_LIFECYCLE_SCRIPTS].some((name) => {
+		if (!Object.hasOwn(scripts, name)) return false;
+		return typeof scripts[name] !== 'string' || scripts[name].trim().length > 0;
+	});
+}
 
 export async function readInstalledPackageMetadata(directory: string): Promise<InstalledPackageMetadata> {
 	const files = new Map<string, Buffer>();
@@ -553,17 +657,7 @@ export async function readInstalledPackageMetadata(directory: string): Promise<I
 		files,
 		readable,
 		hasLockfile: PACKAGE_LOCK_FILES.some((filename) => files.has(filename)),
-		hasInstallableDependencies: ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].some(
-			(field) => {
-				const dependencies = packageJSON?.[field];
-				return (
-					typeof dependencies === 'object' &&
-					dependencies !== null &&
-					!Array.isArray(dependencies) &&
-					Object.keys(dependencies).length > 0
-				);
-			}
-		),
+		hasInstallableDependencies: packageHasAutomaticInstallWork(packageJSON),
 	};
 }
 
@@ -641,6 +735,8 @@ export async function extractApplication(
 	} else {
 		// Given a package, there are a a couple options
 		const parentDirPath = dirname(application.dirPath);
+		let packageIdentifierForPack = application.packageIdentifier;
+		let packageNeedsPacking = true;
 
 		// If the package identifier is a file path we need to check if its a tarball or a directory
 		if (application.packageIdentifier.startsWith('file:')) {
@@ -650,22 +746,28 @@ export async function extractApplication(
 				const stats = await stat(packagePath);
 
 				if (stats.isDirectory()) {
-					// If its a directory, symlink
-					await symlink(packagePath, application.dirPath, 'dir');
-					// And return early since we're done; no extraction needed
-					return;
-				}
+					if (!application.packLocalDirectory) {
+						await symlink(packagePath, application.dirPath, 'dir');
+						return;
+					}
+					// Bare absolute Windows directory inputs historically materialize a copy through npm pack;
+					// explicit file: and relative directories remain live links.
+					packageIdentifierForPack = packagePath;
+					application.logger.debug?.('Packaging local component directory instead of linking it on Windows');
+				} else {
+					if (!stats.isFile()) {
+						throw new Error(`File path specified in package identifier is not a file or directory: ${packagePath}`);
+					}
 
-				if (!stats.isFile()) {
-					throw new Error(`File path specified in package identifier is not a file or directory: ${packagePath}`);
+					// If its a file, we assume it can be unzipped and extracted.
+					// We are using maybe-gunzip to handle both gzipped and non-gzipped tarballs
+					// And then we are happy to let the `tar-fs` library handle the extraction.
+					// Maybe worth adding some detection or at least some error handling if that step below fails.
+					tarballPath = packagePath;
+					tarball = createReadStream(tarballPath);
+					packageNeedsPacking = false;
+					application.logger.debug?.('Using local component archive directly without npm pack');
 				}
-
-				// If its a file, we assume it can be unzipped and extracted.
-				// We are using maybe-gunzip to handle both gzipped and non-gzipped tarballs
-				// And then we are happy to let the `tar-fs` library handle the extraction.
-				// Maybe worth adding some detection or at least some error handling if that step below fails.
-				tarballPath = packagePath;
-				tarball = createReadStream(tarballPath);
 			} catch (err) {
 				if (err.code === 'ENOENT') {
 					throw new Error(`File path specified in package identifier does not exist: ${packagePath}`);
@@ -673,7 +775,8 @@ export async function extractApplication(
 					throw err;
 				}
 			}
-		} else {
+		}
+		if (packageNeedsPacking) {
 			// `npm pack --json` writes a JSON array describing the packed tarball(s). This is also the
 			// spawn that clones a git-reference package, so it is the only one given the git credential
 			// environment.
@@ -695,22 +798,22 @@ export async function extractApplication(
 			// packGitReferenceWithoutScripts), which is exactly what Node 22's bundled npm ships. For a
 			// recognized git-reference identifier, clone and pack it ourselves with scripts stripped
 			// instead, sidestepping that npm code path entirely.
-			const gitRef = allowScripts ? null : parseGitReference(application.packageIdentifier);
+			const gitRef = allowScripts ? null : parseGitReference(packageIdentifierForPack);
 
-			if (!allowScripts && !gitRef && looksLikeGitReference(application.packageIdentifier)) {
+			if (!allowScripts && !gitRef && looksLikeGitReference(packageIdentifierForPack)) {
 				// Recognized as git, but a form the reclone-and-strip-scripts path above can't safely
 				// handle (a `#path:` committish, or a hosted shorthand other than a plain `owner/repo`) —
 				// fail loudly rather than silently falling through to the unreliable `npm pack
 				// --ignore-scripts` below.
 				throw new Error(
-					`Cannot deploy git-reference package '${application.packageIdentifier}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
+					`Cannot deploy git-reference package '${packageIdentifierForPack}' with install scripts disallowed: this identifier's form (e.g. a '#path:' committish, or a hosted shorthand other than a plain 'owner/repo') isn't one this repo's script-suppression handling supports. Set install.allowInstallScripts to true, or use a plain git URL with a branch/tag/commit committish instead.`
 				);
 			}
 
 			if (gitRef) {
 				tarballPath = await packGitReferenceWithoutScripts(application, gitRef, parentDirPath);
 			} else {
-				const packArgs = ['pack', '--json', application.packageIdentifier];
+				const packArgs = ['pack', '--json', packageIdentifierForPack];
 				if (!allowScripts) {
 					packArgs.push('--ignore-scripts');
 				} else if (application.gitCredentialEnv) {
@@ -1450,13 +1553,23 @@ async function rollbackExtractedDirectory(
 	await cleanupExtractionPaths(application, asideStagingDir, transactionPaths);
 }
 
+function automaticInstallArguments(packageManagerName: string, allowInstallScripts: boolean, force = false): string[] {
+	const args = ['install'];
+	if (force) args.push('--force');
+	if (packageManagerName === 'npm') args.push('--omit=dev', '--no-audit', '--no-fund');
+	if (!allowInstallScripts) args.push('--ignore-scripts');
+	return args;
+}
+
 /**
  * Install an application to its relative `application.dirPath` using either a
  * configured `application.install` command, a derived package manager from the
  * application's `package.json#devEngines`, or falling back to the default
  * package manager, `npm`.
  *
- * Will return early if `node_modules` already exists within the `application.dirPath`
+ * Returns early when `node_modules` already exists or when the manifest has no automatic install
+ * work. An explicitly selected non-npm manager is always allowed to inspect its own workspace
+ * configuration, even when the root manifest has no production dependencies.
  *
  * This method may be called from any Harper thread as part of a serialized preparation.
  */
@@ -1516,9 +1629,22 @@ export async function installApplication(application: Application) {
 		);
 	}
 
-	// Next, try package.json devEngines field
+	const allowInstallScripts = !!application.install?.allowInstallScripts;
 	const { packageManager } = packageJSON.devEngines || {};
+	if (dependencyFieldHasWork(packageJSON, 'devDependencies')) {
+		application.logger.warn(
+			`Application ${application.name} declares devDependencies; automatic npm installation omits them, while explicitly selected non-npm package managers retain their own install defaults. Use install_command when deployment requires custom behavior`
+		);
+	}
+	if (
+		!packageHasAutomaticInstallWork(packageJSON) &&
+		!(allowInstallScripts && packageHasAllowedInstallLifecycleWork(packageJSON))
+	) {
+		application.logger.info(`Application ${application.name} has no production package work; skipping install`);
+		return;
+	}
 
+	// Next, try package.json devEngines field
 	// Custom package manager specified
 	if (packageManager) {
 		// On any given system we want to leverage the `name` to match the package manager executable
@@ -1554,7 +1680,7 @@ export async function installApplication(application: Application) {
 		const { stdout, stderr, code } = await nonInteractiveSpawn(
 			application.name,
 			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
-			application.install?.allowInstallScripts ? ['install'] : ['install', '--ignore-scripts'], // All of `npm`, `yarn`, and `pnpm` support the `install` command. If we need to configure options here we may have to use some other defaults though
+			automaticInstallArguments(packageManager.name, allowInstallScripts),
 			application.dirPath,
 			application.install?.timeout,
 			pmOnLine,
@@ -1603,9 +1729,7 @@ export async function installApplication(application: Application) {
 	}
 
 	// Finally, default to running `npm install`
-	const npmInstallArgs = application.install?.allowInstallScripts
-		? ['install', '--force']
-		: ['install', '--force', '--ignore-scripts'];
+	const npmInstallArgs = automaticInstallArguments('npm', allowInstallScripts, true);
 	const npmOnLine = application.onInstallLine
 		? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!('npm', stream, line)
 		: undefined;
@@ -1662,6 +1786,7 @@ export class Application {
 	name: string;
 	payload?: Buffer | string | Readable;
 	packageIdentifier?: string;
+	readonly packLocalDirectory: boolean;
 	install?: { command?: string; timeout?: number; allowInstallScripts?: boolean };
 	onInstallLine?: OnInstallLine;
 	dirPath: string;
@@ -1687,6 +1812,7 @@ export class Application {
 	constructor({ name, payload, packageIdentifier, install, onInstallLine, credentials }: ApplicationOptions) {
 		this.name = name;
 		this.payload = payload;
+		this.packLocalDirectory = shouldPackLocalDirectory(packageIdentifier);
 		this.packageIdentifier = packageIdentifier && derivePackageIdentifier(packageIdentifier);
 		this.install = install;
 		this.onInstallLine = onInstallLine;
@@ -1797,7 +1923,12 @@ export class Application {
  * during the installation process in order to actually resolve what the user specifies for a
  * component matching some of npm's package resolution rules.
  */
+function isBareAbsolutePackagePath(packageIdentifier: string) {
+	return isAbsolute(packageIdentifier) || win32.isAbsolute(packageIdentifier);
+}
+
 export function derivePackageIdentifier(packageIdentifier: string) {
+	if (isBareAbsolutePackagePath(packageIdentifier)) return `file:${packageIdentifier}`;
 	if (packageIdentifier.includes(':')) {
 		return packageIdentifier;
 	}
@@ -1809,6 +1940,10 @@ export function derivePackageIdentifier(packageIdentifier: string) {
 	}
 
 	return `github:${packageIdentifier}`;
+}
+
+export function shouldPackLocalDirectory(packageIdentifier: string | undefined, platform = process.platform) {
+	return platform === 'win32' && !!packageIdentifier && isBareAbsolutePackagePath(packageIdentifier);
 }
 
 /**
@@ -2372,6 +2507,7 @@ function spawnWithEnv(
 		if (process.platform === 'win32' && command === 'npm') {
 			command = 'npm.cmd';
 		}
+		const spawnLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}`);
 
 		const childProcess = spawn(command, args, {
 			shell: true,
@@ -2465,7 +2601,22 @@ function spawnWithEnv(
 			}
 		});
 
-		childProcess.on('close', async (code) => {
+		childProcess.on('exit', (code, signal) => {
+			spawnLogger.debug?.(`Direct child exited with code ${code}, signal ${signal}; awaiting stdio close`);
+		});
+
+		childProcess.on('close', async (code, signal) => {
+			if (didTimeout) {
+				spawnLogger.debug?.(
+					`Child stdio closed with code ${code}, signal ${signal}; timeout path owns process-tree confirmation`
+				);
+			} else if (trackedProcessId) {
+				spawnLogger.debug?.(
+					`Child stdio closed with code ${code}, signal ${signal}; confirming process-tree termination`
+				);
+			} else {
+				spawnLogger.debug?.(`Child stdio closed with code ${code}, signal ${signal}; no process tree was tracked`);
+			}
 			resolveClose();
 			clearTimeout(timeout);
 			// A successful direct-child exit does not prove the process group is empty: a custom
@@ -2486,6 +2637,7 @@ function spawnWithEnv(
 					}
 					return;
 				}
+				spawnLogger.debug?.(`Process tree termination confirmed after command close with code ${code}`);
 				untrackProcessGroup();
 			}
 			// When didTimeout is true, the timeout path's own terminateProcessTree(...).then(...) owns
@@ -2497,7 +2649,6 @@ function spawnWithEnv(
 			if (stderr) {
 				printStd(applicationName, command, stderr, 'stderr');
 			}
-			logger.loggerWithTag(`${applicationName}:spawn:${command}`).debug?.(`Process exited with code ${code}`);
 			if (didTimeout || didSettle) return;
 			didSettle = true;
 			resolve({

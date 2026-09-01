@@ -1,0 +1,49 @@
+const { parentPort, workerData } = require('worker_threads');
+const { setupTestDBPath } = require('../testUtils');
+const { database, resetDatabases, databaseEventsEmitter } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+
+// phase (main -> here): 0 idle, 1 first generation exists, 2 recreate paused after its first attribute
+// row, 3 recreate returned. ack (here -> main): scans completed. Absent when mocha loads this file itself.
+const { phase, ack, tableName } = workerData ?? {};
+if (phase) run();
+
+function run() {
+	setupTestDBPath();
+	setMainIsWorker(true);
+
+	// updateTable is what replication turns into a DB_SCHEMA announcement to peers
+	let updateTableEvents = 0;
+	databaseEventsEmitter.on('updateTable', (Table) => {
+		if (Table.tableName === tableName) updateTableEvents++;
+	});
+
+	function scan(type) {
+		updateTableEvents = 0;
+		const Table = resetDatabases().test?.[tableName];
+		// what this thread can read from the catalog itself, so "not loaded" is distinguishable from
+		// "the rows were not visible yet"
+		const catalog = database({ database: 'test', table: null }).dbisDb;
+		parentPort.postMessage({
+			type,
+			loaded: Boolean(Table),
+			attributes: Table ? Table.attributes.map((attribute) => attribute.name) : [],
+			updateTableEvents,
+			attributeRowVisible: Boolean(catalog.getSync(`${tableName}/name`)),
+			primaryRowVisible: Boolean(catalog.getSync(`${tableName}/`)),
+		});
+	}
+
+	Atomics.wait(phase, 0, 0);
+	scan('first-generation');
+	Atomics.store(ack, 0, 1);
+	Atomics.notify(ack, 0);
+	Atomics.wait(phase, 0, 1);
+	scan('mid-create');
+	Atomics.store(ack, 0, 2);
+	Atomics.notify(ack, 0);
+	Atomics.wait(phase, 0, 2);
+	scan('after-create');
+	Atomics.store(ack, 0, 3);
+	Atomics.notify(ack, 0);
+}

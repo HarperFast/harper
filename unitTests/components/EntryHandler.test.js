@@ -1,7 +1,7 @@
 const { EntryHandler } = require('#src/components/EntryHandler');
 const { EventEmitter, once } = require('node:events');
 const assert = require('node:assert');
-const { join, basename } = require('node:path');
+const { join, basename, sep } = require('node:path');
 const { tmpdir } = require('node:os');
 const { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, mkdir } = require('node:fs/promises');
@@ -19,12 +19,23 @@ function generateFixture(dirPath, fixture) {
 	}
 }
 
+const fixtureDirectories = new Set();
+const openHandlers = new Set();
+
 function createFixture(fixture) {
 	const dirPath = mkdtempSync(join(tmpdir(), 'harper.unit-test.entry-handler-'));
+	// Registered before it is populated so a failure part-way through still leaves it tracked for removal.
+	fixtureDirectories.add(dirPath);
 
 	generateFixture(dirPath, fixture);
 
 	return { directory: dirPath };
+}
+
+function createEntryHandler(...args) {
+	const entryHandler = new EntryHandler(...args);
+	openHandlers.add(entryHandler);
+	return entryHandler;
 }
 
 describe('EntryHandler', () => {
@@ -35,17 +46,33 @@ describe('EntryHandler', () => {
 		this.directory = directory;
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		try {
-			rmSync(this.directory, { recursive: true, force: true });
-			// eslint-disable-next-line sonarjs/no-ignored-exceptions
-		} catch {
-			// best effort to clean up - but doesn't matter too much since this is a temp directory
+			// The async wrapper turns a synchronous throw out of close() into a rejection, so one bad
+			// handler cannot skip the teardown of the rest.
+			const results = await Promise.allSettled([...openHandlers].map(async (entryHandler) => entryHandler.close()));
+			const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+
+			// Removing a tree that is still under a live native watch is what raises the asynchronous
+			// Windows EPERM this hook exists to avoid, so a handler that would not close keeps its fixture.
+			if (failures.length > 0) throw new AggregateError(failures, 'EntryHandler cleanup failed to close');
+
+			for (const directory of fixtureDirectories) {
+				try {
+					rmSync(directory, { recursive: true, force: true });
+					// eslint-disable-next-line sonarjs/no-ignored-exceptions
+				} catch {
+					// best effort to clean up - but doesn't matter too much since this is a temp directory
+				}
+			}
+		} finally {
+			openHandlers.clear();
+			fixtureDirectories.clear();
 		}
 	});
 
 	it('should instantiate and emit events for adding and removing files and directories', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 
 		assert.equal(entryHandler.name, this.name, 'name should be the same');
 		assert.equal(entryHandler.directory, this.directory, 'directory should be the same');
@@ -206,18 +233,16 @@ describe('EntryHandler', () => {
 	});
 
 	it('should await ready event via `ready` property', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, './');
+		const entryHandler = createEntryHandler(this.name, this.directory, './');
 
 		const readyEventSpy = spy();
 		entryHandler.on('ready', readyEventSpy);
 		await entryHandler.ready;
 		assert.equal(readyEventSpy.callCount, 1, 'ready event should be triggered once');
-
-		await entryHandler.close();
 	});
 
 	it('should emit file change events', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, './a');
+		const entryHandler = createEntryHandler(this.name, this.directory, './a');
 		await entryHandler.ready;
 
 		const changeHandlerSpy = spy();
@@ -245,12 +270,10 @@ describe('EntryHandler', () => {
 		);
 		assert.ok(changeArg.stats !== undefined, 'change event argument `stats` should be defined');
 		assert.ok(changeArg.stats.isFile(), 'change event argument `stats` should be a file');
-
-		await entryHandler.close();
 	});
 
 	it('emits logical file and directory diffs after pause and resume', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
 
 		const entries = [];
@@ -275,7 +298,8 @@ describe('EntryHandler', () => {
 		);
 		assert.deepEqual(
 			entries
-				.map((entry) => [entry.eventType, entry.absolutePath.slice(this.directory.length + 1)])
+				// absolutePath is deliberately native; normalize here rather than at the emit site.
+				.map((entry) => [entry.eventType, entry.absolutePath.slice(this.directory.length + 1).replaceAll(sep, '/')])
 				.sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0])),
 			[
 				['change', 'b'],
@@ -300,12 +324,10 @@ describe('EntryHandler', () => {
 			['unlink', 'unlink', 'unlinkDir'],
 			'children are unlinked before their directory'
 		);
-
-		await entryHandler.close();
 	});
 
 	it('emits unlink then add when an entry changes type across pause and resume', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
 
 		const entries = [];
@@ -322,11 +344,10 @@ describe('EntryHandler', () => {
 			entries.map((entry) => entry.eventType),
 			['unlink', 'addDir']
 		);
-		await entryHandler.close();
 	});
 
 	it('commits the resumed generation even when a removal listener throws synchronously', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
 
 		let emittedError;
@@ -348,12 +369,11 @@ describe('EntryHandler', () => {
 		entryHandler.pause();
 		await entryHandler.resume();
 		assert.equal(unlinkCount, 1, 'the committed snapshot does not replay the same removal');
-		await entryHandler.close();
 	});
 
 	it('logs a consumer exception when no error listener is attached', async () => {
 		const errors = [];
-		const entryHandler = new EntryHandler(this.name, this.directory, '.', {
+		const entryHandler = createEntryHandler(this.name, this.directory, '.', {
 			error: (...args) => errors.push(args),
 		});
 		await entryHandler.ready;
@@ -367,11 +387,10 @@ describe('EntryHandler', () => {
 
 		assert.equal(errors.length, 1);
 		assert.equal(errors[0][1].message, 'unhandled removal listener failed');
-		await entryHandler.close();
 	});
 
 	it('routes steady-state unlink and addDir listener throws through error', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
 
 		const errors = [];
@@ -391,11 +410,10 @@ describe('EntryHandler', () => {
 			errors.map((error) => error.message),
 			['unlink listener failed', 'addDir listener failed']
 		);
-		await entryHandler.close();
 	});
 
 	it('ignores a pending read from the watcher generation invalidated by pause', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
 
 		const entries = [];
@@ -413,11 +431,10 @@ describe('EntryHandler', () => {
 		await entryHandler.resume();
 
 		assert.equal(entries.length, 0, 'stale reads neither emit nor pollute the resumed generation diff');
-		await entryHandler.close();
 	});
 
 	it('carries entries emitted by an interrupted first scan into the resumed diff', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		const resourcePath = join(this.directory, 'resource.js');
 		const resourceEvents = [];
 		entryHandler.on('all', (entry) => {
@@ -447,11 +464,10 @@ describe('EntryHandler', () => {
 			['add', 'change'],
 			'an entry already exposed to consumers is changed, not replayed as a fresh add'
 		);
-		await entryHandler.close();
 	});
 
 	it('preserves the pre-deploy snapshot when update races the resumed scan', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
 
 		const entries = [];
@@ -465,11 +481,10 @@ describe('EntryHandler', () => {
 			['unlink'],
 			'the superseding update generation retains the deletion diff exactly once'
 		);
-		await entryHandler.close();
 	});
 
 	it('invalidates a pending outgoing read before applying new URL configuration', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, { files: 'a', urlPath: '/old' });
+		const entryHandler = createEntryHandler(this.name, this.directory, { files: 'a', urlPath: '/old' });
 		await entryHandler.ready;
 
 		const entries = [];
@@ -491,12 +506,11 @@ describe('EntryHandler', () => {
 				['add', '/new/a'],
 			]
 		);
-		await entryHandler.close();
 	});
 
 	it('preserves a known file when a redeploy scan cannot read it', async () => {
 		if (process.platform === 'win32') return;
-		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		const entryHandler = createEntryHandler(this.name, this.directory, 'a');
 		await entryHandler.ready;
 		const pollingReady = once(entryHandler, 'ready');
 		entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('exhausted'), { code: 'ENOSPC' }));
@@ -519,12 +533,11 @@ describe('EntryHandler', () => {
 			);
 		} finally {
 			chmodSync(filePath, 0o600);
-			await entryHandler.close();
 		}
 	});
 
 	it('routes primitive listener throws through error without rejecting the file read', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, '.');
+		const entryHandler = createEntryHandler(this.name, this.directory, '.');
 		await entryHandler.ready;
 
 		let emittedError;
@@ -537,11 +550,10 @@ describe('EntryHandler', () => {
 		await writeFile(join(this.directory, 'a'), 'changed');
 		await waitFor(() => emittedError !== undefined);
 		assert.equal(emittedError, listenerFailure);
-		await entryHandler.close();
 	});
 
 	it('should handle updating the config', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		const entryHandler = createEntryHandler(this.name, this.directory, 'a');
 
 		const readyEventSpy = spy();
 		entryHandler.on('ready', readyEventSpy);
@@ -610,7 +622,7 @@ describe('EntryHandler', () => {
 	});
 
 	it('serializes concurrent config updates without orphaning a watcher', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		const entryHandler = createEntryHandler(this.name, this.directory, 'a');
 		await entryHandler.ready;
 		assert.equal(entryHandler._liveWatcherCountForTests, 1, 'one live watcher after the initial scan');
 
@@ -629,7 +641,7 @@ describe('EntryHandler', () => {
 		// update() must re-arm the readiness latch the way pause() does. Otherwise awaiting it on
 		// an already-ready handler resolves immediately against the previous generation's `ready`,
 		// before the replacement generation has scanned, digested, and emitted its diff.
-		const entryHandler = new EntryHandler(this.name, this.directory, 'a');
+		const entryHandler = createEntryHandler(this.name, this.directory, 'a');
 		await entryHandler.ready;
 
 		const events = [];
@@ -642,12 +654,10 @@ describe('EntryHandler', () => {
 			['add', 'unlink'],
 			'the new generation has emitted its full diff by the time update() resolves'
 		);
-
-		await entryHandler.close();
 	});
 
 	it('should resolve the correct urlPath for files', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, 'foo/d');
+		const entryHandler = createEntryHandler(this.name, this.directory, 'foo/d');
 
 		const addHandlerSpy = spy();
 		entryHandler.on('add', addHandlerSpy);
@@ -659,7 +669,7 @@ describe('EntryHandler', () => {
 	});
 
 	it('should resolve the correct urlPath for files with `./`', async () => {
-		const entryHandler = new EntryHandler(this.name, this.directory, './foo/d');
+		const entryHandler = createEntryHandler(this.name, this.directory, './foo/d');
 
 		const addHandlerSpy = spy();
 		entryHandler.on('add', addHandlerSpy);
@@ -680,7 +690,7 @@ describe('EntryHandler', () => {
 		// Given this pattern we want to ensure that the matcher isn't going to return the
 		// `bad/web` directory, but will return the `web` and `static` directories even though
 		// the `web/*` could match the `bad/web` directory contents.
-		const entryHandler = new EntryHandler(basename(directory), directory, ['web/*', 'static/*']);
+		const entryHandler = createEntryHandler(basename(directory), directory, ['web/*', 'static/*']);
 
 		const allHandlerSpy = spy();
 		entryHandler.on('all', allHandlerSpy);
@@ -696,9 +706,6 @@ describe('EntryHandler', () => {
 		assert.equal(allHandlerSpy.callCount, 6, 'all event should be triggered for each matching entry');
 		assert.equal(addHandlerSpy.callCount, 6, 'add event should be triggered for each matching file');
 		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should be triggered for each matching directory');
-
-		await entryHandler.close();
-		rmSync(directory, { recursive: true, force: true });
 	});
 
 	it('should correctly resolve similar url paths for directories', async () => {
@@ -712,7 +719,7 @@ describe('EntryHandler', () => {
 			],
 		]);
 
-		const entryHandler = new EntryHandler(basename(directory), directory, ['web/static/*', 'web/static-*']);
+		const entryHandler = createEntryHandler(basename(directory), directory, ['web/static/*', 'web/static-*']);
 
 		const allHandlerSpy = spy();
 		entryHandler.on('all', allHandlerSpy);
@@ -742,9 +749,6 @@ describe('EntryHandler', () => {
 			'/static-assets',
 			'urlPath resolution should account for similarities'
 		);
-
-		await entryHandler.close();
-		rmSync(directory, { recursive: true, force: true });
 	});
 
 	it('should correctly resolve similar url paths for files', async () => {
@@ -758,7 +762,7 @@ describe('EntryHandler', () => {
 			],
 		]);
 
-		const entryHandler = new EntryHandler(basename(directory), directory, ['web/static/*', 'web/static-*/*']);
+		const entryHandler = createEntryHandler(basename(directory), directory, ['web/static/*', 'web/static-*/*']);
 
 		const allHandlerSpy = spy();
 		entryHandler.on('all', allHandlerSpy);
@@ -783,9 +787,6 @@ describe('EntryHandler', () => {
 				.sort(),
 			['/a', '/b', '/static-assets/c', '/static-assets/d']
 		);
-
-		await entryHandler.close();
-		rmSync(directory, { recursive: true, force: true });
 	});
 
 	it('should emit all file events before ready resolves', async () => {
@@ -794,7 +795,7 @@ describe('EntryHandler', () => {
 		const { directory } = createFixture(['file1.txt', 'file2.txt', 'file3.txt', 'file4.txt', 'file5.txt']);
 
 		const eventsReceived = [];
-		const entryHandler = new EntryHandler(basename(directory), directory, '*.txt');
+		const entryHandler = createEntryHandler(basename(directory), directory, '*.txt');
 
 		// Track all events as they arrive
 		entryHandler.on('add', (entry) => {
@@ -813,15 +814,12 @@ describe('EntryHandler', () => {
 		for (const event of eventsReceived) {
 			assert.ok(event.hasContents, `File ${event.path} should have contents when ready resolves`);
 		}
-
-		await entryHandler.close();
-		rmSync(directory, { recursive: true, force: true });
 	});
 
 	describe('pause / resume', () => {
 		it('stops emitting while paused and emits only logical additions on resume', async () => {
 			const { directory } = createFixture(['a', 'b', 'c']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			const addSpy = spy();
 			entryHandler.on('add', addSpy);
 
@@ -840,14 +838,11 @@ describe('EntryHandler', () => {
 			await entryHandler.resume();
 			assert.equal(addSpy.callCount, initialAdds + 1, 'resume should emit one add for the new file');
 			assert.equal(addSpy.lastCall.args[0].absolutePath, join(directory, 'd'));
-
-			await entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('preserves listener attachments across pause/resume', async () => {
 			const { directory } = createFixture(['a']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			const allSpy = spy();
 			entryHandler.on('all', allSpy);
 
@@ -861,14 +856,11 @@ describe('EntryHandler', () => {
 
 			assert.equal(allSpy.callCount, before + 1, 'all listener still attached after resume');
 			assert.equal(allSpy.lastCall.args[0].eventType, 'change');
-
-			await entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('resume is a no-op when not paused', async () => {
 			const { directory } = createFixture(['a']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 			const addSpy = spy();
 			entryHandler.on('add', addSpy);
@@ -876,9 +868,6 @@ describe('EntryHandler', () => {
 			await entryHandler.resume(); // not paused
 			await new Promise((r) => setTimeout(r, 100));
 			assert.equal(addSpy.callCount, 0, 'resume without pause should not re-emit');
-
-			await entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('close() while paused awaits the paused watcher teardown', async () => {
@@ -886,14 +875,13 @@ describe('EntryHandler', () => {
 			// a watcher close, then close() lands before resume() and must await
 			// that in-flight teardown rather than resolving early.
 			const { directory } = createFixture(['a']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 
 			entryHandler.pause();
 			// close() called without resume() — exercises #pausedClose path
 			await entryHandler.close();
 			// if close() resolved, teardown settled without throwing
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('awaiting `ready` after pause() does not resolve until resume()', async () => {
@@ -901,7 +889,7 @@ describe('EntryHandler', () => {
 			// wait for resume(). Naive impl (only resetting `ready` in resume) lets
 			// an already-resolved `ready` linger across pause and resolve early.
 			const { directory } = createFixture(['a']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready; // initial ready resolves
 
 			entryHandler.pause();
@@ -918,9 +906,6 @@ describe('EntryHandler', () => {
 			await entryHandler.resume();
 			await readyPromise;
 			assert.equal(readyResolved, true, '`ready` resolves after resume()');
-
-			await entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 	});
 
@@ -934,7 +919,7 @@ describe('EntryHandler', () => {
 
 		it('falls back to polling on ENOSPC and continues to receive change events', async () => {
 			const { directory } = createFixture(['a.txt']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 
 			const errorSpy = spy();
@@ -961,14 +946,11 @@ describe('EntryHandler', () => {
 			await writeFile(join(directory, 'b.txt'), 'b');
 			await waitFor(() => addSpy.callCount >= 1, 5000);
 			assert.ok(addSpy.callCount >= 1, 'polling watcher should fire add');
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		}).timeout(8000);
 
 		it('propagates non-exhaustion errors and does not fall back', async () => {
 			const { directory } = createFixture(['a.txt']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 
 			const errorSpy = spy();
@@ -979,14 +961,11 @@ describe('EntryHandler', () => {
 
 			assert.equal(entryHandler._usingPollingForTests, false);
 			assert.equal(errorSpy.callCount, 1, 'non-exhaustion error should propagate');
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('does not treat an exhaustion-shaped consumer exception as a watcher failure', async () => {
 			const { directory } = createFixture(['a.txt']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 
 			const errors = [];
@@ -998,26 +977,22 @@ describe('EntryHandler', () => {
 			await writeFile(join(directory, 'a.txt'), 'changed');
 			await waitFor(() => errors.length === 1);
 			assert.equal(entryHandler._usingPollingForTests, false);
-
-			await entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('rejects a paused readiness latch when the handler closes', async () => {
 			const { directory } = createFixture(['a.txt']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 			entryHandler.pause();
 			const pausedReady = entryHandler.ready;
 
 			await entryHandler.close();
 			await assert.rejects(pausedReady, /closed before becoming ready/);
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('swallows additional exhaustion errors during recovery', async () => {
 			const { directory } = createFixture(['a.txt']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 
 			const errorSpy = spy();
@@ -1030,9 +1005,6 @@ describe('EntryHandler', () => {
 
 			await waitFor(() => entryHandler._usingPollingForTests === true, 1000);
 			assert.equal(errorSpy.callCount, 0, 'all exhaustion errors should be swallowed');
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('does not reopen watcher if close() is called during recovery', async () => {
@@ -1041,7 +1013,7 @@ describe('EntryHandler', () => {
 			// If close() lands between the ENOSPC and #watch()'s post-await check,
 			// the new chokidar watcher must not be installed.
 			const { directory } = createFixture(['a.txt']);
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			await entryHandler.ready;
 
 			assert.equal(entryHandler._openCountForTests, 1, 'one initial open');
@@ -1049,14 +1021,19 @@ describe('EntryHandler', () => {
 			// Trigger the fallback path, then immediately close before the inner
 			// `await this.#watcher.close()` resolves.
 			entryHandler._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
-			entryHandler.close();
+			// Deliberately not awaited: the close has to race the recovery path. The rejection observer
+			// is attached synchronously so a failure during the race cannot become an unhandledRejection,
+			// and the outcome is asserted after the race so it fails this test rather than the process.
+			const closeOutcome = entryHandler.close().then(
+				() => undefined,
+				(error) => error
+			);
 
 			// Allow plenty of time for the would-be reopen to (not) happen.
 			await new Promise((r) => setTimeout(r, 200));
 
 			assert.equal(entryHandler._openCountForTests, 1, 'reopen must be suppressed by the close-during-fallback guard');
-
-			rmSync(directory, { recursive: true, force: true });
+			assert.equal(await closeOutcome, undefined, 'close() during recovery should not reject');
 		}).timeout(2000);
 	});
 
@@ -1070,7 +1047,7 @@ describe('EntryHandler', () => {
 			const { directory } = createFixture([['node_modules', [['pkg', ['index.js']]]], 'app.js']);
 
 			const allHandlerSpy = spy();
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			entryHandler.on('all', allHandlerSpy);
 
 			await entryHandler.ready;
@@ -1084,16 +1061,13 @@ describe('EntryHandler', () => {
 				paths.some((p) => p === '/app.js'),
 				'app.js outside node_modules should still be emitted'
 			);
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('should ignore nested node_modules', async () => {
 			const { directory } = createFixture([['plugin', [['node_modules', [['dep', ['index.js']]]], 'main.js']]]);
 
 			const allHandlerSpy = spy();
-			const entryHandler = new EntryHandler(basename(directory), directory, 'plugin/**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, 'plugin/**/*');
 			entryHandler.on('all', allHandlerSpy);
 
 			await entryHandler.ready;
@@ -1107,16 +1081,13 @@ describe('EntryHandler', () => {
 				paths.some((p) => p.endsWith('main.js')),
 				'plugin/main.js should still be emitted'
 			);
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('should ignore .git directory', async () => {
 			const { directory } = createFixture([['.git', ['HEAD', 'config']], 'app.js']);
 
 			const allHandlerSpy = spy();
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			entryHandler.on('all', allHandlerSpy);
 
 			await entryHandler.ready;
@@ -1126,16 +1097,13 @@ describe('EntryHandler', () => {
 				paths.every((p) => !p.includes('.git')),
 				`no event should reference .git, got: ${JSON.stringify(paths)}`
 			);
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('should ignore npm atomic-rename temp directories (.tmp-*)', async () => {
 			const { directory } = createFixture([['.tmp-12345', ['package.json']], 'app.js']);
 
 			const allHandlerSpy = spy();
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			entryHandler.on('all', allHandlerSpy);
 
 			await entryHandler.ready;
@@ -1145,9 +1113,6 @@ describe('EntryHandler', () => {
 				paths.every((p) => !p.includes('.tmp-')),
 				`no event should reference .tmp- dirs, got: ${JSON.stringify(paths)}`
 			);
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('should ignore package-manager log files', async () => {
@@ -1160,7 +1125,7 @@ describe('EntryHandler', () => {
 			]);
 
 			const allHandlerSpy = spy();
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			entryHandler.on('all', allHandlerSpy);
 
 			await entryHandler.ready;
@@ -1174,9 +1139,6 @@ describe('EntryHandler', () => {
 				paths.some((p) => p === '/app.js'),
 				'app.js should still be emitted'
 			);
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 
 		it('should not over-match similar names (prefix and suffix)', async () => {
@@ -1192,7 +1154,7 @@ describe('EntryHandler', () => {
 			]);
 
 			const allHandlerSpy = spy();
-			const entryHandler = new EntryHandler(basename(directory), directory, '**/*');
+			const entryHandler = createEntryHandler(basename(directory), directory, '**/*');
 			entryHandler.on('all', allHandlerSpy);
 
 			await entryHandler.ready;
@@ -1210,9 +1172,6 @@ describe('EntryHandler', () => {
 				paths.some((p) => p === '/npm-debug.log.txt'),
 				`event for npm-debug.log.txt should be emitted, got: ${JSON.stringify(paths)}`
 			);
-
-			entryHandler.close();
-			rmSync(directory, { recursive: true, force: true });
 		});
 	});
 });

@@ -2,6 +2,7 @@ import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'node:events';
 import { databaseEventsEmitter, table } from '../resources/databases.ts';
+import { assertTableTargetNotBranched } from '../resources/branchGuard.ts';
 import { server, type Server } from '../server/Server.ts';
 import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } from './EntryHandler.ts';
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
@@ -240,6 +241,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	}
 
 	ensureTable<TableResourceType = unknown>(options: any): TableResourceType {
+		assertTableTargetNotBranched(this.applicationScope?.branches, options.database, options.table, 'ensureTable');
 		options.origin = this.#origin;
 		return table<TableResourceType>(options);
 	}
@@ -461,47 +463,54 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			targetEntryHandler: EntryHandler,
 			entryEventHandler: onEntryEventHandler
 		): onEntryEventHandler => {
-			const pendingOperations = new Set<Promise<void>>();
-			// The first async failure seen before the initial load completes. A rejected operation
-			// cannot stay in pendingOperations as the record of that failure: one that settles before
-			// 'ready' fires would already be gone by the time the load result is computed, letting a
-			// failed load report success and leaving the rejection with nobody to observe it.
-			let initialLoadFailure: unknown;
-			let initialLoadSettled = false;
+			// Retained until the drain below reports them: an operation dropped as it settles is invisible
+			// to that drain, so a handler rejecting before `ready` would report nothing at all.
+			let initialOperations: Promise<void>[] | null = [];
 
 			const wrapped: onEntryEventHandler = (entry) => {
-				const result = entryEventHandler(entry);
+				let result;
+				try {
+					result = entryEventHandler(entry);
+				} catch (error) {
+					// A synchronous throw is the same failure as a rejection. Left to propagate, EntryHandler
+					// catches it for its own reporting and the initial load completes as if nothing failed.
+					result = Promise.reject(error);
+				}
 				if (result instanceof Promise) {
-					const tracked: Promise<void> = result.then(
-						() => {
-							pendingOperations.delete(tracked);
-						},
-						(error) => {
-							pendingOperations.delete(tracked);
-							this.#logger.error?.('Error in async entry handler:', error);
+					const tracked = result.catch((error) => {
+						this.#logger.error?.('Error in async entry handler:', error);
+						try {
 							this.#handleError(error);
-							if (!initialLoadSettled && initialLoadFailure === undefined) initialLoadFailure = error;
+						} catch (reportingError) {
+							// Reporting must not replace the failure it is reporting.
+							this.#logger.error?.('Error reporting an entry handler failure:', reportingError);
 						}
-					);
-					pendingOperations.add(tracked);
+						throw error;
+					});
+					// Nothing awaits `tracked` until the drain, which leaves an early rejection unhandled.
+					tracked.catch(() => {});
+					initialOperations?.push(tracked);
 				}
 			};
 
-			// When the entry handler's initial scan completes, wait for all pending async operations
+			// When the entry handler's initial scan completes, wait for all of its async operations
 			const initialLoadPromise = once(targetEntryHandler, 'ready').then(async () => {
-				if (pendingOperations.size > 0) {
-					await Promise.all(pendingOperations);
+				const operations = initialOperations ?? [];
+				initialOperations = null;
+				// Drained, not fail-fast: the loader holds the plugin-wide load lock until this settles, so a
+				// first failure reported while a sibling still runs would let the next application in.
+				for (const result of await Promise.allSettled(operations)) {
+					if (result.status === 'rejected') throw result.reason;
 				}
-				initialLoadSettled = true;
-				if (initialLoadFailure !== undefined) throw initialLoadFailure;
 				targetEntryHandler.emit('initialLoadComplete');
 			});
 
-			// Track this promise so the component loader can await it. Its rejection is delivered
-			// through waitForInitialLoads(); this bookkeeping chain must settle either way, or the
-			// same failure escapes a second time as an unhandled rejection of the derived promise.
+			// Track this promise so the component loader can await it
 			this.#pendingInitialLoads.add(initialLoadPromise);
-			const forgetInitialLoad = () => this.#pendingInitialLoads.delete(initialLoadPromise);
+			// Two-branch cleanup, not `.finally`: its derivative would reject with nobody left to handle it.
+			const forgetInitialLoad = () => {
+				this.#pendingInitialLoads.delete(initialLoadPromise);
+			};
 			initialLoadPromise.then(forgetInitialLoad, forgetInitialLoad);
 
 			return wrapped;

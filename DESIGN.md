@@ -40,6 +40,42 @@ Consequence: never replace `entry.value` with a copy of `updatedRecord` in this 
 
 The sharing cuts both ways: the caller's mutations are visible to the **commit**, which encodes whatever the object holds at commit time. A downstream consumer that mutates the resolved record before the deferred commit runs corrupts what gets persisted — `finalizeResponse` (`server/REST.ts`) did exactly this, overwriting `.headers` with a web `Headers` (no enumerable own keys → stored as `{}`) and stamping `.status` (#1702; LMDB-only because RocksDB commits encode synchronously). Consumers must copy before mutating; `finalizeResponse` now copies any `entryMap`-tracked record.
 
+## getFromSource() keeps source versions separate from fill ordering
+
+`getFromSource()` reserves a fallback timestamp before calling the source so competing first fills
+whose source does not report a version have a stable ordering token. An inherited request/transaction
+timestamp is used when present; otherwise the storage engine supplies a monotonic timestamp. After
+the source responds, a valid positive, finite, Date-representable `sourceContext.lastModified` is the
+record's candidate version, and the reserved timestamp is only its fallback. A 304 retains the
+existing version.
+
+The candidate is capped at local time (`max(reserved token, Date.now())`). A record's version is also
+this node's ordering token — `precedesExistingVersion()` compares a write's transaction timestamp
+against it — so a source that reports a `lastModified` ahead of local time (a skewed origin clock)
+would otherwise make every later local write to that row look out-of-order and be discarded until
+wall-clock caught up. Capping costs the shared-version property only for that misbehaving case, and
+the cap is logged.
+
+The ordering token is not installed on `sourceContext.timestamp`: the source-resolution transaction
+keeps its own default timestamp, so a slow fetch does not backdate its transaction-log entry. LMDB
+stores the source candidate directly, preserving its separate source-version/local-time semantics;
+only RocksDB clamps a non-advancing candidate because it uses one version for both roles.
+
+Revalidations retain exact-CAS semantics, and a source miss cannot delete a record that raced the
+fetch. First fills may replace a raced record only when their candidate version is strictly greater
+than the raced record's. The comparison is deliberately not `precedesExistingVersion()`: that breaks
+a version tie with the _executing_ node's name, and a fill from a shared source carries no node
+identity of its own, so two replicas resolving the same tie could keep different values at the same
+version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A
+RocksDB replacement whose candidate cannot advance the current version stores at the current version
+and carries `VERSION_NOT_UNIQUE_FLAG`; rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
+then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
+an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
+vouched as fresh.
+
+The flag is also applied to ordinary resequenced RocksDB writes. Those records remain ineligible for
+VerificationTable fast-path confirmation until a later write advances their version.
+
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
 Blobs flagged with `saveBeforeCommit` (or `saveInRecord`) are written to disk in the `beforeIntermediate` phase of a `TransactionWrite`, _before_ the LMDB/RocksDB write commits. The write's commit callback can still skip the actual record write — for older versions, supersedence by future updates, residency mismatches, or full transaction abort. In every such path the file is on disk but no record references it.
@@ -194,6 +230,12 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 
 **Remediating a node damaged before this was enforced.** The fix is forward-only. A node that already lost an attribute's catalog descriptor still has `schemaDefined: true` persisted, so the handshake's honor-local guard refuses to re-add the attribute from any peer and `search_by_value` keeps failing with `unknown attribute`; the recurring `Schema for '<db>.<table>' is defined locally, but attribute '<name>: <type>' from '<node>' does not match local attribute which does not exist` warn is the only detection signal. Local schema authoring is now the only path permitted to write that descriptor back, so remediation is to re-declare the attribute locally on the damaged node — the `create_attribute` operation, or redeploying the component whose `@table` declares it.
 
+## A table is invisible to catalog scans until its create is complete (`databases.ts` `table()` / `initStores`)
+
+The additive-only rule above repairs the _consumer_ of a partial peer snapshot; this rule stops the snapshot from existing. Every worker thread has its own `Table` map, rebuilt by `resetDatabases()` → `initStores` scanning the `__dbis__` catalog whenever any schema-change ITC signal arrives — including one for an unrelated database. On RocksDB catalog rows are individual `putSync` writes and the cross-thread `update-attributes` lock is taken only by writers, so a scan that lands inside a `create_table` used to see the primary row with none or some of the attribute rows, build a `Table` whose `attributes` was that partial list, and emit `updateTable` for it — which harper-pro forwards to peers as a DB_SCHEMA announcement. On a peer whose replication thread had not loaded the table yet, the announcement was applied as an authoritative definition and deleted the locally declared attributes (harper-pro `replicationLoad` "unknown attribute 'name'"; the partial announcement is visible in the node log as `(Re)creating { ... attributes: [ { name: 'id', ... } ] }`).
+
+`table()` therefore writes the primary-key descriptor (`<table>/` — the row `initStores` needs before it will load a table; a row carrying `isPrimaryKey` is accepted too, for pre-5.x catalogs, so the primary-key descriptor must stay the last row written whatever key it lands on) only after every attribute row, still under the exclusive lock, and registers the class in this worker's `databases` map immediately after it. That write is also where the rollback stops: the row is durable the moment the put returns — on LMDB the `finally` that releases the exclusive lock commits the create's write transaction whether or not an error is unwinding — so a create that throws past it (registering the class, persisting relationships) keeps every row it wrote, and undoing them would leave the primary-only catalog this rule exists to prevent. `initStores` skips — with a warn — a table that has attribute rows but no primary row. The catalog is either invisible or complete to every other thread, so no thread can build or announce a partial `Table`. A scan that finds the incomplete catalog also drops a class it still holds from a dropped same-name table, rather than serving that stale generation through the recreate. A create that throws before its primary row is registered nowhere, and `table()` releases what it had opened for the class (primary store, index stores, the audit delete-removal callback, and its storage-reclamation handler — `removeStorageReclamationHandler`, because a RocksDB column family shares its reclamation path with every other family in the database). LMDB already had this property because `exclusiveLock()` there is an environment-wide write transaction. Consequence for an interrupted create: orphan attribute rows, no primary row, and the column families opened before the crash (as before), so the table does not load at all instead of loading with whatever attributes had landed; re-running `create_table` writes the rows, reuses the families, and the new-table reconcile removes any orphan row the new definition does not declare. The guarantee holds only once every schema-creating node runs this code: an older peer still announces primary-first snapshots, so the receiver-side additive rule above stays necessary. Regression coverage: `unitTests/resources/createTableCatalogOrder.test.js` (write order, a create failing on either side of the publish point, and a second worker thread scanning the catalog while the create is paused).
+
 ## Audit-store `'committed'` notification batching (`transactionBroadcast.ts`)
 
 The cross-thread subscription path (default `crossThreads`) drives every `Table.subscribe()` consumer. When the database's audit store emits `'committed'`, we walk the audit log via a reusable iterator and dispatch matching records to subscribers. Three properties of this path are easy to break and worth knowing about before changing it:
@@ -266,6 +308,25 @@ starting `handleApplication`; if a deploy begins during the load, the plugin tim
 unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
 are deliberately paused against the intermediate tree.
 
+### The component load lock is keyed by plugin type, so a plugin's promise is everyone's clock
+
+`sequentiallyHandleApplication` (`components/componentLoader.ts`) holds a cross-thread lock keyed by the
+plugin TYPE name — `graphqlSchema`, `rest`, … — not by the component. That is deliberate. Plugin modules
+are per-thread singletons carrying module-level state (`server/http.ts`'s `universalHeaders` ownership
+array, `resources/graphql.ts`'s `knownGraphQLDirectives`, the scheduler's register-inside-the-lock
+contract), and applications load _concurrently_: `serializeComponentLoad` serializes per application
+name and all applications go into one `Promise.all`. Without this key two applications' `handleApplication`
+for the same plugin would interleave on a single thread, not merely across threads.
+
+The price of that key is that whatever a plugin does inside the lock is paid by every other application.
+So a plugin must return a promise that settles with its real outcome: the `withDeployAwareTimeout`
+watchdog exists for a _hang_, never as the reporting path for a failure the plugin already diagnosed. A
+success-only wait is what turned one unparseable schema into 30s of instance-wide gating per broken
+component (#1917). `Scope.waitForInitialLoads()` is that promise — it resolves once the entry handler's
+initial scan and every operation that scan started have completed, and rejects with the first failure,
+after draining the rest so no sibling operation outlives the lock. The watchdog can still cut that drain
+short, so the serialization the lock buys is bounded by the timeout rather than absolute.
+
 Extraction renames an existing component aside before writing the replacement and keeps it until
 dependency installation and metadata verification complete. Any preparation failure atomically
 renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
@@ -292,6 +353,19 @@ ordering rather than `fsync`, so a host power loss can lose the marker.
 A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
+
+Automatic npm component installation is production-only and uses `--omit=dev --no-audit --no-fund`.
+`installApplication()` skips the package-manager child entirely when the root manifest declares no
+production dependencies, non-empty workspaces, or enabled install lifecycle. An explicitly selected
+non-npm manager still runs so it can discover workspace configuration outside `package.json`, and it
+retains its own install defaults. A configured `install_command` remains the explicit escape hatch for
+build-time tooling. `readInstalledPackageMetadata()` must use the same automatic-work predicate so a
+dev-only npm manifest does not force a restart on every redeploy for lacking a lockfile while an
+explicit non-npm workspace install still does. Absolute local archives are classified before
+package-protocol detection: a Windows drive letter's colon is path syntax, not an npm protocol. File
+type detection remains asynchronous in extraction. Bare absolute Windows directory inputs retain
+npm's copy/pack behavior rather than becoming live links; explicit `file:` and relative directory
+inputs retain their existing symlink behavior.
 
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
@@ -605,6 +679,30 @@ its coalescing must stay a superset-safe no-op for the single-swap #586 case. Re
 `integrationTests/security/cert-key-reload.test.ts` deterministically pins the cert-before-key ordering
 (it fails by design without the rebuild trigger); `cert-reload.test.ts` guards the cert-only #586 path.
 
+**Publication is transactional (#2382).** `updateTLS` builds the entire replacement state —
+hostname→context map, CA map, and default candidate — into pass-local candidates and reconciles the
+live maps in place only after the pass completes (their identity is load-bearing:
+`server.secureContexts` and each context's `availableCAs` alias them). A record that is still in the
+table but fails to build (`ERR_OSSL_X509_KEY_VALUES_MISMATCH` when the table's cert outruns the
+on-disk key, a missing key on this thread) keeps every live entry it owns _and_ its default
+candidacy — a record can be serving as the default with no hostname entries at all — so a transient
+mismatch never downgrades serving below last-good (the pre-fix behavior served the self-signed
+default for days). Retention is trust-aware: a context froze its `ca:` list at build time, so when
+the CA set has changed since, the retained pair is rebuilt against the current trust material —
+new handshakes never see revoked client-CA trust; established sessions and outstanding session
+tickets are unaffected, exactly as on a fresh build (ticket keys are process-wide and never rotate
+on trust changes) — and if that rebuild fails the record's entries
+drop for that pass, except when nothing else is servable: the zero-certificate guard then retains
+the old state (availability outranks the drop in that corner) while the failure keeps retrying. Deleting the record remains the way to drop its contexts; a corrupt authority
+row is a pass failure like any other (reported through the signature throttle, armed for retry) and
+its trust drops until it heals. A failed pass arms a
+self-retry on the shared debounce with a per-signature backoff (1.5s doubling to 5min) and
+signature-throttled logging; external triggers (table subscription, key reload) stay at the plain
+debounce. `loadAndWatch` latches its mtime before the callback for chokidar/poll dedupe, but rolls
+the latch back on a synchronous throw or a rejected callback promise (equality-guarded so a stale
+rejection cannot unlatch a newer reload) — the latch means "last successfully applied", so the
+periodic poll can heal a lost `hdb_certificate` write instead of deduplicating it forever.
+
 ## `set_configuration` replication is opt-in; `replicateOperation` is default-on (`config/configUtils.ts`)
 
 `server.replication.replicateOperation` (installed by harper-pro's replicator) fans out whenever
@@ -638,6 +736,71 @@ mirrors loader behaviors that must stay in sync if the loader changes: config fi
 (`harper-config.yaml` → `harperdb-config.yaml` → `config.yaml`) and `files` pattern validation
 (`..` and absolute patterns rejected). Known limitation: a `componentsRoot` override that itself
 arrives via env var cannot redirect the scan.
+
+## Boot-path config persistence is best-effort, and its two artifacts commit as a unit (`config/configUtils.ts`, `config/harperConfigEnvVars.ts`)
+
+Every boot with a `HARPER_*_CONFIG` env var set re-derives the merged config and, historically, wrote
+it back unconditionally. On a full or quota-exhausted volume that write is refused and, being fatal,
+turned a full disk into a container restart loop nothing inside the container could break — the
+cleanup that frees space needs a started process (#847). Two rules follow.
+
+**Derived boot writes are best-effort; user-requested ones are not.** `persistConfigDuringBoot()`
+swallows exactly ENOSPC/EDQUOT (matching on `errno` as well as `code`, because Linux has no libuv
+mapping for EDQUOT and reports `Unknown system error -122`) and lets the boot proceed on the
+in-memory config. `updateConfig`/`set_configuration`, `addConfig`, `deleteConfigFromFile` and the
+install path keep persist-or-throw: a caller who asked to persist must not get a silent success, and
+an install has no last-known-good config to fall back on.
+
+**The env-config state and the config file must never disagree.** The state file records the
+_pre-env_ values, so it is the only copy of what the operator's config said before an env layer
+overwrote it — the config file itself holds the env-derived value. Both single-file orderings lose
+something: writing the state last means the file it would read originals from is already
+overwritten; writing it first leaves a state ahead of the file, which the next boot's
+`detectConfigDrift` reads as a manual user edit and _permanently_ reassigns those paths to `user`,
+silently disabling the env layer even after space is freed. So the commit is three steps —
+`saveState()` stages the new state in `.harper-config-state.pending.<pid>.json`, the config file is
+written, and `confirmConfigWritten()` **renames** the sidecar over the confirmed record. A rename
+needs no free space, which is the point: no write an exhausted volume can refuse ever stands between
+the confirmed originals and disk. A refused staging write leaves the config file alone; a refused
+config write unlinks the sidecar; a sidecar found at load means a commit was interrupted, so it is
+cleared and drift detection is skipped for that boot rather than mistaking the in-flight write for
+an edit. A boot that re-derives the same state writes nothing at all.
+
+Two details the name and the caller carry. The sidecar is **per-process**: every CLI invocation runs
+`initConfig`, and one shared name would let a starting server clear a running process's in-flight
+commit — the loser would then rewrite the config file with the confirmed state still describing the
+old values, which is the failure the protocol exists to prevent. Recovery therefore only clears a
+sidecar whose owning pid is gone. And only the **main thread** persists or runs recovery: workers
+derive the same merged config and would otherwise race over one pair of files for a result they
+already agree on — and since a worker shares its process's pid, a recovery scan from one would
+delete the main thread's in-flight sidecar as if it were the last boot's wreckage.
+
+A sidecar owned by a _live_ foreign process is not cleared — that process is mid-commit — but its
+presence still turns drift detection off for this boot: a pair someone else is halfway through is no
+more comparable than one an interruption left behind. That suspension is why a sidecar also ages
+out regardless of what its pid says: without it, a sidecar whose owner was killed and whose pid was
+later recycled would look mid-commit forever and suspend drift detection on every boot. The age-out
+is deliberately far longer than a commit could take — recovery from a recycled pid only has to be
+eventual, while deleting a slow-but-live writer's sidecar is the worse error, stranding its config
+file against an unpromoted state.
+
+Drift detection is main-thread-only for the same reason recovery is. A worker never owns the state:
+in the normal sequence the main thread has already classified and persisted before any worker runs,
+and inside the main thread's commit window a file that differs from the snapshot is as likely to be
+the write in flight as an operator edit. A worker that concluded "user edit" would drop the
+env-supplied value for itself alone and serve different config than its siblings.
+
+Known limit: the pair commits as a unit _within a process_. Two live processes (a server boot and a
+CLI invocation) can still interleave their config-file writes and promotions, and nothing in the repo
+serializes config writes across processes. Pre-existing — both artifacts were unordered before this
+protocol — and out of scope here, but the "commits as a unit" guarantee stops at the process
+boundary.
+
+Related: a log write must not be fatal either. `fs.appendFileSync` in `logQueuedData` throws from
+both inline and timer call sites, so on a full volume every log statement was a crash point. The
+fallback goes through `nativeStdWrite`, never `console` — `installStdioGuard` routes console output
+back into this same file logger when `logging.file` and `logging.console` are both on, so a console
+fallback recurses until the stack blows.
 
 ## A dangling symlink silently truncates the deploy tarball (`components/packageComponent.ts`)
 
@@ -893,6 +1056,48 @@ extensionModule.handleApplication` gate (`components/componentLoader.ts`) means 
 Corollary: with `threads: 0` the ops API shares the worker where `handleApplication` _did_ run,
 so ops responses **will** carry the headers there (benign).
 
+## Under Bun, the main HTTP port is served by `node:http`, not `Bun.serve`
+
+Worth knowing before debugging anything Bun-specific on the HTTP path: `getBunHTTPServer()` builds
+the `Bun.serve()` fetch config, but `onWebSocket()` calls `getHTTPServer()` unconditionally — it has
+a uWS branch and no Bun branch, because Bun native WebSockets are unimplemented (nothing ever sets
+`config.websocket`, so WS relies on the Node `ws` server attached to an `http.Server`). MQTT's
+`handleApplication` registers WS on the default port before REST's `httpServer()` call for that same
+port, so `httpServers[port]` is already a Node server by then and `getBunHTTPServer` early-returns
+without registering a serve config. The port is bound by `registerServer()`'s Node server via
+`listenOnPortsBun`'s trailing "non-HTTP servers" loop, and the fetch handler is never invoked for it
+(only the exclusive operations port reaches `Bun.serve`). Consequence: on Bun the `Request`/`Response`
+fetch path is dead code for the main port, and its divergences show up as `node:http`-emulation
+divergences instead.
+
+One such divergence, `#2210`: Bun's `node:http` never derives keep-alive from the request. For a
+`Connection: close` request `shouldKeepAlive` stays `true`, and neither a `Connection: close` response
+header nor `response.socket.end()` closes the connection — a **stream-ended** response (an async
+source ended through `pipeline()`; a direct `response.end()` is fine) delivers its full body and
+terminal chunk, then holds the connection until Bun's own idle timeout — a chunked-aware client
+completes the message and can walk away, but the un-honored close still violates RFC 9112 §9.6 and
+strands the socket; a raw client waiting on the FIN (and the HTTP/1.0 case below, which has no
+terminal chunk to stop at) hangs outright. An HTTP/1.0 client hangs the same way
+without asking to close at all, since 1.0 persistence needs both an explicit `keep-alive` and a length
+to read to — so a 1.0 response that got no `Content-Length` is close-delimited, the same line Node
+draws (Node closes it at ~7ms; Bun never does). An explicit `close` token wins over `keep-alive` on
+both versions. A 1.0 `keep-alive` request whose response _did_ get a
+`Content-Length` (`body.size` on a blob, `server/http.ts:698-709`) is left open, which is again what
+Node does and what Bun then handles correctly.
+
+`pipeBodyToResponse()` therefore ends `request.socket` itself for those shapes
+(`endConnectionIfClientExpectsClose`, `isBun`-gated, HTTP/1 only, clean path only — the error path
+already closes because `pipeline()` destroys the response with the stream error). Ending the
+_request's_ socket is the only remedy that works after a clean stream end on Bun: a `Connection:
+close` response header, `response.socket.end()` and `response.destroy()` were all measured as no-ops
+there. `socket.end()` is graceful, so it does not truncate — 8 MB over plain TCP and 6 MB over TLS to
+a deliberately slow reader each arrive whole. The
+`Content-Length` check reads `response.hasHeader()`, which Bun populates from the `writeHead(status,
+headers)` fast path this file uses (Node does not, but the branch is Bun-only). A
+keep-alive arm pins the other direction (such a client keeps its connection and reuses it); the two
+HTTP/1.0 arms are Node/Bun-only, because uWS does not route an HTTP/1.0 request to the resource at
+all.
+
 ## The published shrinkwrap governs registry installs but not tarball installs (`build-tools/`)
 
 npm decides whether to honor a dependency's bundled `npm-shrinkwrap.json` from the `_hasShrinkwrap`
@@ -1100,6 +1305,15 @@ graphs being identical, though equal metrics do not prove it. It is the expected
 the upper layers are sparse enough that a greedy walk reaches the same entry point, which is why
 standard HNSW descends this way.
 
+Greedy-equals-full is statistical, not per-graph: rare level layouts route to a different layer-0
+entry point and displace the tail of the top-k (~2-3% of random 600-node graphs in the unit test's
+corpus). Tests that assert exact result-set equality across search strategies must therefore pin the
+graph: level assignment draws from the instance's `random` property (a test seam defaulting to
+`Math.random`), which the routing test replaces with a seeded PRNG. One pinned graph samples the
+property once, so that test sweeps a fixed list of seeds, each verified non-divergent when the list
+was written — a seed that starts diverging after an intentional index change is a re-pin, not
+necessarily a routing regression.
+
 ## `efConstruction` and the search-`ef` ceiling both auto-scale with the graph
 
 The connection-building pass selects each node's stored edges from a candidate list of
@@ -1278,3 +1492,34 @@ half-written file into a valid-looking env-only config. Its three outcomes are d
 one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
 restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
 report standing, since it is shared with every other watcher of that file; closing is terminal.
+
+## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
+
+`estimateCondition` estimates range comparators (`starts_with`/`prefix`, the `between` family,
+`lt`/`le`/`gt`/`ge`) via the store's `estimateCount({start, end, …}) → { count, confidence }`
+(rocksdb-js ≥ 2.8.0) instead of flat table fractions, blended as
+`round(confidence × count + (1 − confidence) × fraction-heuristic)` so a low-confidence estimate
+degrades to the historical behavior rather than replacing it. Invariants that are easy to break:
+
+- **Capability is feature-detected per store** (`typeof store.estimateCount === 'function'`)
+  because LMDB-backed and custom index stores do not implement it. The result shape is validated
+  (`Number.isFinite(count)`, `0 ≤ confidence ≤ 1`) and the native call is try/caught, so a store
+  that answers differently — or one closing concurrently — degrades the plan to the fraction
+  heuristic instead of NaN-poisoning condition ordering.
+- **The estimated range must be the executed range.** Construction mirrors `searchByIndex`'s
+  comparator switch; bounds longer than `MAX_SEARCH_KEY_LENGTH` fall back entirely because
+  execution truncates + filters (wider range than the estimable one). Two ways this has already
+  been got wrong: `lt`/`le` need `searchByIndex`'s `start: true` lower bound, or the estimate
+  counts the `[null, primaryKey]` entries an `indexNulls` index holds and execution skips (`true`
+  sorts above `null`) — measured at 21× inflation on an index that is 99% nulls, which is worse
+  than the flat heuristic it replaces; and `RocksIndexStore` must widen value-space bounds to
+  `[value, MAXIMUM_KEY]` composite bounds, because the base implementation's byte-successor
+  semantics exclude the wrong entries on composite `[value, primaryKey]` keys. `getRange` and
+  `estimateCount` therefore share one `translateIndexBounds` helper rather than two copies.
+- **Negated conditions estimate `Infinity` at the root** (`estimateConditionForTable`), following
+  the filter-only convention (`contains`/`ends_with`): the negated flag always forces
+  `needFullScan`, so `estimated_count` here is execution-cost ordering, not result cardinality —
+  a narrow negated range must never look selective enough to become the driving condition.
+- `estimatedEntryCount` reads `estimate-num-keys` (O(1)) rather than iterating; it skews high on
+  overwrite/delete-heavy data until compaction, which is acceptable for the relative-ordering and
+  explicitly-estimated consumers it feeds (and it is a divisor — keep the ≥1 floor).

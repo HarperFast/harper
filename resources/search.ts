@@ -1112,6 +1112,91 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	}
 }
 
+/**
+ * Estimates a range comparator's entry count from the store's statistical estimate, blended with
+ * the table-fraction heuristic by the estimate's confidence so low-confidence estimates degrade
+ * to the old behavior. Returns undefined (caller falls back to the heuristic) when the store
+ * cannot estimate, the shape is unexpected, or the executed range wouldn't match this one.
+ */
+function estimateRangeCondition(table, condition, searchType, fraction) {
+	const attributeName = condition[0] ?? condition.attribute;
+	const isPrimaryKey = attributeName === table.primaryKey;
+	const store = isPrimaryKey ? table.primaryStore : table.indices[attributeName];
+	// LMDB-backed and custom index stores do not implement estimateCount
+	if (typeof store?.estimateCount !== 'function') return undefined;
+	let value = condition[1] ?? condition.value;
+	if (value instanceof Date) value = value.getTime();
+	let range;
+	switch (searchType) {
+		case 'lt':
+			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
+			// index's `[null, primaryKey]` entries are outside the executed range
+			range = { start: true, end: value };
+			break;
+		case 'le':
+			range = { start: true, end: value, inclusiveEnd: true };
+			break;
+		case 'gt':
+			range = { start: value, exclusiveStart: true };
+			break;
+		case 'ge':
+			range = { start: value };
+			break;
+		case 'between':
+		case 'gele':
+		case 'gelt':
+		case 'gtlt':
+		case 'gtle': {
+			if (!Array.isArray(value)) return undefined;
+			let [start, end] = value;
+			if (start instanceof Date) start = start.getTime();
+			if (end instanceof Date) end = end.getTime();
+			range = {
+				start,
+				end,
+				inclusiveEnd: searchType === 'between' || searchType === 'gele' || searchType === 'gtle',
+				exclusiveStart: searchType === 'gtlt' || searchType === 'gtle',
+			};
+			break;
+		}
+		case 'starts_with': {
+			const prefix = value?.toString();
+			if (!prefix) return undefined;
+			range = { start: prefix, end: getStringPrefixUpperBound(prefix) };
+			break;
+		}
+		case 'prefix': {
+			let start = Array.isArray(value) ? value : [value, null];
+			if (start[start.length - 1] != null) start = start.concat(null);
+			const end = start.slice(0);
+			end[end.length - 1] = MAXIMUM_KEY;
+			range = { start, end };
+			break;
+		}
+		default:
+			return undefined;
+	}
+	// Long string bounds get truncated + filtered at execution (searchByIndex), so the
+	// executed range is wider than this one; don't estimate what won't be iterated.
+	if (
+		(typeof range.start === 'string' && range.start.length > MAX_SEARCH_KEY_LENGTH) ||
+		(typeof range.end === 'string' && range.end.length > MAX_SEARCH_KEY_LENGTH)
+	) {
+		return undefined;
+	}
+	let count, confidence;
+	try {
+		({ count, confidence } = store.estimateCount(range) ?? {});
+	} catch {
+		// a concurrently closing/dropped store must degrade the plan, not fail the query
+		return undefined;
+	}
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return undefined;
+	const heuristic = fraction * estimatedEntryCount(table.primaryStore) + 1;
+	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
+}
+
 export function estimateCondition(table) {
 	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
@@ -1141,7 +1226,14 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
+			if (condition.negated) {
+				// a negated condition always executes as a full scan (searchByIndex forces
+				// needFullScan), so follow the filter-only convention used by contains/ends_with:
+				// estimate Infinity so its positive-range estimate can never win the driving-condition
+				// ordering. Short-circuit here rather than computing (and discarding) a positive-range
+				// estimate that would cross the native FFI boundary for nothing.
+				condition.estimated_count = Infinity;
+			} else if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
@@ -1190,11 +1282,14 @@ export function estimateCondition(table) {
 				} else if (Array.isArray(condition.value)) {
 					condition.estimated_count = Infinity;
 				} else condition.estimated_count = Infinity;
-				// for range queries (betweens, startsWith, greater, etc.), just arbitrarily guess
 			} else if (searchType === 'starts_with' || searchType === 'prefix')
-				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+				condition.estimated_count =
+					estimateRangeCondition(table, condition, searchType, STARTS_WITH_ESTIMATE) ??
+					STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'between')
-				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+				condition.estimated_count =
+					estimateRangeCondition(table, condition, searchType, BETWEEN_ESTIMATE) ??
+					BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'sort') {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
@@ -1209,7 +1304,10 @@ export function estimateCondition(table) {
 				if (index?.customIndex?.estimateCount)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);
-				else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+				else
+					condition.estimated_count =
+						estimateRangeCondition(table, condition, searchType, OPEN_RANGE_ESTIMATE) ??
+						OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			}
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
@@ -1395,6 +1493,7 @@ function parseBlock(query, expectedEnd) {
 						break;
 					case 'group-by':
 						recordError('group by is not implemented yet');
+						break;
 					case 'sort':
 						query.sort = toSortObject(args);
 						break;
@@ -1619,16 +1718,18 @@ export function flattenKey(key) {
 	return key;
 }
 
-function estimatedEntryCount(store) {
+export function estimatedEntryCount(store) {
 	const now = Date.now();
 	if ((store.estimatedEntryCountExpires || 0) < now) {
-		// use getStats for LMDB because it is fast path, otherwise RocksDB can handle fast path on its own
-		store.estimatedEntryCount = store instanceof RocksDatabase ? store.getKeysCount() : store.getStats().entryCount;
+		// getStats is the LMDB fast path; for RocksDB, estimate-num-keys is O(1) where an exact
+		// getKeysCount() would iterate the entire store
+		store.estimatedEntryCount =
+			store instanceof RocksDatabase ? store.getEstimatedKeyCount() : store.getStats().entryCount;
 		store.estimatedEntryCountExpires = now + 10000;
 	}
 	return store.estimatedEntryCount;
 }
 
 export function intersectionEstimate(store, left, right) {
-	return (left * right) / estimatedEntryCount(store);
+	return (left * right) / Math.max(estimatedEntryCount(store), 1);
 }

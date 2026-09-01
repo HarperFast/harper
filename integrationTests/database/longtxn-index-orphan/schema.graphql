@@ -1,0 +1,17 @@
+# QA-601 — over-time transaction x secondary-index, MULTI-STORE chain corner.
+#
+# Two separate tables (two separate RocksDB stores/paths) so a single logical write
+# transaction that touches both chains a `next` DatabaseTransaction link
+# (resources/Table.ts txnForContext, ~line 5026). `tag` is @indexed on both so we can
+# cross-check index vs primary in both directions on each table independently.
+type TableA @table @export {
+	id: ID @primaryKey
+	tag: String @indexed
+	payload: String
+}
+
+type TableB @table @export {
+	id: ID @primaryKey
+	tag: String @indexed
+	payload: String
+}

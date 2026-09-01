@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
+const { EventEmitter } = require('node:events');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -11,10 +12,11 @@ const hook_std = require('intercept-stdout');
 const os = require('os');
 const YAML = require('yaml');
 const harperLoggerModule = require('#src/utility/logging/harper_logger');
-const { createLogger } = harperLoggerModule;
+const { createLogger, updateLogger } = harperLoggerModule;
 const { getHttpOptions, handleApplication, logRequest } = require('#src/server/http');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { waitFor } = require('../../waitFor.js');
+const { pinLogConfig } = require('../../logConfigFixture.js');
 
 const HARPER_LOGGER_MODULE = '#js/utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -42,9 +44,47 @@ const LOG_MSGS_TEST = {
 	TRACE: 'trace log',
 };
 
+// Snapshot of a stream's .write plus the 'error' listener installStdioGuard() stashes on it.
+function captureStdio() {
+	return [process.stdout, process.stderr].map((stream) => ({
+		stream,
+		write: stream.write,
+		handler: stream.harperStdioErrorHandler,
+	}));
+}
+
+function restoreStdio(captured) {
+	for (const { stream, write, handler } of captured) {
+		stream.write = write;
+		if (stream.harperStdioErrorHandler) {
+			stream.removeListener('error', stream.harperStdioErrorHandler);
+			delete stream.harperStdioErrorHandler;
+		}
+		if (handler) {
+			stream.harperStdioErrorHandler = handler;
+			stream.on('error', handler);
+		}
+	}
+}
+
+// Loading this module runs initLogSettings(), which ends in stdioLogging(): that replaces the
+// REAL process.stdout/process.stderr .write with a guard closed over this throwaway instance and
+// adds an 'error' listener to both. Leaving it installed routes mocha's own reporter writes
+// through an instance these tests then deliberately break — and the guard is built to be hostile,
+// rethrowing a write error that is not a broken pipe and noop-ing every write after one that is.
+// mocha's `dot` and `tap` reporters write with process.stdout.write directly, so that rethrow
+// escapes mid-run through the runner's callback chain; `timeout: 0` in .mocharc.json then means
+// nothing ever fails the stalled test, the event loop drains, and the process exits 0 having
+// printed no epilogue — indistinguishable from a pass. So put the real streams back before
+// handing the instance to a test. Tests that need the guard install it on a stream of their own.
 function requireUncached(module) {
-	delete require.cache[require.resolve(module)];
-	return rewire(module);
+	const stdio = captureStdio();
+	try {
+		delete require.cache[require.resolve(module)];
+		return rewire(module);
+	} finally {
+		restoreStdio(stdio);
+	}
 }
 
 let captured_stdout = '';
@@ -107,15 +147,28 @@ function setTestLogConfig(level, config_log_path, to_file, to_stream) {
 
 describe('Test harper_logger module', () => {
 	const sandbox = sinon.createSandbox();
+	let restoreLogConfig;
+
+	// Pin the config instead of inheriting whatever Harper install the machine happens to have.
+	// The module-level log_to_file that initLogSettings() resolves at load gates every file write
+	// in createLogger(), so with no boot properties present the HTTP-logger and global-logger tests
+	// below wait forever for a log file nothing is writing, and initLogSettings()'s own test sees
+	// undefined settings because the ENOENT path returns before it reads any config at all.
+	before(() => {
+		restoreLogConfig = pinLogConfig();
+	});
 
 	after(() => {
 		sandbox.restore();
+		restoreLogConfig?.();
 	});
 
 	describe('Test initLogSettings function', () => {
 		const test_error = new Error('no such file or directory test');
+		const afterThisTest = [];
 
 		afterEach(() => {
+			while (afterThisTest.length) afterThisTest.pop()();
 			sandbox.restore();
 			sandbox.resetHistory();
 		});
@@ -140,6 +193,16 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test that if error code is not ENOENT error is handled correctly', () => {
+			// This asserts the path where there is nothing to fall back to, so ROOTPATH has to be
+			// absent: initLogSettings() deliberately SWALLOWS a failure to read the boot properties
+			// when ROOTPATH names a directory holding a config (which is how pinLogConfig() above
+			// works, and how a developer with ROOTPATH exported would run).
+			const originalRootPath = process.env.ROOTPATH;
+			delete process.env.ROOTPATH;
+			afterThisTest.push(() => {
+				if (originalRootPath !== undefined) process.env.ROOTPATH = originalRootPath;
+			});
+
 			test_error.code = 'EACCES';
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const properties_reader_stub = sandbox.stub().throws(test_error);
@@ -868,6 +931,122 @@ describe('Test harper_logger module', () => {
 			this.externalLogger.rotation = this.originalExternalOptions.rotation;
 		});
 	});
+
+	describe('Test external/component logger rotation inheritance (#1877)', () => {
+		const ROTATION_TEST_DIR = path.join(__dirname, 'rotationInheritanceTest');
+		let loggersToCleanup;
+
+		beforeEach(() => {
+			fs.mkdirpSync(ROTATION_TEST_DIR);
+			loggersToCleanup = [];
+		});
+
+		afterEach(async () => {
+			// Stop each rotator interval before removing the directory. There's no public handle to
+			// a logger's internal rotator/file-logger entry, but disabling rotation and re-assigning
+			// `.path` (even to its own current value) goes through the same public `.path` setter
+			// production reload uses, which tears down the old rotator interval on a short internal
+			// timer — the same pattern already used to clean up `httpLogger`/`this.externalLogger`
+			// elsewhere in this file. Any still-open file descriptor is closed by the module's own
+			// safety-timeout, unref'd, so it can't hang the test process.
+			for (const logger of loggersToCleanup) {
+				const currentPath = logger.path;
+				logger.rotation = { enabled: false };
+				logger.path = currentPath;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			fs.removeSync(ROTATION_TEST_DIR);
+		});
+
+		it('inherits the main rotation config (incl. maxSize) and rotates the external log file when no component rotation is configured', async () => {
+			const mainRotation = { enabled: true, maxSize: '1K', auditInterval: 100 };
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			// updateLogSettings() always applies the main logging options (incl. rotation) first,
+			// before ever touching the external logger — reproduce that ordering here, passing
+			// testMainLogger explicitly as the inheritance source instead of reaching into
+			// module-private state.
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			const externalLogger = testMainLogger.forComponent('external');
+			loggersToCleanup.push(externalLogger);
+			const externalLogPath = path.join(ROTATION_TEST_DIR, 'external.log');
+
+			// This is the same call updateLogSettings() makes for `logging.external`: a path of its
+			// own, but no rotation block — it must inherit the main rotation, not lose it.
+			updateLogger(externalLogger, { path: externalLogPath }, undefined, testMainLogger);
+
+			assert.deepStrictEqual(externalLogger.rotation, mainRotation);
+
+			for (let i = 0; i < 30; i++) externalLogger.info('x'.repeat(80));
+
+			const rotatedDir = path.join(ROTATION_TEST_DIR, 'rotated');
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: 'Expected the external log to be rotated using the inherited main maxSize',
+			});
+		});
+
+		it("does not inherit main's rotation path, so a wholesale-inherited rotation archives beside the component's own log instead of risking a cross-device rename (EXDEV)", () => {
+			const mainArchiveDir = path.join(ROTATION_TEST_DIR, 'mainArchive');
+			const mainRotation = { enabled: true, maxSize: '1K', path: mainArchiveDir };
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			const externalLogger = testMainLogger.forComponent('external');
+			loggersToCleanup.push(externalLogger);
+			updateLogger(externalLogger, { path: path.join(ROTATION_TEST_DIR, 'external.log') }, undefined, testMainLogger);
+
+			// maxSize inherits; path does not, so this logger's own rotator defaults beside its file.
+			assert.deepStrictEqual(externalLogger.rotation, { enabled: true, maxSize: '1K' });
+			// Main's own rotation config object must not be mutated by another logger's inheritance.
+			assert.strictEqual(testMainLogger.rotation, mainRotation);
+			assert.strictEqual(testMainLogger.rotation.path, mainArchiveDir);
+		});
+
+		it('preserves an explicit component rotation override instead of the inherited main config', () => {
+			const mainRotation = { enabled: true, maxSize: '1K' };
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
+
+			const externalLogger = testMainLogger.forComponent('external');
+			loggersToCleanup.push(externalLogger);
+			const override = { enabled: false };
+			updateLogger(
+				externalLogger,
+				{ path: path.join(ROTATION_TEST_DIR, 'external.log'), rotation: override },
+				undefined,
+				testMainLogger
+			);
+
+			assert.deepStrictEqual(externalLogger.rotation, override);
+		});
+
+		it('still allows clearing the main logger rotation itself (no self-referential lock-in)', () => {
+			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+
+			updateLogger(
+				testMainLogger,
+				{ path: mainLogPath, rotation: { enabled: true, maxSize: '1K' } },
+				undefined,
+				testMainLogger
+			);
+			assert.deepStrictEqual(testMainLogger.rotation, { enabled: true, maxSize: '1K' });
+
+			// A reload with no rotation block at all (logOptions.rotation undefined) must still be
+			// able to clear the main logger's own rotation, not fall back to itself and get stuck.
+			updateLogger(testMainLogger, { path: mainLogPath }, undefined, testMainLogger);
+			assert.strictEqual(testMainLogger.rotation, undefined);
+		});
+	});
+
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});
@@ -1704,85 +1883,104 @@ describe('Test harper_logger module', () => {
 
 		describe('the process.stdout/stderr.write() wrapper installed by stdioLogging() (harper#2106)', () => {
 			let harper_logger;
-			let originalStdoutWrite;
-			let originalStderrWrite;
 
-			// Drives stdioLogging() directly via rewire rather than through initLogSettings()'s
-			// real-filesystem config resolution, which made log_to_file/logConsole depend on
-			// whatever boot properties happen to exist on the machine running this.
+			// These tests drive installStdioGuard() against FAKE streams, never the real
+			// process.stdout/process.stderr, and that is load-bearing rather than tidiness.
+			//
+			// The guard is meant to be hostile: it rethrows a write error that is not a broken-pipe
+			// error, and after a broken-pipe one it routes every later write to a noop. Installed on
+			// the real streams and left there for the duration of a test, that lands on mocha's own
+			// reporter. `dot` and `tap` write with process.stdout.write directly, so the rethrow
+			// escapes mid-run through the runner's callback chain; `timeout: 0` in .mocharc.json
+			// then means nothing ever fails the stalled test, the event loop drains, and the process
+			// exits 0 having printed no epilogue and no failure — a silent pass. (`spec` and `min`
+			// survived it only because Node's console.* swallows stream write errors, and they still
+			// lost the reporter lines for the broken-pipe tests to the noop.)
+			//
+			// installStdioGuard() takes the stream as a parameter, so the same code under test runs
+			// with the assertions pointed at a stream mocha is not holding.
+			function makeFakeStream() {
+				const stream = new EventEmitter();
+				// Stands in for the pristine process.std*.write the guard replaces. The guard never
+				// calls it — it calls the module's nativeStdWrite — so make it a tripwire: a write that
+				// reaches it means the guard was not installed, and the tests below would otherwise
+				// pass vacuously.
+				stream.write = function unguardedWrite() {
+					throw new Error('installStdioGuard() did not replace the write on this stream');
+				};
+				return stream;
+			}
+
+			// Drives stdioLogging()'s guard directly via rewire rather than through
+			// initLogSettings()'s real-filesystem config resolution, which made
+			// log_to_file/logConsole depend on whatever boot properties happen to exist on the
+			// machine running this.
 			function setup(logToFile) {
 				harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 				harper_logger.__set__('log_to_file', logToFile);
 				harper_logger.__set__('logConsole', true);
-				harper_logger.__get__('stdioLogging')();
+				// Nothing in these tests should reach the real stdout; if a write escapes the stubs
+				// below, capture it here rather than letting it interleave with mocha's output.
+				harper_logger.__set__('nativeStdWrite', sinon.stub().returns(true));
+				// logConsole above makes the guard tee to writeToLogFile, which is only assigned when
+				// the resolved config gives the logger a path. Stub it so the tee is exercised here on
+				// any machine rather than throwing 'writeToLogFile is not a function'.
+				harper_logger.__set__('writeToLogFile', sinon.stub());
+				const installStdioGuard = harper_logger.__get__('installStdioGuard');
+				const fakeStdout = makeFakeStream();
+				const fakeStderr = makeFakeStream();
+				installStdioGuard(fakeStdout);
+				installStdioGuard(fakeStderr);
+				return { fakeStdout, fakeStderr };
 			}
-
-			beforeEach(() => {
-				originalStdoutWrite = process.stdout.write;
-				originalStderrWrite = process.stderr.write;
-			});
-
-			afterEach(() => {
-				// stdioLogging() rebinds the REAL process.stdout/stderr .write (and adds an 'error'
-				// listener) to this module instance - undoing both keeps a broken-pipe simulation
-				// from leaking into the rest of this mocha run.
-				process.stdout.write = originalStdoutWrite;
-				process.stderr.write = originalStderrWrite;
-				for (const stream of [process.stdout, process.stderr]) {
-					if (stream.harperStdioErrorHandler) {
-						stream.removeListener('error', stream.harperStdioErrorHandler);
-						delete stream.harperStdioErrorHandler;
-					}
-				}
-			});
 
 			for (const logToFile of [true, false]) {
 				it(`catches a broken-pipe write inline instead of throwing, regardless of logging.file:${logToFile}`, () => {
-					setup(logToFile);
+					const { fakeStdout, fakeStderr } = setup(logToFile);
 					harper_logger.__set__('nativeStdWrite', function () {
 						throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
 					});
 
-					assert.doesNotThrow(() => process.stderr.write('boom\n'));
+					assert.doesNotThrow(() => fakeStderr.write('boom\n'));
 					// the write above disabled stdio itself - a second, independent write is silent too
-					assert.doesNotThrow(() => process.stdout.write('still fine\n'));
+					assert.doesNotThrow(() => fakeStdout.write('still fine\n'));
 
 					const callback = sinon.stub();
-					assert.strictEqual(process.stdout.write('chunk', callback), true);
+					assert.strictEqual(fakeStdout.write('chunk', callback), true);
 					assert.strictEqual(callback.calledOnce, true);
 				});
 			}
 
 			it('does not swallow a write error unrelated to a broken stdio stream', () => {
-				setup(true);
+				const { fakeStderr } = setup(true);
 				harper_logger.__set__('nativeStdWrite', function () {
 					throw Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' });
 				});
 
-				assert.throws(() => process.stderr.write('boom\n'), /boom/);
+				assert.throws(() => fakeStderr.write('boom\n'), /boom/);
 			});
 
 			it('keeps teeing console output to the log file after a broken pipe disables the native writer', () => {
-				setup(true);
+				const { fakeStderr } = setup(true);
 				const writeToLogFileSpy = sinon.stub();
 				harper_logger.__set__('writeToLogFile', writeToLogFileSpy);
 				harper_logger.__set__('nativeStdWrite', function () {
 					throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
 				});
 
-				process.stderr.write('first write, breaks the pipe\n');
-				process.stderr.write('second write, should still reach the file\n');
+				fakeStderr.write('first write, breaks the pipe\n');
+				fakeStderr.write('second write, should still reach the file\n');
 
 				assert.strictEqual(writeToLogFileSpy.callCount, 2);
 				assert.strictEqual(writeToLogFileSpy.secondCall.args[0], 'second write, should still reach the file');
 			});
 
 			// installStdioGuard() stashes its 'error' listener on the stream itself; calling it
-			// directly (rather than process.stderr.emit('error', ...)) avoids altering Node's own
-			// internal stream state for the rest of this mocha run.
+			// directly (rather than fakeStderr.emit('error', ...)) keeps the assertion on the
+			// handler rather than on EventEmitter's unhandled-'error' behaviour.
 			it('catches the ASYNC error event a real closed pipe emits - not just a synchronous write throw', () => {
-				setup(true);
-				const handler = process.stderr.harperStdioErrorHandler;
+				const { fakeStderr } = setup(true);
+				const handler = fakeStderr.harperStdioErrorHandler;
 				assert.strictEqual(typeof handler, 'function');
 
 				assert.doesNotThrow(() => handler(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })));
@@ -1795,10 +1993,29 @@ describe('Test harper_logger module', () => {
 			});
 
 			it('the async error handler rethrows an error unrelated to a broken stdio stream', () => {
-				setup(true);
-				const handler = process.stderr.harperStdioErrorHandler;
+				const { fakeStderr } = setup(true);
+				const handler = fakeStderr.harperStdioErrorHandler;
 
 				assert.throws(() => handler(Object.assign(new Error('boom'), { code: 'SOMETHING_ELSE' })), /boom/);
+			});
+
+			// The wiring the tests above deliberately do not exercise on the real streams: that
+			// stdioLogging() guards both of them. Safe to run there because it only installs the
+			// pass-through guard - no write is made to throw or to noop - and it is undone
+			// immediately.
+			it('stdioLogging() installs the guard, and its error listener, on both real process streams', () => {
+				const captured = captureStdio();
+				try {
+					harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+					harper_logger.__get__('stdioLogging')();
+
+					for (const { stream, write } of captured) {
+						assert.notStrictEqual(stream.write, write);
+						assert.strictEqual(typeof stream.harperStdioErrorHandler, 'function');
+					}
+				} finally {
+					restoreStdio(captured);
+				}
 			});
 		});
 	});

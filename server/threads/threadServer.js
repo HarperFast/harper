@@ -169,6 +169,22 @@ function closeServers() {
 }
 
 function startServers() {
+	// A worker that has not yet posted child_started owns no ref'd handle: addPort()
+	// (manageThreads) unrefs parentPort, component watchers are persistent:false, and the
+	// reporting timers are unref'd. An await inside loadRootComponents whose completion
+	// arrives through a non-ref-holding source — e.g. rocksdb-js delivers cross-thread
+	// lock-release and parked-commit-retry wakes through unref'd threadsafe functions —
+	// can then drain the event loop, exiting the worker cleanly (code 0) before the ready
+	// handshake and aborting the whole node's startup. Hold a ref for the entire pre-ready
+	// window; the SHUTDOWN path unrefs it for graceful exit as before.
+	parentPort?.ref();
+	let startupPhase = 'loading components';
+	const reportStartupPhase = (phase) => {
+		startupPhase = phase;
+		try {
+			parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE, phase });
+		} catch {}
+	};
 	const rootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 	if (rootPath) {
 		try {
@@ -177,7 +193,9 @@ function startServers() {
 			// ignore any errors with this; just a best effort for now
 		}
 	}
-	let loaded = require('../loadRootComponents.js')
+	reportStartupPhase(startupPhase);
+	let listening;
+	const loaded = require('../loadRootComponents.js')
 		.loadRootComponents(true)
 		.then(() => {
 			parentPort
@@ -222,32 +240,30 @@ function startServers() {
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-			const listening = listenOnPorts();
-
-			// notify that we are now ready to start receiving requests
-			Promise.resolve(listening)
-				.then(() => {
-					if (getWorkerIndex() === 0) {
-						try {
-							startupLog(portServer);
-						} catch (err) {
-							console.error('Error displaying start-up log', err);
-						}
-					}
-					parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
-				})
-				.catch((err) => {
-					// Must not fall into the process-wide 'unhandledRejection' handler above, which
-					// would silently absorb it and leave the worker parked forever.
-					console.error(
-						`Failed to start listening on ${threadId === 0 ? 'the main thread' : `worker ${threadId}`}`,
-						err
-					);
-					harperLogger.fatal('Failed to bind server listeners during startup', err);
-					realExit(1);
-				});
+			reportStartupPhase('binding listeners');
+			listening = listenOnPorts();
 		});
 	componentsLoadedResolve(loaded);
+	const started = loaded
+		.then(() => listening)
+		.then(() => {
+			reportStartupPhase('ready');
+			if (getWorkerIndex() === 0) {
+				try {
+					startupLog(portServer);
+				} catch (err) {
+					console.error('Error displaying start-up log', err);
+				}
+			}
+			parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+		})
+		.catch((error) => {
+			const failedPhase = startupPhase;
+			reportStartupPhase(`failed during ${failedPhase}`);
+			harperLogger.fatal(`HTTP worker startup failed during ${failedPhase}`, error);
+			if (isMainThread) throw error;
+			realExit(1);
+		});
 	// Clean up UDS files and force-close Bun server connections on unexpected exit.
 	// Without the stop(true) call, clients holding keep-alive connections to a dead Bun
 	// worker never receive a FIN/RST and hang indefinitely waiting for a response.
@@ -264,7 +280,7 @@ function startServers() {
 		}
 		httpComponent.cleanupUdsFiles();
 	});
-	return loaded;
+	return started;
 }
 /**
  * An overlong path is the only condition that can skip a domain-socket listener. Check before
