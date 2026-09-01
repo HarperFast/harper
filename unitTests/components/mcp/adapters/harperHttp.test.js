@@ -11,6 +11,9 @@ function makeFakeTable() {
 		async put(record) {
 			store.set(record.id, { ...record });
 		},
+		async patch(record) {
+			store.set(record.id, { ...store.get(record.id), ...record });
+		},
 		async get(id) {
 			const r = store.get(id);
 			return r ? { ...r } : undefined;
