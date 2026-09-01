@@ -62,6 +62,9 @@ const MAX_TXN_OPEN_MS = 1000;
 // on elapsed wall-clock.
 const HOLD_MS = 15_000;
 const LOG_FILES = ['hdb.log', 'stdout.log', 'stderr.log'];
+// Where the fixture puts a checkpoint; derived independently here so that a fixture regression
+// handing back a live directory fails the assertion in refreshOracle() rather than being opened.
+const SNAPSHOT_DIR = 'oracle-snapshots';
 const skipSuite = process.platform === 'win32';
 
 suite(
@@ -139,8 +142,11 @@ suite(
 
 		after(async () => {
 			closeOracleHandles();
-			await removeSnapshot();
-			await teardownHarper(ctx);
+			try {
+				await removeSnapshot();
+			} finally {
+				await teardownHarper(ctx);
+			}
 		});
 
 		function postJSON(path: string, body: unknown): Promise<Response> {
@@ -208,8 +214,12 @@ suite(
 			const res = await postJSON('/Snapshot/', { seq: ++snapshotSeq });
 			const body = await res.text();
 			strictEqual(res.status, 200, `snapshot control should succeed; got ${res.status} ${body.slice(0, 300)}`);
+			strictEqual(
+				JSON.parse(body).path,
+				join(ctx.harper.dataRootDir, SNAPSHOT_DIR, String(snapshotSeq)),
+				'the oracle must only ever open a checkpoint at the path the fixture derives for this sequence'
+			);
 			snapshotPath = JSON.parse(body).path;
-			ok(snapshotPath, `snapshot control must return the checkpoint path; got ${body.slice(0, 300)}`);
 		}
 		function openDbi(name: string): RocksDatabase {
 			// Reading the live directory instead would reintroduce the compaction race the checkpoint
@@ -269,7 +279,7 @@ suite(
 			await seed('ItemF', [{ id: 'snapshot-1', category: 'SNAPSHOT' }]);
 			await refreshOracle();
 			const firstSnapshot = snapshotPath!;
-			ok(firstSnapshot && firstSnapshot !== rootPath, `the oracle must open a checkpoint, not ${rootPath}`);
+			ok(firstSnapshot !== rootPath, `the oracle must open a checkpoint, not ${rootPath}`);
 			strictEqual(
 				openDbi('ItemF/category').path,
 				firstSnapshot,
