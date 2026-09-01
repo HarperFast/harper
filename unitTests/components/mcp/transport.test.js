@@ -61,6 +61,7 @@ function jsonRpc(id, method, params) {
 
 describe('mcp/transport', () => {
 	let envOverrides;
+	let fakeSessionTable;
 	const envStub = {
 		get(key) {
 			return envOverrides[key];
@@ -70,7 +71,8 @@ describe('mcp/transport', () => {
 	beforeEach(() => {
 		envOverrides = {};
 		transport_mod.__set__('env', envStub);
-		_setSessionTableForTest(makeFakeSessionTable());
+		fakeSessionTable = makeFakeSessionTable();
+		_setSessionTableForTest(fakeSessionTable);
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
 		_setResourcesForTest(makeFakeResources([]));
@@ -85,6 +87,7 @@ describe('mcp/transport', () => {
 		_setResourcesForTest(undefined);
 		_setOpenApiGeneratorForTest(undefined);
 		_setHttpUrlPrefixForTest(undefined);
+		_setSubscribeImplForTest(undefined);
 	});
 
 	describe('POST initialize', () => {
@@ -1392,6 +1395,24 @@ describe('mcp/transport', () => {
 			assert.equal(res.status, 200);
 			assert.equal(res.headers['Content-Type'], 'text/event-stream');
 			assert.ok(res.sseIterable, 'sseIterable returned for the SSE channel');
+		});
+
+		it('prunes unavailable subscriptions from a frozen persisted session', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			await saveSession(session.id, { subscriptions: ['https://app.test:9926/nope/1'] });
+			_setSubscribeImplForTest(async () => null);
+			const get = fakeSessionTable.get;
+			fakeSessionTable.get = async (id) => Object.freeze(await get(id));
+
+			const res = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+
+			assert.equal(res.status, 200);
+			assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 		});
 	});
 

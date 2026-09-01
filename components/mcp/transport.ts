@@ -416,7 +416,6 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	if (session.subscriptions?.length) {
 		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
 		if (restored.length !== session.subscriptions.length) {
-			session.subscriptions = restored;
 			await saveSession(session.id, { subscriptions: restored });
 		}
 	}

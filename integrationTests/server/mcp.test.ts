@@ -5,7 +5,7 @@
  * `mcp.operations: {}` in config:
  *   - initialize handshake (request + Mcp-Session-Id response)
  *   - notifications/initialized → 202 empty
- *   - GET /mcp → SSE channel with a valid session
+ *   - GET /mcp → 400 without a session id
  *   - DELETE /mcp → terminate session when enabled
  *   - Unknown method → 200 + JSON-RPC -32601
  *   - Missing/unknown session id → 400 / 404

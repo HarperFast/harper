@@ -34,6 +34,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
  * is identical either way.)
  */
 const EVICTION_WINDOW_SECONDS = 60;
+/** Bounds tombstone storage; structural validation remains the post-eviction backstop. */
 const TOMBSTONE_LIFETIME_MS = 5 * 60 * 1000;
 
 export interface McpSessionRecord {
@@ -66,10 +67,23 @@ export interface McpSessionRecord {
 	clientCapabilities?: Record<string, unknown>;
 	/** A client-terminated session id can never become active again (#1368). */
 	terminated?: true;
+	/** Per-record Table expiration used to bound tombstone retention. */
 	expiresAt?: number;
 }
 
 type McpSessionUpdate = Partial<Pick<McpSessionRecord, 'initialized' | 'lastActivity' | 'logLevel' | 'subscriptions'>>;
+type McpSessionPayload = Omit<McpSessionRecord, 'id' | 'terminated' | 'expiresAt'>;
+
+const SCRUBBED_SESSION_PAYLOAD = {
+	protocolVersion: undefined,
+	initialized: undefined,
+	user: undefined,
+	createdAt: undefined,
+	lastActivity: undefined,
+	logLevel: undefined,
+	subscriptions: undefined,
+	clientCapabilities: undefined,
+} satisfies Record<keyof McpSessionPayload, undefined>;
 
 let _sessionTable: Table | undefined;
 
@@ -97,7 +111,7 @@ function declareSessionTable(): Table {
 			{ name: 'subscriptions' },
 			{ name: 'clientCapabilities' },
 			{ name: 'terminated' },
-			{ name: 'expiresAt', expiresAt: true },
+			{ name: 'expiresAt', expiresAt: true, indexed: true },
 		],
 	});
 }
@@ -175,14 +189,7 @@ export async function deleteSession(id: string): Promise<void> {
 		id,
 		terminated: true,
 		expiresAt: Date.now() + TOMBSTONE_LIFETIME_MS,
-		protocolVersion: undefined,
-		initialized: undefined,
-		user: undefined,
-		createdAt: undefined,
-		lastActivity: undefined,
-		logLevel: undefined,
-		subscriptions: undefined,
-		clientCapabilities: undefined,
+		...SCRUBBED_SESSION_PAYLOAD,
 	});
 	// Tear down ancillary per-session in-memory state — the `tools/list`
 	// pagination cache and the per-session rate-limit buckets. Without
