@@ -1022,7 +1022,13 @@ A missing file is not one of those outcomes to wait on: `ENOENT` is not a sharin
 neither watcher takes the retry ladder for it. `OptionsWatcher` has always settled it at once as
 the install window, and `RootConfigWatcher` does the same rather than spending the whole read
 budget inside `harper_logger.start()` on every boot that has no config file — an env-var-only
-deployment, or a rootPath mounted empty. A watcher error is terminal for the barrier too, and
+deployment, or a rootPath mounted empty. Neither is a deletion an outcome to wait on. `OptionsWatcher.#handleUnlink` cancels the ladder —
+the deletion settles what a pending read was retrying — so when that read had not produced a config
+yet, the ladder it cancels was the only thing left to settle `ready`. Before the first `ready` there
+is also nothing to remove and nothing to hear it: `Scope` is still inside `await scope.ready`, so a
+`remove` there asks for a restart of a component that never booted. A deletion in the boot window
+therefore settles the barrier on the defaults, exactly as the ENOENT read path does; only a deletion
+after `ready` reports `remove`. A watcher error is terminal for the barrier too, and
 settling it is what removes the `error` listener `once(this, 'ready')` attached — so reporting the
 failure afterwards has to check for a listener rather than assume one, or an unlistened `error`
 throws out of chokidar's dispatch and takes the worker down over a fault it just decided to survive.

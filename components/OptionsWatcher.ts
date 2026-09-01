@@ -469,7 +469,13 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			`Configuration file ${path} was deleted. Reverting to default configuration. Recreate it to restore the options watcher.`
 		);
 		this.#resetConfig();
-		this.#emitRemove();
+		// Before the first `ready` there is nothing to remove and nothing to hear it: `Scope.ready`
+		// is still pending, so a `remove` here asks for a restart of a scope that never booted while
+		// the `#readRetry.reset()` above cancelled the only thing left to settle the barrier. Same
+		// ruling as the ENOENT read path, which already boots on the defaults rather than reporting
+		// a removal `ready` would then wait behind forever.
+		if (this.#readyEmitted) this.#emitRemove();
+		else this.#emitReady(this.#scopedConfig);
 		this.#reportEnvComposeFailure();
 	}
 
