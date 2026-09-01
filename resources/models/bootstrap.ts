@@ -354,8 +354,11 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 			continue;
 		// Reload runs factories for built-ins only: they are independent, pure constructors. A module
 		// factory may compose with other entries (wrap an earlier backend), which staged construction
-		// cannot honor — changing one needs a restart, exactly as before this feature.
-		if (!isBoot && !FACTORIES[entry.backend as string]) {
+		// cannot honor — changing one needs a restart, exactly as before this feature. The guard covers
+		// the incoming backend AND a currently-installed module-backed slot: a module→built-in rewrite
+		// is still a change of a restart-managed entry, so it must not live-replace the module (which
+		// would drop its helpers with none of the disposal a restart performs).
+		if (!isBoot && (!FACTORIES[entry.backend as string] || slot?.builtin === false)) {
 			harperLogger.warn(
 				`models.${kind}.${logicalName}: module-backed entries require a restart to add or change; ` +
 					`keeping the previous projection for this entry`

@@ -213,6 +213,30 @@ describe('models config hot reload (#2344)', () => {
 			);
 		});
 
+		it('refuses a module-backed→built-in change on reload, keeping the module and its fallback', async () => {
+			// Rewriting a module-backed entry to a built-in is still a change of a restart-managed
+			// entry: it must not live-replace the custom backend (which would drop its helpers with no
+			// disposal). The old module keeps serving with its routing until a restart.
+			const counting = join(__dirname, 'fixtures', 'counting-backend-module.cjs');
+			await bootstrapModels({
+				models: block({
+					default: { backend: counting, model: 'm1', fallback: ['backup'] },
+					backup: openaiEntry('sk-backup'),
+				}),
+			});
+			const primary = getBackend('embedding', 'default');
+			assert.ok(primary, 'module-backed default installed at boot');
+
+			await applyModelsConfig(
+				block({ default: openaiEntry('sk-new', { fallback: ['backup'] }), backup: openaiEntry('sk-backup') })
+			);
+
+			assert.equal(getBackend('embedding', 'default'), primary, 'module kept; the built-in was not swapped in');
+			const candidates = getRouter().route({ kind: 'embedding', logicalName: 'default', requires: [] });
+			assert.strictEqual(candidates.length, 2, 'the retained module keeps its fallback routing');
+			assert.strictEqual(candidates[1], getBackend('embedding', 'backup'), 'router still returns the fallback');
+		});
+
 		it('refuses to run a module factory on reload, retaining the previous projection', async () => {
 			// A module factory may compose with other entries; staged reload construction cannot
 			// honor that ordering, so changing one keeps restart semantics (review decision).
