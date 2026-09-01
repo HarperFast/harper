@@ -122,7 +122,7 @@ fn main() {
         let build_start = Instant::now();
         for i in 0..n {
             let v = corpus.row(&mut rng);
-            insert(&graph, &v, &params, &mut scratch);
+            insert(&graph, &v, &params, &mut scratch).expect("build insert");
             if (i + 1) % 50_000 == 0 {
                 let rate = (i + 1) as f64 / build_start.elapsed().as_secs_f64();
                 println!("  built {} ({:.0} inserts/s)", i + 1, rate);
