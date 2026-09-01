@@ -185,6 +185,13 @@ impl Plane {
                 self.graph.file.dims
             )));
         }
+        for (i, v) in vector.iter().enumerate() {
+            if !v.is_finite() {
+                // a NaN component yields a huge invMag and -inf distances: that node would
+                // rank first for roughly half of all queries, permanently
+                return Err(Error::from_reason(format!("vector component {i} is not finite")));
+            }
+        }
         let mut scratch = self.insert_scratch.lock().unwrap();
         insert(&self.graph, &vector, &self.params, &mut scratch)
             .ok_or_else(|| Error::from_reason("plane is full (maxNodes reached)"))
@@ -343,7 +350,8 @@ impl Plane {
     /// Set the graph entry point (dual-write mode mirrors the host's entry-point updates).
     #[napi]
     pub fn set_entry_point(&self, id: u32, level: u32) {
-        self.graph.file.set_entry_point(id, level);
+        // clamp: a garbage level would make every search iterate that many empty levels
+        self.graph.file.set_entry_point(id, level.min(crate::format::MAX_UPPER_LEVELS as u32));
     }
 
     #[napi]

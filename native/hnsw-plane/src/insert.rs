@@ -93,17 +93,34 @@ fn prune_with_coverage(graph: &Graph, base: u32, list: &mut Vec<u32>, cap: usize
     *list = scored.into_iter().map(|(cand, _)| cand).collect();
 }
 
-/// Add `new_id` to `nid`'s adjacency at `level`, coverage-pruning to `cap` when over.
+/// Add `new_id` to `nid`'s adjacency at `level`, coverage-pruning to `cap` when over. The
+/// prune's distance computations (which can major-fault on a cold mapping) run OUTSIDE the
+/// slot lock: the list is snapshotted, pruned, and applied with a compare-and-set; after a
+/// bounded retry the fallback merges under the lock with a cheap truncation instead.
 fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize) {
     if level == 0 {
-        graph.update_neighbors(nid, |list| {
-            if list.contains(&new_id) {
+        for _ in 0..2 {
+            let mut snapshot: Vec<u32> = Vec::new();
+            if graph.neighbors_into(nid, &mut snapshot).is_none() {
                 return;
             }
-            list.push(new_id);
-            if list.len() > cap {
-                // distance_between reads other slots without locks; safe under this seqlock
-                prune_with_coverage(graph, nid, list, cap);
+            if snapshot.contains(&new_id) {
+                return;
+            }
+            let mut next = snapshot.clone();
+            next.push(new_id);
+            if next.len() > cap {
+                prune_with_coverage(graph, nid, &mut next, cap);
+            }
+            if graph.set_neighbors_if(nid, &snapshot, &next) {
+                return;
+            }
+        }
+        // contended twice: merge cheaply under the lock (bounded critical section)
+        graph.update_neighbors(nid, |list| {
+            if !list.contains(&new_id) {
+                list.push(new_id);
+                list.truncate(cap);
             }
         });
     } else {
@@ -135,7 +152,8 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
     if entry_id == NO_ID {
         let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER };
         graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx);
-        graph.file.set_entry_point(id, level as u32);
+        // CAS: a concurrent first insert may have installed an entry already — never clobber
+        graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
         return Some(id);
     }
 
@@ -154,7 +172,7 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
                 None => {
                     let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER };
                     graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx);
-                    graph.file.set_entry_point(id, level as u32);
+                    graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
                     return Some(id);
                 }
             }
@@ -247,7 +265,8 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
     }
 
     if (level as u32) > entry_level {
-        graph.file.set_entry_point(id, level as u32);
+        // CAS against the observed entry: a concurrent higher-level promotion wins
+        graph.file.set_entry_point_if_not_better(id, level as u32, entry_id);
     }
     Some(id)
 }

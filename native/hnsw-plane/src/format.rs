@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub const MAGIC: u32 = 0x484e_5357; // "HNSW"
-pub const VERSION: u32 = 4; // v4: owner-identity lock words (older files: reindex)
+pub const VERSION: u32 = 5; // v5: opener registry + aligned freelist pointer (older files: reindex)
 pub const HEADER_SIZE: usize = 4096;
 
 // Header field byte offsets.
@@ -26,6 +26,13 @@ const H_CLEAN_SHUTDOWN: usize = 56; // u8
 const H_MAX_NODES: usize = 64; // u64
 const H_UPPER_HIGH_WATER: usize = 72; // u64 atomic: upper-entry allocator
 const H_UPPER_FREELIST: usize = 80; // u64 atomic: (tag<<32)|idx; NO_UPPER = empty
+const H_ENTRY_PREV: usize = 88; // u64: last replaced entry point (re-election hint)
+// Opener registry: each live handle claims one slot, writes its random tag there, and holds
+// a kernel OFD byte-range lock on the slot (released automatically when the handle - or its
+// whole process - dies). A lock word's owner is dead iff its registry slot no longer carries
+// its tag or the slot's byte range is lockable. Immune to pid reuse and pid namespaces.
+const H_REGISTRY: usize = 128; // u32 x REGISTRY_SLOTS
+pub const REGISTRY_SLOTS: usize = 64;
 
 /// Upper-layer region geometry: fixed entries covering levels 1..=MAX_UPPER_LEVELS at
 /// UPPER_CAP ids per level. P(level >= 1) = 1/M ~ 6.25%; the region reserves entries for
@@ -56,6 +63,12 @@ pub const FLAG_DELETED: u8 = 2;
 pub const NO_ID: u32 = u32::MAX;
 
 pub struct PlaneFile {
+    /// Kept open for the lifetime of the mapping: the opener-registry OFD lock lives on it.
+    file: std::fs::File,
+    /// This handle's registry tag (low bits encode its registry slot). 0 = unregistered
+    /// (registry full or platform without OFD locks): this handle's own dead locks cannot be
+    /// reclaimed by others, and it never reclaims.
+    pub self_tag: u32,
     pub map: MmapMut,
     pub dims: usize,
     pub layer0_cap: usize,
@@ -107,6 +120,9 @@ fn slots_per_page_for(slot_size: usize) -> usize {
 impl PlaneFile {
     /// Create a new plane file with capacity for `max_nodes` (sparse; pages materialize on write).
     pub fn create(path: &Path, dims: usize, layer0_cap: usize, max_nodes: u64) -> io::Result<Self> {
+        if max_nodes >= NO_ID as u64 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "maxNodes must be below 2^32-1"));
+        }
         let slot_size = slot_size_for(dims, layer0_cap);
         let slots_per_page = slots_per_page_for(slot_size);
         let data_len = slot_region_len(max_nodes, slot_size, slots_per_page);
@@ -132,7 +148,21 @@ impl PlaneFile {
         std::sync::atomic::fence(Ordering::Release);
         map[H_MAGIC..H_MAGIC + 4].copy_from_slice(&MAGIC.to_le_bytes());
         let upper_offset = HEADER_SIZE + slot_region_len(max_nodes, slot_size, slots_per_page) as usize;
-        Ok(PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page, opened_clean: true })
+        let mut plane = PlaneFile {
+            file,
+            self_tag: 0,
+            map,
+            dims,
+            layer0_cap,
+            slot_size,
+            max_nodes,
+            upper_offset,
+            upper_capacity,
+            slots_per_page,
+            opened_clean: true,
+        };
+        plane.register_opener();
+        Ok(plane)
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -175,7 +205,20 @@ impl PlaneFile {
             ));
         }
         let opened_clean = map[H_CLEAN_SHUTDOWN] == 1;
-        let plane = PlaneFile { map, dims, layer0_cap, slot_size, max_nodes, upper_offset, upper_capacity, slots_per_page, opened_clean };
+        let mut plane = PlaneFile {
+            file,
+            self_tag: 0,
+            map,
+            dims,
+            layer0_cap,
+            slot_size,
+            max_nodes,
+            upper_offset,
+            upper_capacity,
+            slots_per_page,
+            opened_clean,
+        };
+        plane.register_opener();
         let hw = plane.id_high_water();
         if hw > max_nodes {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "plane header id high-water exceeds capacity: recreate the index"));
@@ -233,10 +276,9 @@ impl PlaneFile {
                 }
                 return new as u32;
             }
-            // next-pointer lives in the dead slot's first neighbor word
-            let next = unsafe {
-                (*(self.slot_ptr(id).add(S_VECTOR + self.dims) as *const AtomicU32)).load(Ordering::Acquire)
-            };
+            // next-pointer lives in the dead slot's scale field: offset 8, aligned for any
+            // dims (the first neighbor word at S_VECTOR+dims is 4-aligned only when dims%4==0)
+            let next = unsafe { (*(self.slot_ptr(id).add(S_SCALE) as *const AtomicU32)).load(Ordering::Acquire) };
             let tag = (cur >> 32).wrapping_add(1);
             let new = (next as u64) | (tag << 32);
             if head.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire).is_ok() {
@@ -249,7 +291,7 @@ impl PlaneFile {
     /// deleted (under its seqlock) so concurrent traversals skip it.
     pub fn free_id(&self, id: u32) {
         let head = self.header_atomic_u64(H_FREELIST_HEAD);
-        let next_word = unsafe { &*(self.slot_ptr(id).add(S_VECTOR + self.dims) as *const AtomicU32) };
+        let next_word = unsafe { &*(self.slot_ptr(id).add(S_SCALE) as *const AtomicU32) };
         loop {
             let cur = head.load(Ordering::Acquire);
             next_word.store((cur & 0xffff_ffff) as u32, Ordering::Release);
@@ -287,7 +329,10 @@ impl PlaneFile {
     }
 
     pub fn set_entry_point(&self, id: u32, level: u32) {
-        self.header_atomic_u64(H_ENTRY).store((id as u64) | ((level as u64) << 32), Ordering::Release);
+        let prev = self.header_atomic_u64(H_ENTRY).swap((id as u64) | ((level as u64) << 32), Ordering::AcqRel);
+        if (prev & 0xffff_ffff) as u32 != NO_ID && (prev & 0xffff_ffff) as u32 != id {
+            self.header_atomic_u64(H_ENTRY_PREV).store(prev, Ordering::Release);
+        }
     }
 
     /// Entry-point CAS for re-election: install (id, level) only while the current entry is
@@ -382,6 +427,80 @@ impl PlaneFile {
                 return;
             }
         }
+    }
+
+    #[inline]
+    fn registry_tag_cell(&self, slot: usize) -> &AtomicU32 {
+        unsafe { &*(self.map.as_ptr().add(H_REGISTRY + slot * 4) as *const AtomicU32) }
+    }
+
+    /// Claim a registry slot for this handle: take the slot's kernel byte-range lock (held
+    /// until this handle closes; released by the kernel if the process dies) and publish a
+    /// random tag whose low bits name the slot. On platforms without OFD locks, or with the
+    /// registry full, the handle stays unregistered (tag 0): it still works, but its own
+    /// abandoned locks are unreclaimable and it never reclaims others'.
+    fn register_opener(&mut self) {
+        #[cfg(target_os = "linux")]
+        for slot in 0..REGISTRY_SLOTS {
+            if !self.try_lock_registry_slot(slot, false) {
+                continue;
+            }
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0);
+            let entropy = (nanos ^ std::process::id().rotate_left(16) ^ (self as *const _ as u32)) & crate::seqlock::GEN_MASK;
+            let tag = ((entropy | 1) & !(REGISTRY_SLOTS as u32 - 1)) | slot as u32;
+            let tag = if tag == 0 { REGISTRY_SLOTS as u32 | 1 << 30 | slot as u32 } else { tag };
+            self.registry_tag_cell(slot).store(tag, Ordering::Release);
+            self.self_tag = tag;
+            return;
+        }
+    }
+
+    /// Try to take the OFD write lock on a registry slot's byte range. `probe` releases it
+    /// immediately (liveness check); otherwise it is held for this handle's lifetime.
+    #[cfg(target_os = "linux")]
+    fn try_lock_registry_slot(&self, slot: usize, probe: bool) -> bool {
+        use std::os::unix::io::AsRawFd;
+        let mut fl: libc::flock = unsafe { std::mem::zeroed() };
+        fl.l_type = libc::F_WRLCK as libc::c_short;
+        fl.l_whence = libc::SEEK_SET as libc::c_short;
+        fl.l_start = (H_REGISTRY + slot * 4) as libc::off_t;
+        fl.l_len = 4;
+        let got = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_OFD_SETLK, &fl) } == 0;
+        if got && probe {
+            fl.l_type = libc::F_UNLCK as libc::c_short;
+            unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_OFD_SETLK, &fl) };
+        }
+        got
+    }
+
+    /// Whether the handle that minted `tag` is gone. True only with positive evidence: the
+    /// registry slot no longer carries the tag, or the slot's kernel lock is acquirable
+    /// (its holder's open handle is closed — process death included). This handle's own tag
+    /// is always alive (a thread of this process holds that lock; never rob it).
+    pub fn tag_is_dead(&self, tag: u32) -> bool {
+        if tag == 0 || tag == self.self_tag {
+            return false;
+        }
+        let slot = (tag as usize) & (REGISTRY_SLOTS - 1);
+        if self.registry_tag_cell(slot).load(Ordering::Acquire) != tag {
+            return true; // registration replaced or cleared: the minting handle is gone
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.try_lock_registry_slot(slot, true)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    /// The re-election hint: the entry point most recently replaced by a promotion.
+    pub fn previous_entry_point(&self) -> u32 {
+        (self.header_atomic_u64(H_ENTRY_PREV).load(Ordering::Acquire) & 0xffff_ffff) as u32
     }
 
     pub fn set_clean_shutdown(&mut self, clean: bool) {

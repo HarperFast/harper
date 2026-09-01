@@ -156,6 +156,9 @@ pub fn search_layer(
         }
         for i in 0..nbuf.len() {
             let nid = nbuf[i];
+            if (nid as u64) >= graph.file.max_nodes {
+                continue; // corrupt/torn neighbor id: skip rather than size allocations by it
+            }
             if !scratch.visit(nid) {
                 continue;
             }
@@ -374,6 +377,9 @@ pub fn search_predicated(
         }
         for i in 0..nbuf.len() {
             let nid = nbuf[i];
+            if (nid as u64) >= graph.file.max_nodes {
+                continue; // corrupt/torn neighbor id: skip rather than size allocations by it
+            }
             if !scratch.visit(nid) {
                 continue;
             }

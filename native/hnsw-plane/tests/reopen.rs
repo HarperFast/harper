@@ -28,9 +28,10 @@ fn dead_writer_lock_is_taken_over_and_slot_sanitized() {
         for i in 0..200 {
             insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
         }
-        // simulate a writer killed mid-write: lock word = bit31 | its (now dead) pid.
-        // 0x7ff_fff0 exceeds Linux pid_max (4M) and any real pid space: kill() -> ESRCH.
-        graph.file.seq_atomic(7).store((1 << 31) | 0x7ff_fff0, Ordering::SeqCst);
+        // simulate a writer killed mid-write: lock word = bit31 | a tag whose registry slot
+        // carries no matching registration (the fabricated tag differs from any live tag,
+        // so tag_is_dead reports it dead immediately)
+        graph.file.seq_atomic(7).store((1 << 31) | 0x1234_5678 & 0x7fff_ffff, Ordering::SeqCst);
         graph.file.msync().unwrap();
     }
     let graph = Graph::new(PlaneFile::open(&path).expect("reopen"));
@@ -68,10 +69,15 @@ fn live_writer_is_never_robbed() {
     let g2 = graph.clone();
     let hold = std::thread::spawn(move || {
         let seq = unsafe { &*(seq9 as *const std::sync::atomic::AtomicU32) };
-        let guard = hnsw_plane::seqlock::write_lock(seq, || panic!("a live same-process writer must never be sanitized"));
+        let g2 = &g2;
+        let guard = hnsw_plane::seqlock::write_lock(
+            seq,
+            g2.file.self_tag,
+            || panic!("a live same-process writer must never be sanitized"),
+            |tag| g2.file.tag_is_dead(tag),
+        );
         std::thread::sleep(std::time::Duration::from_millis(120));
         drop(guard);
-        drop(g2);
     });
     std::thread::sleep(std::time::Duration::from_millis(30)); // reader arrives mid-hold
     let n9 = graph.read_node(9);
@@ -168,5 +174,76 @@ fn full_plane_refuses_inserts_instead_of_corrupting() {
     // freed capacity is usable again
     graph.delete_node(3);
     assert!(insert(&graph, &vector_for(10, dims), &params, &mut scratch).is_some());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn flush_without_watermark_preserves_a_completion_stamp() {
+    let dims = 32;
+    let path = tmp("flushnone");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 256).expect("create"));
+    graph.file.set_watermark(7);
+    graph.file.flush_with_watermark(None).unwrap();
+    assert_eq!(graph.file.watermark(), 7, "a watermark-less barrier must not touch the stamp");
+    graph.file.flush_with_watermark(Some(9)).unwrap();
+    assert_eq!(graph.file.watermark(), 9);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn odd_dims_freelist_reuse_is_aligned() {
+    // dims 25: the old freelist next-pointer at S_VECTOR+dims was unaligned (SIGBUS on
+    // aarch64); it now lives at the dead slot's aligned scale field
+    let dims = 25;
+    let path = tmp("odddims");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 256).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..20 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    graph.delete_node(4);
+    graph.delete_node(9);
+    let a = insert(&graph, &vector_for(50, dims), &params, &mut scratch).unwrap();
+    let b = insert(&graph, &vector_for(51, dims), &params, &mut scratch).unwrap();
+    assert!(a == 9 || a == 4);
+    assert!(b == 9 || b == 4);
+    assert_ne!(a, b);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn same_pid_restart_takeover_via_registry() {
+    // The container-pid-1 scenario: the process that died and the process that reopens have
+    // the SAME pid, so pid-based liveness would wedge forever. Registry liveness is keyed to
+    // the open handle (kernel lock dies with it), which a same-process reopen reproduces
+    // faithfully: drop the old handle, reopen, and the old tag must be reclaimable.
+    let dims = 32;
+    let path = tmp("samepid");
+    let _ = std::fs::remove_file(&path);
+    let dead_tag;
+    {
+        let graph = Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create"));
+        let params = InsertParams::default();
+        let mut scratch = SearchScratch::new();
+        for i in 0..100 {
+            insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+        }
+        dead_tag = graph.file.self_tag;
+        assert_ne!(dead_tag, 0, "linux handles must register");
+        // die mid-write: lock word carries OUR tag, then the handle drops (kernel releases
+        // the registry lock exactly as process death would)
+        graph.file.seq_atomic(11).store((1 << 31) | dead_tag, Ordering::SeqCst);
+        graph.file.msync().unwrap();
+    }
+    let graph = Graph::new(PlaneFile::open(&path).expect("reopen"));
+    assert_ne!(graph.file.self_tag, dead_tag, "a new handle mints a new tag");
+    let start = std::time::Instant::now();
+    assert!(graph.read_node(11).is_none(), "taken-over slot reads deleted (sanitized), not spliced");
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(graph.file.seq_atomic(11).load(Ordering::SeqCst) >> 31, 0, "lock reclaimed");
     let _ = std::fs::remove_file(&path);
 }
