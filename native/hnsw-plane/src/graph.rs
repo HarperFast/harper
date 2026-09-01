@@ -305,7 +305,16 @@ impl Graph {
         self.file.ensure_high_water(id);
         let seq = self.file.seq_atomic(id);
         let _guard = seqlock::write_lock(seq, self.file.self_tag, self.slot_sanitizer(id), self.owner_dead())?;
-        unsafe { *self.file.slot_ptr_mut(id).add(S_FLAGS) = FLAG_DELETED };
+        let p = self.file.slot_ptr_mut(id);
+        unsafe {
+            if *p.add(S_FLAGS) == 0 {
+                // tombstoning a never-written slot: its zero-initialized upper_idx would
+                // otherwise read as the VALID index 0, and a later raw rewrite of this id
+                // would clobber upper entry 0 — another node's hierarchy
+                (p.add(S_UPPER_IDX) as *mut u32).write_unaligned(NO_UPPER);
+            }
+            *p.add(S_FLAGS) = FLAG_DELETED;
+        }
         Ok(())
     }
 

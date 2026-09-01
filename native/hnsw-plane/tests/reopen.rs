@@ -247,3 +247,42 @@ fn same_pid_restart_takeover_via_registry() {
     assert_eq!(graph.file.seq_atomic(11).load(Ordering::SeqCst) >> 31, 0, "lock reclaimed");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn tombstoned_virgin_slot_does_not_alias_upper_entry_zero() {
+    let dims = 32;
+    let path = tmp("virgintomb");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    // make node 0's insert claim upper entry 0 (first level>=1 node allocates it); insert
+    // until some node has an upper entry
+    let mut upper_owner = None;
+    for i in 0..64 {
+        let id = insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+        if graph.read_node(id).map(|n| n.level > 0).unwrap_or(false) {
+            upper_owner = Some(id);
+            break;
+        }
+    }
+    let upper_owner = upper_owner.expect("some node should have an upper level");
+    let mut before = Vec::new();
+    assert!(graph.upper_neighbors_into(upper_owner, 1, &mut before) || before.is_empty());
+
+    // tombstone a NEVER-written id (beyond anything inserted), then raw-write it with an
+    // upper list: it must allocate a fresh entry, not adopt the zero-initialized index 0
+    let virgin = 900;
+    graph.clear_node(virgin).unwrap();
+    let q = hnsw_plane::distance::quantize_int8(&vector_for(virgin, dims));
+    graph
+        .write_node_raw(virgin, 1, &q.0, q.1, q.2, &[1, 2], &[vec![1, 2]])
+        .unwrap();
+    let mut after = Vec::new();
+    let _ = graph.upper_neighbors_into(upper_owner, 1, &mut after);
+    assert_eq!(before, after, "raw-writing a tombstoned virgin slot must not clobber another node's upper entry");
+    let mut virgin_upper = Vec::new();
+    assert!(graph.upper_neighbors_into(virgin, 1, &mut virgin_upper));
+    assert_eq!(virgin_upper, vec![1, 2]);
+    let _ = std::fs::remove_file(&path);
+}
