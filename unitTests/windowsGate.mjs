@@ -112,7 +112,7 @@ const GROUP_TIMEOUT_MS = resolveTimeout(process.env.HARPER_WINDOWS_GATE_GROUP_TI
 // root config (and unitTests/mocha.init.js) as every other unit-test run.
 function runGroup(pattern) {
 	return new Promise((settle) => {
-		// --no-color: an ANSI-prefixed epilogue would defeat SUMMARY's line anchor.
+		// --no-color: an ANSI-prefixed epilogue would defeat parsePassing()'s line anchor.
 		const args = [MOCHA, '--reporter', 'dot', '--no-color', pattern];
 		for (const excluded of EXCLUDED) args.push('--exclude', excluded);
 

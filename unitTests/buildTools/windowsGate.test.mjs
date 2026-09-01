@@ -1,8 +1,8 @@
-// Covers unitTests/windowsGateChecks.mjs, the two calculations that decide whether the
-// Windows gate calls a group green. Both have a failure mode that reports a *pass*: a
-// summary check loose enough to accept a line a test printed itself, and a timeout the
-// runtime clamps to 1ms so every group is SIGKILLed before it runs anything. Each case
-// below fails against the version of that calculation this suite replaced.
+// Covers unitTests/windowsGateChecks.mjs. Each case below fails against the calculation it
+// replaced: the summary regex was unanchored and first-match, so a "N passing" line a test
+// printed itself made a group that never reported an epilogue green; and the timeout
+// override was unguarded, so an empty, unparseable, negative or sub-millisecond value
+// became setTimeout's 1ms clamp and SIGKILLed every group at spawn.
 import assert from 'node:assert';
 import { parsePassing, resolveTimeout } from '../windowsGateChecks.mjs';
 
