@@ -625,6 +625,56 @@ fn a_repair_probe_rotates_so_no_live_node_stays_between_its_samples() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// Rotation has to be per handle. With one process-wide counter, every other plane's repairs
+/// advance it too, so two planes repairing in turn each see offsets stepping by 2 — one residue
+/// class apiece, indefinitely, which is exactly what rotating was meant to prevent. Both planes
+/// here hide their survivor in the same residue, so a shared counter must strand one of them
+/// whichever offset it starts on.
+#[test]
+fn repair_probe_rotation_is_per_plane_not_per_process() {
+    let dims = 32;
+    let mut graphs = Vec::new();
+    let mut survivors = Vec::new();
+    let mut stride = 0u32;
+    for which in 0..2 {
+        let path = tmp(&format!("entryhealperplane{which}"));
+        let _ = std::fs::remove_file(&path);
+        let graph = Graph::new(PlaneFile::create(&path, dims, 16, 4_096).expect("create"));
+        let params = InsertParams::default();
+        let mut scratch = SearchScratch::new();
+        for i in 0..2_100 {
+            insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+        }
+        let hw = graph.file.id_high_water() as u32;
+        stride = (hw / 1_024).max(1);
+        assert!(stride > 1, "precondition: a stride the rotation has to cover");
+        // the same skipped residue on both planes, so a shared counter cannot serve both
+        let survivor = (0..hw).rev().find(|id| (hw - 1 - id) % stride != 0).expect("a skipped residue");
+        for id in 0..hw {
+            if id != survivor {
+                let _ = graph.clear_node(id);
+            }
+        }
+        graphs.push((graph, path));
+        survivors.push(survivor);
+    }
+
+    let mut scratch = SearchScratch::new();
+    let mut found = [false; 2];
+    for _ in 0..stride {
+        for (which, (graph, _)) in graphs.iter().enumerate() {
+            let (hits, _) = search(graph, &Query::new(vector_for(survivors[which], dims)), 5, 64, &mut scratch);
+            if !hits.is_empty() {
+                found[which] = true;
+            }
+        }
+    }
+    assert!(found[0] && found[1], "each plane must cover its own residues: {found:?}");
+    for (_, path) in &graphs {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// A repair publishes with a strict CAS on the entry it observed dead. A first insert that
 /// claims the header in between owns the graph, and a higher-level repair candidate must lose to
 /// it — installing the candidate would leave that insert's node with nothing pointing at it.

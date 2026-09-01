@@ -27,11 +27,13 @@ unsafe fn vread<T: Copy>(p: *const T) -> T {
     p.read_volatile()
 }
 
-/// Rotates `probe_for_entry`'s starting offset so consecutive repairs sample different ids.
-static PROBE_ROTATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
 pub struct Graph {
     pub file: PlaneFile,
+    /// Rotates `probe_for_entry`'s starting offset so this plane's consecutive repairs sample
+    /// different ids. Per handle, not per process: a shared counter is advanced by every other
+    /// plane's repairs too, so one plane's calls can land on a single residue indefinitely —
+    /// which is the coverage the rotation exists to provide.
+    probe_rotation: std::sync::atomic::AtomicU32,
 }
 
 /// A consistent full copy of one node (construction paths only; search uses zero-copy).
@@ -45,7 +47,7 @@ pub struct NodeRead {
 
 impl Graph {
     pub fn new(file: PlaneFile) -> Self {
-        Graph { file }
+        Graph { file, probe_rotation: std::sync::atomic::AtomicU32::new(0) }
     }
 
     #[inline]
@@ -600,11 +602,9 @@ impl Graph {
     /// reuses them, so a churned table's low prefix is all tombstones, while the crate's own
     /// freelist reuses ids and keeps live nodes low.
     ///
-    /// The start rotates. A fixed start would probe one residue class of the stride forever, so a
-    /// live graph lying entirely between its probes would stay invisible permanently rather than
-    /// for one search — the difference between a bounded miss and a silent-empty-results mode.
-    /// Rotating means `stride` consecutive repairs cover every id, while each stays capped at
-    /// `limit`.
+    /// The start rotates per handle, so `stride` consecutive repairs of this plane cover every id
+    /// while each stays capped at `limit`; a fixed start would probe one residue class forever
+    /// and leave a graph lying between its samples invisible permanently, not for one search.
     ///
     /// Best-level rather than first-live: a level-0 entry degrades every later search to a
     /// layer-0-only beam.
@@ -614,7 +614,7 @@ impl Graph {
             return None;
         }
         let stride = (hw / limit).max(1);
-        let offset = PROBE_ROTATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % stride;
+        let offset = self.probe_rotation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % stride;
         let mut best: Option<(u32, u8)> = None;
         let mut cand = hw - 1 - offset;
         for _ in 0..limit {
