@@ -523,6 +523,19 @@ export class ResourceBridge extends BridgeMethods {
 				: typeof deleteObj.timestamp === 'string'
 					? Number.parseInt(deleteObj.timestamp)
 					: deleteObj.timestamp;
+		// A non-numeric timestamp reaches here as NaN from Number.parseInt, and NaN and negatives are
+		// not harmless bounds: audit keys are raw float64, so they sort above every real timestamp and
+		// the prune range spans the whole log. Reject it as the operator input error it is, rather than
+		// letting raiseAuditFloor stop it with a bare Error that reports as a server fault.
+		if (typeof before !== 'number' || !(before >= 0))
+			throw handleHDBError(
+				new Error(),
+				`'timestamp' must be a non-negative epoch time or Date, received: ${String(deleteObj.timestamp)}`,
+				400,
+				undefined,
+				undefined,
+				true
+			);
 		const databaseName = deleteObj.database || deleteObj.schema || DEFAULT_DATABASE;
 		const table = getTable(deleteObj);
 		// A nonexistent table must not fall through to the no-table branch below — on RocksDB that
@@ -545,7 +558,7 @@ export class ResourceBridge extends BridgeMethods {
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
-						raiseAuditFloor(table.auditStore, before); // floor first — see raiseAuditFloor
+						raiseAuditFloor(table.auditStore, before);
 						const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);

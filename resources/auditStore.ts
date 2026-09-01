@@ -193,7 +193,7 @@ export function openAuditStore(rootStore) {
 		if (auditStore instanceof RocksTransactionLogStore) {
 			const before = Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority);
 			try {
-				raiseAuditFloor(auditStore, before); // floor first — see raiseAuditFloor
+				raiseAuditFloor(auditStore, before);
 				auditStore.rootStore.purgeLogs({ before });
 			} catch (error) {
 				// Reclamation calls this without awaiting and this branch has no timer loop to reschedule
@@ -234,7 +234,7 @@ export function openAuditStore(rootStore) {
 					let hasEligibleEntry = false;
 					for (const _entry of auditStore.getRange({ start: 1, end, snapshot: false, limit: 1 }))
 						hasEligibleEntry = true;
-					if (hasEligibleEntry) raiseAuditFloor(auditStore, end); // floor first — see raiseAuditFloor
+					if (hasEligibleEntry) raiseAuditFloor(auditStore, end);
 					for (const auditRecord of auditStore.getRange({
 						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 						snapshot: false,
@@ -422,8 +422,8 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// database, a cutoff below one a wider prune already set), and taking the env write lock to
 	// discover that serializes every worker's boot and reclamation on it. The in-transaction guard
 	// below stays authoritative.
-	// guarded on getBinary: this is an optimization, and must not be what decides the error a store
-	// that cannot record a floor at all reports.
+	// getBinary-guarded so this optimization never decides the error a store with no audit store
+	// reports.
 	if (auditStore?.getBinary && !(cutoff > getAuditFloor(auditStore))) return;
 	updateAuditFloor(auditStore, (current) => (cutoff > current ? cutoff : undefined));
 }
@@ -493,12 +493,14 @@ export function establishAuditFloor(auditStore: any): void {
  * post-hoc reality rather than the configured window — that is the contract, not an approximation
  * of it.
  *
- * **Not covered: a restore.** `restore_backup` replaces the database with the backup's, floor and
- * all, so a cursor from after the backup point is above the restored floor and reads as safe while
- * the entries it is waiting for no longer exist. Nothing here can detect that on its own, and it is
- * not the audit log's problem alone: a restore also rolls back record versions and per-node
- * replication sequence state, so making this one field honest while those stay stale would not give
- * a consumer a coherent answer. It needs a database-level epoch — harper#2451.
+ * **Not covered: copying a database's state without its history.** `restore_backup` replaces a
+ * database with the backup's, floor and all, and a RocksDB checkpoint (a branch database) copies the
+ * floor record but no transaction logs — so in both cases a cursor from after the copy point sits
+ * above a floor that is present, and therefore trusted, for history that is not there. Nothing here
+ * can detect that on its own, and it is not the audit log's problem alone: the same copy rolls back
+ * record versions and per-node replication sequence state, so making this one field honest while
+ * those stay stale would not give a consumer a coherent answer. It needs a database-level epoch —
+ * harper#2451.
  */
 export function getAuditFloor(auditStore: any): number {
 	return decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY));
@@ -521,8 +523,7 @@ export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
 	if (isReadOnlyMode()) return [];
 	const before = Date.now() - auditRetention;
-	// Floor first (see raiseAuditFloor); the audit store is reachable this early because initStores
-	// opens it before replayLogs runs this.
+	// The audit store is reachable this early because initStores opens it before replayLogs runs this.
 	raiseAuditFloor((rootStore as any).auditStore, before);
 	return rootStore.purgeLogs({ before });
 }

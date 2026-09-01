@@ -5538,8 +5538,8 @@ export function makeTable(options) {
 			}
 			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
-			// Floor first (see raiseAuditFloor). LMDB only: RocksTransactionLogStore.remove() is a no-op,
-			// so a RocksDB deleteHistory removes nothing and must not claim it did.
+			// LMDB only: RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory removes
+			// nothing and must not claim it did.
 			if (!isRocksDB) raiseAuditFloor(auditStore, endTime);
 			try {
 				for (const auditRecord of auditStore.getRange({

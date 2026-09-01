@@ -22,6 +22,7 @@ const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
+const ORIGINAL_CLEANUP_DELAY = 10_000; // setAuditRetention's own default, which it does not expose
 
 // A cursor records the last position already processed, so a cursor AT the floor is safe.
 const canResumeFrom = (cursor, floor) => cursor >= floor;
@@ -66,7 +67,9 @@ describe('audit staleness floor', () => {
 	});
 
 	after(() => {
-		setAuditRetention(originalRetention);
+		// both arguments: the second sets the module-global default cleanup delay, and restoring only the
+		// retention leaves every audit store opened later in this mocha process looping at 1 ms
+		setAuditRetention(originalRetention, ORIGINAL_CLEANUP_DELAY);
 	});
 
 	it('gives a new database a floor that admits every cursor it could have produced', async () => {
@@ -419,25 +422,37 @@ describe('audit staleness floor', () => {
 
 	it('works on a real legacy standalone audit root, which owns its own transaction', function () {
 		// A legacy `auditPath` layout is opened by databases.ts as its own LMDB root, with an encoder that
-		// has no Uint8Array passthrough and no `.rootStore`. Both bit here: the floor write reached
-		// createAuditEntry and threw `Invalid audit entry type`, failing database startup.
+		// has no Uint8Array passthrough and no `.rootStore` — so an unwrapped floor write reaches
+		// createAuditEntry and throws `Invalid audit entry type`, failing database startup.
 		const { open } = require('lmdb');
 		const { createAuditEntry, readAuditEntry, establishAuditFloor } = require('#src/resources/auditStore');
-		const legacyRoot = open({
-			path: path.join(os.tmpdir(), `harper-legacy-audit-${process.pid}-${Date.now()}.mdb`),
-			encoder: {
-				encode: (auditRecord) => createAuditEntry(auditRecord),
-				decode: (encoding) => readAuditEntry(encoding),
-			},
-		});
+		const legacyPath = path.join(os.tmpdir(), `harper-legacy-audit-${process.pid}-${Date.now()}.mdb`);
+		const legacyEncoder = {
+			encode: (auditRecord) => createAuditEntry(auditRecord),
+			decode: (encoding) => readAuditEntry(encoding),
+		};
+		const legacyRoot = open({ path: legacyPath, encoder: legacyEncoder });
 		try {
 			assert.doesNotThrow(() => establishAuditFloor(legacyRoot), 'a legacy root must open, not throw');
 			const established = oldestRetainedAuditTime(legacyRoot);
 			assert.ok(Number.isFinite(established), `legacy root should get a floor, got ${established}`);
 			raiseAuditFloor(legacyRoot, established + 5_000);
 			assert.strictEqual(oldestRetainedAuditTime(legacyRoot), established + 5_000);
-		} finally {
 			legacyRoot.close();
+			// Reopen: the whole floor-before-prune ordering rests on the bytes being durable, and every
+			// other assertion in this file reads back through the handle that wrote them.
+			const reopened = open({ path: legacyPath, encoder: legacyEncoder });
+			try {
+				assert.strictEqual(
+					oldestRetainedAuditTime(reopened),
+					established + 5_000,
+					'the floor must survive a close and reopen'
+				);
+			} finally {
+				reopened.close();
+			}
+		} finally {
+			if (legacyRoot.status !== 'closed') legacyRoot.close();
 		}
 	});
 
