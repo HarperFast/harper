@@ -193,8 +193,12 @@ impl Plane {
             }
         }
         let mut scratch = self.insert_scratch.lock().unwrap();
-        insert(&self.graph, &vector, &self.params, &mut scratch)
-            .ok_or_else(|| Error::from_reason("plane is full (maxNodes reached)"))
+        insert(&self.graph, &vector, &self.params, &mut scratch).map_err(|e| match e {
+            crate::insert::InsertError::Full => Error::from_reason("plane is full (maxNodes reached)"),
+            crate::insert::InsertError::Wedged => {
+                Error::from_reason("plane slot lock is wedged (unreclaimable holder); rebuild the index")
+            }
+        })
     }
 
     /// Delete a node; its id returns to the plane freelist. Standalone-allocation mode only
@@ -340,10 +344,10 @@ impl Plane {
     /// Mark a node deleted without touching the plane freelist (dual-write mode: the host
     /// owns id allocation).
     #[napi]
-    pub fn clear_node(&self, id: u32) {
-        if self.graph.clear_node(id).is_err() {
-            // bounded lock wedge: surfaced via the next write; clear is best-effort
-        }
+    pub fn clear_node(&self, id: u32) -> Result<()> {
+        self.graph
+            .clear_node(id)
+            .map_err(|_| Error::from_reason("plane slot lock is wedged (unreclaimable holder); rebuild the index"))
     }
 
     /// Set the graph entry point (dual-write mode mirrors the host's entry-point updates).

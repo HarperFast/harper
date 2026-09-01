@@ -39,7 +39,7 @@ fn concurrent_insert_search() {
                 let mut scratch = SearchScratch::new();
                 for i in 0..per_writer {
                     let v = vector_for(w * per_writer + i, dims);
-                    insert(&graph, &v, &params, &mut scratch).expect("plane full");
+                    insert(&graph, &v, &params, &mut scratch).expect("insert");
                 }
             });
         }

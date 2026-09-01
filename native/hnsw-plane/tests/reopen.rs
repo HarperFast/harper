@@ -168,12 +168,12 @@ fn full_plane_refuses_inserts_instead_of_corrupting() {
     let params = InsertParams::default();
     let mut scratch = SearchScratch::new();
     for i in 0..8 {
-        assert!(insert(&graph, &vector_for(i, dims), &params, &mut scratch).is_some());
+        assert!(insert(&graph, &vector_for(i, dims), &params, &mut scratch).is_ok());
     }
-    assert!(insert(&graph, &vector_for(9, dims), &params, &mut scratch).is_none(), "insert past maxNodes must fail cleanly");
+    assert!(insert(&graph, &vector_for(9, dims), &params, &mut scratch).is_err(), "insert past maxNodes must fail cleanly");
     // freed capacity is usable again
     let _ = graph.delete_node(3);
-    assert!(insert(&graph, &vector_for(10, dims), &params, &mut scratch).is_some());
+    assert!(insert(&graph, &vector_for(10, dims), &params, &mut scratch).is_ok());
     let _ = std::fs::remove_file(&path);
 }
 

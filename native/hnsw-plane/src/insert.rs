@@ -136,12 +136,25 @@ fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize)
     }
 }
 
-/// Insert a vector, returning its node id — or None when the plane is full (max_nodes).
-pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mut SearchScratch) -> Option<u32> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertError {
+    /// max_nodes reached (freeing capacity makes inserts possible again)
+    Full,
+    /// a slot lock could not be acquired or reclaimed within the wedge bound
+    Wedged,
+}
+
+/// Insert a vector, returning its node id.
+pub fn insert(
+    graph: &Graph,
+    vector: &[f32],
+    params: &InsertParams,
+    scratch: &mut SearchScratch,
+) -> Result<u32, InsertError> {
     let (bytes, scale, inv_mag) = quantize_int8(vector);
     let id = graph.file.allocate_id();
     if id == NO_ID {
-        return None;
+        return Err(InsertError::Full);
     }
     let level = level_for(id, params.ml);
     let query = Query::new(vector.to_vec());
@@ -151,10 +164,10 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
     let (entry_id, entry_level) = graph.file.entry_point();
     if entry_id == NO_ID {
         let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]).unwrap_or(NO_UPPER) } else { NO_UPPER };
-        if graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).is_err() { return None; }
+        graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).map_err(|_| InsertError::Wedged)?;
         // CAS: a concurrent first insert may have installed an entry already — never clobber
         graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
-        return Some(id);
+        return Ok(id);
     }
 
     let mut stats = SearchStats { visits: 0 };
@@ -171,9 +184,9 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
                 Some(d) => (re_id, re_level, d),
                 None => {
                     let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]).unwrap_or(NO_UPPER) } else { NO_UPPER };
-                    if graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).is_err() { return None; }
+                    graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).map_err(|_| InsertError::Wedged)?;
                     graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
-                    return Some(id);
+                    return Ok(id);
                 }
             }
         }
@@ -254,7 +267,7 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
     };
     let mut l0: Vec<u32> = connections[0].iter().map(|&(nid, _)| nid).collect();
     l0.truncate(layer0_cap);
-    if graph.write_node(id, level, &bytes, scale, inv_mag, &l0, upper_idx).is_err() { return None; }
+    graph.write_node(id, level, &bytes, scale, inv_mag, &l0, upper_idx).map_err(|_| InsertError::Wedged)?;
 
     // Reverse edges.
     for (l, conns) in connections.iter().enumerate() {
@@ -268,7 +281,7 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
         // CAS against the observed entry: a concurrent higher-level promotion wins
         graph.file.set_entry_point_if_not_better(id, level as u32, entry_id);
     }
-    Some(id)
+    Ok(id)
 }
 
 #[inline]

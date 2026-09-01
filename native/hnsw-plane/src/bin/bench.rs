@@ -212,7 +212,7 @@ fn main() {
                 let mut count = 0u64;
                 while !stop.load(Ordering::Relaxed) {
                     let v = corpus.row(&mut rng);
-                    if insert(&graph, &v, &params, &mut scratch).is_none() {
+                    if insert(&graph, &v, &params, &mut scratch).is_err() {
                         break; // plane full
                     }
                     count += 1;

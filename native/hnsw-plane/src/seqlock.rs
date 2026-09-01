@@ -132,7 +132,9 @@ pub fn write_lock<'a>(
                             return Err(Wedged);
                         }
                     }
-                    Stale::No => {}
+                    // the lock VALUE moved: owners are cycling, i.e. real progress — a busy
+                    // slot must never trip the wedge bound
+                    Stale::No => wedged_since = None,
                 }
                 std::thread::yield_now();
                 continue;
