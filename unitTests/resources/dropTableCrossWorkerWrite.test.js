@@ -49,7 +49,7 @@ function startFixtureWorker() {
 		for (;;) {
 			const message = await next();
 			if (message.event === event) return message;
-			if (message.event === 'logged-error' || message.event === 'unhandled-rejection') continue;
+			if (message.event === 'logged-error') continue;
 			throw new Error(`unexpected worker event ${message.event}: ${JSON.stringify(message)}`);
 		}
 	};
@@ -57,14 +57,11 @@ function startFixtureWorker() {
 	return { worker, send, expect, drain };
 }
 
-// harper#1381: dropTable() on one thread drops the column families while another worker's
-// source-fill cache write is still committing. dropTable() only drains its own thread's in-flight
-// source commits, so the other worker's commit lands on the dropped column family; under
-// RocksDB's default parallel OCC validation that write is admitted past conflict validation and
-// fails inside the memtable insert, which latches a fatal background error on the whole
-// environment ("Invalid column family specified in write batch" on every later write, including
-// this drop's own catalog cleanup). Skipped until rocksdb-js serializes column-family drops
-// against in-flight optimistic commits; it reproduces on the first iteration today.
+// harper#1381: a column family must not be dropped while a commit naming it is between conflict
+// validation and its write, because RocksDB latches that write's failure as a fatal background
+// error on the whole environment. dropTable() drains only its own thread's source-fill commits,
+// so a worker's in-flight commit can still land on the dropped family. Skipped until rocksdb-js#806
+// serializes drops against in-flight commits; on the current binding it fails on iteration 0.
 describe('dropTable racing a cross-worker source-fill commit', function () {
 	this.timeout(120000);
 	let fixture;
@@ -91,14 +88,15 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 			fixture.send('get', { id: i });
 			await fixture.expect('get-resolved');
 			await Main.dropTable();
-			await new Promise((resolve) => setTimeout(resolve, 50));
+			await fixture.expect('commit-settled');
 			const workerEvents = fixture.drain().filter((message) => message.event !== 'logged-error');
-			assert.deepEqual(workerEvents, [], `iteration ${i}: unexpected worker events`);
+			assert.deepStrictEqual(workerEvents, [], `iteration ${i}: unexpected worker events`);
 			assert.doesNotThrow(
 				() => Probe.primaryStore.putSync('__probe__', { i }),
 				`iteration ${i}: the environment must still accept writes`
 			);
-			assert.equal(Main.dbisDB.getSync(`${name}/`), undefined, `iteration ${i}: catalog rows must be removed`);
+			const catalogRows = [...Main.dbisDB.getRange({ start: `${name}/`, end: `${name}0` })].map(({ key }) => key);
+			assert.deepStrictEqual(catalogRows, [], `iteration ${i}: catalog rows must be removed`);
 		}
 	});
 });

@@ -3,6 +3,7 @@
 require('../testUtils');
 const { parentPort } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { createBlob } = require('#src/resources/blob');
 const { logger } = require('#src/utility/logging/logger');
@@ -47,13 +48,27 @@ function runWorkerFixture() {
 					});
 					report('defined');
 					break;
-				case 'get':
-					// getFromSource resolves the caller before its cache write has committed
-					TestTable.get(message.id, {}).then(
-						() => report('get-resolved'),
+				case 'get': {
+					const { id } = message;
+					// getFromSource resolves the caller before its cache write has committed, and holds the
+					// record lock until that write has settled either way.
+					TestTable.get(id, {}).then(
+						async () => {
+							report('get-resolved');
+							try {
+								await waitFor(() => !TestTable.primaryStore.hasLock(id), {
+									timeout: 30000,
+									message: 'the source-fill cache write should settle',
+								});
+								report('commit-settled');
+							} catch (error) {
+								report('settle-error', { error: error?.stack ?? String(error) });
+							}
+						},
 						(error) => report('get-rejected', { error: error?.stack ?? String(error) })
 					);
 					break;
+				}
 			}
 		} catch (error) {
 			report('error', { error: error?.stack ?? String(error) });
