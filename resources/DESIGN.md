@@ -128,7 +128,7 @@ first and a throw from it is what stops the prune.
 | `Table.deleteHistory`                                                        | LMDB (`RocksTransactionLogStore.remove()` is a no-op, so it must NOT raise) |
 | `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                     |
 
-Three things that are easy to get wrong here:
+Four things that are easy to get wrong here:
 
 - **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
   surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
@@ -139,8 +139,9 @@ Three things that are easy to get wrong here:
   the retired `last-removed`, whose values were written after removal and by only one of the five
   paths. A store with no record has retention history we cannot account for — including the empty
   audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts` deliberately does not
-  migrate it — so `openAuditStore` stamps `Date.now()` as a one-time resync epoch. Only a store
-  created in that same call gets the permissive baseline.
+  migrate it, and the audit-DBI-less result of a table-scoped backup taken without `include_audit` —
+  so `openAuditStore` stamps `Date.now()` as a one-time resync epoch. There is no permissive-baseline
+  case: creating the audit DBI proves the DBI was absent, not that the database is new.
 - **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
   bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
   spelling the check that way would read corrupt metadata as safe.

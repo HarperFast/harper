@@ -8,8 +8,16 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { raiseAuditFloor, purgeAgedLogs, setAuditRetention, auditRetention } = require('#src/resources/auditStore');
+const {
+	getAuditFloor: oldestRetainedAuditTime,
+	raiseAuditFloor,
+	purgeAgedLogs,
+	setAuditRetention,
+	auditRetention,
+} = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const os = require('node:os');
+const path = require('node:path');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -127,6 +135,17 @@ describe('audit staleness floor', () => {
 			});
 		}
 
+		it('does not stamp over a record that decodes to unknown', () => {
+			// establishAuditFloor keys off the record's ABSENCE. Keying off the decoded value instead would
+			// let a reopen replace a deliberately-stored Infinity (or corrupt bytes) with Date.now(),
+			// lowering a floor the contract says never lowers.
+			const { establishAuditFloor } = require('#src/resources/auditStore');
+			Metadata.auditStore.putSync(AUDIT_FLOOR_KEY, encodeFloorBytes(Infinity));
+			assert.strictEqual(Metadata.oldestRetainedAuditTime(), Infinity);
+			establishAuditFloor(Metadata.auditStore);
+			assert.strictEqual(Metadata.oldestRetainedAuditTime(), Infinity, 'reopen must not lower it');
+		});
+
 		it('leaves an unknown floor unknown when a prune tries to raise it', () => {
 			// A cutoff says nothing about the history the store lost before we started tracking it.
 			Metadata.auditStore.putSync(AUDIT_FLOOR_KEY, new Uint8Array(4));
@@ -157,12 +176,29 @@ describe('audit staleness floor', () => {
 			['NaN', NaN],
 			['a negative time', -1],
 		]) {
-			it(`ignores ${label} as a cutoff`, () => {
+			it(`throws on ${label} as a cutoff rather than declining it silently`, () => {
+				// Audit keys are raw float64, so NaN and negatives sort ABOVE every real timestamp and the
+				// prune's own range honors them — declining only the floor update would delete everything.
 				const before = Monotonic.oldestRetainedAuditTime();
-				raiseAuditFloor(Monotonic.auditStore, cutoff);
+				assert.throws(() => raiseAuditFloor(Monotonic.auditStore, cutoff), /Invalid audit prune bound/);
 				assert.strictEqual(Monotonic.oldestRetainedAuditTime(), before);
 			});
 		}
+
+		it('refuses a deleteHistory whose bound the range would honor but the floor cannot record', async function () {
+			if (Audited.auditStore.reusableIterable) return this.skip(); // LMDB is the engine that removes entries
+			const guarded = tableInOwnDatabase('Guarded');
+			await guarded.put('kept-1', { name: 'one' });
+			await guarded.put('kept-2', { name: 'two' });
+			const before = auditEntries(guarded.auditStore).length;
+			assert.ok(before >= 2, 'precondition: entries that must survive');
+			await assert.rejects(() => guarded.deleteHistory(NaN), /Invalid audit prune bound/);
+			assert.strictEqual(
+				auditEntries(guarded.auditStore).length,
+				before,
+				'a bound that cannot be recorded must delete nothing'
+			);
+		});
 
 		it('takes an Infinity cutoff and reports the floor as unknown', () => {
 			// `deleteHistory(Infinity)` removes ALL of a table's history. Rejecting the cutoff would
@@ -368,18 +404,28 @@ describe('audit staleness floor', () => {
 		);
 	});
 
-	it('works on a legacy standalone audit root, which owns its own transaction', function () {
-		// A legacy `auditPath` layout is opened as its own LMDB root and has no `.rootStore`; before
-		// the fallback, every prune through it hit `undefined.transactionSync`.
-		const legacyRoot = Audited.auditStore.rootStore;
-		if (legacyRoot.auditStore === undefined) return this.skip();
-		const standalone = {
-			transactionSync: legacyRoot.transactionSync?.bind(legacyRoot),
-			getBinary: Audited.auditStore.getBinary?.bind(Audited.auditStore),
-			putSync: Audited.auditStore.putSync?.bind(Audited.auditStore),
-		};
-		if (!standalone.transactionSync || !standalone.getBinary) return this.skip();
-		assert.doesNotThrow(() => raiseAuditFloor(standalone, Date.now() + 90_000));
+	it('works on a real legacy standalone audit root, which owns its own transaction', function () {
+		// A legacy `auditPath` layout is opened by databases.ts as its own LMDB root, with an encoder that
+		// has no Uint8Array passthrough and no `.rootStore`. Both bit here: the floor write reached
+		// createAuditEntry and threw `Invalid audit entry type`, failing database startup.
+		const { open } = require('lmdb');
+		const { createAuditEntry, readAuditEntry, establishAuditFloor } = require('#src/resources/auditStore');
+		const legacyRoot = open({
+			path: path.join(os.tmpdir(), `harper-legacy-audit-${process.pid}-${Date.now()}.mdb`),
+			encoder: {
+				encode: (auditRecord) => createAuditEntry(auditRecord),
+				decode: (encoding) => readAuditEntry(encoding),
+			},
+		});
+		try {
+			assert.doesNotThrow(() => establishAuditFloor(legacyRoot), 'a legacy root must open, not throw');
+			const established = oldestRetainedAuditTime(legacyRoot);
+			assert.ok(Number.isFinite(established), `legacy root should get a floor, got ${established}`);
+			raiseAuditFloor(legacyRoot, established + 5_000);
+			assert.strictEqual(oldestRetainedAuditTime(legacyRoot), established + 5_000);
+		} finally {
+			legacyRoot.close();
+		}
 	});
 
 	it('reports the database floor for a table whose own auditing is off', () => {

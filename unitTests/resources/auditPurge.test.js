@@ -37,9 +37,11 @@ describe('purgeAgedLogs', () => {
 		};
 		store.auditStore = {
 			rootStore: {
+				// returns the callback's value, as both real engines do: updateAuditFloor requires an
+				// explicit `true` because RocksDB swallows an aborted transaction and returns undefined.
 				transactionSync(callback) {
 					order.push('floor');
-					callback();
+					return callback();
 				},
 			},
 			// A real store always has a floor by this point — openAuditStore establishes one — and the
@@ -47,9 +49,10 @@ describe('purgeAgedLogs', () => {
 			// instead mean "unknown", which a prune deliberately leaves alone.
 			getBinary: () => new Uint8Array(Float64Array.of(1).buffer),
 			putSync(_key, value) {
-				// `value` is a live view over a reused module buffer, so copy before decoding it.
-				const copy = new Uint8Array(value);
-				store.floorWrites.push(new Float64Array(copy.buffer)[0]);
+				// the real write wraps the bytes in lmdb's asBinary(), which bypasses both engines' encoders
+				const wrapped = Object.values(value)[0] ?? value;
+				const bytes = Uint8Array.from(Object.values(wrapped));
+				store.floorWrites.push(new Float64Array(bytes.buffer)[0]);
 			},
 		};
 		return store;

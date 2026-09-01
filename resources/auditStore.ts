@@ -121,10 +121,9 @@ const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 /**
  * Key of this database's audit retention floor. Its *presence* is what marks the floor trustworthy,
- * which is why this is not the retired `last-removed` key: values stored there were written by a
- * path that removed entries first and recorded them afterwards, and were not written by three of the
- * four other prune paths at all, so a legacy value cannot be told apart from one that carries the
- * write-ahead and monotonicity guarantees `raiseAuditFloor` now provides.
+ * which is why this is not the retired `last-removed` key: values stored there were written after the
+ * removal, and by only one of the five prune paths, so a legacy value cannot be told apart from one
+ * carrying the write-ahead and monotonicity guarantees `raiseAuditFloor` now provides.
  */
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
 /** No trustworthy floor: the highest possible floor, so every cursor compares as stale. */
@@ -230,8 +229,8 @@ export function openAuditStore(rootStore) {
 					// remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
 					const end = Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority);
 					// Probe before raising, so an idle database does not write a floor transaction on every
-					// pass forever. Safe against the check-then-act it resembles: `end` is fixed, and audit
-					// keys only move forward, so nothing can drop below it between the probe and the loop.
+					// pass forever. `end` is fixed and audit keys only move forward, so an empty probe means
+					// the loop below finds nothing either.
 					let hasEligibleEntry = false;
 					for (const _entry of auditStore.getRange({ start: 1, end, snapshot: false, limit: 1 }))
 						hasEligibleEntry = true;
@@ -353,30 +352,33 @@ function encodeAuditFloor(floor: number): Uint8Array {
  * consistent because nothing is pruned there either.
  */
 function updateAuditFloor(auditStore: any, resolve: (current: number) => number | undefined): void {
-	if (isReadOnlyMode()) return;
 	// A legacy `auditPath` layout is opened as its own standalone LMDB root (databases.ts) and has no
 	// `.rootStore`, so it owns the transaction itself.
 	const transactionOwner = auditStore?.rootStore ?? auditStore;
-	// Not a guard that skips the write: a prune whose floor cannot be recorded must not proceed, so
-	// this throws where the caller's ordering turns it into "do not prune".
 	if (!transactionOwner?.transactionSync)
 		throw new Error('Cannot record the audit retention floor: this database has no audit store');
-	if (auditStore instanceof RocksTransactionLogStore) {
-		transactionOwner.transactionSync(
-			(txn) => {
-				const floor = resolve(decodeAuditFloor(txn.getBinarySync(AUDIT_FLOOR_KEY)));
-				if (floor === undefined) return;
-				txn.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
-			},
-			{ retryOnBusy: true }
-		);
-	} else {
-		transactionOwner.transactionSync(() => {
-			const floor = resolve(decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY)));
-			if (floor === undefined) return;
-			auditStore.putSync(AUDIT_FLOOR_KEY, encodeAuditFloor(floor));
-		});
-	}
+	// `=== true` because a RocksDB transactionSync swallows an aborted transaction and returns
+	// undefined rather than throwing (see RecordEncoder.saveStructures, which relies on the same
+	// contract). Treating that as success is the fail-open this floor exists to close: the caller
+	// would go on to prune with no durable record that it did.
+	const committed =
+		auditStore instanceof RocksTransactionLogStore
+			? transactionOwner.transactionSync(
+					(txn) => {
+						const floor = resolve(decodeAuditFloor(txn.getBinarySync(AUDIT_FLOOR_KEY)));
+						if (floor !== undefined) txn.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
+						return true;
+					},
+					{ retryOnBusy: true }
+				)
+			: transactionOwner.transactionSync(() => {
+					const floor = resolve(decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY)));
+					// asBinary: a legacy standalone audit root's encoder has no Uint8Array passthrough, so raw
+					// bytes would reach createAuditEntry and throw. This bypasses both encoders.
+					if (floor !== undefined) auditStore.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
+					return true;
+				});
+	if (committed !== true) throw new Error('The audit retention floor transaction did not commit');
 }
 
 /**
@@ -398,10 +400,18 @@ function updateAuditFloor(auditStore: any, resolve: (current: number) => number 
  * cutoff that says nothing about the history it has already lost.
  */
 export function raiseAuditFloor(auditStore: any, cutoff: number): void {
-	// `cutoff > current` is the whole guard: it rejects NaN, negatives, and any cutoff at or below the
-	// floor. Deliberately no finiteness check — `deleteHistory(Infinity)` removes ALL of a table's
-	// history, and Infinity has to be storable so it decodes back to "unknown" and leaves no cursor
-	// reading as safe. Rejecting it would remove the history and keep the old floor certifying it.
+	// Throw rather than no-op on a bound we will not store. A NaN or negative cutoff is NOT harmless
+	// here: transactionKeyEncoder writes keys as raw float64, so NaN (0x7FF8…) and negatives (sign bit
+	// set) sort ABOVE every real timestamp, and `getRange({ start: 1, end: NaN })` therefore spans the
+	// whole log. `delete_transaction_logs_before` reaches that via Number.parseInt on a non-numeric
+	// timestamp, so silently declining the floor update would leave the prune deleting everything.
+	// Infinity is different and IS stored: `deleteHistory(Infinity)` legitimately removes all history,
+	// and Infinity decodes back to "unknown", leaving no cursor reading as safe.
+	if (Number.isNaN(cutoff) || cutoff < 0) throw new Error(`Invalid audit prune bound: ${cutoff}`);
+	// Read-only mode does not exempt a prune from recording its floor; it means the prune must not
+	// happen. Only scheduleAuditCleanup and purgeAgedLogs check read-only themselves, so for
+	// deleteHistory and the whole-database purge this throw is the guard.
+	if (isReadOnlyMode()) throw new Error('Cannot record the audit retention floor: the database is read-only');
 	updateAuditFloor(auditStore, (current) => (cutoff > current ? cutoff : undefined));
 }
 
@@ -416,15 +426,21 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
  * `include_audit`, which carries records but no audit DBI. Cursors from before this moment are
  * therefore reported stale — not because we know they are, but because we do not know they are not.
  *
- * Deliberately no "this store is brand new, use a permissive baseline" case. Creating the audit DBI
- * proves only that the DBI was absent, which the audit-less backup above also produces, and the cost
- * of being conservative on a genuinely new database is nil: its entries are all written after this
- * instant, so only a cursor predating the database itself is affected.
+ * There is no "brand new store, use a permissive baseline" case: creating the audit DBI proves only
+ * that the DBI was absent, which the audit-less backup above also produces. Being conservative on a
+ * genuinely new database costs nothing, since its entries are all written after this instant.
  *
- * In read-only mode nothing is written and the floor stays unknown, which is the fail-closed answer
- * for a process that cannot record what it does not know.
+ * In read-only mode nothing is written and the floor stays unknown — the fail-closed answer for a
+ * process that cannot record what it does not know.
  */
 export function establishAuditFloor(auditStore: any): void {
+	if (isReadOnlyMode()) return;
+	// Absence of the record, not `getAuditFloor() === AUDIT_FLOOR_UNKNOWN`: a record that exists but
+	// decodes to unknown — corrupt bytes, or the Infinity a prune-everything stored — is already the
+	// fail-closed answer, and stamping over it would LOWER a floor that is never supposed to lower.
+	// Reading it here rather than inside the transaction also keeps the overwhelmingly common case (a
+	// floor already established, every worker, every database, every boot) off the env write lock.
+	if (auditStore.getBinary(AUDIT_FLOOR_KEY) !== undefined) return;
 	updateAuditFloor(auditStore, (current) => (current === AUDIT_FLOOR_UNKNOWN ? Date.now() : undefined));
 }
 
