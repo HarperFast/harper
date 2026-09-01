@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
-const { database, databases, table } = require('#src/resources/databases');
+const { database, databases, getDatabases, resetDatabases, table } = require('#src/resources/databases');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const storageReclamation = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -280,5 +280,71 @@ describe('create table catalog write order', () => {
 			for (const [method, original] of patched) catalogPrototype[method] = original;
 			await worker.terminate();
 		}
+	});
+
+	it('a create that fails after its primary row keeps the catalog complete and reloads a usable table', async () => {
+		const tableName = 'CatalogPublishTest';
+		const Seed = table({
+			table: 'CatalogPublishSeed',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+		});
+		// registering the class in this worker is the first thing the create does after the primary row
+		// lands, so a setter that throws injects a failure at exactly the publish boundary
+		Object.defineProperty(databases.test, tableName, {
+			configurable: true,
+			get: () => undefined,
+			set: () => {
+				throw new Error('injected registration failure');
+			},
+		});
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: tableName,
+						database: 'test',
+						schemaDefined: true,
+						attributes: [
+							{ name: 'id', type: 'ID', isPrimaryKey: true },
+							{ name: 'name', type: 'String' },
+							{ name: 'tag', type: 'String', indexed: true },
+						],
+					}),
+				/injected registration failure/
+			);
+		} finally {
+			delete databases.test[tableName];
+		}
+		// LMDB commits the create's write transaction from releaseLock()'s finally even as the error
+		// unwinds, so the rows are durable on both engines and rolling them back would strand a table
+		// every other thread can already see
+		if (Seed.dbisDB.committed) await Seed.dbisDB.committed;
+		assert(Seed.dbisDB.getSync(`${tableName}/`), 'the primary row must survive a failure after the publish point');
+		for (const attribute of ['name', 'tag'])
+			assert(
+				Seed.dbisDB.getSync(`${tableName}/${attribute}`),
+				`the '${attribute}' row must survive a failure after the publish point`
+			);
+		resetDatabases();
+		const Reloaded = getDatabases().test[tableName];
+		assert(Reloaded, 'the table must load after a failure past its publish point');
+		assert.deepStrictEqual(
+			Reloaded.attributes.map((attribute) => attribute.name).sort(),
+			['id', 'name', 'tag'],
+			'the reloaded table must declare every attribute'
+		);
+		assert(Reloaded.indices.tag, 'the reloaded table must open the index');
+		await Reloaded.put({ id: 'published', name: 'after the failure', tag: 'usable' });
+		assert.strictEqual(
+			(await Reloaded.get('published'))?.name,
+			'after the failure',
+			'the reloaded primary store must serve reads'
+		);
+		const byTag = [];
+		for await (const record of Reloaded.search({ conditions: [{ attribute: 'tag', value: 'usable' }] }))
+			byTag.push(record.id);
+		assert.deepStrictEqual(byTag, ['published'], 'the reloaded index must serve searches');
 	});
 });

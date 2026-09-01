@@ -2541,8 +2541,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// runs mid-create skips the table instead of building (and announcing) a partial one.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
-			setTable(tables, tableName, Table);
+			// That write, not the registration below, is the publish point: it is durable from here
+			// (on LMDB releaseLock()'s finally commits this create's write transaction even while an
+			// error unwinds), so any later throw must leave the catalog alone. Rolling back past it
+			// would delete the attribute rows out from under a live primary row and leave every
+			// thread loading the primary-only schema this change exists to prevent.
 			published = true;
+			setTable(tables, tableName, Table);
 		}
 		// a table with no declared primary key has no attribute row to carry relationships, and the
 		// loop above never visits its descriptor
