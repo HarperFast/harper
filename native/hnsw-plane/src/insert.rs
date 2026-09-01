@@ -34,7 +34,7 @@ fn level_for(id: u32, ml: f64) -> u8 {
 /// Remove `to` from `from`'s adjacency at `level` (edge-replacement maintenance).
 fn remove_edge(graph: &Graph, from: u32, to: u32, level: u8) {
     if level == 0 {
-        graph.update_neighbors(from, |list| {
+        let _ = graph.update_neighbors(from, |list| {
             if let Some(pos) = list.iter().position(|&x| x == to) {
                 list.remove(pos);
             }

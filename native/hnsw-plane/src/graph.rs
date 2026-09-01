@@ -605,6 +605,9 @@ impl Graph {
     /// The start rotates per handle, so `stride` consecutive repairs of this plane cover every id
     /// while each stays capped at `limit`; a fixed start would probe one residue class forever
     /// and leave a graph lying between its samples invisible permanently, not for one search.
+    /// The stride is a ceiling division for the same reason: flooring it leaves
+    /// `stride * limit < hw`, so every rotated walk stops short of the lowest `hw % limit` ids
+    /// and a graph surviving only there stays invisible however many times the start rotates.
     ///
     /// Best-level rather than first-live: a level-0 entry degrades every later search to a
     /// layer-0-only beam.
@@ -613,7 +616,7 @@ impl Graph {
         if hw == 0 || limit == 0 {
             return None;
         }
-        let stride = (hw / limit).max(1);
+        let stride = hw.div_ceil(limit);
         let offset = self.probe_rotation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % stride;
         let mut best: Option<(u32, u8)> = None;
         let mut cand = hw - 1 - offset;

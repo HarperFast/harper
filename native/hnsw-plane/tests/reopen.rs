@@ -600,7 +600,7 @@ fn a_repair_probe_rotates_so_no_live_node_stays_between_its_samples() {
         insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
     }
     let hw = graph.file.id_high_water() as u32;
-    let stride = (hw / 1_024).max(1); // REPAIR_PROBE_LIMIT
+    let stride = hw.div_ceil(1_024); // REPAIR_PROBE_LIMIT
     assert!(stride > 1, "precondition: a stride the rotation actually has to cover, got {stride}");
     // an unrotated walk starts at hw-1 and steps by `stride`, so it only ever sees that residue;
     // keep exactly one node alive in a different one
@@ -621,6 +621,49 @@ fn a_repair_probe_rotates_so_no_live_node_stays_between_its_samples() {
         }
     }
     assert!(found, "a rotating probe must reach every residue within `stride` repairs");
+    assert_eq!(graph.file.entry_point().0, survivor, "the only live node must be the repaired entry");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The stride must be a ceiling division. Flooring it leaves `stride * limit < hw` whenever `hw`
+/// is not a multiple of `limit`, so every rotated walk stops above the lowest `hw % limit` ids —
+/// a permanent blind spot, not a one-search one, since no offset ever reaches it. A graph whose
+/// only survivors sit in that prefix would return empty from every later search; this one's does.
+#[test]
+fn a_repair_probe_reaches_the_low_ids_a_floored_stride_would_never_sample() {
+    let dims = 32;
+    let limit = 1_024u32; // REPAIR_PROBE_LIMIT
+    let path = tmp("entryheallowprefix");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 4_096).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..2_100 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    let hw = graph.file.id_high_water() as u32;
+    // a floored walk bottoms out at `hw % limit` whatever its rotation offset, so ids below that
+    // are exactly what the ceiling buys
+    let floored_reach = hw % limit;
+    assert!(hw > limit && floored_reach > 1, "precondition: a low prefix a floored stride skips, hw {hw}");
+    let survivor = floored_reach / 2;
+    for id in 0..hw {
+        if id != survivor {
+            let _ = graph.clear_node(id);
+        }
+    }
+    assert!(graph.read_node(survivor).is_some(), "precondition: the survivor is live");
+    assert_ne!(graph.file.previous_entry_point(), survivor, "precondition: the probe must be what finds it");
+
+    let mut found = false;
+    for _ in 0..hw.div_ceil(limit) {
+        let (hits, _) = search(&graph, &Query::new(vector_for(survivor, dims)), 5, 64, &mut scratch);
+        if !hits.is_empty() {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "a full rotation must cover every id, the lowest included");
     assert_eq!(graph.file.entry_point().0, survivor, "the only live node must be the repaired entry");
     let _ = std::fs::remove_file(&path);
 }
@@ -646,7 +689,7 @@ fn repair_probe_rotation_is_per_plane_not_per_process() {
             insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
         }
         let hw = graph.file.id_high_water() as u32;
-        stride = (hw / 1_024).max(1);
+        stride = hw.div_ceil(1_024);
         assert!(stride > 1, "precondition: a stride the rotation has to cover");
         // the same skipped residue on both planes, so a shared counter cannot serve both
         let survivor = (0..hw).rev().find(|id| (hw - 1 - id) % stride != 0).expect("a skipped residue");
