@@ -8,11 +8,11 @@ import { getRegisteredSession } from './sessionRegistry.ts';
 import { addResourceSubscription, removeResourceSubscription } from './subscriptions.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 
-const DEFAULT_RESPONSE_TIMEOUT_MS = 2_000;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
 const MAX_PENDING = 100;
 const MAX_PENDING_PER_SESSION = 25;
 
-export type SubscriptionRouteResult = 'success' | 'not-subscribable' | 'no-live-stream' | 'internal-error';
+export type SubscriptionRouteResult = 'success' | 'not-subscribable' | 'no-live-stream' | 'timeout' | 'internal-error';
 type Operation = 'subscribe' | 'unsubscribe';
 
 interface Command {
@@ -56,8 +56,17 @@ let responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS;
 
 function bridge(): ItcBridge {
 	if (bridgeOverride) return bridgeOverride;
-	const { onMessageByType } = require('../../server/threads/manageThreads.js');
-	return { sendToThread: threads.sendToThread.bind(threads), onMessageByType };
+	try {
+		const { onMessageByType } = require('../../server/threads/manageThreads.js');
+		if (typeof threads !== 'undefined' && typeof threads.sendToThread === 'function') {
+			return { sendToThread: threads.sendToThread.bind(threads), onMessageByType };
+		}
+	} catch (error) {
+		harperLogger.trace(`MCP subscription routing is unavailable: ${(error as Error).message}`);
+		return { sendToThread: () => false, onMessageByType: () => {} };
+	}
+	harperLogger.trace('MCP subscription routing is unavailable: thread bridge is not initialized');
+	return { sendToThread: () => false, onMessageByType: () => {} };
 }
 
 export function _setSubscriptionItcForTest(fake: ItcBridge | undefined): void {
@@ -100,7 +109,8 @@ function ensureWired(): void {
 		const response = event.message as Response;
 		const entry = pending.get(response?.requestId);
 		if (!entry || response.originator !== entry.targetThreadId) return;
-		if (!['success', 'not-subscribable', 'no-live-stream', 'internal-error'].includes(response.result)) return;
+		if (!['success', 'not-subscribable', 'no-live-stream', 'timeout', 'internal-error'].includes(response.result))
+			return;
 		clearTimeout(entry.timer);
 		pending.delete(response.requestId);
 		entry.resolve(response.result);
@@ -122,6 +132,7 @@ function countPendingForSession(sessionId: string): number {
 function subscriptionUser(user: AuthedUser): AuthedUser {
 	return {
 		...(user.username ? { username: user.username } : {}),
+		...(user.authExpiresAt !== undefined ? { authExpiresAt: user.authExpiresAt } : {}),
 		...(user._scopedToken ? { _scopedToken: true } : {}),
 		...(user.role
 			? {
@@ -146,7 +157,7 @@ function routeRemote(
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => {
 			pending.delete(requestId);
-			resolve('no-live-stream');
+			resolve('timeout');
 		}, responseTimeoutMs);
 		timer.unref();
 		pending.set(requestId, { sessionId: command.sessionId, targetThreadId: owner.threadId, resolve, timer });
@@ -167,7 +178,7 @@ function routeRemote(
 	});
 }
 
-function serializeSessionOperation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+export function withSessionSubscriptionLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
 	const previous = operationChains.get(sessionId) ?? Promise.resolve();
 	const current = previous.then(operation, operation);
 	const tail = current
@@ -185,7 +196,7 @@ function serializeSessionOperation<T>(sessionId: string, operation: () => Promis
 async function executeLocal(command: Command): Promise<SubscriptionRouteResult> {
 	const registered = getRegisteredSession(command.sessionId);
 	if (!registered || registered.streamToken !== command.streamToken) return 'no-live-stream';
-	return serializeSessionOperation(command.sessionId, async () => {
+	return withSessionSubscriptionLock(command.sessionId, async () => {
 		if (command.operation === 'subscribe') {
 			if (!command.user) return 'internal-error';
 			const added = await addResourceSubscription(command.sessionId, command.uri, command.user);

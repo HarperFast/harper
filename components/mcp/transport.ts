@@ -37,7 +37,11 @@ import { listResources, listResourceTemplates, readResource, completeResourceArg
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
 import { dropSessionSubscriptions, restoreResourceSubscriptions } from './subscriptions.ts';
-import { claimSubscriptionOwner, routeResourceSubscription } from './subscriptionRouting.ts';
+import {
+	claimSubscriptionOwner,
+	routeResourceSubscription,
+	withSessionSubscriptionLock,
+} from './subscriptionRouting.ts';
 import {
 	sendServerRequest,
 	routeClientResponse,
@@ -418,13 +422,13 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
-	if (session.subscriptions?.length) {
-		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
-		if (restored.length !== session.subscriptions.length) {
-			session.subscriptions = restored;
-			await patchSession(session.id, { subscriptions: restored });
-		}
-	}
+	await withSessionSubscriptionLock(sessionId, async () => {
+		const currentSession = await loadSession(sessionId);
+		const subscriptions = currentSession?.subscriptions;
+		if (!subscriptions?.length) return;
+		const restored = await restoreResourceSubscriptions(sessionId, subscriptions, effectiveUser(request));
+		if (restored.length !== subscriptions.length) await patchSession(sessionId, { subscriptions: restored });
+	});
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
 	// raw so their original event ids are preserved. Best-effort + per-worker: the
@@ -936,6 +940,12 @@ async function dispatchResourcesSubscribe(
 		// URIs (and unknown URIs) have no change source.
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
 	}
+	if (result === 'timeout') {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource subscription timed out; retry the request')
+		);
+	}
 	if (result === 'internal-error') {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource subscription failed'));
 	}
@@ -964,6 +974,11 @@ async function dispatchResourcesUnsubscribe(
 		if (fresh?.subscriptions?.includes(uri)) {
 			await patchSession(session.id, { subscriptions: fresh.subscriptions.filter((u) => u !== uri) });
 		}
+	} else if (result === 'timeout') {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe timed out; retry the request')
+		);
 	} else if (result === 'internal-error') {
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed'));
 	}
