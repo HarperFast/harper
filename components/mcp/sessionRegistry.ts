@@ -17,6 +17,7 @@
  * without a graceful close).
  */
 import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
+import { randomUUID } from 'node:crypto';
 import type { McpLogLevel } from './logging.ts';
 import type { AuthedUser } from './toolRegistry.ts';
 import type { McpProfile } from './transport.ts';
@@ -29,6 +30,8 @@ export interface SseEvent {
 
 export interface RegisteredSession {
 	sessionId: string;
+	/** Uniquely identifies this particular GET-SSE stream. */
+	streamToken: string;
 	profile: McpProfile;
 	user: AuthedUser;
 	queue: IterableEventQueue<SseEvent>;
@@ -98,6 +101,7 @@ export function registerSession(sessionId: string, profile: McpProfile, user: Au
 	const queue = new IterableEventQueue<SseEvent>();
 	const record: RegisteredSession = {
 		sessionId,
+		streamToken: randomUUID(),
 		profile,
 		user,
 		queue,

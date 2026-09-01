@@ -2,7 +2,6 @@ const assert = require('node:assert');
 const {
 	createSession,
 	loadSession,
-	saveSession,
 	deleteSession,
 	touchSession,
 	_setSessionTableForTest,
@@ -14,6 +13,9 @@ function makeFakeTable() {
 		store,
 		async put(record) {
 			store.set(record.id, { ...record });
+		},
+		async patch(record) {
+			store.set(record.id, { ...store.get(record.id), ...record });
 		},
 		async get(id) {
 			const r = store.get(id);
@@ -64,15 +66,6 @@ describe('mcp/session', () => {
 		it('returns null when the id is unknown', async () => {
 			const loaded = await loadSession('not-a-session');
 			assert.equal(loaded, null);
-		});
-	});
-
-	describe('saveSession', () => {
-		it('persists changes', async () => {
-			const created = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
-			await saveSession({ ...created, initialized: true });
-			const reloaded = await loadSession(created.id);
-			assert.equal(reloaded.initialized, true);
 		});
 	});
 

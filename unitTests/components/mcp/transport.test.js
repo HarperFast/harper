@@ -1,8 +1,9 @@
 const assert = require('node:assert');
+const { threadId } = require('node:worker_threads');
 const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
-const { _setSessionTableForTest, createSession, loadSession, saveSession } = require('#src/components/mcp/session');
+const { _setSessionTableForTest, createSession, loadSession, patchSession } = require('#src/components/mcp/session');
 const {
 	getRegisteredSession,
 	pushSessionFrame,
@@ -46,6 +47,9 @@ function makeFakeTable() {
 		store,
 		async put(record) {
 			store.set(record.id, { ...record });
+		},
+		async patch(record) {
+			store.set(record.id, { ...store.get(record.id), ...record });
 		},
 		async get(id) {
 			const r = store.get(id);
@@ -273,10 +277,9 @@ describe('mcp/transport', () => {
 
 		it('does not roll back lastActivity when persisting the level (touchSession adopted)', async () => {
 			// Force a known-old lastActivity, then setLevel: the request's touchSession
-			// must advance it, and the level-persisting saveSession must NOT write the
+			// must advance it, and the level patch must not write the
 			// stale load-time value back (root fix — handlePost adopts the touched copy).
-			const stale = await loadSession(sessionId);
-			await saveSession({ ...stale, lastActivity: 1 });
+			await patchSession(sessionId, { lastActivity: 1 });
 			await handleMcpRequest(
 				makeReq({
 					body: jsonRpc(2, 'logging/setLevel', { level: 'info' }),
@@ -1113,9 +1116,13 @@ describe('mcp/transport', () => {
 		});
 
 		describe('resources/subscribe + resources/unsubscribe', () => {
-			beforeEach(() => {
+			beforeEach(async () => {
 				// A live GET stream is required to subscribe — register one for the session.
-				registerSession(sessionId, 'application', { username: 'alice', role: { permission: { super_user: true } } });
+				const registered = registerSession(sessionId, 'application', {
+					username: 'alice',
+					role: { permission: { super_user: true } },
+				});
+				await patchSession(sessionId, { streamOwner: { threadId, token: registered.streamToken } });
 				// Inject a fake change stream so dispatch doesn't need the real audit log.
 				// `null` for the sentinel path makes the resource non-subscribable.
 				_setSubscribeImplForTest(async (path) =>

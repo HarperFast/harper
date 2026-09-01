@@ -32,16 +32,12 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
-import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
+import { deleteSession, loadSession, patchSession, touchSession, type McpSessionRecord } from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
-import {
-	addResourceSubscription,
-	removeResourceSubscription,
-	dropSessionSubscriptions,
-	restoreResourceSubscriptions,
-} from './subscriptions.ts';
+import { dropSessionSubscriptions, restoreResourceSubscriptions } from './subscriptions.ts';
+import { claimSubscriptionOwner, routeResourceSubscription } from './subscriptionRouting.ts';
 import {
 	sendServerRequest,
 	routeClientResponse,
@@ -50,8 +46,8 @@ import {
 } from './serverRequests.ts';
 import {
 	registerSession,
+	unregisterSession,
 	touchRegisteredSession,
-	getRegisteredSession,
 	replaySince,
 	type SseEvent,
 } from './sessionRegistry.ts';
@@ -370,7 +366,7 @@ async function dispatchSetLevel(
 	// on the worker where the change fires. Cross-worker push is a separate,
 	// subsystem-wide design item (tracked in the MCP design-doc issue).
 	session.logLevel = level;
-	await saveSession(session);
+	await patchSession(session.id, { logLevel: level });
 	setSessionLogLevel(session.id, level);
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -403,6 +399,12 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 		};
 	}
 	const record = registerSession(sessionId, request.profile, effectiveUser(request));
+	try {
+		await claimSubscriptionOwner(sessionId, record.streamToken);
+	} catch (error) {
+		unregisterSession(sessionId);
+		throw error;
+	}
 	// Seed the live record with any previously-set logging level so a reconnect
 	// (or a setLevel that preceded this stream) keeps delivering notifications/message.
 	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
@@ -420,7 +422,7 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
 		if (restored.length !== session.subscriptions.length) {
 			session.subscriptions = restored;
-			await saveSession(session);
+			await patchSession(session.id, { subscriptions: restored });
 		}
 	}
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
@@ -917,26 +919,25 @@ async function dispatchResourcesSubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/subscribe requires params.uri')
 		);
 	}
-	// Require a live GET SSE stream: that's where notifications/resources/updated is
-	// delivered, and its 'close' is the only teardown hook for the subscription. A
-	// subscription opened without a stream would leak its audit-log iterator and
-	// drop every update silently.
-	if (!getRegisteredSession(session.id)) {
+	const result = await routeResourceSubscription({
+		session,
+		operation: 'subscribe',
+		uri,
+		user: effectiveUser(request),
+	});
+	if (result === 'no-live-stream') {
 		return jsonResponse(
 			200,
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
 		);
 	}
-	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
-	if (!ok) {
+	if (result === 'not-subscribable') {
 		// Only row-backed application resources are subscribable; synthetic harper://*
 		// URIs (and unknown URIs) have no change source.
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
 	}
-	// Persist the URI on the durable record so it survives an SSE reconnect.
-	if (!session.subscriptions?.includes(uri)) {
-		session.subscriptions = [...(session.subscriptions ?? []), uri];
-		await saveSession(session);
+	if (result === 'internal-error') {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource subscription failed'));
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -955,10 +956,16 @@ async function dispatchResourcesUnsubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/unsubscribe requires params.uri')
 		);
 	}
-	removeResourceSubscription(session.id, uri);
-	if (session.subscriptions?.includes(uri)) {
-		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
-		await saveSession(session);
+	const result = await routeResourceSubscription({ session, operation: 'unsubscribe', uri });
+	if (result === 'no-live-stream') {
+		// The live owner is already gone. Remove durable state locally so a later
+		// reconnect cannot restore the cancelled subscription.
+		const fresh = await loadSession(session.id);
+		if (fresh?.subscriptions?.includes(uri)) {
+			await patchSession(session.id, { subscriptions: fresh.subscriptions.filter((u) => u !== uri) });
+		}
+	} else if (result === 'internal-error') {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed'));
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
