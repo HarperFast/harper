@@ -38,6 +38,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { parsePassing, resolveTimeout } from './windowsGateChecks.mjs';
 
 // Same filename shape `test:unit:main` collects (package.json), so a `.test.mjs` suite under
 // one of these directories is not silently skipped.
@@ -105,13 +106,7 @@ const EXCLUDED = [
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MOCHA = join(repoRoot, 'node_modules', 'mocha', 'bin', 'mocha.js');
-// Anchored and last-match, so a test logging its own "N passing" line cannot stand in for
-// the epilogue on a group that terminated before printing one.
-const SUMMARY = /^\s*(\d+) passing\b/gm;
-// setTimeout clamps anything outside 1..2^31-1 to 1ms, so an unguarded override that is empty,
-// unparseable, negative, sub-millisecond, or huge would SIGKILL every group at spawn.
-const overrideTimeoutMs = Number(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS);
-const GROUP_TIMEOUT_MS = overrideTimeoutMs >= 1 ? Math.min(Math.trunc(overrideTimeoutMs), 2_147_483_647) : 600_000;
+const GROUP_TIMEOUT_MS = resolveTimeout(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS);
 
 // No --config: mocha discovers .mocharc.json itself, so the gate inherits the same
 // root config (and unitTests/mocha.init.js) as every other unit-test run.
@@ -145,7 +140,7 @@ function runGroup(pattern) {
 			// here on would interleave through later groups and through the summary table.
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			const passing = [...output.matchAll(SUMMARY)].at(-1)?.[1];
+			const passing = parsePassing(output);
 			if (!reason) {
 				if (timedOut) reason = `timed out after ${GROUP_TIMEOUT_MS}ms`;
 				else if (passing === undefined) reason = `exited ${code} without reporting a summary`;
