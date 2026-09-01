@@ -473,15 +473,20 @@ describe('OptionsWatcher', () => {
 		await teardown({ fixture, options });
 	});
 
-	it('reports removal after an identical file value replaces the boot fallback', async () => {
+	it('reports a truthy config arrival and its later removal after boot fallback', async () => {
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, stringify({ http: { port: 9926 } }), 'utf-8');
 		const options = new OptionsWatcher('graphqlSchema', configFilePath, undefined, true);
 		await options.ready;
 
+		let arrived;
+		options.on('ready', (value) => {
+			arrived = value;
+		});
 		writeFileSync(configFilePath, stringify({ graphqlSchema: DEFAULT_CONFIG.graphqlSchema }), 'utf-8');
 		await options._refreshForTests();
+		assert.deepEqual(arrived, DEFAULT_CONFIG.graphqlSchema, 'a truthy fallback must not mask the config arrival');
 
 		const removed = once(options, 'remove');
 		writeFileSync(configFilePath, stringify({ http: { port: 9926 } }), 'utf-8');
@@ -654,8 +659,6 @@ describe('OptionsWatcher', () => {
 		const options = new OptionsWatcher('graphqlSchema', configFilePath, undefined, true);
 		await options.ready;
 
-		// A reset hands the scope the defaults, and whatever it applies next merges into them in
-		// place — into the module-level object every later reset hands out, if it is not cloned.
 		const removed = once(options, 'remove');
 		rmSync(configFilePath);
 		await removed;
@@ -664,12 +667,13 @@ describe('OptionsWatcher', () => {
 		// recreate below lands while chokidar is still tearing that watch down and its `add` is not
 		// reliably reported — on darwin every run, on Linux CI under load. `should continue to watch
 		// if file is removed and recreated` is where that delivery is asserted; what this case is
-		// about is the merge, so it drives the read itself rather than racing the watcher.
-		const change = once(options, 'change');
+		// about is the reapplied config, so it drives the read itself rather than racing the watcher.
+		const ready = once(options, 'ready');
 		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'custom.graphql' } }), 'utf-8');
 		await options._refreshForTests();
-		await change;
+		const [arrived] = await ready;
 
+		assert.equal(arrived.files, 'custom.graphql', 'the recreated source config must arrive as ready');
 		assert.equal(options.get(['files']), 'custom.graphql', 'the scope must apply its own config');
 		assert.equal(DEFAULT_CONFIG.graphqlSchema.files, '*.graphql', 'the shared defaults must survive it');
 		await teardown({ fixture, options });

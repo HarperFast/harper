@@ -510,12 +510,17 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#emitError(error);
 	}
 
-	// A scope with nothing applied takes `ready`, one with a prior value takes the granular `change`
+	// A scope with no source config takes `ready`, one with a prior source value takes the granular `change`
 	// events `#merge` derives. `ready` is emitted more than once: a scope can go back to having no
 	// config of its own — see `Scope.#handleOptionsWatcherReady` for what a repeat means there.
 	#applyScopedConfig(next: ConfigValue) {
-		if (this.#scopedConfig) {
+		if (!this.#scopeConfigured) {
 			this.#scopeConfigured = true;
+			this.#scopedConfig = next;
+			this.#emitReady(this.#scopedConfig);
+			return;
+		}
+		if (this.#scopedConfig) {
 			return this.#merge(next, this.#scopedConfig);
 		}
 		// A falsy scope value is still a configured scope — `myPlugin:` with nothing under it is
@@ -524,15 +529,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// and rename-burst re-read would otherwise look like one), but *filling it in* is a change
 		// like any other, not the unconfigured → configured `ready` that `Scope` answers with a
 		// restart.
-		if (this.#scopeConfigured) {
-			if (isDeepStrictEqual(next, this.#scopedConfig)) return;
-			this.#scopedConfig = next;
-			this.#emitChange([], next);
-			return;
-		}
-		this.#scopeConfigured = true;
+		if (isDeepStrictEqual(next, this.#scopedConfig)) return;
 		this.#scopedConfig = next;
-		this.#emitReady(this.#scopedConfig);
+		this.#emitChange([], next);
 	}
 
 	// Cloned, never aliased: `#merge` writes into `#scopedConfig` in place, so a scope that starts
