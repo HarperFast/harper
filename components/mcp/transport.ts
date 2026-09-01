@@ -256,11 +256,8 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 		return { status: 403, headers: {} };
 	}
 
-	// Sliding-window idle reset. Awaited (not fire-and-forget) so a concurrent
-	// DELETE that arrives mid-request can't be resurrected by a late put. Adopt
-	// the touched copy (fresh `lastActivity`) so any later save in this request
-	// — `handleInitialized`, `dispatchSetLevel` — persists the current activity
-	// time instead of rolling it back to the load-time value.
+	// Sliding-window idle reset. Await persistence before dispatch; loadSession
+	// rejects any partial row left by a concurrent DELETE/patch race.
 	session = await touchSession(session);
 
 	// A client's response to a server→client request (#3.7): route it to the

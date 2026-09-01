@@ -30,7 +30,6 @@ export interface SseEvent {
 
 export interface RegisteredSession {
 	sessionId: string;
-	/** Uniquely identifies this particular GET-SSE stream. */
 	streamToken: string;
 	profile: McpProfile;
 	user: AuthedUser;

@@ -32,6 +32,7 @@ interface Response {
 }
 
 interface ItcBridge {
+	available?: boolean;
 	sendToThread(threadId: number, event: { type: string; message: unknown }): boolean;
 	onMessageByType(type: string, listener: (event: { message?: unknown }) => void): void;
 }
@@ -59,14 +60,14 @@ function bridge(): ItcBridge {
 	try {
 		const { onMessageByType } = require('../../server/threads/manageThreads.js');
 		if (typeof threads !== 'undefined' && typeof threads.sendToThread === 'function') {
-			return { sendToThread: threads.sendToThread.bind(threads), onMessageByType };
+			return { available: true, sendToThread: threads.sendToThread.bind(threads), onMessageByType };
 		}
 	} catch (error) {
 		harperLogger.trace(`MCP subscription routing is unavailable: ${(error as Error).message}`);
-		return { sendToThread: () => false, onMessageByType: () => {} };
+		return { available: false, sendToThread: () => false, onMessageByType: () => {} };
 	}
 	harperLogger.trace('MCP subscription routing is unavailable: thread bridge is not initialized');
-	return { sendToThread: () => false, onMessageByType: () => {} };
+	return { available: false, sendToThread: () => false, onMessageByType: () => {} };
 }
 
 export function _setSubscriptionItcForTest(fake: ItcBridge | undefined): void {
@@ -97,15 +98,16 @@ export function _pendingSubscriptionRouteCount(): number {
 
 function ensureWired(): void {
 	if (wired) return;
-	wired = true;
-	bridge().onMessageByType(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND, (event) => {
+	const itc = bridge();
+	if (itc.available === false) return;
+	itc.onMessageByType(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND, (event) => {
 		const command = event.message as Command;
 		void handleCommand(command).catch((error) => {
 			harperLogger.error('MCP subscription command failed', error);
 			sendResponse(command, 'internal-error');
 		});
 	});
-	bridge().onMessageByType(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE, (event) => {
+	itc.onMessageByType(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE, (event) => {
 		const response = event.message as Response;
 		const entry = pending.get(response?.requestId);
 		if (!entry || response.originator !== entry.targetThreadId) return;
@@ -115,9 +117,9 @@ function ensureWired(): void {
 		pending.delete(response.requestId);
 		entry.resolve(response.result);
 	});
+	wired = true;
 }
 
-/** Attach the owner-side command listener and persist the routing hint for a new GET stream. */
 export async function claimSubscriptionOwner(sessionId: string, streamToken: string): Promise<void> {
 	ensureWired();
 	await patchSession(sessionId, { streamOwner: { threadId: currentThreadId(), token: streamToken } });
