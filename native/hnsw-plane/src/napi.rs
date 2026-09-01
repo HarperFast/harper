@@ -92,7 +92,7 @@ impl Task for PredicateSearchTask {
             dispatch: Box::new(move |ids: Vec<u32>| {
                 let tx = tx.clone();
                 let ids_echo = ids.clone();
-                tsfn.call_with_return_value(
+                let status = tsfn.call_with_return_value(
                     ids,
                     ThreadsafeFunctionCallMode::NonBlocking,
                     move |ret: Uint8Array| {
@@ -102,6 +102,10 @@ impl Task for PredicateSearchTask {
                         Ok(())
                     },
                 );
+                // a closing or saturated queue drops the callback without invoking it, so this
+                // batch will never answer; reporting it lets the drain finish on the batches
+                // that will, instead of holding teardown for the full deadline
+                status == Status::Ok
             }),
             rx,
         };

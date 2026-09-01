@@ -1779,7 +1779,10 @@ export class HierarchicalNavigableSmallWorld {
 					filterEvaluations: 0,
 				}
 			: undefined;
-		if (this.planeEligible) {
+		// The plane traverses the index's own metric (cosine — the eligibility requirement), so a
+		// query overriding `distance` has to take the JS path: rescoreResults only corrects the
+		// reported distances of whatever candidates came back, not which candidates the beam kept.
+		if (this.planeEligible && distanceFunction === this.distance) {
 			const plane = this.getPlane(target.length, false);
 			// a query whose dimensionality differs from the graph's takes the JS path (which
 			// tolerates the mismatch) rather than erroring or disabling the healthy plane

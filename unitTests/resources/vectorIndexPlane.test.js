@@ -132,6 +132,21 @@ describe('HNSW native plane dual-write', function () {
 		}
 	});
 
+	// The plane only ever traverses the index's own metric, so a query asking for a different one
+	// has to fall back: rescoring fixes the reported distances of the candidates it is handed, not
+	// which candidates a cosine beam kept.
+	it('a query overriding the distance metric takes the JS path rather than a cosine traversal', () => {
+		const condition = { target: vectors.get(3), comparator: 'sort', distance: 'euclidean', ef: EF };
+		const flagged = customIndex().search(condition, { transaction: undefined });
+		assert.equal(typeof flagged?.then, 'undefined', 'a euclidean query must not be answered by the cosine plane');
+		const jsEntries = jsReference().search(condition, { transaction: undefined });
+		assert.deepEqual(
+			flagged.map((entry) => entry.key),
+			jsEntries.map((entry) => entry.key),
+			'an overridden metric must return exactly what the JS traversal returns'
+		);
+	});
+
 	it('parity holds after update-in-place and delete (including neighbor repair)', async () => {
 		for (let i = 0; i < 100; i++) {
 			const vector = makeVector(i + 5000);

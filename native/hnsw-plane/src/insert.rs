@@ -93,6 +93,24 @@ fn prune_with_coverage(graph: &Graph, base: u32, list: &mut Vec<u32>, cap: usize
     *list = scored.into_iter().map(|(cand, _)| cand).collect();
 }
 
+/// The contended fallback's merge: add `new_id` under the slot lock, evicting the farthest
+/// existing neighbor once the list is at `cap`. Pushing and then truncating to `cap` instead
+/// drops the tail — which at exactly `cap` is `new_id` itself, silently losing the reverse edge
+/// that keeps the newly inserted node reachable from `nid`. Neighbor lists are written in
+/// ascending distance (both the insert path and `prune_with_coverage` emit them sorted), so the
+/// tail is the farthest neighbor and the cheapest one to give up under the lock.
+fn merge_neighbor_capped(graph: &Graph, nid: u32, new_id: u32, cap: usize) {
+    let _ = graph.update_neighbors(nid, |list| {
+        if list.contains(&new_id) {
+            return;
+        }
+        if list.len() >= cap {
+            list.truncate(cap.saturating_sub(1));
+        }
+        list.push(new_id);
+    });
+}
+
 /// Add `new_id` to `nid`'s adjacency at `level`, coverage-pruning to `cap` when over. The
 /// prune's distance computations (which can major-fault on a cold mapping) run OUTSIDE the
 /// slot lock: the list is snapshotted, pruned, and applied with a compare-and-set; after a
@@ -117,12 +135,7 @@ fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize)
             }
         }
         // contended twice: merge cheaply under the lock (bounded critical section)
-        let _ = graph.update_neighbors(nid, |list| {
-            if !list.contains(&new_id) {
-                list.push(new_id);
-                list.truncate(cap);
-            }
-        });
+        merge_neighbor_capped(graph, nid, new_id, cap);
     } else {
         let _ = graph.update_upper_level(nid, level, |list| {
             if list.contains(&new_id) {
@@ -312,4 +325,43 @@ fn scratch_begin(graph: &Graph, scratch: &mut SearchScratch) {
     // search_layer assumes a fresh epoch per sweep; SearchScratch::begin is crate-private
     // via this helper to keep the public surface small.
     scratch.begin_public(graph.file.id_high_water());
+}
+
+#[cfg(test)]
+mod reverse_edge_tests {
+    use super::*;
+    use crate::PlaneFile;
+
+    /// The contended fallback must still add the edge when the neighbor list is already full.
+    /// A push followed by `truncate(cap)` drops the tail, and at exactly `cap` the tail is the
+    /// id being added — so the reverse edge that keeps a newly inserted node reachable from
+    /// `nid` is lost precisely in the contended-and-full case the fallback exists to serve.
+    #[test]
+    fn a_contended_merge_into_a_full_neighbor_list_keeps_the_edge_it_adds() {
+        let dims = 8;
+        let cap = 8usize;
+        let path = std::env::temp_dir().join(format!("hnsw-revedge-{}.hnsw", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let graph = Graph::new(PlaneFile::create(&path, dims, cap, 4_096).expect("create"));
+
+        let vector = vec![0i8; dims];
+        let full: Vec<u32> = (1..=cap as u32).collect();
+        graph.write_node_raw(0, 0, &vector, 1.0, 1.0, &full, &[]).expect("seed the full list");
+        for &nid in &full {
+            graph.write_node_raw(nid, 0, &vector, 1.0, 1.0, &[], &[]).expect("seed a neighbor");
+        }
+        let newcomer = cap as u32 + 1;
+        graph.write_node_raw(newcomer, 0, &vector, 1.0, 1.0, &[], &[]).expect("seed the newcomer");
+
+        merge_neighbor_capped(&graph, 0, newcomer, cap);
+
+        let mut neighbors: Vec<u32> = Vec::new();
+        graph.neighbors_into(0, &mut neighbors).expect("node 0 is live");
+        assert!(
+            neighbors.contains(&newcomer),
+            "the contended merge dropped the edge it was adding: {neighbors:?}"
+        );
+        assert_eq!(neighbors.len(), cap, "the merge must stay within the layer-0 cap");
+        let _ = std::fs::remove_file(&path);
+    }
 }

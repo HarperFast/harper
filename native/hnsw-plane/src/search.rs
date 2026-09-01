@@ -303,8 +303,11 @@ pub fn search_filtered(
 /// steer result admission only; routing uses pure distance order, bounded by the visit
 /// budget, so a slow or saturated JS loop degrades speculative overshoot, not correctness.
 pub struct PredicatePipe {
-    /// Sends one batch of ids for evaluation. Must not block.
-    pub dispatch: Box<dyn FnMut(Vec<u32>) + Send>,
+    /// Sends one batch of ids for evaluation. Must not block. Returns whether the batch was
+    /// actually handed off: a refused enqueue never produces a verdict, so counting it as
+    /// outstanding would make the tail drain wait out its whole deadline for an answer that
+    /// cannot arrive.
+    pub dispatch: Box<dyn FnMut(Vec<u32>) -> bool + Send>,
     /// Receives (ids, verdicts) pairs; verdicts[i] != 0 admits ids[i].
     pub rx: std::sync::mpsc::Receiver<(Vec<u32>, Vec<u8>)>,
 }
@@ -405,8 +408,7 @@ pub fn search_predicated(
                     candidates.push(Candidate { distance: d, id: nid });
                     speculative.push((nid, d));
                     batch.push(nid);
-                    if batch.len() >= PREDICATE_BATCH {
-                        (pipe.dispatch)(std::mem::take(&mut batch));
+                    if batch.len() >= PREDICATE_BATCH && (pipe.dispatch)(std::mem::take(&mut batch)) {
                         outstanding += 1;
                     }
                 }
@@ -416,8 +418,7 @@ pub fn search_predicated(
     scratch.neighbors = nbuf;
 
     // flush the tail batch and block-drain what's still in flight
-    if !batch.is_empty() {
-        (pipe.dispatch)(std::mem::take(&mut batch));
+    if !batch.is_empty() && (pipe.dispatch)(std::mem::take(&mut batch)) {
         outstanding += 1;
     }
     let deadline = std::time::Instant::now() + DRAIN_TIMEOUT;
@@ -473,9 +474,7 @@ mod predicate_tests {
         });
 
         let mut pipe = PredicatePipe {
-            dispatch: Box::new(move |ids| {
-                let _ = req_tx.send(ids);
-            }),
+            dispatch: Box::new(move |ids| req_tx.send(ids).is_ok()),
             rx: res_rx,
         };
         let q: Vec<f32> = (0..dims).map(|d| ((41.0f32 * 0.31 + d as f32) * 0.7).sin()).collect();
@@ -525,9 +524,7 @@ mod predicate_tests {
         });
 
         let mut pipe = PredicatePipe {
-            dispatch: Box::new(move |ids| {
-                let _ = req_tx.send(ids);
-            }),
+            dispatch: Box::new(move |ids| req_tx.send(ids).is_ok()),
             rx: res_rx,
         };
         let q: Vec<f32> = (0..dims).map(|d| ((41.0f32 * 0.31 + d as f32) * 0.7).sin()).collect();
@@ -552,6 +549,41 @@ mod predicate_tests {
         );
         drop(pipe);
         worker.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A refused enqueue never answers. Counting it outstanding makes the tail drain wait out
+    /// its whole `DRAIN_TIMEOUT` for a verdict that cannot arrive — which is exactly the state
+    /// a closing environment puts every in-flight filtered query in, so teardown pays five
+    /// seconds per query instead of returning on the batches that did land.
+    #[test]
+    fn a_refused_predicate_enqueue_does_not_hold_the_drain() {
+        let dims = 32;
+        let path = std::env::temp_dir().join(format!("hnsw-refused-{}.hnsw", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let graph = Graph::new(PlaneFile::create(&path, dims, 16, 4_096).expect("create"));
+        let params = InsertParams::default();
+        let mut scratch = SearchScratch::new();
+        for i in 0..1_000u32 {
+            let v: Vec<f32> = (0..dims).map(|d| ((i as f32 * 0.31 + d as f32) * 0.7).sin()).collect();
+            insert(&graph, &v, &params, &mut scratch).unwrap();
+        }
+
+        // the sender stays alive for the whole search, so a drain that believes a batch is
+        // outstanding blocks on the deadline rather than on a disconnected channel
+        let (tx, rx) = std::sync::mpsc::channel::<(Vec<u32>, Vec<u8>)>();
+        let mut pipe = PredicatePipe { dispatch: Box::new(|_ids| false), rx };
+        let q: Vec<f32> = (0..dims).map(|d| ((41.0f32 * 0.31 + d as f32) * 0.7).sin()).collect();
+        let started = std::time::Instant::now();
+        let (hits, _) =
+            search_predicated(&graph, &Query::new(q), 10, 64, &mut pipe, 64 * 24, &mut scratch);
+        let elapsed = started.elapsed();
+        drop(tx);
+        assert!(hits.is_empty(), "no verdict can arrive for a refused batch, so nothing may be admitted");
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "the search waited {elapsed:?} on batches that were never enqueued (deadline is {DRAIN_TIMEOUT:?})"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }
