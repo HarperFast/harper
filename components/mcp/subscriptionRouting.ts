@@ -31,6 +31,20 @@ interface Response {
 	result: SubscriptionRouteResult;
 }
 
+function isCommand(value: unknown): value is Command {
+	if (!value || typeof value !== 'object') return false;
+	const command = value as Partial<Command>;
+	return (
+		typeof command.requestId === 'string' &&
+		typeof command.originator === 'number' &&
+		typeof command.sessionId === 'string' &&
+		typeof command.streamToken === 'string' &&
+		(command.operation === 'subscribe' || command.operation === 'unsubscribe') &&
+		typeof command.uri === 'string' &&
+		(command.user === undefined || (command.user !== null && typeof command.user === 'object'))
+	);
+}
+
 interface ItcBridge {
 	available?: boolean;
 	sendToThread(threadId: number, event: { type: string; message: unknown }): boolean;
@@ -101,7 +115,11 @@ function ensureWired(): void {
 	const itc = bridge();
 	if (itc.available === false) return;
 	itc.onMessageByType(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND, (event) => {
-		const command = event.message as Command;
+		const command = event.message;
+		if (!isCommand(command)) {
+			harperLogger.warn('Ignoring malformed MCP subscription command');
+			return;
+		}
 		void handleCommand(command).catch((error) => {
 			harperLogger.error('MCP subscription command failed', error);
 			sendResponse(command, 'internal-error');
