@@ -104,6 +104,8 @@ export class RootConfigWatcher extends EventEmitter {
 	// failed; a later watcher event still delivers the real config as a `change`.
 	#stageBootFallback() {
 		if (this.#readyEmitted) return;
+		this.#config = undefined;
+		this.#configLoaded = false;
 		this.#readyStaged = true;
 		this.#emitReady();
 	}

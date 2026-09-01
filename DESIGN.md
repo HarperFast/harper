@@ -1037,7 +1037,10 @@ that read the file cleanly serves the operator's config.
 Arming is a terminal outcome of its own: chokidar reports a scan that found no file by emitting
 `ready` and nothing else, so `RootConfigWatcher` always re-reads when the gate opens rather than
 publishing what an earlier read staged — a missing config file takes the ladder and settles on the
-defaults instead of holding the barrier open. `close()` settles it as well.
+defaults instead of holding the barrier open. That fallback must also discard the staged value:
+the arming re-read is authoritative precisely because a write in the unarmed window may have
+superseded it, including by replacing the file with an unusable or missing one. `close()` settles
+the barrier as well.
 
 What settles the barrier is not the same as what the settled value may be _used_ as. A read that
 carried no config settles it carrying nothing — not `{}`, which is a configuration that a consumer
