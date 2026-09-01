@@ -105,8 +105,13 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 
 	describe('a schema corrected after a failed load', () => {
 		let directory;
+		let openScope;
 
-		afterEach(() => {
+		// Closed here rather than at the end of the test so a failed assertion cannot leave a chokidar
+		// watcher running over the directory this hook is about to delete.
+		afterEach(async () => {
+			await openScope?.close();
+			openScope = undefined;
 			resetRestartNeeded();
 			if (directory) rmSync(directory, { recursive: true, force: true });
 			directory = undefined;
@@ -127,6 +132,7 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 				configFilePath,
 				new ApplicationScope('test', new Resources(), {})
 			);
+			openScope = scope;
 			await scope.ready;
 
 			// Raced, not awaited: mocha runs with no test timeout, so a promise that never settles — which
@@ -142,8 +148,12 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 				}),
 			]);
 			clearTimeout(watchdog);
-			assert.equal(outcome, 'rejected', 'the plugin must settle on the schema failure, not wait out the watchdog');
-			assert.equal(restartNeeded(), false, 'the failing load itself must not request a restart');
+			assert.strictEqual(
+				outcome,
+				'rejected',
+				'the plugin must settle on the schema failure, not wait out the watchdog'
+			);
+			assert.strictEqual(restartNeeded(), false, 'the failing load itself must not request a restart');
 
 			// The component is already published as failed, so reprocessing the corrected schema in place
 			// would leave that state behind.
@@ -152,8 +162,6 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 				timeout: 5_000,
 				message: 'correcting the schema after a failed load must request a restart',
 			});
-
-			await scope.close();
 		});
 	});
 

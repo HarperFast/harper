@@ -897,6 +897,18 @@ describe('Scope', () => {
 	});
 
 	describe('initial load failure (#1917)', () => {
+		let openScopes;
+
+		beforeEach(() => {
+			openScopes = [];
+		});
+
+		// Closed here rather than at the end of each test so a failed assertion cannot leave a chokidar
+		// watcher running over the directory afterEach is about to delete.
+		afterEach(async () => {
+			await Promise.allSettled(openScopes.map((scope) => scope.close()));
+		});
+
 		const scopeForFiles = async (files) => {
 			writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { files } }));
 			const scope = new Scope(
@@ -906,6 +918,7 @@ describe('Scope', () => {
 				this.configFilePath,
 				new ApplicationScope('test', this.resources, this.server)
 			);
+			openScopes.push(scope);
 			await scope.ready;
 			return scope;
 		};
@@ -923,8 +936,6 @@ describe('Scope', () => {
 			// The settled load is dropped from the pending set, so a later wait has nothing to await.
 			await new Promise((resolve) => setImmediate(resolve));
 			await scope.waitForInitialLoads();
-
-			await scope.close();
 		});
 
 		it('raises no unhandled rejection when the initial load fails', async () => {
@@ -945,7 +956,6 @@ describe('Scope', () => {
 				process.off('unhandledRejection', onUnhandled);
 			}
 			assert.deepEqual(unhandled, [], 'a failed initial load must not leak an unhandled rejection');
-			await scope.close();
 		});
 
 		it('reports a handler rejection after the initial load without leaking an unhandled rejection', async () => {
@@ -967,8 +977,6 @@ describe('Scope', () => {
 				process.off('unhandledRejection', onUnhandled);
 			}
 			assert.deepEqual(unhandled, [], 'a post-initial-load handler rejection must not leak');
-
-			await scope.close();
 		});
 
 		it('drains sibling initial-load operations before surfacing the failure', async () => {
@@ -1000,7 +1008,7 @@ describe('Scope', () => {
 			// microtasks of `ready`, so turns of the event loop separate the two without a wall clock.
 			await entryHandler.ready;
 			for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
-			assert.equal(
+			assert.strictEqual(
 				settled,
 				false,
 				'the load must not report the failure while a sibling operation still holds the load lock'
@@ -1008,9 +1016,7 @@ describe('Scope', () => {
 
 			releaseSlow();
 			await assert.rejects(initialLoad, /broken\.js is invalid/);
-			assert.equal(slowFinished, true, 'the sibling operation must have run to completion');
-
-			await scope.close();
+			assert.strictEqual(slowFinished, true, 'the sibling operation must have run to completion');
 		});
 	});
 });
