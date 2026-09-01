@@ -1,8 +1,8 @@
-// Covers unitTests/windowsGateChecks.mjs. Each case below fails against the calculation it
-// replaced: the summary regex was unanchored and first-match, so a "N passing" line a test
-// printed itself made a group that never reported an epilogue green; and the timeout
-// override was unguarded, so an empty, unparseable, negative or sub-millisecond value
-// became setTimeout's 1ms clamp and SIGKILLed every group at spawn.
+// Covers unitTests/windowsGateChecks.mjs. Most of these cases fail against the calculations
+// they replaced: the summary regex was unanchored and first-match, so a "N passing" line a
+// test printed itself made a group that never reported an epilogue green; and the timeout
+// override was unguarded, so an empty, unparseable, negative or sub-millisecond value became
+// setTimeout's 1ms clamp and SIGKILLed every group at spawn.
 import assert from 'node:assert';
 import { parsePassing, resolveTimeout } from '../windowsGateChecks.mjs';
 

@@ -1,8 +1,8 @@
 // Split out of unitTests/windowsGate.mjs, which runs the gate on import and so cannot be
 // loaded by a test.
 
-// Anchored and last-match, so a line a test printed itself cannot stand in for the epilogue
-// of a group that terminated before printing one. The anchor holds only against uncoloured
+// Anchored and last-match, so an inline mention of "N passing" does not count and a real
+// epilogue always wins over an earlier line. The anchor holds only against uncoloured
 // output, which is why the gate runs mocha with --no-color.
 const SUMMARY = /^\s*(\d+) passing\b/gm;
 
