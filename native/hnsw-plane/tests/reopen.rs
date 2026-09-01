@@ -584,6 +584,47 @@ fn search_repairs_an_entry_point_in_a_churned_graph_whose_low_ids_are_all_dead()
     let _ = std::fs::remove_file(&path);
 }
 
+/// With a stride above 1 a fixed start probes one residue class forever, so a live graph lying
+/// entirely between its probes would never be found. The rotation makes `stride` consecutive
+/// repairs cover every id; here the sole survivor is deliberately in the residue the unrotated
+/// walk skips.
+#[test]
+fn a_repair_probe_rotates_so_no_live_node_stays_between_its_samples() {
+    let dims = 32;
+    let path = tmp("entryhealrotate");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 4_096).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..2_100 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    let hw = graph.file.id_high_water() as u32;
+    let stride = (hw / 1_024).max(1); // REPAIR_PROBE_LIMIT
+    assert!(stride > 1, "precondition: a stride the rotation actually has to cover, got {stride}");
+    // an unrotated walk starts at hw-1 and steps by `stride`, so it only ever sees that residue;
+    // keep exactly one node alive in a different one
+    let survivor = (0..hw).rev().find(|id| (hw - 1 - id) % stride != 0).expect("a skipped residue");
+    for id in 0..hw {
+        if id != survivor {
+            let _ = graph.clear_node(id);
+        }
+    }
+    assert!(graph.read_node(survivor).is_some(), "precondition: the survivor is live");
+
+    let mut found = false;
+    for _ in 0..stride {
+        let (hits, _) = search(&graph, &Query::new(vector_for(survivor, dims)), 5, 64, &mut scratch);
+        if !hits.is_empty() {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "a rotating probe must reach every residue within `stride` repairs");
+    assert_eq!(graph.file.entry_point().0, survivor, "the only live node must be the repaired entry");
+    let _ = std::fs::remove_file(&path);
+}
+
 /// A repair publishes with a strict CAS on the entry it observed dead. A first insert that
 /// claims the header in between owns the graph, and a higher-level repair candidate must lose to
 /// it — installing the candidate would leave that insert's node with nothing pointing at it.

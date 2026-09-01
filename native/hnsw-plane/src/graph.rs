@@ -27,6 +27,9 @@ unsafe fn vread<T: Copy>(p: *const T) -> T {
     p.read_volatile()
 }
 
+/// Rotates `probe_for_entry`'s starting offset so consecutive repairs sample different ids.
+static PROBE_ROTATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 pub struct Graph {
     pub file: PlaneFile,
 }
@@ -589,26 +592,31 @@ impl Graph {
     }
 
     /// Highest-level live node among at most `limit` probes, skipping `skip`. The read-side
-    /// repair's last resort: `reelect_entry_point_replacing` scans to the high-water mark, which
-    /// a search on the shared pool thread cannot afford.
+    /// repair's last resort, bounded because `reelect_entry_point_replacing`'s scan runs to the
+    /// high-water mark and a search on the shared pool thread cannot afford it.
     ///
-    /// It walks DOWN from the newest id with a stride that spans the whole range, so it makes no
-    /// assumption about where the live nodes are. Both directions matter: Harper allocates node
-    /// ids monotonically and never reuses them, so a churned table has its whole low prefix
-    /// tombstoned and only the newest ids are live — while the crate's own freelist does reuse
-    /// ids, which keeps live nodes low. Striding covers both, and a graph with any appreciable
-    /// live fraction is found in the first few probes either way.
+    /// Walks down from the newest id with a stride spanning the whole range, so it assumes
+    /// nothing about where the live nodes sit: Harper allocates ids monotonically and never
+    /// reuses them, so a churned table's low prefix is all tombstones, while the crate's own
+    /// freelist reuses ids and keeps live nodes low.
     ///
-    /// Best-level rather than first-live, because a level-0 entry degrades every later search to
-    /// a layer-0-only beam.
+    /// The start rotates. A fixed start would probe one residue class of the stride forever, so a
+    /// live graph lying entirely between its probes would stay invisible permanently rather than
+    /// for one search — the difference between a bounded miss and a silent-empty-results mode.
+    /// Rotating means `stride` consecutive repairs cover every id, while each stays capped at
+    /// `limit`.
+    ///
+    /// Best-level rather than first-live: a level-0 entry degrades every later search to a
+    /// layer-0-only beam.
     pub(crate) fn probe_for_entry(&self, limit: u32, skip: u32) -> Option<(u32, u8)> {
         let hw = self.file.id_high_water().min(self.file.max_nodes) as u32;
         if hw == 0 || limit == 0 {
             return None;
         }
         let stride = (hw / limit).max(1);
+        let offset = PROBE_ROTATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % stride;
         let mut best: Option<(u32, u8)> = None;
-        let mut cand = hw - 1;
+        let mut cand = hw - 1 - offset;
         for _ in 0..limit {
             if cand != skip {
                 if let Some(level) = self.node_level(cand) {
