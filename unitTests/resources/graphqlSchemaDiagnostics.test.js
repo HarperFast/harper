@@ -1,8 +1,17 @@
 const assert = require('node:assert');
+const { join, basename } = require('node:path');
+const { tmpdir } = require('node:os');
+const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+const { stringify } = require('yaml');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor.js');
 const logger = require('#src/utility/logging/harper_logger');
 const { setMainIsWorker } = require('#src/server/threads/manageThreads');
-const { loadGQLSchema } = require('#src/resources/graphql');
+const { loadGQLSchema, handleApplication } = require('#src/resources/graphql');
+const { Scope } = require('#src/components/Scope');
+const { ApplicationScope } = require('#src/components/ApplicationScope');
+const { Resources } = require('#src/resources/Resources');
+const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 
 describe('graphqlSchema load diagnostics (#1917)', () => {
 	let warnings;
@@ -92,6 +101,56 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 		const warned = warnings.find((line) => line.includes('two attributes as a primary key'));
 		assert.ok(warned, `expected a duplicate primary key warning, got: ${JSON.stringify(warnings)}`);
 		assert.match(warned, /line \d+, column \d+/, 'the warning must locate the second directive');
+	});
+
+	describe('a schema corrected after a failed load', () => {
+		let directory;
+
+		afterEach(() => {
+			resetRestartNeeded();
+			if (directory) rmSync(directory, { recursive: true, force: true });
+			directory = undefined;
+		});
+
+		it('settles the plugin on the failure and then requests a restart', async () => {
+			directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.graphql-'));
+			const schemaPath = join(directory, 'schema.graphql');
+			writeFileSync(schemaPath, 'type Recovered @table {\n\tid: ID @primaryKey\n');
+			const configFilePath = join(directory, 'config.yaml');
+			writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'schema.graphql' } }));
+			resetRestartNeeded();
+
+			const scope = new Scope(
+				basename(directory),
+				'graphqlSchema',
+				directory,
+				configFilePath,
+				new ApplicationScope('test', new Resources(), {})
+			);
+			await scope.ready;
+
+			// Raced rather than awaited: before the fix this promise never settled at all, and the
+			// component only failed when the loader's watchdog fired.
+			const outcome = await Promise.race([
+				handleApplication(scope).then(
+					() => 'resolved',
+					() => 'rejected'
+				),
+				new Promise((resolve) => setTimeout(() => resolve('pending'), 5_000)),
+			]);
+			assert.equal(outcome, 'rejected', 'the plugin must settle on the schema failure, not wait out the watchdog');
+			assert.equal(restartNeeded(), false, 'the failing load itself must not request a restart');
+
+			// The component is already published as failed by now, so reprocessing the corrected schema
+			// in place would leave that state behind; the restart is the honest recovery path.
+			writeFileSync(schemaPath, 'type Recovered @table {\n\tid: ID @primaryKey\n}\n');
+			await waitFor(() => restartNeeded(), {
+				timeout: 5_000,
+				message: 'correcting the schema after a failed load must request a restart',
+			});
+
+			await scope.close();
+		});
 	});
 
 	it('routes the unknown-type report through the logger', async () => {

@@ -973,9 +973,10 @@ describe('Scope', () => {
 			initialLoad.then(markSettled, markSettled);
 
 			// Draining only begins once the initial scan reports ready; before that a fail-fast
-			// implementation and a draining one are indistinguishable.
+			// implementation and a draining one are indistinguishable. A fail-fast drain settles within
+			// microtasks of `ready`, so turns of the event loop separate the two without a wall clock.
 			await entryHandler.ready;
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
 			assert.equal(
 				settled,
 				false,

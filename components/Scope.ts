@@ -463,10 +463,9 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			targetEntryHandler: EntryHandler,
 			entryEventHandler: onEntryEventHandler
 		): onEntryEventHandler => {
-			// Operations the initial scan started, RETAINED until the drain below reports them. The
-			// previous set discarded each operation as it settled, so anything that finished before
-			// `ready` was invisible to the drain — a handler that rejected that early reported nothing
-			// at all and the component loaded as if its entries had been processed (#1917).
+			// Operations the initial scan started, retained until the drain below reports them: a set that
+			// dropped each one as it settled made anything finishing before `ready` invisible, so a handler
+			// rejecting that early reported nothing at all (#1917).
 			let initialOperations: Promise<void>[] | null = [];
 
 			const wrapped: onEntryEventHandler = (entry) => {
@@ -477,8 +476,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 						this.#handleError(error);
 						throw error;
 					});
-					// Nothing awaits `tracked` until the drain, so a handler that rejects before `ready`
-					// would otherwise spend that window as an unhandled rejection.
+					// Nothing awaits `tracked` until the drain, so an early rejection would otherwise spend
+					// that window unhandled.
 					tracked.catch(() => {});
 					initialOperations?.push(tracked);
 				}
@@ -488,11 +487,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			const initialLoadPromise = once(targetEntryHandler, 'ready').then(async () => {
 				const operations = initialOperations ?? [];
 				initialOperations = null;
-				// Drained, not `Promise.all`'s fail-fast: the component loader holds the plugin-wide
-				// load lock until this settles, so surfacing the first failure while a sibling operation
-				// is still running would let the next application's load of the same plugin interleave
-				// with it. The loader's watchdog can still cut this wait short — the alternative to that
-				// is a lock wedged by an operation that never settles.
+				// Drained, not `Promise.all`'s fail-fast: the loader holds the plugin-wide load lock until
+				// this settles, so reporting the first failure while a sibling still runs would let the
+				// next application's load of the same plugin interleave with it. The loader's watchdog can
+				// still cut the drain short, which is what bounds a sibling that never settles.
 				for (const result of await Promise.allSettled(operations)) {
 					if (result.status === 'rejected') throw result.reason;
 				}
@@ -501,8 +499,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 			// Track this promise so the component loader can await it
 			this.#pendingInitialLoads.add(initialLoadPromise);
-			// Two-branch cleanup rather than `.finally`: a rejected initial load is routine (an invalid
-			// schema), and `.finally`'s derivative would reject with nobody left to handle it.
+			// Two-branch cleanup, not `.finally`: its derivative would reject with nobody left to handle it.
 			const forgetInitialLoad = () => {
 				this.#pendingInitialLoads.delete(initialLoadPromise);
 			};
