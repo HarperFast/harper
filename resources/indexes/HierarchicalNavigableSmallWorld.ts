@@ -5,7 +5,13 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
 import { SKIP } from '@harperfast/extended-iterable';
-import { getPlaneBinding, planeFilePathFor, planeStalePathFor, PLANE_NO_ID, type HnswPlane } from './hnswPlaneBinding.ts';
+import {
+	getPlaneBinding,
+	planeFilePathFor,
+	planeStalePathFor,
+	PLANE_NO_ID,
+	type HnswPlane,
+} from './hnswPlaneBinding.ts';
 
 const logger = loggerWithTag('HNSW');
 
@@ -558,7 +564,11 @@ export class HierarchicalNavigableSmallWorld {
 		for (;;) {
 			let inChunk = 0;
 			let lastKey = -1;
-			for (const { key, value } of this.indexStore.getRange({ start: nextStart, end: Infinity, limit: PLANE_BUILD_CHUNK })) {
+			for (const { key, value } of this.indexStore.getRange({
+				start: nextStart,
+				end: Infinity,
+				limit: PLANE_BUILD_CHUNK,
+			})) {
 				inChunk++;
 				if (typeof key !== 'number') continue;
 				lastKey = key;
