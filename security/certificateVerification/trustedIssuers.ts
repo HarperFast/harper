@@ -11,24 +11,28 @@
 
 import { X509Certificate, createHash } from 'node:crypto';
 
-// the three PEM labels tls.createSecureContext({ ca }) and X509Certificate accept
 const PEM_CERTIFICATE_PATTERN =
 	/-----BEGIN (?:TRUSTED |X509 )?CERTIFICATE-----[\s\S]*?-----END (?:TRUSTED |X509 )?CERTIFICATE-----/g;
 const MAX_RESOLVED_LEAVES = 10_000;
 
 let trustedAuthorities: X509Certificate[] = [];
+let publishedAuthorityPems = '';
 let resolvedIssuers = new Map<string, Buffer | null>();
 
 /**
  * Publish the current trusted authority set (PEM strings, each possibly a bundle of several
- * certificates). Replaces the previous generation atomically and drops its resolution cache.
- * Unparseable certificates are skipped so one bad record cannot disable resolution for the rest;
- * this never throws, because it runs inside the TLS selector's publication step.
+ * certificates). Replaces the previous generation atomically and drops its resolution cache,
+ * unless the set is unchanged. Unparseable certificates are skipped so one bad record cannot
+ * disable resolution for the rest; this never throws, because it runs inside the TLS selector's
+ * publication step.
  */
 export function publishTrustedAuthorities(authorityPems: Iterable<unknown>): void {
+	const pems = Array.from(authorityPems).filter((pem): pem is string => typeof pem === 'string');
+	const joined = pems.join('\n');
+	if (joined === publishedAuthorityPems) return;
+	publishedAuthorityPems = joined;
 	const parsed: X509Certificate[] = [];
-	for (const pem of authorityPems) {
-		if (typeof pem !== 'string') continue;
+	for (const pem of pems) {
 		for (const block of pem.match(PEM_CERTIFICATE_PATTERN) ?? []) {
 			try {
 				parsed.push(new X509Certificate(block));
@@ -41,8 +45,8 @@ export function publishTrustedAuthorities(authorityPems: Iterable<unknown>): voi
 
 /**
  * Find the trusted authority that issued `leafDer`: subject/AKI match plus a signature check, so a
- * same-named authority with a different key never counts. Returns the issuer's DER, or undefined.
- * Never throws; a candidate that fails to parse or verify is simply not the issuer.
+ * same-named authority with a different key never counts, and a certificate is never its own
+ * issuer. Returns the issuer's DER, or undefined.
  */
 export function resolveTrustedIssuer(leafDer: Buffer, fingerprint256?: string): Buffer | undefined {
 	if (trustedAuthorities.length === 0) return undefined;
@@ -55,7 +59,11 @@ export function resolveTrustedIssuer(leafDer: Buffer, fingerprint256?: string): 
 		const leaf = new X509Certificate(leafDer);
 		for (const authority of trustedAuthorities) {
 			try {
-				if (leaf.checkIssued(authority) && leaf.verify(authority.publicKey)) {
+				if (
+					authority.fingerprint256 !== leaf.fingerprint256 &&
+					leaf.checkIssued(authority) &&
+					leaf.verify(authority.publicKey)
+				) {
 					issuer = authority.raw;
 					break;
 				}

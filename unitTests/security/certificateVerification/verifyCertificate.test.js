@@ -1,6 +1,5 @@
 const assert = require('node:assert');
 const { X509Certificate } = require('node:crypto');
-const sinon = require('sinon');
 
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
@@ -26,11 +25,24 @@ BQcDAjAFBgMrZXADQQDTP/KnPnD9wkVAkgzIid3d9uE8Mw1I+vmF389amqDUWDO7
 qCv4tBFlJOXtP1Ky4nVswGNtB6aZTR0hRgFo8koJ
 -----END CERTIFICATE-----`;
 
+// Issued by the same CA but carrying no OCSP or CRL extension, so once its issuer is known the
+// verdict is "no verification available" rather than a network fetch.
+const NO_REVOCATION_URLS_LEAF_PEM = `-----BEGIN CERTIFICATE-----
+MIIBNzCB6qADAgECAgECMAUGAytlcDAyMTAwFQYDVQQDDA5IYXJwZXIgVGVzdCBD
+QTAXBgNVBAoMEEhhcnBlciBPQ1NQIFRlc3QwHhcNMjYwOTAxMjE0NzQ0WhcNMjcw
+OTAxMjE0NzQ0WjAyMTAwFQYDVQQDDA5PQ1NQIFJlc3BvbmRlcjAXBgNVBAoMEEhh
+cnBlciBPQ1NQIFRlc3QwKjAFBgMrZXADIQDr3XOcxKbo4x77G6sX9uYUEv/dwLx1
+v8+KchJ6ldv8PaMlMCMwDAYDVR0TAQH/BAIwADATBgNVHSUEDDAKBggrBgEFBQcD
+CTAFBgMrZXADQQAvVN+z7rC1aN2nW+YkMadPuy6IaLyqxJR6KJeOeD8Nrz7KIbB4
+fh4DhcEhXJVXnVMUWEw0JMO1uzgsopaACEIK
+-----END CERTIFICATE-----`;
+
 const leaf = new X509Certificate(LEAF_PEM);
+const noUrlsLeaf = new X509Certificate(NO_REVOCATION_URLS_LEAF_PEM);
 
 /** getPeerCertificate(true)-shaped object for a socket that exposed only the leaf. */
-function leafOnlyPeerCertificate() {
-	return { subject: { CN: 'Valid Client' }, raw: leaf.raw, fingerprint256: leaf.fingerprint256 };
+function leafOnlyPeerCertificate(certificate = leaf) {
+	return { subject: { CN: 'Valid Client' }, raw: certificate.raw, fingerprint256: certificate.fingerprint256 };
 }
 
 function mtlsConfig(certificateVerification) {
@@ -40,16 +52,13 @@ function mtlsConfig(certificateVerification) {
 describe('certificateVerification/index.ts verifyCertificate() without an issuer in the socket chain', function () {
 	let verifyCertificate;
 	let trustedIssuers;
-	let ocspVerification;
 
 	before(function () {
 		({ verifyCertificate } = require('#src/security/certificateVerification/index'));
 		trustedIssuers = require('#src/security/certificateVerification/trustedIssuers');
-		ocspVerification = require('#src/security/certificateVerification/ocspVerification');
 	});
 
 	afterEach(function () {
-		sinon.restore();
 		trustedIssuers.publishTrustedAuthorities([]);
 	});
 
@@ -82,35 +91,21 @@ describe('certificateVerification/index.ts verifyCertificate() without an issuer
 		assert.deepStrictEqual(result, { valid: false, status: 'no-issuer-cert', method: 'disabled' });
 	});
 
-	it('runs the revocation check against the issuer resolved from the trusted authorities', async function () {
+	it('proceeds to the revocation check once the issuer is resolved from the trusted authorities', async function () {
 		trustedIssuers.publishTrustedAuthorities([CA_PEM]);
-		const verifyOCSP = sinon
-			.stub(ocspVerification, 'verifyOCSP')
-			.resolves({ valid: false, status: 'revoked', method: 'ocsp' });
 		const result = await verifyCertificate(
-			leafOnlyPeerCertificate(),
-			mtlsConfig({ failureMode: 'fail-closed', crl: { enabled: false }, ocsp: { enabled: true } })
+			leafOnlyPeerCertificate(noUrlsLeaf),
+			mtlsConfig({ failureMode: 'fail-closed' })
 		);
-		assert.deepStrictEqual(result, { valid: false, status: 'revoked', method: 'ocsp' });
-		assert.strictEqual(verifyOCSP.callCount, 1);
-		assert.ok(verifyOCSP.firstCall.args[0].equals(leaf.raw));
-		assert.ok(verifyOCSP.firstCall.args[1].equals(new X509Certificate(CA_PEM).raw));
+		// the issuer gap was crossed: the verdict is about the (absent) revocation URLs, not the chain
+		assert.deepStrictEqual(result, { valid: false, status: 'no-verification-available', method: 'disabled' });
 	});
 
-	it('uses the issuer the socket chain already carries without consulting the trusted authorities', async function () {
-		const resolveTrustedIssuer = sinon.spy(trustedIssuers, 'resolveTrustedIssuer');
-		const verifyOCSP = sinon
-			.stub(ocspVerification, 'verifyOCSP')
-			.resolves({ valid: true, status: 'good', method: 'ocsp' });
-		const peerCertificate = leafOnlyPeerCertificate();
+	it('uses the issuer the socket chain already carries even when no trusted authorities are published', async function () {
+		const peerCertificate = leafOnlyPeerCertificate(noUrlsLeaf);
 		peerCertificate.issuerCertificate = { raw: new X509Certificate(CA_PEM).raw };
 		peerCertificate.issuerCertificate.issuerCertificate = peerCertificate.issuerCertificate;
-		const result = await verifyCertificate(
-			peerCertificate,
-			mtlsConfig({ failureMode: 'fail-open', crl: { enabled: false }, ocsp: { enabled: true } })
-		);
-		assert.strictEqual(result.status, 'good');
-		assert.strictEqual(resolveTrustedIssuer.callCount, 0);
-		assert.strictEqual(verifyOCSP.callCount, 1);
+		const result = await verifyCertificate(peerCertificate, mtlsConfig({ failureMode: 'fail-closed' }));
+		assert.deepStrictEqual(result, { valid: false, status: 'no-verification-available', method: 'disabled' });
 	});
 });

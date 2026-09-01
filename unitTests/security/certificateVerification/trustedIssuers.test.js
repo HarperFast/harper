@@ -92,6 +92,11 @@ describe('certificateVerification/trustedIssuers.ts', function () {
 		assert.ok(trustedIssuers.resolveTrustedIssuer(leaf.raw).equals(ca.raw));
 	});
 
+	it('never resolves a certificate as its own issuer', function () {
+		trustedIssuers.publishTrustedAuthorities([CA_PEM]);
+		assert.strictEqual(trustedIssuers.resolveTrustedIssuer(ca.raw, ca.fingerprint256), undefined);
+	});
+
 	it('does not resolve an authority that did not issue the leaf', function () {
 		trustedIssuers.publishTrustedAuthorities([FOREIGN_CA_PEM]);
 		assert.strictEqual(trustedIssuers.resolveTrustedIssuer(leaf.raw), undefined);
