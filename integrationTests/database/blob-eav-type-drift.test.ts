@@ -39,10 +39,7 @@
  * are expected to be fully gone (row deleted) by the end of the run — expected live
  * blob-file floor is exactly 3, reached through natural reclamation alone.
  *
- * Originating QA-id: QA-597. Promoted from the qa-explorer promote-candidates snapshot (P-384)
- * after a cold gate rerun on main; unlike sibling suites QA-593/595/596 (PR #1833), this one
- * has no `sourcedFrom`/cache resolver involved — it targets the EAV-substrate/blob-store seam
- * directly.
+ * Originating QA-id: QA-597. Promoted from the qa-explorer promote-candidates snapshot (P-384).
  */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
