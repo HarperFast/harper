@@ -129,8 +129,8 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 			);
 			await scope.ready;
 
-			// Raced rather than awaited: before the fix this promise never settled, and mocha runs with no
-			// test timeout, so awaiting it would hang the suite rather than fail.
+			// Raced, not awaited: mocha runs with no test timeout, so a promise that never settles — which
+			// is exactly the bug — would hang the suite instead of failing it.
 			let watchdog;
 			const outcome = await Promise.race([
 				handleApplication(scope).then(

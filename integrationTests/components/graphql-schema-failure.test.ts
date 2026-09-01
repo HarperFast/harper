@@ -139,8 +139,7 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 		strictEqual(before.restartRequired, false, 'nothing should have asked for a restart yet');
 
 		// The component is already published as failed, with an ErrorResource standing in for it, so
-		// reprocessing the corrected schema in place would leave that state behind. The plugin marks its
-		// initial load settled on failure precisely so this takes the restart path instead.
+		// reprocessing the corrected schema in place would leave that state behind.
 		await writeFile(
 			join(componentsDir, 'broken-one', 'schema.graphql'),
 			'type BrokenOne @table @export {\n\tid: ID @primaryKey\n\tname: String\n}\n'

@@ -472,7 +472,12 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				if (result instanceof Promise) {
 					const tracked = result.catch((error) => {
 						this.#logger.error?.('Error in async entry handler:', error);
-						this.#handleError(error);
+						try {
+							this.#handleError(error);
+						} catch (reportingError) {
+							// Reporting must not replace the failure it is reporting.
+							this.#logger.error?.('Error reporting an entry handler failure:', reportingError);
+						}
 						throw error;
 					});
 					// Nothing awaits `tracked` until the drain, which leaves an early rejection unhandled.
@@ -485,9 +490,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			const initialLoadPromise = once(targetEntryHandler, 'ready').then(async () => {
 				const operations = initialOperations ?? [];
 				initialOperations = null;
-				// Drained, not `Promise.all`'s fail-fast: the loader holds the plugin-wide load lock until
-				// this settles, so reporting the first failure while a sibling still runs would let the
-				// next application's load of the same plugin interleave with it.
+				// Drained, not fail-fast: the loader holds the plugin-wide load lock until this settles, so a
+				// first failure reported while a sibling still runs would let the next application in.
 				for (const result of await Promise.allSettled(operations)) {
 					if (result.status === 'rejected') throw result.reason;
 				}

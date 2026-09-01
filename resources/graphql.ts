@@ -81,14 +81,12 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			entry.absolutePath,
 			scope.resources,
 			scope.applicationScope?.branches,
-			// Tags each diagnostic, so concurrent broken applications stay distinguishable.
 			scope.logger
 		);
 	});
-	// `waitForInitialLoads()` settles with the load's real outcome; a success-only wait left the loader
-	// to report a diagnosed failure at its watchdog, holding the plugin-wide load lock for it (#1917).
-	// The flag advances on either outcome: a schema corrected afterwards belongs on the restart path,
-	// not reprocessed as part of an initial load that is over.
+	// Settles with the load's real outcome, so a diagnosed failure is not left for the loader's watchdog
+	// to report while it holds the plugin-wide load lock (#1917). The flag advances either way: a schema
+	// corrected afterwards belongs on the restart path.
 	return scope.waitForInitialLoads().finally(() => {
 		initialLoadComplete = true;
 	});
@@ -113,15 +111,13 @@ async function processGraphQLSchema(
 	try {
 		ast = parse(new Source(gqlContent.toString(), filePath));
 	} catch (error) {
-		// GraphQLError.toString() is the only rendering carrying the source excerpt, line/column and
-		// caret; `.stack`, which the logger prefers, points at Harper internals. It stays out of the
-		// thrown message: a failed component becomes an ErrorResource whose message REST copies into the
-		// problem-response title, and the excerpt is schema source plus a host path.
+		// GraphQLError.toString() is the only rendering carrying the source excerpt and caret; `.stack`,
+		// which the logger prefers, points at Harper internals. It stays out of the thrown message: a
+		// failed component's ErrorResource message becomes the REST problem title.
 		logger.error?.(`Invalid GraphQL schema in ${filePath}:\n${error}`);
 		throw new Error(`Invalid GraphQL schema${urlPath ? ` at ${urlPath}` : ''}`);
 	}
-	// A directive the schema declares itself, or one GraphQL specifies, is not unknown just because
-	// Harper does not act on it.
+	// Spec-defined and schema-declared directives are not unknown just because Harper ignores them.
 	const recognizedDirectives = new Set([
 		...server.knownGraphQLDirectives,
 		...specifiedDirectives.map((directive) => directive.name),
