@@ -249,11 +249,10 @@ impl Graph {
         seqlock::read_consistent(seq, self.file.self_tag, || unsafe { *self.file.slot_ptr(id).add(S_FLAGS) != 0 }, self.slot_sanitizer(id), || true, self.owner_dead())
     }
 
-    /// The slot's stored upper idx regardless of valid/deleted flags — the raw mirroring
-    /// path reuses a cleared node's entry when the host rewrites the same id. Read under the
-    /// slot write lock, not `read_consistent`: that read reports NO_UPPER when it cannot settle
-    /// within the stale window, and a caller that treats "cannot tell" as "none bound" mints a
-    /// second entry for an id that already owns one, orphaning the first.
+    /// The slot's stored upper idx regardless of valid/deleted flags. Taken under the slot
+    /// write lock rather than `read_consistent`, whose NO_UPPER fallback cannot be told apart
+    /// from an unbound slot — reusing it as one mints a second entry for an id that already
+    /// owns one.
     fn upper_idx_locked(&self, id: u32) -> Result<u32, Wedged> {
         if !self.in_range(id) {
             return Ok(NO_UPPER);
@@ -288,15 +287,14 @@ impl Graph {
             idx if idx != NO_UPPER && (idx as u64) >= self.file.upper_capacity => NO_UPPER, // corrupt stored index
             idx => idx,
         };
+        let mut fresh = NO_UPPER;
         let upper_idx = if upper_levels.is_empty() {
-            // an id re-minted at level 0 must not keep reading the previous node's hierarchy:
-            // the shared host counter reseeds to largestNodeId + 1 across a restart, so
-            // deleting the top ids hands them back out and the new record redraws its level.
-            // Emptied in place rather than freed — returning it to the shared freelist is not
-            // atomic with publishing the slot below, so a mirror that read this index first
-            // could republish a slot pointing at an entry already handed to another node.
-            // Keeping it bound costs at most one idle entry per id, the bounded upper
-            // retention hnsw-native-plane.md §10 already accepts.
+            // the host reseeds its id counter to largestNodeId + 1 on restart, so an id can be
+            // re-minted at level 0 over a slot that had a hierarchy; that entry must stop being
+            // readable. Emptied in place rather than freed: the freelist hand-off is not atomic
+            // with publishing the slot below, so a mirror that read this index first could
+            // republish a slot pointing at an entry already given to another node. One idle
+            // entry per id is the bounded retention hnsw-native-plane.md §10 accepts.
             if existing != NO_UPPER {
                 self.rewrite_upper(existing, &[])?;
             }
@@ -305,11 +303,17 @@ impl Graph {
             self.rewrite_upper(existing, upper_levels)?;
             existing
         } else {
-            self.write_upper(upper_levels)?
+            fresh = self.write_upper(upper_levels)?;
+            fresh
         };
         let mut l0 = neighbors.to_vec();
         l0.truncate(self.file.layer0_cap);
-        self.write_node(id, level, vector, scale, inv_mag, &l0, upper_idx)?;
+        if let Err(wedged) = self.write_node(id, level, vector, scale, inv_mag, &l0, upper_idx) {
+            // nothing points at a freshly allocated entry until the slot is published, so a
+            // wedged publish strands it outside both the freelist and the graph
+            self.file.free_upper(fresh);
+            return Err(wedged);
+        }
         Ok(())
     }
 
