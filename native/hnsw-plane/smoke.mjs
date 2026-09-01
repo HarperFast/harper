@@ -1,12 +1,12 @@
-// NAPI smoke test: build with `cargo build --release --features napi --lib`, then
-// (the bench bin cannot link against unresolved node-api symbols; build the lib alone)
-//   cp target/release/libhnsw_plane.so hnsw-plane.node && node smoke.mjs
+// End-to-end smoke test: `npm run build && node smoke.mjs` (also the CI path).
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const { Plane } = require('./hnsw-plane.node');
+const { Plane } = require('./index.js');
 
 const dims = 64;
-const path = `/tmp/smoke-${process.pid}.hnsw`;
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
+const path = join(tmpdir(), `smoke-${process.pid}.hnsw`);
 const plane = Plane.create(path, dims, 32, 10_000);
 
 function vec(i) {
@@ -49,7 +49,7 @@ if (pred.length === 0) throw new Error('predicate search returned nothing');
 console.log(`predicate top hit: id ${pred[0].id} (calls: ${predicateCalls})`);
 
 // raw mirroring path (dual-write phase 1): host-allocated ids, full node state per call
-const mirror = Plane.create(`/tmp/smoke-mirror-${process.pid}.hnsw`, dims, 32, 10_000);
+const mirror = Plane.create(join(tmpdir(), `smoke-mirror-${process.pid}.hnsw`), dims, 32, 10_000);
 const q42 = vec(42);
 // quantize like the host: scale maps max|c| to 127, invMag = 1/|v|
 function quant(v) {

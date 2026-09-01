@@ -40,7 +40,7 @@ fn remove_edge(graph: &Graph, from: u32, to: u32, level: u8) {
             }
         });
     } else {
-        graph.update_upper_level(from, level, |list| {
+        let _ = graph.update_upper_level(from, level, |list| {
             if let Some(pos) = list.iter().position(|&x| x == to) {
                 list.remove(pos);
             }
@@ -112,19 +112,19 @@ fn add_reverse_edge(graph: &Graph, nid: u32, new_id: u32, level: u8, cap: usize)
             if next.len() > cap {
                 prune_with_coverage(graph, nid, &mut next, cap);
             }
-            if graph.set_neighbors_if(nid, &snapshot, &next) {
+            if graph.set_neighbors_if(nid, &snapshot, &next).unwrap_or(false) {
                 return;
             }
         }
         // contended twice: merge cheaply under the lock (bounded critical section)
-        graph.update_neighbors(nid, |list| {
+        let _ = graph.update_neighbors(nid, |list| {
             if !list.contains(&new_id) {
                 list.push(new_id);
                 list.truncate(cap);
             }
         });
     } else {
-        graph.update_upper_level(nid, level, |list| {
+        let _ = graph.update_upper_level(nid, level, |list| {
             if list.contains(&new_id) {
                 return;
             }
@@ -150,8 +150,8 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
 
     let (entry_id, entry_level) = graph.file.entry_point();
     if entry_id == NO_ID {
-        let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER };
-        graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx);
+        let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]).unwrap_or(NO_UPPER) } else { NO_UPPER };
+        if graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).is_err() { return None; }
         // CAS: a concurrent first insert may have installed an entry already — never clobber
         graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
         return Some(id);
@@ -170,8 +170,8 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
             match (re_id != NO_ID).then(|| graph.distance_to(re_id, &query)).flatten() {
                 Some(d) => (re_id, re_level, d),
                 None => {
-                    let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]) } else { NO_UPPER };
-                    graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx);
+                    let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]).unwrap_or(NO_UPPER) } else { NO_UPPER };
+                    if graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).is_err() { return None; }
                     graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
                     return Some(id);
                 }
@@ -248,13 +248,13 @@ pub fn insert(graph: &Graph, vector: &[f32], params: &InsertParams, scratch: &mu
                     .unwrap_or_default()
             })
             .collect();
-        graph.write_upper(&levels)
+        graph.write_upper(&levels).unwrap_or(NO_UPPER)
     } else {
         NO_UPPER
     };
     let mut l0: Vec<u32> = connections[0].iter().map(|&(nid, _)| nid).collect();
     l0.truncate(layer0_cap);
-    graph.write_node(id, level, &bytes, scale, inv_mag, &l0, upper_idx);
+    if graph.write_node(id, level, &bytes, scale, inv_mag, &l0, upper_idx).is_err() { return None; }
 
     // Reverse edges.
     for (l, conns) in connections.iter().enumerate() {

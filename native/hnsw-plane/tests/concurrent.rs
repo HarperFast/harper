@@ -96,8 +96,8 @@ fn concurrent_insert_search() {
     }
 
     // Delete + reinsert reuses ids (freelist; the #2182 fix).
-    graph.delete_node(5);
-    graph.delete_node(6);
+    let _ = graph.delete_node(5);
+    let _ = graph.delete_node(6);
     let params = InsertParams::default();
     let a = insert(&graph, &vector_for(90_001, dims), &params, &mut scratch).unwrap();
     let b = insert(&graph, &vector_for(90_002, dims), &params, &mut scratch).unwrap();

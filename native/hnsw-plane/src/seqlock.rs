@@ -20,6 +20,15 @@ pub const GEN_MASK: u32 = LOCKED - 1;
 
 /// How long a locked value must stay unchanged before the owner's liveness is checked.
 const TAKEOVER_AFTER: Duration = Duration::from_millis(20);
+/// Hard bound on waiting for a lock this thread cannot reclaim (owner alive-or-unknowable:
+/// an unregistered handle's abandoned lock, a deadlocked live thread). A live writer's
+/// critical section is microseconds, so five seconds of one unchanged locked value means
+/// the slot is wedged — surfacing an error beats hanging a caller forever.
+const WRITE_WEDGE_AFTER: Duration = Duration::from_secs(5);
+
+/// The slot's lock could not be acquired or reclaimed within the wedge bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wedged;
 const SPINS_BEFORE_CLOCK: u32 = 1 << 10;
 
 /// A fresh generation for a takeover release: the previous generation is unknowable, so it
@@ -87,9 +96,10 @@ pub fn write_lock<'a>(
     self_tag: u32,
     sanitize: impl Fn(),
     owner_dead: impl Fn(u32) -> bool,
-) -> SeqWriteGuard<'a> {
+) -> Result<SeqWriteGuard<'a>, Wedged> {
     let mut spins = 0u32;
     let mut watch = StaleWatch::new();
+    let mut wedged_since: Option<Instant> = None;
     loop {
         let cur = seq.load(Ordering::Acquire);
         if cur & LOCKED == 0 {
@@ -97,19 +107,32 @@ pub fn write_lock<'a>(
                 .compare_exchange_weak(cur, LOCKED | (self_tag & GEN_MASK), Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                return SeqWriteGuard { seq, release_gen: cur.wrapping_add(1) & GEN_MASK };
+                return Ok(SeqWriteGuard { seq, release_gen: cur.wrapping_add(1) & GEN_MASK });
             }
+            wedged_since = None;
         } else {
             spins += 1;
             if spins > SPINS_BEFORE_CLOCK {
-                if let Stale::DeadOwner(observed) = watch.observe(cur, &owner_dead) {
-                    if seq
-                        .compare_exchange(observed, LOCKED | (self_tag & GEN_MASK), Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                    {
-                        sanitize();
-                        return SeqWriteGuard { seq, release_gen: fresh_generation() };
+                match watch.observe(cur, &owner_dead) {
+                    Stale::DeadOwner(observed) => {
+                        if seq
+                            .compare_exchange(observed, LOCKED | (self_tag & GEN_MASK), Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                        {
+                            sanitize();
+                            return Ok(SeqWriteGuard { seq, release_gen: fresh_generation() });
+                        }
+                        wedged_since = None;
                     }
+                    Stale::UnknownPastWindow => {
+                        // unreclaimable (unregistered owner tag, or an alive-but-stuck
+                        // holder): bounded wait, then surface the wedge instead of hanging
+                        let since = *wedged_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() > WRITE_WEDGE_AFTER {
+                            return Err(Wedged);
+                        }
+                    }
+                    Stale::No => {}
                 }
                 std::thread::yield_now();
                 continue;

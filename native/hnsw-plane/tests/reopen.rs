@@ -47,7 +47,7 @@ fn dead_writer_lock_is_taken_over_and_slot_sanitized() {
     let (hits, _) = search(&graph, &Query::new(vector_for(3, dims)), 5, 64, &mut scratch);
     assert!(!hits.is_empty());
     let q = hnsw_plane::distance::quantize_int8(&vector_for(7, dims));
-    graph.write_node_raw(7, 0, &q.0, q.1, q.2, &[3, 4], &[]);
+    graph.write_node_raw(7, 0, &q.0, q.1, q.2, &[3, 4], &[]).unwrap();
     assert!(graph.read_node(7).is_some(), "a rewrite heals the sanitized slot");
     let _ = std::fs::remove_file(&path);
 }
@@ -100,9 +100,9 @@ fn double_remove_does_not_cycle_the_freelist() {
     for i in 0..20 {
         insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
     }
-    graph.delete_node(5);
-    graph.delete_node(5); // second delete must be a no-op, not a second freelist push
-    graph.delete_node(2_000_000); // out-of-range must be a no-op, not an OOB write
+    let _ = graph.delete_node(5);
+    let _ = graph.delete_node(5); // second delete must be a no-op, not a second freelist push
+    let _ = graph.delete_node(2_000_000); // out-of-range must be a no-op, not an OOB write
     let a = insert(&graph, &vector_for(101, dims), &params, &mut scratch).unwrap();
     let b = insert(&graph, &vector_for(102, dims), &params, &mut scratch).unwrap();
     let c = insert(&graph, &vector_for(103, dims), &params, &mut scratch).unwrap();
@@ -124,7 +124,7 @@ fn deleting_the_entry_point_reelects_and_recovers() {
         insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
     }
     let (entry, _) = graph.file.entry_point();
-    graph.delete_node(entry);
+    let _ = graph.delete_node(entry);
     let (new_entry, _) = graph.file.entry_point();
     assert_ne!(new_entry, entry, "a new entry point must be elected");
     let (hits, _) = search(&graph, &Query::new(vector_for(3, dims)), 5, 64, &mut scratch);
@@ -172,7 +172,7 @@ fn full_plane_refuses_inserts_instead_of_corrupting() {
     }
     assert!(insert(&graph, &vector_for(9, dims), &params, &mut scratch).is_none(), "insert past maxNodes must fail cleanly");
     // freed capacity is usable again
-    graph.delete_node(3);
+    let _ = graph.delete_node(3);
     assert!(insert(&graph, &vector_for(10, dims), &params, &mut scratch).is_some());
     let _ = std::fs::remove_file(&path);
 }
@@ -204,8 +204,8 @@ fn odd_dims_freelist_reuse_is_aligned() {
     for i in 0..20 {
         insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
     }
-    graph.delete_node(4);
-    graph.delete_node(9);
+    let _ = graph.delete_node(4);
+    let _ = graph.delete_node(9);
     let a = insert(&graph, &vector_for(50, dims), &params, &mut scratch).unwrap();
     let b = insert(&graph, &vector_for(51, dims), &params, &mut scratch).unwrap();
     assert!(a == 9 || a == 4);

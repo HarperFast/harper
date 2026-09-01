@@ -200,8 +200,10 @@ impl Plane {
     /// Delete a node; its id returns to the plane freelist. Standalone-allocation mode only
     /// (pairs with insert()); dual-write hosts use clearNode instead.
     #[napi]
-    pub fn remove(&self, id: u32) {
-        self.graph.delete_node(id);
+    pub fn remove(&self, id: u32) -> Result<()> {
+        self.graph
+            .delete_node(id)
+            .map_err(|_| Error::from_reason("plane slot lock is wedged (unreclaimable holder); rebuild the index"))
     }
 
     /// Mirror a host-maintained node into the plane (dual-write phase 1): full node state
@@ -259,16 +261,9 @@ impl Plane {
                 }
             }
         }
-        self.graph.write_node_raw(
-            id,
-            level,
-            vec_i8,
-            scale as f32,
-            inv_mag as f32,
-            &neighbors.to_vec(),
-            &upper_levels,
-        );
-        Ok(())
+        self.graph
+            .write_node_raw(id, level, vec_i8, scale as f32, inv_mag as f32, &neighbors.to_vec(), &upper_levels)
+            .map_err(|_| Error::from_reason("plane slot lock is wedged (unreclaimable holder); rebuild the index"))
     }
 
     /// Builder-scan variant of writeNodeRaw: writes ONLY when the slot has never been
@@ -321,7 +316,9 @@ impl Plane {
         l0.truncate(self.graph.file.layer0_cap);
         // the untouched check and the write share one seqlock acquisition inside the crate:
         // a live mirror's newer write can never be overwritten by this scan's older snapshot
-        Ok(self.graph.write_node_if_untouched(id, level, vec_i8, scale as f32, inv_mag as f32, &l0, &upper_levels))
+        self.graph
+            .write_node_if_untouched(id, level, vec_i8, scale as f32, inv_mag as f32, &l0, &upper_levels)
+            .map_err(|_| Error::from_reason("plane slot lock is wedged (unreclaimable holder); rebuild the index"))
     }
 
     /// Advisory: whether the file recorded a durability barrier (flush) as its last state
@@ -344,7 +341,9 @@ impl Plane {
     /// owns id allocation).
     #[napi]
     pub fn clear_node(&self, id: u32) {
-        self.graph.clear_node(id);
+        if self.graph.clear_node(id).is_err() {
+            // bounded lock wedge: surfaced via the next write; clear is best-effort
+        }
     }
 
     /// Set the graph entry point (dual-write mode mirrors the host's entry-point updates).
