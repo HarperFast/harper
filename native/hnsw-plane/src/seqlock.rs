@@ -27,8 +27,13 @@ pub const TAG_MASK: u32 = (1 << 19) - 1;
 #[inline]
 fn acquisition_value(self_tag: u32) -> u32 {
     use std::cell::Cell;
+    use std::sync::atomic::AtomicU32 as GlobalCounter;
+    // each thread's salt stream starts at a globally unique offset — identical thread-local
+    // streams across threads could publish identical lock values, making back-to-back
+    // acquisitions indistinguishable from one long hold
+    static NEXT_STREAM: GlobalCounter = GlobalCounter::new(1);
     thread_local! {
-        static SALT: Cell<u32> = const { Cell::new(0) };
+        static SALT: Cell<u32> = Cell::new(NEXT_STREAM.fetch_add(0x2545_f491, Ordering::Relaxed));
     }
     let salt = SALT.with(|c| {
         let v = c.get().wrapping_add(1);

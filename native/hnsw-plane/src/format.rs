@@ -422,7 +422,7 @@ impl PlaneFile {
     /// Return a dead upper entry to the freelist. Caller must have unlinked it from its
     /// node's slot (or marked the node deleted) first.
     pub fn free_upper(&self, idx: u32) {
-        if idx == NO_UPPER {
+        if idx == NO_UPPER || (idx as u64) >= self.upper_capacity {
             return;
         }
         let head = self.header_atomic_u64(H_UPPER_FREELIST);

@@ -275,7 +275,10 @@ impl Graph {
         upper_levels: &[Vec<u32>],
     ) -> Result<(), Wedged> {
         self.file.ensure_high_water(id);
-        let existing = self.upper_idx_raw(id);
+        let existing = match self.upper_idx_raw(id) {
+            idx if idx != NO_UPPER && (idx as u64) >= self.file.upper_capacity => NO_UPPER, // corrupt stored index
+            idx => idx,
+        };
         let upper_idx = if upper_levels.is_empty() {
             existing // keep an existing entry bound (level never shrinks in practice)
         } else if existing != NO_UPPER {
