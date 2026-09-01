@@ -53,6 +53,7 @@ describe('mcp/subscriptionRouting', () => {
 	beforeEach(() => {
 		_setSessionTableForTest(fakeTable());
 		_setSubscriptionThreadIdForTest(1);
+		_setSubscriptionItcForTest(fakeBridge());
 	});
 
 	afterEach(() => {
@@ -106,6 +107,19 @@ describe('mcp/subscriptionRouting', () => {
 		});
 		assert.equal(result, 'no-live-stream');
 		assert.equal(_pendingSubscriptionRouteCount(), 0);
+	});
+
+	it('retries listener wiring after the thread bridge becomes available', async () => {
+		const bridge = fakeBridge();
+		bridge.available = false;
+		_setSubscriptionItcForTest(bridge);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		await claimSubscriptionOwner(session.id, 'first-stream');
+		assert.equal(bridge.listeners.size, 0);
+		bridge.available = true;
+		await claimSubscriptionOwner(session.id, 'second-stream');
+		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND), true);
+		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE), true);
 	});
 
 	it('bounds a sent command when the owner never responds', async () => {

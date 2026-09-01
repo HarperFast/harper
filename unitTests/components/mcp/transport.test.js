@@ -101,6 +101,7 @@ describe('mcp/transport', () => {
 		_setResourcesForTest(makeFakeResources([]));
 		_setOpenApiGeneratorForTest(() => ({ openapi: '3.0.3', info: { title: 'fake' }, paths: {} }));
 		_setHttpUrlPrefixForTest('');
+		_setSubscriptionItcForTest({ onMessageByType() {}, sendToThread: () => true });
 	});
 
 	afterEach(() => {
@@ -110,6 +111,8 @@ describe('mcp/transport', () => {
 		_setResourcesForTest(undefined);
 		_setOpenApiGeneratorForTest(undefined);
 		_setHttpUrlPrefixForTest(undefined);
+		_resetSubscriptionRoutingForTest();
+		_setSubscriptionItcForTest(undefined);
 	});
 
 	describe('POST initialize', () => {
