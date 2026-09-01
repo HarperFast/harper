@@ -14,13 +14,14 @@ use crate::seqlock::Wedged;
 
 /// Aligned volatile load of a slot/upper-entry field another process may be mutating.
 ///
-/// Ordinary loads of concurrently-written mmap bytes are a data race the optimizer is free to
-/// duplicate, split, or sink across the seqlock's validating fence — which would let a reader
-/// act on bytes the generation check never covered. Volatile forbids exactly that. The vector
-/// is deliberately NOT read this way: `cosine_int8_raw` must stay autovectorized, and a torn
-/// vector only perturbs a distance the generation check then discards. Every field this is
-/// applied to is naturally aligned (slots are 64-aligned and the neighbor/id arrays are
-/// 4-padded by format.rs), so these compile to single loads.
+/// This forbids the optimizer from duplicating, splitting, or sinking the load across the
+/// seqlock's validating fence, which would let a reader act on bytes the generation check
+/// never covered. It does NOT make the access race-free under Rust's memory model — only
+/// atomics would, and that is the format change hnsw-native-plane.md §10 records as
+/// follow-up. The vector is deliberately not read this way: `cosine_int8_raw` must stay
+/// autovectorized, and a torn vector only perturbs a distance the generation check discards.
+/// Every field read here is naturally aligned (slots are 64-aligned; the neighbor and upper
+/// id arrays are 4-padded by format.rs), so these compile to single loads.
 #[inline(always)]
 unsafe fn vread<T: Copy>(p: *const T) -> T {
     p.read_volatile()
@@ -532,6 +533,13 @@ impl Graph {
         if entry_id == id {
             self.neighbors_into(id, &mut candidates);
         }
+        // Re-elect before the tombstone, not after: between marking the slot deleted and
+        // installing a replacement, every concurrent search routes through a node that reads
+        // as absent and returns nothing. The node is still live here, so a crash inside the
+        // window leaves the header naming a live entry either way.
+        if entry_id == id {
+            self.reelect_entry_point_replacing(&candidates, id);
+        }
         let upper_idx;
         {
             let seq = self.file.seq_atomic(id);
@@ -548,13 +556,6 @@ impl Graph {
                 (p.add(S_UPPER_IDX) as *mut u32).write_unaligned(NO_UPPER);
                 *p.add(S_FLAGS) = FLAG_DELETED;
             }
-        }
-        // re-elect BEFORE the fallible upper cleanup: the slot is tombstoned above and
-        // re-election is infallible, so ordering it first means no error path can leave the
-        // header naming a dead entry — which blinds every search until an insert happens to
-        // repair it
-        if entry_id == id {
-            self.reelect_entry_point_replacing(&candidates, id);
         }
         if upper_idx != NO_UPPER && (upper_idx as u64) < self.file.upper_capacity {
             // empty the entry under its own lock BEFORE freeing: a traversal that already
@@ -593,11 +594,7 @@ impl Graph {
     /// with no live neighborhood). Preferring level keeps the hierarchy navigable — a
     /// level-0 entry degrades every search to a layer-0-only beam. An empty graph clears
     /// the entry.
-    pub(crate) fn reelect_entry_point(&self, preferred: &[u32]) {
-        self.reelect_entry_point_replacing(preferred, crate::format::NO_ID)
-    }
-
-    fn reelect_entry_point_replacing(&self, preferred: &[u32], replacing: u32) {
+    pub(crate) fn reelect_entry_point_replacing(&self, preferred: &[u32], replacing: u32) {
         let mut best: Option<(u32, u8)> = None;
         // the most recently replaced entry point is the best cheap candidate: usually alive,
         // usually high-level — and it makes the full fallback scan a last resort
@@ -608,6 +605,9 @@ impl Graph {
             }
         }
         for &cand in preferred {
+            if cand == replacing {
+                continue; // the node on its way out is never its own replacement
+            }
             if let Some(level) = self.node_level(cand) {
                 if best.map(|(_, l)| level > l).unwrap_or(true) {
                     best = Some((cand, level));
@@ -617,6 +617,9 @@ impl Graph {
         if best.is_none() {
             let hw = self.file.id_high_water().min(self.file.max_nodes) as u32;
             for cand in 0..hw {
+                if cand == replacing {
+                    continue;
+                }
                 if let Some(level) = self.node_level(cand) {
                     if best.map(|(_, l)| level > l).unwrap_or(true) {
                         best = Some((cand, level));
@@ -629,7 +632,7 @@ impl Graph {
         }
         match best {
             Some((cand, level)) => self.file.set_entry_point_if_not_better(cand, level as u32, replacing),
-            None => self.file.set_entry_point_if_not_better(crate::format::NO_ID, 0, replacing),
+            None => self.file.clear_entry_point_if(replacing),
         }
     }
 

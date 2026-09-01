@@ -553,9 +553,9 @@ export function searchByIndex(
 							'This index resolves search results asynchronously; the results must be consumed with async iteration'
 						);
 					}
-					// ONE iterator per iterate() call, memoized before any next() runs: overlapping
-					// next() calls must advance a shared cursor, or each builds its own iterator over
-					// the same array and they both yield entry 0 while entry 1 is skipped
+					// one shared iterator per iterate() call: overlapping next() calls must advance the
+					// same cursor, or each builds its own over the same array and entry 0 is yielded
+					// twice while entry 1 is skipped
 					const iteratorPromise = pending.then((entries) => entries[Symbol.iterator]());
 					iteratorPromise.catch(() => {});
 					let closed = false;

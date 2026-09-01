@@ -162,10 +162,9 @@ pub fn insert(
     let m = params.m;
 
     let mut stats = SearchStats { visits: 0 };
-    // Upper entry this insert may already have published for `id` while trying to claim an
-    // empty graph. The slot points at it, so the join path below must REWRITE that index
-    // rather than mint a second one: freeing an index a live slot still names would let
-    // another node adopt it mid-traversal.
+    // Upper entry a first-entry claim attempt already published for `id`. Its slot names the
+    // index, so the join path must rewrite it in place — freeing an index a live slot names
+    // would let another node adopt it mid-traversal.
     let mut published_upper = NO_UPPER;
     let mut published = false;
     let publish_edgeless = |published: &mut bool, published_upper: &mut u32| -> Result<(), InsertError> {
@@ -179,21 +178,21 @@ pub fn insert(
         Ok(())
     };
 
-    // Resolve an entry point to grow from. Bounded because each turn either finishes, joins a
-    // live entry, or replaces one that is provably gone; the cap only guards a pathological
-    // insert/delete interleaving that keeps clearing the entry under us.
+    // Resolve an entry point to grow from. Every turn makes progress — it claims an empty
+    // graph, joins a live entry, or replaces one that is provably gone — so the cap only
+    // guards an insert/delete interleaving that keeps clearing the entry under us.
     let mut joined = None;
-    for _ in 0..8 {
+    for _ in 0..16 {
         let (entry_id, entry_level) = graph.file.entry_point();
         if entry_id == NO_ID {
             publish_edgeless(&mut published, &mut published_upper)?;
-            // Claim only from EMPTY. set_entry_point_if_not_better would install this edgeless
-            // node over a live equal-or-lower-level entry and orphan the graph behind it; and
-            // it never reports losing, so a loser used to return an unreachable node.
+            // Claim only from EMPTY: a not-worse install would put this edgeless node over a
+            // live equal-or-lower-level entry and orphan the graph behind it, and it never
+            // reports losing, so a loser used to return a node nothing points at.
             if graph.file.claim_entry_if_empty(id, level as u32) {
                 return Ok(id);
             }
-            continue; // another racer rooted the graph — join it rather than stand alone
+            continue; // a racer rooted the graph — join it rather than stand alone
         }
         if let Some(d) = graph.distance_to(entry_id, &query) {
             joined = Some((entry_id, entry_level, d));
@@ -203,12 +202,12 @@ pub fn insert(
         // re-electing). Self-promoting an edgeless new node here would orphan the whole
         // existing graph behind an unreachable root — re-elect from the live graph and
         // continue; only a truly empty graph makes this node the first entry.
-        graph.reelect_entry_point(&[]);
+        graph.reelect_entry_point_replacing(&[], entry_id);
     }
+    // Reporting success for a node no search can reach is the failure this whole path exists
+    // to prevent, so an unresolvable entry point is an error the host can retry.
     let Some((entry_id, entry_level, entry_dist)) = joined else {
-        publish_edgeless(&mut published, &mut published_upper)?;
-        graph.file.claim_entry_if_empty(id, level as u32);
-        return Ok(id);
+        return Err(InsertError::Wedged);
     };
     let top = level.min(entry_level as u8);
     let (mut ep, mut ep_dist) =
@@ -281,7 +280,6 @@ pub fn insert(
             })
             .collect();
         if published_upper != NO_UPPER {
-            // a lost first-entry claim already published this entry under the slot
             graph.rewrite_upper(published_upper, &levels).map_err(|_| InsertError::Wedged)?;
             published_upper
         } else {

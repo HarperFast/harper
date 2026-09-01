@@ -420,12 +420,9 @@ fn a_wedged_untouched_write_frees_its_upper_entry() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// A wedged upper-entry cleanup must not leave the header naming a deleted entry point.
-///
-/// `delete_node` tombstones the slot, then rewrites the node's upper entry — a fallible step.
-/// With re-election ordered after it, a wedged upper lock returned early and every subsequent
-/// search routed through a dead entry (returning nothing) until some insert happened to
-/// repair it. The observable, not the header word, is what this asserts.
+/// A wedged upper-entry cleanup must not leave the header naming a deleted entry point: the
+/// cleanup is fallible, so an early return there strands every search on a dead entry. Asserts
+/// the observable (searches still return hits), not the header word.
 #[test]
 fn a_wedged_upper_cleanup_still_reelects_the_entry_point() {
     use std::sync::atomic::Ordering as O;

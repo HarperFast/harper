@@ -378,9 +378,16 @@ impl PlaneFile {
     #[inline]
     fn record_previous_entry(&self, prev_packed: u64, new_id: u32) {
         let prev_id = (prev_packed & 0xffff_ffff) as u32;
-        if prev_id != NO_ID && prev_id != new_id {
-            self.header_atomic_u64(H_ENTRY_PREV).store(prev_packed, Ordering::Release);
+        if prev_id == NO_ID || prev_id == new_id || (prev_id as u64) >= self.max_nodes {
+            return;
         }
+        // a hint is only worth keeping while its node is live: the host mirrors a post-delete
+        // re-election through this same call, and storing the node that died would evict a
+        // usable hint with one the repair path can never follow
+        if unsafe { *self.slot_ptr(prev_id).add(S_FLAGS) } != FLAG_VALID {
+            return;
+        }
+        self.header_atomic_u64(H_ENTRY_PREV).store(prev_packed, Ordering::Release);
     }
 
     /// Claim the entry point of an EMPTY graph: a strict compare-exchange from the empty
@@ -425,6 +432,21 @@ impl PlaneFile {
                     }
                     return;
                 }
+                Err(now) => cur = now,
+            }
+        }
+    }
+
+    /// Clear the entry point, but only while it still names `expected_id`. A re-election that
+    /// found no candidate must not erase an entry a concurrent insert installed meanwhile —
+    /// `set_entry_point_if_not_better(NO_ID, 0, ..)` would, because a level-0 live entry is not
+    /// "better" than the level-0 clear.
+    pub fn clear_entry_point_if(&self, expected_id: u32) {
+        let cell = self.header_atomic_u64(H_ENTRY);
+        let mut cur = cell.load(Ordering::Acquire);
+        while (cur & 0xffff_ffff) as u32 == expected_id {
+            match cell.compare_exchange(cur, NO_ID as u64, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
                 Err(now) => cur = now,
             }
         }

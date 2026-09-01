@@ -132,13 +132,8 @@ fn axis_vector(writer: u32, dims: usize) -> Vec<f32> {
     v
 }
 
-/// The empty-graph entry-point claim, sampled where it actually races.
-///
-/// Every writer that observes `entry_point() == NO_ID` publishes an edgeless node before the
-/// claim, so a claim that only declines to clobber a winner leaves every loser unreachable:
-/// nothing points at it and it is not the entry. One barrier per whole-suite run samples that
-/// window about once; the regression needs many small fresh graphs, each racing the FIRST
-/// insert, and each asserting reachability by id.
+/// Many small fresh graphs, each racing its FIRST insert: that window is where the empty-graph
+/// entry-point claim races, and a single barrier in a long build samples it about once.
 #[test]
 fn racing_first_inserts_all_stay_reachable() {
     let dims = 32;

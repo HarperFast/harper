@@ -430,9 +430,8 @@ export class HierarchicalNavigableSmallWorld {
 			const stalePath = planeStalePathFor(filePath);
 			if (existsSync(stalePath)) {
 				try {
-					// force: an operator following the documented rollback deletes the .plane file by
-					// hand and leaves the sidecar; an ENOENT here used to trip the catch below on
-					// every attach forever, permanently disabling a plane that could just be rebuilt
+					// force: either artifact may already be gone (the documented rollback deletes the
+					// plane file by hand), and an ENOENT here disables the plane on every later attach
 					rmSync(filePath, { force: true });
 					rmSync(stalePath, { force: true });
 				} catch {
@@ -791,7 +790,13 @@ export class HierarchicalNavigableSmallWorld {
 	private invalidatePlaneFile(filePath: string, attached?: HnswPlane | null): void {
 		try {
 			const plane = attached ?? (existsSync(filePath) ? getPlaneBinding()?.open(filePath) : undefined);
-			plane?.flush(0);
+			// the header store takes effect for every process mapping the file immediately; the
+			// msync behind it goes to the pool, because on a multi-GB plane it would otherwise
+			// freeze this worker's event loop
+			plane?.setWatermark(0);
+			plane
+				?.flushAsync(0)
+				.catch((flushError) => logger.warn?.('could not persist the stale HNSW plane watermark', flushError));
 		} catch (invalidateError) {
 			logger.warn?.('could not zero the watermark of the stale HNSW plane file', invalidateError);
 		}
