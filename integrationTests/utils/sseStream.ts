@@ -108,7 +108,7 @@ export function consumeSse(
 			}
 		);
 		req.on('error', (e: any) => {
-			if (timedOut || e?.name === 'AbortError') finish(null);
+			if (timedOut) finish(null);
 			else finish('error', e);
 		});
 		req.end();
@@ -160,7 +160,13 @@ export async function waitForProbe<T>(
 	let probe: T | null = null;
 	while (Date.now() < deadline) {
 		probe = await getProbe<T>(restBase, authHeaders, Math.max(1, deadline - Date.now())).catch(() => null);
-		if (probe && predicate(probe)) return probe;
+		// A predicate reading counter fields off an error payload throws; that is "not satisfied
+		// yet", and the caller asserts on the snapshot this returns.
+		try {
+			if (probe && predicate(probe)) return probe;
+		} catch {
+			/* not satisfied */
+		}
 		await sleep(50);
 	}
 	return probe;
@@ -183,12 +189,30 @@ export async function awaitFixtureReady(
 ): Promise<{ logPath: string; uncaughtBaseline: number }> {
 	const logPath = harper.logDir ? join(harper.logDir, 'hdb.log') : join(harper.dataRootDir as string, 'log', 'hdb.log');
 	const deadline = Date.now() + timeoutMs;
+	let ready = false;
 	while (Date.now() < deadline) {
 		const probe = await getProbe<{ ok?: boolean }>(restBase, authHeaders).catch(() => null);
-		if (probe?.ok !== undefined) return { logPath, uncaughtBaseline: countUncaught(readFileSync(logPath, 'utf8')) };
+		if (probe?.ok !== undefined) {
+			ready = true;
+			break;
+		}
 		await sleep(250);
 	}
-	throw new Error(`Probe route did not become ready within ${timeoutMs}ms at ${restBase}/Probe/`);
+	if (!ready) throw new Error(`Probe route did not become ready within ${timeoutMs}ms at ${restBase}/Probe/`);
+	// Polled, not read once: the HTTP port can answer before the log writer has created the file.
+	while (Date.now() < deadline) {
+		try {
+			return { logPath, uncaughtBaseline: countUncaught(readFileSync(logPath, 'utf8')) };
+		} catch {
+			await sleep(100);
+		}
+	}
+	throw new Error(`hdb.log never became readable at ${logPath} — uncaughtException checks would pass vacuously`);
+}
+
+/** For the end-of-suite sweep: a log that vanished mid-run must fail, not silently count zero. */
+export function readLogOrThrow(logPath: string): string {
+	return readFileSync(logPath, 'utf8');
 }
 
 export function readLogSafe(logPath: string): string {

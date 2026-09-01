@@ -51,6 +51,7 @@ import {
 	awaitFixtureReady,
 	consumeSse,
 	countUncaught,
+	readLogOrThrow,
 	readLogSafe,
 	uncaughtAfterSettle,
 	uncaughtLines,
@@ -226,7 +227,7 @@ suite(
 				// Measured against the baseline taken in before(), so a case whose own delta check was
 				// outrun by the log flush is still caught here.
 				await sleep(1_000);
-				const offenders = uncaughtLines(readLogSafe(logPath));
+				const offenders = uncaughtLines(readLogOrThrow(logPath));
 				if (offenders.length > uncaughtBaseline) {
 					console.log(`[QA-559][Z] NEW uncaughtException lines:\n${offenders.slice(uncaughtBaseline).join('\n')}`);
 				}

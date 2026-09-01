@@ -31,6 +31,7 @@ import {
 	awaitFixtureReady,
 	consumeSse,
 	countUncaught,
+	readLogOrThrow,
 	readLogSafe,
 	uncaughtAfterSettle,
 	uncaughtLines,
@@ -91,7 +92,7 @@ suite(
 		async function assertCompletes(path: string, expectedEvents: number) {
 			const uncaughtBefore = countUncaught(readLogSafe(logPath));
 			const r = await consumeSse(`${restBase}${path}`, authHeaders, 15_000);
-			ok(r.status >= 200 && r.status < 300, `expected 2xx, got ${r.status}`);
+			ok(r.status >= 200 && r.status < 300, `expected 2xx, got ${r.status} (errored=${r.errored?.message ?? null})`);
 			ok(
 				!r.aborted,
 				`${path} must not hit the AbortController timeout — a timeout here means the #1628 hang regressed. raw:\n${r.raw}`
@@ -217,7 +218,7 @@ suite(
 				// Measured against the baseline taken in before(), so a case whose own delta check was
 				// outrun by the log flush is still caught here.
 				await sleep(1_000);
-				const offenders = uncaughtLines(readLogSafe(logPath));
+				const offenders = uncaughtLines(readLogOrThrow(logPath));
 				if (offenders.length > uncaughtBaseline) {
 					console.log(`[QA-537][Z] NEW uncaughtException lines:\n${offenders.slice(uncaughtBaseline).join('\n')}`);
 				}
