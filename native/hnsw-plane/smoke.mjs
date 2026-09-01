@@ -1,7 +1,7 @@
-// End-to-end smoke test: `npm run build && node smoke.mjs` (also the CI path).
+// End-to-end smoke test: `npm run build:hnsw-plane && node native/hnsw-plane/smoke.mjs`.
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const { Plane } = require('./index.js');
+const { Plane } = require('./hnsw-plane.node');
 
 const dims = 64;
 const { tmpdir } = await import('node:os');

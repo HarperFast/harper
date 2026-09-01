@@ -240,9 +240,6 @@ impl Plane {
                 id, self.graph.file.max_nodes
             )));
         }
-        if (id as u64) >= self.graph.file.max_nodes {
-            return Err(Error::from_reason(format!("id {} exceeds plane capacity {}", id, self.graph.file.max_nodes)));
-        }
         if !(scale as f32).is_finite() || !(inv_mag as f32).is_finite() {
             return Err(Error::from_reason("scale/invMag must be finite"));
         }

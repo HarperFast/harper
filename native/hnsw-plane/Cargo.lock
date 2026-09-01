@@ -46,6 +46,7 @@ dependencies = [
 name = "hnsw-plane"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "memmap2",
  "napi",
  "napi-build",
