@@ -965,7 +965,7 @@ describe('Scope', () => {
 			} finally {
 				process.off('unhandledRejection', onUnhandled);
 			}
-			assert.deepEqual(unhandled, [], 'a failed initial load must not leak an unhandled rejection');
+			assert.deepStrictEqual(unhandled, [], 'a failed initial load must not leak an unhandled rejection');
 		});
 
 		it('reports a handler rejection after the initial load without leaking an unhandled rejection', async () => {
@@ -986,7 +986,7 @@ describe('Scope', () => {
 			} finally {
 				process.off('unhandledRejection', onUnhandled);
 			}
-			assert.deepEqual(unhandled, [], 'a post-initial-load handler rejection must not leak');
+			assert.deepStrictEqual(unhandled, [], 'a post-initial-load handler rejection must not leak');
 		});
 
 		it('drains sibling initial-load operations before surfacing the failure', async () => {
