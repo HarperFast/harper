@@ -159,6 +159,28 @@ describe('Subscription replay', () => {
 			// concurrent writes during replay should still come out in chronological order
 			assertChronological(events, 'startTime branch with concurrent writes out of order');
 		});
+
+		// harper#2444: rocksdb's transaction-log reader didn't stamp localTime on decoded audit
+		// records, so replay's getValue(store, fullRecord, auditRecord.localTime) had no
+		// reconstruction time for partial-record (patch) entries and delivered them with
+		// value: undefined — catch-up consumers dropped every partial update made while offline.
+		it('delivers a patch written while unsubscribed as a full-value event on catch-up', async () => {
+			const id = 9100;
+			await StartTimeTable.put(id, { name: 'patch_base' });
+			const startTime = StartTimeTable.primaryStore.getEntry(id).version;
+			await StartTimeTable.patch(id, { name: 'patch_updated' });
+			const subscription = await StartTimeTable.subscribe({ startTime, isCollection: true, omitCurrent: true });
+			const events = await collect(subscription, 100);
+			subscription.return?.();
+
+			const patchEvent = events.filter((e) => e.id === id).pop();
+			assert.ok(patchEvent, 'the patch made after startTime must be replayed');
+			assert.ok(
+				patchEvent.value != null,
+				`replayed ${patchEvent.type} event must carry a usable value, got ${patchEvent.value}`
+			);
+			assert.equal(patchEvent.value.name, 'patch_updated');
+		});
 	});
 
 	describe('count branch (collection with previousCount)', () => {
