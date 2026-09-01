@@ -23,7 +23,7 @@
  *   npm run test:integration -- "integrationTests/server/sse-finite-generator.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -83,6 +83,11 @@ suite(
 			await teardownHarper(ctx);
 		});
 
+		/** The `n` carried by each delivered event, in arrival order. */
+		function eventNumbers(result: { events: string[] }): number[] {
+			return result.events.map((event) => JSON.parse(event).n);
+		}
+
 		async function assertCompletes(path: string, expectedEvents: number) {
 			const uncaughtBefore = countUncaught(readLogSafe(logPath));
 			const r = await consumeSse(`${restBase}${path}`, authHeaders, 15_000);
@@ -119,7 +124,7 @@ suite(
 
 		test('2: SingleGen (N=1) over SSE — exactly 1 event, response closes cleanly', { timeout: 20_000 }, async () => {
 			const r = await assertCompletes('/SingleGen/', 1);
-			ok(r.events[0].includes('"n":0'), `expected the single event to contain n=0, got: ${r.events[0]}`);
+			deepStrictEqual(eventNumbers(r), [0]);
 		});
 
 		// ── 3: canonical finite generator (N=5) ──────────────────────────────────────────────
@@ -129,9 +134,7 @@ suite(
 			{ timeout: 20_000 },
 			async () => {
 				const r = await assertCompletes('/FiniteGen/', 5);
-				for (let i = 0; i < 5; i++) {
-					ok(r.events[i].includes(`"n":${i}`), `expected event ${i} to contain n=${i}, got: ${r.events[i]}`);
-				}
+				deepStrictEqual(eventNumbers(r), [0, 1, 2, 3, 4]);
 			}
 		);
 
@@ -142,8 +145,12 @@ suite(
 			{ timeout: 20_000 },
 			async () => {
 				const r = await assertCompletes('/LargeGen/', 3000);
-				ok(r.events[0].includes('"n":0'), `expected first event n=0, got: ${r.events[0]}`);
-				ok(r.events[2999].includes('"n":2999'), `expected last event n=2999, got: ${r.events[2999]}`);
+				// Every index, not just the endpoints: a reordering or duplication in the middle of a long
+				// stream preserves both the count and the ends.
+				deepStrictEqual(
+					eventNumbers(r),
+					Array.from({ length: 3000 }, (_, i) => i)
+				);
 			}
 		);
 
@@ -166,13 +173,15 @@ suite(
 				// lives in sse-throw-midstream.test.ts.
 				ok(!r.aborted, `must not hit the AbortController timeout — the response never terminated. raw:\n${r.raw}`);
 				ok(r.terminatedBy !== null, 'response must terminate via end/error/close, not hang indefinitely');
+				// The generator yields 2 before it throws. The upper bound is the contract; the lower bound
+				// is 1 rather than 2 because the abrupt destroy can drop the last chunk before it drains,
+				// and a prefix of zero events would mean the pre-error events were never delivered at all.
+				const delivered = eventNumbers(r);
 				ok(
-					r.events.length <= 2,
-					`expected at most the 2 events yielded before the throw, got ${r.events.length}. raw:\n${r.raw}`
+					delivered.length >= 1 && delivered.length <= 2,
+					`expected a 1-2 event prefix before the throw, got ${delivered.length}. raw:\n${r.raw}`
 				);
-				for (let i = 0; i < r.events.length; i++) {
-					ok(r.events[i].includes(`"n":${i}`), `expected event ${i} to contain n=${i}, got: ${r.events[i]}`);
-				}
+				deepStrictEqual(delivered, [0, 1].slice(0, delivered.length));
 				strictEqual(
 					(await uncaughtAfterSettle(logPath)) - uncaughtBefore,
 					0,
