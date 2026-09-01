@@ -90,6 +90,17 @@ pub struct PlaneFile {
 const PAGE: usize = 4096;
 const H_SLOTS_PER_PAGE: usize = 20; // u16
 
+/// MADV_RANDOM: hosts packing many instances live in permanent memory pressure, where
+/// evict-and-refault is steady state; default readahead pulls ~16 unwanted pages per random
+/// re-fault, taxing every tenant's page cache. The plane has no sequential reader to protect
+/// (search is pointer-chasing, the builder writes, backfill scans read the host store).
+fn advise_random(map: &MmapMut) {
+    #[cfg(unix)]
+    let _ = map.advise(memmap2::Advice::Random);
+    #[cfg(not(unix))]
+    let _ = map;
+}
+
 fn slot_size_for(dims: usize, layer0_cap: usize) -> usize {
     let raw = S_VECTOR + dims + layer0_cap * 4;
     raw.next_multiple_of(64) // cache-line align
@@ -131,6 +142,7 @@ impl PlaneFile {
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
         file.set_len(len)?;
         let mut map = unsafe { MmapMut::map_mut(&file)? };
+        advise_random(&map);
         // geometry and allocator state first; MAGIC+VERSION last, so a concurrent opener
         // in the create window sees an invalid header (retryable) rather than adopting a
         // half-initialized plane with max_nodes = 0
@@ -173,6 +185,7 @@ impl PlaneFile {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "plane file shorter than its header: recreate the index"));
         }
         let map = unsafe { MmapMut::map_mut(&file)? };
+        advise_random(&map);
         let magic = u32::from_le_bytes(map[H_MAGIC..H_MAGIC + 4].try_into().unwrap());
         let version = u32::from_le_bytes(map[H_VERSION..H_VERSION + 4].try_into().unwrap());
         if magic != MAGIC || version != VERSION {
