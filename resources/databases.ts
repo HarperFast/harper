@@ -2538,7 +2538,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 		}
 		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
-		// runs mid-create skips the table instead of building (and announcing) a partial one.
+		// runs mid-create skips the table instead of building (and announcing) a partial one. It already
+		// carries this table's relationships (set on primaryKeyAttribute above), so the persistence block
+		// below is a no-op for a create — a table is never published with an incomplete relationship list.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
 			// That write, not the registration below, is the publish point: it is durable from here

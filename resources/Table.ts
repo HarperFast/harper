@@ -6576,9 +6576,16 @@ export function makeTable(options) {
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
-			// a superseded pass settles now, or the reclamation run awaiting it never continues
-			settlePendingCleanup();
-			if (!cleanupInterval) return;
+			if (!cleanupInterval) {
+				// no replacement pass is being scheduled, so nothing is left to settle a superseded one
+				settlePendingCleanup();
+				return;
+			}
+			// This pass adopts the awaiters of the pass whose timer it just cleared: they settle when
+			// this pass's scan completes, so a reclamation run is never told the storage was reclaimed
+			// before any scan ran. It has to run now, though — that run blocks its whole path on the
+			// promise, and the replacement's own slot can be a full interval out.
+			if (pendingCleanupResolvers.size > 0) runImmediately = true;
 			return new Promise<void>((resolve) => {
 				pendingCleanupResolvers.add(resolve);
 				const startOfYear = new Date();
@@ -6607,6 +6614,9 @@ export function makeTable(options) {
 									settlePendingCleanup();
 									return;
 								}
+								// every awaiter registered before this scan began is satisfied by it, including
+								// any this pass adopted from the pass it superseded
+								const settling = [...pendingCleanupResolvers];
 								const MAX_CLEANUP_CONCURRENCY = 50;
 								const outstandingCleanupOperations = new Array(MAX_CLEANUP_CONCURRENCY);
 								let cleanupIndex = 0;
@@ -6686,8 +6696,10 @@ export function makeTable(options) {
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
-								pendingCleanupResolvers.delete(resolve);
-								resolve(undefined);
+								for (const settle of settling) {
+									pendingCleanupResolvers.delete(settle);
+									settle();
+								}
 								cleanupPriority = 0; // reset the priority
 							})),
 						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number

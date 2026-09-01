@@ -61,6 +61,73 @@ describe('create table catalog write order', () => {
 		);
 	});
 
+	it('publishes a primary row that already carries the relationship list', () => {
+		const Target = table({
+			table: 'CatalogRelationTarget',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+		});
+		const catalogPrototype = Object.getPrototypeOf(Target.dbisDB);
+		const writes = [];
+		const patched = [];
+		for (const method of ['put', 'putSync']) {
+			const original = catalogPrototype[method];
+			if (typeof original !== 'function') continue;
+			catalogPrototype[method] = function (key, value, ...rest) {
+				// the row is a live object the create keeps annotating, so record what this write persisted
+				if (typeof key === 'string' && key.startsWith('CatalogRelationHost/'))
+					writes.push({ key, relationships: value?.relationships && structuredClone(value.relationships) });
+				return original.call(this, key, value, ...rest);
+			};
+			patched.push([method, original]);
+		}
+		try {
+			table({
+				table: 'CatalogRelationHost',
+				database: 'test',
+				schemaDefined: true,
+				schemaRelationshipsDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'targetId', type: 'ID', indexed: true },
+					{
+						name: 'target',
+						type: 'CatalogRelationTarget',
+						relationship: { from: 'targetId' },
+						relationshipReference: { database: 'test', table: 'CatalogRelationTarget' },
+						definition: { tableClass: Target },
+					},
+				],
+			});
+		} finally {
+			for (const [method, original] of patched) catalogPrototype[method] = original;
+		}
+		const keys = writes.map((write) => write.key);
+		assert.strictEqual(
+			keys[keys.length - 1],
+			'CatalogRelationHost/',
+			`primary row must be the last catalog write of the create: ${keys}`
+		);
+		assert.deepStrictEqual(
+			writes[writes.length - 1].relationships,
+			[
+				{
+					name: 'target',
+					type: 'CatalogRelationTarget',
+					relationship: { from: 'targetId' },
+					target: { database: 'test', table: 'CatalogRelationTarget' },
+				},
+			],
+			'the published primary row must already list the relationships'
+		);
+		assert.strictEqual(
+			keys.filter((key) => key === 'CatalogRelationHost/').length,
+			1,
+			`relationship persistence must not rewrite the published primary row: ${keys}`
+		);
+	});
+
 	it('a create that fails before its primary row registers nothing, releases its stores, and can be retried', async () => {
 		const tableName = 'CatalogFailTest';
 		const Seed = table({
