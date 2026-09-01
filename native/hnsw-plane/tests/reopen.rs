@@ -12,8 +12,6 @@ fn vector_for(i: u32, dims: usize) -> Vec<f32> {
     (0..dims).map(|d| ((i as f32 * 0.31 + d as f32) * 0.7).sin()).collect()
 }
 
-/// Wait for a holder thread to report the lock taken, rather than spinning forever if it dies
-/// before signalling.
 fn await_lock(held: &std::sync::atomic::AtomicBool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !held.load(std::sync::atomic::Ordering::Acquire) {
@@ -357,12 +355,13 @@ fn contended_raw_rewrite_does_not_mint_a_second_upper_entry() {
             let guard =
                 hnsw_plane::seqlock::write_lock(seq, g2.file.self_tag, || panic!("live owner sanitized"), |tag| {
                     g2.file.tag_is_dead(tag)
-                });
+                })
+                .expect("the holder must actually take the lock, or the test proves nothing");
             held2.store(true, O::Release);
             std::thread::sleep(std::time::Duration::from_millis(30)); // past TAKEOVER_AFTER
             drop(guard);
         });
-        await_lock(&held); // the mirror must arrive with the lock genuinely held
+        await_lock(&held);
         graph.write_node_raw(9, 1, &q.0, q.1, q.2, &[1, 2], &[vec![n % 8]]).unwrap();
         hold.join().unwrap();
     }
@@ -377,8 +376,7 @@ fn contended_raw_rewrite_does_not_mint_a_second_upper_entry() {
 
 /// Nothing references a freshly allocated upper entry until its write lands, so a path that
 /// gives up on a wedged slot lock without freeing strands it outside both the freelist and the
-/// graph. `upper_high_water` staying put on the next allocation is what distinguishes a
-/// reclaimed entry from a leaked one.
+/// graph.
 #[test]
 fn a_wedged_untouched_write_frees_its_upper_entry() {
     use std::sync::atomic::Ordering as O;
@@ -403,7 +401,8 @@ fn a_wedged_untouched_write_frees_its_upper_entry() {
         let g2 = &g2;
         let guard = hnsw_plane::seqlock::write_lock(seq, g2.file.self_tag, || panic!("live owner sanitized"), |tag| {
             g2.file.tag_is_dead(tag)
-        });
+        })
+        .expect("the holder must actually take the lock, or the test proves nothing");
         held2.store(true, O::Release);
         std::thread::sleep(std::time::Duration::from_millis(6_500)); // past WRITE_WEDGE_AFTER
         drop(guard);
