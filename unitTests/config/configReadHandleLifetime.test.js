@@ -219,8 +219,10 @@ describe('root config read handle lifetime', () => {
 
 	it('OptionsWatcher still reads an application config without blocking', async () => {
 		// Application configs are written in place, never by rename-over, so they must keep the
-		// non-blocking read — a slow or stalled component-config volume must not stall the thread.
-		const appConfigPath = join(fixture, 'config.yaml');
+		// non-blocking read — including when the component uses a root-style config filename.
+		const appDirectory = join(fixture, 'application');
+		mkdirSync(appDirectory);
+		const appConfigPath = join(appDirectory, HARPER_CONFIG_FILE);
 		writeFileSync(appConfigPath, stringify({ 'test-component': { enabled: true } }));
 		const watcher = new OptionsWatcher('test-component', appConfigPath, undefined, false);
 		openWatchers.push(watcher);
