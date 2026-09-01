@@ -1400,35 +1400,6 @@ function assertLegalBranchName(name: string, description: string): void {
 }
 
 /**
- * Open a RocksDB directory as a **scope-private** database: its Table classes are built into an
- * object the caller owns and nothing is registered in the global `databases` map, so no enumerator
- * of that map — analytics, `describe_all`, worker teardown, replication — can observe it.
- *
- * `databaseName` is the *logical* name the application knows (`data`), so its schema and code need
- * no changes. `storeName` is the branch's own identity and is what `getRootBlobPathsForDB` resolves
- * blob directories from, which is how a branch gets its own blob roots rather than writing into the
- * base's.
- *
- * The caller owns the returned handle; the only thing that closes it on the caller's behalf is
- * `closeBranchDatabases`, which `closeLoadedDatabases` runs at thread teardown so a branch left open
- * on an exiting worker does not leak its handles into the process-global RocksDB registry.
- *
- * NOT SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
- * `dropTable()` or equivalent through one resolves against the global schema and would delete the
- * live base Table class — which is why schema operations through a branch are refused
- * (branchGuard.ts).
- *
- * A branch's blob roots are a hard-link clone of the base's, taken with the checkpoint, so a row
- * whose blob predates the branch reads back normally and the branch allocates new file ids in its own
- * directory (harper#644).
- *
- * A branch is the checkpoint's SST content plus its own transaction-log tail. This function opens
- * only the stores; replaying the tail is `openOrCreate`'s job (branchDatabase.ts), where the
- * cross-thread claim elects exactly one replayer and awaits it before any thread may open the
- * branch — the same recovery contract a base database gets at boot, without which a process that
- * died unflushed silently rewinds the branch to its last memtable flush (harper#643).
- */
-/**
  * Refuse a branch store identity that something else already answers to.
  *
  * `storeName` picks the branch's blob roots, and blob file ids restart from each store's own counter,
@@ -1487,9 +1458,20 @@ export function isBranchIdentity(name: string): boolean {
 	// The in-memory set covers only branches open in THIS process, so after a restart -- or for an
 	// application that is simply not loaded -- a database could take the name of an on-disk branch and
 	// share its blob root. The staging sibling goes through the same route, because it names the path
-	// materialization renames over. The identity carries the application name's length precisely so it
-	// can be taken apart again without guessing where the name ends.
-	const storeName = name.endsWith(BRANCH_STAGING_SUFFIX) ? name.slice(0, -BRANCH_STAGING_SUFFIX.length) : name;
+	// materialization renames over -- but BOTH readings of a name ending in `.staging` have to be
+	// tried: `schemaRegex` permits `.`, so `4_myapp__data.staging` is either the sibling of a branch of
+	// `data` or a branch of a database actually called `data.staging`.
+	if (branchDirectoryExistsFor(name)) return true;
+	return name.endsWith(BRANCH_STAGING_SUFFIX)
+		? branchDirectoryExistsFor(name.slice(0, -BRANCH_STAGING_SUFFIX.length))
+		: false;
+}
+
+/**
+ * Is there a branch directory answering to this store identity? The identity carries the application
+ * name's length precisely so it can be taken apart again without guessing where the name ends.
+ */
+function branchDirectoryExistsFor(storeName: string): boolean {
 	const prefix = /^(\d+)_/.exec(storeName);
 	if (!prefix) return false;
 	const appLength = Number(prefix[1]);
@@ -1509,6 +1491,38 @@ export function isBranchIdentity(name: string): boolean {
 	}
 }
 
+/**
+ * Open a RocksDB directory as a **scope-private** database: its Table classes are built into an
+ * object the caller owns and nothing is registered in the global `databases` map, so no enumerator
+ * of that map — analytics, `describe_all`, worker teardown, replication — can observe it.
+ *
+ * `databaseName` is the *logical* name the application knows (`data`), so its schema and code need
+ * no changes. `storeName` is the branch's own identity and is what `getRootBlobPathsForDB` resolves
+ * blob directories from, which is how a branch gets its own blob roots rather than writing into the
+ * base's.
+ *
+ * The caller owns the returned handle; the only thing that closes it on the caller's behalf is
+ * `closeBranchDatabases`, which `closeLoadedDatabases` runs at thread teardown so a branch left open
+ * on an exiting worker does not leak its handles into the process-global RocksDB registry.
+ *
+ * NOT SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
+ * `dropTable()` or equivalent through one resolves against the global schema and would delete the
+ * live base Table class — which is why schema operations through a branch are refused
+ * (branchGuard.ts).
+ *
+ * A branch's blob roots are a hard-link clone of the base's, taken with the checkpoint, so a row
+ * whose blob predates the branch reads back normally and the branch allocates new file ids in its own
+ * directory (harper#644).
+ *
+ * A branch is the checkpoint's SST content plus its own transaction-log tail. This function opens
+ * only the stores; replaying the tail is `openOrCreate`'s job (branchDatabase.ts), where the
+ * cross-thread claim elects exactly one replayer and awaits it before any thread may open the
+ * branch — the same recovery contract a base database gets at boot, without which a process that
+ * died unflushed silently rewinds the branch to its last memtable flush (harper#643).
+ *
+ * Pass `blobRoots` to pin the handle to the roots the branch was published with; without it the
+ * store resolves them from current configuration, which is only right for a branch being created.
+ */
 export function openBranchDatabase(
 	path: string,
 	databaseName: string,

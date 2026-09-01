@@ -54,8 +54,12 @@ export function blobSnapshotDir(backupDir: string, backupId: number): string {
  * Hard-link `src` to `dest`, falling back to a copy when the two are on different filesystems (or
  * the filesystem does not support additional hard links). Never creates a symlink. Returns false
  * when the source vanishes so the caller can substitute a marker for it.
+ *
+ * A fallback copy is counted rather than merely tolerated: it turns a constant-time clone into an
+ * O(bytes) one that also doubles the disk, and a caller doing this on a latency budget (a branch
+ * materialized during application load) has to be able to say so.
  */
-async function linkOrCopy(src: string, dest: string): Promise<boolean> {
+async function linkOrCopy(src: string, dest: string, counts?: { copied: number }): Promise<boolean> {
 	await mkdir(dirname(dest), { recursive: true });
 	try {
 		await link(src, dest);
@@ -77,11 +81,12 @@ async function linkOrCopy(src: string, dest: string): Promise<boolean> {
 				if (copyError.code === 'ENOENT') return false;
 				throw copyError;
 			}
+			if (counts) counts.copied++;
 			return true;
 		}
 		if (error.code === 'EEXIST') {
 			await unlink(dest);
-			return linkOrCopy(src, dest);
+			return linkOrCopy(src, dest, counts);
 		}
 		throw error;
 	}
@@ -103,7 +108,8 @@ const BACKUP_MARKER_REASONS: CaptureMarkerReasons = {
 async function captureBlobFile(
 	srcPath: string,
 	destPath: string,
-	reasons: CaptureMarkerReasons = BACKUP_MARKER_REASONS
+	reasons: CaptureMarkerReasons = BACKUP_MARKER_REASONS,
+	counts?: { copied: number }
 ): Promise<BlobCaptureDisposition> {
 	let disposition: BlobCaptureDisposition;
 	try {
@@ -120,7 +126,7 @@ async function captureBlobFile(
 	}
 	if (disposition === 'skip') return disposition;
 	if (disposition === 'capture') {
-		if (await linkOrCopy(srcPath, destPath)) return disposition;
+		if (await linkOrCopy(srcPath, destPath, counts)) return disposition;
 		disposition = 'gone';
 	}
 	await mkdir(dirname(destPath), { recursive: true });
@@ -137,15 +143,18 @@ async function captureBlobFile(
  * only; restore must replace exactly what the snapshot holds.
  *
  * Also used by branch materialization (harper#644), which clones a base's blob roots into the
- * branch's own so the OS inode refcount does the reference counting.
+ * branch's own so the OS inode refcount does the reference counting. That caller passes `onProgress`
+ * because its walk runs inside a window other threads are waiting on, and `copied` because a walk
+ * that had to copy instead of link cost it time and disk it should report.
  */
 export async function copyTree(
 	srcRoot: string,
 	destRoot: string,
 	classify = false,
-	reasons?: CaptureMarkerReasons
-): Promise<{ substituted: number; captured: number }> {
-	const counts = { substituted: 0, captured: 0 };
+	reasons?: CaptureMarkerReasons,
+	onProgress?: () => void
+): Promise<{ substituted: number; captured: number; copied: number }> {
+	const counts = { substituted: 0, captured: 0, copied: 0 };
 	if (!existsSync(srcRoot)) return counts;
 	const stack: string[] = [srcRoot];
 	while (stack.length > 0) {
@@ -164,12 +173,13 @@ export async function copyTree(
 			} else if (entry.isFile()) {
 				const destPath = join(destRoot, relative(srcRoot, srcPath));
 				if (classify) {
-					const disposition = await captureBlobFile(srcPath, destPath, reasons);
+					const disposition = await captureBlobFile(srcPath, destPath, reasons, counts);
 					if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
 					else if (disposition === 'capture') counts.captured++;
 				} else {
-					await linkOrCopy(srcPath, destPath);
+					await linkOrCopy(srcPath, destPath, counts);
 				}
+				onProgress?.();
 			}
 			// symlinks/other node types in a blob root are not expected and are intentionally skipped
 		}

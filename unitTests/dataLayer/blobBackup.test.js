@@ -8,6 +8,7 @@ const {
 	blobSnapshotDir,
 	blobsReadmeContent,
 	copyBlobRootsByIndex,
+	copyTree,
 	snapshotBlobs,
 	restoreBlobSnapshot,
 	deleteBlobSnapshot,
@@ -244,6 +245,24 @@ describe('blobBackup', function () {
 			await copyBlobRootsByIndex(destination, [rootA, rootB]);
 			assert.ok(!existsSync(join(destination, '0', '001/002/003')), 'a stale file from the previous copy is gone');
 			assert.strictEqual(blobBody(join(destination, '0', '001/002/009')), 'delta');
+		});
+	});
+
+	describe('copyTree', function () {
+		it('reports one unit of progress per file, so a caller inside a claim window can prove it is alive', async function () {
+			writeBlob(rootA, '001/002/003', 'alpha');
+			writeBlob(rootA, '001/002/004', 'beta');
+			writeBlob(rootA, '007/008/009', 'gamma');
+			let ticks = 0;
+
+			const counts = await copyTree(rootA, join(tempDir, 'walked'), true, undefined, () => ticks++);
+
+			// Branch materialization holds a cross-thread claim for the whole walk, and every other
+			// thread's application load is waiting on it; without a tick per file a big enough base
+			// times all of them out while this is healthily copying.
+			assert.strictEqual(ticks, 3, 'every file walked reports progress');
+			assert.strictEqual(counts.captured, 3);
+			assert.strictEqual(counts.copied, 0, 'a same-filesystem walk hard-links and copies nothing');
 		});
 	});
 

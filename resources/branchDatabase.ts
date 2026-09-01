@@ -42,9 +42,14 @@ const UNCLAIMED = 0n;
 const CREATING = 1n;
 const READY = 2n;
 
+/** Slot holding the claim itself. */
+const CLAIM_STATE = 0;
+/** Slot the winner bumps as materialization advances; see `claimDeadlineFor`. */
+const CLAIM_PROGRESS = 1;
+
 const MAX_NAME_LENGTH = commonValidators.schema_length.maximum;
 
-/** How long a loser waits for the winner's checkpoint before giving up on the branch; the
+/** How long a loser waits on a winner that reports NO progress before giving up on the branch; the
  *  winner's replay budget is added on top where the deadline is built (`openOrCreate`). */
 const CLAIM_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -53,6 +58,8 @@ interface OpenBranch {
 	/** Reset on removal: the buffer outlives the directory, and a stale READY would make the next
 	 *  caller skip materialization and then fail to open a directory that is no longer there. */
 	claimState: BigInt64Array;
+	/** What the handle resolves blobs through, so teardown deletes exactly what this branch owns. */
+	blobRoots: string[];
 }
 
 // Keyed on the in-flight open, not the finished one: within a thread the losers of the claim wake on
@@ -67,14 +74,35 @@ const branchesByPath = new Map<string, Promise<OpenBranch>>();
  */
 function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
 	const baseStore = database({ database: baseName, table: undefined });
-	const seed = new BigInt64Array([UNCLAIMED]);
+	const seed = new BigInt64Array([UNCLAIMED, 0n]);
 	return new BigInt64Array(baseStore.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer));
 }
 
+/** One unit of materialization finished, which buys every waiting thread another full budget. */
+export function reportClaimProgress(state: BigInt64Array): void {
+	Atomics.add(state, CLAIM_PROGRESS, 1n);
+}
+
 /**
- * Take the checkpoint into a temporary sibling and rename it into place, so a crash mid-copy leaves
- * debris rather than a half-populated directory that RocksDB would then refuse to open.
+ * A deadline that follows the winner's progress rather than the clock alone. The claim window covers a
+ * hard-link clone of the base's entire blob tree, so any fixed budget is wrong for a large enough base:
+ * every waiting thread's load fails while the winner is healthily copying, the winner then publishes,
+ * and the next deploy succeeds -- so a real outage reads as a flap. Restarting the budget on each unit
+ * of reported work bounds a winner that has STOPPED rather than one that is merely slow.
  */
+export function claimDeadlineFor(state: BigInt64Array, budget: number): () => number {
+	let seen = Atomics.load(state, CLAIM_PROGRESS);
+	let at = Date.now() + budget;
+	return () => {
+		const progress = Atomics.load(state, CLAIM_PROGRESS);
+		if (progress !== seen) {
+			seen = progress;
+			at = Date.now() + budget;
+		}
+		return at;
+	};
+}
+
 /**
  * Reproduce the base's blob roots as the branch's own, hard-linking each file so the OS inode
  * refcount does the reference counting: the branch and base share the bytes, each holds its own
@@ -88,9 +116,10 @@ function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
  * stamps PENDING onto that inode IN PLACE -- through the branch's link as well, since it is the same
  * inode. The marker makes that blob fail loudly in the branch instead.
  */
-async function cloneBlobRoots(baseName: string, branchRoots: string[]): Promise<void> {
+async function cloneBlobRoots(baseName: string, branchRoots: string[], progress: () => void): Promise<void> {
 	const baseRoots = getBlobPathsForDatabaseName(baseName);
 	let substituted = 0;
+	let copied = 0;
 	for (let index = 0; index < baseRoots.length; index++) {
 		const staging = `${branchRoots[index]}.staging`;
 		await rm(staging, { recursive: true, force: true });
@@ -98,19 +127,36 @@ async function cloneBlobRoots(baseName: string, branchRoots: string[]): Promise<
 		// the branch still needs its own (empty) root to exist so its allocator starts where the base's
 		// would have.
 		await mkdir(staging, { recursive: true });
-		const counts = await copyTree(baseRoots[index], staging, true, {
-			gone: 'blob was already reclaimed from the base when this branch was created',
-			pending: 'blob was still being written to the base when this branch was created',
-		});
+		const counts = await copyTree(
+			baseRoots[index],
+			staging,
+			true,
+			{
+				gone: 'blob was already reclaimed from the base when this branch was created',
+				pending: 'blob was still being written to the base when this branch was created',
+			},
+			progress
+		);
 		substituted += counts.substituted;
+		copied += counts.copied;
 		await rm(branchRoots[index], { recursive: true, force: true });
 		await mkdir(dirname(branchRoots[index]), { recursive: true });
 		await rename(staging, branchRoots[index]);
+		progress();
 	}
 	if (substituted > 0) {
 		logger.warn?.(
 			`Branch of '${baseName}' substituted ${substituted} blob file(s) with markers because they were ` +
 				`mid-write or already reclaimed when it was created; reads of those blobs in the branch will fail`
+		);
+	}
+	if (copied > 0) {
+		// The hard link is the whole design: without it the branch is a second full copy of the base's
+		// blobs, taken while the application is loading, and nothing else in the log would say so.
+		logger.warn?.(
+			`Branch of '${baseName}' could not hard-link ${copied} blob file(s) and copied their bytes instead; ` +
+				`on a filesystem without hard links a branch costs a full copy of the base's blobs, in disk and ` +
+				`in the time every application load that creates one takes`
 		);
 	}
 }
@@ -157,8 +203,9 @@ type BranchState =
 	| { state: 'unmarked'; why: string }
 	/** `blobRoots` is what was published with it, and what the branch stays pinned to while it is open. */
 	| { state: 'complete'; blobRoots: string[] }
-	/** Was published complete; part of what it recorded is gone or no longer matches the config. */
-	| { state: 'damaged'; problem: string };
+	/** Was published complete; part of what it recorded is gone or no longer matches the config.
+	 *  `blobRoots` is still what it recorded, and so still the only list a removal may delete. */
+	| { state: 'damaged'; problem: string; blobRoots: string[] };
 
 /**
  * Does this directory hold database data? Not "does CURRENT exist" -- a store that lost CURRENT still
@@ -202,7 +249,14 @@ function readBranchState(branchPath: string, storeName: string): BranchState {
 		return looksLikeAStore ? { state: 'unmarked', why: 'it has no readable completion marker' } : { state: 'debris' };
 	}
 	// `JSON.parse('null')` succeeds and yields null, so this cannot go straight to a property access.
-	if (recorded == null || !Array.isArray(recorded.blobRoots) || recorded.blobRoots.some((r) => typeof r !== 'string')) {
+	// An empty list would pass the prefix check below and pin the branch to no roots at all, so the
+	// first blob write would fail on an undefined path instead of here, where it can say why.
+	if (
+		recorded == null ||
+		!Array.isArray(recorded.blobRoots) ||
+		recorded.blobRoots.length === 0 ||
+		recorded.blobRoots.some((r) => typeof r !== 'string')
+	) {
 		return { state: 'unmarked', why: 'its completion marker is malformed' };
 	}
 	const configured = getBlobPathsForDatabaseName(storeName);
@@ -217,23 +271,34 @@ function readBranchState(branchPath: string, storeName: string): BranchState {
 			problem:
 				`its blob roots no longer match the configured storage.blobPaths ` +
 				`(recorded ${JSON.stringify(recorded.blobRoots)}, configured ${JSON.stringify(configured)})`,
+			blobRoots: recorded.blobRoots,
 		};
 	}
 	const missing = recorded.blobRoots.filter((root) => !existsSync(root));
 	return missing.length
-		? { state: 'damaged', problem: `blob root(s) are missing: ${missing.join(', ')}` }
+		? { state: 'damaged', problem: `blob root(s) are missing: ${missing.join(', ')}`, blobRoots: recorded.blobRoots }
 		: { state: 'complete', blobRoots: recorded.blobRoots };
 }
 
-/** Publishes the branch and reports the blob roots its marker records, which is what it is pinned to. */
-async function materializeBranch(baseName: string, branchPath: string, storeName: string): Promise<string[]> {
+/**
+ * Take the checkpoint into a temporary sibling and rename it into place, so a crash mid-copy leaves
+ * debris rather than a half-populated directory that RocksDB would then refuse to open. Reports the
+ * blob roots the marker records, which is what the branch is then pinned to.
+ */
+async function materializeBranch(
+	baseName: string,
+	branchPath: string,
+	storeName: string,
+	report: { progress: () => void; strandedRoots: () => void }
+): Promise<string[]> {
 	const staging = `${branchPath}.staging`;
 	const blobRoots = getBlobPathsForDatabaseName(storeName);
 	await rm(staging, { recursive: true, force: true });
 	await mkdir(dirname(branchPath), { recursive: true });
 	try {
 		await database({ database: baseName, table: undefined }).createCheckpoint(staging);
-		await cloneBlobRoots(baseName, blobRoots);
+		report.progress();
+		await cloneBlobRoots(baseName, blobRoots, report.progress);
 		await writeFile(join(staging, COMPLETION_MARKER), JSON.stringify({ blobRoots } satisfies BranchCompletion));
 		await rename(staging, branchPath);
 		return blobRoots;
@@ -243,7 +308,8 @@ async function materializeBranch(baseName: string, branchPath: string, storeName
 		// already published and nothing owns them once this attempt is abandoned. Only safe because this
 		// branch never became complete -- one that did is never rebuilt, so this cannot remove the last
 		// copy of anything.
-		await removeBlobRoots(blobRoots);
+		// Surviving roots still hold this identity's files, so the caller must not release the name.
+		if (!(await removeBlobRoots(blobRoots))) report.strandedRoots();
 		throw error;
 	}
 }
@@ -260,19 +326,19 @@ function isShared(state: BigInt64Array): boolean {
 }
 
 function wakeWaiters(state: BigInt64Array): void {
-	if (isShared(state)) Atomics.notify(state, 0);
+	if (isShared(state)) Atomics.notify(state, CLAIM_STATE);
 }
 
 /** Wait until the claim leaves CREATING, and report the state it settled on. */
-async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: number): Promise<bigint> {
+async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: () => number): Promise<bigint> {
 	for (;;) {
-		const current = Atomics.load(state, 0);
+		const current = Atomics.load(state, CLAIM_STATE);
 		if (current !== CREATING) return current;
-		const remaining = deadline - Date.now();
+		const remaining = deadline() - Date.now();
 		if (remaining <= 0) throw new Error(`Timed out waiting for another thread to create the branch at ${branchPath}`);
 		const slice = Math.min(remaining, 1000);
 		if (isShared(state)) {
-			const wait = (Atomics as any).waitAsync(state, 0, CREATING, slice);
+			const wait = (Atomics as any).waitAsync(state, CLAIM_STATE, CREATING, slice);
 			if (wait.async) await wait.value;
 		} else {
 			await new Promise((resolve) => setTimeout(resolve, Math.min(slice, 5)));
@@ -315,19 +381,24 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 	// cannot take the same name.
 	reserveBranchIdentity(storeName);
 	let handedOver = false;
+	// An abandoned attempt whose roots could not be removed keeps the name: they still hold this
+	// identity's files, and a database created under it would resolve its own new ids onto them.
+	let blobRootsStranded = false;
 	try {
 		// The claim's CREATING window now covers the winner's replay as well as its checkpoint, so
 		// waiters must outlast the replay budget too, or a merely slow (but live) recovery would time
-		// out every other thread's application load minutes before the winner publishes READY.
-		const deadline = Date.now() + CLAIM_TIMEOUT_MS + replayTimeBudgetMs();
+		// out every other thread's application load minutes before the winner publishes READY. The
+		// clone in between is unbounded in the base's size, which is why the budget follows progress.
+		const deadline = claimDeadlineFor(claimState, CLAIM_TIMEOUT_MS + replayTimeBudgetMs());
 		for (;;) {
 			// The deadline bounds the whole protocol, not just a single wait: an unexpected state word --
 			// a future state, a buffer another version wrote -- must fail this load, never spin forever.
-			if (Date.now() > deadline) throw new Error(`Timed out claiming the branch at ${branchPath}`);
-			const previous = Atomics.compareExchange(claimState, 0, UNCLAIMED, CREATING);
+			if (Date.now() > deadline()) throw new Error(`Timed out claiming the branch at ${branchPath}`);
+			const previous = Atomics.compareExchange(claimState, CLAIM_STATE, UNCLAIMED, CREATING);
 			if (previous === READY) break;
 			if (previous === UNCLAIMED) {
 				let branch: BranchDatabase | undefined;
+				let blobRoots: string[] = [];
 				try {
 					// Adopt rather than recreate. The branch outlives the process that first made it, so on
 					// every restart after the first the directory is already here — and `materializeBranch`
@@ -343,7 +414,6 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 								`have it recreated from the base on the next load.`
 						);
 					}
-					let blobRoots: string[];
 					if (existing.state === 'complete') {
 						blobRoots = existing.blobRoots;
 						const configured = getBlobPathsForDatabaseName(storeName);
@@ -359,7 +429,10 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					} else {
 						// Absent, or leftovers that are not a store: nothing here can be lost.
 						await rm(branchPath, { recursive: true, force: true });
-						blobRoots = await materializeBranch(baseName, branchPath, storeName);
+						blobRoots = await materializeBranch(baseName, branchPath, storeName, {
+							progress: () => reportClaimProgress(claimState),
+							strandedRoots: () => (blobRootsStranded = true),
+						});
 					}
 					releaseBranchIdentity(storeName);
 					branch = openBranchDatabase(branchPath, baseName, storeName, blobRoots);
@@ -371,7 +444,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					// checkpoint copies only RocksDB files), so replay after materialize is a no-op; the
 					// read-only skip mirrors the base's boot replay.
 					if (!isReadOnlyMode()) await replayLogs(branch.rootStore as RocksDatabase, branch.tables, true);
-					Atomics.store(claimState, 0, READY);
+					Atomics.store(claimState, CLAIM_STATE, READY);
 				} catch (error) {
 					// Release rather than record the failure. A claim that stays un-releasable turns one
 					// transient error -- a full disk, a rename losing a race -- into a branch that can never
@@ -383,13 +456,13 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					} catch (closeError) {
 						logger.warn(`Error closing branch at ${branchPath} after a failed open`, closeError);
 					}
-					Atomics.store(claimState, 0, UNCLAIMED);
+					Atomics.store(claimState, CLAIM_STATE, UNCLAIMED);
 					throw error;
 				} finally {
 					wakeWaiters(claimState);
 				}
 				handedOver = true;
-				return { branch, claimState };
+				return { branch, claimState, blobRoots };
 			}
 			// Someone else holds it. A wait that settles on UNCLAIMED means they failed and released, so
 			// take another turn at being the one who creates it.
@@ -411,11 +484,11 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 		releaseBranchIdentity(storeName);
 		const adopted = openBranchDatabase(branchPath, baseName, storeName, published.blobRoots);
 		handedOver = true;
-		return { branch: adopted, claimState };
+		return { branch: adopted, claimState, blobRoots: published.blobRoots };
 	} finally {
 		// `openBranchDatabase` takes the identity over for the life of the handle; anything short of
 		// that has to hand it back, or the application can never load again in this process.
-		if (!handedOver) releaseBranchIdentity(storeName);
+		if (!handedOver && !blobRootsStranded) releaseBranchIdentity(storeName);
 	}
 }
 
@@ -459,10 +532,10 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
 	const storeName = branchStoreNameFor(branchPath);
-	// Read while the marker is still on disk: what this branch owns is what it published, which for a
-	// branch that predates an appended `storage.blobPaths` entry is a prefix of the configured list.
-	const published = readBranchState(branchPath, storeName);
-	const blobRoots = published.state === 'complete' ? published.blobRoots : getBlobPathsForDatabaseName(storeName);
+	// What this branch owns is what it published, not what is configured now: an entry appended to
+	// `storage.blobPaths` since may already hold a `<storeName>` directory this branch never wrote.
+	// The open handle is already pinned to them; otherwise the marker still on disk names them.
+	const blobRoots = opened?.blobRoots ?? recordedBlobRootsAt(branchPath, storeName);
 	// The identity has to be held for every deletion below, not just checked before them:
 	// `isBranchIdentity` is what stops `table()` claiming this name, and once the directory is gone its
 	// on-disk half sees nothing either, so the reservation is the only thing left holding the name while
@@ -472,7 +545,7 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 		opened.branch.close();
 		// Same turn as the close that released it, so nothing can slip into the gap.
 		retakeBranchIdentity(storeName);
-		Atomics.store(opened.claimState, 0, UNCLAIMED);
+		Atomics.store(opened.claimState, CLAIM_STATE, UNCLAIMED);
 		wakeWaiters(opened.claimState);
 	} else {
 		// Never opened here, so the name has to be claimed outright. Failing means something else already
@@ -509,6 +582,19 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	} finally {
 		if (releaseAfterCleanup) releaseBranchIdentity(storeName);
 	}
+}
+
+/**
+ * The roots a branch on disk recorded, falling back to configuration only for one that never
+ * published a usable marker -- an abandoned materialization, whose roots ARE the configured ones.
+ */
+function recordedBlobRootsAt(branchPath: string, storeName: string): string[] {
+	const published = readBranchState(branchPath, storeName);
+	// A marker that reads as damaged still names what this branch published, and that is what may be
+	// deleted; only a branch with no usable marker at all leaves configuration as the best answer.
+	return published.state === 'complete' || published.state === 'damaged'
+		? published.blobRoots
+		: getBlobPathsForDatabaseName(storeName);
 }
 
 /** `<storage>/`branches`/<app>/<db>` — the same identity `branchStoreName` composed on the way in. */
