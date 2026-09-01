@@ -169,20 +169,49 @@ function tally(serials: number[]): string {
 	return [...counts.entries()].map(([serial, n]) => `${serial}=${n}`).join(', ');
 }
 
-/** Poll until a fresh connection serves `expectedSerial`, or the deadline passes. Returns ms taken, or -1. */
-async function waitForSerial(hostname: string, expectedSerial: number, deadlineMs: number): Promise<number> {
+/**
+ * Poll whole fan-outs until EVERY fresh handshake serves `expectedSerial`, or the deadline passes;
+ * `tookMs` is -1 if it never converged. Waiting on the all-worker condition rather than on the
+ * first worker to flip is what makes this safe under load: each worker debounces its own
+ * updateTLS() rebuild independently, so a one-connection probe can succeed while another worker is
+ * still on the old context, and an immediate all-workers assertion would then fail a rotation that
+ * was merely mid-flight.
+ */
+async function waitForAllWorkers(
+	hostname: string,
+	expectedSerial: number,
+	attempts: number,
+	deadlineMs: number
+): Promise<{ tookMs: number; serials: number[]; errors: number }> {
 	const start = Date.now();
 	const deadline = start + deadlineMs;
-	while (Date.now() < deadline) {
-		try {
-			const cert = await servedCert(hostname);
-			if (cert.serial === expectedSerial) return Date.now() - start;
-		} catch {
-			// transient — keep polling
+	let last = await fanOut(hostname, attempts);
+	while (true) {
+		if (last.errors === 0 && last.serials.length === attempts && last.serials.every((s) => s === expectedSerial)) {
+			return { tookMs: Date.now() - start, ...last };
 		}
+		if (Date.now() >= deadline) return { tookMs: -1, ...last };
 		await sleep(400);
+		last = await fanOut(hostname, attempts);
 	}
-	return -1;
+}
+
+/** Observed live worker count via the operations API (best-effort, 0 on failure) — same guard as cert-reload.test.ts. */
+async function observedWorkerCount(ctx: ContextWithHarper): Promise<number> {
+	try {
+		const res = await fetch(ctx.harper.operationsAPIURL, {
+			method: 'POST',
+			headers: {
+				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({ operation: 'system_information', attributes: ['threads'] }),
+		});
+		const body = (await res.json()) as { threads?: unknown };
+		return Array.isArray(body.threads) ? body.threads.length : 0;
+	} catch {
+		return 0;
+	}
 }
 
 for (const WORKERS of [1, 4]) {
@@ -240,6 +269,16 @@ for (const WORKERS of [1, 4]) {
 			const SERIAL_ROTATE_AFTER_SCHEMA_CHANGE = 87703; // rotation after an ordinary schema change
 
 			test(`threads=${WORKERS}: baseline cert is served (peer cert inspected, not just "connected")`, async () => {
+				// The harness hardcodes --THREADS_COUNT=1 and this suite overrides it via config. If
+				// the override were ignored, or workers died during startup, every handshake below
+				// would land on one survivor and the whole per-worker-divergence premise would be
+				// silently vacuous.
+				const workerCount = await observedWorkerCount(ctx);
+				ok(
+					workerCount >= WORKERS,
+					`expected at least ${WORKERS} worker threads for this arm, observed ${workerCount} — the arm would be vacuous`
+				);
+
 				const { serials, errors } = await fanOut(ctx.harper.hostname, 10);
 				equal(errors, 0, `unexpected handshake failures: ${errors}/10`);
 				ok(
@@ -250,27 +289,42 @@ for (const WORKERS of [1, 4]) {
 
 			test(`threads=${WORKERS}: rotation with no schema change propagates normally (control, mirrors #586)`, async () => {
 				await writeFile(certPath, await makeServerCertPem(keyPair, SERIAL_ROTATE_NO_SWAP));
-				const took = await waitForSerial(ctx.harper.hostname, SERIAL_ROTATE_NO_SWAP, PROPAGATION_WAIT_MS);
-				ok(took >= 0, `rotation never propagated within ${PROPAGATION_WAIT_MS}ms`);
-				console.log(`[QA-877 threads=${WORKERS}] rotation (no schema change) propagated in ${took}ms`);
-
-				const { serials, errors } = await fanOut(ctx.harper.hostname, FANOUT_ATTEMPTS);
+				const { tookMs, serials, errors } = await waitForAllWorkers(
+					ctx.harper.hostname,
+					SERIAL_ROTATE_NO_SWAP,
+					FANOUT_ATTEMPTS,
+					PROPAGATION_WAIT_MS
+				);
+				console.log(`[QA-877 threads=${WORKERS}] rotation (no schema change) reached every worker in ${tookMs}ms`);
 				equal(errors, 0, `unexpected handshake failures: ${errors}/${FANOUT_ATTEMPTS}`);
 				ok(
-					serials.every((s) => s === SERIAL_ROTATE_NO_SWAP),
-					`expected every worker to serve ${SERIAL_ROTATE_NO_SWAP} after settling, got: ${tally(serials)}`
+					tookMs >= 0,
+					`rotation did not reach every worker within ${PROPAGATION_WAIT_MS}ms, last tally: ${tally(serials)}`
 				);
 			});
 
 			test(`threads=${WORKERS}: an ordinary schema change (create_attribute) triggers resetDatabases() but does not disturb the currently-served cert`, async () => {
-				const result = await sendOperation(ctx.harper, {
+				const attribute = `qa877SchemaChange_${WORKERS}`;
+				await sendOperation(ctx.harper, {
 					operation: 'create_attribute',
 					schema: 'data',
 					table: 'Widget',
-					attribute: `qa877SchemaChange_${WORKERS}`,
+					attribute,
 				});
-				ok(result, 'create_attribute did not succeed');
-				await sleep(1500); // let the ITC schema broadcast reach every worker's resetDatabases()
+				// sendOperation already fails a non-200, but a 200 that did not actually alter the
+				// schema would make the rest of this arm vacuous — so read the attribute back.
+				const described = await sendOperation(ctx.harper, {
+					operation: 'describe_table',
+					database: 'data',
+					table: 'Widget',
+				});
+				ok(
+					(described?.attributes ?? []).some((a: { attribute?: string }) => a.attribute === attribute),
+					`create_attribute reported success but '${attribute}' is not on the table: ${JSON.stringify(described?.attributes)}`
+				);
+				// A fixed wait is right here: the assertion below is that something did NOT happen
+				// (the served cert did not change), so there is no condition to poll for.
+				await sleep(1500);
 
 				const { serials, errors } = await fanOut(ctx.harper.hostname, FANOUT_ATTEMPTS);
 				equal(errors, 0, `unexpected handshake failures right after the schema change: ${errors}/${FANOUT_ATTEMPTS}`);
@@ -282,28 +336,26 @@ for (const WORKERS of [1, 4]) {
 
 			test(`threads=${WORKERS}: rotation AFTER that schema change ALSO propagates normally (#2004 does not reproduce via this trigger)`, async () => {
 				await writeFile(certPath, await makeServerCertPem(keyPair, SERIAL_ROTATE_AFTER_SCHEMA_CHANGE));
-				const took = await waitForSerial(ctx.harper.hostname, SERIAL_ROTATE_AFTER_SCHEMA_CHANGE, PROPAGATION_WAIT_MS);
-
-				const { serials, errors } = await fanOut(ctx.harper.hostname, FANOUT_ATTEMPTS);
+				const { tookMs, serials, errors } = await waitForAllWorkers(
+					ctx.harper.hostname,
+					SERIAL_ROTATE_AFTER_SCHEMA_CHANGE,
+					FANOUT_ATTEMPTS,
+					PROPAGATION_WAIT_MS
+				);
 				const staleCount = serials.filter((s) => s === SERIAL_ROTATE_NO_SWAP).length;
-				const freshCount = serials.filter((s) => s === SERIAL_ROTATE_AFTER_SCHEMA_CHANGE).length;
 				console.log(
-					`[QA-877 threads=${WORKERS}] rotation after schema change: took=${took}ms errors=${errors} ` +
-						`stale(${SERIAL_ROTATE_NO_SWAP})=${staleCount} fresh(${SERIAL_ROTATE_AFTER_SCHEMA_CHANGE})=${freshCount} ` +
-						`tally=${tally(serials)}`
+					`[QA-877 threads=${WORKERS}] rotation after schema change: tookMs=${tookMs} errors=${errors} ` +
+						`stale(${SERIAL_ROTATE_NO_SWAP})=${staleCount} tally=${tally(serials)}`
 				);
 
-				// This is the headline empirical result: per the file header, an ordinary schema change
-				// does NOT swap the cert-table object (resources/databases.ts reuses the Table wrapper
-				// in place unless the storage engine itself changed), so the rotation reaches every
-				// worker just like the no-schema-change control above. If this ever starts failing, it
-				// means create_attribute's resetDatabases() call started forcing a real table-object
-				// swap — which would mean #2004 is reachable via a MUCH more common trigger than
-				// currently understood, and this finding should be revisited/promoted urgently.
-				ok(took >= 0, `rotation after an ordinary schema change never propagated within ${PROPAGATION_WAIT_MS}ms`);
+				// A red assertion here means create_attribute's resetDatabases() call started forcing a
+				// real table-object swap, which makes #2004 reachable from a far more common trigger
+				// than currently understood. Escalate rather than adjust.
+				equal(errors, 0, `unexpected handshake failures: ${errors}/${FANOUT_ATTEMPTS}`);
 				ok(
-					serials.every((s) => s === SERIAL_ROTATE_AFTER_SCHEMA_CHANGE),
-					`expected every worker to serve ${SERIAL_ROTATE_AFTER_SCHEMA_CHANGE}, got: ${tally(serials)}`
+					tookMs >= 0,
+					`rotation after an ordinary schema change did not reach every worker within ` +
+						`${PROPAGATION_WAIT_MS}ms, last tally: ${tally(serials)}`
 				);
 			});
 
@@ -318,10 +370,15 @@ for (const WORKERS of [1, 4]) {
 				});
 				await waitForReady();
 
-				const { serials, errors } = await fanOut(ctx.harper.hostname, 10);
+				const { tookMs, serials, errors } = await waitForAllWorkers(
+					ctx.harper.hostname,
+					SERIAL_ROTATE_AFTER_SCHEMA_CHANGE,
+					10,
+					PROPAGATION_WAIT_MS
+				);
 				equal(errors, 0, `unexpected handshake failures after restart: ${errors}/10`);
 				ok(
-					serials.every((s) => s === SERIAL_ROTATE_AFTER_SCHEMA_CHANGE),
+					tookMs >= 0,
 					`expected the restart to serve the on-disk cert (${SERIAL_ROTATE_AFTER_SCHEMA_CHANGE}), got: ${tally(serials)}`
 				);
 			});

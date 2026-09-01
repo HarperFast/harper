@@ -64,6 +64,18 @@ const FIXTURE_PATH = join(import.meta.dirname, 'qa701-deployment-payload-ops');
 // disappearance here is attributable only to delete_deployment_payload.
 const FORCED_RETENTION_MAX_SIZE = 200 * 1024 * 1024; // 200 MiB
 
+// Every fixture gets a DISTINCT payload size: countFilesNearSize() identifies the blob under test
+// by size alone, so two same-size deploys coexisting in the store would make one read as the
+// other's leak. The multi-MB non-terminal size is also what gives the 409 probe a real window.
+const SMALL_FIXTURE_KB = 4;
+const REDEPLOY_FIXTURE_KB = 16;
+const DELEGATION_FIXTURE_KB = 64;
+const NONTERMINAL_FIXTURE_KB = 6 * 1024;
+const LARGE_FIXTURE_KB = 12 * 1024;
+
+// Mirrors TERMINAL_STATUSES in components/deploymentOperations.ts -- the set the 409 guard keys on.
+const TERMINAL_STATUSES = ['success', 'failed', 'rolled_back'];
+
 function postMultipart(
 	url: URL,
 	contentType: string,
@@ -77,7 +89,7 @@ function postMultipart(
 				hostname: url.hostname,
 				port: url.port,
 				method: 'POST',
-				path: '/',
+				path: url.pathname + url.search,
 				headers: {
 					'Content-Type': contentType,
 					'Transfer-Encoding': 'chunked',
@@ -87,11 +99,15 @@ function postMultipart(
 			(res) => {
 				const chunks: Buffer[] = [];
 				res.on('data', (c) => chunks.push(c));
+				res.on('error', reject);
 				res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
 			}
 		);
 		req.on('error', reject);
-		body.on('error', reject);
+		body.on('error', (err) => {
+			req.destroy(err);
+			reject(err);
+		});
 		body.pipe(req);
 	});
 }
@@ -135,6 +151,7 @@ async function getDeploymentWhenTerminal(
 		if (got.status === 200 && (got.body?.status === 'success' || got.body?.status === 'failed')) return got;
 		await sleep(75);
 	}
+	if (!last) throw new Error(`get_deployment for '${deploymentId}' was never polled within ${timeoutMs}ms`);
 	return last;
 }
 
@@ -169,9 +186,12 @@ function listBlobFiles(blobsRoot: string): Array<{ path: string; size: number; m
 	return out;
 }
 
-// Counts blob files whose size matches `targetSize` within `toleranceBytes` -- targets the
-// SPECIFIC blob under test by its known size rather than an aggregate directory total, which is
-// fragile once several small test deploys' blobs coexist in the same store.
+// Counts blob files whose size matches `targetSize` within `toleranceBytes`. An on-disk blob file
+// runs a handful of bytes larger than payload_size (resources/blob.ts), hence the tolerance. This
+// is an identity oracle, so every fixture below is built at a DISTINCT size: two same-size random
+// payloads land inside the tolerance of each other, and a surviving unrelated blob would then read
+// as a leak of the one under test. Callers require exactly one pre-delete match to keep that
+// honest -- if this ever counts more than one, widen the size spread, don't widen the tolerance.
 function countFilesNearSize(listing: Array<{ size: number }>, targetSize: number, toleranceBytes = 64): number {
 	return listing.filter((f) => Math.abs(f.size - targetSize) <= toleranceBytes).length;
 }
@@ -356,7 +376,7 @@ suite(
 		let smallSha256: string;
 
 		test('2 setup: deploy a small real component, confirm payload_blob retained', async () => {
-			const fixtureDir = buildFixture(4, 'QA-701 small');
+			const fixtureDir = buildFixture(SMALL_FIXTURE_KB, 'QA-701 small');
 			const packaged = await packageToBuffer(fixtureDir);
 			smallBuffer = packaged.buffer;
 			smallSha256 = packaged.sha256;
@@ -419,35 +439,60 @@ suite(
 		});
 
 		test('3: delete_deployment_payload on a non-terminal deployment -> 409, blob untouched', async () => {
-			// Deploy a fresh component and immediately (racily) try to delete its payload before it
-			// can possibly have settled to a terminal status -- exercises the 409 guard's intent.
-			// If the deploy happens to have already gone terminal by the time we call delete (small
-			// fixtures can finish fast), fall back to asserting the row is terminal and skip the 409
-			// assertion rather than false-failing on a race.
-			const fixtureDir = buildFixture(4, 'QA-701 nonterminal');
+			// deploy_component only responds once the row has reached a terminal status, so awaiting
+			// the deploy and then deleting can never reach the guard -- it deletes against a row that
+			// is already terminal. The recorder writes the row as 'pending' before the payload is
+			// ingested (components/deploymentRecorder.ts's create()), so the in-flight row is visible
+			// through list_deployments for the whole upload+install window. Deploy without awaiting,
+			// catch the row there, and delete against it. NONTERMINAL_FIXTURE_KB is multi-MB to keep
+			// that window comfortably wider than the poll interval.
+			const fixtureDir = buildFixture(NONTERMINAL_FIXTURE_KB, 'QA-701 nonterminal');
 			const packaged = await packageToBuffer(fixtureDir);
-			const deployed = await deployBuffer(ctx, 'qa701-nonterminal-app', packaged.buffer, false);
-			strictEqual(deployed.status, 200);
-			ok(deployed.deploymentId);
+			const deployPromise = deployBuffer(ctx, 'qa701-nonterminal-app', packaged.buffer, false);
 
-			const immediateDelete = await callOperation(ctx, {
-				operation: 'delete_deployment_payload',
-				deployment_id: deployed.deploymentId,
-			});
-			const rowNow = await callOperation(ctx, { operation: 'get_deployment', deployment_id: deployed.deploymentId });
-			if (rowNow.body?.status && !['success', 'failed', 'rolled_back'].includes(rowNow.body.status)) {
+			let inFlightId: string | undefined;
+			let inFlightStatus: string | undefined;
+			const windowDeadline = Date.now() + 20000;
+			while (Date.now() < windowDeadline) {
+				const listed = await callOperation(ctx, { operation: 'list_deployments' });
+				const row = (listed.body?.deployments ?? []).find(
+					(d: any) => d.project === 'qa701-nonterminal-app' && !TERMINAL_STATUSES.includes(d.status)
+				);
+				if (row) {
+					inFlightId = row.deployment_id;
+					inFlightStatus = row.status;
+					break;
+				}
+				if (!listed.body?.deployments) break; // list_deployments is not answering; fall through
+			}
+
+			if (inFlightId) {
+				const delResp = await callOperation(ctx, {
+					operation: 'delete_deployment_payload',
+					deployment_id: inFlightId,
+				});
 				strictEqual(
-					immediateDelete.status,
+					delResp.status,
 					409,
-					`delete on a non-terminal deployment (status='${rowNow.body?.status}') should 409, got ${immediateDelete.status}: ${JSON.stringify(immediateDelete.body)}`
+					`delete on a non-terminal deployment (status='${inFlightStatus}') should 409, got ${delResp.status}: ${JSON.stringify(delResp.body)}`
 				);
 			} else {
 				console.log(
-					`[QA-701] 3: deploy settled to terminal ('${rowNow.body?.status}') before the delete call landed -- 409 race window missed, not a defect.`
+					'[QA-701] 3: the deployment reached a terminal status before any poll observed it -- 409 window missed, not a defect.'
 				);
 			}
-			// Let it finish terminally either way so it doesn't interfere with later probes.
-			await getDeploymentWhenTerminal(ctx, deployed.deploymentId!);
+
+			const deployed = await deployPromise;
+			strictEqual(
+				deployed.status,
+				200,
+				`deploy expected 200, got ${deployed.status}: ${deployed.raw.toString('utf8')}`
+			);
+			ok(deployed.deploymentId);
+			const settled = await getDeploymentWhenTerminal(ctx, deployed.deploymentId!);
+			strictEqual(settled.body.status, 'success', `deploy should succeed: ${JSON.stringify(settled.body.error)}`);
+			// The refused delete must not have touched the blob: it is still there once terminal.
+			strictEqual(settled.body.payload_blob_present, true, 'a 409-refused delete must leave payload_blob in place');
 		});
 
 		test('4: delete_deployment_payload reclaims ON-DISK bytes, not just the row flag', async () => {
@@ -459,9 +504,11 @@ suite(
 				'precondition: payload_blob should still be present before delete'
 			);
 			const payloadSize = got.body.payload_size as number;
-			ok(
-				countFilesNearSize(beforeListing, payloadSize) >= 1,
-				`precondition: a blob file matching payload_size=${payloadSize} should exist on disk before delete, ` +
+			strictEqual(
+				countFilesNearSize(beforeListing, payloadSize),
+				1,
+				`precondition: exactly one blob file should match payload_size=${payloadSize} before delete ` +
+					`(the size is this suite's identity oracle -- see countFilesNearSize), ` +
 					`listing=${JSON.stringify(beforeListing)}`
 			);
 
@@ -530,7 +577,7 @@ suite(
 		});
 
 		test('7: redeploy after delete produces an independent new deployment_id + fresh payload_blob', async () => {
-			const fixtureDir = buildFixture(4, 'QA-701 redeploy');
+			const fixtureDir = buildFixture(REDEPLOY_FIXTURE_KB, 'QA-701 redeploy');
 			const packaged = await packageToBuffer(fixtureDir);
 			const deployed = await deployBuffer(ctx, 'qa701-small-app', packaged.buffer, false);
 			strictEqual(
@@ -615,19 +662,13 @@ suite(
 		});
 
 		test('9: multi-MB payload delete reclaims disk bytes at scale', async () => {
-			const MB = 12; // above the *default* 10 MiB auto-retention threshold, but this suite
-			// forces payloadRetention.maxSize to 200 MiB, so this deploy retains its blob until we
-			// explicitly delete it -- isolating this op's reclaim from the automatic drop.
-			const fixtureDir = mkdtempSync(join(tmpdir(), 'qa701-large-fixture-'));
-			tempFixtureDirs.push(fixtureDir);
-			writeFileSync(fixtureDir + '/config.yaml', '# payload-size padding only, no routes\n');
-			const scratch = Buffer.allocUnsafe(1024 * 1024);
-			randomFillSync(scratch);
-			writeFileSync(join(fixtureDir, 'padding.bin'), Buffer.concat(Array(MB).fill(scratch)));
-
+			// Above the *default* 10 MiB auto-retention threshold, but this suite forces
+			// payloadRetention.maxSize to 200 MiB, so this deploy retains its blob until the explicit
+			// delete below -- isolating this op's reclaim from the automatic drop.
+			const fixtureDir = buildFixture(LARGE_FIXTURE_KB, 'QA-701 large');
 			const packaged = await packageToBuffer(fixtureDir);
 			ok(
-				packaged.buffer.length > MB * 1024 * 1024 * 0.9,
+				packaged.buffer.length > LARGE_FIXTURE_KB * 1024 * 0.9,
 				`fixture should package to multi-MB, got ${packaged.buffer.length}`
 			);
 
@@ -647,9 +688,11 @@ suite(
 
 			const beforeListing = listBlobFiles(blobsRoot);
 			const payloadSize = got.body.payload_size as number;
-			ok(
-				countFilesNearSize(beforeListing, payloadSize) >= 1,
-				`precondition: a blob file matching payload_size=${payloadSize} should exist on disk before delete, ` +
+			strictEqual(
+				countFilesNearSize(beforeListing, payloadSize),
+				1,
+				`precondition: exactly one blob file should match payload_size=${payloadSize} before delete ` +
+					`(the size is this suite's identity oracle -- see countFilesNearSize), ` +
 					`listing=${JSON.stringify(beforeListing)}`
 			);
 
@@ -741,7 +784,7 @@ suite(
 		let liveForDelegationDeploymentId: string;
 
 		test('10b setup: deploy one more real payload for the delegated-role probe', async () => {
-			const fixtureDir = buildFixture(4, 'QA-701 delegation target');
+			const fixtureDir = buildFixture(DELEGATION_FIXTURE_KB, 'QA-701 delegation target');
 			const packaged = await packageToBuffer(fixtureDir);
 			const deployed = await deployBuffer(ctx, 'qa701-delegation-app', packaged.buffer, false);
 			strictEqual(deployed.status, 200);
@@ -754,9 +797,9 @@ suite(
 		test('10c: gate-2-delegated non-SU role can delete_deployment_payload but is STILL 403 on get_deployment_payload', async () => {
 			const auth = { username: NON_SU_USER_DELEGATED, password: NON_SU_PASSWORD };
 
-			// get_deployment_payload self-enforces super_user in the handler (commit 23186ebca) --
-			// exposes the raw tarball (can embed secrets), unlike get_deployment's stripped metadata,
-			// so an explicit role `operations` grant must NOT be enough to unlock it.
+			// components/deploymentOperations.ts's requireSuperUser runs inside the get handler, on top of
+			// the registered permission: the raw tarball can embed secrets, unlike get_deployment's
+			// stripped metadata, so an explicit role `operations` grant must NOT be enough to unlock it.
 			const getResp = await callOperationAs(
 				ctx,
 				{ operation: 'get_deployment_payload', deployment_id: liveForDelegationDeploymentId },
