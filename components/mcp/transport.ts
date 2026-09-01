@@ -256,8 +256,6 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 		return { status: 403, headers: {} };
 	}
 
-	// Adopt the touched copy so later saves in this request do not roll
-	// `lastActivity` back to its load-time value.
 	session = await touchSession(session);
 
 	// A client's response to a server→client request (#3.7): route it to the

@@ -8,7 +8,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 describe('Table patch conflict merging', () => {
 	let PatchMergeTables;
 
-	before(() => {
+	before(async () => {
 		setupTestDBPath();
 		setMainIsWorker(true);
 		PatchMergeTables = [false, true].map((audit) => ({
@@ -27,6 +27,7 @@ describe('Table patch conflict merging', () => {
 				],
 			}),
 		}));
+		await Promise.all(PatchMergeTables.map(({ Table }) => Table.indexingOperation));
 	});
 
 	it('preserves a concurrently committed field when retrying a stale patch', async () => {
@@ -57,7 +58,7 @@ describe('Table patch conflict merging', () => {
 	});
 
 	it('creates a partial record when patching a deleted key', async () => {
-		const [{ Table: PatchMerge }] = PatchMergeTables;
+		const { Table: PatchMerge } = PatchMergeTables.find(({ audit }) => !audit);
 		await PatchMerge.put('evicted-session', { id: 'evicted-session', lastActivity: 1 });
 		await PatchMerge.delete('evicted-session');
 		await PatchMerge.patch('evicted-session', { lastActivity: 2 });
@@ -68,7 +69,7 @@ describe('Table patch conflict merging', () => {
 	});
 
 	it('replaces an array field instead of merging its elements', async () => {
-		const [{ Table: PatchMerge }] = PatchMergeTables;
+		const { Table: PatchMerge } = PatchMergeTables.find(({ audit }) => !audit);
 		await PatchMerge.put('subscriptions', { id: 'subscriptions', subscriptions: ['first', 'second'] });
 		await PatchMerge.patch('subscriptions', { subscriptions: ['second'] });
 		const saved = await PatchMerge.get('subscriptions');
