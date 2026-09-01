@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases } = require('#src/resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
-const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
+const { getPlaneBinding, planeStalePathFor } = require('#src/resources/indexes/hnswPlaneBinding');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 async function fromAsync(iterable) {
@@ -224,6 +224,52 @@ describe('HNSW native plane dual-write', function () {
 		assert.throws(() => [...results], /async/i, 'sync iteration must throw, not loop on promise-shaped results');
 	});
 
+	it('overlapping next() calls on plane-backed results advance one shared cursor', async () => {
+		const query = () => ({
+			sort: { attribute: 'vector', target: vectors.get(42), distance: 'cosine' },
+			select: ['id'],
+			limit: 5,
+		});
+		const sequential = (await fromAsync(PlaneTest.search(query()))).map((record) => record.id);
+		assert.ok(sequential.length > 2, 'need several results to detect a duplicate or a skip');
+		const iterator = PlaneTest.search(query()).iterate({ async: true });
+		// both issued before the first resolves: building an iterator per call returned entry 0
+		// twice and dropped entry 1
+		const [first, second] = await Promise.all([iterator.next(), iterator.next()]);
+		const seen = [first.value.id, second.value.id];
+		for (let next = await iterator.next(); !next.done; next = await iterator.next()) seen.push(next.value.id);
+		assert.deepEqual(seen, sequential, 'overlapping next() calls must yield the sequential order exactly once');
+	});
+
+	it('an abandoned plane-backed iterable does not raise an unhandled rejection', async () => {
+		const index = customIndex();
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			// a post-load step that throws is the reachable way the pending pipeline rejects
+			index.rescoreResults = () => {
+				throw new Error('rescore boom');
+			};
+			const results = PlaneTest.search({
+				sort: { attribute: 'vector', target: vectors.get(42), distance: 'cosine' },
+				select: ['id'],
+				limit: 5,
+			});
+			// aborted request / limit 0: the consumer walks away without a single next()
+			await results.iterate({ async: true }).return();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		} finally {
+			delete index.rescoreResults;
+			process.off('unhandledRejection', onUnhandled);
+		}
+		assert.deepEqual(
+			unhandled.map((reason) => String(reason?.message ?? reason)),
+			[],
+			'an unobserved rejection here exits the process under Node default policy'
+		);
+	});
+
 	it('reopens the same plane file across a restart', async () => {
 		const planePath = customIndex().planeFilePath();
 		const inodeBefore = fs.statSync(planePath).ino;
@@ -321,6 +367,38 @@ describe('HNSW native plane dual-write', function () {
 		assert.equal(typeof results?.then, 'undefined', 'writes and searches must run on the JS path meanwhile');
 		assert.ok(results.length > 0);
 		await Foreign.dropTable();
+	});
+
+	it('a stale tombstone left without its plane file rebuilds instead of disabling the plane forever', async () => {
+		const Orphan = table({
+			table: 'PlaneOrphan',
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+			],
+		});
+		const index = Orphan.indices.vector.customIndex;
+		for (let i = 0; i < 30; i++) await Orphan.put(i, { vector: makeVector(i + 40000) });
+		const planePath = index.planeFilePath();
+		const stalePath = planeStalePathFor(planePath);
+		try {
+			// the documented rollback, run by hand: the operator deletes the plane file while a
+			// tombstone from an earlier undeletable-plane path is still sitting next to it
+			index.resetDerivedStorage();
+			fs.writeFileSync(stalePath, '');
+			assert.ok(!fs.existsSync(planePath), 'precondition: tombstone present, plane file gone');
+			const results = index.search(
+				{ target: makeVector(40003), comparator: 'sort', distance: 'cosine', ef: 50 },
+				{ transaction: undefined }
+			);
+			if (typeof results?.then === 'function') await results;
+			assert.ok(!fs.existsSync(stalePath), 'the tombstone must be cleared, not left to disable the plane forever');
+			assert.ok(fs.existsSync(planePath), 'the plane must rebuild once the tombstone is cleared');
+		} finally {
+			fs.rmSync(stalePath, { force: true });
+			await Orphan.dropTable();
+		}
 	});
 
 	it('disabling the flag deletes the plane file so a re-enable rebuilds instead of adopting it stale', async () => {

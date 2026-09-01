@@ -541,6 +541,9 @@ export function searchByIndex(
 				// once it resolves, exposed as a lazily-resolving iterable — consumable through async
 				// iteration only, like the promise-entry filter paths above.
 				const pending = (searched as Promise<any[]>).then(processEntries);
+				// nothing is required to consume this iterable (an aborted request, `limit: 0`), and
+				// a rejection nobody observed reaches Node's unhandledRejection and exits the process
+				pending.catch(() => {});
 				const results: any = new ExtendedIterable();
 				results.iterate = (options?: { async?: boolean }) => {
 					// fail loudly rather than hand a synchronous consumer promise-shaped iterator
@@ -550,17 +553,23 @@ export function searchByIndex(
 							'This index resolves search results asynchronously; the results must be consumed with async iteration'
 						);
 					}
-					let inner: Iterator<any> | null = null;
+					// ONE iterator per iterate() call, memoized before any next() runs: overlapping
+					// next() calls must advance a shared cursor, or each builds its own iterator over
+					// the same array and they both yield entry 0 while entry 1 is skipped
+					const iteratorPromise = pending.then((entries) => entries[Symbol.iterator]());
+					iteratorPromise.catch(() => {});
+					let closed = false;
 					return {
 						next() {
-							if (inner) return Promise.resolve(inner.next());
-							return pending.then((entries) => {
-								inner = entries[Symbol.iterator]();
-								return inner.next();
-							});
+							if (closed) return Promise.resolve({ done: true, value: undefined });
+							return iteratorPromise.then((inner) => (closed ? { done: true, value: undefined } : inner.next()));
 						},
 						return(value?: any) {
-							(inner as any)?.return?.(value);
+							closed = true;
+							iteratorPromise.then(
+								(inner) => (inner as any).return?.(value),
+								() => {}
+							);
 							return Promise.resolve({ done: true, value });
 						},
 					};

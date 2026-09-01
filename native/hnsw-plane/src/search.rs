@@ -219,6 +219,32 @@ pub fn greedy_descend(
     (current, current_dist)
 }
 
+/// Resolve a live entry point for a read, repairing a dead one in place.
+///
+/// A search that finds the header naming a deleted or sanitized node returns EMPTY, and on a
+/// read-mostly table nothing ever repairs it: write-path re-election only runs on delete, and
+/// a slot a reader sanitized after its writer died had no delete at all. Repair is bounded to
+/// the O(1) previous-entry hint — `reelect_entry_point`'s fallback scan is O(high-water) and
+/// would stampede the pool thread that runs every search.
+fn resolve_entry(graph: &Graph, query: &Query, stats: &mut SearchStats) -> Option<(u32, u32, f32)> {
+    let (entry_id, entry_level) = graph.file.entry_point();
+    if entry_id != NO_ID {
+        if let Some(d) = graph.distance_to(entry_id, query) {
+            stats.visits += 1;
+            return Some((entry_id, entry_level, d));
+        }
+    }
+    let prev = graph.file.previous_entry_point();
+    if prev == NO_ID || prev == entry_id {
+        return None;
+    }
+    let level = graph.node_level(prev)?;
+    let d = graph.distance_to(prev, query)?;
+    stats.visits += 1;
+    graph.file.set_entry_point_if_not_better(prev, level as u32, entry_id);
+    Some((prev, level as u32, d))
+}
+
 /// Full search: greedy descent through upper layers, then beam at layer 0.
 pub fn search(
     graph: &Graph,
@@ -228,19 +254,10 @@ pub fn search(
     scratch: &mut SearchScratch,
 ) -> (Vec<(u32, f32)>, SearchStats) {
     let mut stats = SearchStats { visits: 0 };
-    let (entry_id, entry_level) = graph.file.entry_point();
-    if entry_id == NO_ID {
+    let Some((entry_id, entry_level, entry_dist)) = resolve_entry(graph, query, &mut stats) else {
         return (Vec::new(), stats);
-    }
-    scratch.begin(graph.file.id_high_water());
-
-    let entry_dist = match graph.distance_to(entry_id, query) {
-        Some(d) => {
-            stats.visits += 1;
-            d
-        }
-        None => return (Vec::new(), stats),
     };
+    scratch.begin(graph.file.id_high_water());
     let (ep, ep_dist) = greedy_descend(graph, query, entry_id, entry_dist, entry_level, 0, &mut stats);
     let mut out = search_layer(graph, query, ep, ep_dist, ef, 0, scratch, &mut stats, None, u64::MAX);
     out.truncate(k);
@@ -259,18 +276,10 @@ pub fn search_filtered(
     scratch: &mut SearchScratch,
 ) -> (Vec<(u32, f32)>, SearchStats) {
     let mut stats = SearchStats { visits: 0 };
-    let (entry_id, entry_level) = graph.file.entry_point();
-    if entry_id == NO_ID {
+    let Some((entry_id, entry_level, entry_dist)) = resolve_entry(graph, query, &mut stats) else {
         return (Vec::new(), stats);
-    }
-    scratch.begin_public(graph.file.id_high_water());
-    let entry_dist = match graph.distance_to(entry_id, query) {
-        Some(d) => {
-            stats.visits += 1;
-            d
-        }
-        None => return (Vec::new(), stats),
     };
+    scratch.begin_public(graph.file.id_high_water());
     let (ep, ep_dist) = greedy_descend(graph, query, entry_id, entry_dist, entry_level, 0, &mut stats);
     let budget = if filter.is_some() { (ef * filter_expansion) as u64 } else { u64::MAX };
     let mut out = search_layer(graph, query, ep, ep_dist, ef, 0, scratch, &mut stats, filter, budget);
@@ -307,18 +316,10 @@ pub fn search_predicated(
     scratch: &mut SearchScratch,
 ) -> (Vec<(u32, f32)>, SearchStats) {
     let mut stats = SearchStats { visits: 0 };
-    let (entry_id, entry_level) = graph.file.entry_point();
-    if entry_id == NO_ID {
+    let Some((entry_id, entry_level, entry_dist)) = resolve_entry(graph, query, &mut stats) else {
         return (Vec::new(), stats);
-    }
-    scratch.begin_public(graph.file.id_high_water());
-    let entry_dist = match graph.distance_to(entry_id, query) {
-        Some(d) => {
-            stats.visits += 1;
-            d
-        }
-        None => return (Vec::new(), stats),
     };
+    scratch.begin_public(graph.file.id_high_water());
     let (ep, ep_dist) = greedy_descend(graph, query, entry_id, entry_dist, entry_level, 0, &mut stats);
 
     use std::collections::HashMap;

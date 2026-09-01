@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub const MAGIC: u32 = 0x484e_5357; // "HNSW"
-pub const VERSION: u32 = 5; // v5: opener registry + aligned freelist pointer (older files: reindex)
+pub const VERSION: u32 = 6; // v6: 4-aligned neighbor + upper id arrays (older files: reindex)
 pub const HEADER_SIZE: usize = 4096;
 
 // Header field byte offsets.
@@ -39,11 +39,15 @@ pub const REGISTRY_SLOTS: usize = 64;
 /// 1/8 of max_nodes (2x headroom). P(level >= 9) at mL = 1/ln16 is ~e^-25 — unreachable.
 pub const MAX_UPPER_LEVELS: usize = 8;
 pub const UPPER_CAP: usize = 64; // matches the JS graph's upper cap (M<<2 under optimizeRouting)
-// entry: seq u32 | levels u8 | pad | per-level (degree u16 + ids u32*UPPER_CAP)
+// entry: seq u32 | levels u8 | pad | per-level (degree u16 + pad u16 + ids u32*UPPER_CAP)
 pub const U_SEQ: usize = 0;
 pub const U_LEVELS: usize = 4;
 pub const U_LISTS: usize = 8;
-pub const UPPER_LEVEL_STRIDE: usize = 2 + UPPER_CAP * 4 + 2; // degree + ids + pad -> 132
+/// The pad follows the degree rather than the ids so every id array starts 4-aligned; the
+/// stride (and so the entry size) is unchanged either way.
+pub const UL_DEGREE: usize = 0;
+pub const UL_IDS: usize = 4;
+pub const UPPER_LEVEL_STRIDE: usize = UL_IDS + UPPER_CAP * 4;
 pub const NO_UPPER: u32 = u32::MAX;
 
 // Slot layout offsets (within a slot).
@@ -55,8 +59,15 @@ pub const S_SCALE: usize = 8; // f32
 pub const S_INV_MAG: usize = 12; // f32
 pub const S_UPPER_IDX: usize = 16; // u32 index into the upper region; NO_UPPER = none
 pub const S_VECTOR: usize = 20; // dims bytes (int8) or dims*4 (f32)
-                                // neighbors: u32 * layer0_cap, follows vector
-                                // deleted slots reuse the first neighbor word as freelist next-pointer
+                                // neighbors: u32 * layer0_cap, follows the 4-padded vector
+
+/// Byte offset of a slot's neighbor array. The vector is padded to a 4-byte boundary so this
+/// is 4-aligned for every dims: the search hot path then reads each neighbor as one aligned
+/// volatile u32 instead of four byte loads plus shifts.
+#[inline]
+pub const fn neighbor_offset(dims: usize) -> usize {
+    S_VECTOR + (dims + 3) / 4 * 4
+}
 
 pub const FLAG_VALID: u8 = 1;
 pub const FLAG_DELETED: u8 = 2;
@@ -102,7 +113,7 @@ fn advise_random(map: &MmapMut) {
 }
 
 fn slot_size_for(dims: usize, layer0_cap: usize) -> usize {
-    let raw = S_VECTOR + dims + layer0_cap * 4;
+    let raw = neighbor_offset(dims) + layer0_cap * 4;
     raw.next_multiple_of(64) // cache-line align
 }
 
@@ -156,6 +167,9 @@ impl PlaneFile {
             .copy_from_slice(&((NO_ID as u64) | 0u64 << 32).to_le_bytes());
         map[H_MAX_NODES..H_MAX_NODES + 8].copy_from_slice(&max_nodes.to_le_bytes());
         map[H_UPPER_FREELIST..H_UPPER_FREELIST + 8].copy_from_slice(&(NO_UPPER as u64).to_le_bytes());
+        // zero would read as "node 0 was the previous entry point" and hand every re-election
+        // and search-side repair a candidate that was never an entry point
+        map[H_ENTRY_PREV..H_ENTRY_PREV + 8].copy_from_slice(&(NO_ID as u64).to_le_bytes());
         map[H_VERSION..H_VERSION + 4].copy_from_slice(&VERSION.to_le_bytes());
         std::sync::atomic::fence(Ordering::Release);
         map[H_MAGIC..H_MAGIC + 4].copy_from_slice(&MAGIC.to_le_bytes());
@@ -295,8 +309,9 @@ impl PlaneFile {
                 let _ = head.compare_exchange(cur, NO_ID as u64, Ordering::AcqRel, Ordering::Acquire);
                 continue;
             }
-            // next-pointer lives in the dead slot's scale field: offset 8, aligned for any
-            // dims (the first neighbor word at S_VECTOR+dims is 4-aligned only when dims%4==0)
+            // next-pointer lives in the dead slot's scale field rather than its first neighbor
+            // word: the neighbor array is a live reader's aligned volatile load target, and a
+            // freelist pointer parked there would be decoded as a neighbor id
             let next = unsafe { (*(self.slot_ptr(id).add(S_SCALE) as *const AtomicU32)).load(Ordering::Acquire) };
             let tag = (cur >> 32).wrapping_add(1);
             let new = (next as u64) | (tag << 32);
@@ -353,15 +368,47 @@ impl PlaneFile {
 
     pub fn set_entry_point(&self, id: u32, level: u32) {
         let prev = self.header_atomic_u64(H_ENTRY).swap((id as u64) | ((level as u64) << 32), Ordering::AcqRel);
-        if (prev & 0xffff_ffff) as u32 != NO_ID && (prev & 0xffff_ffff) as u32 != id {
-            self.header_atomic_u64(H_ENTRY_PREV).store(prev, Ordering::Release);
+        self.record_previous_entry(prev, id);
+    }
+
+    /// Remember the entry point a PROMOTION displaced. Only promotions are recorded: the node
+    /// they displace was live and high-level, which is what makes it a usable hint. Recording
+    /// a re-election's replacement instead would fill the hint with the dead node that forced
+    /// the re-election.
+    #[inline]
+    fn record_previous_entry(&self, prev_packed: u64, new_id: u32) {
+        let prev_id = (prev_packed & 0xffff_ffff) as u32;
+        if prev_id != NO_ID && prev_id != new_id {
+            self.header_atomic_u64(H_ENTRY_PREV).store(prev_packed, Ordering::Release);
         }
+    }
+
+    /// Claim the entry point of an EMPTY graph: a strict compare-exchange from the empty
+    /// encoding, so exactly one racer wins. `set_entry_point_if_not_better` cannot serve here —
+    /// it is a not-worse install, so a second first-inserter would replace the winner with its
+    /// own edgeless node and orphan everything already rooted at the winner. A loser must join
+    /// the winner's graph instead of returning an unlinked node.
+    pub fn claim_entry_if_empty(&self, id: u32, level: u32) -> bool {
+        self.header_atomic_u64(H_ENTRY)
+            .compare_exchange(NO_ID as u64, (id as u64) | ((level as u64) << 32), Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// Entry-point CAS for re-election: install (id, level) only while the current entry is
     /// still `expected_id` or is of a lower level — a concurrent insert that just promoted a
     /// higher-level entry must not be clobbered by a delete's level-0 survivor.
     pub fn set_entry_point_if_not_better(&self, id: u32, level: u32, expected_id: u32) {
+        self.cas_entry_if_not_better(id, level, expected_id, false);
+    }
+
+    /// The same CAS for an insert that PROMOTED itself above the entry it observed: the
+    /// displaced entry is live, so it is recorded as the previous-entry hint that re-election
+    /// and the search-side repair both consult before any O(high-water) scan.
+    pub fn promote_entry_point(&self, id: u32, level: u32, expected_id: u32) {
+        self.cas_entry_if_not_better(id, level, expected_id, true);
+    }
+
+    fn cas_entry_if_not_better(&self, id: u32, level: u32, expected_id: u32, record_prev: bool) {
         let cell = self.header_atomic_u64(H_ENTRY);
         let new = (id as u64) | ((level as u64) << 32);
         let mut cur = cell.load(Ordering::Acquire);
@@ -372,7 +419,12 @@ impl PlaneFile {
                 return; // someone installed a better entry meanwhile
             }
             match cell.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return,
+                Ok(_) => {
+                    if record_prev {
+                        self.record_previous_entry(cur, id);
+                    }
+                    return;
+                }
                 Err(now) => cur = now,
             }
         }

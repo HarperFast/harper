@@ -161,35 +161,54 @@ pub fn insert(
     let layer0_cap = graph.file.layer0_cap;
     let m = params.m;
 
-    let (entry_id, entry_level) = graph.file.entry_point();
-    if entry_id == NO_ID {
-        let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]).unwrap_or(NO_UPPER) } else { NO_UPPER };
-        graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).map_err(|_| InsertError::Wedged)?;
-        // CAS: a concurrent first insert may have installed an entry already — never clobber
-        graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
-        return Ok(id);
-    }
-
     let mut stats = SearchStats { visits: 0 };
-    let (entry_id, entry_level, entry_dist) = match graph.distance_to(entry_id, &query) {
-        Some(d) => (entry_id, entry_level, d),
-        None => {
-            // The stored entry point is gone (e.g. a mirroring host cleared it without
-            // re-electing). Self-promoting an edgeless new node here would orphan the whole
-            // existing graph behind an unreachable root — re-elect from the live graph and
-            // continue; only a truly empty graph makes this node the first entry.
-            graph.reelect_entry_point(&[]);
-            let (re_id, re_level) = graph.file.entry_point();
-            match (re_id != NO_ID).then(|| graph.distance_to(re_id, &query)).flatten() {
-                Some(d) => (re_id, re_level, d),
-                None => {
-                    let upper_idx = if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]).unwrap_or(NO_UPPER) } else { NO_UPPER };
-                    graph.write_node(id, level, &bytes, scale, inv_mag, &[], upper_idx).map_err(|_| InsertError::Wedged)?;
-                    graph.file.set_entry_point_if_not_better(id, level as u32, NO_ID);
-                    return Ok(id);
-                }
-            }
+    // Upper entry this insert may already have published for `id` while trying to claim an
+    // empty graph. The slot points at it, so the join path below must REWRITE that index
+    // rather than mint a second one: freeing an index a live slot still names would let
+    // another node adopt it mid-traversal.
+    let mut published_upper = NO_UPPER;
+    let mut published = false;
+    let publish_edgeless = |published: &mut bool, published_upper: &mut u32| -> Result<(), InsertError> {
+        if *published {
+            return Ok(());
         }
+        *published_upper =
+            if level > 0 { graph.write_upper(&vec![Vec::new(); level as usize]).unwrap_or(NO_UPPER) } else { NO_UPPER };
+        graph.write_node(id, level, &bytes, scale, inv_mag, &[], *published_upper).map_err(|_| InsertError::Wedged)?;
+        *published = true;
+        Ok(())
+    };
+
+    // Resolve an entry point to grow from. Bounded because each turn either finishes, joins a
+    // live entry, or replaces one that is provably gone; the cap only guards a pathological
+    // insert/delete interleaving that keeps clearing the entry under us.
+    let mut joined = None;
+    for _ in 0..8 {
+        let (entry_id, entry_level) = graph.file.entry_point();
+        if entry_id == NO_ID {
+            publish_edgeless(&mut published, &mut published_upper)?;
+            // Claim only from EMPTY. set_entry_point_if_not_better would install this edgeless
+            // node over a live equal-or-lower-level entry and orphan the graph behind it; and
+            // it never reports losing, so a loser used to return an unreachable node.
+            if graph.file.claim_entry_if_empty(id, level as u32) {
+                return Ok(id);
+            }
+            continue; // another racer rooted the graph — join it rather than stand alone
+        }
+        if let Some(d) = graph.distance_to(entry_id, &query) {
+            joined = Some((entry_id, entry_level, d));
+            break;
+        }
+        // The stored entry point is gone (e.g. a mirroring host cleared it without
+        // re-electing). Self-promoting an edgeless new node here would orphan the whole
+        // existing graph behind an unreachable root — re-elect from the live graph and
+        // continue; only a truly empty graph makes this node the first entry.
+        graph.reelect_entry_point(&[]);
+    }
+    let Some((entry_id, entry_level, entry_dist)) = joined else {
+        publish_edgeless(&mut published, &mut published_upper)?;
+        graph.file.claim_entry_if_empty(id, level as u32);
+        return Ok(id);
     };
     let top = level.min(entry_level as u8);
     let (mut ep, mut ep_dist) =
@@ -261,7 +280,13 @@ pub fn insert(
                     .unwrap_or_default()
             })
             .collect();
-        graph.write_upper(&levels).unwrap_or(NO_UPPER)
+        if published_upper != NO_UPPER {
+            // a lost first-entry claim already published this entry under the slot
+            graph.rewrite_upper(published_upper, &levels).map_err(|_| InsertError::Wedged)?;
+            published_upper
+        } else {
+            graph.write_upper(&levels).unwrap_or(NO_UPPER)
+        }
     } else {
         NO_UPPER
     };
@@ -279,7 +304,7 @@ pub fn insert(
 
     if (level as u32) > entry_level {
         // CAS against the observed entry: a concurrent higher-level promotion wins
-        graph.file.set_entry_point_if_not_better(id, level as u32, entry_id);
+        graph.file.promote_entry_point(id, level as u32, entry_id);
     }
     Ok(id)
 }

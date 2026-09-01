@@ -419,3 +419,79 @@ fn a_wedged_untouched_write_frees_its_upper_entry() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// A wedged upper-entry cleanup must not leave the header naming a deleted entry point.
+///
+/// `delete_node` tombstones the slot, then rewrites the node's upper entry — a fallible step.
+/// With re-election ordered after it, a wedged upper lock returned early and every subsequent
+/// search routed through a dead entry (returning nothing) until some insert happened to
+/// repair it. The observable, not the header word, is what this asserts.
+#[test]
+fn a_wedged_upper_cleanup_still_reelects_the_entry_point() {
+    use std::sync::atomic::Ordering as O;
+    let dims = 32;
+    let path = tmp("wedgedelete");
+    let _ = std::fs::remove_file(&path);
+    let graph = std::sync::Arc::new(Graph::new(PlaneFile::create(&path, dims, 16, 64).expect("create")));
+    let raw = |id: u32, level: u8, neighbors: &[u32], upper: &[Vec<u32>]| {
+        let q = hnsw_plane::distance::quantize_int8(&vector_for(id, dims));
+        graph.write_node_raw(id, level, &q.0, q.1, q.2, neighbors, upper).expect("mirror");
+    };
+    // node 0 is the entry point and the only node with a hierarchy, so it owns upper entry 0
+    raw(0, 1, &[1], &[vec![1]]);
+    raw(1, 0, &[0], &[]);
+    graph.file.set_entry_point(0, 1);
+
+    let upper_seq = graph.file.upper_seq_atomic(0) as *const _ as usize;
+    let g2 = graph.clone();
+    let held = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held2 = held.clone();
+    let hold = std::thread::spawn(move || {
+        let seq = unsafe { &*(upper_seq as *const std::sync::atomic::AtomicU32) };
+        let g2 = &g2;
+        let guard = hnsw_plane::seqlock::write_lock(seq, g2.file.self_tag, || panic!("live owner sanitized"), |tag| {
+            g2.file.tag_is_dead(tag)
+        })
+        .expect("the holder must actually take the lock, or the test proves nothing");
+        held2.store(true, O::Release);
+        std::thread::sleep(std::time::Duration::from_millis(6_500)); // past WRITE_WEDGE_AFTER
+        drop(guard);
+    });
+    await_lock(&held);
+    assert_eq!(graph.delete_node(0), Err(hnsw_plane::seqlock::Wedged), "the held upper lock must wedge the cleanup");
+    hold.join().unwrap();
+
+    assert_eq!(graph.file.entry_point().0, 1, "the entry point must be re-elected before the fallible cleanup");
+    let mut scratch = SearchScratch::new();
+    let (hits, _) = search(&graph, &Query::new(vector_for(1, dims)), 5, 64, &mut scratch);
+    assert!(!hits.is_empty(), "searches must keep working after a wedged delete of the entry point");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A search must repair an entry point that no writer will: a host that cleared the entry, or
+/// a slot a reader sanitized after its writer died, leaves no delete to run the write-path
+/// re-election, so on a read-mostly table every search returns empty indefinitely.
+#[test]
+fn search_repairs_an_entry_point_no_writer_will() {
+    let dims = 32;
+    let path = tmp("entryheal");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..200 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    let prev = graph.file.previous_entry_point();
+    assert_ne!(prev, hnsw_plane::format::NO_ID, "promotions must record a previous-entry hint to repair from");
+
+    // the entry's slot reads as gone with no delete having run (dead-writer sanitization, or a
+    // mirroring host clearing the node) — nothing on the write path will ever re-elect
+    let (entry, _) = graph.file.entry_point();
+    graph.clear_node(entry).expect("tombstone the entry slot");
+
+    let (hits, _) = search(&graph, &Query::new(vector_for(7, dims)), 5, 64, &mut scratch);
+    assert!(!hits.is_empty(), "a search must self-heal past a dead entry point instead of returning empty");
+    assert_ne!(graph.file.entry_point().0, entry, "the repair must be published, not repeated per search");
+    let _ = std::fs::remove_file(&path);
+}

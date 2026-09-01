@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, openSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
@@ -381,7 +381,13 @@ export class HierarchicalNavigableSmallWorld {
 			unlinkSync(filePath);
 			logger.info?.('deleted the HNSW plane file of an index no longer using nativePlane');
 		} catch (error: any) {
-			if (error?.code !== 'ENOENT') logger.warn?.('could not delete the HNSW plane file', error);
+			if (error?.code !== 'ENOENT') {
+				// the file survives (Windows EBUSY while another process maps it), and nothing
+				// mirrors into it from here on: a later re-enable would adopt it at its nonzero
+				// watermark and silently miss every mutation made while the flag was off
+				logger.warn?.('could not delete the HNSW plane file; marking it stale', error);
+				this.invalidatePlaneFile(filePath);
+			}
 		}
 	}
 
@@ -424,8 +430,11 @@ export class HierarchicalNavigableSmallWorld {
 			const stalePath = planeStalePathFor(filePath);
 			if (existsSync(stalePath)) {
 				try {
-					unlinkSync(filePath);
-					unlinkSync(stalePath);
+					// force: an operator following the documented rollback deletes the .plane file by
+					// hand and leaves the sidecar; an ENOENT here used to trip the catch below on
+					// every attach forever, permanently disabling a plane that could just be rebuilt
+					rmSync(filePath, { force: true });
+					rmSync(stalePath, { force: true });
 				} catch {
 					this.planeRetryAt = now + NODE_COUNT_TTL;
 					return null;
@@ -723,6 +732,7 @@ export class HierarchicalNavigableSmallWorld {
 	 * inode keeps itself consistent until the schema-change/restart cycle rebuilds everything.
 	 */
 	private disablePlane(error: unknown): void {
+		const attached = this.plane;
 		this.plane = null;
 		this.planeReady = false;
 		const filePath = this.planeFilePath();
@@ -731,8 +741,8 @@ export class HierarchicalNavigableSmallWorld {
 				unlinkSync(filePath);
 			} catch (unlinkError: any) {
 				if (unlinkError?.code !== 'ENOENT') {
-					logger.warn?.('could not delete the disabled HNSW plane file; tombstoning it as stale', unlinkError);
-					this.tombstonePlane(filePath);
+					logger.warn?.('could not delete the disabled HNSW plane file; marking it stale', unlinkError);
+					this.invalidatePlaneFile(filePath, attached);
 				}
 			}
 		}
@@ -750,6 +760,7 @@ export class HierarchicalNavigableSmallWorld {
 	 * database instances.
 	 */
 	resetDerivedStorage(): void {
+		const attached = this.plane;
 		this.plane = undefined;
 		this.planeReady = false;
 		this.planeRetryAt = 0;
@@ -760,16 +771,30 @@ export class HierarchicalNavigableSmallWorld {
 		} catch (error: any) {
 			if (error?.code !== 'ENOENT') {
 				// a stale file that cannot be deleted (e.g. Windows EBUSY while mapped) must not
-				// be reopened as if current — tombstone it so no process ever adopts it
+				// be reopened as if current — mark it so no process ever adopts it
 				this.plane = null;
-				logger.warn?.('could not delete the HNSW plane file; tombstoning it as stale', error);
-				this.tombstonePlane(filePath);
+				logger.warn?.('could not delete the HNSW plane file; marking it stale', error);
+				this.invalidatePlaneFile(filePath, attached);
 			}
 		}
 	}
 
-	/** Mark an undeletable plane file stale; getPlane refuses to open a tombstoned plane. */
-	private tombstonePlane(filePath: string): void {
+	/**
+	 * Make an undeletable plane file unadoptable, in band first and then with the `.stale`
+	 * sidecar. Zeroing the watermark under a durability barrier marks the file an incomplete
+	 * initial mirror, which planeSearchReady already refuses and PLANE_INCOMPLETE_REBUILD_MS
+	 * already rebuilds — and unlike the sidecar (an empty file with no directory fsync) it is
+	 * durable and cannot be separated from the plane it invalidates. The sidecar still follows
+	 * because another process may still be mapping this inode and can re-stamp the watermark
+	 * from its own mirror writes; it is checked at attach, before any such writer exists.
+	 */
+	private invalidatePlaneFile(filePath: string, attached?: HnswPlane | null): void {
+		try {
+			const plane = attached ?? (existsSync(filePath) ? getPlaneBinding()?.open(filePath) : undefined);
+			plane?.flush(0);
+		} catch (invalidateError) {
+			logger.warn?.('could not zero the watermark of the stale HNSW plane file', invalidateError);
+		}
 		try {
 			closeSync(openSync(planeStalePathFor(filePath), 'w'));
 		} catch (tombstoneError) {

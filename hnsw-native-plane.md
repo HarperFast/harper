@@ -97,15 +97,19 @@ One file per index (per slice, once C2 lands): `<index-path>.hnsw`.
 
 **Main region — layer-0 slots**, addressed `4096 + id × slot_size`:
 
-| Field                           | Size (768-d int8, cap 64)          |
-| ------------------------------- | ---------------------------------- |
-| seq (seqlock)                   | 4 B                                |
-| flags (valid/deleted) + level   | 2 B                                |
-| scale (f32) + invMag (f32)      | 8 B                                |
-| degree                          | 2 B                                |
-| vector (int8 × 768)             | 768 B                              |
-| neighbor ids (u32 × layer0_cap) | 256 B                              |
-| **total, padded**               | **1,040 B → 1 KB-aligned 1,088 B** |
+| Field                           | Size (768-d int8, cap 64)           |
+| ------------------------------- | ----------------------------------- |
+| seq (seqlock)                   | 4 B                                 |
+| flags (valid/deleted) + level   | 2 B                                 |
+| scale (f32) + invMag (f32)      | 8 B                                 |
+| degree                          | 2 B                                 |
+| vector (int8 × 768)             | 768 B (padded to a 4-byte boundary) |
+| neighbor ids (u32 × layer0_cap) | 256 B                               |
+| **total, padded**               | **1,040 B → 1 KB-aligned 1,088 B**  |
+
+The vector's trailing pad keeps the neighbor array 4-aligned for every `dims`, so the search
+hot path reads each neighbor id as one aligned volatile `u32`. Upper-layer id lists are padded
+the same way (`degree u16 + pad u16 + ids`).
 
 At 100M nodes: ~109 GB (int8). A binary-code v2 slot (96 B codes + ids) is ~384 B → ~38 GB.
 For comparison, today's encoding averages 1,425 B/node _plus_ RocksDB overhead — so v1 is
