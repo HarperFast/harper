@@ -256,11 +256,8 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 		return { status: 403, headers: {} };
 	}
 
-	// Sliding-window idle reset. Awaited (not fire-and-forget) so a concurrent
-	// DELETE that arrives mid-request can't be resurrected by a late put. Adopt
-	// the touched copy (fresh `lastActivity`) so any later save in this request
-	// — `handleInitialized`, `dispatchSetLevel` — persists the current activity
-	// time instead of rolling it back to the load-time value.
+	// Adopt the touched copy so later saves in this request do not roll
+	// `lastActivity` back to its load-time value.
 	session = await touchSession(session);
 
 	// A client's response to a server→client request (#3.7): route it to the
@@ -370,7 +367,7 @@ async function dispatchSetLevel(
 	// on the worker where the change fires. Cross-worker push is a separate,
 	// subsystem-wide design item (tracked in the MCP design-doc issue).
 	session.logLevel = level;
-	await saveSession(session);
+	await saveSession(session.id, { logLevel: level });
 	setSessionLogLevel(session.id, level);
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -420,7 +417,7 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
 		if (restored.length !== session.subscriptions.length) {
 			session.subscriptions = restored;
-			await saveSession(session);
+			await saveSession(session.id, { subscriptions: restored });
 		}
 	}
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
@@ -936,7 +933,7 @@ async function dispatchResourcesSubscribe(
 	// Persist the URI on the durable record so it survives an SSE reconnect.
 	if (!session.subscriptions?.includes(uri)) {
 		session.subscriptions = [...(session.subscriptions ?? []), uri];
-		await saveSession(session);
+		await saveSession(session.id, { subscriptions: session.subscriptions });
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -958,7 +955,7 @@ async function dispatchResourcesUnsubscribe(
 	removeResourceSubscription(session.id, uri);
 	if (session.subscriptions?.includes(uri)) {
 		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
-		await saveSession(session);
+		await saveSession(session.id, { subscriptions: session.subscriptions });
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }

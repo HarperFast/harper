@@ -4,22 +4,7 @@ const { EventEmitter } = require('node:events');
 const { createHarperHttpHandler } = require('#src/components/mcp/adapters/harperHttp');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
 const { Headers } = require('#src/server/serverHelpers/Headers');
-
-function makeFakeTable() {
-	const store = new Map();
-	return {
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
-}
+const { makeFakeSessionTable } = require('../fakeSessionTable');
 
 function makeHeaders(init = {}) {
 	const h = new Headers();
@@ -74,7 +59,7 @@ async function next() {
 }
 
 describe('mcp/adapters/harperHttp', () => {
-	beforeEach(() => _setSessionTableForTest(makeFakeTable()));
+	beforeEach(() => _setSessionTableForTest(makeFakeSessionTable()));
 	afterEach(() => _setSessionTableForTest(undefined));
 
 	it('handles an initialize request and returns 200 + JSON body + Mcp-Session-Id', async () => {

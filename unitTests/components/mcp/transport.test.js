@@ -22,6 +22,7 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
+const { makeFakeSessionTable } = require('./fakeSessionTable');
 
 function makeFakeResources(entries) {
 	const map = new Map();
@@ -38,23 +39,6 @@ function makeFakeResources(entries) {
 		return best;
 	};
 	return map;
-}
-
-function makeFakeTable() {
-	const store = new Map();
-	return {
-		store,
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
 }
 
 function makeReq(overrides = {}) {
@@ -86,7 +70,7 @@ describe('mcp/transport', () => {
 	beforeEach(() => {
 		envOverrides = {};
 		transport_mod.__set__('env', envStub);
-		_setSessionTableForTest(makeFakeTable());
+		_setSessionTableForTest(makeFakeSessionTable());
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
 		_setResourcesForTest(makeFakeResources([]));
@@ -276,7 +260,7 @@ describe('mcp/transport', () => {
 			// must advance it, and the level-persisting saveSession must NOT write the
 			// stale load-time value back (root fix — handlePost adopts the touched copy).
 			const stale = await loadSession(sessionId);
-			await saveSession({ ...stale, lastActivity: 1 });
+			await saveSession(stale.id, { lastActivity: 1 });
 			await handleMcpRequest(
 				makeReq({
 					body: jsonRpc(2, 'logging/setLevel', { level: 'info' }),

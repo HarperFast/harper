@@ -106,6 +106,6 @@ export async function handleInitialize(
 export async function handleInitialized(session: McpSessionRecord): Promise<McpSessionRecord> {
 	if (session.initialized) return session;
 	const updated: McpSessionRecord = { ...session, initialized: true };
-	await saveSession(updated);
+	await saveSession(session.id, { initialized: true });
 	return updated;
 }

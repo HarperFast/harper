@@ -5,8 +5,8 @@
  * `mcp.operations: {}` in config:
  *   - initialize handshake (request + Mcp-Session-Id response)
  *   - notifications/initialized → 202 empty
- *   - GET /mcp → 405 (no SSE channel in v1)
- *   - DELETE /mcp → 405 by default
+ *   - GET /mcp → SSE channel with a valid session
+ *   - DELETE /mcp → terminate session when enabled
  *   - Unknown method → 200 + JSON-RPC -32601
  *   - Missing/unknown session id → 400 / 404
  *   - User binding on session
@@ -53,7 +53,7 @@ suite('MCP Streamable HTTP transport (operations profile)', (ctx: ContextWithHar
 		// real users — this is a harness-only workaround.
 		await startHarper(ctx, {
 			config: {
-				mcp: { operations: { mountPath: '/mcp' } },
+				mcp: { operations: { mountPath: '/mcp' }, session: { allowClientDelete: true } },
 			},
 			env: {},
 		});
@@ -171,13 +171,30 @@ suite('MCP Streamable HTTP transport (operations profile)', (ctx: ContextWithHar
 		await res.body?.cancel();
 	});
 
-	test('DELETE /mcp returns 405 when allowClientDelete is not configured', async () => {
-		const res = await fetch(mcpUrl(ctx), {
-			method: 'DELETE',
-			headers: { Authorization: authHeader(ctx) },
+	test('DELETE /mcp terminates the session and subsequent requests return 404', async () => {
+		const initRes = await jsonRpcPost(ctx, {
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '0' } },
 		});
-		strictEqual(res.status, 405);
-		await res.body?.cancel();
+		const sessionId = initRes.headers.get('mcp-session-id')!;
+		await initRes.body?.cancel();
+
+		const deleteRes = await fetch(mcpUrl(ctx), {
+			method: 'DELETE',
+			headers: { 'Authorization': authHeader(ctx), 'Mcp-Session-Id': sessionId },
+		});
+		strictEqual(deleteRes.status, 204);
+		await deleteRes.body?.cancel();
+
+		const reuseRes = await jsonRpcPost(
+			ctx,
+			{ jsonrpc: '2.0', id: 2, method: 'ping' },
+			{ 'Mcp-Session-Id': sessionId, 'MCP-Protocol-Version': '2025-06-18' }
+		);
+		strictEqual(reuseRes.status, 404);
+		await reuseRes.body?.cancel();
 	});
 
 	test('parse error returns 400 with JSON-RPC -32700', async () => {

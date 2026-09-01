@@ -8,6 +8,7 @@ const {
 	_restoreGetConfigObj,
 } = indexMod;
 const { _setSessionTableForTest } = require('#src/components/mcp/session');
+const { makeFakeSessionTable } = require('./fakeSessionTable');
 
 function makeFakeFastify() {
 	const calls = [];
@@ -40,18 +41,8 @@ function makeFakeScope() {
 	};
 }
 
-function makeFakeTable() {
-	return {
-		async put() {},
-		async get() {
-			return undefined;
-		},
-		async delete() {},
-	};
-}
-
 describe('components/mcp/index', () => {
-	beforeEach(() => _setSessionTableForTest(makeFakeTable()));
+	beforeEach(() => _setSessionTableForTest(makeFakeSessionTable()));
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
 		_resetApplicationStartedForTest();

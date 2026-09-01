@@ -3,7 +3,7 @@
  *
  * Eviction is delegated to Harper's native TTL (`Table.setTTLExpiration`):
  * every write to a session record updates its `version`, which Harper uses
- * to determine expiration. So calling `saveSession(record)` on each request
+ * to determine expiration. So calling `saveSession(id, changes)` on each request
  * gives sliding-window idle semantics for free — no custom timer, no sweep.
  *
  * Spec: when a request bears an `Mcp-Session-Id` the server doesn't
@@ -34,6 +34,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
  * is identical either way.)
  */
 const EVICTION_WINDOW_SECONDS = 60;
+const TOMBSTONE_LIFETIME_MS = 5 * 60 * 1000;
 
 export interface McpSessionRecord {
 	id: string;
@@ -63,7 +64,12 @@ export interface McpSessionRecord {
 	 * to clients that declared support. Undefined = client declared none.
 	 */
 	clientCapabilities?: Record<string, unknown>;
+	/** A client-terminated session id can never become active again (#1368). */
+	terminated?: true;
+	expiresAt?: number;
 }
+
+type McpSessionUpdate = Partial<Pick<McpSessionRecord, 'initialized' | 'lastActivity' | 'logLevel' | 'subscriptions'>>;
 
 let _sessionTable: Table | undefined;
 
@@ -90,6 +96,8 @@ function declareSessionTable(): Table {
 			{ name: 'logLevel' },
 			{ name: 'subscriptions' },
 			{ name: 'clientCapabilities' },
+			{ name: 'terminated' },
+			{ name: 'expiresAt', expiresAt: true },
 		],
 	});
 }
@@ -145,20 +153,37 @@ export async function createSession({
  */
 export async function loadSession(id: string): Promise<McpSessionRecord | null> {
 	const record = (await (getTable() as any).get(id)) as McpSessionRecord | undefined | null;
-	if (!record) return null;
+	if (
+		!record ||
+		record.terminated ||
+		typeof record.createdAt !== 'number' ||
+		typeof record.protocolVersion !== 'string'
+	)
+		return null;
 	return record;
 }
 
 /**
- * Persist updated session state. Used to bump `lastActivity` (sliding-window
- * idle reset) and to flip `initialized` after `notifications/initialized`.
+ * Persist changed session fields without overwriting concurrent updates.
  */
-export async function saveSession(record: McpSessionRecord): Promise<void> {
-	await (getTable() as any).put(record);
+export async function saveSession(id: string, changes: McpSessionUpdate): Promise<void> {
+	await (getTable() as any).patch(id, { id, ...changes });
 }
 
 export async function deleteSession(id: string): Promise<void> {
-	await (getTable() as any).delete(id);
+	await (getTable() as any).patch(id, {
+		id,
+		terminated: true,
+		expiresAt: Date.now() + TOMBSTONE_LIFETIME_MS,
+		protocolVersion: undefined,
+		initialized: undefined,
+		user: undefined,
+		createdAt: undefined,
+		lastActivity: undefined,
+		logLevel: undefined,
+		subscriptions: undefined,
+		clientCapabilities: undefined,
+	});
 	// Tear down ancillary per-session in-memory state — the `tools/list`
 	// pagination cache and the per-session rate-limit buckets. Without
 	// these, every session that ever paged or called a tool leaves orphan
@@ -174,6 +199,6 @@ export async function deleteSession(id: string): Promise<void> {
  */
 export async function touchSession(record: McpSessionRecord): Promise<McpSessionRecord> {
 	const touched: McpSessionRecord = { ...record, lastActivity: Date.now() };
-	await saveSession(touched);
+	await saveSession(record.id, { lastActivity: touched.lastActivity });
 	return touched;
 }

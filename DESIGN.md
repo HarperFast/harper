@@ -467,6 +467,14 @@ A handful of design points are non-obvious and easy to break:
   GET reconnect must not reject an in-flight `ctx.serverRequest`. A `DELETE` (explicit session teardown) drops
   **both**, because it may arrive with no open GET stream.
 
+- **Client session deletion is a durable terminal state.** An authenticated POST can load a session on one
+  worker while a client DELETE commits on another, so physical row absence cannot represent termination: a
+  late unconditional save would recreate the row. `deleteSession` instead writes a short-lived `terminated`
+  tombstone, all post-creation persistence uses field-level patches so optimistic retries preserve it, and
+  `loadSession` rejects both tombstones and structurally incomplete rows that a patch could recreate after
+  tombstone eviction. New save sites must persist only their changed fields; a whole-record patch can revert
+  concurrent logging or subscription state.
+
 - **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
   assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a
   `Last-Event-ID` header, `replaySince` re-sends only the frames after that id. The event-id sequence **and**
