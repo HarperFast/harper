@@ -72,7 +72,7 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 
 		it('does not warn for a Harper-registered directive', async () => {
 			await loadGQLSchema('type HarperDirective {\n\tid: ID @indexed\n}');
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				warnings.filter((line) => line.includes('unknown field directive')),
 				[]
 			);
@@ -80,7 +80,7 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 
 		it('does not warn for a directive the GraphQL spec defines', async () => {
 			await loadGQLSchema('type SpecDirective {\n\tid: ID @deprecated(reason: "moved")\n}');
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				warnings.filter((line) => line.includes('unknown field directive')),
 				[]
 			);
@@ -88,7 +88,7 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 
 		it('does not warn for a directive the schema declares itself', async () => {
 			await loadGQLSchema('directive @audit on FIELD_DEFINITION\ntype SelfDeclared {\n\tid: ID @audit\n}');
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				warnings.filter((line) => line.includes('unknown field directive')),
 				[]
 			);
