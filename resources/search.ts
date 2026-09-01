@@ -554,8 +554,7 @@ export function searchByIndex(
 						);
 					}
 					// one shared iterator per iterate() call: overlapping next() calls must advance the
-					// same cursor, or each builds its own over the same array and entry 0 is yielded
-					// twice while entry 1 is skipped
+					// same cursor
 					const iteratorPromise = pending.then((entries) => entries[Symbol.iterator]());
 					iteratorPromise.catch(() => {});
 					let closed = false;

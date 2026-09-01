@@ -219,13 +219,24 @@ pub fn greedy_descend(
     (current, current_dist)
 }
 
+/// Slots a read-side repair may probe when the previous-entry hint is dead too. Bounded so a
+/// search never pays the write path's O(high-water) re-election scan.
+const REPAIR_PROBE_LIMIT: u32 = 1024;
+
 /// Resolve a live entry point for a read, repairing a dead one in place.
 ///
 /// A search that finds the header naming a deleted or sanitized node returns EMPTY, and on a
 /// read-mostly table nothing ever repairs it: write-path re-election only runs on delete, and
-/// a slot a reader sanitized after its writer died had no delete at all. Repair is bounded to
-/// the O(1) previous-entry hint — `reelect_entry_point`'s fallback scan is O(high-water) and
-/// would stampede the pool thread that runs every search.
+/// a slot a reader sanitized after its writer died had no delete at all.
+///
+/// The candidate is the O(1) previous-entry hint, then a bounded probe. The hint is a single
+/// slot and can itself be dead — promote B over C, delete B, then lose C to a dead writer, and
+/// the hint names a deleted node — so falling back is what keeps that from returning empty
+/// forever. The probe is capped at `REPAIR_PROBE_LIMIT` because
+/// `reelect_entry_point_replacing`'s scan runs to the high-water mark, and every search paying
+/// that would stampede the pool thread they all share; ids are dense from 0, so a live graph
+/// resolves in the first few slots, and the repair publishes, so only the first search after a
+/// wedge pays even that.
 fn resolve_entry(graph: &Graph, query: &Query, stats: &mut SearchStats) -> Option<(u32, u32, f32)> {
     let (entry_id, entry_level) = graph.file.entry_point();
     if entry_id != NO_ID {
@@ -234,15 +245,19 @@ fn resolve_entry(graph: &Graph, query: &Query, stats: &mut SearchStats) -> Optio
             return Some((entry_id, entry_level, d));
         }
     }
-    let prev = graph.file.previous_entry_point();
-    if prev == NO_ID || prev == entry_id {
-        return None;
-    }
-    let level = graph.node_level(prev)?;
-    let d = graph.distance_to(prev, query)?;
+    let hint = graph.file.previous_entry_point();
+    let candidate = (hint != NO_ID && hint != entry_id)
+        .then(|| graph.node_level(hint).map(|level| (hint, level)))
+        .flatten()
+        .or_else(|| graph.probe_for_entry(REPAIR_PROBE_LIMIT, entry_id));
+    let (id, level) = candidate?;
+    let d = graph.distance_to(id, query)?;
     stats.visits += 1;
-    graph.file.set_entry_point_if_not_better(prev, level as u32, entry_id);
-    Some((prev, level as u32, d))
+    // Strict on the entry we observed dead, NOT a not-worse install: between the read above and
+    // here a first insert can have claimed the header with its own live level-0 root, and
+    // replacing that with a higher-level candidate would orphan a node nothing else points at.
+    graph.file.replace_entry_if(entry_id, id, level as u32);
+    Some((id, level as u32, d))
 }
 
 /// Full search: greedy descent through upper layers, then beam at layer 0.

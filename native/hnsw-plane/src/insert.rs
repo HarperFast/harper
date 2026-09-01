@@ -186,9 +186,9 @@ pub fn insert(
         let (entry_id, entry_level) = graph.file.entry_point();
         if entry_id == NO_ID {
             publish_edgeless(&mut published, &mut published_upper)?;
-            // Claim only from EMPTY: a not-worse install would put this edgeless node over a
-            // live equal-or-lower-level entry and orphan the graph behind it, and it never
-            // reports losing, so a loser used to return a node nothing points at.
+            // Claim only from EMPTY, and only the winner returns: a not-worse install would put
+            // this edgeless node over a live equal-or-lower-level entry and orphan the graph
+            // behind it, and it cannot report losing, which a loser must know to join instead.
             if graph.file.claim_entry_if_empty(id, level as u32) {
                 return Ok(id);
             }
@@ -204,8 +204,8 @@ pub fn insert(
         // continue; only a truly empty graph makes this node the first entry.
         graph.reelect_entry_point_replacing(&[], entry_id);
     }
-    // Reporting success for a node no search can reach is the failure this whole path exists
-    // to prevent, so an unresolvable entry point is an error the host can retry.
+    // An unresolvable entry point is an error the host retries: Ok here would report success
+    // for a node no search can reach.
     let Some((entry_id, entry_level, entry_dist)) = joined else {
         return Err(InsertError::Wedged);
     };

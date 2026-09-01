@@ -60,6 +60,8 @@ export interface HnswPlane {
 	setWatermark(txn: number): void;
 	flush(watermark?: number): void;
 	flushAsync(watermark?: number): Promise<void>;
+	/** Zero the watermark and msync the header page alone — a 4 KB barrier, not a full flush. */
+	invalidate(): void;
 }
 
 export interface HnswPlaneConstructor {

@@ -279,6 +279,14 @@ Decided (Kris, 2026-08-31):
 
 Open:
 
+- **Atomic slot payloads.** Fields a concurrent reader acts on (flags, level, degree, scale,
+  invMag, neighbor and upper ids) are read through aligned `read_volatile`, which forbids the
+  reload/split/sink across the seqlock's validating fence that `lto = true, codegen-units = 1`
+  otherwise licenses. That is not the same as being race-free under Rust's memory model: only
+  making those fields `AtomicU8`/`AtomicU16`/`AtomicU32` in the slot layout would be, and that
+  is a format change deferred past phase 1. The stored vector stays an ordinary load on
+  purpose — `cosine_int8_raw` must keep autovectorizing, and a torn vector only perturbs a
+  distance the generation check discards.
 - **msync cadence default** — bounded-lag durability window vs write amplification; needs a
   workload measurement, not a guess.
 - **f32 (quantization:"none") slot variant** — 3,072 B vectors → 3.4 KB slots; supported by the

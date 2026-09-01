@@ -492,3 +492,98 @@ fn search_repairs_an_entry_point_no_writer_will() {
     assert_ne!(graph.file.entry_point().0, entry, "the repair must be published, not repeated per search");
     let _ = std::fs::remove_file(&path);
 }
+
+/// `invalidate` demotes a plane that already looks like a complete mirror back to "incomplete,
+/// rebuild me", and reports barrier failure to its caller instead of into a dropped promise —
+/// which is what lets the host order it before creating a `.stale` sidecar. (Durability itself
+/// is not observable in-process: the mapping is MAP_SHARED, so every store is already visible to
+/// a reopen and to `read()` whether or not the msync ran. The ordering that a crash would expose
+/// is asserted on the host side, in `vectorIndexPlane.test.js`.)
+#[test]
+fn invalidate_demotes_a_complete_looking_mirror_and_reports_failure() {
+    let dims = 32;
+    let path = tmp("invalidate");
+    let _ = std::fs::remove_file(&path);
+    {
+        let graph = Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create"));
+        let params = InsertParams::default();
+        let mut scratch = SearchScratch::new();
+        for i in 0..50 {
+            insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+        }
+        graph.file.flush_with_watermark(Some(4_096)).expect("barrier");
+        assert_eq!(graph.file.watermark(), 4_096, "precondition: a complete-looking mirror");
+        graph.file.invalidate().expect("invalidate must report its barrier, not swallow it");
+        assert_eq!(graph.file.watermark(), 0, "invalidation must mark the mirror incomplete in band");
+    }
+    let reopened = PlaneFile::open(&path).expect("reopen");
+    assert_eq!(reopened.watermark(), 0, "a fresh opener must see the incomplete mark, not the old stamp");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The hint is one slot and can die too: promote over a node, then lose BOTH that node and the
+/// entry it was promoted over. Without the bounded probe the repair has nowhere left to look and
+/// every later search returns empty although most of the graph is live.
+#[test]
+fn search_repairs_an_entry_point_whose_hint_is_dead_too() {
+    let dims = 32;
+    let path = tmp("entryhealdeadhint");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..200 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    let hint = graph.file.previous_entry_point();
+    assert_ne!(hint, hnsw_plane::format::NO_ID, "precondition: a hint to invalidate");
+    let (entry, _) = graph.file.entry_point();
+
+    // both sanitized with no delete having run, so no write-path re-election ever happens and
+    // the hint the repair would follow names a node that reads as gone
+    graph.clear_node(hint).expect("tombstone the hint slot");
+    graph.clear_node(entry).expect("tombstone the entry slot");
+
+    let (hits, _) = search(&graph, &Query::new(vector_for(7, dims)), 5, 64, &mut scratch);
+    assert!(!hits.is_empty(), "a dead hint must fall back to the bounded probe, not return empty forever");
+    let repaired = graph.file.entry_point().0;
+    assert_ne!(repaired, entry, "the repair must be published");
+    assert_ne!(repaired, hint, "the repair must not publish the dead hint");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A repair publishes with a strict CAS on the entry it observed dead. A first insert that
+/// claims the header in between owns the graph, and a higher-level repair candidate must lose to
+/// it — installing the candidate would leave that insert's node with nothing pointing at it.
+#[test]
+fn a_repair_never_displaces_a_root_installed_while_it_ran() {
+    let dims = 32;
+    let path = tmp("entryhealrace");
+    let _ = std::fs::remove_file(&path);
+    let graph = Graph::new(PlaneFile::create(&path, dims, 16, 1_024).expect("create"));
+    let params = InsertParams::default();
+    let mut scratch = SearchScratch::new();
+    for i in 0..64 {
+        insert(&graph, &vector_for(i, dims), &params, &mut scratch).unwrap();
+    }
+    let (observed, _) = graph.file.entry_point();
+    let candidate = (0..64u32)
+        .find(|&id| id != observed && id != 7 && graph.read_node(id).is_some())
+        .expect("a live repair candidate");
+    let candidate_level = graph.read_node(candidate).expect("live").level;
+    assert!(graph.read_node(7).is_some(), "precondition: the racing root is a live node");
+
+    // the interleaving a repair races: the header no longer names the entry it read
+    graph.file.set_entry_point(7, 0);
+    assert!(
+        !graph.file.replace_entry_if(observed, candidate, candidate_level as u32),
+        "a repair must not publish over an entry installed after it read the dead one"
+    );
+    assert_eq!(graph.file.entry_point().0, 7, "the root installed meanwhile stays");
+
+    // and it does publish when nothing raced it
+    let (current, _) = graph.file.entry_point();
+    assert!(graph.file.replace_entry_if(current, candidate, candidate_level as u32));
+    assert_eq!(graph.file.entry_point().0, candidate);
+    let _ = std::fs::remove_file(&path);
+}

@@ -384,7 +384,9 @@ impl PlaneFile {
         // a hint is only worth keeping while its node is live: the host mirrors a post-delete
         // re-election through this same call, and storing the node that died would evict a
         // usable hint with one the repair path can never follow
-        if unsafe { *self.slot_ptr(prev_id).add(S_FLAGS) } != FLAG_VALID {
+        // volatile like every other read of a field a concurrent writer mutates (graph.rs's
+        // `vread`): this one is outside the slot seqlock, so the retry cannot even catch a tear
+        if unsafe { self.slot_ptr(prev_id).add(S_FLAGS).read_volatile() } != FLAG_VALID {
             return;
         }
         self.header_atomic_u64(H_ENTRY_PREV).store(prev_packed, Ordering::Release);
@@ -435,6 +437,24 @@ impl PlaneFile {
                 Err(now) => cur = now,
             }
         }
+    }
+
+    /// Install `(id, level)` ONLY while the entry still names `expected_id`. The read-side
+    /// repair publishes through this rather than `set_entry_point_if_not_better`: the entry it
+    /// is replacing is dead, so "not worse" is the wrong test — a concurrent first insert that
+    /// just claimed the header with a level-0 root would lose to a higher-level repair
+    /// candidate and be orphaned with nothing pointing at it.
+    pub fn replace_entry_if(&self, expected_id: u32, id: u32, level: u32) -> bool {
+        let cell = self.header_atomic_u64(H_ENTRY);
+        let new = (id as u64) | ((level as u64) << 32);
+        let mut cur = cell.load(Ordering::Acquire);
+        while (cur & 0xffff_ffff) as u32 == expected_id {
+            match cell.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
+                Err(now) => cur = now,
+            }
+        }
+        false
     }
 
     /// Clear the entry point, but only while it still names `expected_id`. A re-election that
@@ -642,6 +662,21 @@ impl PlaneFile {
             self.set_watermark(txn);
         }
         unsafe { *(self.map.as_ptr().add(H_CLEAN_SHUTDOWN) as *mut u8) = 1 };
+        self.map.flush_range(0, HEADER_SIZE)
+    }
+
+    /// Mark the plane an incomplete mirror, durably, and nothing else: zero the watermark and
+    /// msync the header page alone. Every opener then refuses to search it and rebuilds.
+    ///
+    /// Deliberately NOT `flush_with_watermark(Some(0))`: that writes the whole mapping back
+    /// first, and the caller invalidating a multi-GB plane cannot pay a full msync inline —
+    /// which is why the host used to queue an async flush and create its `.stale` sidecar
+    /// before the flush had happened at all. Skipping the data flush is sound because the
+    /// data is being discarded, and because lowering the watermark is the safe direction:
+    /// the ordering hazard `flush_with_watermark` exists to prevent is a NEW watermark over
+    /// missing data, never an old one over durable data.
+    pub fn invalidate(&self) -> io::Result<()> {
+        self.set_watermark(0);
         self.map.flush_range(0, HEADER_SIZE)
     }
 }

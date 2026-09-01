@@ -369,6 +369,45 @@ describe('HNSW native plane dual-write', function () {
 		await Foreign.dropTable();
 	});
 
+	it('an undeletable plane is marked incomplete in band before its stale sidecar is created', async () => {
+		const Undeletable = table({
+			table: 'PlaneUndeletable',
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+			],
+		});
+		const index = Undeletable.indices.vector.customIndex;
+		for (let i = 0; i < 30; i++) await Undeletable.put(i, { vector: makeVector(i + 60000) });
+		const planePath = index.planeFilePath();
+		const stalePath = planeStalePathFor(planePath);
+		fs.rmSync(stalePath, { force: true });
+		const plane = getPlaneBinding().open(planePath);
+		plane.setWatermark(4096); // a plane that would read as a complete mirror on the next attach
+		const order = [];
+		// a stand-in rather than a monkeypatch: the binding's methods live on a non-writable
+		// prototype, so assigning over one silently does nothing in sloppy mode
+		const observed = {
+			invalidate() {
+				// the sidecar must not exist yet: it is an empty file whose directory entry is never
+				// fsynced, so creating it first lets a power loss keep the old watermark and lose the
+				// only marker
+				order.push(fs.existsSync(stalePath) ? 'sidecar-first' : 'in-band-first');
+				plane.invalidate();
+			},
+		};
+		try {
+			index.invalidatePlaneFile(planePath, observed);
+			assert.deepEqual(order, ['in-band-first'], 'the durable in-band mark must complete before the sidecar');
+			assert.ok(fs.existsSync(stalePath), 'the sidecar still follows, for a process that cannot map the file');
+			assert.equal(getPlaneBinding().open(planePath).getWatermark(), 0, 'the plane must read as an incomplete mirror');
+		} finally {
+			fs.rmSync(stalePath, { force: true });
+			await Undeletable.dropTable();
+		}
+	});
+
 	it('a stale tombstone left without its plane file rebuilds instead of disabling the plane forever', async () => {
 		const Orphan = table({
 			table: 'PlaneOrphan',
