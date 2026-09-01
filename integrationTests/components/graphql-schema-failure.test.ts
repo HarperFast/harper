@@ -100,8 +100,10 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 	});
 
 	test('the instance log names the schema file, line, column and offending token', () => {
+		// The diagnostic carries the schema's real path, which is backslash-separated on Windows.
+		const log = instanceLog.replaceAll('\\', '/');
 		for (const app of BROKEN_APPS) {
-			const diagnostic = instanceLog
+			const diagnostic = log
 				.split('\n')
 				.find((line) => line.includes('Invalid GraphQL schema in') && line.includes(`${app}/schema.graphql`));
 			ok(diagnostic, `expected a schema diagnostic naming ${app}/schema.graphql in the instance log`);
