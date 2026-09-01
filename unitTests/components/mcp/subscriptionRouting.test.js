@@ -169,6 +169,22 @@ describe('mcp/subscriptionRouting', () => {
 		assert.equal(response.result, 'no-live-stream');
 	});
 
+	it('ignores malformed commands without attempting a response', async () => {
+		let sent = 0;
+		const bridge = fakeBridge(() => {
+			sent++;
+			return true;
+		});
+		_setSubscriptionItcForTest(bridge);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		await claimSubscriptionOwner(session.id, 'owner-token');
+		const listener = bridge.listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND);
+		assert.doesNotThrow(() => listener({ message: undefined }));
+		assert.doesNotThrow(() => listener({ message: { requestId: 'r1', originator: 1 } }));
+		await new Promise(setImmediate);
+		assert.equal(sent, 0);
+	});
+
 	it('executes subscribe and unsubscribe on the owner and updates the durable URI list', async () => {
 		let response;
 		const bridge = fakeBridge((_target, event) => {
