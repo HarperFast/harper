@@ -1,7 +1,7 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { ServerError } from '../utility/errors/hdbError.ts';
+import { ServerError, TransactionCommitConflictTimeoutError } from '../utility/errors/hdbError.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -75,6 +75,34 @@ let outstandingCommitCount = 0;
 // the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
 const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
 let lastOverloadLogAt = -Infinity;
+
+// Shared by the two sites that report a commit stuck behind write intents — the bystander-shedding
+// log in checkOverloaded() and the abandonment log in abandonCommitAfterDeadline(). One wedge
+// episode produces both, so they share the cooldown: separate limiters would double the flood the
+// cooldown exists to prevent. Mutates only when it grants, so a caller that also has its own
+// suppression (checkOverloaded's per-node `logged`) must test that first.
+function allowStuckCommitLog(now: number): boolean {
+	if (now - lastOverloadLogAt <= OVERLOAD_LOG_MIN_INTERVAL_MS) return false;
+	lastOverloadLogAt = now;
+	return true;
+}
+
+// Which database/table, which native transaction, and which request a stuck commit belongs to —
+// without it a wedge gives no indication of what to investigate (harper#2001).
+function describeCommitIdentity(
+	store: any,
+	startedFrom: { resourceName: string; method: string } | undefined,
+	nativeTransaction: any
+): string {
+	const nativeTransactionId = nativeTransaction?.id;
+	return (
+		`from table: ${store?.rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
+		(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
+		(startedFrom?.resourceName
+			? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
+			: '')
+	);
+}
 
 // Track a submitted commit until it settles. Every attempt is tracked unconditionally: a
 // coordinated retry round and a chained second-store commit are both issued from inside the
@@ -398,6 +426,13 @@ export class DatabaseTransaction implements Transaction {
 	declare next: DatabaseTransaction;
 	// The head of this multi-store chain, set when the link is created; absent on the head itself.
 	declare root?: DatabaseTransaction;
+	// When this logical commit first reached the storage engine, held on the chain root so every
+	// retry round and every chained store measures ONE elapsed wait (issue #2450). Deliberately not
+	// the per-attempt clock trackOutstandingCommit() keeps: that one drives thread-wide load
+	// shedding and must stay per-attempt, or a long uncapped source-apply retry would 503 every
+	// unrelated request on the thread. Cleared when the logical commit settles, so a reused
+	// transaction's next batch starts on a fresh budget.
+	declare commitStartedAt?: number;
 	// Whether this link is why its chain root is write-supervised (see endWriteSupervision).
 	declare writeSupervised?: boolean;
 	declare stale: boolean;
@@ -724,25 +759,22 @@ export class DatabaseTransaction implements Transaction {
 			// original per-request log was fixed to avoid, just shifted from per-request to per-commit.
 			// A commit skipped by the cooldown is NOT marked `logged`, so it still gets a log later if
 			// it's still the oldest once the cooldown clears, rather than going silent forever.
-			if (!oldestOutstandingCommit.logged && now - lastOverloadLogAt > OVERLOAD_LOG_MIN_INTERVAL_MS) {
+			if (!oldestOutstandingCommit.logged && allowStuckCommitLog(now)) {
 				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
 				// thread otherwise logs nothing at all server-side while rejecting every write with a
 				// 503, which was the single biggest obstacle to root-causing a recurrence. The flag lives
 				// on the node itself, so if THIS commit settles while still over the limit and a
 				// different one is now oldest, that one logs too instead of staying silent forever.
 				oldestOutstandingCommit.logged = true;
-				lastOverloadLogAt = now;
-				const nativeTransactionId = oldestOutstandingCommit.nativeTransaction?.id;
-				const store = oldestOutstandingCommit.store;
-				const startedFrom = oldestOutstandingCommit.startedFrom;
 				harperLogger.error(
 					`Rejecting writes on this thread: a commit has been outstanding for ` +
 						`${Math.round(now - oldestOutstandingCommit.start)}ms (exceeds the ` +
-						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), from table: ${store?.rootStore?.databaseName ?? '?'}.${store?.name ?? '?'}` +
-						(nativeTransactionId !== undefined ? ` (transaction ${nativeTransactionId})` : '') +
-						(startedFrom?.resourceName
-							? `, started from ${startedFrom.resourceName}${startedFrom.method ? '.' + startedFrom.method : ''}`
-							: '') +
+						`${MAX_OUTSTANDING_TXN_DURATION}ms limit), ` +
+						describeCommitIdentity(
+							oldestOutstandingCommit.store,
+							oldestOutstandingCommit.startedFrom,
+							oldestOutstandingCommit.nativeTransaction
+						) +
 						`. Further record updates and publishes from new application requests on this thread ` +
 						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
@@ -1078,8 +1110,12 @@ export class DatabaseTransaction implements Transaction {
 					// claimed this per-database transaction in txnForContext and so can name the wrong
 					// table when a transaction spans more than one table in the same database.
 					trackOutstandingCommit(commitResolution, this.writes[0]?.store, this.startedFrom, transaction);
+					// Stamp the chain root on its FIRST native submission; every retry round and every
+					// chained store re-enters here and must inherit that one clock, not restart it.
+					const chainRoot = this.root ?? this;
+					if (chainRoot.commitStartedAt === undefined) chainRoot.commitStartedAt = performance.now();
 					const completions = [];
-					return commitResolution.then(
+					const commitOutcome = commitResolution.then(
 						(commitResult) => {
 							if (commitResult === RETRY_NOW_VALUE) {
 								this.retries++;
@@ -1087,6 +1123,8 @@ export class DatabaseTransaction implements Transaction {
 								// Mark this specific native transaction as a retry so RocksTransactionLogStore
 								// skips re-writing its already-staged txn-log entries (#2).
 								(transaction as RocksTransactionWithRetry).isRetry = true;
+								const pastBudget = this.elapsedPastCommitBudget();
+								if (pastBudget) this.abandonCommitAfterDeadline(transaction, pastBudget);
 								// Mirror the ERR_BUSY cap/warn policy: non-sourceApply transactions abort
 								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
 								if (this.retries > MAX_RETRIES) {
@@ -1203,6 +1241,10 @@ export class DatabaseTransaction implements Transaction {
 								// premature publish, and no fresh-transaction replay that would drop the entry.
 								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
 								(transaction as RocksTransactionWithRetry).isRetry = true;
+								// Before the backoff gate below: the budget can already be spent on the first
+								// retry when an earlier store in this chain consumed it.
+								const pastBudget = this.elapsedPastCommitBudget();
+								if (pastBudget) this.abandonCommitAfterDeadline(transaction, pastBudget);
 								if (this.retries > 2) {
 									// Transactions applying data from a canonical source of truth (replication peer or
 									// external caching source) must never drop a write on a transient conflict: there is no
@@ -1253,6 +1295,23 @@ export class DatabaseTransaction implements Transaction {
 								this.releaseContext(!!options.doneWriting);
 								throw error;
 							}
+						}
+					);
+					// The clock ends with the logical commit it measures, however that ends — success, retry
+					// exhaustion, abandonment, a terminal failure. `commitOutcome` settles at exactly that
+					// point (its success branch awaits the chained stores' own commits), so releasing here
+					// covers every terminal exit; a clock left set would make a reused transaction's next
+					// batch abandon on its first conflict. Released through the RETURNED promise rather than a
+					// second subscriber on `commitOutcome`: a subscriber would mark a dropped commit rejection
+					// as handled and silence the unhandled-rejection that surfaces it.
+					return commitOutcome.then(
+						(resolution) => {
+							chainRoot.commitStartedAt = undefined;
+							return resolution;
+						},
+						(error) => {
+							chainRoot.commitStartedAt = undefined;
+							throw error;
 						}
 					);
 				}
@@ -1382,6 +1441,60 @@ export class DatabaseTransaction implements Transaction {
 			}
 		}
 	}
+	/** How long this logical commit may keep retrying: the thread-wide queue limit, or its own larger explicit budget. */
+	private commitConflictBudget(): number {
+		return Math.max(MAX_OUTSTANDING_TXN_DURATION, (this.root ?? this).timeoutBudget || 0);
+	}
+
+	/**
+	 * How long this logical commit has been retrying once it is past its budget, else 0. rocksdb-js
+	 * returns control from a parked commit every `ROCKSDB_JS_PARK_TIMEOUT_MS` even when the intent
+	 * holder never releases, so without this bound a request-path commit retries the attempt cap out
+	 * — minutes past the queue limit an operator configured (issue #2450).
+	 *
+	 * Source-applied writes are exempt for the same reason they are exempt from the attempt cap:
+	 * there is no resubscribe/sequence-resume path, so dropping one permanently diverges this node.
+	 */
+	private elapsedPastCommitBudget(): number {
+		if (this.sourceApply) return 0;
+		const startedAt = (this.root ?? this).commitStartedAt;
+		if (startedAt === undefined) return 0;
+		const elapsed = performance.now() - startedAt;
+		return elapsed > this.commitConflictBudget() ? elapsed : 0;
+	}
+
+	/**
+	 * Abandon a logical commit that stayed in write-intent conflict past its budget. Cleanup is
+	 * retry exhaustion's, so no link leaks a native handle or read snapshot; the error is distinct
+	 * because the condition is distinct — every attempt reported transient contention, so a later
+	 * request can succeed once the holder releases, which the generic exhaustion 500 does not say.
+	 *
+	 * Only a chain root may report `retryable`: a link commits solely from its predecessor's success
+	 * handler, so anywhere else in the chain an earlier store has already landed durable audit
+	 * entries and hooks that a replayed request would run twice. A head whose scope already rotated
+	 * through a mid-scope commit is in the same position.
+	 */
+	private abandonCommitAfterDeadline(headTransaction: RocksTransaction, elapsedMs: number): never {
+		const elapsed = Math.round(elapsedMs);
+		const budget = this.commitConflictBudget();
+		const retryable = !this.root && !this.snapshotFree;
+		if (allowStuckCommitLog(performance.now())) {
+			harperLogger.error(
+				`Abandoning a write transaction: its commit has been in write-intent conflict for ${elapsed}ms ` +
+					`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
+					describeCommitIdentity(this.writes[0]?.store, this.startedFrom, headTransaction) +
+					`. Another transaction holds a conflicting write intent and has not completed; the request is ` +
+					`failed with a 503${retryable ? '' : ' (not retryable — an earlier store in this transaction already committed)'} ` +
+					`rather than waiting further.`
+			);
+		}
+		this.abortChainAfterRetries(headTransaction);
+		throw new TransactionCommitConflictTimeoutError(
+			`Commit was in conflict with ongoing writes for ${elapsed}ms, exceeding the ${budget}ms limit; transaction abandoned after ${this.retries} retries`,
+			retryable
+		);
+	}
+
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
 	 * first, then abort each link's native transaction and release its DatabaseTransaction-level

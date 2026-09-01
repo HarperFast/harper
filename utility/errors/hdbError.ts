@@ -85,6 +85,24 @@ export class IndexRebuildingError extends ServerError {
 	}
 }
 
+/**
+ * Thrown when a write transaction's commit kept losing write-intent conflicts past its queue-time
+ * budget (`storage.maxTransactionQueueTime`, or the transaction's own larger `timeoutBudget`) and
+ * Harper abandoned it rather than let the request wait on an intent holder that may never release
+ * (issue #2450). `retryable` is false when part of the transaction already landed durably — the
+ * caller must not replay a request whose earlier store committed.
+ */
+export class TransactionCommitConflictTimeoutError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string, retryable: boolean) {
+		super(message, 503);
+		this.name = 'TransactionCommitConflictTimeoutError';
+		this.code = 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT';
+		this.retryable = retryable;
+	}
+}
+
 export class UpdateAttributesLockTimeoutError extends ServerError {
 	code: string;
 	retryable: boolean;
