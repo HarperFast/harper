@@ -475,8 +475,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 
 	/**
 	 * Shared fallback for the ENOENT read path and `#handleUnlink`: when config env vars
-	 * define this scope, apply the env-only overlay (first application → `ready`; already
-	 * configured → `merge`, never reset). Returns true when the event was handled —
+	 * define this scope, apply the env-only overlay (first source application → `ready`;
+	 * already configured → `merge`, never reset). Returns true when the event was handled —
 	 * including the malformed-env case, which routes to `error` like the file-read path
 	 * rather than an unhandled rejection. Returns false (root config untouched) when this
 	 * is not a root config or the env config does not provide the scope, so callers keep
