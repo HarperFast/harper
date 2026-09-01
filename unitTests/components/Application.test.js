@@ -8,6 +8,7 @@ testUtils.preTestPrep();
 const {
 	isSSHAuthFailure,
 	assertApplicationConfig,
+	splitAttributionOwners,
 	derivePackageIdentifier,
 	parseGitReference,
 	shouldPackLocalDirectory,
@@ -204,6 +205,27 @@ describe('parseGitReference', () => {
 			cloneUrl: 'https://example.com/owner/repo.git',
 			committish: 'feature%2Ffoo',
 		});
+	});
+});
+
+describe('splitAttributionOwners', () => {
+	// The decision behind the two paths that fail a deployment closed when its journal and its ownership
+	// sidecar name different components. Tested here rather than through either caller: one of them is only
+	// reachable when a journal appears BETWEEN two reads under a lock, which no test can stage.
+	it('reports both names, sidecar first, when the two sources disagree', () => {
+		// Both are stuck: the restore gate takes the union and blocks the sidecar's component, while
+		// settlement needs the intersection and can never clear the journal owner's.
+		assert.deepStrictEqual(splitAttributionOwners('other', 'web'), ['web', 'other']);
+	});
+
+	it('reports nothing when they agree', () => {
+		assert.strictEqual(splitAttributionOwners('web', 'web'), undefined);
+	});
+
+	it('treats an unanswerable sidecar as agreement, not disagreement', () => {
+		// The journal names its own component and can settle it, so a sidecar that cannot be read must not
+		// block that — this is the distinction that keeps an unreadable sidecar from wedging a component.
+		assert.strictEqual(splitAttributionOwners('web', undefined), undefined);
 	});
 });
 

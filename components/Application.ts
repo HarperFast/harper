@@ -1356,6 +1356,26 @@ async function journaledDeploymentForComponent(
 }
 
 /**
+ * The components a deployment's evidence implicates, when its journal and its ownership sidecar disagree
+ * about whose it is — or `undefined` when there is no disagreement to act on.
+ *
+ * A sidecar that cannot answer is NOT disagreement: the journal names its own component and can settle it,
+ * so an unreadable sidecar must not block that. Only a sidecar that reads and names something else is the
+ * wedge, and then BOTH names are returned, sidecar first, because both are stuck — see
+ * `splitAttributionError`.
+ *
+ * Separated from either call site so the decision is testable on its own: the paths that reach it include
+ * one that requires a journal to appear between two reads under a lock, which no test can stage.
+ */
+export function splitAttributionOwners(
+	journalOwner: string,
+	sidecarOwner: string | undefined
+): [string, string] | undefined {
+	if (sidecarOwner === undefined || sidecarOwner === journalOwner) return undefined;
+	return [sidecarOwner, journalOwner];
+}
+
+/**
  * The error for a deployment its journal and its ownership sidecar attribute to different components.
  *
  * Both names are wedged, so both are failed: the restore gate takes the union and blocks the sidecar's
@@ -1612,7 +1632,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			let activationToFail: string | undefined;
 			// Set when the journal that appears under the lock names someone other than the sidecar owner
 			// whose lock we took. Both names are failed, exactly as on the journaled path.
-			let splitOwners: { journalOwner: string; sidecarOwner: string } | undefined;
+			let splitOwners: [string, string] | undefined;
 			const removeResidue = async () => {
 				// Re-read UNDER the lock, and do not swallow: the first scan raced a deploy that can publish a
 				// journal before releasing the lock, so a journal found now must be settled rather than deleted.
@@ -1633,9 +1653,10 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					// component's trees, whose own deploy may hold its own lock and be mid-flight. It is also the
 					// same split evidence the journaled path fails closed for both names, so it takes the same
 					// route rather than a second opinion here.
-					if (owner !== undefined && appeared.component !== owner) {
-						splitOwners = { journalOwner: appeared.component, sidecarOwner: owner };
-						throw splitAttributionError(deploymentDirPath, appeared.component, owner);
+					const splitNames = splitAttributionOwners(appeared.component, owner);
+					if (splitNames) {
+						splitOwners = splitNames;
+						throw splitAttributionError(deploymentDirPath, appeared.component, splitNames[0]);
 					}
 					activationToFail = appeared.component;
 					await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, appeared);
@@ -1692,8 +1713,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				// to defer this component until the deploy holding that lock finishes — and it leaves nothing
 				// durable behind, since `fail()` writes no marker for a deferral.
 				if (splitOwners) {
-					await fail(splitOwners.sidecarOwner, error);
-					await fail(splitOwners.journalOwner, error);
+					for (const name of splitOwners) await fail(name, error);
 				} else if (activationToFail) await fail(activationToFail, error);
 				else if (error instanceof ComponentPreparationLockTimeoutError) await fail(owner ?? deployment.name, error);
 				else
@@ -1714,10 +1734,10 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 			// component and can settle it — so a sidecar that cannot be read must not block that; only one
 			// that CAN be read and names something else is the wedge below.
 			const sidecarOwner = await candidateComponentName(deploymentDirPath).catch(() => undefined);
-			if (sidecarOwner !== undefined && sidecarOwner !== journal.component) {
-				const split = splitAttributionError(deploymentDirPath, journal.component, sidecarOwner);
-				await fail(sidecarOwner, split);
-				await fail(journal.component, split);
+			const splitNames = splitAttributionOwners(journal.component, sidecarOwner);
+			if (splitNames) {
+				const split = splitAttributionError(deploymentDirPath, journal.component, splitNames[0]);
+				for (const name of splitNames) await fail(name, split);
 				continue;
 			}
 			const settling = journal;
