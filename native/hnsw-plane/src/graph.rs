@@ -250,21 +250,24 @@ impl Graph {
     }
 
     /// The slot's stored upper idx regardless of valid/deleted flags — the raw mirroring
-    /// path reuses a cleared node's entry when the host rewrites the same id.
-    fn upper_idx_raw(&self, id: u32) -> u32 {
+    /// path reuses a cleared node's entry when the host rewrites the same id. Read under the
+    /// slot write lock, not `read_consistent`: that read reports NO_UPPER when it cannot settle
+    /// within the stale window, and a caller that treats "cannot tell" as "none bound" mints a
+    /// second entry for an id that already owns one, orphaning the first.
+    fn upper_idx_locked(&self, id: u32) -> Result<u32, Wedged> {
         if !self.in_range(id) {
-            return NO_UPPER;
+            return Ok(NO_UPPER);
         }
         let seq = self.file.seq_atomic(id);
-        seqlock::read_consistent(seq, self.file.self_tag, || {
-            let p = self.file.slot_ptr(id);
-            unsafe {
-                if *p.add(S_FLAGS) == 0 {
-                    return NO_UPPER; // never written
-                }
+        let _guard = seqlock::write_lock(seq, self.file.self_tag, self.slot_sanitizer(id), self.owner_dead())?;
+        let p = self.file.slot_ptr(id);
+        Ok(unsafe {
+            if *p.add(S_FLAGS) == 0 {
+                NO_UPPER // never written
+            } else {
                 (p.add(S_UPPER_IDX) as *const u32).read_unaligned()
             }
-        }, self.slot_sanitizer(id), || NO_UPPER, self.owner_dead())
+        })
     }
 
     /// Mirror a host-maintained node into the plane: full state per call, host-allocated id
@@ -281,12 +284,23 @@ impl Graph {
         upper_levels: &[Vec<u32>],
     ) -> Result<(), Wedged> {
         self.file.ensure_high_water(id);
-        let existing = match self.upper_idx_raw(id) {
+        let existing = match self.upper_idx_locked(id)? {
             idx if idx != NO_UPPER && (idx as u64) >= self.file.upper_capacity => NO_UPPER, // corrupt stored index
             idx => idx,
         };
         let upper_idx = if upper_levels.is_empty() {
-            existing // keep an existing entry bound (level never shrinks in practice)
+            // an id re-minted at level 0 must not keep reading the previous node's hierarchy:
+            // the shared host counter reseeds to largestNodeId + 1 across a restart, so
+            // deleting the top ids hands them back out and the new record redraws its level.
+            // Emptied in place rather than freed — returning it to the shared freelist is not
+            // atomic with publishing the slot below, so a mirror that read this index first
+            // could republish a slot pointing at an entry already handed to another node.
+            // Keeping it bound costs at most one idle entry per id, the bounded upper
+            // retention hnsw-native-plane.md §10 already accepts.
+            if existing != NO_UPPER {
+                self.rewrite_upper(existing, &[])?;
+            }
+            existing
         } else if existing != NO_UPPER {
             self.rewrite_upper(existing, upper_levels)?;
             existing
