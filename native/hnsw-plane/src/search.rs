@@ -493,7 +493,9 @@ mod predicate_tests {
     /// The tail drain must stop receiving the moment the last verdict lands. Draining until the
     /// channel reports empty sits out another full `recv_timeout` after `outstanding` reaches
     /// zero — 50 ms added to every filtered query, against a sub-millisecond search. Measured
-    /// from the evaluator's last send so the search's own cost is not in the number.
+    /// from the evaluator's last send so the search's own cost is not in the number, and over
+    /// the best of several queries so scheduler noise on one of them cannot pass for the extra
+    /// receive, which every query would pay.
     #[test]
     fn a_predicated_search_returns_as_soon_as_the_last_verdict_lands() {
         let dims = 32;
@@ -529,13 +531,24 @@ mod predicate_tests {
             rx: res_rx,
         };
         let q: Vec<f32> = (0..dims).map(|d| ((41.0f32 * 0.31 + d as f32) * 0.7).sin()).collect();
-        let (hits, _) =
-            search_predicated(&graph, &Query::new(q), 10, 64, &mut pipe, 64 * 24, &mut scratch);
-        let tail = last_send.lock().unwrap().expect("the evaluator answered a batch").elapsed();
-        assert!(!hits.is_empty(), "precondition: an admitting predicate returns results");
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let (hits, _) = search_predicated(
+                &graph,
+                &Query::new(q.clone()),
+                10,
+                64,
+                &mut pipe,
+                64 * 24,
+                &mut scratch,
+            );
+            let tail = last_send.lock().unwrap().expect("the evaluator answered a batch").elapsed();
+            assert!(!hits.is_empty(), "precondition: an admitting predicate returns results");
+            best = best.min(tail);
+        }
         assert!(
-            tail < std::time::Duration::from_millis(25),
-            "the drain sat {tail:?} past the last verdict instead of returning on it"
+            best < std::time::Duration::from_millis(25),
+            "the drain sat {best:?} past the last verdict on every query instead of returning on it"
         );
         drop(pipe);
         worker.join().unwrap();
