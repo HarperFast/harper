@@ -31,14 +31,22 @@ function startFixtureWorker() {
 	const queued = [];
 	const waiting = [];
 	const loggedErrors = [];
+	let died = null;
 	const receive = (message) => {
 		if (message?.type !== MESSAGE_TYPE) return;
 		const waiter = waiting.shift();
-		if (waiter) waiter(message);
+		if (waiter) waiter.resolve(message);
 		else queued.push(message);
 	};
-	const next = () =>
-		queued.length ? Promise.resolve(queued.shift()) : new Promise((resolve) => waiting.push(resolve));
+	const fail = (error) => {
+		died = error;
+		for (const waiter of waiting.splice(0)) waiter.reject(error);
+	};
+	const next = () => {
+		if (queued.length) return Promise.resolve(queued.shift());
+		if (died) return Promise.reject(died);
+		return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+	};
 	const worker = startWorker(WORKER_FIXTURE, {
 		name: 'drop-table-cross-worker-test',
 		workerIndex: 1,
@@ -46,6 +54,8 @@ function startFixtureWorker() {
 		autoRestart: false,
 		onStarted(spawned) {
 			spawned.on('message', receive);
+			spawned.on('error', fail);
+			spawned.on('exit', (code) => fail(new Error(`fixture worker exited with code ${code}`)));
 		},
 	});
 	const send = (command, details = {}) => worker.postMessage({ type: CONTROL_TYPE, command, ...details });
@@ -104,7 +114,7 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 		await Main.dropTable();
 		await fixture.sync();
 		assert.deepStrictEqual(fixture.drain(), [], 'unexpected worker events');
-		assert.doesNotThrow(() => Probe.primaryStore.putSync('__probe__', { settled: true }));
+		Probe.primaryStore.putSync('__probe__', { settled: true });
 		assert.deepStrictEqual(catalogRows(Main, name), [], 'catalog rows must be removed');
 	});
 
@@ -132,10 +142,7 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 				.drain()
 				.filter((message) => message.event !== 'logged-error' || !CONTAINED_COMMIT_LOSS.test(message.message));
 			assert.deepStrictEqual(unexpected, [], `iteration ${i}: unexpected worker events`);
-			assert.doesNotThrow(
-				() => Probe.primaryStore.putSync('__probe__', { i }),
-				`iteration ${i}: the environment must still accept writes`
-			);
+			Probe.primaryStore.putSync('__probe__', { i });
 			assert.deepStrictEqual(catalogRows(Main, name), [], `iteration ${i}: catalog rows must be removed`);
 		}
 		assert.ok(raced > 0, "no iteration caught the worker's commit in flight when the drop started");
