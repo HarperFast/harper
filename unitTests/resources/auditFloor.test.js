@@ -135,6 +135,19 @@ describe('audit staleness floor', () => {
 			});
 		}
 
+		for (const [label, cutoff] of [
+			['negative zero', -0],
+			['a string', '123'],
+			['null', null],
+		]) {
+			it(`throws on ${label} as a cutoff, which the prune range would still honor`, () => {
+				const target = tableInOwnDatabase(`Bound${String(label).replace(/\W/g, '')}`);
+				const before = target.oldestRetainedAuditTime();
+				assert.throws(() => raiseAuditFloor(target.auditStore, cutoff), /Invalid audit prune bound/);
+				assert.strictEqual(target.oldestRetainedAuditTime(), before);
+			});
+		}
+
 		it('does not stamp over a record that decodes to unknown', () => {
 			// establishAuditFloor keys off the record's ABSENCE. Keying off the decoded value instead would
 			// let a reopen replace a deliberately-stored Infinity (or corrupt bytes) with Date.now(),
@@ -426,6 +439,18 @@ describe('audit staleness floor', () => {
 		} finally {
 			legacyRoot.close();
 		}
+	});
+
+	it('leaves an audit store whose only key is the floor enumerable-key-free', function () {
+		// openAuditStore's time-reversal check does `time > Date.now()` over getKeys({reverse, limit: 1}).
+		// If the floor's symbol key were enumerated there, a database whose audit log is still empty
+		// would compare a Symbol and throw during open. The audit key encoder does not yield it.
+		if (Audited.auditStore.reusableIterable) return this.skip(); // RocksDB getKeys is unimplemented
+		const fresh = tableInOwnDatabase('KeyOnlyFloor');
+		assert.ok(Number.isFinite(fresh.oldestRetainedAuditTime()), 'precondition: a floor is recorded');
+		const keys = [];
+		for (const key of fresh.auditStore.getKeys({ reverse: true, limit: 1 })) keys.push(key);
+		assert.deepStrictEqual(keys, [], 'the floor key must not surface as an enumerable audit key');
 	});
 
 	it('reports the database floor for a table whose own auditing is off', () => {

@@ -5587,7 +5587,9 @@ export function makeTable(options) {
 			return entriesDeleted;
 		}
 		/**
-		 * The floor of retained audit history, in the same time domain as `subscribe`'s `startTime`:
+		 * The floor of retained audit history, in the same time domain as `subscribe`'s `startTime` and
+		 * the `localTime` its events carry — but NOT `getHistory`'s `localTime`, which is the origin
+		 * version under that name. Concretely:
 		 * a consumer whose last-processed cursor is `>=` the returned value can resume incrementally,
 		 * and one below it has lost history it needs and must resync from a full read. `Infinity` means
 		 * the floor is unknown — including on any database opened for the first time by a version that

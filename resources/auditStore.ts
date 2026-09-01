@@ -351,7 +351,7 @@ function encodeAuditFloor(floor: number): Uint8Array {
  * below history the higher one already removed. In read-only mode nothing is written, which is
  * consistent because nothing is pruned there either.
  */
-function updateAuditFloor(auditStore: any, resolve: (current: number) => number | undefined): void {
+function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: boolean) => number | undefined): void {
 	// A legacy `auditPath` layout is opened as its own standalone LMDB root (databases.ts) and has no
 	// `.rootStore`, so it owns the transaction itself.
 	const transactionOwner = auditStore?.rootStore ?? auditStore;
@@ -365,14 +365,16 @@ function updateAuditFloor(auditStore: any, resolve: (current: number) => number 
 		auditStore instanceof RocksTransactionLogStore
 			? transactionOwner.transactionSync(
 					(txn) => {
-						const floor = resolve(decodeAuditFloor(txn.getBinarySync(AUDIT_FLOOR_KEY)));
+						const stored = txn.getBinarySync(AUDIT_FLOOR_KEY);
+						const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
 						if (floor !== undefined) txn.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
 						return true;
 					},
 					{ retryOnBusy: true }
 				)
 			: transactionOwner.transactionSync(() => {
-					const floor = resolve(decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY)));
+					const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
+					const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
 					// asBinary: a legacy standalone audit root's encoder has no Uint8Array passthrough, so raw
 					// bytes would reach createAuditEntry and throw. This bypasses both encoders.
 					if (floor !== undefined) auditStore.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
@@ -407,11 +409,22 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// timestamp, so silently declining the floor update would leave the prune deleting everything.
 	// Infinity is different and IS stored: `deleteHistory(Infinity)` legitimately removes all history,
 	// and Infinity decodes back to "unknown", leaving no cursor reading as safe.
-	if (Number.isNaN(cutoff) || cutoff < 0) throw new Error(`Invalid audit prune bound: ${cutoff}`);
+	// `-0` and a non-number slip past a naive `< 0` check but are still ordered keys the range honors:
+	// -0 sets the float64 sign bit and a non-number takes the ordered-binary branch of the key encoder,
+	// so both sort outside the timestamp space the prune means to bound.
+	if (typeof cutoff !== 'number' || Number.isNaN(cutoff) || cutoff < 0 || Object.is(cutoff, -0))
+		throw new Error(`Invalid audit prune bound: ${String(cutoff)}`);
 	// Read-only mode does not exempt a prune from recording its floor; it means the prune must not
 	// happen. Only scheduleAuditCleanup and purgeAgedLogs check read-only themselves, so for
 	// deleteHistory and the whole-database purge this throw is the guard.
 	if (isReadOnlyMode()) throw new Error('Cannot record the audit retention floor: the database is read-only');
+	// Lock-free pre-check: most calls cannot move the floor (a RocksDB reclamation pass on an idle
+	// database, a cutoff below one a wider prune already set), and taking the env write lock to
+	// discover that serializes every worker's boot and reclamation on it. The in-transaction guard
+	// below stays authoritative.
+	// guarded on getBinary: this is an optimization, and must not be what decides the error a store
+	// that cannot record a floor at all reports.
+	if (auditStore?.getBinary && !(cutoff > getAuditFloor(auditStore))) return;
 	updateAuditFloor(auditStore, (current) => (cutoff > current ? cutoff : undefined));
 }
 
@@ -438,10 +451,19 @@ export function establishAuditFloor(auditStore: any): void {
 	// Absence of the record, not `getAuditFloor() === AUDIT_FLOOR_UNKNOWN`: a record that exists but
 	// decodes to unknown — corrupt bytes, or the Infinity a prune-everything stored — is already the
 	// fail-closed answer, and stamping over it would LOWER a floor that is never supposed to lower.
-	// Reading it here rather than inside the transaction also keeps the overwhelmingly common case (a
-	// floor already established, every worker, every database, every boot) off the env write lock.
+	// The check is repeated inside the transaction (the `recorded` argument), because between this
+	// read and that write another worker's prune can store exactly such a value; this read only keeps
+	// the common case — a floor already established, every worker, every database, every boot — off
+	// the env write lock.
 	if (auditStore.getBinary(AUDIT_FLOOR_KEY) !== undefined) return;
-	updateAuditFloor(auditStore, (current) => (current === AUDIT_FLOOR_UNKNOWN ? Date.now() : undefined));
+	try {
+		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : Date.now()));
+	} catch (error) {
+		// Never fail a database open over this. An unrecorded floor already reads as unknown, which is
+		// the fail-closed answer; aborting startup instead would turn a metadata write failure into an
+		// outage. The next open retries.
+		harperLogger.warn('Could not establish the audit retention floor; it will read as unknown', error);
+	}
 }
 
 /**
@@ -450,8 +472,11 @@ export function establishAuditFloor(auditStore: any): void {
  * incrementally, and one below it has lost history it needs and must resync. Returns `Infinity` when
  * the floor is unknown, which fails closed — no cursor compares as safe.
  *
- * The time domain is the audit-log key (`localTime`), the same domain as subscription events and
- * MQTT durable-session `startTime`, so consumers compare cursors directly.
+ * The time domain is the audit-log key: what `subscribe`'s events carry as `localTime` and what MQTT
+ * durable sessions persist as `startTime`, so those compare against the floor directly.
+ * **`getHistory` is not in that domain** — it reports each entry's origin `version` under the name
+ * `localTime`, which a backdated or replicated write makes differ from the audit-log key. A cursor
+ * saved from `getHistory` is not comparable to this floor.
  *
  * **Database-scoped**, and deliberately conservative: the audit store is per-database and its
  * entries carry a `tableId`, so a per-table floor would need a scan for the first entry matching
