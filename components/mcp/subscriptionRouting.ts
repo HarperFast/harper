@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
 import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { loadSession, patchSession, type McpSessionRecord } from './session.ts';
+import { patchSession, updateSessionSubscriptions, type McpSessionRecord } from './session.ts';
 import { getRegisteredSession } from './sessionRegistry.ts';
 import { addResourceSubscription, removeResourceSubscription } from './subscriptions.ts';
 import type { AuthedUser } from './toolRegistry.ts';
@@ -222,15 +222,12 @@ async function executeLocal(command: Command): Promise<SubscriptionRouteResult> 
 			const added = await addResourceSubscription(command.sessionId, command.uri, command.user);
 			if (!added) return 'not-subscribable';
 			try {
-				const session = await loadSession(command.sessionId);
+				const session = await updateSessionSubscriptions(command.sessionId, (subscriptions) =>
+					subscriptions.includes(command.uri) ? subscriptions : [...subscriptions, command.uri]
+				);
 				if (!session) {
 					removeResourceSubscription(command.sessionId, command.uri);
 					return 'no-live-stream';
-				}
-				if (!session.subscriptions?.includes(command.uri)) {
-					await patchSession(command.sessionId, {
-						subscriptions: [...(session.subscriptions ?? []), command.uri],
-					});
 				}
 				return 'success';
 			} catch (error) {
@@ -238,12 +235,9 @@ async function executeLocal(command: Command): Promise<SubscriptionRouteResult> 
 				throw error;
 			}
 		}
-		const session = await loadSession(command.sessionId);
-		if (session?.subscriptions?.includes(command.uri)) {
-			await patchSession(command.sessionId, {
-				subscriptions: session.subscriptions.filter((uri) => uri !== command.uri),
-			});
-		}
+		await updateSessionSubscriptions(command.sessionId, (subscriptions) =>
+			subscriptions.includes(command.uri) ? subscriptions.filter((uri) => uri !== command.uri) : subscriptions
+		);
 		removeResourceSubscription(command.sessionId, command.uri);
 		return 'success';
 	});

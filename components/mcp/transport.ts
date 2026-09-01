@@ -32,7 +32,14 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
-import { deleteSession, loadSession, patchSession, touchSession, type McpSessionRecord } from './session.ts';
+import {
+	deleteSession,
+	loadSession,
+	patchSession,
+	touchSession,
+	updateSessionSubscriptions,
+	type McpSessionRecord,
+} from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
@@ -419,13 +426,13 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
-	await withSessionSubscriptionLock(sessionId, async () => {
-		const currentSession = await loadSession(sessionId);
-		const subscriptions = currentSession?.subscriptions;
-		if (!subscriptions?.length) return;
-		const restored = await restoreResourceSubscriptions(sessionId, subscriptions, effectiveUser(request));
-		if (restored.length !== subscriptions.length) await patchSession(sessionId, { subscriptions: restored });
-	});
+	await withSessionSubscriptionLock(sessionId, () =>
+		updateSessionSubscriptions(sessionId, async (subscriptions) => {
+			if (!subscriptions.length) return subscriptions;
+			const restored = await restoreResourceSubscriptions(sessionId, subscriptions, effectiveUser(request));
+			return restored.length === subscriptions.length ? subscriptions : restored;
+		})
+	);
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
 	// raw so their original event ids are preserved. Best-effort + per-worker: the
@@ -967,10 +974,9 @@ async function dispatchResourcesUnsubscribe(
 	if (result === 'no-live-stream') {
 		// The live owner is already gone. Remove durable state locally so a later
 		// reconnect cannot restore the cancelled subscription.
-		const fresh = await loadSession(session.id);
-		if (fresh?.subscriptions?.includes(uri)) {
-			await patchSession(session.id, { subscriptions: fresh.subscriptions.filter((u) => u !== uri) });
-		}
+		await updateSessionSubscriptions(session.id, (subscriptions) =>
+			subscriptions.includes(uri) ? subscriptions.filter((subscription) => subscription !== uri) : subscriptions
+		);
 	} else if (result === 'timeout') {
 		return jsonResponse(
 			200,

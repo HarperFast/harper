@@ -165,6 +165,43 @@ export async function patchSession(id: string, changes: Partial<Omit<McpSessionR
 	await (getTable() as any).patch({ id, ...changes });
 }
 
+function subscriptionLockKey(id: string): string {
+	return `mcp-subscriptions:${id}`;
+}
+
+function acquireSessionSubscriptionLock(store: Table['primaryStore'], key: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const attempt = () => {
+			try {
+				if (store.tryLock(key, attempt)) resolve();
+			} catch (error) {
+				reject(error);
+			}
+		};
+		attempt();
+	});
+}
+
+/** Serialize durable subscription read-modify-writes across HTTP workers. */
+export async function updateSessionSubscriptions(
+	id: string,
+	update: (subscriptions: string[]) => string[] | Promise<string[]>
+): Promise<McpSessionRecord | null> {
+	const store = getTable().primaryStore;
+	const key = subscriptionLockKey(id);
+	await acquireSessionSubscriptionLock(store, key);
+	try {
+		const session = await loadSession(id);
+		if (!session) return null;
+		const subscriptions = session.subscriptions ?? [];
+		const updated = await update(subscriptions);
+		if (updated !== subscriptions) await patchSession(id, { subscriptions: updated });
+		return updated === subscriptions ? session : { ...session, subscriptions: updated };
+	} finally {
+		store.unlock(key);
+	}
+}
+
 export async function deleteSession(id: string): Promise<void> {
 	await (getTable() as any).delete(id);
 	// Tear down ancillary per-session in-memory state — the `tools/list`

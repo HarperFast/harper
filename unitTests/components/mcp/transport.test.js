@@ -48,8 +48,27 @@ function makeFakeResources(entries) {
 
 function makeFakeTable() {
 	const store = new Map();
+	const locks = new Set();
+	const waiters = new Map();
 	return {
 		store,
+		primaryStore: {
+			tryLock(key, callback) {
+				if (!locks.has(key)) {
+					locks.add(key);
+					return true;
+				}
+				const queued = waiters.get(key) ?? [];
+				queued.push(callback);
+				waiters.set(key, queued);
+				return false;
+			},
+			unlock(key) {
+				locks.delete(key);
+				const callback = waiters.get(key)?.shift();
+				if (callback) setImmediate(callback);
+			},
+		},
 		async put(record) {
 			store.set(record.id, { ...record });
 		},

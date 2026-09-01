@@ -4,13 +4,33 @@ const {
 	loadSession,
 	deleteSession,
 	touchSession,
+	updateSessionSubscriptions,
 	_setSessionTableForTest,
 } = require('#src/components/mcp/session');
 
 function makeFakeTable() {
 	const store = new Map();
+	const locks = new Set();
+	const waiters = new Map();
 	return {
 		store,
+		primaryStore: {
+			tryLock(key, callback) {
+				if (!locks.has(key)) {
+					locks.add(key);
+					return true;
+				}
+				const queued = waiters.get(key) ?? [];
+				queued.push(callback);
+				waiters.set(key, queued);
+				return false;
+			},
+			unlock(key) {
+				locks.delete(key);
+				const callback = waiters.get(key)?.shift();
+				if (callback) setImmediate(callback);
+			},
+		},
 		async put(record) {
 			store.set(record.id, { ...record });
 		},
@@ -100,6 +120,25 @@ describe('mcp/session', () => {
 			assert.equal(touched.initialized, true);
 			assert.equal(touched.user, 'alice');
 			assert.equal(touched.protocolVersion, '2025-06-18');
+		});
+	});
+
+	describe('updateSessionSubscriptions', () => {
+		it('serializes concurrent read-modify-writes for the same session', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			fake.store.get(session.id).subscriptions = ['first', 'second'];
+			const originalPatch = fake.patch;
+			fake.patch = async (record) => {
+				if (record.subscriptions) await new Promise((resolve) => setImmediate(resolve));
+				return originalPatch.call(fake, record);
+			};
+
+			await Promise.all([
+				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions.filter((uri) => uri !== 'first')),
+				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions.filter((uri) => uri !== 'second')),
+			]);
+
+			assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 		});
 	});
 });
