@@ -107,6 +107,7 @@ import { server } from '../server/Server.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { activeSuperUserRemains } from './superUserGuard.ts';
+import { databases, databaseEventsEmitter } from '../resources/databases.ts';
 
 server.getUser = (username: string, password?: string | null): Promise<User> => {
 	return findAndValidateUser(username, password, password != null);
@@ -345,6 +346,85 @@ async function listUsers(): Promise<Map<string, User>> {
 	return userMap;
 }
 
+// Frozen because one instance is shared by every role with the same read permission: an entry
+// mutated by any consumer would change what every other user is allowed to do.
+function systemTablePermissions(readPerm: boolean): UserRolePermissionTable {
+	return Object.freeze({
+		read: readPerm,
+		insert: false,
+		update: false,
+		delete: false,
+		attribute_permissions: Object.freeze([]) as UserRoleAttributePermissionTable[],
+	}) as UserRolePermissionTable;
+}
+
+const systemTablesByReadPerm = new Map<boolean, Record<string, UserRolePermissionTable>>();
+
+/**
+ * `systemSchema.json` is install-time only; components create `hdb_scheduler_state`, `hdb_session`,
+ * `hdb_status` and friends later, and a map built from the JSON alone reports those as nonexistent
+ * to every caller, super_user included (harper#2120). The set comes from the live registry that
+ * `describe_database` enumerates, so listed and addressable stay one set.
+ *
+ * Two constraints shape this. It must be a plain object, because operation forwarding
+ * structured-clones the request — permissions included — to a worker thread, and a `Proxy` there
+ * fails the whole operation with `DataCloneError`. And it must be updated **in place** rather than
+ * replaced: `security/auth.ts` serves warmed authorization entries and `getSuperUser()` hands back
+ * cached roles, neither of which re-reads a map, so a fresh object would leave those identities on
+ * the stale one and reproduce the original 403.
+ *
+ * Entries are defined rather than assigned so a table named `__proto__` becomes an own property
+ * instead of hitting the inherited setter.
+ */
+function syncSystemTables(tables: Record<string, UserRolePermissionTable>, readPerm: boolean) {
+	const live = databases[terms.SYSTEM_SCHEMA_NAME];
+	const names = new Set([...Object.keys(systemSchema), ...(live ? Object.keys(live) : [])]);
+	for (const name of names) {
+		if (!Object.hasOwn(tables, name)) {
+			Object.defineProperty(tables, name, {
+				value: systemTablePermissions(readPerm),
+				writable: true,
+				enumerable: true,
+				configurable: true,
+			});
+		}
+	}
+	for (const name of Object.keys(tables)) {
+		if (!names.has(name)) delete tables[name];
+	}
+}
+
+function systemTablesPermissions(readPerm: boolean): Record<string, UserRolePermissionTable> {
+	let tables = systemTablesByReadPerm.get(readPerm);
+	if (!tables) {
+		tables = {};
+		systemTablesByReadPerm.set(readPerm, tables);
+		syncSystemTables(tables, readPerm);
+	}
+	return tables;
+}
+
+// Scoped to the system database: these events also fire for user tables, and resyncing on those
+// would be pure waste. `Table.dropTable()` deletes from the registry without emitting, so a table
+// dropped that way lingers here until the next system-table event — permissively, but only for a
+// table the data layer will then refuse as nonexistent anyway.
+//
+// Never allowed to throw: these listeners run inside `emit` during `getDatabases()` and `table()`,
+// so an exception here aborts schema loading and takes the node down. A stale map is a 403.
+function refreshSystemTables() {
+	try {
+		for (const [readPerm, tables] of systemTablesByReadPerm) syncSystemTables(tables, readPerm);
+	} catch (error) {
+		harperLogger.error('Failed to refresh system table permissions; they may be stale', error);
+	}
+}
+databaseEventsEmitter.on('updateTable', (table) => {
+	if (table?.databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+});
+databaseEventsEmitter.on('dropTable', (_tableName, databaseName) => {
+	if (databaseName === terms.SYSTEM_SCHEMA_NAME) refreshSystemTables();
+});
+
 /**
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthorization.
  * @param userRole - Role of the user found during auth.
@@ -354,25 +434,26 @@ function appendSystemTablesToRole(userRole: UserRole) {
 		logger.error(`invalid user role found.`);
 		return;
 	}
-	if (!userRole.permission.system) {
-		userRole.permission.system = {
-			tables: {},
-		};
+	// A role may declare its own `system` block, and before harper#2120 any entry outside
+	// systemSchema.json survived — which let a role grant itself reads and writes on tables like
+	// hdb_session. Those are dropped now, so name them: an operator whose grant stops working
+	// otherwise sees only a 403 with nothing pointing at the cause.
+	//
+	// Identity check, not emptiness: several users share one role object, so by the second user the
+	// map we installed is already there and would otherwise be reported as the operator's own.
+	const existing = userRole.permission.system?.tables;
+	const alreadyManaged = !!existing && [...systemTablesByReadPerm.values()].some((managed) => managed === existing);
+	const declared = alreadyManaged ? [] : Object.keys(existing ?? {});
+	if (declared.length > 0) {
+		harperLogger.warn(
+			`Ignoring role-declared permissions on system tables for role '${userRole.id}': ${declared.join(', ')}. ` +
+				`System table permissions are managed by Harper and cannot be granted through a role.`
+		);
 	}
-	if (!userRole.permission.system.tables) {
-		userRole.permission.system.tables = {};
-	}
-	for (let table of Object.keys(systemSchema)) {
-		let newProp = {
-			read: !!userRole.permission.super_user,
-			insert: false,
-			update: false,
-			delete: false,
-			attribute_permissions: [],
-		};
-
-		userRole.permission.system.tables[table] = newProp;
-	}
+	userRole.permission.system = {
+		...userRole.permission.system,
+		tables: systemTablesPermissions(!!userRole.permission.super_user),
+	};
 }
 
 /**
