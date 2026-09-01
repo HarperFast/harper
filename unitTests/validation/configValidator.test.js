@@ -158,7 +158,7 @@ describe('Test configValidator module', () => {
 			const good_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			good_config_obj.storage.blobs = {
 				compression: {
-					default: { codec: 'deflate', threshold: 65536 },
+					'default': { codec: 'deflate', threshold: 65536 },
 					'text/*': { codec: 'deflate' },
 					'application/json': { threshold: 8192 },
 					'image/*': false,
@@ -179,6 +179,12 @@ describe('Test configValidator module', () => {
 			const bad_key_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_key_obj.storage.blobs = { compression: { 'not a content type!': { codec: 'deflate' } } };
 			expect(bad_key_obj && configValidator(bad_key_obj).error).to.not.eql(undefined);
+
+			// a typo'd field inside an entry must fail rather than silently falling back to defaults —
+			// the top-level validate() runs with allowUnknown:true, so the entry object needs .unknown(false)
+			const bad_field_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_field_obj.storage.blobs = { compression: { default: { treshold: 1000000 } } };
+			expect(configValidator(bad_field_obj).error).to.not.eql(undefined);
 		});
 
 		it('Test logging in config_schema with bad values', () => {

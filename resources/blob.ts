@@ -311,12 +311,26 @@ class BlobReadError extends Error {
  * an uncompressed blob its length on disk proves nothing, and inflating a partial deflate stream
  * errors. Resolving means the writer (if any) has finished — not that this caller holds the lock.
  */
-function waitForBlobWriteCompletion(storageInfo: StorageInfo): Promise<void> {
+function waitForBlobWriteCompletion(storageInfo: StorageInfo): Promise<boolean> {
 	const store = storageInfo.store;
 	const lockKey = storageInfo.fileId + ':blob';
 	return new Promise((resolve, reject) => {
+		// Probe first: the writer lock is free on the overwhelming majority of reads, so arm the
+		// timeout only when a writer actually holds it — an uncontended compressed read pays a
+		// tryLock, not a setTimeout.
 		let settled = false;
-		const timer = setTimeout(() => {
+		let timer: NodeJS.Timeout;
+		function onReleased() {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(true); // we waited for a held writer lock to release
+		}
+		if (store.tryLock(lockKey, onReleased)) {
+			store.unlock(lockKey);
+			return resolve(false); // no writer held the lock; nothing was waited on
+		}
+		timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
 			reject(
@@ -327,18 +341,6 @@ function waitForBlobWriteCompletion(storageInfo: StorageInfo): Promise<void> {
 			);
 		}, getBlobReadTimeout());
 		timer.unref();
-		const onReleased = () => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			resolve();
-		};
-		if (store.tryLock(lockKey, onReleased)) {
-			settled = true;
-			clearTimeout(timer);
-			store.unlock(lockKey);
-			resolve();
-		}
 	});
 }
 
@@ -697,10 +699,29 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			// The writer's lock is the only completeness authority for a compressed body (the header
 			// stores the uncompressed size, so body length proves nothing; a partial deflate stream
 			// errors on inflate). Wait for it — bounded, like every other blob read wait (#1423).
-			await waitForBlobWriteCompletion(storageInfo);
+			const waited = await waitForBlobWriteCompletion(storageInfo);
 			if (cancelled || fd == null) return;
-			// Re-read the header from this same fd: the writer we just waited for finalizes the size in
-			// place, and an aborted receive stamps PENDING/ERROR over the same inode (harper-pro#481).
+			if (waited) {
+				// A held writer lock may have been an in-place repair, which finishes by renaming a
+				// fresh (uncompressed) file over the path (repairBlobFile holds this same lock for its
+				// whole duration) — orphaning the descriptor we opened before the wait. Reopen so the
+				// header re-read and the stream below see the current file, not the stale inode;
+				// otherwise a healthy repaired blob would inflate as a torn deflate body and return a
+				// permanent 500. Mirrors openStoredBlobBody's re-sniff. The prefix read from the old
+				// inode is discarded — the fresh descriptor streams the body from just past the header.
+				close(fd);
+				fd = await new Promise<number>((resolveOpen, rejectOpen) =>
+					open(filePath, 'r', (error, openedFd) => (error ? rejectOpen(error) : resolveOpen(openedFd)))
+				);
+				if (cancelled) {
+					closeFd();
+					return;
+				}
+				bodyPrefix = Buffer.alloc(0);
+				bodyPosition = HEADER_SIZE;
+			}
+			// Re-read the header from the (current) fd: the writer we just waited for finalizes the size
+			// in place, and an aborted receive stamps PENDING/ERROR over the same inode (harper-pro#481).
 			const header = Buffer.allocUnsafe(HEADER_SIZE);
 			const headerBytes = await new Promise<number>((resolveRead, rejectRead) =>
 				read(fd, header, 0, HEADER_SIZE, 0, (error, bytesRead) => (error ? rejectRead(error) : resolveRead(bytesRead)))
@@ -719,6 +740,12 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					: new BlobReadError('Blob pending replication for ' + filePath, BLOB_UNAVAILABLE_STATUS);
 			}
 			const declaredSize = Number(headerValue & 0xffffffffffffn);
+			if (type === UNCOMPRESSED_TYPE) {
+				// We sniffed DEFLATE, waited, and the file is now uncompressed: an in-place repair
+				// replaced it with a healthy uncompressed body. Report retryable so the caller re-reads
+				// the current file through the ordinary path rather than misclassifying it as corrupt.
+				throw new BlobReadError(`Blob ${filePath} was replaced while reading; retry`, BLOB_UNAVAILABLE_STATUS);
+			}
 			if (type !== DEFLATE_TYPE || declaredSize === UNKNOWN_SIZE) {
 				// the writer is confirmed done, so a placeholder size (or a header no longer readable as
 				// deflate) is a write that never finished — confidently incomplete, not merely in progress
@@ -1845,9 +1872,23 @@ export function createStoredDeflateVerifier(expectedSize: number, fileId: string
 	const inflater = createInflate();
 	let inflatedLength = 0;
 	let failure: Error | undefined;
+	// The in-flight transform() callback, kept so a failure can settle it directly. A mid-write
+	// zlib data error (a corrupt, not merely truncated, body) fires 'error'/'close' but NEVER invokes
+	// the pending `inflater.write` callback, so a transform that waited only on that callback would
+	// stall forever — hanging the save pipeline and leaking the blob write lock. settlePending() is
+	// the escape: whichever of the write callback or the failure runs first clears it; the other is a
+	// no-op, so callback() is still called exactly once per chunk.
+	let pending: { callback: (error?: Error | null, data?: Buffer) => void; chunk: Buffer } | undefined;
+	const settlePending = () => {
+		if (!pending) return;
+		const { callback, chunk } = pending;
+		pending = undefined;
+		callback(failure, failure ? undefined : chunk);
+	};
 	const fail = (error: Error) => {
 		failure ??= error;
 		inflater.destroy();
+		settlePending();
 	};
 	inflater.on('data', (inflated: Buffer) => {
 		inflatedLength += inflated.length;
@@ -1872,9 +1913,13 @@ export function createStoredDeflateVerifier(expectedSize: number, fileId: string
 			if (!failure && sawDeflateEnd) fail(trailingData());
 			if (failure) return callback(failure);
 			// Forward the chunk only once zlib has consumed it: this is the backpressure coupling and
-			// what keeps the end/overflow/error detections ordered ahead of the next chunk. The callback
-			// fires even when a detection destroys the inflater mid-write (ERR_STREAM_DESTROYED).
+			// what keeps the end/overflow/error detections ordered ahead of the next chunk. If zlib
+			// data-errors while consuming this chunk it drops the write callback, so fail()/settlePending()
+			// settles this transform instead (see the `pending` note above).
+			pending = { callback, chunk };
 			inflater.write(chunk, (writeError) => {
+				if (!pending) return; // already settled by a failure; do not call callback twice
+				pending = undefined;
 				const error = failure ?? (writeError as Error | undefined);
 				callback(error, error ? undefined : chunk);
 			});
@@ -2338,8 +2383,9 @@ export async function classifyBlobFileForCapture(filePath: string): Promise<Blob
 	// UNCOMPRESSED_TYPE and a short compressed body reaches here looking whole. Both producers of one
 	// need this: saveBlob stamps a known size before the first compressed byte, so a live write is
 	// invisible above and caught only here, and an unclean shutdown can leave a torn body the
-	// asynchronous repair sweep has not reached yet. Compression is opt-in per createBlob and unused
-	// inside Harper, so this reads nothing on an ordinary corpus.
+	// asynchronous repair sweep has not reached yet. Compression is opt-in via storage.blobs.compression
+	// (off by default): on a corpus with it disabled this branch is never taken, but where an operator
+	// enables it each completeness check fully inflates the compressed body it reaches.
 	if (header[1] !== DEFLATE_TYPE) return 'capture';
 	const uncompressedSize = Number(
 		new DataView(header.buffer, header.byteOffset, HEADER_SIZE).getBigUint64(0) & 0xffffffffffffn
@@ -3551,6 +3597,17 @@ export function openStoredBlobBody(blob: Blob): StoredBlobBody | undefined {
 			const verifier = createInflate();
 			let inflated = 0;
 			let verifyFailure: Error | undefined;
+			// A mid-write zlib data error (a corrupt, not merely truncated, body) fires 'error'/'close'
+			// but drops the pending `verifier.write` callback, so the per-chunk await below would hang
+			// forever — suspending this generator inside the try and leaking the descriptor and the file
+			// hold its finally releases. settleWrite() unblocks it from error/close too; whichever runs
+			// first resolves the promise and clears the ref, so the write callback is a harmless no-op.
+			let resolvePendingWrite: (() => void) | undefined;
+			const settleWrite = () => {
+				const resolve = resolvePendingWrite;
+				resolvePendingWrite = undefined;
+				resolve?.();
+			};
 			verifier.on('data', (chunk: Buffer) => {
 				inflated += chunk.length;
 				if (inflated > size && !verifyFailure) {
@@ -3560,15 +3617,20 @@ export function openStoredBlobBody(blob: Blob): StoredBlobBody | undefined {
 			});
 			verifier.on('error', (error) => {
 				verifyFailure ??= failVerification(`is not a valid deflate stream: ${error.message}`);
+				settleWrite();
 			});
+			verifier.on('close', settleWrite); // a destroy() with no 'error' (oversize) also drops the write callback
 			try {
 				for await (const chunk of source as AsyncIterable<Buffer>) {
 					if (verifyFailure) throw verifyFailure;
 					if (!verifier.destroyed) {
 						// Yield only once the verifier consumed the chunk, so a detection surfaces before the
 						// bytes it condemns are handed to the caller's wire frame (and never after the caller
-						// has already seen a clean end). The callback fires even on a mid-write destroy.
-						await new Promise<void>((resolveWrite) => verifier.write(chunk, () => resolveWrite()));
+						// has already seen a clean end).
+						await new Promise<void>((resolveWrite) => {
+							resolvePendingWrite = resolveWrite;
+							verifier.write(chunk, settleWrite);
+						});
 						if (verifyFailure) throw verifyFailure;
 					}
 					yield chunk;

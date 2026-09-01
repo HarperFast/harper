@@ -15,6 +15,7 @@ const {
 	inflatesToExactly,
 } = require('#src/resources/blob');
 const { Readable } = require('node:stream');
+const { syncBuiltinESMExports } = require('node:module');
 const zlib = require('node:zlib');
 const { deflateSync } = zlib;
 const fs = require('node:fs');
@@ -309,7 +310,10 @@ describe('Blob compression (harper#2443)', () => {
 		const filePath = getFilePathForBlob(blob);
 		assert(statSync(filePath).size < 256 * 1024, 'precondition: a tiny body inflating to 64 MiB');
 		let peakInflated = 0;
-		// zlib's exports are non-writable (a plain assignment is silently ignored), so redefine
+		// zlib's exports are non-writable (a plain assignment is silently ignored), so redefine; then
+		// syncBuiltinESMExports() so blob.ts's `import { createInflate } from 'node:zlib'` picks up the
+		// patched value — under --conditions=typestrip it loads as ESM with link-time bindings the CJS
+		// namespace mutation would otherwise never reach, leaving peakInflated at 0.
 		const originalInflate = Object.getOwnPropertyDescriptor(zlib, 'createInflate');
 		Object.defineProperty(zlib, 'createInflate', {
 			...originalInflate,
@@ -319,11 +323,13 @@ describe('Blob compression (harper#2443)', () => {
 				return inflater;
 			},
 		});
+		syncBuiltinESMExports();
 		try {
 			assert.equal(await inflatesToExactly(filePath, 1000), false);
 			assert.equal(await inflatesToExactly(filePath, bombSize), true);
 		} finally {
 			Object.defineProperty(zlib, 'createInflate', originalInflate);
+			syncBuiltinESMExports();
 		}
 		assert(peakInflated >= bombSize, `the exact expectation must inflate the whole body (saw ${peakInflated})`);
 		assert(
@@ -370,11 +376,15 @@ describe('Blob compression (harper#2443)', () => {
 			if (options?.fd === undefined) streamOpenedByPath = true;
 			return originalCreateReadStream.call(fs, path, options);
 		};
+		// propagate the fs patches to blob.ts's ESM `import { open, createReadStream } from 'node:fs'`
+		// bindings, which under --conditions=typestrip are link-time and ignore the CJS namespace mutation.
+		syncBuiltinESMExports();
 		try {
 			assert((await streamToBuffer(record.blob.stream())).equals(payload));
 		} finally {
 			fs.open = originalOpen;
 			fs.createReadStream = originalCreateReadStream;
+			syncBuiltinESMExports();
 		}
 		assert.equal(opens.length, 1, `the read must open the file exactly once (saw ${opens.length})`);
 		assert.equal(streamOpenedByPath, false, 'the inflate source must reuse the descriptor of the first read');
@@ -521,5 +531,90 @@ describe('Blob compression (harper#2443)', () => {
 			assert.equal(error.statusCode, 500);
 			return true;
 		});
+	});
+
+	// A deflate body corrupted mid-stream (as opposed to truncated) makes zlib raise Z_DATA_ERROR while
+	// consuming a chunk, which drops the pending inflater.write callback. A verifier that waited only on
+	// that callback would hang forever; these two tests fail by timeout without the error/close settle.
+	it('rejects a corrupt stored body on receive instead of hanging the write pipeline', async function () {
+		this.timeout(5000);
+		// An invalid zlib stream: inflate raises Z_DATA_ERROR while consuming a chunk (not a clean end or
+		// an oversize, both of which zlib settles on its own), which is the case that drops the write
+		// callback — a verifier that waited only on that callback would hang the whole write pipeline.
+		const corrupt = Buffer.alloc(512 * 1024, 0xff);
+		const chunks = [];
+		for (let o = 0; o < corrupt.length; o += 65536) chunks.push(corrupt.subarray(o, o + 65536));
+		const blob = createBlobFromStoredBody(Readable.from(chunks), {
+			type: 'text/plain',
+			size: 4 * 1024 * 1024,
+			codec: 'deflate',
+		});
+		await CompressionTest.put({ id: 210, blob }).catch(() => {});
+		await assert.rejects(blob.written, /not a valid deflate stream|inflated to|inflates past/);
+	});
+
+	it('fails a mid-stream-corrupt stored body on send instead of hanging and leaking the file hold', async function () {
+		this.timeout(5000);
+		const payload = Buffer.alloc(2 * 1024 * 1024, 'sender mid-corrupt ');
+		const blob = await putBlob(220, payload, { compress: true, type: 'text/plain' });
+		const filePath = getFilePathForBlob(blob);
+		const onDisk = readFileSync(filePath);
+		// valid deflate prefix then garbage: Z_DATA_ERROR mid-inflate, which drops zlib's write callback
+		onDisk.fill(0xab, HEADER_SIZE + Math.floor((onDisk.length - HEADER_SIZE) / 2));
+		writeFileSync(filePath, onDisk);
+		const stored = openStoredBlobBody(blob);
+		assert(stored, 'the header sniff still passes; verification is what catches the corrupt body');
+		await assert.rejects(
+			(async () => {
+				for await (const _chunk of stored.stream()) {
+					// drain
+				}
+			})(),
+			(error) => {
+				assert.equal(error.statusCode, 500, 'a corrupt stored body is a permanent (500) failure');
+				return true;
+			}
+		);
+		// the finally released the descriptor and the hold: a follow-up open succeeds rather than wedging
+		const reopened = openStoredBlobBody(blob);
+		assert(reopened, 'the failed send must not leave the file held');
+		reopened.close();
+	});
+
+	it('a compressed read whose file is repaired (replaced) during the writer wait is retryable, not corrupt', async function () {
+		this.timeout(10000);
+		const payload = Buffer.from('repaired during read '.repeat(3000));
+		const blob = await putBlob(230, payload, { compress: true, type: 'text/plain' });
+		const filePath = getFilePathForBlob(blob);
+		const lockKey = getFileId(blob) + ':blob';
+
+		// tear the on-disk compressed body so a reader stuck on the pre-wait inode would inflate it to a
+		// permanent 500; the 8-byte header survives, so the read still sniffs DEFLATE and parks in the wait
+		truncateSync(filePath, statSync(filePath).size - 20);
+		assert.ok(store.tryLock(lockKey));
+		const record = await CompressionTest.get(230);
+		let settled = false;
+		const pendingRead = streamToBuffer(record.blob.stream())
+			.then(
+				() => ({ ok: true }),
+				(error) => ({ ok: false, status: error.statusCode })
+			)
+			.finally(() => (settled = true));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(settled, false, 'the read must be parked on the writer lock');
+
+		// a repair publishes a fresh, healthy UNCOMPRESSED file over the path (rename), then releases the lock
+		const healthy = Buffer.concat([Buffer.alloc(HEADER_SIZE), payload]);
+		healthy.writeUIntBE(payload.length, 2, 6); // UNCOMPRESSED_TYPE (0) header carrying the real content size
+		writeFileSync(filePath + '.repair', healthy);
+		renameSync(filePath + '.repair', filePath);
+		store.unlock(lockKey);
+
+		const result = await pendingRead;
+		assert.equal(result.ok, false, 'the read must not serve the orphaned torn inode');
+		assert.equal(result.status, 503, 'a file replaced during the wait is retryable (503), not permanent (500)');
+
+		// a fresh read now serves the repaired, healthy content
+		assert((await streamToBuffer((await CompressionTest.get(230)).blob.stream())).equals(payload));
 	});
 });

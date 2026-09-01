@@ -378,7 +378,12 @@ export function configValidator(configJson, skipFsValidation = false) {
 						/^([\w.+-]+\/(\*|[\w.+-]+)|default)$/,
 						Joi.alternatives([
 							Joi.valid(false),
-							Joi.object({ codec: Joi.valid('deflate').optional(), threshold: number.min(0).optional() }),
+							// .unknown(false) so a typo'd nested field (e.g. `treshold`) is rejected instead of
+							// silently inheriting the top-level validate() allowUnknown:true and falling back to
+							// the default threshold — matching config-root.schema.json.
+							Joi.object({ codec: Joi.valid('deflate').optional(), threshold: number.min(0).optional() }).unknown(
+								false
+							),
 						])
 					)
 					// fail on keys that are not a content type, a 'type/*' wildcard, or 'default' —
