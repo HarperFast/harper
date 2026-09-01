@@ -57,9 +57,13 @@ function startFixtureWorker() {
 			else throw new Error(`unexpected worker event ${message.event}: ${JSON.stringify(message)}`);
 		}
 	};
-	// Everything the worker reported that no expect() consumed, logged errors included.
 	const drain = () => [...loggedErrors.splice(0), ...queued.splice(0)];
-	return { worker, send, expect, drain };
+	// A round-trip through the worker: everything it reported before answering has arrived.
+	const sync = async () => {
+		send('ping');
+		await expect('pong');
+	};
+	return { worker, send, expect, drain, sync };
 }
 
 function catalogRows(Table, name) {
@@ -83,10 +87,12 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 
 	after(async () => {
 		await fixture?.worker?.terminate?.();
+		setMainIsWorker(false);
 	});
 
-	// Exercises the fixture on every run: the worker's settlement signal, the drop, the probe write
-	// and the catalog check, with the commit already landed so there is no race to lose.
+	// Whatever the worker reported before a test began is not that test's signal.
+	beforeEach(() => fixture.drain());
+
 	it("drops cleanly once the worker's source-fill commit has settled", async () => {
 		const name = 'CrossDropSettled';
 		const Main = defineTable(name);
@@ -96,6 +102,7 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 		await fixture.expect('get-resolved');
 		await fixture.expect('commit-settled');
 		await Main.dropTable();
+		await fixture.sync();
 		assert.deepStrictEqual(fixture.drain(), [], 'unexpected worker events');
 		assert.doesNotThrow(() => Probe.primaryStore.putSync('__probe__', { settled: true }));
 		assert.deepStrictEqual(catalogRows(Main, name), [], 'catalog rows must be removed');
@@ -114,8 +121,11 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 			fixture.send('define', { table: name });
 			await fixture.expect('defined');
 			fixture.send('get', { id: i });
-			const { commitInFlight } = await fixture.expect('get-resolved');
-			if (commitInFlight) raced++;
+			await fixture.expect('get-resolved');
+			// The record lock is shared across threads and held until the worker's cache write settles.
+			// Sampled on the dropping thread right before the drop, it shows the race was exercised at
+			// least once; it cannot show that a given iteration overlapped.
+			if (Main.primaryStore.hasLock(i)) raced++;
 			await Main.dropTable();
 			await fixture.expect('commit-settled');
 			const unexpected = fixture
@@ -128,6 +138,6 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 			);
 			assert.deepStrictEqual(catalogRows(Main, name), [], `iteration ${i}: catalog rows must be removed`);
 		}
-		assert.ok(raced > 0, 'no iteration caught the worker commit in flight, so the race was never exercised');
+		assert.ok(raced > 0, "no iteration caught the worker's commit in flight when the drop started");
 	});
 });

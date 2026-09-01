@@ -55,7 +55,7 @@ function runWorkerFixture() {
 					// record lock until that write has settled either way.
 					TestTable.get(id, {}).then(
 						async () => {
-							report('get-resolved', { commitInFlight: TestTable.primaryStore.hasLock(id) });
+							report('get-resolved');
 							try {
 								await waitFor(() => !TestTable.primaryStore.hasLock(id), {
 									timeout: 30000,
@@ -70,6 +70,9 @@ function runWorkerFixture() {
 					);
 					break;
 				}
+				case 'ping':
+					report('pong');
+					break;
 			}
 		} catch (error) {
 			report('error', { error: error?.stack ?? String(error) });
