@@ -3,6 +3,3 @@
 
 unitTests/security/jsLoader/fixtures
 integrationTests/**/fixture-broken-*/**
-# Deliberately unparseable GraphQL schemas (#1917 regression fixtures)
-integrationTests/fixtures/graphql-schema-failure/broken-one/schema.graphql
-integrationTests/fixtures/graphql-schema-failure/broken-two/schema.graphql

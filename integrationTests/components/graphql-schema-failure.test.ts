@@ -28,7 +28,7 @@ import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } fr
 import { waitForLogMatches } from './waitForLog.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/graphql-schema-failure');
-const BROKEN_APPS = ['broken-one', 'broken-two'];
+const BROKEN_APPS = ['fixture-broken-one', 'fixture-broken-two'];
 // Must match the `graphqlSchema.timeout` in the broken fixtures' config.yaml.
 const BROKEN_PLUGIN_TIMEOUT_MS = 5_000;
 
@@ -84,7 +84,7 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 		const res = await fetch(new URL('/', ctx.harper.httpURL), { headers: { accept: 'application/json' } });
 		const title = ((await res.json()) as { title?: string }).title ?? '';
 		ok(
-			/Could not load component 'graphqlSchema' for application 'broken-(one|two)'/.test(title),
+			/Could not load component 'graphqlSchema' for application 'fixture-broken-(one|two)'/.test(title),
 			`expected a broken component's load failure to be reported: ${title}`
 		);
 		ok(/Invalid GraphQL schema/.test(title), `expected the real reason in the reported failure: ${title}`);
@@ -126,7 +126,7 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 
 	test('the broken components do not serialize behind each other', () => {
 		const gap = Math.abs(
-			loadAttemptTimestamp(instanceLog, 'broken-two') - loadAttemptTimestamp(instanceLog, 'broken-one')
+			loadAttemptTimestamp(instanceLog, 'fixture-broken-two') - loadAttemptTimestamp(instanceLog, 'fixture-broken-one')
 		);
 		ok(
 			gap < BROKEN_PLUGIN_TIMEOUT_MS - 1_000,
@@ -143,7 +143,7 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 		// The component is already published as failed, with an ErrorResource standing in for it, so
 		// reprocessing the corrected schema in place would leave that state behind.
 		await writeFile(
-			join(componentsDir, 'broken-one', 'schema.graphql'),
+			join(componentsDir, 'fixture-broken-one', 'schema.graphql'),
 			'type BrokenOne @table @export {\n\tid: ID @primaryKey\n\tname: String\n}\n'
 		);
 
