@@ -81,16 +81,14 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			entry.absolutePath,
 			scope.resources,
 			scope.applicationScope?.branches,
-			// Tags every schema diagnostic with the application, so concurrent broken applications stay
-			// distinguishable without reading the absolute path out of the message.
+			// Tags each diagnostic, so concurrent broken applications stay distinguishable.
 			scope.logger
 		);
 	});
-	// `once(entryHandler, 'initialLoadComplete')` settles only on success, so a failed schema load left
-	// the loader waiting out its watchdog while holding the plugin-wide load lock (#1917).
-	// `waitForInitialLoads()` settles with the load's real outcome. The flag advances on either outcome:
-	// a schema corrected afterwards must take the restart path, not be reprocessed as part of an
-	// initial load that is already over.
+	// `waitForInitialLoads()` settles with the load's real outcome; a success-only wait left the loader
+	// to report a diagnosed failure at its watchdog, holding the plugin-wide load lock for it (#1917).
+	// The flag advances on either outcome: a schema corrected afterwards belongs on the restart path,
+	// not reprocessed as part of an initial load that is over.
 	return scope.waitForInitialLoads().finally(() => {
 		initialLoadComplete = true;
 	});
@@ -115,10 +113,10 @@ async function processGraphQLSchema(
 	try {
 		ast = parse(new Source(gqlContent.toString(), filePath));
 	} catch (error) {
-		// GraphQLError.toString() is the only rendering that carries the source excerpt, line/column and
-		// caret; the logger renders `.stack`, which points at Harper internals. It stays out of the
-		// thrown message because a failed component becomes an ErrorResource whose message REST copies
-		// verbatim into the problem-response title, and the excerpt is schema source and a host path.
+		// GraphQLError.toString() is the only rendering carrying the source excerpt, line/column and
+		// caret; `.stack`, which the logger prefers, points at Harper internals. It stays out of the
+		// thrown message: a failed component becomes an ErrorResource whose message REST copies into the
+		// problem-response title, and the excerpt is schema source plus a host path.
 		logger.error?.(`Invalid GraphQL schema in ${filePath}:\n${error}`);
 		throw new Error(`Invalid GraphQL schema${urlPath ? ` at ${urlPath}` : ''}`);
 	}

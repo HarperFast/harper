@@ -948,6 +948,29 @@ describe('Scope', () => {
 			await scope.close();
 		});
 
+		it('reports a handler rejection after the initial load without leaking an unhandled rejection', async () => {
+			const scope = await scopeForFiles('test.js');
+			let calls = 0;
+			scope.handleEntry(async () => {
+				if (++calls > 1) throw new Error('reload failed');
+			});
+			await scope.waitForInitialLoads();
+
+			const unhandled = [];
+			const onUnhandled = (reason) => unhandled.push(reason);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				await writeFile(this.testFilePath, '"changed";');
+				await waitFor(() => calls > 1, { timeout: 5000, message: 'the change must reach the entry handler' });
+				for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+			}
+			assert.deepEqual(unhandled, [], 'a post-initial-load handler rejection must not leak');
+
+			await scope.close();
+		});
+
 		it('drains sibling initial-load operations before surfacing the failure', async () => {
 			writeFileSync(join(this.directory, 'broken.js'), '"broken";');
 			writeFileSync(join(this.directory, 'slow.js'), '"slow";');

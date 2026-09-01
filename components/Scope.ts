@@ -463,9 +463,8 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			targetEntryHandler: EntryHandler,
 			entryEventHandler: onEntryEventHandler
 		): onEntryEventHandler => {
-			// Operations the initial scan started, retained until the drain below reports them: a set that
-			// dropped each one as it settled made anything finishing before `ready` invisible, so a handler
-			// rejecting that early reported nothing at all (#1917).
+			// Retained until the drain below reports them: an operation dropped as it settles is invisible
+			// to that drain, so a handler rejecting before `ready` would report nothing at all.
 			let initialOperations: Promise<void>[] | null = [];
 
 			const wrapped: onEntryEventHandler = (entry) => {
@@ -476,8 +475,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 						this.#handleError(error);
 						throw error;
 					});
-					// Nothing awaits `tracked` until the drain, so an early rejection would otherwise spend
-					// that window unhandled.
+					// Nothing awaits `tracked` until the drain, which leaves an early rejection unhandled.
 					tracked.catch(() => {});
 					initialOperations?.push(tracked);
 				}
@@ -489,8 +487,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 				initialOperations = null;
 				// Drained, not `Promise.all`'s fail-fast: the loader holds the plugin-wide load lock until
 				// this settles, so reporting the first failure while a sibling still runs would let the
-				// next application's load of the same plugin interleave with it. The loader's watchdog can
-				// still cut the drain short, which is what bounds a sibling that never settles.
+				// next application's load of the same plugin interleave with it.
 				for (const result of await Promise.allSettled(operations)) {
 					if (result.status === 'rejected') throw result.reason;
 				}

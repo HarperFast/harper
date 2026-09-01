@@ -21,9 +21,10 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
-import { cp, mkdtemp } from 'node:fs/promises';
+import { cp, mkdtemp, writeFile } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
-import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { startHarper, teardownHarper, sendOperation, type ContextWithHarper } from '@harperfast/integration-testing';
 import { waitForLogMatches } from './waitForLog.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, '../fixtures/graphql-schema-failure');
@@ -44,6 +45,7 @@ function loadAttemptTimestamp(log: string, appName: string): number {
 
 suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWithHarper) => {
 	let instanceLog: string;
+	let componentsDir: string;
 
 	before(async () => {
 		// All three apps must land directly under components/, so stage the data root rather than
@@ -51,8 +53,9 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 		const dataRootDir = await mkdtemp(
 			join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 		);
+		componentsDir = join(dataRootDir, 'components');
 		for (const app of [...BROKEN_APPS, 'control']) {
-			await cp(join(FIXTURE_PATH, app), join(dataRootDir, 'components', app), { recursive: true, dereference: true });
+			await cp(join(FIXTURE_PATH, app), join(componentsDir, app), { recursive: true, dereference: true });
 		}
 		ctx.harper = { dataRootDir };
 		// One worker: the load lock is cross-thread, so extra workers only repeat the same queue.
@@ -108,6 +111,17 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 		ok(/^\s*\|\s*\^/m.test(instanceLog), 'the diagnostic must carry the caret pointing at the offending token');
 	});
 
+	test('both broken components are reported failed while the valid one is loaded', async () => {
+		const status = await sendOperation(ctx.harper, { operation: 'get_status' });
+		const byName = new Map<string, string>(
+			(status.componentStatus ?? []).map((entry: { name: string; status?: string }) => [entry.name, entry.status ?? ''])
+		);
+		for (const app of BROKEN_APPS) {
+			strictEqual(byName.get(`${app}.graphqlSchema`), 'error', `expected '${app}' to report a failed schema component`);
+		}
+		strictEqual(byName.get('control.graphqlSchema'), 'healthy', 'the valid application must still load');
+	});
+
 	test('the broken components do not serialize behind each other', () => {
 		const gap = Math.abs(
 			loadAttemptTimestamp(instanceLog, 'broken-two') - loadAttemptTimestamp(instanceLog, 'broken-one')
@@ -117,5 +131,27 @@ suite('a broken graphqlSchema does not gate the whole instance', (ctx: ContextWi
 			`the two broken components loaded ${gap}ms apart; with the plugin timeout at ` +
 				`${BROKEN_PLUGIN_TIMEOUT_MS}ms that means the second waited out the first's watchdog`
 		);
+	});
+
+	// Declared last: it changes instance-wide state the other assertions read.
+	test('correcting a broken schema on disk asks for the restart that would clear the failure', async () => {
+		const before = await sendOperation(ctx.harper, { operation: 'get_status' });
+		strictEqual(before.restartRequired, false, 'nothing should have asked for a restart yet');
+
+		// The component is already published as failed, with an ErrorResource standing in for it, so
+		// reprocessing the corrected schema in place would leave that state behind. The plugin marks its
+		// initial load settled on failure precisely so this takes the restart path instead.
+		await writeFile(
+			join(componentsDir, 'broken-one', 'schema.graphql'),
+			'type BrokenOne @table @export {\n\tid: ID @primaryKey\n\tname: String\n}\n'
+		);
+
+		const deadline = Date.now() + 20_000;
+		let restartRequired = false;
+		while (Date.now() < deadline && !restartRequired) {
+			await delay(250);
+			restartRequired = (await sendOperation(ctx.harper, { operation: 'get_status' })).restartRequired;
+		}
+		ok(restartRequired, 'a schema corrected after a failed load must request the restart that clears it');
 	});
 });

@@ -129,20 +129,24 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 			);
 			await scope.ready;
 
-			// Raced rather than awaited: before the fix this promise never settled at all, and the
-			// component only failed when the loader's watchdog fired.
+			// Raced rather than awaited: before the fix this promise never settled, and mocha runs with no
+			// test timeout, so awaiting it would hang the suite rather than fail.
+			let watchdog;
 			const outcome = await Promise.race([
 				handleApplication(scope).then(
 					() => 'resolved',
 					() => 'rejected'
 				),
-				new Promise((resolve) => setTimeout(() => resolve('pending'), 5_000)),
+				new Promise((resolve) => {
+					watchdog = setTimeout(() => resolve('pending'), 5_000);
+				}),
 			]);
+			clearTimeout(watchdog);
 			assert.equal(outcome, 'rejected', 'the plugin must settle on the schema failure, not wait out the watchdog');
 			assert.equal(restartNeeded(), false, 'the failing load itself must not request a restart');
 
-			// The component is already published as failed by now, so reprocessing the corrected schema
-			// in place would leave that state behind; the restart is the honest recovery path.
+			// The component is already published as failed, so reprocessing the corrected schema in place
+			// would leave that state behind.
 			writeFileSync(schemaPath, 'type Recovered @table {\n\tid: ID @primaryKey\n}\n');
 			await waitFor(() => restartNeeded(), {
 				timeout: 5_000,
