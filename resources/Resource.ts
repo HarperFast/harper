@@ -270,6 +270,18 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		{ type: 'update', method: 'update' }
 	);
 
+	/**
+	 * Acquire an exclusive lock on a record and return it ready for updates (harper#483). The
+	 * second argument is the lock options, not record content, so authorization checks the table's
+	 * update permission and not the option names as attributes.
+	 */
+	static lock = transactional(
+		function (resource: any, query: RequestTarget, _request: Context, data: any) {
+			return resource.lock ? resource.lock(query, data) : missingMethod(resource, 'lock');
+		},
+		{ type: 'update', method: 'lock', optionsAsData: true }
+	);
+
 	static connect = transactional(
 		function (resource: any, query: RequestTarget, _request: Context, data: any) {
 			return resource.connect
@@ -587,6 +599,8 @@ function transactional(
 		letItLinger?: boolean;
 		method?: string;
 		syncAllowed?: boolean;
+		// `data` is a call's options rather than record content, so the allow* hooks see no attributes
+		optionsAsData?: boolean;
 	}
 ) {
 	applyContext.reliesOnPrototype = true;
@@ -854,16 +868,17 @@ function transactional(
 				if (loadAsInstance !== false) {
 					// do permission checks, with allow methods
 					let allowed;
+					const authorizedData = options.optionsAsData ? {} : data;
 					try {
 						allowed =
 							options.type === 'read'
 								? resource.allowRead(context.user, query, context)
 								: options.type === 'update'
 									? resource.doesExist?.() === false
-										? resource.allowCreate(context.user, data, context)
-										: resource.allowUpdate(context.user, data, context)
+										? resource.allowCreate(context.user, authorizedData, context)
+										: resource.allowUpdate(context.user, authorizedData, context)
 									: options.type === 'create'
-										? resource.allowCreate(context.user, data, context)
+										? resource.allowCreate(context.user, authorizedData, context)
 										: resource.allowDelete(context.user, query, context);
 					} catch {
 						// allow* threw — fail closed rather than letting the request proceed

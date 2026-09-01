@@ -13,6 +13,7 @@ import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
 import { Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
 import type { RootDatabaseKind } from './databases.ts';
+import { LOCK_VERSION_STEP } from './recordLock.ts';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const trackedTxns = new Set<DatabaseTransaction>();
@@ -202,6 +203,20 @@ export class LMDBTransaction extends DatabaseTransaction {
 		let commitCompletions: Promise<void>[];
 		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
+		// Record-lock gate (harper#483): a write to a record another party holds waits for the release,
+		// then the whole batch re-runs against reloaded entries with a timestamp past the release.
+		const gated: TransactionWrite[] = [];
+		for (const write of this.writes) {
+			if (write.gateOnLock !== true || !write.key) continue;
+			if (retries > 0 || !write.entry) write.entry = write.store.getEntry(write.key);
+			if (this.gateLockedWrite(write)) gated.push(write);
+		}
+		if (gated.length > 0) {
+			return this.parkForRecordUnlocks(gated).then((releasedVersion) => {
+				this.timestamp = Math.max(getNextMonotonicTime(), releasedVersion + LOCK_VERSION_STEP);
+				return this.commit({ ...options, timestamp: this.timestamp, retries: retries + 1 });
+			});
+		}
 		const doWrite = (write) => {
 			const completion = write.commit(txnTime, write.entry, retries);
 			if (typeof completion?.then === 'function') {
@@ -306,6 +321,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.clearWrites();
 					this.timestamp = 0;
 					this.next = null;
+					const releasing = this.releaseRecordLocks();
+					if (releasing) completions.push(releasing);
 					return Promise.all(completions).then(() => {
 						return {
 							txnTime,
@@ -323,24 +340,30 @@ export class LMDBTransaction extends DatabaseTransaction {
 				}
 			});
 		}
-		const txnResolution: CommitResolution = {
-			txnTime,
+		const finishWithoutWrites = (): any => {
+			const txnResolution: CommitResolution = {
+				txnTime,
+			};
+			if (this.next) {
+				// now run any other transactions
+				const nextResolution = this.next?.commit(options);
+				if ((nextResolution as any)?.then)
+					return (nextResolution as any)?.then((nextResolution) => ({
+						txnTime,
+						next: nextResolution,
+					}));
+				txnResolution.next = nextResolution as any;
+			}
+			return txnResolution;
 		};
-		if (this.next) {
-			// now run any other transactions
-			const nextResolution = this.next?.commit(options);
-			if ((nextResolution as any)?.then)
-				return (nextResolution as any)?.then((nextResolution) => ({
-					txnTime,
-					next: nextResolution,
-				}));
-			txnResolution.next = nextResolution as any;
-		}
-		return txnResolution;
+		const releasing = this.releaseRecordLocks();
+		return releasing ? releasing.then(finishWithoutWrites) : finishWithoutWrites();
 	}
-	abort(): void {
+	abort(): Promise<void> | void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
+		this.lockWait?.cancel();
+		const releasing = this.releaseRecordLocks();
 		this.drainCompletions();
 		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
 		// (retaining any fileId the current on-disk record still references — an aborted write may carry an
@@ -351,6 +374,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		// reset the transaction
 		this.clearWrites();
+		return releasing;
 	}
 	save(..._args: any[]): any {
 		// noop for LMDB

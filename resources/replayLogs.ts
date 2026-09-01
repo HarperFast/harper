@@ -264,6 +264,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					case 'invalidate':
 						tableInstance._writeInvalidate(recordId, record, options);
 						break;
+					case 'lock':
+					case 'unlock':
+						// a lock generation is record state the RocksDB write batch already carried; a lease that
+						// outlived the crash expires on its own
+						break;
 					case 'structures': {
 						const structuresAsBinary = auditRecord.getBinaryValue(primaryStore);
 						const updatedStructures = structuresAsBinary ? primaryStore.decoder.decode(structuresAsBinary) : undefined;

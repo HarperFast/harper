@@ -1,8 +1,16 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { ServerError } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
+import {
+	LOCKED,
+	LOCKED_WRITE_WAIT_MS,
+	LOCK_VERSION_STEP,
+	lockGateVerdict,
+	waitForRecordUnlock,
+	type RecordLockHandle,
+} from './recordLock.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -323,6 +331,17 @@ export type TransactionWrite = {
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
+	// a local record mutation (set by Table.ts): while the record carries a live lock generation this
+	// transaction does not hold, the write waits for the release instead of staging (harper#483)
+	gateOnLock?: boolean;
+	// held back by gateOnLock this round; commit() waits for the release and re-stages it
+	gated?: boolean;
+	// the held (node-owned) lock the writing instance carries, which makes this a holder write
+	lockHandle?: RecordLockHandle;
+	// validate() ran; it is not repeated when a gated write is finally staged
+	validated?: boolean;
+	// validate() found nothing to write and this transaction dropped the write; a later save() re-stages
+	dropped?: boolean;
 };
 
 /**
@@ -446,6 +465,149 @@ export class DatabaseTransaction implements Transaction {
 	committing = false;
 	commitPhaseTicks = 0;
 	declare commitChainHead?: DatabaseTransaction;
+	// Transaction-scoped record locks by store and key identity (harper#483): holder writes pass the
+	// lock gate, and every commit or abort of this link releases them.
+	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
+	// When a commit that is waiting for a record lock gives up (423), fixed at the first wait.
+	declare lockWaitDeadline?: number;
+	declare lockWait?: { cancel: () => void };
+
+	registerRecordLock(handle: RecordLockHandle): void {
+		let locksForStore = (this.recordLocks ??= new Map()).get(handle.store);
+		if (!locksForStore) this.recordLocks.set(handle.store, (locksForStore = new Map()));
+		locksForStore.set(handle.keyId, handle);
+	}
+
+	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
+		return this.recordLocks?.get(store)?.get(keyId);
+	}
+
+	unregisterRecordLock(handle: RecordLockHandle): void {
+		const locksForStore = this.recordLocks?.get(handle.store);
+		if (locksForStore?.get(handle.keyId) === handle) locksForStore.delete(handle.keyId);
+	}
+
+	/**
+	 * Release every transaction-scoped lock this link holds. A release is its own conditional UNLOCK
+	 * write; its failure is logged, never surfaced: the data this commit landed is durable, and the
+	 * lease bounds a lingering generation.
+	 */
+	releaseRecordLocks(): Promise<void> | undefined {
+		const recordLocks = this.recordLocks;
+		if (!recordLocks) return;
+		this.recordLocks = undefined;
+		const releases: Promise<unknown>[] = [];
+		for (const locksForStore of recordLocks.values()) {
+			for (const handle of locksForStore.values()) {
+				releases.push(
+					handle
+						.release()
+						.catch((error) => harperLogger.warn?.('Failed to release a record lock after the transaction', error))
+				);
+			}
+		}
+		if (releases.length > 0) return Promise.all(releases).then(() => undefined);
+	}
+
+	/**
+	 * Whether `operation` must wait for a record lock before staging. Only Table.ts's local record
+	 * mutations opt in; canonical-source applies and replay never wait, they preserve the generation.
+	 */
+	protected gateLockedWrite(operation: TransactionWrite): boolean {
+		if (operation.gateOnLock !== true || this.sourceApply || this.isReplay) return false;
+		const entry = operation.entry;
+		if (!entry || !(entry.metadataFlags & LOCKED)) return false;
+		const verdict = lockGateVerdict(entry, [
+			operation.lockHandle,
+			this.recordLockFor(operation.store, writeKeyId(operation.key)),
+		]);
+		if (!verdict) return false;
+		if (verdict === 'lost')
+			throw new ClientError(
+				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
+				409
+			);
+		operation.gated = true;
+		return true;
+	}
+
+	/**
+	 * Park this commit until the locks gating its writes are released, then re-stage the whole write
+	 * set on a fresh native handle with a fresh timestamp. The gated writes staged nothing, so no
+	 * write intent of theirs can hold up the release they are waiting for; the timestamp is renewed
+	 * because a write landing with a version older than the release would be resequenced as
+	 * out-of-order and, for a full put, dropped.
+	 */
+	/**
+	 * Park until the locks gating these writes are released (or their leases end), bounded by one
+	 * deadline per transaction. Resolves with the highest version the gated records carry afterwards,
+	 * which the re-staged transaction's timestamp must exceed: a write landing with a version older
+	 * than the release is resequenced as out-of-order and, for a full put, dropped.
+	 */
+	protected parkForRecordUnlocks(gated: TransactionWrite[]): Promise<number> {
+		const now = Date.now();
+		this.lockWaitDeadline ??= now + LOCKED_WRITE_WAIT_MS;
+		if (now >= this.lockWaitDeadline) {
+			throw new ClientError(`Record ${String(gated[0].key)} is locked and was not released in time`, 423);
+		}
+		let until = this.lockWaitDeadline;
+		for (const write of gated) if (write.entry.lockExpiresAt < until) until = write.entry.lockExpiresAt;
+		this.setCommitPhase(true);
+		const waits = gated.map((write) => waitForRecordUnlock(write.store, writeKeyId(write.key), until));
+		this.lockWait = { cancel: () => waits.forEach((wait) => wait.cancel()) };
+		return Promise.race(waits.map((wait) => wait.promise)).then(() => {
+			this.lockWait = undefined;
+			for (const wait of waits) wait.cancel();
+			this.setCommitPhase(false);
+			if (this.timedOut) throw transactionOpenTooLongError();
+			if (this.open === TRANSACTION_STATE.CLOSED)
+				throw new ServerError('Transaction was aborted while waiting for a record lock', 500);
+			let releasedVersion = 0;
+			for (const write of gated) {
+				write.gated = false;
+				const version = write.store.getEntry(write.key)?.version;
+				if (version > releasedVersion) releasedVersion = version;
+			}
+			return releasedVersion;
+		});
+	}
+
+	/**
+	 * After the wait, re-stage the whole write set on a fresh native handle with a fresh timestamp. The
+	 * gated writes staged nothing, so no write intent of theirs could hold up the release they waited
+	 * for; the first round's staged writes and log batch are discarded with their handle.
+	 */
+	private waitForRecordUnlocks(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
+		return this.parkForRecordUnlocks(gated).then((releasedVersion) => {
+			this.retries++; // the commit handlers re-base on the reloaded entries
+			this.timestamp = Math.max(
+				(this.db as any).getMonotonicTimestamp?.() ?? getNextMonotonicTime(),
+				releasedVersion + LOCK_VERSION_STEP
+			);
+			const staged = this.transaction;
+			if (staged) {
+				if (this.readTxnsUsed > 1) {
+					// Iterators still stream through the handle: it stays open for them, but nothing staged in
+					// it may commit, so the replay goes through a fresh handle like the outstanding-iterators
+					// branch of commit().
+					if (!this.writesAbandoned) {
+						this.writesAbandoned = true;
+						try {
+							(staged as { abandonWrites?: () => void }).abandonWrites?.();
+						} catch (error) {
+							harperLogger.warn?.('Failed to release write intents while waiting for a record lock', error);
+						}
+					}
+					const replay = new RocksTransaction(this.db.store as RocksStore, { coordinatedRetry: true });
+					replay.setTimestamp(this.timestamp);
+					return this.commit({ ...options, transaction: replay });
+				}
+				this.detachOwnedTransaction();
+				abortNativeTransaction(staged, 'discarding writes staged before a record lock wait');
+			}
+			return this.commit(options);
+		});
+	}
 
 	setCommitPhase(committing: boolean): void {
 		// A commit phase covers the sealed write set across the whole multi-store chain.
@@ -677,6 +839,7 @@ export class DatabaseTransaction implements Transaction {
 		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
 		this.writesByKey = undefined;
+		this.lockWaitDeadline = undefined;
 	}
 
 	/**
@@ -885,13 +1048,21 @@ export class DatabaseTransaction implements Transaction {
 		if (reloadEntry || operation.entry === undefined) {
 			operation.entry = operation.store.getEntry(operation.key, { transaction });
 		}
+		if (!operation.saved && !operation.validated) {
+			operation.validated = true;
+			if ((operation.validate?.(txnTime, this) as any) === false) {
+				operation.commit = () => {}; // noop if we try again
+				operation.saved = true;
+				return;
+			}
+		}
+		// Checked every round: a retry round reloads the entry, and the record may have been locked since
+		// the write first staged. Before `before`, so a gated write reaches no source and saves no blob
+		// until the lock clears.
+		if (this.gateLockedWrite(operation)) return;
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
-			if ((operation.validate?.(txnTime, this) as any) === false) {
-				operation.commit = () => {}; // noop if we try again
-				return;
-			}
 			let result: Promise<void> = operation.before?.() as Promise<void>;
 			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;
@@ -933,6 +1104,50 @@ export class DatabaseTransaction implements Transaction {
 		if (completions.length > 0) {
 			this.setCommitPhase(true);
 		}
+		// The tail shared by a commit that submits nothing natively: no writes, or only record-lock releases.
+		const finishWithoutNativeCommit = () => {
+			const txnResolution: CommitResolution = {
+				txnTime: this.timestamp,
+			};
+			if (this.next) {
+				// now run any other transactions
+				options.timestamp = this.timestamp;
+				// as above: the next store must not inherit this store's explicit native transaction
+				let nextResolution;
+				try {
+					nextResolution = this.next?.commit(options.transaction ? { ...options, transaction: undefined } : options);
+				} catch (error) {
+					// A synchronous throw reaches neither rejection handler below, and the head has already
+					// committed — surrender ownership here too, or the scope stays resumable on top of a
+					// half-landed multi-store commit.
+					this.endScopeOwnership();
+					throw error;
+				}
+				if ((nextResolution as any)?.then)
+					return (nextResolution as any)?.then(
+						(nextResolution) => {
+							// Only once the chained store's own commit has SETTLED: rotating first would leave the
+							// scope resumable after a partially failed mid-scope commit.
+							this.completeMidScopeCommit(options);
+							return {
+								txnTime: this.timestamp,
+								next: nextResolution,
+							};
+						},
+						(error) => {
+							// A chained store's commit failed, so this multi-store commit half-landed. Surrender
+							// ownership as the head's own failure branch does: a handler that catches this and
+							// commits again must not rotate on top of it, and must not have the failed link
+							// dropped from the chain before its abort can clean up its blobs.
+							this.endScopeOwnership();
+							throw error;
+						}
+					);
+				txnResolution.next = nextResolution as any;
+			}
+			this.completeMidScopeCommit(options);
+			return txnResolution;
+		};
 		return when(
 			completions.length > 0 ? Promise.all(completions) : null,
 			() => {
@@ -949,6 +1164,8 @@ export class DatabaseTransaction implements Transaction {
 					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
 					return this.commit(options);
 				}
+				const gated = this.writes.filter((write) => write?.gated);
+				if (gated.length > 0) return this.waitForRecordUnlocks(gated, options);
 				// The save loop above can be what opened this transaction's native handle — save() attaches
 				// one when it had none, which is every ImmediateTransaction commit since its getReadTxn
 				// opens none — leaving the local captured before the loop empty while that handle holds
@@ -1153,6 +1370,8 @@ export class DatabaseTransaction implements Transaction {
 							this.releaseContext(!!options.doneWriting);
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
+							const releasing = this.releaseRecordLocks();
+							if (releasing) completions.push(releasing);
 							return Promise.all(completions).then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
@@ -1263,47 +1482,9 @@ export class DatabaseTransaction implements Transaction {
 				this.clearWrites();
 				if (options.doneWriting) this.endScopeOwnership();
 				this.releaseContext(!!options.doneWriting);
-				const txnResolution: CommitResolution = {
-					txnTime: this.timestamp,
-				};
-				if (this.next) {
-					// now run any other transactions
-					options.timestamp = this.timestamp;
-					// as above: the next store must not inherit this store's explicit native transaction
-					let nextResolution;
-					try {
-						nextResolution = this.next?.commit(options.transaction ? { ...options, transaction: undefined } : options);
-					} catch (error) {
-						// A synchronous throw reaches neither rejection handler below, and the head has already
-						// committed — surrender ownership here too, or the scope stays resumable on top of a
-						// half-landed multi-store commit.
-						this.endScopeOwnership();
-						throw error;
-					}
-					if ((nextResolution as any)?.then)
-						return (nextResolution as any)?.then(
-							(nextResolution) => {
-								// Only once the chained store's own commit has SETTLED: rotating first would leave the
-								// scope resumable after a partially failed mid-scope commit.
-								this.completeMidScopeCommit(options);
-								return {
-									txnTime: this.timestamp,
-									next: nextResolution,
-								};
-							},
-							(error) => {
-								// A chained store's commit failed, so this multi-store commit half-landed. Surrender
-								// ownership as the head's own failure branch does: a handler that catches this and
-								// commits again must not rotate on top of it, and must not have the failed link
-								// dropped from the chain before its abort can clean up its blobs.
-								this.endScopeOwnership();
-								throw error;
-							}
-						);
-					txnResolution.next = nextResolution as any;
-				}
-				this.completeMidScopeCommit(options);
-				return txnResolution;
+				const releasing = this.releaseRecordLocks();
+				if (releasing) return releasing.then(() => finishWithoutNativeCommit());
+				return finishWithoutNativeCommit();
 			},
 			(error) => {
 				this.setCommitPhase(false);
@@ -1350,11 +1531,14 @@ export class DatabaseTransaction implements Transaction {
 		this.writesAbandoned = false;
 	}
 
-	abort(): void {
+	/** Resolves once the record locks this chain held are released; the abort itself is synchronous. */
+	abort(): Promise<void> | void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
+		this.lockWait?.cancel();
+		let releasing = this.releaseRecordLocks();
 		this.drainCompletions();
 		try {
 			for (const write of this.writes) {
@@ -1375,12 +1559,15 @@ export class DatabaseTransaction implements Transaction {
 			this.next = null;
 			if (next) {
 				try {
-					next.abort();
+					const nextReleasing = next.abort();
+					if (nextReleasing)
+						releasing = releasing ? Promise.all([releasing, nextReleasing]).then(() => undefined) : nextReleasing;
 				} catch (error) {
 					harperLogger.debug?.('cleaning up a chained transaction during abort', error);
 				}
 			}
 		}
+		return releasing;
 	}
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link

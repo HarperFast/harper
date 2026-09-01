@@ -17,6 +17,21 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
+import {
+	LOCKED,
+	LOCK_ATTEMPT_SERIALIZER_WAIT_MS,
+	LOCK_VERSION_STEP,
+	isLockedLive,
+	lockAttemptKey,
+	nextLockVersion,
+	notifyRecordUnlocked,
+	resolveLockOptions,
+	serializeLockAttempt,
+	waitForRecordUnlock,
+	type RecordLockHandle,
+	type RecordLockOptions,
+	type ResolvedRecordLockOptions,
+} from './recordLock.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import type {
@@ -72,7 +87,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -681,6 +696,8 @@ export function makeTable(options) {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
+		#lockHandle?: RecordLockHandle; // a held (node-owned) record lock this instance carries (harper#483)
+		#lockWritable?: boolean; // returned by lock(): save() stages the changes made since on its own
 		declare getProperty: (name: string) => any;
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
@@ -2009,6 +2026,18 @@ export function makeTable(options) {
 		 * Save any changes into this instance to the current transaction
 		 */
 		save() {
+			const operation = this.#savingOperation;
+			if ((!operation || operation.dropped) && this.#lockWritable) {
+				// A locked record stages its update here rather than at lock() time: a held lock's record is
+				// often written after the acquiring request's transaction completed, which would have dropped
+				// an update staged then. Nothing set means nothing to stage — a locked absent id stays absent.
+				const changes = this.#changes;
+				if (changes && Object.keys(changes).length > 0) {
+					this.#savingOperation = null;
+					return when(this._writeUpdate(this.getId(), changes, false), () => this.save());
+				}
+				if (!operation) return;
+			}
 			if (this.#savingOperation) {
 				try {
 					return this.#saveOperation(this.#savingOperation);
@@ -2101,6 +2130,8 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				gateOnLock: options?.nodeId == null,
+				lockHandle: this.#lockHandle,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
@@ -2148,6 +2179,8 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				gateOnLock: options?.nodeId == null,
+				lockHandle: this.#lockHandle,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2247,6 +2280,8 @@ export function makeTable(options) {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
+				entry ??= primaryStore.getEntry(id, options);
+				if (isLockedLive(entry)) return; // a live lock keeps its record; the lease bounds it (harper#483)
 				// evictions never go in the audit log, so we can not record a deletion entry for the eviction
 				// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
 				// removed the entry entirely, but first cleanup indices
@@ -2258,11 +2293,11 @@ export function makeTable(options) {
 					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
 						updateIndices(id, existingRecord, null);
 					});
-					const removal = removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
+					const removal = removeEntry(primaryStore, entry, existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					updateIndices(id, existingRecord, null, options);
-					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
+					removeEntry(primaryStore, entry, options);
 				}
 				committed = true;
 				// Eviction is best-effort cleanup, run fire-and-forget from the record-expiration sweep and the
@@ -2307,10 +2342,106 @@ export function makeTable(options) {
 			}
 		}
 		/**
-		 * This is intended to acquire a lock on a record from the whole cluster.
+		 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
+		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is the
+		 * record's own durable state: a version-conditional LOCK write whose version is the lock
+		 * generation. Other local writers to the record wait for the release (never a silent last-write-
+		 * wins), and the generation expires on its own after `lease` if it is never released.
+		 *
+		 * Transaction-scoped (default): acquire before the transaction writes, write through the returned
+		 * record (or the table's static verbs in the same transaction), and the commit or abort releases
+		 * it. `{ hold: true }`: the lock outlives the transaction; write through the returned record and
+		 * release with `unlock()`, or let the lease expire.
 		 */
-		lock() {
-			throw new Error('Not yet implemented');
+		lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
+			if (options === undefined && isPlainOptions(target)) {
+				options = target as RecordLockOptions;
+				target = undefined;
+			}
+			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
+			checkValidId(id);
+			const resolved = resolveLockOptions(options);
+			const context = this.getContext();
+			const link = txnForContext(context);
+			const keyId = writeKeyId(id);
+			const held = this.#lockHandle;
+			if (held && !held.released && held.keyId === keyId && held.expiresAt > Date.now()) {
+				return Promise.resolve(this.#reloadLocked(id));
+			}
+			const scoped = link.recordLockFor(primaryStore, keyId);
+			if (scoped && !scoped.released && scoped.expiresAt > Date.now()) {
+				if (resolved.hold) {
+					link.unregisterRecordLock(scoped);
+					scoped.hold = true;
+					this.#lockHandle = scoped;
+				}
+				return Promise.resolve(this.#reloadLocked(id));
+			}
+			if (!resolved.hold && (link.saveCommits || link.startedFrom?.method === 'lock')) {
+				throw new ClientError(
+					'A transaction-scoped lock is released when its transaction commits, so lock() must run inside a transaction; pass { hold: true } for a lock that outlives the call',
+					400
+				);
+			}
+			// The holder's writes must carry a timestamp past the lock generation, and a transaction's
+			// timestamp is fixed by its first staged write: lock first, write after (the same contract on
+			// both engines, though LMDB only assigns the timestamp at commit).
+			if (link.writes.some(Boolean)) {
+				throw new ClientError('lock() must be called before the transaction writes to this table', 400);
+			}
+			return acquireRecordLock(id, keyId, resolved, context).then((handle) => {
+				if (resolved.hold) this.#lockHandle = handle;
+				else {
+					link.registerRecordLock(handle);
+					link.timestamp = Math.max(link.timestamp || 0, currentTimestamp(), handle.lockVersion + LOCK_VERSION_STEP);
+					if (isRocksDB) {
+						if (link.transaction) {
+							// The scope's read snapshot predates the lock; drop it so the rest of the scope reads
+							// what it locked (and its own commit does not conflict with the LOCK write).
+							if (link.readTxnsUsed <= 1) {
+								link.releaseReadTxn();
+								link.snapshotFree = true;
+							} else link.transaction.setTimestamp(link.timestamp);
+						}
+					}
+				}
+				return this.#reloadLocked(id);
+			});
+		}
+		/** Load the record as it is now that the lock committed; changes made from here are staged by `save()`. */
+		#reloadLocked(id: Id) {
+			TableResource._updateResource(this, primaryStore.getEntry(id));
+			this.#changes = undefined;
+			this.#lockWritable = true;
+			return this;
+		}
+		/**
+		 * Release the lock this instance holds. Resolves true when this call cleared the generation.
+		 * A held lock released inside a transaction that already wrote to the record is released when
+		 * that transaction commits instead: the UNLOCK is its own write and would wait behind those
+		 * staged writes.
+		 */
+		unlock(): Promise<boolean> {
+			const link = txnForContext(this.getContext());
+			const keyId = writeKeyId(this.getId());
+			const held = this.#lockHandle;
+			if (held) {
+				this.#lockHandle = undefined;
+				const staged = link.writesByKey?.get(primaryStore)?.get(keyId);
+				if (staged?.saved && isJoinableScope(link)) {
+					held.hold = false;
+					link.registerRecordLock(held);
+					return Promise.resolve(false);
+				}
+				return held.release();
+			}
+			if (link.recordLockFor(primaryStore, keyId)) {
+				throw new ClientError(
+					'A transaction-scoped lock is released when its transaction commits; only a held lock ({ hold: true }) is released with unlock()',
+					400
+				);
+			}
+			return Promise.resolve(false);
 		}
 		static operation(operation, context) {
 			operation.table ||= tableName;
@@ -2481,6 +2612,10 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				deferSave: true,
+				// a canonical-source apply carries the record's true state and preserves a lock; only local
+				// writers wait for one
+				gateOnLock: options?.nodeId == null && !options?.isNotification && !options?.isCopyApply,
+				lockHandle: this.#lockHandle,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
@@ -2559,6 +2694,7 @@ export function makeTable(options) {
 						}
 					} else {
 						(committedBy as any).removeWrite?.(write);
+						write.dropped = true;
 						return false;
 					}
 				},
@@ -3248,6 +3384,8 @@ export function makeTable(options) {
 				entry,
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
+				gateOnLock: options?.nodeId == null,
+				lockHandle: this.#lockHandle,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
@@ -6184,6 +6322,189 @@ export function makeTable(options) {
 		return 1;
 	}
 
+	// #section: record-locks
+	function currentTimestamp(): number {
+		return isRocksDB ? (primaryStore as RocksDatabase).getMonotonicTimestamp() : getNextMonotonicTime();
+	}
+	function isPlainOptions(value: unknown): boolean {
+		return (
+			typeof value === 'object' &&
+			value !== null &&
+			!Array.isArray(value) &&
+			!(value instanceof URLSearchParams) &&
+			(value as any).id === undefined
+		);
+	}
+	/**
+	 * The one authority for record locks (harper#483): a LOCK or UNLOCK write conditioned on the
+	 * record's version, in a control transaction of its own so it never rides the caller's staged
+	 * intents. Each commit round re-evaluates `precondition` against the entry as that round reads
+	 * it; the write reports `stale` when the version moved since `expectedVersion` was read and
+	 * `refused` when the precondition no longer holds, staging nothing in either case. The control
+	 * transaction's timestamp IS the version written: on RocksDB the audit-log key is the transaction
+	 * timestamp and the record's history walk looks entries up by version.
+	 */
+	function writeLockTransition(
+		id: Id,
+		type: 'lock' | 'unlock',
+		expectedVersion: number | undefined,
+		precondition: (existing: Entry | undefined) => boolean,
+		lease: number | undefined,
+		user: any
+	): Promise<{ outcome: 'applied' | 'stale' | 'refused'; version: number; lockExpiresAt: number }> {
+		const version = nextLockVersion(currentTimestamp(), expectedVersion);
+		const lockExpiresAt = type === 'lock' ? Date.now() + lease : -1;
+		let outcome: 'applied' | 'stale' | 'refused' = 'stale';
+		const controlTransaction: unknown = transaction({ user } as Context, (txn: any) => {
+			const link = txnForContext({ transaction: txn } as any);
+			link.timestamp = version;
+			const write: any = {
+				key: id,
+				store: primaryStore,
+				skipReplicationConfirmation: true,
+				commit: (_txnTime: number, existing: Entry | undefined, _retry: boolean, nativeTransaction: any) => {
+					write.skipped = true;
+					if (existing?.version !== expectedVersion) {
+						outcome = 'stale';
+						return;
+					}
+					if (!precondition(existing)) {
+						outcome = 'refused';
+						return;
+					}
+					write.skipped = false;
+					outcome = 'applied';
+					logger.trace?.(`Writing record ${type} for id: ${id}, version: ${new Date(version).toISOString()}`);
+					updateRecord(
+						id,
+						existing?.value ?? null, // an absent record gets a locked placeholder that gates its creation
+						existing,
+						version,
+						(existing?.metadataFlags ?? 0) & (INVALIDATED | EVICTED | LOCAL_ONLY),
+						true,
+						{
+							user,
+							expiresAt: existing?.expiresAt,
+							residencyId: existing?.residencyId,
+							transaction: nativeTransaction,
+							tableToTrack: null,
+							...(type === 'lock' ? { lock: { lockVersion: version, lockExpiresAt } } : { unlock: true }),
+						},
+						type,
+						false,
+						null
+					);
+				},
+			};
+			link.addWrite(write);
+		});
+		return Promise.resolve(controlTransaction).then(() => ({ outcome, version, lockExpiresAt }));
+	}
+	/** Clear a generation whose lease has passed; the record and its value stay. */
+	async function clearExpiredLock(id: Id, lockVersion: number): Promise<boolean> {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const existing = primaryStore.getEntry(id);
+			if (existing?.lockVersion !== lockVersion || isLockedLive(existing)) return false;
+			const { outcome } = await writeLockTransition(
+				id,
+				'unlock',
+				existing.version,
+				(entry) => entry?.lockVersion === lockVersion && !isLockedLive(entry),
+				undefined,
+				undefined
+			);
+			if (outcome !== 'stale') {
+				if (outcome === 'applied') notifyRecordUnlocked(primaryStore, writeKeyId(id));
+				return outcome === 'applied';
+			}
+		}
+		return false;
+	}
+	async function acquireRecordLock(
+		id: Id,
+		keyId: unknown,
+		options: ResolvedRecordLockOptions,
+		context: Context
+	): Promise<RecordLockHandle> {
+		const deadline = Date.now() + options.timeout;
+		const attemptKey = lockAttemptKey(tableId, id);
+		const user = (context as any)?.user;
+		while (true) {
+			const attempted = await serializeLockAttempt(
+				primaryStore,
+				attemptKey,
+				Math.min(LOCK_ATTEMPT_SERIALIZER_WAIT_MS, Math.max(1, deadline - Date.now())),
+				async () => {
+					const existing = primaryStore.getEntry(id) as Entry | undefined;
+					if (isLockedLive(existing)) return { heldUntil: existing.lockExpiresAt };
+					const result = await writeLockTransition(
+						id,
+						'lock',
+						existing?.version,
+						(entry) => !isLockedLive(entry),
+						options.lease,
+						user
+					);
+					return result.outcome === 'applied' ? result : undefined;
+				}
+			);
+			if (attempted && 'version' in attempted) {
+				scheduleCleanup(); // arm the sweep that clears a generation whose holder never releases it
+				return makeLockHandle(id, keyId, attempted.version, attempted.lockExpiresAt, options.hold, user);
+			}
+			if (Date.now() >= deadline) {
+				throw new ClientError(`Record ${String(id)} is locked and was not released within ${options.timeout}ms`, 423);
+			}
+			if (attempted && 'heldUntil' in attempted)
+				await waitForRecordUnlock(primaryStore, keyId, Math.min(attempted.heldUntil, deadline)).promise;
+		}
+	}
+	function makeLockHandle(
+		id: Id,
+		keyId: unknown,
+		lockVersion: number,
+		expiresAt: number,
+		hold: boolean,
+		user: any
+	): RecordLockHandle {
+		let releasing: Promise<boolean> | undefined;
+		const handle: RecordLockHandle = {
+			store: primaryStore,
+			key: id,
+			keyId,
+			lockVersion,
+			expiresAt,
+			hold,
+			released: false,
+			release() {
+				if (releasing) return releasing;
+				handle.released = true;
+				return (releasing = (async () => {
+					try {
+						for (let attempt = 0; attempt < 3; attempt++) {
+							const existing = primaryStore.getEntry(id) as Entry | undefined;
+							if (existing?.lockVersion !== lockVersion || !(existing.metadataFlags & LOCKED)) return false;
+							const { outcome } = await writeLockTransition(
+								id,
+								'unlock',
+								existing.version,
+								(entry) => entry?.lockVersion === lockVersion && (entry.metadataFlags & LOCKED) !== 0,
+								undefined,
+								user
+							);
+							if (outcome !== 'stale') return outcome === 'applied';
+						}
+						logger.warn?.(`Could not release the lock on ${tableName} record ${String(id)}; its lease will expire it`);
+						return false;
+					} finally {
+						notifyRecordUnlocked(primaryStore, keyId);
+					}
+				})());
+			},
+		};
+		return handle;
+	}
+
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
@@ -6566,7 +6887,8 @@ export function makeTable(options) {
 							logger.trace?.(
 								`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
-							if (audit || trackDeletes) {
+							// a locked record leaves a tombstone that keeps its generation, never an outright removal
+							if (audit || trackDeletes || isLockedLive(existingEntry)) {
 								updateRecord(
 									id,
 									null,
@@ -6822,14 +7144,26 @@ export function makeTable(options) {
 										const { key, value: record, version, expiresAt, metadataFlags } = entry;
 										// if there is no auditing cleanup and we are tracking deletion, need to do cleanup of
 										// these deletion entries (LMDB audit cleanup has its own scheduled job for this)
-										let action: 'tombstone' | 'evict' | undefined;
-										if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
+										let action: 'tombstone' | 'evict' | 'clearLock' | undefined;
+										if (metadataFlags & LOCKED) {
+											// a live generation keeps its record; an expired one is cleared so the bit does not
+											// linger past its lease, and the record then takes the next cycle's normal path
+											if (!isLockedLive(entry)) action = 'clearLock';
+										} else if (record === null && removeDeletedRecords && version + auditRetention < Date.now()) {
 											action = 'tombstone';
 										} else if (expiresAt != undefined && shouldEvict(expiresAt, version, metadataFlags, record)) {
 											action = 'evict';
 											count++;
 										}
-										if (action) {
+										if (action === 'clearLock') {
+											await outstandingCleanupOperations[cleanupIndex];
+											outstandingCleanupOperations[cleanupIndex] = clearExpiredLock(key, entry.lockVersion).catch(
+												(error) => {
+													logger.error?.('Cleanup error', error);
+												}
+											);
+											if (++cleanupIndex >= MAX_CLEANUP_CONCURRENCY) cleanupIndex = 0;
+										} else if (action) {
 											// Blob-bearing records delete their blob files as a non-transactional side effect, so
 											// they stay on the per-record evict() path that preserves the existing blob/commit ordering.
 											if (batcher && !(action === 'evict' && metadataFlags & HAS_BLOBS)) {

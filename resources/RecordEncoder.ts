@@ -29,6 +29,7 @@ import {
 	getFileId,
 } from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
+import { LOCKED, isLockedLive } from './recordLock.ts';
 import { recordAction } from './analytics/write.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
@@ -98,6 +99,10 @@ export type Entry = {
 	deref?: () => any;
 	[METADATA]?: any;
 	additionalAuditRefs?: Array<{ version: number; nodeId: number }>;
+	/** Lock generation token (the LOCK audit entry's version); present only while LOCKED is set */
+	lockVersion?: number;
+	/** Lease deadline (ms epoch) of the lock generation; present only while LOCKED is set */
+	lockExpiresAt?: number;
 };
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
@@ -148,6 +153,8 @@ let timestampNextEncoding = 0,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0,
 	nodeIdAtNextEncoding = -1,
+	lockVersionNextEncoding = -1,
+	lockExpiresAtNextEncoding = -1,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
@@ -333,6 +340,8 @@ export class RecordEncoder extends StructonEncoder {
 				const expiresAt = expiresAtNextEncoding;
 				const residencyId = residencyIdAtNextEncoding;
 				const nodeId = nodeIdAtNextEncoding;
+				const lockVersion = lockVersionNextEncoding;
+				const lockExpiresAt = lockExpiresAtNextEncoding;
 				const additionalAuditRefs = additionalAuditRefsNextEncoding;
 				if (metadata >= 0) {
 					valueStart += 4; // make room for metadata bytes
@@ -361,6 +370,16 @@ export class RecordEncoder extends StructonEncoder {
 					if (additionalAuditRefs && additionalAuditRefs.length > 0) {
 						valueStart += 1 + additionalAuditRefs.length * 12; // 1 byte for count + 8 bytes version + 4 bytes nodeId per ref
 						additionalAuditRefsNextEncoding = undefined;
+					}
+					if (lockVersion >= 0) {
+						valueStart += 16; // lock generation token + lease deadline
+						lockVersionNextEncoding = -1;
+						lockExpiresAtNextEncoding = -1;
+						if (!(metadata & LOCKED)) {
+							throw new Error('Lock generation included, but not in metadata flags');
+						}
+					} else if (metadata & LOCKED) {
+						throw new Error('LOCKED metadata flag set without a lock generation');
 					}
 				}
 				const encoded = superEncode.call(this, record, options | 2048 | valueStart); // encode with 8 bytes reserved space for txnId
@@ -405,6 +424,12 @@ export class RecordEncoder extends StructonEncoder {
 							dataView.setUint32(position, ref.nodeId);
 							position += 4;
 						}
+					}
+					if (lockVersion >= 0) {
+						dataView.setFloat64(position, lockVersion);
+						position += 8;
+						dataView.setFloat64(position, lockExpiresAt);
+						position += 8;
 					}
 				}
 				return encoded;
@@ -548,7 +573,7 @@ export class RecordEncoder extends StructonEncoder {
 					localTime = getTimestamp();
 					nextByte = buffer[position];
 				}
-				let expiresAt, residencyId, nodeId, additionalAuditRefs;
+				let expiresAt, residencyId, nodeId, additionalAuditRefs, lockVersion, lockExpiresAt;
 				if (nextByte < 32) {
 					if (nextByte === ACTION_32_BIT) {
 						const dataView =
@@ -593,6 +618,14 @@ export class RecordEncoder extends StructonEncoder {
 							additionalAuditRefs.push({ version, nodeId: refNodeId });
 						}
 					}
+					if (metadataFlags & LOCKED) {
+						const dataView =
+							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+						lockVersion = dataView.getFloat64(position);
+						position += 8;
+						lockExpiresAt = dataView.getFloat64(position);
+						position += 8;
+					}
 				}
 
 				const value = decodeFromDatabase(
@@ -610,6 +643,8 @@ export class RecordEncoder extends StructonEncoder {
 					residencyId,
 					nodeId,
 					additionalAuditRefs,
+					lockVersion,
+					lockExpiresAt,
 					size: end - start,
 					value,
 				} as any;
@@ -672,6 +707,8 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.residencyId = lastMetadata.residencyId;
 			entry.nodeId = lastMetadata.nodeId;
 			entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+			entry.lockVersion = lastMetadata.lockVersion;
+			entry.lockExpiresAt = lastMetadata.lockExpiresAt;
 			entry.size = lastMetadata.size;
 			if (lastMetadata.expiresAt >= 0) {
 				entry.expiresAt = lastMetadata.expiresAt;
@@ -732,6 +769,8 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.residencyId = lastMetadata.residencyId;
 				entry.nodeId = lastMetadata.nodeId;
 				entry.additionalAuditRefs = lastMetadata.additionalAuditRefs;
+				entry.lockVersion = lastMetadata.lockVersion;
+				entry.lockExpiresAt = lastMetadata.lockExpiresAt;
 				entry.size = lastMetadata.size;
 				if (lastMetadata.expiresAt >= 0) entry.expiresAt = lastMetadata.expiresAt;
 				lastMetadata = null;
@@ -840,6 +879,8 @@ export function clearNextEncoding() {
 	expiresAtNextEncoding = -1;
 	nodeIdAtNextEncoding = -1;
 	residencyIdAtNextEncoding = 0;
+	lockVersionNextEncoding = -1;
+	lockExpiresAtNextEncoding = -1;
 	additionalAuditRefsNextEncoding = undefined;
 }
 export function recordUpdater(store, tableId, auditStore) {
@@ -886,6 +927,18 @@ export function recordUpdater(store, tableId, auditStore) {
 		if (isRocksDB && record !== undefined && existingEntry?.version != null && newVersion <= existingEntry.version) {
 			assignMetadata = Math.max(assignMetadata, 0) | VERSION_NOT_UNIQUE_FLAG;
 		}
+		// A live lock generation survives every rewrite of the record (invalidate, relocate, publish,
+		// source resolution, holder writes) until an unlock or a takeover replaces it; only the lock
+		// transitions themselves choose otherwise.
+		const lock = options?.lock ?? (options?.unlock || !isLockedLive(existingEntry) ? undefined : existingEntry);
+		if (lock) {
+			assignMetadata = Math.max(assignMetadata, 0) | LOCKED;
+			lockVersionNextEncoding = lock.lockVersion;
+			lockExpiresAtNextEncoding = lock.lockExpiresAt;
+		} else {
+			lockVersionNextEncoding = -1;
+			lockExpiresAtNextEncoding = -1;
+		}
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
 		const putOptions: {
@@ -929,6 +982,9 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= LOCAL_ONLY;
 				extendedType |= LOCAL_ONLY;
 			}
+			// Lock transitions are never replicated (Phase 0 is single-node), but the record itself still is:
+			// only the audit entry carries LOCAL_ONLY.
+			if (type === 'lock' || type === 'unlock') extendedType |= LOCAL_ONLY;
 			if (previousResidencyId !== residencyId) {
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;
 				if (!previousResidencyId) previousResidencyId = 0;
@@ -982,6 +1038,8 @@ export function recordUpdater(store, tableId, auditStore) {
 				const structureVersion = store.encoder.structures.length + (store.encoder.typedStructs?.length ?? 0);
 				const nodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
 				const viaNodeId = options?.viaNodeId ?? nodeId;
+				// lock transitions change no data: their audit entries are header-only
+				if (type === 'lock' || type === 'unlock') lastValueEncoding = undefined;
 				if (resolveRecord && existingEntry?.localTime) {
 					const replacingId = existingEntry?.localTime;
 					const replacingEntry = auditStore.get(replacingId, tableId, id);

@@ -4,6 +4,7 @@ import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import type { Entry, RecordObject } from './RecordEncoder.ts';
 import { RequestTarget } from './RequestTarget.ts';
+import type { RecordLockOptions } from './recordLock.ts';
 
 export interface ResourceInterface<Record extends object = any>
 	extends Partial<RecordObject>, Pick<UpdatableRecord<Record>, 'addTo' | 'subtractFrom'> {
@@ -44,6 +45,11 @@ export interface ResourceInterface<Record extends object = any>
 	delete?(target: RequestTargetOrId): boolean | Promise<boolean>;
 
 	invalidate(target: RequestTargetOrId): void | Promise<void>;
+
+	/** Acquire an exclusive lock on a record and return it ready for updates (see `RecordLockOptions`) */
+	lock?(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<WritableRecord<Record>>;
+	/** Release the lock this instance holds; resolves true when this call cleared it */
+	unlock?(): Promise<boolean>;
 
 	publish?(target: RequestTargetOrId, record: Record, options?: any): void;
 	subscribe?(request: SubscriptionRequest): AsyncIterable<Record> | Promise<AsyncIterable<Record>>;
@@ -257,6 +263,19 @@ interface TypedUpdatableRecord<Record extends object, Property extends keyof Rec
 	addTo(property: Property, value: Record[Property]): void;
 	subtractFrom(property: Property, value: Record[Property]): void;
 }
+
+export type { RecordLockOptions } from './recordLock.ts';
+
+/**
+ * What `lock()` resolves with: the locked record, loaded after the lock committed and tracking
+ * changes for `save()`. A transaction-scoped lock is released when its transaction commits or
+ * aborts; a held lock (`{ hold: true }`) by `unlock()` or its lease.
+ */
+export type WritableRecord<Record extends object = any> = UpdatableRecord<Record> & {
+	save(): void | Promise<void>;
+	update(updates?: Partial<Record>): unknown;
+	unlock(): Promise<boolean>;
+};
 
 export interface Subscription<Event extends object = any> extends IterableEventQueue<Event> {
 	new (listener: Listener<Event>);

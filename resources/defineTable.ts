@@ -27,6 +27,7 @@
 
 import { table, type Table } from './databases.ts';
 import { attributeToFragment } from './jsonSchemaTypes.ts';
+import type { RecordLockOptions } from './recordLock.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Field model — phantom-typed Field. Flags are set via GETTER PROPERTIES (no call):
@@ -235,6 +236,7 @@ interface TypedVerbs<S extends Shape> {
 	post(record: InsertOf<S>, context?: any): MaybePromise<unknown>;
 	patch(id: IdOf<S>, changes: PatchOf<S>, context?: any): MaybePromise<unknown>;
 	update(id: IdOf<S>, updates?: PatchOf<S>, context?: any): MaybePromise<InstanceOf<S>>;
+	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<InstanceOf<S>>;
 	delete(id: IdOf<S>, context?: any): MaybePromise<unknown>;
 	search(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
 	query(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
@@ -248,7 +250,7 @@ interface TypedVerbs<S extends Shape> {
  */
 export type TableHandle<S extends Shape = Shape> = Omit<
 	Table,
-	'get' | 'put' | 'post' | 'patch' | 'update' | 'delete' | 'search' | 'query'
+	'get' | 'put' | 'post' | 'patch' | 'update' | 'lock' | 'delete' | 'search' | 'query'
 > &
 	TypedVerbs<S> & {
 		// phantom projection carriers — discovery surface, zero runtime cost
