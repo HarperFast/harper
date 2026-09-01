@@ -10,6 +10,7 @@ const { join } = require('node:path');
 const { writeFileSync, mkdtempSync, rmSync } = require('node:fs');
 const { stringify } = require('yaml');
 const { waitFor } = require('../../waitFor.js');
+const { getSharedRootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const {
 	bootstrapModels,
 	applyModelsConfig,
@@ -111,15 +112,14 @@ describe('models config hot reload (#2344)', () => {
 			assert.equal(getBackend('embedding', 'default'), appOwned, 'removal must not delete the override');
 		});
 
-		it("publishes a factory's helper registration in the same tick as its primary", async () => {
+		it("publishes a factory's helper registration with its primary, not mid-construction", async () => {
 			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
 			let release;
 			let applying;
 			globalThis.__helperGate = new Promise((resolve) => (release = resolve));
 			globalThis.__helperGateReached = false;
 			try {
-				await bootstrapModels({ models: block({}) });
-				applying = applyModelsConfig(block({ default: { backend: helperModule, model: 'm1' } }));
+				applying = bootstrapModels({ models: block({ default: { backend: helperModule, model: 'm1' } }) });
 				await waitFor(() => globalThis.__helperGateReached, { message: 'construction never started' });
 
 				// Mid-construction: neither the helper nor the primary may be visible yet.
@@ -140,28 +140,90 @@ describe('models config hot reload (#2344)', () => {
 			}
 		});
 
-		it('removes a helper together with its removed entry', async () => {
+		it('removes a helper together with its removed entry on re-bootstrap; reload refuses both', async () => {
 			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
 			await bootstrapModels({ models: block({ default: { backend: helperModule, model: 'm1' } }) });
+			const entry = getBackend('embedding', 'default');
 			assert.ok(getBackend('embedding', 'default-helper'), 'helper installed with its entry');
 
+			// Reload: module entries are restart-managed in both directions.
 			await applyModelsConfig(block({}));
+			assert.equal(getBackend('embedding', 'default'), entry, 'reload keeps the module entry');
+			assert.ok(getBackend('embedding', 'default-helper'), 'and its helper');
 
+			// Re-bootstrap (the restart-shaped event): removal takes effect, helper cascades.
+			await bootstrapModels({ models: block({}) });
 			assert.equal(getBackend('embedding', 'default'), undefined);
 			assert.equal(getBackend('embedding', 'default-helper'), undefined, 'helper removed with its entry');
 		});
 
-		it('removes a stale helper when a rebuild registers a different one', async () => {
+		it('removes a stale helper when a re-bootstrap registers a different one', async () => {
+			// Module factories run only at boot now, so helper rotation is a restart-shaped event.
 			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
 			await bootstrapModels({
 				models: block({ default: { backend: helperModule, model: 'm1', helperName: 'helper-a' } }),
 			});
 			assert.ok(getBackend('embedding', 'helper-a'));
 
-			await applyModelsConfig(block({ default: { backend: helperModule, model: 'm2', helperName: 'helper-b' } }));
+			await bootstrapModels({
+				models: block({ default: { backend: helperModule, model: 'm2', helperName: 'helper-b' } }),
+			});
 
 			assert.equal(getBackend('embedding', 'helper-a'), undefined, 'stale helper removed');
 			assert.ok(getBackend('embedding', 'helper-b'), 'replacement helper installed');
+		});
+
+		it('a module entry rename on reload keeps the old name serving instead of half-applying', async () => {
+			// Refusing the added name while removing the old one would turn a rename into a bare
+			// removal; module entries are restart-managed in both directions.
+			const counting = join(__dirname, 'fixtures', 'counting-backend-module.cjs');
+			await bootstrapModels({ models: block({ old: { backend: counting, model: 'm1' } }) });
+			const before = getBackend('embedding', 'old');
+
+			await applyModelsConfig(block({ renamed: { backend: counting, model: 'm1' } }));
+
+			assert.equal(getBackend('embedding', 'old'), before, 'old name keeps serving');
+			assert.equal(getBackend('embedding', 'renamed'), undefined, 'new name waits for a restart');
+		});
+
+		it('refuses to run a module factory on reload, retaining the previous projection', async () => {
+			// A module factory may compose with other entries; staged reload construction cannot
+			// honor that ordering, so changing one keeps restart semantics (review decision).
+			const counting = join(__dirname, 'fixtures', 'counting-backend-module.cjs');
+			globalThis.__countingBackendBuilds = 0;
+			try {
+				await bootstrapModels({ models: block({ default: { backend: counting, model: 'm1' } }) });
+				const before = getBackend('embedding', 'default');
+				assert.equal(globalThis.__countingBackendBuilds, 1);
+
+				await applyModelsConfig(block({ default: { backend: counting, model: 'm2' } }));
+
+				assert.equal(globalThis.__countingBackendBuilds, 1, 'factory not re-run on reload');
+				assert.equal(getBackend('embedding', 'default'), before, 'previous backend retained');
+			} finally {
+				delete globalThis.__countingBackendBuilds;
+			}
+		});
+
+		it('boot installs entries sequentially, so a later module factory can wrap an earlier one', async () => {
+			// The order-dependent composition boot has always allowed: `cached` resolves `base` at
+			// factory time. Staged boot construction broke this (review finding); per-entry publish
+			// restores it.
+			const wrapping = join(__dirname, 'fixtures', 'wrapping-backend-module.cjs');
+			globalThis.__wrapperSawBase = undefined;
+			try {
+				await bootstrapModels({
+					models: block({
+						base: openaiEntry('sk-base'),
+						cached: { backend: wrapping, wraps: 'base' },
+					}),
+				});
+
+				assert.equal(globalThis.__wrapperSawBase, true, 'the wrapper factory saw its base installed');
+				assert.ok(getBackend('embedding', 'cached'));
+			} finally {
+				delete globalThis.__wrapperSawBase;
+			}
 		});
 
 		it('does not clobber an application override of a helper name', async () => {
@@ -229,10 +291,10 @@ describe('models config hot reload (#2344)', () => {
 			}
 		});
 
-		it('reinstalls a helper whose config-entry overlap was later dropped (boot/reload agree)', async () => {
-			// Boot with a factory helper AND a config entry of the same name: the entry wins and the
-			// parent must stop tracking that name — otherwise, once the entry is dropped and the parent
-			// rebuilds, a stale record CASes against the vacant slot and the helper never comes back.
+		it('restores a suppressed helper the moment its claiming entry is removed', async () => {
+			// Boot with a factory helper AND a config entry of the same name: the entry wins, the
+			// helper's record is suppressed rather than forgotten, and dropping the entry restores the
+			// helper — the live registry matches a restart with the same final config.
 			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
 			await bootstrapModels({
 				models: block({
@@ -240,12 +302,14 @@ describe('models config hot reload (#2344)', () => {
 					'default-helper': openaiEntry('sk-own'),
 				}),
 			});
+			const winner = getBackend('embedding', 'default-helper');
+			assert.ok(winner && winner.name !== 'helper', 'the config entry owns the name at boot');
 
 			await applyModelsConfig(block({ default: { backend: helperModule, model: 'm1' } }));
-			assert.equal(getBackend('embedding', 'default-helper'), undefined, 'dropped entry vacates the name');
 
-			await applyModelsConfig(block({ default: { backend: helperModule, model: 'm2' } }));
-			assert.ok(getBackend('embedding', 'default-helper'), 'the rebuild reinstalls its helper');
+			const restored = getBackend('embedding', 'default-helper');
+			assert.ok(restored, 'the helper is back the moment the claiming entry is removed');
+			assert.notEqual(restored, winner, 'and it is the factory helper, not the removed entry');
 		});
 
 		it('lets a config entry claim a name held by a projection-installed helper', async () => {
@@ -267,21 +331,22 @@ describe('models config hot reload (#2344)', () => {
 			assert.equal(getBackend('embedding', 'default-helper'), claimed);
 		});
 
-		it('rotates helpers even while the primary is overridden', async () => {
+		it('a module entry change under an override is refused, leaving override and helper intact', async () => {
+			// Module factories no longer run on reload, so nothing rotates here by design; the refusal
+			// must leave every installed piece exactly as it was.
 			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
 			await bootstrapModels({
 				models: block({ default: { backend: helperModule, model: 'm1', helperName: 'helper-a' } }),
 			});
+			const helperA = getBackend('embedding', 'helper-a');
 			const appOwned = { name: 'app-policy-backend', capabilities: () => ({ embed: true }) };
 			setEmbedding('default', appOwned);
 
-			// A frozen helper would keep serving a revoked credential just because the primary is owned
-			// by an application.
 			await applyModelsConfig(block({ default: { backend: helperModule, model: 'm2', helperName: 'helper-b' } }));
 
 			assert.equal(getBackend('embedding', 'default'), appOwned, 'primary override intact');
-			assert.equal(getBackend('embedding', 'helper-a'), undefined, 'stale helper retired');
-			assert.ok(getBackend('embedding', 'helper-b'), 'new helper serving');
+			assert.equal(getBackend('embedding', 'helper-a'), helperA, 'existing helper untouched');
+			assert.equal(getBackend('embedding', 'helper-b'), undefined, 'no factory ran on reload');
 		});
 
 		it('a failed rebuild keeps the routing that was applied with the serving backend', async () => {
@@ -423,7 +488,7 @@ describe('models config hot reload (#2344)', () => {
 			globalThis.__helperGateReached = false;
 			try {
 				setEmbedding('victim', appOwned);
-				inFlight = applyModelsConfig(block({ slow: { backend: helperModule, model: 'm1' } }));
+				inFlight = bootstrapModels({ models: block({ slow: { backend: helperModule, model: 'm1' } }) });
 				await waitFor(() => globalThis.__helperGateReached, { message: 'in-flight apply never started' });
 
 				const boot = bootstrapModels({ models: block({ victim: openaiEntry('sk-boot') }) });
@@ -448,7 +513,7 @@ describe('models config hot reload (#2344)', () => {
 			globalThis.__helperGate = new Promise((resolve) => (release = resolve));
 			globalThis.__helperGateReached = false;
 			try {
-				inFlight = applyModelsConfig(block({ slow: { backend: helperModule, model: 'm1' } }));
+				inFlight = bootstrapModels({ models: block({ slow: { backend: helperModule, model: 'm1' } }) });
 				await waitFor(() => globalThis.__helperGateReached, { message: 'in-flight apply never started' });
 
 				// Queued in this order: stale reload, then a NEWER boot. Draining the stale reload after
@@ -465,6 +530,16 @@ describe('models config hot reload (#2344)', () => {
 
 				assert.ok(getBackend('embedding', 'keeper'), 'the boot applied');
 				assert.equal(getBackend('embedding', 'stale'), undefined, 'the older reload was discarded');
+
+				// And the other half of the contract: a reload queued AFTER the boot still refines it.
+				await applyModelsConfig(
+					block({
+						slow: { backend: helperModule, model: 'm1' },
+						keeper: openaiEntry('sk-boot'),
+						late: openaiEntry('sk-late'),
+					})
+				);
+				assert.ok(getBackend('embedding', 'late'), 'a post-boot reload applied its distinct state');
 			} finally {
 				release();
 				await inFlight?.catch(() => {});
@@ -483,7 +558,7 @@ describe('models config hot reload (#2344)', () => {
 			globalThis.__helperGate = new Promise((resolve) => (release = resolve));
 			globalThis.__helperGateReached = false;
 			try {
-				inFlight = applyModelsConfig(block({ slow: { backend: helperModule, model: 'm1' } }));
+				inFlight = bootstrapModels({ models: block({ slow: { backend: helperModule, model: 'm1' } }) });
 				await waitFor(() => globalThis.__helperGateReached, { message: 'in-flight apply never started' });
 
 				// Boot's block is authoritative for the whole map, so it must carry `slow` itself —
@@ -594,6 +669,20 @@ describe('models config hot reload (#2344)', () => {
 			process.env.HARPER_SET_CONFIG = JSON.stringify({ 'models.embedding.default': { backend: 'openai' } });
 
 			assert.equal(startModelsConfigHotReload(), false, 'dotted keys compose into models and pin it');
+		});
+
+		it('subscribes to the isolate-shared watcher and unsubscribes without closing it', () => {
+			// Logging already opens one root-config watcher per worker; models must ride the same
+			// instance instead of doubling the native-watcher footprint (review finding).
+			const shared = getSharedRootConfigWatcher();
+			shared.ready.catch(() => {});
+			const before = shared.listenerCount('change');
+
+			assert.equal(startModelsConfigHotReload(), true);
+			assert.equal(shared.listenerCount('change'), before + 1, 'models subscribed to the shared watcher');
+
+			stopModelsConfigHotReload();
+			assert.equal(shared.listenerCount('change'), before, 'stop unsubscribes without closing');
 		});
 
 		for (const layer of ENV_LAYERS) {

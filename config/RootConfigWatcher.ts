@@ -13,6 +13,17 @@ import {
 } from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 
+let sharedWatcher: RootConfigWatcher | undefined;
+
+/**
+ * The isolate-wide watcher for the root config file. Consumers (logging, models) subscribe to this
+ * one instance instead of each opening their own native watcher — per-worker duplicates double the
+ * inotify/FD footprint and the synchronous read+parse work on every config write.
+ */
+export function getSharedRootConfigWatcher(): RootConfigWatcher {
+	return (sharedWatcher ??= new RootConfigWatcher());
+}
+
 export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
 	#watchPath: string;

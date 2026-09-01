@@ -46,7 +46,7 @@ import {
 	replaceIfCurrent,
 	type CapturedInstall,
 } from './backendRegistry.ts';
-import { RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
+import { getSharedRootConfigWatcher, RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
 import { validateModelsBlock } from '../../validation/configValidator.ts';
 import type { ModelBackend } from './types.ts';
 
@@ -106,22 +106,42 @@ interface InstalledSlot {
 	entryJson: string;
 	/** The entry's fallback group as applied, so a retained backend keeps its routing. */
 	fallback?: string[];
-	/** Helper registrations the entry's factory made, installed and removed with the entry. */
-	extras?: CapturedInstall[];
+	/** Whether the entry's backend is a built-in. Module-backed entries are restart-managed: reload
+	 * refuses to add, change, OR remove them, so a rename cannot half-apply as a bare removal. */
+	builtin?: boolean;
+	/** Helper registrations the entry's factory made, installed and removed with the entry.
+	 * `suppressed`: a config entry claimed this helper's name; the record is kept so the helper is
+	 * restored when that entry is removed — matching a restart with the final config. */
+	extras?: Array<CapturedInstall & { suppressed?: boolean }>;
 }
 
 const installedSlots = new Map<string, InstalledSlot>();
 
-/** Release a name held by a projection-installed helper, so a config entry can claim it. */
+/**
+ * Let a config entry claim a name held by a projection-installed helper. The record is suppressed
+ * rather than deleted, so removing the claiming entry later restores the helper — the live
+ * registry then matches a restart with the same final config.
+ */
 function claimHelperOccupant(kind: ModelKind, logicalName: string): ModelBackend | undefined {
 	for (const slot of installedSlots.values()) {
-		const index = slot.extras?.findIndex((e) => e.kind === kind && e.logicalName === logicalName) ?? -1;
-		if (index >= 0) {
-			const [extra] = slot.extras!.splice(index, 1);
+		const extra = slot.extras?.find((e) => !e.suppressed && e.kind === kind && e.logicalName === logicalName);
+		if (extra) {
+			extra.suppressed = true;
 			return extra.backend;
 		}
 	}
 	return undefined;
+}
+
+/** Restore a suppressed helper once the entry that claimed its name is removed. */
+function restoreSuppressedHelper(kind: ModelKind, logicalName: string): void {
+	for (const slot of installedSlots.values()) {
+		const extra = slot.extras?.find((e) => e.suppressed && e.kind === kind && e.logicalName === logicalName);
+		if (extra && replaceIfCurrent(extra.kind, extra.logicalName, undefined, extra.backend)) {
+			extra.suppressed = false;
+			return;
+		}
+	}
 }
 
 const slotKey = (kind: ModelKind, logicalName: string) => `${kind} ${logicalName}`;
@@ -231,6 +251,69 @@ function collectKind(
 	}
 }
 
+function publishEntry(
+	desiredEntry: DesiredEntry,
+	backend: ModelBackend,
+	extras: CapturedInstall[],
+	isBoot: boolean
+): void {
+	const { kind, logicalName, entry, entryJson } = desiredEntry;
+	const key = slotKey(kind, logicalName);
+	// Boot overwrites occupants (the documented contract); a reload replaces only what this
+	// projection installed — or a helper the projection installed under this name, which a config
+	// entry outranks — so genuine application overrides survive.
+	const previous = installedSlots.get(key);
+	let expected = isBoot ? getBackend(kind, logicalName) : previous?.backend;
+	// Claimed at boot too, or the parent record keeps an installable claim on a name it lost.
+	const claimedHelper = claimHelperOccupant(kind, logicalName);
+	if (!isBoot && expected === undefined && claimedHelper !== undefined) expected = claimedHelper;
+	// Helpers rotate and retire with their entry even when the primary swap is lost to an
+	// override — a frozen helper would keep serving a revoked credential.
+	const installedExtras: Array<CapturedInstall & { suppressed?: boolean }> = [];
+	for (const extra of extras) {
+		const extraExpected = isBoot
+			? getBackend(extra.kind, extra.logicalName)
+			: previous?.extras?.find((e) => e.kind === extra.kind && e.logicalName === extra.logicalName)?.backend;
+		if (replaceIfCurrent(extra.kind, extra.logicalName, extraExpected, extra.backend)) {
+			installedExtras.push(extra);
+		} else {
+			harperLogger.warn(
+				`models.${kind}.${logicalName}: helper '${extra.logicalName}' is owned by another registration; leaving it in place`
+			);
+		}
+	}
+	for (const old of previous?.extras ?? []) {
+		if (old.suppressed) continue;
+		if (!extras.some((e) => e.kind === old.kind && e.logicalName === old.logicalName)) {
+			removeIfCurrent(old.kind, old.logicalName, old.backend);
+		}
+	}
+	const builtin = Boolean(FACTORIES[entry.backend as string]);
+	if (replaceIfCurrent(kind, logicalName, expected, backend)) {
+		installedSlots.set(key, {
+			kind,
+			logicalName,
+			backend,
+			entryJson,
+			builtin,
+			fallback: entry.fallback,
+			extras: installedExtras,
+		});
+	} else {
+		// Record the ask with no installed instance, so unchanged reloads skip instead of
+		// re-losing this swap every apply; installed helpers stay recorded and removable.
+		installedSlots.set(key, {
+			kind,
+			logicalName,
+			entryJson,
+			builtin,
+			fallback: entry.fallback,
+			extras: installedExtras,
+		});
+		harperLogger.warn(`models.${kind}.${logicalName}: another registration owns this entry; leaving it in place`);
+	}
+}
+
 async function applyModels(block: ModelsConfig | null | undefined, isBoot: boolean): Promise<void> {
 	if (!isBoot) {
 		if (block === undefined) {
@@ -269,6 +352,17 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 		const installed = getBackend(kind, logicalName);
 		if (slot && slot.entryJson === entryJson && (isBoot ? installed === slot.backend : installed !== undefined))
 			continue;
+		// Reload runs factories for built-ins only: they are independent, pure constructors. A module
+		// factory may compose with other entries (wrap an earlier backend), which staged construction
+		// cannot honor — changing one needs a restart, exactly as before this feature.
+		if (!isBoot && !FACTORIES[entry.backend as string]) {
+			harperLogger.warn(
+				`models.${kind}.${logicalName}: module-backed entries require a restart to add or change; ` +
+					`keeping the previous projection for this entry`
+			);
+			failedKeys.add(key);
+			continue;
+		}
 		// Warn before expansion: literal credentials in `harperdb-config.yaml`
 		// land on disk, in backups, and (depending on deployment) in replicated
 		// config tables. The `${VAR}` indirection pattern from
@@ -298,7 +392,11 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 				failedKeys.add(key);
 				continue;
 			}
-			staged.set(key, { desiredEntry, backend, extras });
+			// Boot publishes each entry as it is built, in config order, so a later module factory
+			// observes earlier entries exactly as it always has (a wrapper resolves its base). Reload
+			// defers everything to one synchronous publish, so a request never sees a partial rebuild.
+			if (isBoot) publishEntry(desiredEntry, backend, extras, true);
+			else staged.set(key, { desiredEntry, backend, extras });
 		} catch (err) {
 			failedKeys.add(key);
 			harperLogger.error(`models.${kind}.${logicalName}: registration failed (${(err as Error)?.message ?? err})`);
@@ -306,58 +404,27 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 	}
 
 	for (const { desiredEntry, backend, extras } of staged.values()) {
-		const { kind, logicalName, entry, entryJson } = desiredEntry;
-		const key = slotKey(kind, logicalName);
-		// Boot overwrites occupants (the documented contract); a reload replaces only what this
-		// projection installed — or a helper the projection installed under this name, which a config
-		// entry outranks — so genuine application overrides survive.
-		const previous = installedSlots.get(key);
-		let expected = isBoot ? getBackend(kind, logicalName) : previous?.backend;
-		// Spliced at boot too, or a later removal leaves a stale extra record CASing against a vacancy.
-		const claimedHelper = claimHelperOccupant(kind, logicalName);
-		if (!isBoot && expected === undefined && claimedHelper !== undefined) expected = claimedHelper;
-		// Helpers rotate and retire with their entry even when the primary swap is lost to an
-		// override — a frozen helper would keep serving a revoked credential.
-		const installedExtras: CapturedInstall[] = [];
-		for (const extra of extras) {
-			const extraExpected = isBoot
-				? getBackend(extra.kind, extra.logicalName)
-				: previous?.extras?.find((e) => e.kind === extra.kind && e.logicalName === extra.logicalName)?.backend;
-			if (replaceIfCurrent(extra.kind, extra.logicalName, extraExpected, extra.backend)) {
-				installedExtras.push(extra);
-			} else {
-				harperLogger.warn(
-					`models.${kind}.${logicalName}: helper '${extra.logicalName}' is owned by another registration; leaving it in place`
-				);
-			}
-		}
-		for (const old of previous?.extras ?? []) {
-			if (!extras.some((e) => e.kind === old.kind && e.logicalName === old.logicalName)) {
-				removeIfCurrent(old.kind, old.logicalName, old.backend);
-			}
-		}
-		if (replaceIfCurrent(kind, logicalName, expected, backend)) {
-			installedSlots.set(key, {
-				kind,
-				logicalName,
-				backend,
-				entryJson,
-				fallback: entry.fallback,
-				extras: installedExtras,
-			});
-		} else {
-			// Record the ask with no installed instance, so unchanged reloads skip instead of
-			// re-losing this swap every apply; installed helpers stay recorded and removable.
-			installedSlots.set(key, { kind, logicalName, entryJson, fallback: entry.fallback, extras: installedExtras });
-			harperLogger.warn(`models.${kind}.${logicalName}: another registration owns this entry; leaving it in place`);
-		}
+		publishEntry(desiredEntry, backend, extras, isBoot);
 	}
 	const desiredKeys = new Set(desired.map((d) => slotKey(d.kind, d.logicalName)));
 	for (const [key, slot] of [...installedSlots]) {
 		if (presentKeys.has(key)) continue;
+		// Module-backed entries are restart-managed on reload in BOTH directions: refusing an added
+		// rename target while removing its old name would turn the rename into a bare removal.
+		if (!isBoot && slot.builtin === false) {
+			harperLogger.warn(
+				`models.${slot.kind}.${slot.logicalName}: module-backed entries require a restart to remove; keeping it`
+			);
+			continue;
+		}
 		if (slot.backend) removeIfCurrent(slot.kind, slot.logicalName, slot.backend);
-		for (const extra of slot.extras ?? []) removeIfCurrent(extra.kind, extra.logicalName, extra.backend);
+		for (const extra of slot.extras ?? []) {
+			if (!extra.suppressed) removeIfCurrent(extra.kind, extra.logicalName, extra.backend);
+		}
 		installedSlots.delete(key);
+		// A removed entry may have been shadowing a factory helper of the same name; put the
+		// helper back, so the live registry matches a restart with this final config.
+		if (slot.backend) restoreSuppressedHelper(slot.kind, slot.logicalName);
 	}
 	// Rebuild fallback routing from scratch each apply so a removed/changed `fallback:` (or a
 	// removed `models:` block) doesn't leave stale routing behind (#1326).
@@ -382,6 +449,8 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 // ── Hot reload wiring ─────────────────────────────────────────────────────────
 
 let modelsConfigWatcher: RootConfigWatcher | undefined;
+let ownsModelsConfigWatcher = false;
+let modelsApplyListener: ((config: unknown) => void) | undefined;
 let pendingSettle: NodeJS.Timeout | undefined;
 
 /**
@@ -410,12 +479,16 @@ export function startModelsConfigHotReload(options?: {
 		);
 		return false;
 	}
-	modelsConfigWatcher = new RootConfigWatcher(options?.configFilePath);
+	// One watcher per isolate: logging already opens one, and a second per worker doubles the
+	// native-watcher/FD footprint and the read+parse work on every config write. A test-supplied
+	// path gets a private instance, owned (and closed) by this module.
+	ownsModelsConfigWatcher = options?.configFilePath !== undefined;
+	modelsConfigWatcher = ownsModelsConfigWatcher
+		? new RootConfigWatcher(options?.configFilePath)
+		: getSharedRootConfigWatcher();
 	// An 'error' event with no listener would take the worker down; and `ready` is an events.once
 	// promise that rejects on a pre-ready 'error', so it must be observed too.
-	modelsConfigWatcher.on('error', (error) => {
-		harperLogger.warn(`models: config watcher error: ${(error as Error)?.message ?? error}`);
-	});
+	modelsConfigWatcher.on('error', modelsWatcherErrorListener);
 	modelsConfigWatcher.ready.catch(() => {});
 	// 'ready' carries the file state at watch start: a rewrite that lands during the watcher's
 	// initial scan arrives there rather than as 'change', and an unchanged block is a no-op anyway.
@@ -435,6 +508,7 @@ export function startModelsConfigHotReload(options?: {
 	};
 	modelsConfigWatcher.on('ready', applyFromFile);
 	modelsConfigWatcher.on('change', applyFromFile);
+	modelsApplyListener = applyFromFile;
 	return true;
 }
 
@@ -442,8 +516,22 @@ export function startModelsConfigHotReload(options?: {
 export function stopModelsConfigHotReload(): void {
 	clearTimeout(pendingSettle);
 	pendingSettle = undefined;
-	modelsConfigWatcher?.close();
+	if (modelsConfigWatcher) {
+		if (modelsApplyListener) {
+			modelsConfigWatcher.off('ready', modelsApplyListener);
+			modelsConfigWatcher.off('change', modelsApplyListener);
+		}
+		modelsConfigWatcher.off('error', modelsWatcherErrorListener);
+		// The shared watcher belongs to the isolate (logging still consumes it); close only a
+		// private, test-supplied instance.
+		if (ownsModelsConfigWatcher) modelsConfigWatcher.close();
+	}
+	modelsApplyListener = undefined;
 	modelsConfigWatcher = undefined;
+}
+
+function modelsWatcherErrorListener(error: unknown): void {
+	harperLogger.warn(`models: config watcher error: ${(error as Error)?.message ?? error}`);
 }
 
 function envLayerNamingModels(): string | undefined {

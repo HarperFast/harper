@@ -145,7 +145,7 @@ function resolveLogPath(configPath: string, rootPath: string) {
 async function updateLogSettings() {
 	if (!rootConfig) {
 		// set up the initial watcher
-		rootConfig = new RootConfigWatcher();
+		rootConfig = getSharedRootConfigWatcher();
 		// wait for it to be ready
 		await rootConfig.ready;
 		// TODO: Any way to differentiate changes that we can and can't handle?
@@ -1811,7 +1811,7 @@ export function AuthAuditLog(
 	this.path = path;
 }
 // we have to load this at the end to avoid circular dependencies problems
-import { RootConfigWatcher } from '../../config/RootConfigWatcher.ts';
+import { getSharedRootConfigWatcher } from '../../config/RootConfigWatcher.ts';
 
 export const getLogFilePath = () => logFilePath;
 export const forComponent = (name: string, isExternal?: boolean) => mainLogger.forComponent(name, isExternal);
