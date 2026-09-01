@@ -17,6 +17,26 @@ use std::time::{Duration, Instant};
 
 pub const LOCKED: u32 = 1 << 31;
 pub const GEN_MASK: u32 = LOCKED - 1;
+/// A lock value decomposes as: bit 31 LOCKED | salt(13 bits) | handle identity(19 bits).
+/// The identity — registry slot (6 bits) + the handle's per-open epoch (12 bits) — is what
+/// liveness is keyed on; the salt changes every acquisition so back-to-back writers from ONE
+/// handle still change the observed value (a waiter that never sees an unlocked window must
+/// still see progress, or healthy same-handle churn would trip the wedge bound).
+pub const TAG_MASK: u32 = (1 << 19) - 1;
+
+#[inline]
+fn acquisition_value(self_tag: u32) -> u32 {
+    use std::cell::Cell;
+    thread_local! {
+        static SALT: Cell<u32> = const { Cell::new(0) };
+    }
+    let salt = SALT.with(|c| {
+        let v = c.get().wrapping_add(1);
+        c.set(v);
+        v
+    });
+    LOCKED | (((salt << 19) | (self_tag & TAG_MASK)) & GEN_MASK)
+}
 
 /// How long a locked value must stay unchanged before the owner's liveness is checked.
 const TAKEOVER_AFTER: Duration = Duration::from_millis(20);
@@ -62,21 +82,21 @@ enum Stale {
 /// Track how long one locked value has been observed; decide staleness.
 struct StaleWatch {
     seen: u32,
-    since: Instant,
+    since: Option<Instant>,
 }
 
 impl StaleWatch {
     fn new() -> Self {
-        StaleWatch { seen: 0, since: Instant::now() }
+        StaleWatch { seen: 0, since: None }
     }
 
     fn observe(&mut self, locked_value: u32, owner_dead: &impl Fn(u32) -> bool) -> Stale {
-        if self.seen != locked_value {
+        if self.seen != locked_value || self.since.is_none() {
             self.seen = locked_value;
-            self.since = Instant::now();
+            self.since = Some(Instant::now());
             return Stale::No;
         }
-        if self.since.elapsed() < TAKEOVER_AFTER {
+        if self.since.map(|at| at.elapsed() < TAKEOVER_AFTER).unwrap_or(true) {
             return Stale::No;
         }
         if owner_dead(locked_value & GEN_MASK) {
@@ -104,7 +124,7 @@ pub fn write_lock<'a>(
         let cur = seq.load(Ordering::Acquire);
         if cur & LOCKED == 0 {
             if seq
-                .compare_exchange_weak(cur, LOCKED | (self_tag & GEN_MASK), Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange_weak(cur, acquisition_value(self_tag), Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
                 return Ok(SeqWriteGuard { seq, release_gen: cur.wrapping_add(1) & GEN_MASK });
@@ -116,7 +136,7 @@ pub fn write_lock<'a>(
                 match watch.observe(cur, &owner_dead) {
                     Stale::DeadOwner(observed) => {
                         if seq
-                            .compare_exchange(observed, LOCKED | (self_tag & GEN_MASK), Ordering::AcqRel, Ordering::Acquire)
+                            .compare_exchange(observed, acquisition_value(self_tag), Ordering::AcqRel, Ordering::Acquire)
                             .is_ok()
                         {
                             sanitize();
@@ -173,7 +193,7 @@ pub fn read_consistent<T>(
                 match watch.observe(before, &owner_dead) {
                     Stale::DeadOwner(observed) => {
                         if seq
-                            .compare_exchange(observed, LOCKED | (self_tag & GEN_MASK), Ordering::AcqRel, Ordering::Acquire)
+                            .compare_exchange(observed, acquisition_value(self_tag), Ordering::AcqRel, Ordering::Acquire)
                             .is_ok()
                         {
                             sanitize();

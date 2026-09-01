@@ -276,6 +276,12 @@ impl PlaneFile {
                 }
                 return new as u32;
             }
+            if (id as u64) >= self.max_nodes {
+                // corrupt freelist head (file-sourced): drop the chain rather than compute
+                // out-of-mapping pointers; capacity continues via the high-water
+                let _ = head.compare_exchange(cur, NO_ID as u64, Ordering::AcqRel, Ordering::Acquire);
+                continue;
+            }
             // next-pointer lives in the dead slot's scale field: offset 8, aligned for any
             // dims (the first neighbor word at S_VECTOR+dims is 4-aligned only when dims%4==0)
             let next = unsafe { (*(self.slot_ptr(id).add(S_SCALE) as *const AtomicU32)).load(Ordering::Acquire) };
@@ -388,6 +394,11 @@ impl PlaneFile {
         loop {
             let cur = head.load(Ordering::Acquire);
             let idx = (cur & 0xffff_ffff) as u32;
+            if idx != NO_UPPER && (idx as u64) >= self.upper_capacity {
+                // corrupt upper freelist head (file-sourced): drop the chain
+                let _ = head.compare_exchange(cur, NO_UPPER as u64, Ordering::AcqRel, Ordering::Acquire);
+                continue;
+            }
             if idx == NO_UPPER {
                 let hw = self.header_atomic_u64(H_UPPER_HIGH_WATER);
                 let new = hw.fetch_add(1, Ordering::AcqRel);
@@ -449,9 +460,14 @@ impl PlaneFile {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.subsec_nanos())
                 .unwrap_or(0);
-            let entropy = (nanos ^ std::process::id().rotate_left(16) ^ (self as *const _ as u32)) & crate::seqlock::GEN_MASK;
-            let tag = ((entropy | 1) & !(REGISTRY_SLOTS as u32 - 1)) | slot as u32;
-            let tag = if tag == 0 { REGISTRY_SLOTS as u32 | 1 << 30 | slot as u32 } else { tag };
+            // identity = slot (low 6 bits) + a random per-open epoch (12 bits, nonzero):
+            // a dead lock value pointing at a since-re-occupied slot is recognized as dead
+            // by the epoch mismatch — the container same-pid restart lands exactly here
+            let mut epoch = (nanos ^ std::process::id().rotate_left(16) ^ (self as *const _ as u32)) & 0xfff;
+            if epoch == 0 {
+                epoch = 1;
+            }
+            let tag = (epoch << 6) | slot as u32;
             self.registry_tag_cell(slot).store(tag, Ordering::Release);
             self.self_tag = tag;
             return;
@@ -476,17 +492,27 @@ impl PlaneFile {
         got
     }
 
-    /// Whether the handle that minted `tag` is gone. True only with positive evidence: the
-    /// registry slot no longer carries the tag, or the slot's kernel lock is acquirable
-    /// (its holder's open handle is closed — process death included). This handle's own tag
-    /// is always alive (a thread of this process holds that lock; never rob it).
-    pub fn tag_is_dead(&self, tag: u32) -> bool {
-        if tag == 0 || tag == self.self_tag {
+    /// Whether the handle behind a lock value is gone. Lock values carry a per-acquisition
+    /// salt in their upper bits, so ownership is keyed on the registry SLOT (low bits): the
+    /// owner is dead only with positive evidence — no registration in the slot, or the
+    /// slot's kernel lock acquirable (its holder's open handle closed; process death
+    /// included). Our own slot is always alive (probing our own OFD lock would succeed and
+    /// lie). A dead value pointing at a slot since re-occupied by a NEW live handle reads
+    /// alive; the bounded writer wedge covers that rare mis-attribution.
+    pub fn tag_is_dead(&self, lock_value: u32) -> bool {
+        let identity = lock_value & crate::seqlock::TAG_MASK;
+        if identity == 0 {
+            return false; // unregistered owner: unknowable
+        }
+        if self.self_tag != 0 && identity == self.self_tag {
+            // ourselves: probing our own OFD lock from the same description would succeed
+            // and lie, so self is answered structurally
             return false;
         }
-        let slot = (tag as usize) & (REGISTRY_SLOTS - 1);
-        if self.registry_tag_cell(slot).load(Ordering::Acquire) != tag {
-            return true; // registration replaced or cleared: the minting handle is gone
+        let slot = (identity as usize) & (REGISTRY_SLOTS - 1);
+        let registered = self.registry_tag_cell(slot).load(Ordering::Acquire);
+        if registered == 0 || registered != identity {
+            return true; // slot empty, or re-occupied by a different epoch: owner departed
         }
         #[cfg(target_os = "linux")]
         {

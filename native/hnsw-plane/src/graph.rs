@@ -158,7 +158,7 @@ impl Graph {
         out.clear();
         debug_assert!(level >= 1);
         let idx = self.upper_idx_of(id);
-        if idx == NO_UPPER || level as usize > MAX_UPPER_LEVELS {
+        if idx == NO_UPPER || (idx as u64) >= self.file.upper_capacity || level as usize > MAX_UPPER_LEVELS {
             return false;
         }
         let seq = self.file.upper_seq_atomic(idx);
@@ -310,7 +310,7 @@ impl Graph {
     /// false when the node has no entry or level. `f` may read other slots.
     pub fn update_upper_level<F: FnOnce(&mut Vec<u32>)>(&self, id: u32, level: u8, f: F) -> Result<bool, Wedged> {
         let idx = self.upper_idx_of(id);
-        if idx == NO_UPPER || level as usize > MAX_UPPER_LEVELS {
+        if idx == NO_UPPER || (idx as u64) >= self.file.upper_capacity || level as usize > MAX_UPPER_LEVELS {
             return Ok(false);
         }
         let seq = self.file.upper_seq_atomic(idx);
@@ -500,7 +500,7 @@ impl Graph {
                 *p.add(S_FLAGS) = FLAG_DELETED;
             }
         }
-        if upper_idx != NO_UPPER {
+        if upper_idx != NO_UPPER && (upper_idx as u64) < self.file.upper_capacity {
             // empty the entry under its own lock BEFORE freeing: a traversal that already
             // read this node's upper_idx must find a dead entry, not one reallocated to a
             // different node mid-read
