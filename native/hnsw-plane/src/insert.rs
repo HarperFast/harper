@@ -93,12 +93,13 @@ fn prune_with_coverage(graph: &Graph, base: u32, list: &mut Vec<u32>, cap: usize
     *list = scored.into_iter().map(|(cand, _)| cand).collect();
 }
 
-/// The contended fallback's merge: add `new_id` under the slot lock, evicting the farthest
-/// existing neighbor once the list is at `cap`. Pushing and then truncating to `cap` instead
-/// drops the tail — which at exactly `cap` is `new_id` itself, silently losing the reverse edge
-/// that keeps the newly inserted node reachable from `nid`. Neighbor lists are written in
-/// ascending distance (both the insert path and `prune_with_coverage` emit them sorted), so the
-/// tail is the farthest neighbor and the cheapest one to give up under the lock.
+/// The contended fallback's merge: add `new_id` under the slot lock, displacing the tail once the
+/// list is at `cap`. Which neighbor that is is arbitrary — appends push at the tail, so a list is
+/// distance-ordered only immediately after a prune — but it must not be `new_id` itself, which is
+/// what a push followed by `truncate(cap)` drops. That loss is the systematic one: the edge being
+/// added is the in-edge keeping a freshly inserted node reachable from `nid`, and it disappears
+/// every time the list is full and the CAS path is contended. Picking a better victim needs
+/// distances, which this path deliberately keeps outside the lock.
 fn merge_neighbor_capped(graph: &Graph, nid: u32, new_id: u32, cap: usize) {
     let _ = graph.update_neighbors(nid, |list| {
         if list.contains(&new_id) {
@@ -332,10 +333,9 @@ mod reverse_edge_tests {
     use super::*;
     use crate::PlaneFile;
 
-    /// The contended fallback must still add the edge when the neighbor list is already full.
-    /// A push followed by `truncate(cap)` drops the tail, and at exactly `cap` the tail is the
-    /// id being added — so the reverse edge that keeps a newly inserted node reachable from
-    /// `nid` is lost precisely in the contended-and-full case the fallback exists to serve.
+    /// The contended fallback must still add the edge when the neighbor list is already full —
+    /// the one case where a push-then-`truncate(cap)` discards `new_id` rather than a neighbor,
+    /// losing the in-edge exactly in the contended-and-full case the fallback exists to serve.
     #[test]
     fn a_contended_merge_into_a_full_neighbor_list_keeps_the_edge_it_adds() {
         let dims = 8;
