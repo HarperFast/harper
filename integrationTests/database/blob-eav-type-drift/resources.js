@@ -2,8 +2,9 @@
 //
 // Deterministic payload generation happens server-side (from a seed) so large blob
 // bodies never have to cross the wire on write — only small JSON in/out. The client
-// verifies round-trip fidelity independently via REST GET (both the full record and
-// the `.value` dot-notation sub-attribute route), computing sha256 itself.
+// verifies round-trip fidelity independently via REST GET on the `.value` dot-notation
+// sub-attribute route, computing sha256 itself. (A full-record GET is used only to
+// confirm a deleted row is actually gone.)
 
 import { createHash, createHmac } from 'node:crypto';
 
