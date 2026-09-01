@@ -934,6 +934,7 @@ export const JWT_ENUM = {
 export const ITC_EVENT_TYPES = {
 	SHUTDOWN: 'shutdown',
 	CHILD_STARTED: 'child_started',
+	CHILD_STARTUP_PHASE: 'child_startup_phase',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
 	USER: 'user',
