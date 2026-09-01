@@ -161,58 +161,30 @@ describe('Audit log', () => {
 			setAuditRetention(60_000, 10_000);
 		}
 	});
+	// Driven through the store's own cadence rather than a replaced global setTimeout: every audit store
+	// in the process shares that global, so a stub keyed only on the delay swallows the re-arm of the
+	// shared LMDB fixture's loop too, which under HARPER_STORAGE_ENGINE=lmdb runs at a sub-second cadence
+	// by the time this test starts.
 	it('holds Rocks cleanup at the retention-derived cadence whatever a pass purges', async function () {
 		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-cadence-'));
 		const rootStore = new RocksDatabase(scratch).open();
-		const originalSetTimeout = global.setTimeout;
-		const originalClearTimeout = global.clearTimeout;
-		const scheduled = [];
-		const fakeTimers = new Set();
 		let purgeCalls = 0;
 		// alternate empty and productive passes: the LMDB backoff would double on the first and halve on
 		// the second, so a shared cadence rule shows up here as a changing delay
 		rootStore.purgeLogs = () => (++purgeCalls % 2 ? [] : ['purged.txnlog']);
-		// delays above this test's own (10ms and 100ms) belong to something else in the process — the
-		// shared fixture's 10s audit loop, a replication retry — and get the real timer. Handing those
-		// a stub that never fires killed them silently for the rest of the run.
-		global.setTimeout = (callback, delay, ...args) => {
-			if (delay > 1_000) return originalSetTimeout(callback, delay, ...args);
-			const timer = {
-				callback,
-				delay,
-				unref() {
-					return timer;
-				},
-			};
-			fakeTimers.add(timer);
-			scheduled.push(timer);
-			return timer;
-		};
-		global.clearTimeout = (timer) => {
-			if (!fakeTimers.has(timer)) originalClearTimeout(timer);
-		};
 		setAuditRetention(1_000, 10);
+		let store;
 		try {
-			const store = openAuditStore(rootStore);
-			scheduled.length = 0;
-			const firstResolution = store.scheduleAuditCleanup(10);
-			assert.equal(scheduled.length, 1);
-			const first = scheduled.shift();
-			assert.equal(first.delay, 10, 'an explicit delay still wins for the pass it schedules');
-			await first.callback();
-			await firstResolution;
-
-			for (const pass of [1, 2, 3]) {
-				assert.equal(scheduled.length, 1);
-				const next = scheduled.shift();
-				assert.equal(next.delay, 100, `pass ${pass} should hold the retention-derived cadence`);
-				await next.callback();
+			store = openAuditStore(rootStore);
+			for (const pass of [1, 2, 3, 4]) {
+				// an explicit delay wins for the pass it schedules, and the pass then re-derives the cadence
+				await store.scheduleAuditCleanup(1);
+				assert.equal(store.auditCleanupDelay, 100, `pass ${pass} should hold the retention-derived cadence`);
 			}
 			assert.equal(purgeCalls, 4, 'every pass should have reached purgeLogs');
 		} finally {
-			global.setTimeout = originalSetTimeout;
-			global.clearTimeout = originalClearTimeout;
 			setAuditRetention(60_000, 10_000);
+			store?.stopAuditCleanup();
 			removeStorageReclamation(scratch);
 			if (rootStore.status !== 'closed') rootStore.close();
 			rmSync(scratch, { recursive: true, force: true });
@@ -249,53 +221,26 @@ describe('Audit log', () => {
 	it('shortens the Rocks cadence while disk pressure is reported', async function () {
 		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-pressure-'));
 		const rootStore = new RocksDatabase(scratch).open();
-		const originalSetTimeout = global.setTimeout;
-		const originalClearTimeout = global.clearTimeout;
-		const fakeTimers = new Set();
-		const scheduled = [];
-		rootStore.purgeLogs = () => [];
-		// only the scratch path reports pressure, so no other open store's handler is invoked and
-		// its cleanup timers cannot land in `scheduled`
+		let purgeCalls = 0;
+		rootStore.purgeLogs = () => {
+			purgeCalls++;
+			return [];
+		};
+		// only the scratch path reports pressure, so no other open store's handler is invoked
 		setAvailableSpaceRatioGetter(async (path) => (path === scratch ? 0.2 : 0.8));
-		global.setTimeout = (callback, delay, ...args) => {
-			if (delay > 1_000) return originalSetTimeout(callback, delay, ...args);
-			const timer = {
-				callback,
-				delay,
-				unref() {
-					return timer;
-				},
-			};
-			fakeTimers.add(timer);
-			scheduled.push(timer);
-			return timer;
-		};
-		global.clearTimeout = (timer) => {
-			if (!fakeTimers.has(timer)) originalClearTimeout(timer);
-		};
 		setAuditRetention(1_000, 10);
-		let reclamation;
+		let store;
 		try {
-			openAuditStore(rootStore);
-			scheduled.length = 0;
-			// not awaited: the handler resolves only once the pass below runs, and the pass is on a fake timer
-			reclamation = runReclamationHandlers();
-			await new Promise(setImmediate);
-
-			assert.equal(scheduled.length, 1, 'a pressure signal should arm a cleanup pass');
-			const pressuredPass = scheduled.shift();
-			assert.equal(pressuredPass.delay, 100, 'the reclamation handler arms its pass at a fixed 100ms');
-			await pressuredPass.callback();
-
-			assert.equal(scheduled.length, 1);
+			store = openAuditStore(rootStore);
+			// the handler arms its pass and awaits it, so a settled reclamation run means the pass ran
+			await runReclamationHandlers();
+			assert.ok(purgeCalls > 0, 'a pressure signal should run a cleanup pass');
 			// priority 0.4/0.2 = 2, so the window is retention/(1+4) and the cadence a tenth of that
-			assert.equal(scheduled.shift().delay, 20, 'pressure should shorten the cadence, not just the cutoff');
+			assert.equal(store.auditCleanupDelay, 20, 'pressure should shorten the cadence, not just the cutoff');
 		} finally {
-			global.setTimeout = originalSetTimeout;
-			global.clearTimeout = originalClearTimeout;
-			await reclamation;
 			setAvailableSpaceRatioGetter();
 			setAuditRetention(60_000, 10_000);
+			store?.stopAuditCleanup();
 			removeStorageReclamation(scratch);
 			if (rootStore.status !== 'closed') rootStore.close();
 			rmSync(scratch, { recursive: true, force: true });
@@ -1574,4 +1519,47 @@ describe('Audit cleanup retirement', () => {
 			}
 		});
 	}
+
+	// The initializing marker write has no downstream owner: openAuditStore() is synchronous and
+	// returns the store, so a rejection here escapes as an unhandled rejection unless it is contained
+	// at the call site.
+	it('contains a rejected last-removed initialization write instead of letting it escape the open', async function () {
+		const rootStore = openScratchStore();
+		const originalWarn = harperLogger.warn;
+		let unhandledRejection;
+		const onUnhandledRejection = (reason) => (unhandledRejection = reason);
+		process.on('unhandledRejection', onUnhandledRejection);
+		const realOpenDB = rootStore.openDB.bind(rootStore);
+		let opens = 0;
+		// the scratch environment has no audit store yet, so the create:false probe returns nothing and
+		// openAuditStore takes the initialize-a-new-store branch on its own
+		rootStore.openDB = (name, options) => {
+			opens++;
+			const store = realOpenDB(name, options);
+			if (store) store.put = () => Promise.reject(new Error('simulated marker initialization failure'));
+			return store;
+		};
+		const warnings = [];
+		harperLogger.warn = (...args) => warnings.push(args);
+		let auditStore;
+		try {
+			auditStore = openAuditStore(rootStore);
+			assert.equal(opens, 2, 'the fixture must take the branch that initializes a new audit store');
+			await waitFor(
+				() => warnings.some(([message]) => message === 'Error initializing the audit log last-removed marker'),
+				{
+					timeout: 1000,
+					message: 'the rejected initialization write was never logged',
+				}
+			);
+			assert.equal(unhandledRejection, undefined, 'the initialization write must not escape the synchronous open');
+		} finally {
+			harperLogger.warn = originalWarn;
+			process.off('unhandledRejection', onUnhandledRejection);
+			rootStore.openDB = realOpenDB;
+			auditStore?.stopAuditCleanup();
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
 });

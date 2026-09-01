@@ -167,7 +167,10 @@ export function openAuditStore(rootStore) {
 	let pendingCleanupResolve: (() => void) | null = null;
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
-	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	// The chosen cadence lives on the store rather than in the closure: it is the loop's own observable
+	// state, and the only other way to read it is to replace the process-global setTimeout, which
+	// swallows the re-arm of every other audit store in the process.
+	auditStore.auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
 	let cleanupStopped = false;
 	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
 	// getLastRemoved() reporting a boundary the entries behind it have already been deleted past
@@ -195,7 +198,7 @@ export function openAuditStore(rootStore) {
 		// Skip audit cleanup/purge in read-only mode
 		if (cleanupStopped || isReadOnlyMode()) return Promise.resolve();
 
-		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
+		if (newCleanupDelay) auditStore.auditCleanupDelay = newCleanupDelay;
 		// the pass we are about to cancel has not started, so its callers are handed over to this one
 		const supersededResolve = pendingCleanupResolve;
 		clearTimeout(pendingCleanup);
@@ -251,7 +254,7 @@ export function openAuditStore(rootStore) {
 								await new Promise(setImmediate);
 								if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 									// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-									auditCleanupDelay = 10; // and keep trying very soon
+									auditStore.auditCleanupDelay = 10; // and keep trying very soon
 									break;
 								}
 							}
@@ -271,7 +274,7 @@ export function openAuditStore(rootStore) {
 						if (isRocksAuditStore) {
 							// eligibility only changes on rotation/flush, so the LMDB backoff — keyed on a per-entry
 							// delete count — would only rescan the same segments
-							auditCleanupDelay = Math.max(
+							auditStore.auditCleanupDelay = Math.max(
 								DEFAULT_AUDIT_CLEANUP_DELAY,
 								Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
 							);
@@ -281,14 +284,14 @@ export function openAuditStore(rootStore) {
 								// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
 								// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
 								// retention over ~248 days grows it past 2^31 where halving it wraps negative.
-								auditCleanupDelay = Math.max(
+								auditStore.auditCleanupDelay = Math.max(
 									1,
-									Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY)
+									Math.min(auditStore.auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY)
 								);
 							} else {
 								pendingLastRemoved = lastKey;
 								// and do updates faster
-								if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
+								if (auditStore.auditCleanupDelay > 100) auditStore.auditCleanupDelay = auditStore.auditCleanupDelay / 2;
 							}
 							// skipped when the store was retired or closed mid-pass — this writes to the audit
 							// store — and carried to the next pass instead, so a failed write is not lost
@@ -333,7 +336,7 @@ export function openAuditStore(rootStore) {
 					} catch {}
 					resolve();
 				});
-			}, auditCleanupDelay).unref();
+			}, auditStore.auditCleanupDelay).unref();
 		});
 		if (supersededResolve) resolution.then(supersededResolve);
 		return resolution;
