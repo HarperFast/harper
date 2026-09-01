@@ -527,7 +527,7 @@ export class ResourceBridge extends BridgeMethods {
 		// not harmless bounds: audit keys are raw float64, so they sort above every real timestamp and
 		// the prune range spans the whole log. Reject it as the operator input error it is, rather than
 		// letting raiseAuditFloor stop it with a bare Error that reports as a server fault.
-		if (typeof before !== 'number' || !(before >= 0))
+		if (typeof before !== 'number' || !(before >= 0) || Object.is(before, -0))
 			throw handleHDBError(
 				new Error(),
 				`'timestamp' must be a non-negative epoch time or Date, received: ${String(deleteObj.timestamp)}`,

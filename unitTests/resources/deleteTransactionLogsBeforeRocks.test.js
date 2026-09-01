@@ -91,6 +91,29 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 		assert.strictEqual(typeof results.log_files_deleted, 'number');
 	});
 
+	it('rejects a prune bound the audit range would honor as a whole-log delete (harper#2447)', async () => {
+		// Audit keys are raw float64, so NaN and negatives sort above every real timestamp and the prune
+		// range spans the whole log. A non-numeric timestamp reaches that via Number.parseInt.
+		for (const timestamp of ['yesterday', -1, -0, Number.NaN, new Date('nonsense'), undefined]) {
+			await assert.rejects(
+				harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp }),
+				(error) => {
+					assert.strictEqual(error.statusCode, 400, `${String(timestamp)} should be a client error`);
+					assert.match(error.message, /non-negative epoch time/);
+					return true;
+				},
+				`timestamp ${String(timestamp)} must be refused`
+			);
+		}
+	});
+
+	it('accepts every legitimate timestamp shape', async () => {
+		for (const timestamp of [Date.now(), String(Date.now()), new Date(), 0, '0']) {
+			const results = await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp });
+			assert.strictEqual(typeof results.log_files_deleted, 'number', `${String(timestamp)} should be accepted`);
+		}
+	});
+
 	it('raises the audit staleness floor to the purge cutoff (harper#2447)', async () => {
 		const timestamp = Date.now() + 2000;
 		await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp });

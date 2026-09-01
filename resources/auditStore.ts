@@ -456,8 +456,16 @@ export function establishAuditFloor(auditStore: any): void {
 	// the common case — a floor already established, every worker, every database, every boot — off
 	// the env write lock.
 	if (auditStore.getBinary(AUDIT_FLOOR_KEY) !== undefined) return;
+	// Not bare Date.now(): a clock that has rolled back would bootstrap a floor BELOW history this
+	// database may already have pruned, certifying a stale cursor. The newest retained entry is a
+	// lower bound the clock cannot argue with — everything at or above it is demonstrably still here —
+	// so take whichever is later. (openAuditStore separately error-logs the reversal itself.)
+	let epoch = Date.now();
+	for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
+		if (typeof newest === 'number' && newest > epoch) epoch = newest;
+	}
 	try {
-		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : Date.now()));
+		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : epoch));
 	} catch (error) {
 		// Never fail a database open over this. An unrecorded floor already reads as unknown, which is
 		// the fail-closed answer; aborting startup instead would turn a metadata write failure into an

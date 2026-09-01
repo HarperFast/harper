@@ -5592,8 +5592,8 @@ export function makeTable(options) {
 		 * version under that name. Concretely:
 		 * a consumer whose last-processed cursor is `>=` the returned value can resume incrementally,
 		 * and one below it has lost history it needs and must resync from a full read. `Infinity` means
-		 * the floor is unknown — including on any database opened for the first time by a version that
-		 * did not record one — and fails closed, so no cursor reads as safe.
+		 * the floor is unknown and fails closed, so no cursor reads as safe — reachable when the floor
+		 * could not be recorded (a read-only database, or a failed metadata write).
 		 *
 		 * Database-scoped, a moment-in-time observation, and conservative in one direction only: it can
 		 * ask for a resync that was not strictly necessary, never certify a cursor whose history is
