@@ -545,9 +545,7 @@ export class ResourceBridge extends BridgeMethods {
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
-						// Raise the staleness floor first, so this purge cannot leave a consumer resuming
-						// from a cursor below it with a silently short replay (see raiseAuditFloor).
-						raiseAuditFloor(table.auditStore, before);
+						raiseAuditFloor(table.auditStore, before); // floor first — see raiseAuditFloor
 						const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);

@@ -5538,11 +5538,11 @@ export function makeTable(options) {
 			}
 			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
-			// Before removing anything (see raiseAuditFloor). This is the prune the floor cannot be
-			// derived from the surviving log for: it takes ONE table out of a database-scoped log, so
-			// siblings' entries below `endTime` remain and the oldest surviving entry can sit below the
-			// newest removed one. LMDB only — RocksTransactionLogStore.remove() is a no-op, so a RocksDB
-			// deleteHistory removes nothing and must not claim it did.
+			// Floor first (see raiseAuditFloor). This is the prune the floor cannot be derived from the
+			// surviving log for: it takes ONE table out of a database-scoped log, so siblings' entries
+			// below `endTime` remain and the oldest surviving entry can sit below the newest removed one.
+			// LMDB only — RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory
+			// removes nothing and must not claim it did.
 			if (!isRocksDB) raiseAuditFloor(auditStore, endTime);
 			try {
 				for (const auditRecord of auditStore.getRange({

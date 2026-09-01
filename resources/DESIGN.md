@@ -144,6 +144,11 @@ Three things that are easy to get wrong here:
 - **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
   bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
   spelling the check that way would read corrupt metadata as safe.
+- **A restore is outside what the floor can see.** `restore_backup` reinstalls the backup's floor
+  along with everything else, so a cursor from after the backup point reads as safe against it. The
+  audit floor is one of three carriers of resumable state a restore rolls back (record versions and
+  per-node `Symbol.for('seq')` records are the others), so this wants a database-level generation
+  rather than a fix in this one field — harper#2451.
 
 ---
 

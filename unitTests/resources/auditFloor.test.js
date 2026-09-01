@@ -15,12 +15,7 @@ require('#src/server/serverHelpers/serverUtilities');
 
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
 
-/**
- * The predicate a resuming consumer applies to the floor. Spelled out here rather than assumed,
- * because it is the contract the accessor exists to serve and what harper#2448 will apply inside
- * `Table.subscribe`: a cursor records the last position already processed, so a cursor AT the floor
- * is safe and only one below it has lost entries.
- */
+// A cursor records the last position already processed, so a cursor AT the floor is safe.
 const canResumeFrom = (cursor, floor) => cursor >= floor;
 
 function auditEntries(auditStore) {
@@ -98,10 +93,8 @@ describe('audit staleness floor', () => {
 	});
 
 	describe('untrustworthy metadata fails closed', () => {
-		// Every one of these is metadata this code did not write — a shorter or longer record, or eight
-		// bytes that do not decode to a usable time. Returning ANY number for them would hand a
-		// consumer a floor derived from bytes we do not understand, and a NaN floor in particular makes
-		// one of the two natural spellings of the check ("cursor < floor means stale") read as safe.
+		// A NaN floor in particular makes one of the two natural spellings of the check
+		// ("cursor < floor means stale") read as safe, so none of these may return a number.
 		const cases = [
 			['a truncated record', new Uint8Array(4)],
 			['an oversized record', new Uint8Array(12)],
@@ -135,8 +128,7 @@ describe('audit staleness floor', () => {
 		}
 
 		it('leaves an unknown floor unknown when a prune tries to raise it', () => {
-			// A store whose history we cannot account for must not be talked down to a cutoff that says
-			// nothing about what it lost before we started tracking.
+			// A cutoff says nothing about the history the store lost before we started tracking it.
 			Metadata.auditStore.putSync(AUDIT_FLOOR_KEY, new Uint8Array(4));
 			raiseAuditFloor(Metadata.auditStore, Date.now());
 			assert.strictEqual(Metadata.oldestRetainedAuditTime(), Infinity);
@@ -163,7 +155,6 @@ describe('audit staleness floor', () => {
 
 		for (const [label, cutoff] of [
 			['NaN', NaN],
-			['Infinity', Infinity],
 			['a negative time', -1],
 		]) {
 			it(`ignores ${label} as a cutoff`, () => {
@@ -173,10 +164,21 @@ describe('audit staleness floor', () => {
 			});
 		}
 
+		it('takes an Infinity cutoff and reports the floor as unknown', () => {
+			// `deleteHistory(Infinity)` removes ALL of a table's history. Rejecting the cutoff would
+			// remove the entries and leave the previous floor certifying them.
+			const unbounded = tableInOwnDatabase('Unbounded');
+			assert.ok(Number.isFinite(unbounded.oldestRetainedAuditTime()), 'precondition: a known floor');
+			raiseAuditFloor(unbounded.auditStore, Infinity);
+			assert.strictEqual(unbounded.oldestRetainedAuditTime(), Infinity);
+		});
+
+		it('throws rather than skipping the write when there is no audit store', () => {
+			// Callers order the raise before the prune, so this throw is what stops an unrecorded prune.
+			assert.throws(() => raiseAuditFloor(undefined, Date.now()), /has no audit store/);
+		});
+
 		it('does not prune when the floor cannot be recorded', () => {
-			// Ordering is the whole guarantee: a purge that ran and then failed to record its floor
-			// leaves a floor certifying history that is gone. purgeAgedLogs raises first, so a failure
-			// to record has to stop the purge.
 			let purgeCalls = 0;
 			const failingStore = {
 				auditStore: {
@@ -272,6 +274,40 @@ describe('audit staleness floor', () => {
 			);
 		});
 
+		it('but a pass with nothing eligible writes no floor at all', async function () {
+			if (Audited.auditStore.reusableIterable) return this.skip(); // the Rocks branch runs on demand, not on a loop
+			const idle = tableInOwnDatabase('Idle');
+			await idle.put('recent', { name: 'kept' });
+			const before = idle.oldestRetainedAuditTime();
+			setAuditRetention(originalRetention); // nothing is old enough to prune
+			await idle.auditStore.scheduleAuditCleanup(1);
+			assert.strictEqual(
+				idle.oldestRetainedAuditTime(),
+				before,
+				'an idle database must not write a floor transaction on every pass'
+			);
+		});
+
+		it('deleteHistory with an unbounded endTime leaves no cursor readable as safe', async function () {
+			if (Audited.auditStore.reusableIterable) return this.skip(); // RocksTransactionLogStore.remove() is a no-op
+			const cleared = tableInOwnDatabase('Cleared');
+			await cleared.put('all-1', { name: 'one' });
+			await cleared.put('all-2', { name: 'two' });
+			const written = auditEntries(cleared.auditStore).map((entry) => entry.localTime);
+			assert.ok(written.length >= 2, 'precondition: entries to remove');
+
+			await cleared.deleteHistory(Infinity);
+
+			const floor = cleared.oldestRetainedAuditTime();
+			for (const localTime of written) {
+				assert.strictEqual(
+					canResumeFrom(localTime, floor),
+					false,
+					`a cursor at removed entry ${localTime} must read as stale (floor ${floor})`
+				);
+			}
+		});
+
 		it('the RocksDB log purge does', async function () {
 			if (!Audited.auditStore.reusableIterable) return this.skip(); // LMDB paths covered above
 			const purgeTable = tableInOwnDatabase('Purged');
@@ -303,9 +339,50 @@ describe('audit staleness floor', () => {
 		});
 	});
 
+	it('records the floor before the purge on a real store, not only on a stand-in', async function () {
+		// auditPurge.test.js proves the ordering against a plain-object stand-in, which takes the LMDB
+		// branch of updateAuditFloor. This pins it on whichever branch the running engine actually uses,
+		// by observing the floor from inside purgeLogs — the only point where "already recorded?" is a
+		// meaningful question.
+		const ordered = tableInOwnDatabase('Ordered');
+		await ordered.put('ordering-1', { name: 'one' });
+		const rootStore = ordered.auditStore.rootStore;
+		if (typeof rootStore.purgeLogs !== 'function') return this.skip(); // LMDB has no log purge
+		const cutoff = Date.now() + 30_000;
+		let floorDuringPurge;
+		const realPurgeLogs = rootStore.purgeLogs.bind(rootStore);
+		rootStore.purgeLogs = (options) => {
+			floorDuringPurge = ordered.oldestRetainedAuditTime();
+			return realPurgeLogs(options);
+		};
+		try {
+			setAuditRetention(Date.now() - cutoff); // so purgeAgedLogs' cutoff is `cutoff`
+			purgeAgedLogs(rootStore);
+		} finally {
+			rootStore.purgeLogs = realPurgeLogs;
+			setAuditRetention(originalRetention);
+		}
+		assert.ok(
+			floorDuringPurge >= cutoff,
+			`floor should already be recorded when purgeLogs runs, saw ${floorDuringPurge}`
+		);
+	});
+
+	it('works on a legacy standalone audit root, which owns its own transaction', function () {
+		// A legacy `auditPath` layout is opened as its own LMDB root and has no `.rootStore`; before
+		// the fallback, every prune through it hit `undefined.transactionSync`.
+		const legacyRoot = Audited.auditStore.rootStore;
+		if (legacyRoot.auditStore === undefined) return this.skip();
+		const standalone = {
+			transactionSync: legacyRoot.transactionSync?.bind(legacyRoot),
+			getBinary: Audited.auditStore.getBinary?.bind(Audited.auditStore),
+			putSync: Audited.auditStore.putSync?.bind(Audited.auditStore),
+		};
+		if (!standalone.transactionSync || !standalone.getBinary) return this.skip();
+		assert.doesNotThrow(() => raiseAuditFloor(standalone, Date.now() + 90_000));
+	});
+
 	it('reports the database floor for a table whose own auditing is off', () => {
-		// The floor is a property of the database's audit log, not of one table's participation in it,
-		// so an unaudited table in an audited database still answers — with its database's floor.
 		const unaudited = table({
 			table: 'FloorUnaudited',
 			database: 'auditFloorDB',

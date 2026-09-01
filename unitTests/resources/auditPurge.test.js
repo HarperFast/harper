@@ -20,9 +20,8 @@ describe('purgeAgedLogs', () => {
 		setAuditRetention(originalRetention);
 	});
 
-	// purgeAgedLogs raises the database's audit staleness floor before purging (harper#2447), so the
-	// stand-in needs the audit store that write goes through. `order` records both steps: the floor
-	// write has to come first, or a crash between them leaves a floor certifying purged history.
+	// purgeAgedLogs raises the floor before purging (harper#2447); `order` records both steps, because
+	// a crash between them leaves a floor certifying purged history if the write came second.
 	function fakeStore(purgedFiles = ['000001.txnlog', '000002.txnlog']) {
 		const calls = [];
 		const order = [];
@@ -37,7 +36,6 @@ describe('purgeAgedLogs', () => {
 			},
 		};
 		store.auditStore = {
-			// Stands in for the store transaction the real read-modify-write runs inside.
 			rootStore: {
 				transactionSync(callback) {
 					order.push('floor');
