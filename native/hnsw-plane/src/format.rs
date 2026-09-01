@@ -327,6 +327,10 @@ impl PlaneFile {
         self.header_atomic_u64(H_ID_HIGH_WATER).load(Ordering::Acquire)
     }
 
+    pub fn upper_high_water(&self) -> u64 {
+        self.header_atomic_u64(H_UPPER_HIGH_WATER).load(Ordering::Acquire)
+    }
+
     /// Entry point (id, level), read as one atomic word — a torn (new id, old level) pair
     /// would blind a racing search.
     pub fn entry_point(&self) -> (u32, u32) {

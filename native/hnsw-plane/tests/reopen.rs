@@ -366,3 +366,55 @@ fn contended_raw_rewrite_does_not_mint_a_second_upper_entry() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+/// The backfill scan allocates its upper entry before taking the slot lock, and nothing
+/// references that entry until the write lands — so giving up on a wedged lock without freeing
+/// strands it outside both the freelist and the graph. `upper_high_water` not advancing on the
+/// next allocation is what proves it was reclaimed.
+///
+/// `write_node_raw`'s equivalent window (between `upper_idx_locked` releasing and `write_node`
+/// re-acquiring) is guarded the same way but cannot be driven deterministically: a holder that
+/// takes the lock first now wedges the read, before anything is allocated.
+#[test]
+fn a_wedged_untouched_write_frees_its_upper_entry() {
+    use std::sync::atomic::{AtomicBool, Ordering as O};
+    let dims = 32;
+    let path = tmp("wedgeuntouched");
+    let _ = std::fs::remove_file(&path);
+    let graph = std::sync::Arc::new(Graph::new(PlaneFile::create(&path, dims, 16, 64).expect("create")));
+    let write = |id: u32| {
+        let q = hnsw_plane::distance::quantize_int8(&vector_for(id, dims));
+        let _ = graph.write_node_if_untouched(id, 1, &q.0, q.1, q.2, &[1, 2], &[vec![id]]);
+    };
+
+    write(1);
+    let baseline = graph.file.upper_high_water();
+
+    let seq9 = graph.file.seq_atomic(9) as *const _ as usize;
+    let g2 = graph.clone();
+    let held = std::sync::Arc::new(AtomicBool::new(false));
+    let held2 = held.clone();
+    let hold = std::thread::spawn(move || {
+        let seq = unsafe { &*(seq9 as *const std::sync::atomic::AtomicU32) };
+        let g2 = &g2;
+        let guard = hnsw_plane::seqlock::write_lock(seq, g2.file.self_tag, || panic!("live owner sanitized"), |tag| {
+            g2.file.tag_is_dead(tag)
+        });
+        held2.store(true, O::Release);
+        std::thread::sleep(std::time::Duration::from_millis(6_500)); // past WRITE_WEDGE_AFTER
+        drop(guard);
+    });
+    while !held.load(O::Acquire) {
+        std::hint::spin_loop();
+    }
+    write(9); // wedges on the slot lock, having already allocated an upper entry
+    hold.join().unwrap();
+
+    write(2);
+    assert_eq!(
+        graph.file.upper_high_water(),
+        baseline + 1,
+        "the wedged write leaked its upper entry instead of returning it to the freelist"
+    );
+    let _ = std::fs::remove_file(&path);
+}

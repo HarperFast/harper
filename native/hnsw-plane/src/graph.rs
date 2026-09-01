@@ -309,9 +309,7 @@ impl Graph {
         let mut l0 = neighbors.to_vec();
         l0.truncate(self.file.layer0_cap);
         if let Err(wedged) = self.write_node(id, level, vector, scale, inv_mag, &l0, upper_idx) {
-            // nothing points at a freshly allocated entry until the slot is published, so a
-            // wedged publish strands it outside both the freelist and the graph
-            self.file.free_upper(fresh);
+            self.file.free_upper(fresh); // unreachable from any slot until publication succeeds
             return Err(wedged);
         }
         Ok(())
@@ -634,12 +632,20 @@ impl Graph {
         debug_assert!(neighbors.len() <= self.file.layer0_cap);
         debug_assert_eq!(vector.len(), self.file.dims);
         self.file.ensure_high_water(id);
-        // the upper entry is allocated before taking the slot lock (allocation is cheap and
-        // an unused entry is freed below on the untouched-check failing)
+        // the upper entry is allocated before taking the slot lock (allocation is cheap); it is
+        // unreachable from any slot until the write below lands, so every path that does not
+        // publish it — a wedged lock, a slot that turns out to be touched — has to free it
         let upper_idx = if upper_levels.is_empty() { NO_UPPER } else { self.write_upper(upper_levels)? };
         let seq = self.file.seq_atomic(id);
         let written = {
-            let _guard = seqlock::write_lock(seq, self.file.self_tag, self.slot_sanitizer(id), self.owner_dead())?;
+            let _guard = match seqlock::write_lock(seq, self.file.self_tag, self.slot_sanitizer(id), self.owner_dead())
+            {
+                Ok(guard) => guard,
+                Err(wedged) => {
+                    self.file.free_upper(upper_idx);
+                    return Err(wedged);
+                }
+            };
             let p = self.file.slot_ptr_mut(id);
             let dims = self.file.dims;
             unsafe {
