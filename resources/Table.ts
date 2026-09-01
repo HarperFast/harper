@@ -6614,8 +6614,7 @@ export function makeTable(options) {
 									settlePendingCleanup();
 									return;
 								}
-								// every awaiter registered before this scan began is satisfied by it, including
-								// any this pass adopted from the pass it superseded
+								// snapshot: an awaiter that arrives during this scan belongs to the pass that supersedes it
 								const settling = [...pendingCleanupResolvers];
 								const MAX_CLEANUP_CONCURRENCY = 50;
 								const outstandingCleanupOperations = new Array(MAX_CLEANUP_CONCURRENCY);
