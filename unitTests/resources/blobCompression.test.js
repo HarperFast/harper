@@ -12,9 +12,11 @@ const {
 	createBlobFromStoredBody,
 	openStoredBlobBody,
 	getFileId,
+	inflatesToExactly,
 } = require('#src/resources/blob');
 const { Readable } = require('node:stream');
-const { deflateSync } = require('node:zlib');
+const zlib = require('node:zlib');
+const { deflateSync } = zlib;
 const { readFileSync, statSync, openSync, writeSync, closeSync, truncateSync } = require('fs');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
@@ -76,8 +78,6 @@ describe('Blob compression (harper#2443)', () => {
 		const blob = await putBlob(100, payload, { compress: true, type: 'text/plain' });
 		assert.equal(headerTypeOf(blob), DEFLATE_TYPE);
 		const record = await CompressionTest.get(100);
-		// the point of the read-path fix: the streaming read must not fall back to the buffered
-		// inflate (one chunk holding the entire uncompressed content in heap)
 		record.blob.bytes = () => {
 			throw new Error('stream() of a compressed blob must not buffer the whole content via bytes()');
 		};
@@ -85,7 +85,6 @@ describe('Blob compression (harper#2443)', () => {
 		let position = 0;
 		const streamed = await streamToBuffer(record.blob.stream(), (chunk) => {
 			maxChunk = Math.max(maxChunk, chunk.length);
-			// verify incrementally so a corrupt chunk is caught where it happens
 			assert(payload.subarray(position, position + chunk.length).equals(chunk), `chunk at ${position} must match`);
 			position += chunk.length;
 		});
@@ -139,7 +138,6 @@ describe('Blob compression (harper#2443)', () => {
 		assert.equal(headerTypeOf(below), UNCOMPRESSED_TYPE, 'below threshold stays uncompressed');
 		const above = await putBlob(131, Buffer.alloc(200000, 'x'), { type: 'text/plain' });
 		assert.equal(headerTypeOf(above), DEFLATE_TYPE, 'at/above threshold compresses');
-		// a streamed source with no declared size cannot be measured against the threshold
 		const unknownSize = await putBlob(132, Readable.from([Buffer.alloc(200000, 'x')]), { type: 'text/plain' });
 		assert.equal(headerTypeOf(unknownSize), UNCOMPRESSED_TYPE, 'unknown-size streams stay uncompressed');
 		// a streamed source WITH a declared size is measurable
@@ -280,9 +278,46 @@ describe('Blob compression (harper#2443)', () => {
 		);
 		assert(emitted <= lyingSize, `must not emit past the declared size (emitted ${emitted})`);
 
-		// the buffered read path is held to the same ceiling (it also has no descriptor cross-check
-		// on a ranged read)
 		await assert.rejects(record.blob.slice(0, 5000).bytes(), /inflates past its declared size/);
+	});
+
+	it('clamps a ranged read past the end of a compressed blob like an uncompressed one', async () => {
+		const payload = Buffer.from('over-range slice payload '.repeat(4000));
+		const compressed = await putBlob(151, payload, { compress: true, type: 'text/plain' });
+		const plain = await putBlob(152, payload, { compress: false, type: 'text/plain' });
+		assert.equal(headerTypeOf(compressed), DEFLATE_TYPE);
+		assert.equal(headerTypeOf(plain), UNCOMPRESSED_TYPE);
+		const tail = payload.subarray(payload.length - 100);
+		for (const id of [151, 152]) {
+			const { blob } = await CompressionTest.get(id);
+			const slice = blob.slice(payload.length - 100, payload.length + 5000);
+			assert(Buffer.from(await slice.bytes()).equals(tail), `bytes() of over-range slice (${id})`);
+			assert((await streamToBuffer(slice.stream())).equals(tail), `stream() of over-range slice (${id})`);
+		}
+	});
+
+	it('inflatesToExactly stops a body that inflates past the expected size instead of draining it', async () => {
+		const bombSize = 64 * 1024 * 1024;
+		const blob = await putBlob(153, Buffer.alloc(bombSize), { compress: true, type: 'text/plain' });
+		const filePath = getFilePathForBlob(blob);
+		assert(statSync(filePath).size < 256 * 1024, 'precondition: a tiny body inflating to 64 MiB');
+		let peakInflated = 0;
+		const originalInflate = zlib.createInflate;
+		zlib.createInflate = (...args) => {
+			const inflater = originalInflate.apply(zlib, args);
+			inflater.on('data', (chunk) => (peakInflated += chunk.length));
+			return inflater;
+		};
+		try {
+			assert.equal(await inflatesToExactly(filePath, 1000), false);
+			assert.equal(await inflatesToExactly(filePath, bombSize), true);
+		} finally {
+			zlib.createInflate = originalInflate;
+		}
+		assert(
+			peakInflated < bombSize + 4 * 1024 * 1024,
+			`the short expectation must abandon the inflate early (saw ${peakInflated})`
+		);
 	});
 
 	it('stamps the storage codec into the stored blob reference as a local hint', async () => {

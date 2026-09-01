@@ -44,7 +44,7 @@ import {
 	type FSWatcher,
 } from 'node:fs';
 import type { StatsFs } from 'node:fs';
-import { createDeflate, createInflate, inflate, inflateSync } from 'node:zlib';
+import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
@@ -78,6 +78,8 @@ type StorageInfo = {
 	// Slices share this state with their source, so condemning either instance invalidates every view
 	// that can still re-encode the same fileId.
 	fileState?: { discarded?: boolean };
+	// The file `blobFileMissingOrIncompleteAsync` last found damaged, for the locked recheck to recognize
+	probedDamage?: { fileSize: number; header: Buffer };
 };
 type BlobFileInfo = { store?: any; fileId?: string };
 
@@ -441,7 +443,6 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					}
 
 					size = Number(headerValue & 0xffffffffffffn);
-					if (size < end) size = end;
 					if (size < UNKNOWN_SIZE) {
 						if (isFullRead && descriptorSize != null && descriptorSize < UNKNOWN_SIZE && size !== descriptorSize) {
 							// the header claims a different (uncompressed) size than the record descriptor: the file
@@ -572,10 +573,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				if (pending) return pending;
 				return new Promise<Buffer>((resolve, reject) => {
 					// start/end index into the UNCOMPRESSED content, so inflate first, then slice — with
-					// output capped at the declared size, so a body that inflates past its own header (a
-					// lying or corrupted header) is refused instead of allocating without bound, matching
-					// the streaming read path's ceiling. zlib rejects a cap of 0, so an empty blob's cap
-					// is 1 and the exact-length check below covers it.
+					// output capped at the header's declared size, so a body that inflates past its own
+					// header (a lying or corrupted header) is refused instead of allocating without bound,
+					// matching the streaming read path's ceiling. zlib rejects a cap of 0, so an empty
+					// blob's cap is 1 and the exact-length check below covers it.
 					inflate(rawBytes.subarray(HEADER_SIZE), { maxOutputLength: Math.max(size, 1) }, (error, result) => {
 						if (error) {
 							const code = (error as { code?: string }).code ?? '';
@@ -759,15 +760,12 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					const chunkStart = inflatedTotal;
 					inflatedTotal += chunk.length;
 					if (inflatedTotal > declaredSize) {
-						// Refuse — before emitting past the declared size — a body that inflates beyond its own
-						// header, so a malformed or malicious file cannot stream unbounded output (nor defeat
-						// the descriptor cross-check above by lying small).
+						// refused before emitting, so a body that lies about its length cannot stream unbounded output
 						throw new BlobReadError(
 							`Blob ${filePath} inflates past its declared size of ${declaredSize}`,
 							BLOB_CORRUPT_STATUS
 						);
 					}
-					// start/end index into the uncompressed content: discard up to `start`, trim at `end`
 					const emitFrom = Math.max(sliceStart - chunkStart, 0);
 					const emitTo = end === undefined ? chunk.length : Math.min(end - chunkStart, chunk.length);
 					if (emitTo > emitFrom)
@@ -1867,16 +1865,9 @@ export function createStoredDeflateVerifier(expectedSize: number, fileId: string
 	inflater.on('error', (error) =>
 		fail(new Error(`Pre-compressed blob body for ${fileId} is not a valid deflate stream`, { cause: error }))
 	);
-	// zlib silently ignores input after the deflate stream's final block. Detection is best-effort:
-	// Inflate ends its readable side early when it sees post-stream input, so an 'end' before our
-	// flush's end() call — or a chunk arriving after 'end' — is trailing data; but zlib's write
-	// callback can fire before it emits that 'end', so some trailing bytes land undetected. That is
-	// deliberate slack, not a hole: every reader and completeness check inflates and ignores trailing
-	// bytes, so the residue is only wasted disk, while the guarantees that protect correctness
-	// (truncation, wrong inflated length, invalid stream, oversize) are all deterministic. The
-	// chunk-boundary dependence does mean bytes one hop accepted can be rejected at the next (a
-	// relay re-chunks them) — only a sender violating the format can produce that, and the failed
-	// save is handled like any other save failure from that sender.
+	// Trailing data past the final deflate block is detected best-effort (zlib may acknowledge a write
+	// before emitting the early 'end' it triggers); readers ignore trailing bytes, so the residue is
+	// only wasted disk, while truncation, wrong length, invalid stream, and oversize are deterministic.
 	const trailingData = () =>
 		new Error(`Pre-compressed blob body for ${fileId} continues past the end of its deflate stream`);
 	let sawDeflateEnd = false;
@@ -2219,9 +2210,11 @@ export function getFilePathForBlob(blob: FileBackedBlob): string {
  * Repairs a damaged file-backed blob under its existing fileId. The damage check and atomic file
  * replacement share the blob lock, so a failed repair never modifies the referenced file. Callers
  * must establish an exact record identity tie (same version and source node) and positional blob
- * pairing before calling. The received byte count must match the reported source size and, when
- * present, the stored descriptor. On a synchronous `undefined`, no repair started and `source`
- * remains owned by the caller.
+ * pairing before calling, and classify the file with `blobFileMissingOrIncompleteAsync` first — a
+ * compressed body's damage is only provable by inflating it, which the locked recheck here will
+ * not do. The received byte count must match the reported source size and, when present, the
+ * stored descriptor. On a synchronous `undefined`, no repair started and `source` remains owned
+ * by the caller.
  */
 export function repairBlobFile(
 	blob: Blob,
@@ -2403,11 +2396,77 @@ export function blobHeaderIndicatesIncomplete(header: Buffer, fileSize: number):
 }
 
 /**
- * Whether a file-backed blob's backing file is missing or incomplete on disk — the gate for the
- * copy-delivery repair. This blocking probe is the locked final recheck after the caller's async
- * exact-duplicate prefilter, so it runs only on blobs that prefilter already found damaged (or
- * that changed underneath it), which is what makes a synchronous inflate of a compressed body
- * affordable here. Returns undefined for blobs the question does not apply to.
+ * What a blob file's header and length alone say about its completeness: `true` when the file is
+ * missing, short, unfinished, an error/pending stub, or disagrees with the record descriptor; `false`
+ * when an uncompressed body is whole; `null` for a deflate body, whose header records the uncompressed
+ * length and so proves nothing about the body — only inflating it can. `undefined` when the question
+ * does not apply or the file could not be inspected.
+ */
+function classifyBlobFileByHeader(
+	blob: Blob,
+	fileSize: number,
+	header: Buffer,
+	headerBytes: number
+): boolean | null | undefined {
+	if (fileSize < HEADER_SIZE || headerBytes < HEADER_SIZE) return true;
+	if (blobHeaderIndicatesIncomplete(header, fileSize)) return true;
+	const descriptorSize = (blob as { size?: number }).size;
+	if (descriptorSize !== undefined && header.readUIntBE(2, 6) !== descriptorSize) return true;
+	return header.readUInt16BE(0) === DEFLATE_TYPE ? null : false;
+}
+
+/**
+ * Whether a file-backed blob's backing file is missing or incomplete on disk — the unlocked,
+ * non-blocking classification a copy-delivery repair candidate gets first (harper-pro#699). A deflate
+ * body is inflated (streamed, off the event loop) to decide; the file it judged damaged is remembered
+ * so the locked recheck in `repairBlobFile` can recognize it without inflating again. Returns
+ * undefined for blobs the question does not apply to, or that could not be inspected.
+ */
+export async function blobFileMissingOrIncompleteAsync(blob: Blob): Promise<boolean | undefined> {
+	if (!(blob instanceof FileBackedBlob)) return undefined;
+	const storageInfo = storageInfoForBlob.get(blob);
+	if (!storageInfo?.fileId) return undefined;
+	const filePath = getFilePath(storageInfo);
+	let file: FileHandle;
+	try {
+		file = await openFile(filePath, 'r');
+	} catch (error) {
+		if ((error as { code?: string })?.code === 'ENOENT') return true;
+		logger.debug?.('Unable to open blob file for in-place repair inspection', error);
+		return undefined;
+	}
+	let fileSize: number;
+	const header = Buffer.allocUnsafe(HEADER_SIZE);
+	let verdict: boolean | null | undefined;
+	try {
+		fileSize = (await file.stat()).size;
+		const { bytesRead } = await file.read(header, 0, HEADER_SIZE, 0);
+		verdict = classifyBlobFileByHeader(blob, fileSize, header, bytesRead);
+	} catch (error) {
+		logger.debug?.('Unable to inspect blob file for in-place repair', error);
+		return undefined;
+	} finally {
+		await file.close().catch(() => {});
+	}
+	if (verdict !== null) return verdict;
+	try {
+		verdict = !(await inflatesToExactly(filePath, header.readUIntBE(2, 6)));
+	} catch (error) {
+		logger.debug?.('Unable to inspect blob file for in-place repair', error);
+		return undefined;
+	}
+	storageInfo.probedDamage = verdict ? { fileSize, header } : undefined;
+	return verdict;
+}
+
+/**
+ * The locked, synchronous recheck of `blobFileMissingOrIncompleteAsync`'s verdict, run by
+ * `repairBlobFile` under the blob's write lock so a repair can only replace a file no writer is
+ * still producing. It repeats the header classification, and for a deflate body — which it cannot
+ * afford to inflate on the event loop — answers `true` only while the file is still the one the
+ * probe found damaged: a body can only grow (writers append; a repair replaces the file) so an
+ * unchanged length and header mean unchanged bytes, and anything else is `undefined` (not provably
+ * damaged — decline, and let the next probe or the repair sweep classify it).
  */
 export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 	try {
@@ -2424,44 +2483,18 @@ export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 			return undefined;
 		}
 		try {
-			const size = fstatSync(fd).size;
-			if (size < HEADER_SIZE) return true;
+			const fileSize = fstatSync(fd).size;
 			const header = Buffer.allocUnsafe(HEADER_SIZE);
-			if (readSync(fd, header, 0, HEADER_SIZE, 0) < HEADER_SIZE) return true;
-			if (blobHeaderIndicatesIncomplete(header, size)) return true;
-			const storedSize = header.readUIntBE(2, 6);
-			const descriptorSize = (blob as { size?: number }).size;
-			if (descriptorSize !== undefined && storedSize !== descriptorSize) return true;
-			if (header.readUInt16BE(0) !== DEFLATE_TYPE) return false;
-			return !deflateBodyInflatesToExactlySync(fd, size, storedSize);
+			const verdict = classifyBlobFileByHeader(blob, fileSize, header, readSync(fd, header, 0, HEADER_SIZE, 0));
+			if (verdict !== null) return verdict;
+			const probed = storageInfo.probedDamage;
+			return probed?.fileSize === fileSize && probed.header.equals(header) ? true : undefined;
 		} finally {
 			closeSync(fd);
 		}
 	} catch (error) {
 		logger.debug?.('Unable to inspect blob file for in-place repair', error);
 		return undefined;
-	}
-}
-
-/**
- * Synchronous counterpart of `inflatesToExactly` for the locked repair recheck. The output is capped
- * at the declared size so a lying header cannot allocate without bound; a zlib failure means the body
- * is torn or corrupt, while an I/O failure propagates because it is not an answer.
- */
-function deflateBodyInflatesToExactlySync(fd: number, fileSize: number, size: number): boolean {
-	const body = Buffer.allocUnsafe(fileSize - HEADER_SIZE);
-	let bodyLength = 0;
-	while (bodyLength < body.length) {
-		const bytesRead = readSync(fd, body, bodyLength, body.length - bodyLength, HEADER_SIZE + bodyLength);
-		if (bytesRead === 0) break;
-		bodyLength += bytesRead;
-	}
-	try {
-		return inflateSync(body.subarray(0, bodyLength), { maxOutputLength: Math.max(size, 1) }).length === size;
-	} catch (error) {
-		const code = (error as { code?: string }).code ?? '';
-		if (code === 'ERR_BUFFER_TOO_LARGE' || code.startsWith('Z_')) return false;
-		throw error;
 	}
 }
 export const databasePaths = new Map<RootDatabase, string[]>();
@@ -3366,23 +3399,26 @@ async function isBlobFileCompleteAtPath(filePath: string): Promise<boolean> {
  * Whether the deflate body after the header inflates to exactly `size` bytes. A compressed blob's
  * header records the uncompressed length, so it cannot be compared to the on-disk body; a truncated
  * stream errors (Z_BUF_ERROR) or yields fewer bytes. Streamed rather than inflateSync so memory stays
- * bounded over a sweep that may touch many large blobs. Shared with harper-pro's async repair
- * prefilter, which must classify a torn compressed body the same way the locked recheck does.
+ * bounded over a sweep that may touch many large blobs, and abandoned as soon as the output passes
+ * `size` so a body that lies about its length costs no more than the length it claimed.
  */
 export function inflatesToExactly(filePath: string, size: number): Promise<boolean> {
 	return new Promise<boolean>((resolve, reject) => {
 		let inflatedLength = 0;
 		const source = createReadStream(filePath, { start: HEADER_SIZE });
 		const inflate = createInflate();
+		// Both: pipe() does not tear down the destination when the source errors, so the inflate's
+		// native zlib handle would sit allocated until GC — once per blob, on every backup walk.
+		const stop = () => {
+			source.destroy();
+			inflate.destroy();
+		};
 		// A zlib error is the answer (body truncated or corrupt); an I/O error is a failure to answer and
 		// must propagate, or a systemic fault would classify a corpus of complete blobs as incomplete.
 		// The reject arm is unverified: it needs a read fault raised mid-inflate on a file that opened
 		// cleanly, which no test here can produce.
 		const fail = (error: NodeJS.ErrnoException) => {
-			// Both: pipe() does not tear down the destination when the source errors, so the inflate's
-			// native zlib handle would sit allocated until GC — once per blob, on every backup walk.
-			source.destroy();
-			inflate.destroy();
+			stop();
 			if (error?.code?.startsWith('Z_')) resolve(false);
 			else reject(error);
 		};
@@ -3390,6 +3426,10 @@ export function inflatesToExactly(filePath: string, size: number): Promise<boole
 		inflate.on('error', fail);
 		inflate.on('data', (chunk: Buffer) => {
 			inflatedLength += chunk.length;
+			if (inflatedLength > size) {
+				stop();
+				resolve(false);
+			}
 		});
 		inflate.on('end', () => resolve(inflatedLength === size));
 		source.pipe(inflate);
