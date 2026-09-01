@@ -1,0 +1,110 @@
+const assert = require('node:assert');
+const { setupTestDBPath } = require('../testUtils');
+const logger = require('#src/utility/logging/harper_logger');
+const { setMainIsWorker } = require('#src/server/threads/manageThreads');
+const { loadGQLSchema } = require('#src/resources/graphql');
+
+describe('graphqlSchema load diagnostics (#1917)', () => {
+	let warnings;
+	let errors;
+	let originalWarn;
+	let originalError;
+
+	before(() => {
+		setupTestDBPath();
+	});
+
+	beforeEach(() => {
+		warnings = [];
+		errors = [];
+		originalWarn = logger.warn;
+		originalError = logger.error;
+		logger.warn = (...args) => warnings.push(args.join(' '));
+		logger.error = (...args) => errors.push(args.join(' '));
+	});
+
+	afterEach(() => {
+		logger.warn = originalWarn;
+		logger.error = originalError;
+	});
+
+	describe('parse failures', () => {
+		it('logs the GraphQL source excerpt, line/column and caret', async () => {
+			await assert.rejects(loadGQLSchema('type Broken {\n\tid: ID!\n'));
+
+			const logged = errors.find((line) => line.includes('Syntax Error'));
+			assert.ok(logged, `expected a logged syntax error, got: ${JSON.stringify(errors)}`);
+			assert.match(logged, /<inline-schema>:\d+:\d+/, 'the log must carry the file, line and column');
+			assert.match(logged, /\^/, 'the log must carry the caret pointing at the offending token');
+		});
+
+		it('keeps the schema source out of the error the loader hands to clients', async () => {
+			// A failed component load is stored as an ErrorResource whose message REST copies verbatim
+			// into the problem-response title, so the excerpt and the absolute path must not be in it.
+			await assert.rejects(loadGQLSchema('type Broken {\n\tid: ID!\n'), (error) => {
+				assert.match(error.message, /^Invalid GraphQL schema/);
+				assert.doesNotMatch(error.message, /\^/, 'the excerpt must not reach the thrown message');
+				assert.doesNotMatch(error.message, /Syntax Error/, 'the parser detail must not reach the thrown message');
+				assert.ok(!error.message.includes('<inline-schema>'), 'the file path must not reach the thrown message');
+				return true;
+			});
+		});
+	});
+
+	describe('unknown field directives', () => {
+		it('warns for a directive nothing recognizes', async () => {
+			await loadGQLSchema('type Unknowable {\n\tid: ID @bogus\n}');
+
+			const warned = warnings.find((line) => line.includes('@bogus'));
+			assert.ok(warned, `expected an unknown-directive warning, got: ${JSON.stringify(warnings)}`);
+			assert.match(warned, /is an unknown field directive/);
+			assert.match(warned, /line \d+, column \d+/, 'the warning must locate the directive');
+		});
+
+		it('does not warn for a Harper-registered directive', async () => {
+			await loadGQLSchema('type HarperDirective {\n\tid: ID @indexed\n}');
+			assert.deepEqual(
+				warnings.filter((line) => line.includes('unknown field directive')),
+				[]
+			);
+		});
+
+		it('does not warn for a directive the GraphQL spec defines', async () => {
+			await loadGQLSchema('type SpecDirective {\n\tid: ID @deprecated(reason: "moved")\n}');
+			assert.deepEqual(
+				warnings.filter((line) => line.includes('unknown field directive')),
+				[]
+			);
+		});
+
+		it('does not warn for a directive the schema declares itself', async () => {
+			await loadGQLSchema('directive @audit on FIELD_DEFINITION\ntype SelfDeclared {\n\tid: ID @audit\n}');
+			assert.deepEqual(
+				warnings.filter((line) => line.includes('unknown field directive')),
+				[]
+			);
+		});
+	});
+
+	it('routes the duplicate @primaryKey warning through the logger', async () => {
+		await loadGQLSchema('type TwoKeys {\n\tfirst: ID @primaryKey\n\tsecond: ID @primaryKey\n}');
+
+		const warned = warnings.find((line) => line.includes('two attributes as a primary key'));
+		assert.ok(warned, `expected a duplicate primary key warning, got: ${JSON.stringify(warnings)}`);
+		assert.match(warned, /line \d+, column \d+/, 'the warning must locate the second directive');
+	});
+
+	it('routes the unknown-type report through the logger', async () => {
+		// The report is emitted only by worker 0; outside a worker thread getWorkerIndex() is undefined.
+		setMainIsWorker(true);
+		try {
+			await loadGQLSchema('type ReferencesUnknown {\n\tother: Bar\n}');
+		} finally {
+			setMainIsWorker(false);
+		}
+
+		const reported = errors.find((line) => line.includes('The type Bar is unknown'));
+		assert.ok(reported, `expected an unknown-type report, got: ${JSON.stringify(errors)}`);
+		assert.match(reported, /line \d+, column \d+/);
+	});
+});
