@@ -605,9 +605,8 @@ impl Graph {
     /// The start rotates per handle, so `stride` consecutive repairs of this plane cover every id
     /// while each stays capped at `limit`; a fixed start would probe one residue class forever
     /// and leave a graph lying between its samples invisible permanently, not for one search.
-    /// The stride is a ceiling division for the same reason: flooring it leaves
-    /// `stride * limit < hw`, so every rotated walk stops short of the lowest `hw % limit` ids
-    /// and a graph surviving only there stays invisible however many times the start rotates.
+    /// That coverage rests on `stride * limit >= hw`, which is why the stride is a ceiling
+    /// division: below it a walk stops short of id 0 and no offset ever reaches the tail.
     ///
     /// Best-level rather than first-live: a level-0 entry degrades every later search to a
     /// layer-0-only beam.

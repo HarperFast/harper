@@ -347,9 +347,13 @@ pub fn search_predicated(
 
     let mut nbuf = std::mem::take(&mut scratch.neighbors);
 
+    // guarded on `outstanding` rather than draining until the channel is empty: with a blocking
+    // receive the unguarded form pays another full timeout after the last verdict lands, on every
+    // filtered query
     macro_rules! drain {
         ($recv:expr) => {
-            while let Ok((ids, flags)) = $recv {
+            while outstanding > 0 {
+                let Ok((ids, flags)) = $recv else { break };
                 outstanding -= 1;
                 for (i, id) in ids.iter().enumerate() {
                     verdicts.insert(*id, flags.get(i).copied().unwrap_or(0) != 0);
@@ -481,6 +485,58 @@ mod predicate_tests {
         for (id, _) in &hits {
             assert_eq!(id % 2, 0, "odd id {id} leaked through the predicate");
         }
+        drop(pipe);
+        worker.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The tail drain must stop receiving the moment the last verdict lands. Draining until the
+    /// channel reports empty sits out another full `recv_timeout` after `outstanding` reaches
+    /// zero — 50 ms added to every filtered query, against a sub-millisecond search. Measured
+    /// from the evaluator's last send so the search's own cost is not in the number.
+    #[test]
+    fn a_predicated_search_returns_as_soon_as_the_last_verdict_lands() {
+        let dims = 32;
+        let path = std::env::temp_dir().join(format!("hnsw-preddrain-{}.hnsw", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let graph = Graph::new(PlaneFile::create(&path, dims, 16, 4_096).expect("create"));
+        let params = InsertParams::default();
+        let mut scratch = SearchScratch::new();
+        for i in 0..1_000u32 {
+            let v: Vec<f32> = (0..dims).map(|d| ((i as f32 * 0.31 + d as f32) * 0.7).sin()).collect();
+            insert(&graph, &v, &params, &mut scratch).unwrap();
+        }
+
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<Vec<u32>>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<(Vec<u32>, Vec<u8>)>();
+        // stamped before the send, so the search can never observe a verdict newer than the stamp
+        let last_send = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+        let stamps = last_send.clone();
+        let worker = std::thread::spawn(move || {
+            while let Ok(ids) = req_rx.recv() {
+                let verdicts = vec![1u8; ids.len()];
+                *stamps.lock().unwrap() = Some(std::time::Instant::now());
+                if res_tx.send((ids, verdicts)).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut pipe = PredicatePipe {
+            dispatch: Box::new(move |ids| {
+                let _ = req_tx.send(ids);
+            }),
+            rx: res_rx,
+        };
+        let q: Vec<f32> = (0..dims).map(|d| ((41.0f32 * 0.31 + d as f32) * 0.7).sin()).collect();
+        let (hits, _) =
+            search_predicated(&graph, &Query::new(q), 10, 64, &mut pipe, 64 * 24, &mut scratch);
+        let tail = last_send.lock().unwrap().expect("the evaluator answered a batch").elapsed();
+        assert!(!hits.is_empty(), "precondition: an admitting predicate returns results");
+        assert!(
+            tail < std::time::Duration::from_millis(25),
+            "the drain sat {tail:?} past the last verdict instead of returning on it"
+        );
         drop(pipe);
         worker.join().unwrap();
         let _ = std::fs::remove_file(&path);
