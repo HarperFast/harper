@@ -468,7 +468,14 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			let initialOperations: Promise<void>[] | null = [];
 
 			const wrapped: onEntryEventHandler = (entry) => {
-				const result = entryEventHandler(entry);
+				let result;
+				try {
+					result = entryEventHandler(entry);
+				} catch (error) {
+					// A synchronous throw is the same failure as a rejection. Left to propagate, EntryHandler
+					// catches it for its own reporting and the initial load completes as if nothing failed.
+					result = Promise.reject(error);
+				}
 				if (result instanceof Promise) {
 					const tracked = result.catch((error) => {
 						this.#logger.error?.('Error in async entry handler:', error);

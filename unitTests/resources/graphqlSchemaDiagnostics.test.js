@@ -110,11 +110,14 @@ describe('graphqlSchema load diagnostics (#1917)', () => {
 		// Closed here rather than at the end of the test so a failed assertion cannot leave a chokidar
 		// watcher running over the directory this hook is about to delete.
 		afterEach(async () => {
-			await openScope?.close();
-			openScope = undefined;
-			resetRestartNeeded();
-			if (directory) rmSync(directory, { recursive: true, force: true });
-			directory = undefined;
+			try {
+				await openScope?.close();
+			} finally {
+				openScope = undefined;
+				resetRestartNeeded();
+				if (directory) rmSync(directory, { recursive: true, force: true });
+				directory = undefined;
+			}
 		});
 
 		it('settles the plugin on the failure and then requests a restart', async () => {

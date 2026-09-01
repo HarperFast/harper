@@ -906,7 +906,7 @@ describe('Scope', () => {
 		// Closed here rather than at the end of each test so a failed assertion cannot leave a chokidar
 		// watcher running over the directory afterEach is about to delete.
 		afterEach(async () => {
-			await Promise.allSettled(openScopes.map((scope) => scope.close()));
+			await Promise.all(openScopes.map((scope) => scope.close()));
 		});
 
 		const scopeForFiles = async (files) => {
@@ -936,6 +936,16 @@ describe('Scope', () => {
 			// The settled load is dropped from the pending set, so a later wait has nothing to await.
 			await new Promise((resolve) => setImmediate(resolve));
 			await scope.waitForInitialLoads();
+		});
+
+		it('settles waitForInitialLoads when the entry handler throws synchronously', async () => {
+			const scope = await scopeForFiles('test.js');
+			const failure = new Error('synchronous schema failure');
+			scope.handleEntry(() => {
+				throw failure;
+			});
+
+			await assert.rejects(scope.waitForInitialLoads(), (error) => error === failure);
 		});
 
 		it('raises no unhandled rejection when the initial load fails', async () => {
