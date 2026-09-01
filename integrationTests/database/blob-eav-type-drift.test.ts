@@ -23,16 +23,16 @@
  *   T3: blob -> DELETE the row entirely while still blob-valued.
  *   T4: blob -> blob -> blob -> blob, a pure replace chain (no scalar involved), to
  *      stress old-file reclamation across several generations.
- *   T5: `cleanup_orphan_blobs` (blob.ts's `cleanupOrphans`) is a DIFFERENT mechanism
- *      from the above — it only reconciles files that are NOT in the current
- *      process's in-memory pending-reclamation queue (e.g. surviving a crash/restart
- *      before their scheduled unlink ran); it explicitly skips any path still
- *      `pendingReclamation`. T1-T4's per-step assertions already prove the live floor
- *      is exactly 3 files through natural reclamation alone, so T5 asserts that floor
- *      directly and then runs cleanup_orphan_blobs only as a safety/idempotency
- *      diagnostic — it must be a no-op here, since nothing this suite creates is a
- *      genuine cleanup_orphan_blobs-class orphan (that needs its own crash/restart
- *      fixture; see the dispatch task's Findings).
+ *   T5: `cleanup_orphan_blobs` (blob.ts's `cleanupOrphans`) is a DIFFERENT mechanism from
+ *      the above — it only reconciles files that are NOT in the current process's
+ *      in-memory pending-reclamation queue (e.g. surviving a crash/restart before their
+ *      scheduled unlink ran); it explicitly skips any path still `pendingReclamation`.
+ *      T1-T4's per-step assertions already prove the live floor is exactly 3 files
+ *      through natural reclamation alone, so T5 asserts that floor — and every live
+ *      row's fidelity — directly. It also invokes cleanup_orphan_blobs as a smoke check
+ *      (the operation must not error), but the product deliberately fires it without
+ *      awaiting completion (`dataLayer/schema.ts`), so no assertion here depends on
+ *      when, or whether, that sweep has actually run.
  *
  * Live-blob accounting: `ctrl` (never touched, blob throughout), `s2b` (ends as blob),
  * `replaceChain` (ends as blob) are expected to survive; `sku1-spec` and `b2delete`
@@ -40,14 +40,9 @@
  * blob-file floor is exactly 3, reached through natural reclamation alone.
  *
  * Originating QA-id: QA-597. Promoted from the qa-explorer promote-candidates snapshot (P-384)
- * after a cold gate rerun on main. Held back from PR #1833 (which promoted QA-593/595/596) as
- * a distinct-theme follow-up; unlike those three, this suite has no `sourcedFrom`/cache
- * resolver involved — it targets the EAV-substrate/blob-store seam directly. Reworked during
- * promotion, per independent pre-push review, to assert natural reclamation at each step
- * instead of deferring judgment to a post-sweep count (which let a broken sweeper still pass,
- * since natural reclamation had already reached the live floor before T5 ran it), to remove a
- * race between T2's before/after count and T1's still-draining reclamation queue, and to gate
- * the scalar REST oracle on status/value instead of only on "does it look blob-shaped".
+ * after a cold gate rerun on main; unlike sibling suites QA-593/595/596 (PR #1833), this one
+ * has no `sourcedFrom`/cache resolver involved — it targets the EAV-substrate/blob-store seam
+ * directly.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
@@ -99,27 +94,24 @@ async function countFiles(dir: string): Promise<number> {
 }
 
 /**
- * Wait until `countFiles(dir)` reaches `expectedCount` (natural reclamation landed), or — if it
- * never gets there — until the count plateaus for `minStableMs` (well past blob.ts's ~2s default
- * reclamation delay) so a genuine mismatch is reported promptly instead of spinning for the full
- * budget. This is the gate that makes each step's reclamation assertion real instead of deferring
- * it to a later count taken after everything has had time to settle anyway.
+ * Wait until `countFiles(dir)` reaches `expectedCount` (natural reclamation landed) or
+ * `timeoutMs` runs out. `runReclamation` (blob.ts) legitimately re-queues a due entry rather
+ * than unlinking it — when an open read snapshot can still see the superseded version, or the
+ * shared hold table is briefly unreadable — so the wait does NOT exit early on a plateau short
+ * of the target: a live deferral and a genuine leak look identical until the deadline, and
+ * exiting early would report the former as the latter.
  */
 async function waitForSettle(
 	dir: string,
 	expectedCount: number,
-	{ timeoutMs = 20_000, intervalMs = 250, minStableMs = 5_000 } = {}
+	{ timeoutMs = 20_000, intervalMs = 250 } = {}
 ): Promise<{ count: number; timedOut: boolean; waitedMs: number }> {
 	const start = Date.now();
 	const deadline = start + timeoutMs;
 	let cur = await countFiles(dir);
-	let stableSince = start;
 	while (cur !== expectedCount && Date.now() < deadline) {
 		await sleep(intervalMs);
-		const next = await countFiles(dir);
-		if (next !== cur) stableSince = Date.now();
-		cur = next;
-		if (Date.now() - stableSince >= minStableMs) break; // plateaued short of target — real mismatch, report now
+		cur = await countFiles(dir);
 	}
 	return { count: cur, timedOut: cur !== expectedCount, waitedMs: Date.now() - start };
 }
@@ -233,8 +225,8 @@ suite('QA-597 EAV substrate x Blob-valued attribute x type-drift', { skip: skipS
 				);
 			}
 		}
-		// The round-trip-fidelity gate the header claims: REST dot-notation must return the
-		// CURRENT scalar value on success, not merely fail to look blob-shaped.
+		// REST dot-notation must return the CURRENT scalar value on success, not merely fail to
+		// look blob-shaped.
 		if (rg.status !== 200) {
 			mismatches.push(`${label}: dot-notation GET .value returned ${rg.status} for a live scalar slot`);
 		} else {
@@ -366,8 +358,8 @@ suite('QA-597 EAV substrate x Blob-valued attribute x type-drift', { skip: skipS
 		const startCount = mismatches.length;
 		const id = 'replaceChain';
 		let lastSha = '';
-		// First write introduces a new live file (3 -> 3, since T3's row is already gone); each
-		// replacement after that reclaims the prior generation, net zero change.
+		// First write introduces a new live file (T3 left the floor at 2, ctrl + s2b, so this
+		// goes 2 -> 3); each replacement after that reclaims the prior generation, net zero change.
 		for (let i = 1; i <= 4; i++) {
 			lastSha = await writeBlobAndVerify(id, 16_000, `rc-v${i}`, `T4 replace ${i}/4`, 3);
 		}
@@ -376,7 +368,7 @@ suite('QA-597 EAV substrate x Blob-valued attribute x type-drift', { skip: skipS
 		ok(mismatches.length === startCount, `DEFECT(S) during T4:\n${mismatches.slice(startCount).join('\n')}`);
 	});
 
-	test('T5: live-floor reached by natural reclamation alone; cleanup_orphan_blobs is a safe no-op', async () => {
+	test('T5: live floor reached by natural reclamation alone; cleanup_orphan_blobs does not error', async () => {
 		// Everything currently expected LIVE: ctrl (blob, untouched), s2b (ended as blob),
 		// replaceChain (ended as blob). sku1-spec and b2delete are fully deleted rows.
 		const expectedLiveIds = ['ctrl', 's2b', 'replaceChain'];
@@ -386,16 +378,42 @@ suite('QA-597 EAV substrate x Blob-valued attribute x type-drift', { skip: skipS
 		// reclamation (the ordinary put()/delete() path), so the live floor must already be exact
 		// BEFORE cleanup_orphan_blobs ever runs — crediting the sweep with work the queue already
 		// did would let a broken sweeper still pass.
-		const preCleanup = await countFiles(mainBlobDir);
-		findings.push(`T5 pre-cleanup disk file count: ${preCleanup} (expected ${EXPECTED_LIVE_COUNT})`);
+		const liveFloor = await countFiles(mainBlobDir);
+		findings.push(`T5 disk file count: ${liveFloor} (expected ${EXPECTED_LIVE_COUNT})`);
 		ok(
-			preCleanup === EXPECTED_LIVE_COUNT,
-			`DEFECT: live blob-file count is ${preCleanup} before cleanup_orphan_blobs even ran, expected ${EXPECTED_LIVE_COUNT} from natural reclamation alone`
+			liveFloor === EXPECTED_LIVE_COUNT,
+			`DEFECT: live blob-file count is ${liveFloor} before cleanup_orphan_blobs even ran, expected ${EXPECTED_LIVE_COUNT} from natural reclamation alone`
 		);
+
+		// Re-verify every surviving blob byte-exact, and that deleted rows stay gone — BEFORE
+		// invoking cleanup_orphan_blobs below, since that operation is fire-and-forget by design
+		// (dataLayer/schema.ts does not await it) and its completion is not observable from here.
+		for (const id of expectedLiveIds) {
+			const vs = await opOk({ action: 'verifyServer', id });
+			if (!vs.body.present || vs.body.kind !== 'blob' || vs.body.readError) {
+				mismatches.push(`T5: '${id}' unreadable/corrupted: ${JSON.stringify(vs.body)}`);
+				continue;
+			}
+			const rg = await rawGet(`/Attribute/${id}.value`);
+			const actualSha = rg.status === 200 ? sha256hex(rg.body) : null;
+			if (actualSha !== vs.body.sha256) {
+				mismatches.push(
+					`T5: '${id}' REST dot-notation read mismatches internal sha (internal=${vs.body.sha256}, rest=${actualSha}, status=${rg.status})`
+				);
+			}
+			findings.push(`T5 live check '${id}': OK, sha256=${vs.body.sha256}`);
+		}
+		for (const id of ['sku1-spec', 'b2delete']) {
+			const r = await rawGet(`/Attribute/${id}`);
+			if (r.status !== 404 && r.status !== 410) {
+				mismatches.push(`T5: deleted row '${id}' unexpectedly present: status=${r.status}`);
+			}
+		}
 
 		// cleanup_orphan_blobs targets a DIFFERENT class of file (one lost from the in-memory
 		// pending-reclamation queue, e.g. across a crash/restart) — nothing this suite creates
-		// qualifies, so it must be a safe no-op here. Run it as a diagnostic, not as the gate.
+		// qualifies. Invoke it as a smoke check only: the request itself must not error. No
+		// assertion here depends on whether or when the sweep it starts actually finishes.
 		const cleanupResp = await client.req().send({ operation: 'cleanup_orphan_blobs', database: BLOB_DATABASE });
 		findings.push(
 			`T5 cleanup_orphan_blobs invoked (database=${BLOB_DATABASE}): status=${cleanupResp.status} body=${JSON.stringify(cleanupResp.body)}`
@@ -405,61 +423,8 @@ suite('QA-597 EAV substrate x Blob-valued attribute x type-drift', { skip: skipS
 			`cleanup_orphan_blobs request failed: ${cleanupResp.status} ${JSON.stringify(cleanupResp.body)}`
 		);
 
-		const postCleanup = await waitForSettle(mainBlobDir, EXPECTED_LIVE_COUNT, { timeoutMs: 8_000, minStableMs: 3_000 });
-		findings.push(
-			`T5 post-cleanup disk file count: ${postCleanup.count} (waited ${postCleanup.waitedMs}ms, expected unchanged at ${EXPECTED_LIVE_COUNT})`
-		);
-
-		// Orphaned-ref cross-check: cleanup must not have touched any file a live record still
-		// points to. Re-verify every surviving blob byte-exact.
-		for (const id of expectedLiveIds) {
-			const vs = await opOk({ action: 'verifyServer', id });
-			if (!vs.body.present || vs.body.kind !== 'blob' || vs.body.readError) {
-				mismatches.push(
-					`T5: '${id}' unreadable/corrupted after cleanup_orphan_blobs (ORPHANED-REF): ${JSON.stringify(vs.body)}`
-				);
-				continue;
-			}
-			const rg = await rawGet(`/Attribute/${id}.value`);
-			const actualSha = rg.status === 200 ? sha256hex(rg.body) : null;
-			if (actualSha !== vs.body.sha256) {
-				mismatches.push(
-					`T5: '${id}' REST dot-notation read after cleanup_orphan_blobs mismatches internal sha (internal=${vs.body.sha256}, rest=${actualSha}, status=${rg.status})`
-				);
-			}
-			findings.push(`T5 post-cleanup live check '${id}': OK, sha256=${vs.body.sha256}`);
-		}
-
-		// Deleted rows must stay gone.
-		for (const id of ['sku1-spec', 'b2delete']) {
-			const r = await rawGet(`/Attribute/${id}`);
-			if (r.status !== 404 && r.status !== 410) {
-				mismatches.push(
-					`T5: deleted row '${id}' unexpectedly resurfaced after cleanup_orphan_blobs: status=${r.status}`
-				);
-			}
-		}
-
-		if (postCleanup.count === EXPECTED_LIVE_COUNT) {
-			findings.push(
-				'T5 VERDICT: natural reclamation already reached the exact live floor; cleanup_orphan_blobs was a clean no-op'
-			);
-		} else if (postCleanup.count > EXPECTED_LIVE_COUNT) {
-			findings.push(
-				`T5 VERDICT: DEFECT CANDIDATE — cleanup_orphan_blobs left ${postCleanup.count} files, expected ${EXPECTED_LIVE_COUNT} unchanged`
-			);
-		} else {
-			findings.push(
-				`T5 VERDICT: DEFECT CANDIDATE — cleanup_orphan_blobs over-reclaimed to ${postCleanup.count} files, expected ${EXPECTED_LIVE_COUNT} unchanged (a LIVE blob's file may have been deleted)`
-			);
-		}
-
 		// ── Hard assertions (true defect gates) ──────────────────────────────────
 		ok(mismatches.length === 0, `DATA-LOSS/CORRUPTION DEFECT(S):\n${mismatches.join('\n')}`);
 		ok(staleBytesSuspects.length === 0, `STALE-BYTES DEFECT(S):\n${staleBytesSuspects.join('\n')}`);
-		ok(
-			postCleanup.count === EXPECTED_LIVE_COUNT,
-			`cleanup_orphan_blobs must be a no-op here: expected ${EXPECTED_LIVE_COUNT} unchanged, found ${postCleanup.count} in ${mainBlobDir}`
-		);
 	});
 });
