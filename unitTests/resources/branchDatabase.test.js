@@ -25,12 +25,6 @@ function publishHandBuiltBranch(branchPath, appName, baseName) {
 	_writeFileSync(_join(branchPath, '.branch-complete'), JSON.stringify({ blobRoots }));
 }
 
-const { cpSync: _cpSync } = require('node:fs');
-/** Copy a directory tree, for on-disk states these tests have to construct by hand. */
-function cpSyncForTest(from, to) {
-	_cpSync(from, to, { recursive: true });
-}
-
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const describeUnlessLmdb = isLMDB ? describe.skip : describe;
 const itUnlessLmdb = isLMDB ? it.skip : it;
@@ -916,5 +910,55 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 		// fallback to copyFile would double disk and make first load O(bytes) with nothing noticing.
 		assert.strictEqual(statSync(branchFile).ino, statSync(baseFile).ino, 'same inode');
 		assert.ok(statSync(branchFile).nlink >= 2, 'and more than one link to it');
+	});
+});
+
+describeUnlessLmdb('branch identity is unavailable across restarts and restores (harper#644)', () => {
+	const { mkdirSync, writeFileSync, rmSync } = require('node:fs');
+	const { join } = require('node:path');
+	const { isBranchIdentity, resolveDatabasePath } = require('#src/resources/databases');
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({ table: 'Src', database: 'identbase', attributes: [{ name: 'id', isPrimaryKey: true }] });
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+		rmSync(resolveBranchPath('identbase', 'identApp'), { recursive: true, force: true });
+	});
+
+	it('recognises a branch identity from the directory, not just from what this process has open', async function () {
+		this.timeout(30000);
+		const identity = `${'identApp'.length}_identApp__identbase`;
+		assert.strictEqual(isBranchIdentity(identity), false, 'sanity: nothing owns it yet');
+
+		await getOrCreateBranch('identbase', 'identApp');
+		await removeBranches(); // drops the in-memory set, as a restart would
+		mkdirSync(resolveBranchPath('identbase', 'identApp'), { recursive: true });
+
+		// The in-memory set only knows branches open in THIS process. After a restart -- or for an app
+		// that is simply not loaded -- a database could otherwise take this name and share the branch's
+		// blob root, which is silent corruption in both directions.
+		assert.strictEqual(isBranchIdentity(identity), true, 'the on-disk branch still owns its identity');
+	});
+
+	it('refuses an identity whose database exists on disk but is not loaded', async function () {
+		this.timeout(30000);
+		const { assertBranchIdentityAvailable } = require('#src/resources/databases');
+		const identity = `${'blockedApp'.length}_blockedApp__identbase`;
+
+		// `getDatabases()` skips a database blocked by restore, so it is absent from every in-memory
+		// map while its blob root is real -- and materialization would remove and replace that root.
+		// A directory standing in for exactly that: present on disk, absent from the maps.
+		const planted = resolveDatabasePath(identity);
+		mkdirSync(planted, { recursive: true });
+		writeFileSync(join(planted, 'CURRENT'), 'a database this process has not loaded\n');
+		try {
+			assert.throws(() => assertBranchIdentityAvailable(identity), /already in use/);
+		} finally {
+			rmSync(planted, { recursive: true, force: true });
+		}
 	});
 });

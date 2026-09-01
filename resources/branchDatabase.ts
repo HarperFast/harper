@@ -188,7 +188,8 @@ function readBranchState(branchPath: string, storeName: string): BranchState {
 	} catch {
 		return looksLikeAStore ? { state: 'unmarked', why: 'it has no readable completion marker' } : { state: 'debris' };
 	}
-	if (!Array.isArray(recorded.blobRoots) || recorded.blobRoots.some((root) => typeof root !== 'string')) {
+	// `JSON.parse('null')` succeeds and yields null, so this cannot go straight to a property access.
+	if (recorded == null || !Array.isArray(recorded.blobRoots) || recorded.blobRoots.some((r) => typeof r !== 'string')) {
 		return { state: 'unmarked', why: 'its completion marker is malformed' };
 	}
 	const configured = getBlobPathsForDatabaseName(storeName);

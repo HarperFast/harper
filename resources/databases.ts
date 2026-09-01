@@ -1431,7 +1431,15 @@ export function assertBranchIdentityAvailable(storeName: string): void {
 	// loaded is absent from both, and it owns the blob root this identity would destroy.
 	getDatabases();
 	for (const name of [storeName, `${storeName}.staging`]) {
-		if (databases[name] || definedDatabases?.has(name) || openBranchIdentities.has(name)) {
+		// The directory as well as the maps. `getDatabases` skips a database blocked by restore, so an
+		// in-memory check alone reports its name as free while its blob root is very much real -- and
+		// materialization would then remove and replace it.
+		if (
+			databases[name] ||
+			definedDatabases?.has(name) ||
+			openBranchIdentities.has(name) ||
+			existsSync(resolveDatabasePath(name))
+		) {
 			throw new Error(`Cannot use '${storeName}' as a branch store identity: '${name}' is already in use`);
 		}
 	}
@@ -1453,7 +1461,28 @@ export function releaseBranchIdentity(storeName: string): void {
 
 /** Is this name spoken for by a branch? Database creation has to refuse it -- they share a blob root. */
 export function isBranchIdentity(name: string): boolean {
-	return openBranchIdentities.has(name);
+	if (openBranchIdentities.has(name)) return true;
+	// The in-memory set covers only branches open in THIS process, so after a restart -- or for an
+	// application that is simply not loaded -- a database could take the name of an on-disk branch and
+	// share its blob root. The identity carries the application name's length precisely so it can be
+	// taken apart again without guessing where the name ends.
+	const prefix = /^(\d+)_/.exec(name);
+	if (!prefix) return false;
+	const appLength = Number(prefix[1]);
+	const appName = name.slice(prefix[0].length, prefix[0].length + appLength);
+	if (
+		appName.length !== appLength ||
+		name.slice(prefix[0].length + appLength, prefix[0].length + appLength + 2) !== '__'
+	)
+		return false;
+	const baseName = name.slice(prefix[0].length + appLength + 2);
+	if (!baseName) return false;
+	try {
+		return existsSync(resolveBranchPath(baseName, appName));
+	} catch {
+		// Not a name a branch path could hold, so no branch owns it.
+		return false;
+	}
 }
 
 export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
