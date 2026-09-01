@@ -44,7 +44,7 @@ import {
 	type FSWatcher,
 } from 'node:fs';
 import type { StatsFs } from 'node:fs';
-import { createDeflate, createInflate, inflate } from 'node:zlib';
+import { createDeflate, createInflate, inflate, inflateSync } from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
@@ -88,7 +88,7 @@ const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will 
 // We want to keep the file path private (but accessible to the extension)
 const HEADER_SIZE = 8;
 const UNCOMPRESSED_TYPE = 0;
-const DEFLATE_TYPE = 1;
+export const DEFLATE_TYPE = 1;
 const ERROR_TYPE = 0xff;
 // A write that aborted on a re-streamable external source (replication receive / origin fetch) stamps the
 // file with this type so a downstream read returns 503 (retry) rather than 500 (confidently incomplete).
@@ -571,9 +571,34 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 				const pending = waitForCompletion(size === UNKNOWN_SIZE, true);
 				if (pending) return pending;
 				return new Promise<Buffer>((resolve, reject) => {
-					// start/end index into the UNCOMPRESSED content, so inflate first, then slice
-					inflate(rawBytes.subarray(HEADER_SIZE), (error, result) => {
-						if (error) reject(error);
+					// start/end index into the UNCOMPRESSED content, so inflate first, then slice — with
+					// output capped at the declared size, so a body that inflates past its own header (a
+					// lying or corrupted header) is refused instead of allocating without bound, matching
+					// the streaming read path's ceiling. zlib rejects a cap of 0, so an empty blob's cap
+					// is 1 and the exact-length check below covers it.
+					inflate(rawBytes.subarray(HEADER_SIZE), { maxOutputLength: Math.max(size, 1) }, (error, result) => {
+						if (error) {
+							const code = (error as { code?: string }).code ?? '';
+							reject(
+								code === 'ERR_BUFFER_TOO_LARGE'
+									? new BlobReadError(
+											`Blob ${filePath} inflates past its declared size of ${size}`,
+											BLOB_CORRUPT_STATUS
+										)
+									: code.startsWith('Z_')
+										? new BlobReadError(
+												`Blob ${filePath} is not a valid deflate stream: ${error.message}`,
+												BLOB_CORRUPT_STATUS
+											)
+										: error
+							);
+						} else if (result.length !== size)
+							reject(
+								new BlobReadError(
+									`Blob ${filePath} inflates to ${result.length} bytes, not its declared size of ${size}`,
+									BLOB_CORRUPT_STATUS
+								)
+							);
 						else resolve(sliceContent(result));
 					});
 				});
@@ -662,11 +687,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 		// full reads can be compared against the header.
 		const descriptorSize = this.size;
 		const isFullRead = start === undefined && end === undefined;
-		// Once the first read identifies a DEFLATE body, the stream switches to this iterator and the
-		// fd-positioned read loop below never touches the file again: a deflate body cannot be
-		// length-checked or offset-seeked, so it is inflated in sequence, one chunk per pull.
 		let compressedRead: AsyncGenerator<Buffer> | undefined;
-		// Destroys the compressed pipeline's node streams; closeFd() alone would strand them mid-read.
 		let teardownCompressedRead: (() => void) | undefined;
 		async function* readCompressedBlob(): AsyncGenerator<Buffer> {
 			// The writer's lock is the only completeness authority for a compressed body (the header
@@ -711,12 +732,11 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 					for (const callback of blob.#onSize) callback(declaredSize);
 				}
 			}
-			// Close our descriptor and let the pipeline's read stream own its lifecycle entirely
-			// (path mode): sharing a descriptor with an fs stream races its worker-thread close(2)
-			// against other users of the fd — observed as EBADF on destroy-during-read. The blob hold
-			// (released via closeFd() when this iterator finishes) keeps the path alive to reopen, and
-			// published blob files are never rewritten in place, so the reopened file is the same
-			// settled content the header above described (or its byte-equivalent in-place repair).
+			// Close our descriptor and let the pipeline's read stream own its lifecycle entirely (path
+			// mode): sharing a descriptor with an fs stream races its worker-thread close(2) against
+			// other users of the fd (EBADF on destroy-during-read). The blob hold keeps the path alive
+			// to reopen, and the only same-path writer, repairBlobFile, runs solely on blobs already
+			// classified damaged — never on a file a read like this one just validated as settled.
 			const originalFd = fd;
 			fd = null;
 			close(originalFd, (closeError) => {
@@ -923,10 +943,10 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 								return onError(new BlobReadError('Blob pending replication for ' + filePath, BLOB_UNAVAILABLE_STATUS));
 							}
 							if (buffer[1] === DEFLATE_TYPE) {
-								// Switch this stream to the compressed read path for this and every later pull:
-								// the raw read loop below must never stream a deflate body as content, and
-								// buffering the whole inflated blob (the old delegation to bytes()) costs the
-								// full uncompressed size in heap per concurrent read.
+								// A deflate body cannot be length-checked or offset-seeked, and buffering the whole
+								// inflated content (the old delegation to bytes()) costs the full uncompressed size
+								// in heap per concurrent read — so this and every later pull go through the
+								// streaming inflate iterator instead of the raw read loop below.
 								settled = true;
 								compressedRead = readCompressedBlob();
 								return pumpCompressedRead(controller).then(resolve, reject);
@@ -1121,7 +1141,7 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			},
 			cancel() {
 				cancelled = true;
-				teardownCompressedRead?.(); // before closeFd, so the pipeline is not left reading a nulled fd
+				teardownCompressedRead?.();
 				closeFd(); // releases the hold, including when cancelled before any open succeeded
 				clearTimeout(timer);
 				clearTimeout(openTimer);
@@ -1643,7 +1663,7 @@ function getBlobCompressionPolicy(): Map<string, BlobCompressionEntry> | null {
  * per the opt-in `storage.blobs.compression` map. Absent config means never. Matching precedence
  * is exact type, then `type/*`, then `default`. An unknown size never compresses: the threshold
  * cannot be evaluated, and compressing a small streamed write under a large configured threshold
- * would violate the operator's limit. Exported for tests; production callers go through saveBlob.
+ * would violate the operator's limit.
  */
 export function resolveBlobCompression(type: string | undefined, size: number | undefined): boolean {
 	const policy = getBlobCompressionPolicy();
@@ -1742,10 +1762,9 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		}
 		return storageInfo; // nothing more to do if it supposed to be saved in the record
 	}
-	// Resolve the configured compression policy here rather than in createBlob: every local write
-	// funnels through saveBlob (the pack extension, pre-commit saves, native-Blob saves), including
-	// the HTTP-upload path, which never sees creation options. An explicit `compress` option (either
-	// value) and a pre-compressed source both take precedence over the policy.
+	// The policy resolves here, not in createBlob, because the HTTP-upload path never sees creation
+	// options — every local write funnels through saveBlob. An explicit `compress` option (either
+	// value) and a pre-compressed source both take precedence.
 	if (storageInfo.compress === undefined && !storageInfo.storedCodec) {
 		const size = (blob as FileBackedBlob).size ?? storageInfo.contentBuffer?.length;
 		if (resolveBlobCompression(blob.type, size)) storageInfo.compress = true;
@@ -1830,8 +1849,7 @@ export function shouldDestroyIdleBlobSource(paused: boolean, bytesWritten: numbe
  * forwards and fails the pipeline unless the body is a well-formed deflate stream inflating to
  * exactly `expectedSize` bytes. This is what lets a raw peer-preserved body land under a finalized
  * DEFLATE header without trusting the peer: a truncated, corrupt, oversized (bomb), or trailing-
- * garbage body rejects the save instead of being published. Exported for unit tests; the production
- * caller is writeBlobWithStream's storedCodec branch.
+ * garbage body rejects the save instead of being published.
  */
 export function createStoredDeflateVerifier(expectedSize: number, fileId: string): Transform {
 	const inflater = createInflate();
@@ -1855,7 +1873,10 @@ export function createStoredDeflateVerifier(expectedSize: number, fileId: string
 	// callback can fire before it emits that 'end', so some trailing bytes land undetected. That is
 	// deliberate slack, not a hole: every reader and completeness check inflates and ignores trailing
 	// bytes, so the residue is only wasted disk, while the guarantees that protect correctness
-	// (truncation, wrong inflated length, invalid stream, oversize) are all deterministic.
+	// (truncation, wrong inflated length, invalid stream, oversize) are all deterministic. The
+	// chunk-boundary dependence does mean bytes one hop accepted can be rejected at the next (a
+	// relay re-chunks them) — only a sender violating the format can produce that, and the failed
+	// save is handled like any other save failure from that sender.
 	const trailingData = () =>
 		new Error(`Pre-compressed blob body for ${fileId} continues past the end of its deflate stream`);
 	let sawDeflateEnd = false;
@@ -2384,8 +2405,9 @@ export function blobHeaderIndicatesIncomplete(header: Buffer, fileSize: number):
 /**
  * Whether a file-backed blob's backing file is missing or incomplete on disk — the gate for the
  * copy-delivery repair. This blocking probe is the locked final recheck after the caller's async
- * exact-duplicate prefilter. Compressed bodies require the asynchronous repair sweep for
- * verification. Returns undefined for blobs the question does not apply to.
+ * exact-duplicate prefilter, so it runs only on blobs that prefilter already found damaged (or
+ * that changed underneath it), which is what makes a synchronous inflate of a compressed body
+ * affordable here. Returns undefined for blobs the question does not apply to.
  */
 export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 	try {
@@ -2407,14 +2429,39 @@ export function blobFileMissingOrIncomplete(blob: Blob): boolean | undefined {
 			const header = Buffer.allocUnsafe(HEADER_SIZE);
 			if (readSync(fd, header, 0, HEADER_SIZE, 0) < HEADER_SIZE) return true;
 			if (blobHeaderIndicatesIncomplete(header, size)) return true;
+			const storedSize = header.readUIntBE(2, 6);
 			const descriptorSize = (blob as { size?: number }).size;
-			return descriptorSize !== undefined && header.readUIntBE(2, 6) !== descriptorSize;
+			if (descriptorSize !== undefined && storedSize !== descriptorSize) return true;
+			if (header.readUInt16BE(0) !== DEFLATE_TYPE) return false;
+			return !deflateBodyInflatesToExactlySync(fd, size, storedSize);
 		} finally {
 			closeSync(fd);
 		}
 	} catch (error) {
 		logger.debug?.('Unable to inspect blob file for in-place repair', error);
 		return undefined;
+	}
+}
+
+/**
+ * Synchronous counterpart of `inflatesToExactly` for the locked repair recheck. The output is capped
+ * at the declared size so a lying header cannot allocate without bound; a zlib failure means the body
+ * is torn or corrupt, while an I/O failure propagates because it is not an answer.
+ */
+function deflateBodyInflatesToExactlySync(fd: number, fileSize: number, size: number): boolean {
+	const body = Buffer.allocUnsafe(fileSize - HEADER_SIZE);
+	let bodyLength = 0;
+	while (bodyLength < body.length) {
+		const bytesRead = readSync(fd, body, bodyLength, body.length - bodyLength, HEADER_SIZE + bodyLength);
+		if (bytesRead === 0) break;
+		bodyLength += bytesRead;
+	}
+	try {
+		return inflateSync(body.subarray(0, bodyLength), { maxOutputLength: Math.max(size, 1) }).length === size;
+	} catch (error) {
+		const code = (error as { code?: string }).code ?? '';
+		if (code === 'ERR_BUFFER_TOO_LARGE' || code.startsWith('Z_')) return false;
+		throw error;
 	}
 }
 export const databasePaths = new Map<RootDatabase, string[]>();
@@ -3028,11 +3075,9 @@ addExtension({
 				throw new Error('Unable to save blob without file id');
 			}
 			storageInfo.recordId = encodeForStorageForRecordId;
-			// Record how THIS file is stored. It is a per-node hint (a decoded blob carries it back
-			// through the spread above on re-encode) that lets a replication sender skip even the 8-byte
-			// header sniff for the uncompressed majority; the sender still confirms against the local
-			// file header before ever sending raw, because a relayed record can outlive the storage form
-			// it was first written with.
+			// Per-node hint only — a replication sender uses it to skip the header sniff for the
+			// uncompressed majority, but always confirms against the local file header before sending
+			// raw: a relayed record (or an in-place repair) can outlive the storage form recorded here.
 			if (storageInfo.compress || storageInfo.storedCodec) options.codec = 'deflate';
 			// A record version being written now references this file, so any reclamation queued by an
 			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
@@ -3321,9 +3366,10 @@ async function isBlobFileCompleteAtPath(filePath: string): Promise<boolean> {
  * Whether the deflate body after the header inflates to exactly `size` bytes. A compressed blob's
  * header records the uncompressed length, so it cannot be compared to the on-disk body; a truncated
  * stream errors (Z_BUF_ERROR) or yields fewer bytes. Streamed rather than inflateSync so memory stays
- * bounded over a sweep that may touch many large blobs.
+ * bounded over a sweep that may touch many large blobs. Shared with harper-pro's async repair
+ * prefilter, which must classify a torn compressed body the same way the locked recheck does.
  */
-function inflatesToExactly(filePath: string, size: number): Promise<boolean> {
+export function inflatesToExactly(filePath: string, size: number): Promise<boolean> {
 	return new Promise<boolean>((resolve, reject) => {
 		let inflatedLength = 0;
 		const source = createReadStream(filePath, { start: HEADER_SIZE });

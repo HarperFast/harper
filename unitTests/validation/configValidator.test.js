@@ -154,6 +154,33 @@ describe('Test configValidator module', () => {
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
+		it('storage.blobs.compression accepts content-type entries and rejects malformed ones', () => {
+			const good_config_obj = testUtils.deepClone(FAKE_CONFIG);
+			good_config_obj.storage.blobs = {
+				compression: {
+					default: { codec: 'deflate', threshold: 65536 },
+					'text/*': { codec: 'deflate' },
+					'application/json': { threshold: 8192 },
+					'image/*': false,
+				},
+			};
+			expect(configValidator(good_config_obj).error).to.eql(undefined);
+
+			const bad_codec_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_codec_obj.storage.blobs = { compression: { default: { codec: 'zstd' } } };
+			expect(configValidator(bad_codec_obj).error.message).to.include('codec');
+
+			const bad_threshold_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_threshold_obj.storage.blobs = { compression: { default: { threshold: -1 } } };
+			expect(configValidator(bad_threshold_obj).error.message).to.include('threshold');
+
+			// a key that is not a content type, a type/* wildcard, or 'default' must fail, not
+			// silently never match
+			const bad_key_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_key_obj.storage.blobs = { compression: { 'not a content type!': { codec: 'deflate' } } };
+			expect(bad_key_obj && configValidator(bad_key_obj).error).to.not.eql(undefined);
+		});
+
 		it('Test logging in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';

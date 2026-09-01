@@ -2106,12 +2106,37 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 	});
 
-	it('leaves a truncated compressed body for the asynchronous repair sweep to verify', async () => {
+	it('reports a compressed body that no longer inflates to its header size (torn, or a lying header)', async () => {
 		const payload = Buffer.from('truncated compressed blob '.repeat(2000));
 		await BlobRepairTest.put({ id: 'compressed-damage-probe', blob: createBlob(payload, { compress: true }) });
 		const { blob } = await BlobRepairTest.get('compressed-damage-probe');
 		const filePath = getFilePathForBlob(blob);
-		truncateSync(filePath, statSync(filePath).size - 1);
+		const intact = readFileSync(filePath);
+		assert.strictEqual(intact[1], 1, 'precondition: stored deflated');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false, 'intact compressed body is healthy');
+		truncateSync(filePath, intact.length - 1);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true, 'torn compressed body is damaged');
+		// a header understating the size: the body inflates past the cap and is refused, not allocated
+		writeFileSync(filePath, Buffer.concat([makeBlobHeader(payload.length - 1, 1), intact.subarray(8)]));
+		blob.size = payload.length - 1;
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true, 'body inflating past the header is damaged');
+		writeFileSync(filePath, intact);
+		blob.size = payload.length;
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false, 'restored body is healthy again');
+	});
+
+	it('repairBlobFile heals a compressed body torn by an unclean shutdown', async () => {
+		const payload = Buffer.from('torn compressed blob '.repeat(2000));
+		await BlobRepairTest.put({ id: 'repair-torn-compressed', blob: createBlob(payload, { compress: true }) });
+		const { blob } = await BlobRepairTest.get('repair-torn-compressed');
+		const filePath = getFilePathForBlob(blob);
+		truncateSync(filePath, statSync(filePath).size - 64);
+		await assert.rejects(blob.bytes(), { statusCode: 500 });
+		const saving = repairBlobFile(blob, Readable.from(payload), payload.length);
+		assert.ok(saving, 'repair should start on a torn compressed blob');
+		await saving;
+		assert.strictEqual(getFilePathForBlob(blob), filePath);
+		assert.deepStrictEqual(await blob.bytes(), payload);
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 	});
 

@@ -251,6 +251,8 @@ describe('Blob compression (harper#2443)', () => {
 		});
 		await decodeFromDatabase(() => saveBlob(empty).saving, store);
 		assert.equal(readFileSync(getFilePathForBlob(empty))[1], DEFLATE_TYPE);
+		assert.deepEqual(await empty.bytes(), Buffer.alloc(0));
+		assert.deepEqual(await streamToBuffer(empty.stream()), Buffer.alloc(0));
 	});
 
 	it('bounds the output of a compressed blob whose header understates its size', async () => {
@@ -277,6 +279,20 @@ describe('Blob compression (harper#2443)', () => {
 			/inflates past its declared size/
 		);
 		assert(emitted <= lyingSize, `must not emit past the declared size (emitted ${emitted})`);
+
+		// the buffered read path is held to the same ceiling (it also has no descriptor cross-check
+		// on a ranged read)
+		await assert.rejects(record.blob.slice(0, 5000).bytes(), /inflates past its declared size/);
+	});
+
+	it('stamps the storage codec into the stored blob reference as a local hint', async () => {
+		setCompressionConfig({ default: { codec: 'deflate' } });
+		const compressedBlob = await putBlob(155, Buffer.from('hinted payload '.repeat(2000)), { type: 'text/plain' });
+		assert.equal(headerTypeOf(compressedBlob), DEFLATE_TYPE);
+		assert.equal((await CompressionTest.get(155)).blob.codec, 'deflate', 'compressed refs must carry the hint');
+		setCompressionConfig(undefined);
+		await putBlob(156, Buffer.from('unhinted payload '.repeat(2000)), { type: 'text/plain' });
+		assert.equal((await CompressionTest.get(156)).blob.codec, undefined, 'uncompressed refs must carry none');
 	});
 
 	it('a compressed read waits for the writer and times out with a retryable 503', async function () {
@@ -389,7 +405,7 @@ describe('Blob compression (harper#2443)', () => {
 		assert(Buffer.concat(chunks).equals(compressed), 'a relayed body must be byte-identical to the origin bytes');
 	});
 
-	it('waits for a truncated-then-repaired file via the normal read machinery (torn classification intact)', async () => {
+	it('classifies a torn compressed body incomplete, and its read fails loudly as corrupt', async () => {
 		const payload = Buffer.alloc(30000, 'classify me ');
 		const blob = await putBlob(200, payload, { compress: true, type: 'text/plain' });
 		assert.equal(await isBlobComplete(blob), true);
