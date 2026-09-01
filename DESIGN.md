@@ -302,6 +302,25 @@ starting `handleApplication`; if a deploy begins during the load, the plugin tim
 unpaused load time. This prevents a long install from looking like a hung plugin while its entry handlers
 are deliberately paused against the intermediate tree.
 
+### The component load lock is keyed by plugin type, so a plugin's promise is everyone's clock
+
+`sequentiallyHandleApplication` (`components/componentLoader.ts`) holds a cross-thread lock keyed by the
+plugin TYPE name — `graphqlSchema`, `rest`, … — not by the component. That is deliberate. Plugin modules
+are per-thread singletons carrying module-level state (`server/http.ts`'s `universalHeaders` ownership
+array, `resources/graphql.ts`'s `knownGraphQLDirectives`, the scheduler's register-inside-the-lock
+contract), and applications load _concurrently_: `serializeComponentLoad` serializes per application
+name and all applications go into one `Promise.all`. Without this key two applications' `handleApplication`
+for the same plugin would interleave on a single thread, not merely across threads.
+
+The price of that key is that whatever a plugin does inside the lock is paid by every other application.
+So a plugin must return a promise that settles with its real outcome: the `withDeployAwareTimeout`
+watchdog exists for a _hang_, never as the reporting path for a failure the plugin already diagnosed. A
+success-only wait is what turned one unparseable schema into 30s of instance-wide gating per broken
+component (#1917). `Scope.waitForInitialLoads()` is that promise — it resolves once the entry handler's
+initial scan and every operation that scan started have completed, and rejects with the first failure,
+after draining the rest so no sibling operation outlives the lock. The watchdog can still cut that drain
+short, so the serialization the lock buys is bounded by the timeout rather than absolute.
+
 Extraction renames an existing component aside before writing the replacement and keeps it until
 dependency installation and metadata verification complete. Any preparation failure atomically
 renames the partial tree into hidden staging before restoring the prior tree, so a live writer cannot
