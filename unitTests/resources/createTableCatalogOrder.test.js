@@ -290,7 +290,6 @@ describe('create table catalog write order', () => {
 			schemaDefined: true,
 			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
 		});
-		// Table.cleanup() is the only caller of this, so a call is proof the unreachable class was released
 		const releasedReclamationHandlers = [];
 		const originalRemoveHandler = storageReclamation.removeStorageReclamationHandler;
 		storageReclamation.removeStorageReclamationHandler = function (path, handler) {
