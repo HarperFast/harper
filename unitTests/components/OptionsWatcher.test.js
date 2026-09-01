@@ -703,6 +703,33 @@ describe('OptionsWatcher', () => {
 		await teardown({ fixture, options });
 	}).timeout(10000);
 
+	// A deletion inside the boot window cancels the ladder that was the only thing left to settle
+	// `ready`, so `#handleUnlink` has to settle the barrier itself: `remove` reaches a `Scope` whose
+	// own `ready` is still pending, which asks for a restart of a component that never booted.
+	it('settles ready when the file is deleted before any read had a config to give', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, '', 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+
+		// Waited out so the arming re-read is not what settles the barrier, and so the ladder — whose
+		// rungs back off with the elapsed budget — has a rung far enough away that chokidar's
+		// `unlink` (held back by its own atomic-write window) is what observes the deletion first.
+		// That ordering is the boot hang: the ladder was the only thing left to settle `ready`, and
+		// `#handleUnlink` cancels it.
+		for (let waited = 0; waited < 3000 && !options._armedForTests; waited += 50) await delay(50);
+		assert.equal(options._armedForTests, true, 'the watcher must arm once chokidar has finished its scan');
+		await delay(1200);
+		const events = [];
+		for (const event of ['ready', 'remove']) options.on(event, () => events.push(event));
+		rmSync(configFilePath, { force: true });
+
+		const [value] = await options.ready;
+		assert.strictEqual(value, undefined, 'a scope the defaults do not name settles carrying nothing');
+		assert.deepEqual(events, ['ready'], 'a deletion in the boot window settles the barrier, it does not remove');
+		await teardown({ fixture, options });
+	}).timeout(10000);
+
 	// `myPlugin:` with nothing under it is a configured scope whose value happens to be falsy, and
 	// `Scope` turns a repeat `ready` into a restart request — so a re-read of it must not look like
 	// the unconfigured → configured transition.
@@ -1268,16 +1295,29 @@ describe('OptionsWatcher', () => {
 
 		const expected = { jsResource: { files: 'foo.js' } };
 
+		// The scope booted on its own truthy default, which leaves it *unconfigured*, so the file
+		// arriving is the unconfigured → configured transition `#applyScopedConfig` reports as a
+		// second `ready` — not the merge a scope with a prior source value would take.
+		let changed = 0;
+		const countChanges = () => changed++;
+		options.on('change', countChanges);
 		await assertEvent(
 			options,
-			'change',
+			'ready',
 			() => writeFile(configFilePath, stringify(expected), 'utf-8'),
-			(changeSpy) => {
-				assert.equal(changeSpy.callCount, 1);
+			(readySpy) => {
+				assert.equal(readySpy.callCount, 1);
+				assert.deepEqual(
+					readySpy.getCall(0).args,
+					[expected[name]],
+					'the arrival must carry the config that was written'
+				);
+				assert.equal(changed, 0, 'a truthy boot fallback is not a prior source value to merge against');
 				assert.deepEqual(options.getRoot(), expected, 'should return the updated config after writing a new file');
 				assert.deepEqual(options.getAll(), expected[name], 'should return the configuration after file recreation');
 			}
 		);
+		options.removeListener('change', countChanges);
 
 		await assertEvent(
 			options,
