@@ -67,6 +67,11 @@ describe('mcp/session', () => {
 			const loaded = await loadSession('not-a-session');
 			assert.equal(loaded, null);
 		});
+
+		it('returns null for a partial record left by a late patch after deletion', async () => {
+			fake.store.set('deleted-session', { id: 'deleted-session', lastActivity: Date.now() });
+			assert.equal(await loadSession('deleted-session'), null);
+		});
 	});
 
 	describe('deleteSession', () => {

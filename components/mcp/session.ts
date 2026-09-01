@@ -148,7 +148,15 @@ export async function createSession({
  */
 export async function loadSession(id: string): Promise<McpSessionRecord | null> {
 	const record = (await (getTable() as any).get(id)) as McpSessionRecord | undefined | null;
-	if (!record) return null;
+	if (
+		!record ||
+		typeof record.protocolVersion !== 'string' ||
+		typeof record.initialized !== 'boolean' ||
+		typeof record.user !== 'string' ||
+		typeof record.createdAt !== 'number' ||
+		typeof record.lastActivity !== 'number'
+	)
+		return null;
 	return record;
 }
 

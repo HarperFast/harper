@@ -2,6 +2,7 @@ const assert = require('node:assert');
 const {
 	claimSubscriptionOwner,
 	routeResourceSubscription,
+	withSessionSubscriptionLock,
 	_setSubscriptionItcForTest,
 	_setSubscriptionThreadIdForTest,
 	_setSubscriptionTimeoutForTest,
@@ -72,6 +73,7 @@ describe('mcp/subscriptionRouting', () => {
 	it('accepts a correlated response only from the expected owner thread', async () => {
 		const bridge = fakeBridge((_target, event, listeners) => {
 			assert.equal(event.message.user.password, undefined, 'credentials must not cross the worker boundary');
+			assert.equal(event.message.user.authExpiresAt, 12345);
 			const requestId = event.message.requestId;
 			setImmediate(() => {
 				listeners.get(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE)({
@@ -88,7 +90,7 @@ describe('mcp/subscriptionRouting', () => {
 			session: await remoteSession(),
 			operation: 'subscribe',
 			uri: 'https://app.test/Product/1',
-			user: { ...USER, password: 'do-not-forward' },
+			user: { ...USER, authExpiresAt: 12345, password: 'do-not-forward' },
 		});
 		assert.equal(result, 'success');
 		assert.equal(_pendingSubscriptionRouteCount(), 0);
@@ -115,7 +117,7 @@ describe('mcp/subscriptionRouting', () => {
 			uri: 'https://app.test/Product/1',
 			user: USER,
 		});
-		assert.equal(result, 'no-live-stream');
+		assert.equal(result, 'timeout');
 		assert.equal(_pendingSubscriptionRouteCount(), 0);
 	});
 
@@ -195,5 +197,37 @@ describe('mcp/subscriptionRouting', () => {
 		for (let i = 0; i < 20 && !response; i++) await new Promise(setImmediate);
 		assert.equal(response.result, 'success');
 		assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+	});
+
+	it('serializes owner commands behind reconnect restoration for the same session', async () => {
+		_setSubscriptionThreadIdForTest(7);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		let releaseRestore;
+		const restoreBlocked = new Promise((resolve) => (releaseRestore = resolve));
+		const restoring = withSessionSubscriptionLock(session.id, () => restoreBlocked);
+		let subscribeStarted = false;
+		_setSubscribeImplForTest(async () => {
+			subscribeStarted = true;
+			return {
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}) };
+				},
+			};
+		});
+		const subscribing = routeResourceSubscription({
+			session: await loadSession(session.id),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/2',
+			user: USER,
+		});
+		await new Promise(setImmediate);
+		assert.equal(subscribeStarted, false);
+		releaseRestore();
+		await restoring;
+		assert.equal(await subscribing, 'success');
+		assert.equal(subscribeStarted, true);
 	});
 });

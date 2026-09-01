@@ -60,6 +60,12 @@ export interface ToolDescriptor {
 /** Authenticated user object as Harper builds it (subset we touch). */
 export interface AuthedUser {
 	username?: string;
+<<<<<<< HEAD
+=======
+	authExpiresAt?: number;
+	// Attribution-only principal that must not be re-resolved against hdb_user (see refreshSessionUser).
+	_scopedToken?: boolean;
+>>>>>>> 160dc70ef (Harden MCP subscription routing (#1751))
 	role?: {
 		role?: string;
 		permission?: {

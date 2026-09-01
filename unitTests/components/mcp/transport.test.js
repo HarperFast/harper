@@ -23,6 +23,11 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
+const {
+	_setSubscriptionItcForTest,
+	_setSubscriptionTimeoutForTest,
+	_resetSubscriptionRoutingForTest,
+} = require('#src/components/mcp/subscriptionRouting');
 
 function makeFakeResources(entries) {
 	const map = new Map();
@@ -1184,6 +1189,30 @@ describe('mcp/transport', () => {
 					})
 				);
 				assert.equal(res.jsonBody.error.code, -32602);
+			});
+
+			it('returns a retryable internal error when subscription routing times out', async () => {
+				_setSubscriptionItcForTest({
+					onMessageByType() {},
+					sendToThread() {
+						return true;
+					},
+				});
+				_setSubscriptionTimeoutForTest(5);
+				await patchSession(sessionId, { streamOwner: { threadId: threadId + 1, token: 'remote-owner' } });
+				try {
+					const res = await handleMcpRequest(
+						makeReq({
+							body: jsonRpc(73, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						})
+					);
+					assert.equal(res.jsonBody.error.code, -32603);
+					assert.match(res.jsonBody.error.message, /timed out; retry/);
+				} finally {
+					_resetSubscriptionRoutingForTest();
+					_setSubscriptionItcForTest(undefined);
+				}
 			});
 
 			it('unsubscribe removes the URI from the durable record', async () => {
