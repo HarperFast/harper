@@ -10,6 +10,7 @@ const hdb_logger = require('#src/utility/logging/harper_logger');
 const { logRotator: log_rotator } = require('#src/utility/logging/logRotator');
 const assert = require('assert');
 const { pinLogConfig } = require('../../logConfigFixture.js');
+const { waitFor } = require('../../waitFor.js');
 const LOG_DIR_NAME_TEST = 'testLogger';
 const LOG_NAME_TEST = 'hdb.log';
 const LOG_DIR_TEST = path.join(__dirname, LOG_DIR_NAME_TEST);
@@ -150,5 +151,88 @@ describe('Test logRotator module', () => {
 
 		expect(fs.pathExistsSync(oldLog), 'Rotated log older than retention should be deleted').to.be.false;
 		expect(fs.pathExistsSync(newLog), 'Rotated log within retention should be kept').to.be.true;
+	}).timeout(TEST_TIMEOUT);
+
+	it('Keeps both archives when two loggers with the same basename rotate into a shared directory at the same instant', async () => {
+		// Two distinct source logs sharing a basename (e.g. `/logs/a/hdb.log` and `/logs/b/hdb.log`)
+		// is exactly the scenario that used to collide: both computed the same
+		// `<basename>-<timestamp>.log` destination when their rotations landed in the same audit
+		// tick, and POSIX rename() silently replaced the first archive with the second (#1880).
+		// Use a dedicated subdirectory with its own file names, distinct from LOG_FILE_PATH_TEST
+		// ('testLogger/hdb.log') and harper_logger.test.js's 'testLogger/external.log' — those
+		// paths key the module-global `fileLoggers` map, and reusing them would let unrelated
+		// leftover state from other tests bleed into this one.
+		const collisionDir = path.join(LOG_DIR_TEST, 'collisionTest');
+		const sourceADir = path.join(collisionDir, 'a');
+		const sourceBDir = path.join(collisionDir, 'b');
+		const sourceALogPath = path.join(sourceADir, 'hdb.log');
+		const sourceBLogPath = path.join(sourceBDir, 'hdb.log');
+		fs.mkdirpSync(sourceADir);
+		fs.mkdirpSync(sourceBDir);
+		const sourceALogger = hdb_logger.createLogger({ stdStreams: false, path: sourceALogPath, level: 'error' });
+		const sourceBLogger = hdb_logger.createLogger({ stdStreams: false, path: sourceBLogPath, level: 'error' });
+
+		const markerA = 'SOURCE_A_PAYLOAD_MARKER';
+		const markerB = 'SOURCE_B_PAYLOAD_MARKER';
+		for (let i = 1; i < 21; i++) {
+			sourceALogger.error(markerA, i);
+			sourceBLogger.error(markerB, i);
+		}
+		await hdb_utils.asyncSetTimeout(50);
+
+		// Freeze Date.now so both rotators compute the exact same timestamp for their archive
+		// filename, reproducing the collision window deterministically instead of depending on
+		// real timer alignment (#1880).
+		const realDateNow = Date.now;
+		const frozenNow = realDateNow();
+		Date.now = () => frozenNow;
+		const sharedRotatedDir = path.join(collisionDir, 'rotated');
+		let sourceARotator, sourceBRotator;
+		try {
+			sourceARotator = log_rotator({
+				logger: sourceALogger,
+				path: sharedRotatedDir,
+				enabled: true,
+				auditInterval: 100,
+				maxSize: '1K',
+			});
+			sourceBRotator = log_rotator({
+				logger: sourceBLogger,
+				path: sharedRotatedDir,
+				enabled: true,
+				auditInterval: 100,
+				maxSize: '1K',
+			});
+			// Wait for the actual completion condition (both archives present) instead of a fixed
+			// sleep: end() only cancels *future* ticks, it does not await a stat()/rename() already
+			// in flight, so a fixed sleep can race that in-flight work and observe only one archive
+			// on a loaded runner.
+			await waitFor(() => fs.existsSync(sharedRotatedDir) && fs.readdirSync(sharedRotatedDir).length >= 2, {
+				timeout: TEST_TIMEOUT - 1000,
+				message: 'Expected both sources to have rotated an archive into the shared directory',
+			});
+		} finally {
+			Date.now = realDateNow;
+			sourceARotator?.end();
+			sourceBRotator?.end();
+			sourceALogger.closeLogFile();
+			sourceBLogger.closeLogFile();
+		}
+
+		const rotatedFiles = fs.readdirSync(sharedRotatedDir);
+		assert.strictEqual(
+			rotatedFiles.length,
+			2,
+			`Expected one surviving archive per source log, found: ${rotatedFiles.join(', ')}`
+		);
+		const contents = rotatedFiles.map((file) => readFileSync(path.join(sharedRotatedDir, file), 'utf-8'));
+		assert(
+			contents.some((content) => content.includes(markerA)),
+			'Expected one archive to contain source A payload'
+		);
+		assert(
+			contents.some((content) => content.includes(markerB)),
+			'Expected one archive to contain source B payload'
+		);
 	}).timeout(TEST_TIMEOUT);
 });

@@ -2,3 +2,4 @@
 # Only list additional files and directories that aren't already in `.gitignore`
 
 unitTests/security/jsLoader/fixtures
+integrationTests/**/fixture-broken-*/**
