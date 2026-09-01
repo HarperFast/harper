@@ -16,7 +16,6 @@ function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
-// GET /FiniteGen/ — canonical finite generator, N=5.
 export class FiniteGen extends Resource {
 	static loadAsInstance = false;
 	static async *connect(_target, _incomingMessages, _request) {
@@ -32,7 +31,7 @@ export class FiniteGen extends Resource {
 	}
 }
 
-// GET /EmptyGen/ — 0 events, so the terminal `done` step is the very FIRST step produced.
+// 0 events, so the terminal `done` step is the very first step produced.
 export class EmptyGen extends Resource {
 	static loadAsInstance = false;
 	// eslint-disable-next-line require-yield
@@ -46,7 +45,6 @@ export class EmptyGen extends Resource {
 	}
 }
 
-// GET /SingleGen/ — exactly 1 event then completion.
 export class SingleGen extends Resource {
 	static loadAsInstance = false;
 	static async *connect(_target, _incomingMessages, _request) {
@@ -59,8 +57,8 @@ export class SingleGen extends Resource {
 	}
 }
 
-// GET /ThrowGen/ — yields 2 of an intended 5, then throws. A rejecting iterator never reaches a
-// `done:true` step, so this is the contrast arm rather than the fixed code path.
+// A rejecting iterator never reaches a `done:true` step, so this is the contrast arm rather than
+// the fixed code path.
 export class ThrowGen extends Resource {
 	static loadAsInstance = false;
 	static async *connect(_target, _incomingMessages, _request) {
@@ -77,7 +75,7 @@ export class ThrowGen extends Resource {
 	}
 }
 
-// GET /LargeGen/ — 3000 events then completion: the same terminal-step path at volume.
+// The same terminal-step path at volume.
 export class LargeGen extends Resource {
 	static loadAsInstance = false;
 	static async *connect(_target, _incomingMessages, _request) {
@@ -92,7 +90,7 @@ export class LargeGen extends Resource {
 	}
 }
 
-// GET /Probe/ — readiness + lifecycle-counter snapshot (plain JSON, not SSE).
+// Readiness + lifecycle-counter snapshot, served as plain JSON rather than SSE.
 export class Probe extends Resource {
 	static loadAsInstance = false;
 	static async get() {

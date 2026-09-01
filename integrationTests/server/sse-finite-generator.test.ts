@@ -1,23 +1,17 @@
 /**
  * QA-537 — regression verify for #1628 "SSE hang on a finite generator streamed to completion",
- * fixed by PR #1632.
+ * fixed by PR #1632. `transformIterable` (server/serverHelpers/contentTypes.ts) applied the SSE
+ * `serialize` transform to a generator's terminal `{ value: undefined, done: true }` step, which
+ * threw inside Readable.from's pull loop and left the response hanging, never closed; the fix
+ * passes that step through untransformed.
  *
- * `transformIterable` (server/serverHelpers/contentTypes.ts) applied the SSE `serialize` transform
- * to the generator's terminal `{ value: undefined, done: true }` step as well as to its yielded
- * values. `serialize()` dereferences `message.acknowledge`, so the terminal step threw a TypeError
- * inside Readable.from's pull loop — an uncaughtException that left the response hanging, never
- * closed, whenever a finite async generator was streamed to completion over
- * `Accept: text/event-stream`. The fix passes the terminal step through untransformed.
+ * The arms vary where the terminal step falls relative to the yielded values — N=0 (it is the
+ * first step produced, the sharpest trigger), N=1, N=5, N=3000 — plus ThrowGen, whose rejection
+ * never reaches the terminal step and so exercises #1789's teardown instead.
  *
- * The shapes below vary where that terminal step falls relative to the yielded values, which is
- * the axis the bug lived on: N=0 (terminal step is the first step produced, the sharpest trigger),
- * N=1, N=5 (the issue's own case) and N=3000 (same path after a long stream). ThrowGen is the
- * contrast arm — a generator that rejects never reaches the terminal step at all, so it exercises
- * the #1789 teardown path instead.
- *
- * Neighbouring suites, neither of which covers those completion shapes: sse-throw-midstream.test.ts
- * (#1789) is the dedicated anchor for a generator that *throws*; stream-error-contract.test.ts pins
- * the stream-*error* contract across SSE, NDJSON and iterable-REST on raw socket bytes.
+ * sse-throw-midstream.test.ts (#1789) anchors the throw path; stream-error-contract.test.ts pins
+ * the stream-error contract across SSE, NDJSON and iterable-REST on raw socket bytes. Neither
+ * covers the completion shapes above.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/server/sse-finite-generator.test.ts"
@@ -168,10 +162,9 @@ suite(
 					`[QA-537][5] ThrowGen: status=${r.status} events=${r.events.length} terminatedBy=${r.terminatedBy} aborted=${r.aborted} errored=${r.errored?.message ?? null} elapsedMs=${r.elapsedMs}`
 				);
 
-				// A rejecting generator never reaches the terminal `done` step #1632 fixed; it exits via
-				// the #1789 pipeline() teardown, which destroys the response instead of ending it
-				// cleanly. Both are bounded — that is what is asserted here. The full throw contract
-				// lives in sse-throw-midstream.test.ts.
+				// A rejecting generator exits via #1789's pipeline() teardown, which destroys the response
+				// instead of ending it cleanly. Only boundedness is asserted here; the throw contract
+				// itself is sse-throw-midstream.test.ts's.
 				ok(!r.aborted, `must not hit the AbortController timeout — the response never terminated. raw:\n${r.raw}`);
 				ok(r.terminatedBy !== null, 'response must terminate via end/error/close, not hang indefinitely');
 				// The generator yields 2 before it throws. The upper bound is the contract; the lower bound
@@ -204,6 +197,10 @@ suite(
 				);
 				console.log(`[QA-537][Z] liveness probe: ${probe ? JSON.stringify(probe) : 'DEAD'}`);
 				ok(probe !== null, 'Harper must still respond to Probe/ after all streaming cases');
+				ok(
+					probe!.finite && probe!.empty && probe!.single && probe!.throwGen && probe!.large,
+					`Probe/ returned no lifecycle counters: ${JSON.stringify(probe)}`
+				);
 				for (const [name, counter] of Object.entries({
 					FiniteGen: probe!.finite,
 					EmptyGen: probe!.empty,

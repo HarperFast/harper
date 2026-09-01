@@ -72,10 +72,14 @@ export function consumeSse(
 			elapsedMs: 0,
 		};
 		let settled = false;
+		let flushDecoder: (() => string) | null = null;
 		const finish = (terminatedBy: SseResult['terminatedBy'], err?: Error) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			// An abrupt close settles through 'error'/'close', so flushing only on 'end' would drop a
+			// multi-byte character the decoder was still holding.
+			if (flushDecoder) result.raw += flushDecoder();
 			result.aborted = timedOut;
 			result.terminatedBy = timedOut ? null : terminatedBy;
 			result.errored = err ?? null;
@@ -96,13 +100,11 @@ export function consumeSse(
 				// A bare d.toString('utf8') per chunk corrupts any multi-byte character that straddles
 				// a TCP chunk boundary into U+FFFD.
 				const decoder = new StringDecoder('utf8');
+				flushDecoder = () => decoder.end();
 				res.on('data', (d: Buffer) => {
 					result.raw += decoder.write(d);
 				});
-				res.on('end', () => {
-					result.raw += decoder.end();
-					finish('end');
-				});
+				res.on('end', () => finish('end'));
 				res.on('error', (e: Error) => finish('error', e));
 				res.on('close', () => finish('close'));
 			}

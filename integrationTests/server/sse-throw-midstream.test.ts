@@ -214,6 +214,7 @@ suite(
 					p !== null,
 					'Harper must still respond to Probe/ after all throw-mid-stream cases (worker not crashed/wedged)'
 				);
+				ok(p!.throwFirst && p!.throwMid && p!.clean, `Probe/ returned no lifecycle counters: ${JSON.stringify(p)}`);
 				ok(
 					p!.throwFirst.opened >= 1 && p!.throwFirst.closed >= 1,
 					'ThrowFirst should show a matched open/close pair (generator finally ran)'
