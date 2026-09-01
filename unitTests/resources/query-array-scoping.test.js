@@ -1,5 +1,5 @@
 require('../testUtils');
-const assert = require('assert');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { parseQuery } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
@@ -61,7 +61,7 @@ describe('Array-valued property scoping', () => {
 	describe('chained conditions are same-element scoped', () => {
 		it('parses a chained condition onto the previous condition', () => {
 			const parsed = parseQuery('skiLengths=ge=175&=le=180');
-			assert.equal(parsed.conditions.length, 1);
+			assert.strictEqual(parsed.conditions.length, 1);
 			// untyped FIQL values stay strings at parse time; only the parent condition's
 			// value is coerced during query planning (harper#2433)
 			assert.deepStrictEqual(parsed.conditions[0], {
@@ -73,7 +73,7 @@ describe('Array-valued property scoping', () => {
 			});
 		});
 		it('unindexed array, programmatic: only records with a single element inside the range match', async function () {
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				await collectIds(
 					Skiers.search({
 						conditions: [
@@ -93,7 +93,7 @@ describe('Array-valued property scoping', () => {
 			// one result per matching index entry proves the per-element index (not a table
 			// scan) served the collapsed range; the duplicated id 2 is harper#2434 — change
 			// to [2, 4, 6] when fixed
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				await collectIds(
 					Skiers.search({
 						conditions: [
@@ -110,40 +110,43 @@ describe('Array-valued property scoping', () => {
 			);
 		});
 		it('REST route with typed values agrees on both paths', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengths=ge=number:175&=le=number:180')), [2, 4, 6]);
-			assert.deepEqual(await collectIds(searchRest('skiLengthsIdx=ge=number:175&=le=number:180')), [2, 2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=ge=number:175&=le=number:180')), [2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengthsIdx=ge=number:175&=le=number:180')), [2, 2, 4, 6]);
 		});
 		it('exclusive chain (gt/lt) excludes both bounds; inclusive chain (ge/le) includes them', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengths=gt=number:175&=lt=number:180')), [2]);
-			assert.deepEqual(await collectIds(searchRest('skiLengthsIdx=gt=number:175&=lt=number:180')), [2, 2]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=gt=number:175&=lt=number:180')), [2]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengthsIdx=gt=number:175&=lt=number:180')), [2, 2]);
 		});
 		it('pins harper#2433: untyped REST chain degenerates', async function () {
 			// prepareConditions coerces only the parent value, so the collapsed range is
 			// [175, '180']; every number sorts below a string, making the string upper bound
 			// a no-op (superset) and a string lower bound exclude everything (empty set)
-			assert.deepEqual(await collectIds(searchRest('skiLengths=ge=175&=le=180')), [1, 2, 4, 6]);
-			assert.deepEqual(await collectIds(searchRest('skiLengths=le=180&=ge=175')), []);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=ge=175&=le=180')), [1, 2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=le=180&=ge=175')), []);
 		});
 		it.skip('harper#2433: untyped REST chained range must coerce the chained leg', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengths=ge=175&=le=180')), [2, 4, 6]);
-			assert.deepEqual(await collectIds(searchRest('skiLengths=le=180&=ge=175')), [2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=ge=175&=le=180')), [2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=le=180&=ge=175')), [2, 4, 6]);
 		});
 		it.skip('harper#2434: indexed chained range must not duplicate a record with two in-range elements', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengthsIdx=ge=number:175&=le=number:180')), [2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengthsIdx=ge=number:175&=le=number:180')), [2, 4, 6]);
 		});
 	});
 
 	describe('independent repeated conditions are independently existential', () => {
 		it('unindexed array: different elements may satisfy different legs', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengths=ge=175&skiLengths=le=180')), [1, 2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=ge=175&skiLengths=le=180')), [1, 2, 4, 6]);
 		});
 		it('indexed array: same matching records as unindexed', async function () {
 			// unique ids: which leg leads the scan is estimate-dependent, so the harper#2434
 			// duplicate pattern is not stable here
-			assert.deepEqual(await collectUniqueIds(searchRest('skiLengthsIdx=ge=175&skiLengthsIdx=le=180')), [1, 2, 4, 6]);
+			assert.deepStrictEqual(
+				await collectUniqueIds(searchRest('skiLengthsIdx=ge=175&skiLengthsIdx=le=180')),
+				[1, 2, 4, 6]
+			);
 		});
 		it.skip('harper#2434: indexed lead condition must not duplicate records into the result', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengthsIdx=ge=175&skiLengthsIdx=le=180')), [1, 2, 4, 6]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengthsIdx=ge=175&skiLengthsIdx=le=180')), [1, 2, 4, 6]);
 		});
 	});
 
@@ -182,23 +185,23 @@ describe('Array-valued property scoping', () => {
 	describe('contains over array values: per-element toString substring', () => {
 		it('string elements, unindexed: substring of any element matches', async function () {
 			// 'presale' and 'sales' match as substrings without equaling 'sale'
-			assert.deepEqual(await collectIds(searchRest('tags=ct=sale')), [1, 2]);
+			assert.deepStrictEqual(await collectIds(searchRest('tags=ct=sale')), [1, 2]);
 		});
 		it('string elements, indexed: same records; pins harper#2434 duplicate for the two-element match', async function () {
-			assert.deepEqual(await collectIds(searchRest('tagsIdx=ct=sale')), [1, 1, 2]);
+			assert.deepStrictEqual(await collectIds(searchRest('tagsIdx=ct=sale')), [1, 1, 2]);
 		});
 		it('numeric elements, unindexed: decimal-string substring of any element matches', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengths=ct=17')), [1, 2, 4]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths=ct=17')), [1, 2, 4]);
 		});
 		it('numeric elements, indexed: same records; pins harper#2434 duplicates', async function () {
-			assert.deepEqual(await collectIds(searchRest('skiLengthsIdx=ct=17')), [1, 1, 2, 2, 4]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengthsIdx=ct=17')), [1, 1, 2, 2, 4]);
 		});
 		it.skip('harper#2434: indexed contains must not duplicate records with several matching elements', async function () {
-			assert.deepEqual(await collectIds(searchRest('tagsIdx=ct=sale')), [1, 2]);
-			assert.deepEqual(await collectIds(searchRest('skiLengthsIdx=ct=17')), [1, 2, 4]);
+			assert.deepStrictEqual(await collectIds(searchRest('tagsIdx=ct=sale')), [1, 2]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengthsIdx=ct=17')), [1, 2, 4]);
 		});
 		it('programmatic string value against numeric elements: same result', async function () {
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				await collectIds(
 					Skiers.search({ conditions: [{ attribute: 'skiLengths', comparator: 'contains', value: '17' }] })
 				),
@@ -206,11 +209,11 @@ describe('Array-valued property scoping', () => {
 			);
 		});
 		it('whole-element matching is equality, not contains', async function () {
-			assert.deepEqual(
+			assert.deepStrictEqual(
 				await collectIds(Skiers.search({ conditions: [{ attribute: 'tags', comparator: 'equals', value: 'sale' }] })),
 				[2]
 			);
-			assert.deepEqual(await collectIds(searchRest('skiLengths==175')), [4]);
+			assert.deepStrictEqual(await collectIds(searchRest('skiLengths==175')), [4]);
 		});
 	});
 });
