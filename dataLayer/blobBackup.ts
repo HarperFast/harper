@@ -88,10 +88,23 @@ async function linkOrCopy(src: string, dest: string): Promise<boolean> {
 	return true;
 }
 
-/**
- * Put one blob file into the snapshot, returning how the entry was captured.
- */
-async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobCaptureDisposition> {
+/** What a substituted marker says happened, so a branch clone doesn't report itself as a backup. */
+export interface CaptureMarkerReasons {
+	gone: string;
+	pending: string;
+}
+
+const BACKUP_MARKER_REASONS: CaptureMarkerReasons = {
+	gone: 'blob was deleted while this backup was being taken',
+	pending: 'blob was not yet complete when this backup was taken',
+};
+
+/** Put one blob file into the destination, returning how the entry was captured. */
+async function captureBlobFile(
+	srcPath: string,
+	destPath: string,
+	reasons: CaptureMarkerReasons = BACKUP_MARKER_REASONS
+): Promise<BlobCaptureDisposition> {
 	let disposition: BlobCaptureDisposition;
 	try {
 		disposition = await classifyBlobFileForCapture(srcPath);
@@ -111,15 +124,7 @@ async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobC
 		disposition = 'gone';
 	}
 	await mkdir(dirname(destPath), { recursive: true });
-	await writeFile(
-		destPath,
-		createCaptureMarker(
-			disposition,
-			disposition === 'gone'
-				? 'blob was deleted while this backup was being taken'
-				: 'blob was not yet complete when this backup was taken'
-		)
-	);
+	await writeFile(destPath, createCaptureMarker(disposition, disposition === 'gone' ? reasons.gone : reasons.pending));
 	return disposition;
 }
 
@@ -127,13 +132,18 @@ async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobC
  * Recursively copy every file under `srcRoot` into `destRoot` (hard-link-else-copy), preserving the
  * relative directory structure. Missing `srcRoot` is a no-op (a database with no blobs yet).
  *
- * `classify` belongs to the snapshot direction only; restore must replace exactly what the snapshot
- * holds.
+ * `classify` substitutes a marker for a file that is mid-write or already gone, so the destination
+ * fails loudly on that blob rather than carrying a truncated one. It belongs to the capture direction
+ * only; restore must replace exactly what the snapshot holds.
+ *
+ * Also used by branch materialization (harper#644), which clones a base's blob roots into the
+ * branch's own so the OS inode refcount does the reference counting.
  */
-async function copyTree(
+export async function copyTree(
 	srcRoot: string,
 	destRoot: string,
-	classify = false
+	classify = false,
+	reasons?: CaptureMarkerReasons
 ): Promise<{ substituted: number; captured: number }> {
 	const counts = { substituted: 0, captured: 0 };
 	if (!existsSync(srcRoot)) return counts;
@@ -154,7 +164,7 @@ async function copyTree(
 			} else if (entry.isFile()) {
 				const destPath = join(destRoot, relative(srcRoot, srcPath));
 				if (classify) {
-					const disposition = await captureBlobFile(srcPath, destPath);
+					const disposition = await captureBlobFile(srcPath, destPath, reasons);
 					if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
 					else if (disposition === 'capture') counts.captured++;
 				} else {

@@ -1406,9 +1406,9 @@ function assertLegalBranchName(name: string, description: string): void {
  * live base Table class — which is why schema operations through a branch are refused
  * (branchGuard.ts).
  *
- * A branch's blob roots start empty, so a row whose blob was written before the checkpoint reads
- * back as a missing file until harper#644 links the base's blob tree into them. Non-blob rows are
- * unaffected, for reads and writes alike.
+ * A branch's blob roots are a hard-link clone of the base's, taken with the checkpoint, so a row
+ * whose blob predates the branch reads back normally and the branch allocates new file ids in its own
+ * directory (harper#644).
  *
  * A branch is the checkpoint's SST content plus its own transaction-log tail. This function opens
  * only the stores; replaying the tail is `openOrCreate`'s job (branchDatabase.ts), where the
@@ -1416,6 +1416,46 @@ function assertLegalBranchName(name: string, description: string): void {
  * branch — the same recovery contract a base database gets at boot, without which a process that
  * died unflushed silently rewinds the branch to its last memtable flush (harper#643).
  */
+/**
+ * Refuse a branch store identity that something else already answers to.
+ *
+ * `storeName` picks the branch's blob roots, and blob file ids restart from each store's own counter,
+ * so two holders of one identity write the same file paths and truncate each other. It must be
+ * checked BEFORE anything destructive runs: materialization removes and replaces the blob root that
+ * this name resolves to, and a real database may legally be called `5_myapp__data` -- `schemaRegex`
+ * permits digits, `_` and `.`. The `.staging` sibling materialization writes is covered too, since a
+ * database may legally carry that name as well.
+ */
+export function assertBranchIdentityAvailable(storeName: string): void {
+	// The on-disk scan, not just the in-memory maps: a database that exists on disk but has not been
+	// loaded is absent from both, and it owns the blob root this identity would destroy.
+	getDatabases();
+	for (const name of [storeName, `${storeName}.staging`]) {
+		if (databases[name] || definedDatabases?.has(name) || openBranchIdentities.has(name)) {
+			throw new Error(`Cannot use '${storeName}' as a branch store identity: '${name}' is already in use`);
+		}
+	}
+}
+
+/**
+ * Claim the identity as well as checking it, so the window between the check and the branch actually
+ * opening cannot be filled by a concurrent create or a second branch. `releaseBranchIdentity` hands
+ * it back if materialization never gets as far as opening.
+ */
+export function reserveBranchIdentity(storeName: string): void {
+	assertBranchIdentityAvailable(storeName);
+	openBranchIdentities.add(storeName);
+}
+
+export function releaseBranchIdentity(storeName: string): void {
+	openBranchIdentities.delete(storeName);
+}
+
+/** Is this name spoken for by a branch? Database creation has to refuse it -- they share a blob root. */
+export function isBranchIdentity(name: string): boolean {
+	return openBranchIdentities.has(name);
+}
+
 export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
 	assertLegalBranchName(databaseName, 'logical database name');
 	assertLegalBranchName(storeName, 'store identity');
@@ -1432,11 +1472,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// a loaded database's store is closed by `closeLoadedDatabases`, so adopting it would mean this
 	// handle's `close()` tears down a live database
 	if (rocksdbDatabaseEnvs.has(path)) throw new Error(`Cannot branch ${path}: it is already open as a database`);
-	// `storeName` picks the blob roots, and blob file ids restart from each store's own checkpointed
-	// counter, so two holders of one identity write the same file paths and truncate each other
-	if (databases[storeName] || definedDatabases?.has(storeName) || openBranchIdentities.has(storeName)) {
-		throw new Error(`Cannot use '${storeName}' as a branch store identity: it is already in use`);
-	}
+	assertBranchIdentityAvailable(storeName);
 
 	const tables: Tables = Object.create(null);
 	// initStores opens a table's column families well before `setTable` publishes it into `tables`,
@@ -2057,6 +2093,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	// fix still loads (data stays accessible) and can be dropped to remediate.
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
+	}
+	// A branch resolves its blob root from its store identity, so a database created under that same
+	// name would share the root: two allocators minting the same file paths and truncating each other,
+	// and the branch's teardown removing the database's blobs.
+	if (isBranchIdentity(databaseName)) {
+		throw new ClientError(`'${databaseName}' is in use as a branch store identity and cannot be a database name`);
 	}
 	const rootStore = database({ database: databaseName, table: tableName });
 	const tables = databases[databaseName];

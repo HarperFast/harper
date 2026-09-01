@@ -10,6 +10,27 @@ const { getOrCreateBranch, removeBranches } = require('#src/resources/branchData
 const { replayLogs } = require('#src/resources/replayLogs');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
+const { writeFileSync: _writeFileSync, mkdirSync: _mkdirSync } = require('node:fs');
+const { join: _join } = require('node:path');
+const { getBlobPathsForDatabaseName: _blobRoots } = require('#src/resources/blob');
+
+/**
+ * Finish a branch that a test built by hand so it reads as one materialization published: the
+ * completion marker naming the blob roots, and those roots present. Without it such a branch is
+ * (correctly) refused as a real store carrying no marker.
+ */
+function publishHandBuiltBranch(branchPath, appName, baseName) {
+	const blobRoots = _blobRoots(`${appName.length}_${appName}__${baseName}`);
+	for (const root of blobRoots) _mkdirSync(root, { recursive: true });
+	_writeFileSync(_join(branchPath, '.branch-complete'), JSON.stringify({ blobRoots }));
+}
+
+const { cpSync: _cpSync } = require('node:fs');
+/** Copy a directory tree, for on-disk states these tests have to construct by hand. */
+function cpSyncForTest(from, to) {
+	_cpSync(from, to, { recursive: true });
+}
+
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const describeUnlessLmdb = isLMDB ? describe.skip : describe;
 const itUnlessLmdb = isLMDB ? it.skip : it;
@@ -174,6 +195,7 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		await mkdir(join(branchPath, '..'), { recursive: true });
 		await database({ database: 'lifebase', table: undefined }).createCheckpoint(staging);
 		await rename(staging, branchPath);
+		publishHandBuiltBranch(branchPath, 'appAdopt', 'lifebase');
 
 		// Hold the branch store's replay lock from a second handle on the same directory (handles on
 		// one path share the native store, and the lock table lives on it): the elected replay must
@@ -396,7 +418,7 @@ describe('scoped databases binding (harper#643)', () => {
 
 describeUnlessLmdb('branch rollback is scoped to the failing application (harper#643)', () => {
 	const { mkdirSync, writeFileSync, rmSync } = require('node:fs');
-	const { dirname } = require('node:path');
+	const { dirname, join } = require('node:path');
 	let prepareBranches;
 
 	// An occupied branch directory no longer injects a fault: a directory that is already there is a
@@ -413,8 +435,11 @@ describeUnlessLmdb('branch rollback is scoped to the failing application (harper
 	/** Fail while opening — the branch path itself is adopted, then turns out not to be a database. */
 	function failBranchOpen(baseName, appName) {
 		const path = resolveBranchPath(baseName, appName);
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, 'not a database');
+		mkdirSync(path, { recursive: true });
+		// Has to read as a COMPLETE branch, or adoption treats it as leftovers and rebuilds from the base
+		// instead of failing: a marker naming roots that exist, over something that is not a database.
+		writeFileSync(join(path, 'CURRENT'), 'not a database');
+		publishHandBuiltBranch(path, appName, baseName);
 		return path;
 	}
 
@@ -687,3 +712,209 @@ describeUnlessLmdb(
 		});
 	}
 );
+
+describeUnlessLmdb('blobs in a branch (harper#644)', () => {
+	const { createBlob, getFilePathForBlob, getBlobPathsForDatabaseName } = require('#src/resources/blob');
+	// Comfortably above any inline threshold, and compressible content would be fine too -- only the
+	// size decides whether this lands in the blob tree.
+	const PAYLOAD = Buffer.alloc(64 * 1024, 'base blob contents ');
+	const BRANCH_STORE = `${'blobApp'.length}_blobApp__blobbase`;
+	let BlobSource;
+
+	function assertFileBacked(blob, what) {
+		assert.ok(getFilePathForBlob(blob), `${what} must be a file-backed blob for this suite to test anything`);
+	}
+
+	before(async function () {
+		this.timeout(30000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		BlobSource = table({
+			table: 'BlobSource',
+			database: 'blobbase',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		// Written to the base BEFORE any branch exists, so a branch's checkpointed record references a
+		// blob file the base already owns -- the case that is broken without the clone.
+		await BlobSource.put({ id: 'from-base', payload: await createBlob(PAYLOAD) });
+		assertFileBacked((await databases.blobbase.BlobSource.get('from-base')).payload, "the base's blob");
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	it('serves a blob the base wrote before the branch was taken', async function () {
+		this.timeout(30000);
+		const branch = await getOrCreateBranch('blobbase', 'blobApp');
+
+		const record = await branch.tables.BlobSource.get('from-base');
+		assert.ok(record, 'the branch has the row');
+		assertFileBacked(record.payload, "the branch's view of the blob");
+		// The branch resolves blob ids under its OWN root, so without the clone this file is not there.
+		assert.ok(existsSync(getFilePathForBlob(record.payload)), 'the branch has its own copy of the file');
+		assert.ok(PAYLOAD.equals(Buffer.from(await record.payload.bytes())), 'and it reads back byte-identical');
+	});
+
+	it("writes its own blobs into its own root, leaving the base's bytes alone", async function () {
+		this.timeout(30000);
+		const branch = await getOrCreateBranch('blobbase', 'blobApp');
+		const replacement = Buffer.alloc(64 * 1024, 'branch wrote this ');
+
+		await branch.tables.BlobSource.put({ id: 'from-base', payload: await createBlob(replacement) });
+		const throughBranch = await branch.tables.BlobSource.get('from-base');
+		assert.ok(replacement.equals(Buffer.from(await throughBranch.payload.bytes())));
+
+		const base = await databases.blobbase.BlobSource.get('from-base');
+		assert.ok(PAYLOAD.equals(Buffer.from(await base.payload.bytes())), "the base's blob is untouched");
+	});
+
+	it('removes its blob root when the branch is removed', async function () {
+		this.timeout(30000);
+		await getOrCreateBranch('blobbase', 'blobApp');
+		const [branchBlobRoot] = getBlobPathsForDatabaseName(BRANCH_STORE);
+		assert.ok(existsSync(branchBlobRoot), `expected a branch blob root at ${branchBlobRoot}`);
+
+		await removeBranches();
+
+		// The blob root lives outside the branch directory, so removing only the directory would strand
+		// it -- and being hard links, the bytes would survive the base deleting its own copies.
+		assert.strictEqual(existsSync(branchBlobRoot), false, 'the branch takes its blob root with it');
+		assert.ok(existsSync(getBlobPathsForDatabaseName('blobbase')[0]), "the base's blob root stays");
+	});
+});
+
+describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
+	const { mkdirSync, writeFileSync, rmSync, statSync, cpSync } = require('node:fs');
+	const { join } = require('node:path');
+	const { getBlobPathsForDatabaseName, createBlob, getFilePathForBlob } = require('#src/resources/blob');
+	const STORE = `${'safeApp'.length}_safeApp__safebase`;
+
+	before(async function () {
+		this.timeout(30000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({
+			table: 'Safe',
+			database: 'safebase',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		await databases.safebase.Safe.put({ id: 'seed', payload: await createBlob(Buffer.alloc(64 * 1024, 'x')) });
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+		// A refused branch never entered the handle cache, so `removeBranches` cannot reach it; left in
+		// place it would fail every later test in this suite the same way.
+		rmSync(resolveBranchPath('safebase', 'safeApp'), { recursive: true, force: true });
+		for (const root of getBlobPathsForDatabaseName(STORE)) rmSync(root, { recursive: true, force: true });
+	});
+
+	it('refuses an identity a real database already answers to, before removing anything', async function () {
+		this.timeout(30000);
+		// A branch's blob root is `<blobs>/<identity>` and materialization REMOVES and replaces it, so a
+		// database legally named like the identity would have its blob root deleted. schemaRegex permits
+		// digits, `_` and `.`, so this name is reachable. Its own app name, because registering the
+		// database claims that identity for the rest of the process.
+		const clashStore = `${'clashApp'.length}_clashApp__safebase`;
+		table({ table: 'Victim', database: clashStore, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		const victimRoot = getBlobPathsForDatabaseName(clashStore)[0];
+		mkdirSync(victimRoot, { recursive: true });
+		writeFileSync(join(victimRoot, 'precious'), 'the victim database owns this');
+
+		await assert.rejects(() => getOrCreateBranch('safebase', 'clashApp'), /already in use/);
+
+		assert.ok(existsSync(join(victimRoot, 'precious')), "the real database's blob root must survive");
+	});
+
+	it('refuses to serve or rebuild a branch that lost a blob root, rather than silently re-forking', async function () {
+		this.timeout(30000);
+		await getOrCreateBranch('safebase', 'safeApp');
+		const branchPath = resolveBranchPath('safebase', 'safeApp');
+
+		// Keep a real, complete branch aside, tear the live one down so nothing is cached, then put back
+		// the directory WITHOUT its blob roots. That is the state a power loss can leave, since the
+		// directory and the roots live on different volumes and neither rename is fsynced.
+		const saved = `${branchPath}.savedforTest`;
+		cpSync(branchPath, saved, { recursive: true });
+		await removeBranches();
+		cpSync(saved, branchPath, { recursive: true });
+		rmSync(saved, { recursive: true, force: true });
+		assert.ok(
+			getBlobPathsForDatabaseName(STORE).every((root) => !existsSync(root)),
+			'sanity: directory present, blob roots gone'
+		);
+
+		// Rebuilding here would re-fork from the base and silently discard everything written to the
+		// branch since it was created; a branch that was once complete may hold data that exists nowhere
+		// else. Refusing leaves it intact and puts the decision in front of an operator.
+		await assert.rejects(() => getOrCreateBranch('safebase', 'safeApp'), /cannot be trusted/);
+		assert.ok(existsSync(branchPath), 'and it does not delete what it refused to serve');
+
+		rmSync(branchPath, { recursive: true, force: true });
+	});
+
+	it('clears leftovers that are not a store and rebuilds, where there is nothing to lose', async function () {
+		this.timeout(30000);
+		const branchPath = resolveBranchPath('safebase', 'safeApp');
+		// No completion marker AND no CURRENT: not a database, so nothing was ever written here and
+		// clearing it is safe. This is the only shape that may be deleted.
+		mkdirSync(branchPath, { recursive: true });
+		writeFileSync(join(branchPath, 'stray'), 'leftovers that are not a store');
+
+		const branch = await getOrCreateBranch('safebase', 'safeApp');
+		assert.ok(await branch.tables.Safe.get('seed'), 'rebuilt from the base');
+		assert.ok(getBlobPathsForDatabaseName(STORE).every((root) => existsSync(root)));
+	});
+
+	it('refuses, never deletes, a real store that carries no completion marker', async function () {
+		this.timeout(30000);
+		// Exactly the shape every branch created before the marker existed has, and the shape a branch
+		// whose marker was lost to operator cleanup or an unsynced write has. Materialization cannot
+		// produce it -- it publishes by renaming a staging directory that already holds the marker -- so
+		// anything marker-less that IS a store came from elsewhere and is carrying data.
+		const branchPath = resolveBranchPath('safebase', 'safeApp');
+		mkdirSync(branchPath, { recursive: true });
+		writeFileSync(join(branchPath, 'CURRENT'), 'MANIFEST-000001\n');
+
+		await assert.rejects(() => getOrCreateBranch('safebase', 'safeApp'), /cannot be trusted/);
+		assert.ok(existsSync(join(branchPath, 'CURRENT')), 'the store must still be there, not re-forked away');
+	});
+
+	it('refuses a branch whose recorded blob roots no longer match the configuration', async function () {
+		this.timeout(30000);
+		await getOrCreateBranch('safebase', 'safeApp');
+		const branchPath = resolveBranchPath('safebase', 'safeApp');
+		const saved = `${branchPath}.savedforTest`;
+		cpSync(branchPath, saved, { recursive: true });
+		await removeBranches();
+		cpSync(saved, branchPath, { recursive: true });
+		rmSync(saved, { recursive: true, force: true });
+
+		// `storageIndex` on a row is a position in this list, so a reordered or resized blobPaths would
+		// resolve rows through the wrong root. The marker records what was published, which is exactly
+		// what makes that detectable.
+		writeFileSync(join(branchPath, '.branch-complete'), JSON.stringify({ blobRoots: ['/nowhere/at/all'] }));
+
+		await assert.rejects(() => getOrCreateBranch('safebase', 'safeApp'), /no longer match the configured/);
+	});
+
+	it('hard-links rather than copies, so the clone costs no extra bytes', async function () {
+		this.timeout(30000);
+		const branch = await getOrCreateBranch('safebase', 'safeApp');
+
+		const baseFile = getFilePathForBlob((await databases.safebase.Safe.get('seed')).payload);
+		const branchFile = getFilePathForBlob((await branch.tables.Safe.get('seed')).payload);
+		assert.notStrictEqual(baseFile, branchFile, 'the branch resolves its own path');
+		// The whole design rests on this: same inode, so the OS refcount IS the reference count. A silent
+		// fallback to copyFile would double disk and make first load O(bytes) with nothing noticing.
+		assert.strictEqual(statSync(branchFile).ino, statSync(baseFile).ino, 'same inode');
+		assert.ok(statSync(branchFile).nlink >= 2, 'and more than one link to it');
+	});
+});
