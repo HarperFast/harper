@@ -12,6 +12,16 @@ fn vector_for(i: u32, dims: usize) -> Vec<f32> {
     (0..dims).map(|d| ((i as f32 * 0.31 + d as f32) * 0.7).sin()).collect()
 }
 
+/// Wait for a holder thread to report the lock taken, rather than spinning forever if it dies
+/// before signalling.
+fn await_lock(held: &std::sync::atomic::AtomicBool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !held.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(std::time::Instant::now() < deadline, "holder thread never acquired the lock");
+        std::hint::spin_loop();
+    }
+}
+
 fn tmp(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("hnsw-{name}-{}.hnsw", std::process::id()))
 }
@@ -352,9 +362,7 @@ fn contended_raw_rewrite_does_not_mint_a_second_upper_entry() {
             std::thread::sleep(std::time::Duration::from_millis(30)); // past TAKEOVER_AFTER
             drop(guard);
         });
-        while !held.load(O::Acquire) {
-            std::hint::spin_loop(); // the mirror must arrive with the lock genuinely held
-        }
+        await_lock(&held); // the mirror must arrive with the lock genuinely held
         graph.write_node_raw(9, 1, &q.0, q.1, q.2, &[1, 2], &[vec![n % 8]]).unwrap();
         hold.join().unwrap();
     }
@@ -367,32 +375,28 @@ fn contended_raw_rewrite_does_not_mint_a_second_upper_entry() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// The backfill scan allocates its upper entry before taking the slot lock, and nothing
-/// references that entry until the write lands — so giving up on a wedged lock without freeing
-/// strands it outside both the freelist and the graph. `upper_high_water` not advancing on the
-/// next allocation is what proves it was reclaimed.
-///
-/// `write_node_raw`'s equivalent window (between `upper_idx_locked` releasing and `write_node`
-/// re-acquiring) is guarded the same way but cannot be driven deterministically: a holder that
-/// takes the lock first now wedges the read, before anything is allocated.
+/// Nothing references a freshly allocated upper entry until its write lands, so a path that
+/// gives up on a wedged slot lock without freeing strands it outside both the freelist and the
+/// graph. `upper_high_water` staying put on the next allocation is what distinguishes a
+/// reclaimed entry from a leaked one.
 #[test]
 fn a_wedged_untouched_write_frees_its_upper_entry() {
-    use std::sync::atomic::{AtomicBool, Ordering as O};
+    use std::sync::atomic::Ordering as O;
     let dims = 32;
     let path = tmp("wedgeuntouched");
     let _ = std::fs::remove_file(&path);
     let graph = std::sync::Arc::new(Graph::new(PlaneFile::create(&path, dims, 16, 64).expect("create")));
     let write = |id: u32| {
         let q = hnsw_plane::distance::quantize_int8(&vector_for(id, dims));
-        let _ = graph.write_node_if_untouched(id, 1, &q.0, q.1, q.2, &[1, 2], &[vec![id]]);
+        graph.write_node_if_untouched(id, 1, &q.0, q.1, q.2, &[1, 2], &[vec![id]])
     };
 
-    write(1);
+    assert_eq!(write(1), Ok(true));
     let baseline = graph.file.upper_high_water();
 
     let seq9 = graph.file.seq_atomic(9) as *const _ as usize;
     let g2 = graph.clone();
-    let held = std::sync::Arc::new(AtomicBool::new(false));
+    let held = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let held2 = held.clone();
     let hold = std::thread::spawn(move || {
         let seq = unsafe { &*(seq9 as *const std::sync::atomic::AtomicU32) };
@@ -404,13 +408,11 @@ fn a_wedged_untouched_write_frees_its_upper_entry() {
         std::thread::sleep(std::time::Duration::from_millis(6_500)); // past WRITE_WEDGE_AFTER
         drop(guard);
     });
-    while !held.load(O::Acquire) {
-        std::hint::spin_loop();
-    }
-    write(9); // wedges on the slot lock, having already allocated an upper entry
+    await_lock(&held);
+    assert_eq!(write(9), Err(hnsw_plane::seqlock::Wedged), "the held lock must wedge this write");
     hold.join().unwrap();
 
-    write(2);
+    assert_eq!(write(2), Ok(true));
     assert_eq!(
         graph.file.upper_high_water(),
         baseline + 1,
