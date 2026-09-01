@@ -100,25 +100,48 @@ let hdbProperties;
 
 let rootConfig;
 
-function updateLogger(logger: any, logOptions: any, name?: string) {
-	logger.rotation = logOptions.rotation;
+// `mainLoggerRef` defaults to the module's private `mainLogger` singleton (the real production
+// behavior) but can be overridden by callers (currently just tests) so the inheritance decision
+// below can be exercised against a throwaway logger without reaching into module-private state.
+export function updateLogger(logger: any, logOptions: any, name?: string, mainLoggerRef: any = mainLogger) {
+	// Fall back to the main logger's rotation (like level/path below) so an external/component
+	// logger with no rotation block of its own inherits maxSize/interval/etc rather than losing
+	// rotation entirely (#1877). Excluded when `logger` IS mainLoggerRef: the fallback would just
+	// reassign mainLogger.rotation to itself, making it impossible to ever clear main's rotation.
+	const inheritedRotation = logOptions.rotation ?? (logger === mainLoggerRef ? undefined : mainLoggerRef?.rotation);
+	if (inheritedRotation && inheritedRotation === mainLoggerRef?.rotation) {
+		// This logger has no rotation block of its own and is inheriting main's wholesale — but
+		// inheriting `rotation.path` too would point this logger's archives at wherever main
+		// archives to. If this logger's file lives on a different filesystem/volume than that
+		// directory, the rotator's fs.rename() there fails with EXDEV and the tick error leaks
+		// (contained in logRotator.ts) without ever rotating this log. Strip the inherited path so
+		// rotation instead defaults beside this logger's own path (logRotator's own <log dir>/rotated
+		// fallback); an explicit `rotation.path` in this logger's own config still wins, since that
+		// goes through `logOptions.rotation` above, not this fallback. Clone rather than mutate:
+		// `inheritedRotation` is the literal object shared by mainLogger.rotation and every other
+		// component that inherited it.
+		const { path: _inheritedPath, ...rotationWithoutPath } = inheritedRotation;
+		logger.rotation = rotationWithoutPath;
+	} else {
+		logger.rotation = inheritedRotation;
+	}
 	let path = logOptions.path;
 	if (path) {
 		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
 	} else if (logOptions.root) {
 		path = join(logOptions.root, logName);
 	} else {
-		path = mainLogger.path;
+		path = mainLoggerRef.path;
 		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
 	}
 	if (path) logger.path = path;
 	else console.error('No path for logger', logOptions);
-	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLogger?.level ?? LOG_LEVEL_HIERARCHY.info;
+	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLoggerRef?.level ?? LOG_LEVEL_HIERARCHY.info;
 	updateConditional(logger);
 	logger.logToStdstreams = logOptions.stdStreams ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
-	logger.tag = logOptions.tag ?? ((mainLogger.path === logger.path || externalLogger.path === logger.path) && name);
+	logger.tag = logOptions.tag ?? ((mainLoggerRef.path === logger.path || externalLogger.path === logger.path) && name);
 }
 // creates a logger where the methods are only defined if they are within the log level.
 // Using this conditional logger means that every method call must be optional like log.trace?.('message),
@@ -383,6 +406,7 @@ module.exports = {
 	disableStdio,
 	isStdioBrokenError,
 	externalLogger,
+	updateLogger,
 };
 
 // Writes past the stdio guard installed by installStdioGuard, which would otherwise route the
@@ -1887,4 +1911,5 @@ export default {
 	errorForLog,
 	inspectForLog,
 	isErrorLike,
+	updateLogger,
 };
