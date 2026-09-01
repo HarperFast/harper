@@ -103,7 +103,10 @@ function postMultipart(
 				res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
 			}
 		);
-		req.on('error', reject);
+		req.on('error', (err) => {
+			body.destroy(err);
+			reject(err);
+		});
 		body.on('error', (err) => {
 			req.destroy(err);
 			reject(err);
@@ -311,7 +314,8 @@ suite(
 								'Basic ' + Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64'),
 						},
 					});
-					if (probe.status !== 404) break;
+					// A 5xx means mounted but unhealthy, which is not ready either.
+					if (probe.status !== 404 && probe.status < 500) break;
 				} catch {
 					/* not ready yet */
 				}
@@ -463,7 +467,8 @@ suite(
 					inFlightStatus = row.status;
 					break;
 				}
-				if (!listed.body?.deployments) break; // list_deployments is not answering; fall through
+				// Deliberately no early exit on a malformed/failed list response: a transient error
+				// under load would otherwise end the poll and silently skip the 409 assertion.
 			}
 
 			if (inFlightId) {

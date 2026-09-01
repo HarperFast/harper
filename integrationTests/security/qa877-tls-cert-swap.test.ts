@@ -98,6 +98,11 @@ const skipSuite = process.platform === 'win32' || testsBun;
 // 1500ms updateTLS debounce). 25s gives ample margin before we conclude "did not propagate".
 const PROPAGATION_WAIT_MS = 25_000;
 const FANOUT_ATTEMPTS = 30;
+// Each worker debounces its own updateTLS() rebuild with a 1500ms timer. The schema-change leg
+// asserts a NON-event (the served cert does not change), so it must wait clearly past that debounce
+// — waiting exactly 1500ms would let a swap land just after the probe and read as "unchanged",
+// which is the very failure the leg exists to catch.
+const NON_EVENT_SETTLE_MS = 5_000;
 
 async function makeServerCertPem(keyPair: Ed25519KeyPair, serialNumber: number): Promise<string> {
 	const cert = await createCertificate({
@@ -229,7 +234,10 @@ for (const WORKERS of [1, 4]) {
 				while (Date.now() < deadline) {
 					try {
 						const res = await fetch(`${ctx.harper.httpURL}/Widget/`);
-						if (res.status !== 404) return;
+						// 404 means the route is not mounted yet; a 5xx means it is mounted but unhealthy,
+						// which is also not ready — treating it as ready turns a fixture misconfiguration
+						// into a cryptic TLS timeout further down.
+						if (res.status !== 404 && res.status < 500) return;
 					} catch {
 						/* not ready yet */
 					}
@@ -260,8 +268,11 @@ for (const WORKERS of [1, 4]) {
 			});
 
 			after(async () => {
-				await teardownHarper(ctx);
-				await rm(certsDir, { recursive: true, force: true, maxRetries: 3 });
+				try {
+					await teardownHarper(ctx);
+				} finally {
+					await rm(certsDir, { recursive: true, force: true, maxRetries: 3 });
+				}
 			});
 
 			const SERIAL_BASELINE = 87701;
@@ -324,7 +335,7 @@ for (const WORKERS of [1, 4]) {
 				);
 				// A fixed wait is right here: the assertion below is that something did NOT happen
 				// (the served cert did not change), so there is no condition to poll for.
-				await sleep(1500);
+				await sleep(NON_EVENT_SETTLE_MS);
 
 				const { serials, errors } = await fanOut(ctx.harper.hostname, FANOUT_ATTEMPTS);
 				equal(errors, 0, `unexpected handshake failures right after the schema change: ${errors}/${FANOUT_ATTEMPTS}`);
