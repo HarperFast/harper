@@ -28,6 +28,25 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 	removeLog(logName: string);
 };
 
+/**
+ * The error a corrupt frame ends a query iterator with: the engine's `CorruptFrameError` when it
+ * classified the break (`resyncPosition` is set when intact entries follow the break — a mid-log
+ * break whose entries in between are lost to the stream — and absent for a torn tail), or a plain
+ * `RangeError` from an engine that does not classify, carrying none of those fields.
+ */
+export type CorruptFrameReport = RangeError &
+	Partial<Pick<CorruptFrameError, 'logId' | 'position' | 'resyncPosition' | 'unreadableBytes'>>;
+
+/**
+ * Called once per log per iterable when a corrupt frame ends that log's query iterator early (a new
+ * `getRange` over a still-broken log reports it again), synchronously from inside the iterable's
+ * `next()`; on the aggregate path a `removeLog` requested from the hook is applied once that `next()`
+ * returns. It covers framing breaks only: a reader that dies with another error ends its log through
+ * the aggregate path's own containment (see `safeNext`) without a report. Core only reports; what to
+ * do about the gap is the caller's policy.
+ */
+export type CorruptFrameHook = (error: CorruptFrameReport, logName: string) => void | Promise<void>;
+
 type TrackedIterator = IterableIterator<TransactionEntry> & { lastVersion?: number; lastEndTxn?: boolean };
 
 export type TransactionLogIterable = Iterable<AuditRecord> & {
@@ -36,6 +55,20 @@ export type TransactionLogIterable = Iterable<AuditRecord> & {
 };
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
+
+function invokeCorruptFrameHook(onCorruptFrame: CorruptFrameHook, error: CorruptFrameReport, logName: string) {
+	const hookFailed = (hookError: unknown) => {
+		try {
+			harperLogger.error(`onCorruptFrame hook failed for transaction log "${logName}"`, hookError);
+		} catch {}
+	};
+	try {
+		const result = onCorruptFrame(error, logName) as Promise<void> | undefined;
+		if (typeof result?.then === 'function') void result.then(undefined, hookFailed);
+	} catch (hookError) {
+		hookFailed(hookError);
+	}
+}
 
 /**
  * Represents a transaction log store backed by RocksDB.
@@ -250,6 +283,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
+		onCorruptFrame?: CorruptFrameHook;
 		/**
 		 * Track which version a break truncated, in `corruptFrameStop.truncatedVersions`. Costs two
 		 * property stores per yielded entry (see below), so it defaults off: only boot replay reads
@@ -269,7 +303,11 @@ export class RocksTransactionLogStore extends EventEmitter {
 		// it, not inside it. On the iterator itself, not in a map keyed by log: this is written per
 		// entry on the replay/broadcast path (when `attributeCorruption`), and it stays attached when a
 		// removed log is spliced out of the aggregate.
-		const trackCorruptFrames = (log: TransactionLog, queryOptions: typeof options): TrackedIterator => {
+		const trackCorruptFrames = (
+			log: TransactionLog,
+			queryOptions: typeof options,
+			onCorruptFrame?: CorruptFrameHook
+		): TrackedIterator => {
 			const report = reportCorruptFrame(`${this.corruptFrameScope}/${log.name}`);
 			const iterator: TrackedIterator = endIteratorOnCorruptFrame(log.query(queryOptions), (error) => {
 				corruptFrameStop.breaks++;
@@ -277,7 +315,10 @@ export class RocksTransactionLogStore extends EventEmitter {
 					corruptFrameStop.truncatedVersions.add(iterator.lastVersion);
 				}
 				if (isMidLogBreak(error)) corruptFrameStop.midLogBreak = true;
-				report(error);
+				try {
+					report(error);
+				} catch {}
+				if (onCorruptFrame) invokeCorruptFrameHook(onCorruptFrame, error, log.name);
 			});
 			// Set here, once, rather than left for the per-entry write sites below to add these fields
 			// on their first call: every TrackedIterator then reaches its final shape before any entry
@@ -300,11 +341,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 					log = this.rootStore.useLog(options.log);
 				}
 			}
-			const queryIterator = trackCorruptFrames(log, options);
+			const queryIterator = trackCorruptFrames(log, options, options.onCorruptFrame);
 			singleLogIterator = queryIterator;
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
+			const excludedLogs = [...(options.excludeLogs ?? [])];
 			let logs: TransactionLog[] = [];
 			// holds the queue of next entries from each iterator
 			let nextEntries: any[];
@@ -334,11 +376,18 @@ export class RocksTransactionLogStore extends EventEmitter {
 					return { value: undefined, done: true };
 				}
 			};
+			// Reports wait until the outer poll has finished building nextEntries, so a hook may reference
+			// the iterable and re-enter it without an in-flight poll overwriting its buffer.
+			const hook = options.onCorruptFrame;
+			let deferredReports: [CorruptFrameReport, string][] | undefined;
+			const onCorruptFrame =
+				hook &&
+				((error: CorruptFrameReport, logName: string) => {
+					(deferredReports ??= []).push([error, logName]);
+				});
 			const updateIterators = () => {
 				if (latestUpdates !== this.updates) {
-					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
-						(log) => !options.excludeLogs?.includes(log.name)
-					);
+					const latestLogs = (this.nodeLogs || this.loadLogs()).filter((log) => !excludedLogs.includes(log.name));
 					for (let log of latestLogs) {
 						if (!logs.includes(log)) {
 							logs.push(log);
@@ -352,7 +401,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 								// condition of potentially missing an initial update
 								queryOptions = { ...options, start: options.start ?? 0 };
 							}
-							iterators.push(trackCorruptFrames(log, queryOptions));
+							iterators.push(trackCorruptFrames(log, queryOptions, onCorruptFrame));
 						}
 					}
 					latestUpdates = this.updates;
@@ -370,77 +419,105 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 			updateIterators();
 
+			const advance = (): IteratorResult<TransactionEntry | number> => {
+				// We get up to two passes: the normal find-earliest pass, plus one retry that
+				// forces nextEntries.length = 0 to re-poll every per-log iterator (each picks
+				// up new entries when its log file has grown since the last `.next()` returned
+				// done) and to let updateIterators pick up any new logs added since the last
+				// call (e.g. a peer's log created by replication). Without the retry, a
+				// `{ done: true }` slot in nextEntries carried over from a previous call
+				// persists across a burst of commits that all coalesce into a single
+				// notifyFromTransactionData wake-up — the find-earliest loop keeps skipping
+				// the stale done slot, never re-polls the underlying iterator, and the entire
+				// burst is silently dropped (no further 'committed' arrives to unstick us).
+				// This was the fingerprint of the cloneNode topology bug where peer rows
+				// landed in hdb_nodes via system-DB replication but subscribeToNodeUpdates
+				// never received the events, so onNodeUpdate never opened replication
+				// connections to those peers.
+				for (let attempt = 0; attempt < 2; attempt++) {
+					if (nextEntries.length === 0) {
+						// on the first iteration and any time we finished all the iterators,
+						// we re-retrieve all the next entries (in case we are resuming after
+						// being done)
+						updateIterators();
+					}
+					let earliest: TransactionEntry;
+					let earliestIndex = -1;
+					for (let i = 0; i < nextEntries.length; i++) {
+						const result = nextEntries[i];
+						// skip any that are done
+						if (result.done) {
+							continue;
+						}
+						// find the earliest one that is not done
+						const next = result.value;
+						if (!earliest || earliest.timestamp > next.timestamp) {
+							earliest = next;
+							earliestIndex = i;
+						}
+					}
+					if (earliestIndex >= 0) {
+						if (attributeCorruption) {
+							// before the refill, which is where a break surfaces and needs this entry's version
+							iterators[earliestIndex].lastVersion = earliest.timestamp;
+							iterators[earliestIndex].lastEndTxn = earliest.endTxn;
+						}
+						nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
+						return {
+							value: onlyKeys ? earliest.timestamp : earliest,
+							done: false,
+						};
+					}
+					// All current entries are done; force the retry pass to re-poll
+					nextEntries.length = 0;
+				}
+				return { value: undefined, done: true };
+			};
+
+			// Keep removals out of a poll so re-entrant callers cannot splice its slots.
+			let polling = false;
+			let deferredRemovals: string[] | undefined;
+			const guardedNext = (userHook: CorruptFrameHook) => () => {
+				const outerPolling = polling;
+				polling = true;
+				try {
+					return advance();
+				} finally {
+					if (!outerPolling) {
+						while (deferredReports) {
+							const reports = deferredReports;
+							deferredReports = undefined;
+							for (const [error, logName] of reports) invokeCorruptFrameHook(userHook, error, logName);
+						}
+					}
+					polling = outerPolling;
+					if (deferredRemovals && !outerPolling) {
+						const logNames = deferredRemovals;
+						deferredRemovals = undefined;
+						for (const logName of logNames) aggregateIterator.removeLog(logName);
+					}
+				}
+			};
 			aggregateIterator = {
-				next() {
-					// We get up to two passes: the normal find-earliest pass, plus one retry that
-					// forces nextEntries.length = 0 to re-poll every per-log iterator (each picks
-					// up new entries when its log file has grown since the last `.next()` returned
-					// done) and to let updateIterators pick up any new logs added since the last
-					// call (e.g. a peer's log created by replication). Without the retry, a
-					// `{ done: true }` slot in nextEntries carried over from a previous call
-					// persists across a burst of commits that all coalesce into a single
-					// notifyFromTransactionData wake-up — the find-earliest loop keeps skipping
-					// the stale done slot, never re-polls the underlying iterator, and the entire
-					// burst is silently dropped (no further 'committed' arrives to unstick us).
-					// This was the fingerprint of the cloneNode topology bug where peer rows
-					// landed in hdb_nodes via system-DB replication but subscribeToNodeUpdates
-					// never received the events, so onNodeUpdate never opened replication
-					// connections to those peers.
-					for (let attempt = 0; attempt < 2; attempt++) {
-						if (nextEntries.length === 0) {
-							// on the first iteration and any time we finished all the iterators,
-							// we re-retrieve all the next entries (in case we are resuming after
-							// being done)
-							updateIterators();
-						}
-						let earliest: TransactionEntry;
-						let earliestIndex = -1;
-						for (let i = 0; i < nextEntries.length; i++) {
-							const result = nextEntries[i];
-							// skip any that are done
-							if (result.done) {
-								continue;
-							}
-							// find the earliest one that is not done
-							const next = result.value;
-							if (!earliest || earliest.timestamp > next.timestamp) {
-								earliest = next;
-								earliestIndex = i;
-							}
-						}
-						if (earliestIndex >= 0) {
-							if (attributeCorruption) {
-								// before the refill, which is where a break surfaces and needs this entry's version
-								iterators[earliestIndex].lastVersion = earliest.timestamp;
-								iterators[earliestIndex].lastEndTxn = earliest.endTxn;
-							}
-							nextEntries[earliestIndex] = safeNext(iterators[earliestIndex], logs[earliestIndex]);
-							return {
-								value: onlyKeys ? earliest.timestamp : earliest,
-								done: false,
-							};
-						}
-						// All current entries are done; force the retry pass to re-poll
-						nextEntries.length = 0;
-					}
-					return { value: undefined, done: true };
-				},
+				next: hook ? guardedNext(hook) : advance,
 				addLog(logName: string) {
-					let index = options.excludeLogs?.indexOf(logName);
-					if (index >= 0) {
-						options.excludeLogs.splice(index, 1);
-					}
+					const index = excludedLogs.indexOf(logName);
+					if (index >= 0) excludedLogs.splice(index, 1);
 				},
 				removeLog: (logName: string) => {
+					if (polling) {
+						(deferredRemovals ??= []).push(logName);
+						return;
+					}
 					const log = this.logByName.get(logName);
 					if (!log) return; // not found
 
-					const index = logs.findIndex((l) => l === log);
+					const index = logs.findIndex((candidate) => candidate === log);
 					if (index >= 0) {
 						logs.splice(index, 1);
 						iterators.splice(index, 1);
 						nextEntries.splice(index, 1);
-						options.excludeLogs.push(logName);
+						excludedLogs.push(logName);
 					}
 				},
 			};
