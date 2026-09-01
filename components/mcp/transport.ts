@@ -364,7 +364,6 @@ async function dispatchSetLevel(
 	// tools/resources list_changed notifications only reach sessions registered
 	// on the worker where the change fires. Cross-worker push is a separate,
 	// subsystem-wide design item (tracked in the MCP design-doc issue).
-	session.logLevel = level;
 	await saveSession(session.id, { logLevel: level });
 	setSessionLogLevel(session.id, level);
 	return jsonResponse(200, buildSuccess(messageId, {}));
@@ -929,8 +928,8 @@ async function dispatchResourcesSubscribe(
 	}
 	// Persist the URI on the durable record so it survives an SSE reconnect.
 	if (!session.subscriptions?.includes(uri)) {
-		session.subscriptions = [...(session.subscriptions ?? []), uri];
-		await saveSession(session.id, { subscriptions: session.subscriptions });
+		const subscriptions = [...(session.subscriptions ?? []), uri];
+		await saveSession(session.id, { subscriptions });
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -951,8 +950,8 @@ async function dispatchResourcesUnsubscribe(
 	}
 	removeResourceSubscription(session.id, uri);
 	if (session.subscriptions?.includes(uri)) {
-		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
-		await saveSession(session.id, { subscriptions: session.subscriptions });
+		const subscriptions = session.subscriptions.filter((u) => u !== uri);
+		await saveSession(session.id, { subscriptions });
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }

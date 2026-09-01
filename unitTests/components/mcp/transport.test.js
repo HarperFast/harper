@@ -258,6 +258,20 @@ describe('mcp/transport', () => {
 			assert.equal(session.logLevel, 'warning');
 		});
 
+		it('logging/setLevel persists without mutating a frozen loaded session', async () => {
+			const get = fakeSessionTable.get;
+			fakeSessionTable.get = async (id) => Object.freeze(await get(id));
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(2, 'logging/setLevel', { level: 'warning' }),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+
+			assert.equal(res.status, 200);
+			assert.equal((await loadSession(sessionId)).logLevel, 'warning');
+		});
+
 		it('does not roll back lastActivity when persisting the level (touchSession adopted)', async () => {
 			// Force a known-old lastActivity, then setLevel: the request's touchSession
 			// must advance it, and the level-persisting saveSession must NOT write the
@@ -1184,6 +1198,29 @@ describe('mcp/transport', () => {
 				assert.deepEqual(res.jsonBody.result, {});
 				const saved = await loadSession(sessionId);
 				assert.ok(!(saved.subscriptions ?? []).includes(uri), 'URI dropped from the record');
+			});
+
+			it('subscribes and unsubscribes without mutating a frozen loaded session', async () => {
+				const get = fakeSessionTable.get;
+				fakeSessionTable.get = async (id) => Object.freeze(await get(id));
+				const uri = 'https://app.test:9926/Product/3';
+
+				const subscribe = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(76, 'resources/subscribe', { uri }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				const unsubscribe = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(77, 'resources/unsubscribe', { uri }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+
+				assert.equal(subscribe.status, 200);
+				assert.equal(unsubscribe.status, 200);
+				assert.ok(!(await loadSession(sessionId)).subscriptions.includes(uri));
 			});
 		});
 
