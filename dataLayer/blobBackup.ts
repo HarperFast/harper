@@ -53,11 +53,8 @@ export function blobSnapshotDir(backupDir: string, backupId: number): string {
 /**
  * Hard-link `src` to `dest`, falling back to a copy when the two are on different filesystems (or
  * the filesystem does not support additional hard links). Never creates a symlink. Returns false
- * when the source vanishes so the caller can substitute a marker for it.
- *
- * A fallback copy is counted rather than merely tolerated: it turns a constant-time clone into an
- * O(bytes) one that also doubles the disk, and a caller doing this on a latency budget (a branch
- * materialized during application load) has to be able to say so.
+ * when the source vanishes so the caller can substitute a marker for it. `counts.copied` is what a
+ * caller on a latency budget needs: the fallback turns a constant-time clone into an O(bytes) one.
  */
 async function linkOrCopy(src: string, dest: string, counts?: { copied: number }): Promise<boolean> {
 	await mkdir(dirname(dest), { recursive: true });
@@ -143,9 +140,8 @@ async function captureBlobFile(
  * only; restore must replace exactly what the snapshot holds.
  *
  * Also used by branch materialization (harper#644), which clones a base's blob roots into the
- * branch's own so the OS inode refcount does the reference counting. That caller passes `onProgress`
- * because its walk runs inside a window other threads are waiting on, and `copied` because a walk
- * that had to copy instead of link cost it time and disk it should report.
+ * branch's own so the OS inode refcount does the reference counting. Its walk runs inside a window
+ * other threads wait on, which is what `onProgress` is for.
  */
 export async function copyTree(
 	srcRoot: string,

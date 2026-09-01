@@ -1364,6 +1364,22 @@ function branchIdentityPair(storeName: string): string[] {
 }
 
 /**
+ * Identities whose blob roots outlived the branch that owned them, because a removal or an abandoned
+ * materialization could not delete them. A database created under such a name would resolve its own
+ * fresh file ids onto files it never wrote, so the name stays refused -- but only against DATABASES.
+ * The branch itself may take it back: materializing it replaces those roots wholesale, which is the
+ * only route that clears the condition without an operator.
+ */
+const quarantinedBranchIdentities = new Set<string>();
+
+export function quarantineBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) {
+		quarantinedBranchIdentities.add(name);
+		openBranchIdentities.delete(name);
+	}
+}
+
+/**
  * True when `dbPath` is a directory an open branch owns. The database scan opens any directory that
  * holds CURRENT + MANIFEST-*, and harper#643 places a branch inside the directory it walks, so
  * without this a rescan would rebuild the branch's tables into the global map, overwrite the store
@@ -1445,7 +1461,10 @@ export function reserveBranchIdentity(storeName: string): void {
  * the database scan, which at that exact moment would find the branch directory unowned.
  */
 export function retakeBranchIdentity(storeName: string): void {
-	for (const name of branchIdentityPair(storeName)) openBranchIdentities.add(name);
+	for (const name of branchIdentityPair(storeName)) {
+		openBranchIdentities.add(name);
+		quarantinedBranchIdentities.delete(name);
+	}
 }
 
 export function releaseBranchIdentity(storeName: string): void {
@@ -1454,7 +1473,7 @@ export function releaseBranchIdentity(storeName: string): void {
 
 /** Is this name spoken for by a branch? Database creation has to refuse it -- they share a blob root. */
 export function isBranchIdentity(name: string): boolean {
-	if (openBranchIdentities.has(name)) return true;
+	if (openBranchIdentities.has(name) || quarantinedBranchIdentities.has(name)) return true;
 	// The in-memory set covers only branches open in THIS process, so after a restart -- or for an
 	// application that is simply not loaded -- a database could take the name of an on-disk branch and
 	// share its blob root. The staging sibling goes through the same route, because it names the path

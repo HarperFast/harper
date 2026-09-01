@@ -782,8 +782,8 @@ describeUnlessLmdb('blobs in a branch (harper#644)', () => {
 });
 
 describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
-	const { mkdirSync, writeFileSync, readFileSync, rmSync, statSync, cpSync } = require('node:fs');
-	const { join } = require('node:path');
+	const { chmodSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, cpSync } = require('node:fs');
+	const { dirname, join } = require('node:path');
 	const { getBlobPathsForDatabaseName, createBlob, getFilePathForBlob } = require('#src/resources/blob');
 	const STORE = `${'safeApp'.length}_safeApp__safebase`;
 
@@ -883,13 +883,10 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 
 	it("substitutes a marker, in the branch's own words, for a base blob that was mid-write", async function () {
 		this.timeout(30000);
-		// The hard link would otherwise carry a truncated blob into the branch -- and worse, the abort
-		// that follows stamps PENDING onto that inode IN PLACE, through the branch's link as well. This
-		// is what the clone passes its own `CaptureMarkerReasons` for: the branch must not describe
-		// itself as a backup when it explains the substitution.
+		// Linking it would carry a truncated blob in, and the abort that follows stamps PENDING onto that
+		// inode in place -- through the branch's link too, since it is the same inode.
 		const [baseRoot] = getBlobPathsForDatabaseName('safebase');
-		// An uncompressed header promising 100 bytes over a file holding 10: the shape of a write that
-		// has stamped its size but not landed its body.
+		// An uncompressed header promising 100 bytes over a file holding 10.
 		const header = Buffer.alloc(8);
 		header.writeUInt16BE(0, 0);
 		header.writeUIntBE(100, 2, 6);
@@ -906,11 +903,22 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 		}
 	});
 
+	it('clears a directory holding nothing but a malformed completion marker, and rebuilds', async function () {
+		this.timeout(30000);
+		// Refusing is only right where there is data to lose; a directory holding nothing but marker
+		// garbage has none, so it must stay clearable rather than needing an operator.
+		const branchPath = resolveBranchPath('safebase', 'safeApp');
+		mkdirSync(branchPath, { recursive: true });
+		writeFileSync(join(branchPath, '.branch-complete'), JSON.stringify({ blobRoots: [] }));
+
+		const branch = await getOrCreateBranch('safebase', 'safeApp');
+		assert.ok(await branch.tables.Safe.get('seed'), 'rebuilt from the base');
+	});
+
 	it('refuses a completion marker that records no blob roots at all', async function () {
 		this.timeout(30000);
 		// An empty list is an exact prefix of anything, so without its own guard it reads as complete and
-		// pins the branch to no roots — the first blob write would then fail on an undefined path rather
-		// than here, where the branch can say what is wrong with it.
+		// the first blob write fails on an undefined path instead of here.
 		const branchPath = resolveBranchPath('safebase', 'safeApp');
 		mkdirSync(branchPath, { recursive: true });
 		writeFileSync(join(branchPath, 'CURRENT'), 'MANIFEST-000001\n');
@@ -966,6 +974,34 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 				}),
 			/branch store identity/
 		);
+	});
+
+	it('refuses a stranded identity to databases, while letting the branch itself take it back', async function () {
+		this.timeout(30000);
+		// Removal needs write permission on the containing directory, so a read-only volume is a real
+		// filesystem refusal rather than a stubbed one.
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		await getOrCreateBranch('safebase', 'safeApp');
+		const [root] = getBlobPathsForDatabaseName(STORE);
+		const volume = dirname(root);
+
+		chmodSync(volume, 0o500);
+		try {
+			await removeBranches();
+			assert.ok(existsSync(root), 'sanity: the blob root outlived the branch directory');
+			assert.throws(
+				() => table({ table: 'Squatter', database: STORE, attributes: [{ name: 'id', isPrimaryKey: true }] }),
+				/branch store identity/,
+				'a database under that name would mint its own file ids onto the files left behind'
+			);
+		} finally {
+			chmodSync(volume, 0o700);
+		}
+
+		// Materializing replaces those roots wholesale, so the branch is the one holder that may take the
+		// name back; otherwise one transient EBUSY makes the application unloadable for the process life.
+		const rebuilt = await getOrCreateBranch('safebase', 'safeApp');
+		assert.ok(await rebuilt.tables.Safe.get('seed'), 'the application loads again');
 	});
 
 	it('keeps the identity reserved until the blob roots are gone, not just the directory', async function () {
@@ -1252,6 +1288,15 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 		assert.ok(existsSync(join(stranger, 'precious')), 'the reordered configuration is not what it owns');
 	});
 
+	it('refuses to publish a branch when no blob volume is configured at all', async function () {
+		this.timeout(30000);
+		// The marker it would otherwise write records no roots, which no later load can accept: the branch
+		// would be bricked on every boot after this one.
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, []);
+
+		await assert.rejects(() => getOrCreateBranch('volbase', 'volApp'), /nowhere of its own to keep blobs/);
+	});
+
 	it('still refuses a branch whose recorded roots were dropped from the configuration', async function () {
 		this.timeout(30000);
 		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
@@ -1278,10 +1323,8 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 });
 
 describe('the claim budget follows the winner (harper#644)', () => {
-	// The winner holds the claim for a checkpoint AND a hard-link clone of the base's whole blob tree,
-	// so the budget every other thread waits on cannot be a constant: on a large enough base it expires
-	// while the winner is healthily copying. Driven directly because within one isolate `branchesByPath`
-	// dedupes callers, so nothing in-process ever takes the waiting side of this protocol.
+	// Driven directly: within one isolate `branchesByPath` dedupes callers, so nothing in-process ever
+	// takes the waiting side of this protocol.
 	const { claimDeadlineFor, reportClaimProgress } = require('#src/resources/branchDatabase');
 
 	it('restarts the budget when the winner reports progress, and runs it down when it does not', async function () {

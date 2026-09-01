@@ -257,9 +257,8 @@ describe('blobBackup', function () {
 
 			const counts = await copyTree(rootA, join(tempDir, 'walked'), true, undefined, () => ticks++);
 
-			// Branch materialization holds a cross-thread claim for the whole walk, and every other
-			// thread's application load is waiting on it; without a tick per file a big enough base
-			// times all of them out while this is healthily copying.
+			// Branch materialization holds a cross-thread claim for the whole walk; without a tick per file
+			// a big enough base times every waiting thread out while this is healthily copying.
 			assert.strictEqual(ticks, 3, 'every file walked reports progress');
 			assert.strictEqual(counts.captured, 3);
 			assert.strictEqual(counts.copied, 0, 'a same-filesystem walk hard-links and copies nothing');

@@ -16,6 +16,7 @@ import {
 	hydrateBranchRelationships,
 	isReadOnlyMode,
 	openBranchDatabase,
+	quarantineBranchIdentity,
 	releaseBranchIdentity,
 	reserveBranchIdentity,
 	resolveBranchPath,
@@ -42,15 +43,16 @@ const UNCLAIMED = 0n;
 const CREATING = 1n;
 const READY = 2n;
 
-/** Slot holding the claim itself. */
 const CLAIM_STATE = 0;
-/** Slot the winner bumps as materialization advances; see `claimDeadlineFor`. */
 const CLAIM_PROGRESS = 1;
 
 const MAX_NAME_LENGTH = commonValidators.schema_length.maximum;
 
 /** How long a loser waits on a winner that reports NO progress before giving up on the branch; the
- *  winner's replay budget is added on top where the deadline is built (`openOrCreate`). */
+ *  winner's replay budget is added on top where the deadline is built (`openOrCreate`). Progress is
+ *  reported per checkpoint and per cloned file, so that is the granularity this bounds: a single
+ *  unit that takes longer than the budget still expires it, which needs a byte copy (no hard links)
+ *  of one blob tens of gigabytes large. */
 const CLAIM_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface OpenBranch {
@@ -78,7 +80,6 @@ function claimStateFor(baseName: string, branchPath: string): BigInt64Array {
 	return new BigInt64Array(baseStore.getUserSharedBuffer(`branch-claim:${branchPath}`, seed.buffer));
 }
 
-/** One unit of materialization finished, which buys every waiting thread another full budget. */
 export function reportClaimProgress(state: BigInt64Array): void {
 	Atomics.add(state, CLAIM_PROGRESS, 1n);
 }
@@ -257,7 +258,9 @@ function readBranchState(branchPath: string, storeName: string): BranchState {
 		recorded.blobRoots.length === 0 ||
 		recorded.blobRoots.some((r) => typeof r !== 'string')
 	) {
-		return { state: 'unmarked', why: 'its completion marker is malformed' };
+		// Same split as an unreadable marker above: refuse anything carrying store data, but a directory
+		// holding nothing but a bad marker has nothing to lose and must stay clearable.
+		return looksLikeAStore ? { state: 'unmarked', why: 'its completion marker is malformed' } : { state: 'debris' };
 	}
 	const configured = getBlobPathsForDatabaseName(storeName);
 	// By index, not by set: `storageIndex` on a row is a position in this list, so a reordered
@@ -293,6 +296,14 @@ async function materializeBranch(
 ): Promise<string[]> {
 	const staging = `${branchPath}.staging`;
 	const blobRoots = getBlobPathsForDatabaseName(storeName);
+	// Publishing an empty root list would record a marker no later load can accept, bricking the branch
+	// on every subsequent boot instead of failing here, where the configuration is the visible problem.
+	if (blobRoots.length === 0) {
+		throw new Error(
+			`Cannot create the branch at ${branchPath}: storage.blobPaths is configured with no entries, so ` +
+				`the branch has nowhere of its own to keep blobs`
+		);
+	}
 	await rm(staging, { recursive: true, force: true });
 	await mkdir(dirname(branchPath), { recursive: true });
 	try {
@@ -331,9 +342,20 @@ function wakeWaiters(state: BigInt64Array): void {
 
 /** Wait until the claim leaves CREATING, and report the state it settled on. */
 async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: () => number): Promise<bigint> {
+	// A progress-extended deadline has no ceiling, so a wait past the original budget must say why it is
+	// still waiting rather than looking like a hang with no thread to point at.
+	const patience = deadline();
+	let announced = false;
 	for (;;) {
 		const current = Atomics.load(state, CLAIM_STATE);
 		if (current !== CREATING) return current;
+		if (!announced && Date.now() > patience) {
+			announced = true;
+			logger.warn?.(
+				`Still waiting for another thread to create the branch at ${branchPath}; it is reporting ` +
+					`progress, so this wait is extended for as long as it keeps doing so`
+			);
+		}
 		const remaining = deadline() - Date.now();
 		if (remaining <= 0) throw new Error(`Timed out waiting for another thread to create the branch at ${branchPath}`);
 		const slice = Math.min(remaining, 1000);
@@ -381,8 +403,9 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 	// cannot take the same name.
 	reserveBranchIdentity(storeName);
 	let handedOver = false;
-	// An abandoned attempt whose roots could not be removed keeps the name: they still hold this
-	// identity's files, and a database created under it would resolve its own new ids onto them.
+	// An abandoned attempt whose roots could not be removed does not hand the name back to a DATABASE:
+	// those roots still hold this identity's files, and a database created under the name would resolve
+	// its own new ids onto them. The branch may still retake it, which is what repairs the condition.
 	let blobRootsStranded = false;
 	try {
 		// The claim's CREATING window now covers the winner's replay as well as its checkpoint, so
@@ -488,7 +511,10 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 	} finally {
 		// `openBranchDatabase` takes the identity over for the life of the handle; anything short of
 		// that has to hand it back, or the application can never load again in this process.
-		if (!handedOver && !blobRootsStranded) releaseBranchIdentity(storeName);
+		if (!handedOver) {
+			if (blobRootsStranded) quarantineBranchIdentity(storeName);
+			else releaseBranchIdentity(storeName);
+		}
 	}
 }
 
@@ -540,7 +566,8 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 	// `isBranchIdentity` is what stops `table()` claiming this name, and once the directory is gone its
 	// on-disk half sees nothing either, so the reservation is the only thing left holding the name while
 	// the blob roots are still being removed.
-	let releaseAfterCleanup = true;
+	let holdsIdentity = true;
+	let blobRootsStranded = false;
 	if (opened) {
 		opened.branch.close();
 		// Same turn as the close that released it, so nothing can slip into the gap.
@@ -553,7 +580,7 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 		try {
 			reserveBranchIdentity(storeName);
 		} catch (error) {
-			releaseAfterCleanup = false;
+			holdsIdentity = false;
 			logger.warn?.(`Leaving the blob roots of the branch at ${branchPath} in place: its identity is in use`, error);
 		}
 	}
@@ -567,20 +594,23 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 		// held handle, permissions) would leave a branch that still looks adoptable but whose allocator
 		// restarts from an empty root and remints ids its own rows hold. Leaking them the other way round
 		// is recoverable; that is not.
-		if (releaseAfterCleanup && !existsSync(branchPath)) {
-			// A root that survived still holds this branch's blob files, so the identity is never handed
-			// back: a database taking the name would resolve its own new file ids onto them.
+		if (holdsIdentity && !existsSync(branchPath)) {
+			// A root that survived still holds this branch's blob files, so the name is not handed back to
+			// a database: one taking it would resolve its own new file ids onto them.
 			if (!(await removeBlobRoots(blobRoots))) {
-				releaseAfterCleanup = false;
+				blobRootsStranded = true;
 				logger.warn?.(
-					`Keeping '${storeName}' reserved for the life of this process: the branch at ${branchPath} ` +
-						`left blob files behind and a database under that name would resolve onto them`
+					`Refusing '${storeName}' to new databases for the life of this process: the branch at ` +
+						`${branchPath} left blob files behind and a database under that name would resolve onto them`
 				);
 			}
 		}
 		await pruneEmptyParents(branchRootOf(branchPath), branchPath);
 	} finally {
-		if (releaseAfterCleanup) releaseBranchIdentity(storeName);
+		if (holdsIdentity) {
+			if (blobRootsStranded) quarantineBranchIdentity(storeName);
+			else releaseBranchIdentity(storeName);
+		}
 	}
 }
 
