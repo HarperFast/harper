@@ -200,7 +200,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// the next — so an older one completing last would put the file's previous contents back
 		// with no event left to correct it.
 		const sequence = ++this.#readSequence;
-		const outranked = () => this.#closed || sequence < this.#appliedSequence;
+		// `<=`, not `<`: a deletion supersedes the reads already in flight without being a read of
+		// its own, and says so by claiming the sequence they were issued under.
+		const outranked = () => this.#closed || sequence <= this.#appliedSequence;
 		const read: Promise<void> = readFile(this.#filePath, 'utf-8')
 			.then(
 				(contents) => {
@@ -453,7 +455,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// The deletion settles what a pending read was retrying, and a rung landing after this
 		// would find ENOENT and emit a second `remove` at consumers that treat it as teardown.
 		// Same for the arming re-read's deferred absence check: this is the event it was waiting on.
+		// Cancelling the ladder covers the rung not yet armed; a rung already in flight on the
+		// asynchronous path is outranked instead, or its ENOENT would report the same deletion again
+		// — after the settle below, as a `remove` that asks `Scope` to restart a scope that just
+		// booted on the defaults.
 		this.#readRetry.reset();
+		this.#appliedSequence = this.#readSequence;
 		if (this.#armAbsence) clearImmediate(this.#armAbsence);
 		this.#armAbsence = undefined;
 		// A real deletion still leaves env-var config in force: an env-defined scope must

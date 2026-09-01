@@ -712,16 +712,19 @@ describe('OptionsWatcher', () => {
 		writeFileSync(configFilePath, '', 'utf-8');
 		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
 
-		// Waited out so the arming re-read is not what settles the barrier, and so the ladder — whose
-		// rungs back off with the elapsed budget — has a rung far enough away that chokidar's
-		// `unlink` (held back by its own atomic-write window) is what observes the deletion first.
-		// That ordering is the boot hang: the ladder was the only thing left to settle `ready`, and
+		// Waited out so the arming re-read is not what settles the barrier. The ladder's rungs then
+		// back off with the elapsed budget, so waiting on its own read count — rather than on a wall
+		// clock a loaded runner would overrun — leaves the next rung far enough away that chokidar's
+		// `unlink`, held back by its own atomic-write window, observes the deletion first. That
+		// ordering is the boot hang: the ladder was the only thing left to settle `ready`, and
 		// `#handleUnlink` cancels it.
-		for (let waited = 0; waited < 3000 && !options._armedForTests; waited += 50) await delay(50);
+		for (let waited = 0; waited < 3000 && !options._armedForTests; waited += 20) await delay(20);
 		assert.equal(options._armedForTests, true, 'the watcher must arm once chokidar has finished its scan');
-		await delay(1200);
 		const events = [];
 		for (const event of ['ready', 'remove']) options.on(event, () => events.push(event));
+		for (let waited = 0; waited < 3000 && options._readCountForTests < 6 && !events.length; waited += 20)
+			await delay(20);
+		assert.deepEqual(events, [], 'the ladder must still be the only thing the barrier is waiting on');
 		rmSync(configFilePath, { force: true });
 
 		const [value] = await options.ready;
