@@ -2569,6 +2569,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 	} catch (error) {
 		if (unpublishedPrimaryStore && !published) discardUnpublishedTable();
+		else if (published && tables[tableName] !== Table) discardUnregisteredClass();
 		throw error;
 	} finally {
 		releaseLock();
@@ -2613,6 +2614,17 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			if (attributesDbi.getSync(attributeKey)) return attributeKey;
 		}
 		return tableName + '/';
+	}
+	// The catalog of a published table stays, but a class the registration never accepted is
+	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers
+	// and reclamation handler live for the process. The stores stay open: the table is durable, and
+	// whichever scan reloads it opens its own handles.
+	function discardUnregisteredClass() {
+		try {
+			Table.cleanup();
+		} catch (discardError) {
+			logger.warn(`Error releasing the unregistered class of ${databaseName}.${tableName}`, discardError);
+		}
 	}
 	function discardUnpublishedTable() {
 		const discard = (description: string, action: () => unknown) => {

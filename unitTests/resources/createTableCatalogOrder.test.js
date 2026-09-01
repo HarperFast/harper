@@ -290,6 +290,13 @@ describe('create table catalog write order', () => {
 			schemaDefined: true,
 			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
 		});
+		// Table.cleanup() is the only caller of this, so a call is proof the unreachable class was released
+		const releasedReclamationHandlers = [];
+		const originalRemoveHandler = storageReclamation.removeStorageReclamationHandler;
+		storageReclamation.removeStorageReclamationHandler = function (path, handler) {
+			releasedReclamationHandlers.push(path);
+			return originalRemoveHandler.call(this, path, handler);
+		};
 		// registering the class in this worker is the first thing the create does after the primary row
 		// lands, so a setter that throws injects a failure at exactly the publish boundary
 		Object.defineProperty(databases.test, tableName, {
@@ -315,8 +322,14 @@ describe('create table catalog write order', () => {
 				/injected registration failure/
 			);
 		} finally {
+			storageReclamation.removeStorageReclamationHandler = originalRemoveHandler;
 			delete databases.test[tableName];
 		}
+		assert.strictEqual(
+			releasedReclamationHandlers.length,
+			1,
+			'the class the registration rejected must release its callbacks'
+		);
 		// LMDB commits the create's write transaction from releaseLock()'s finally even as the error
 		// unwinds, so the rows are durable on both engines and rolling them back would strand a table
 		// every other thread can already see
