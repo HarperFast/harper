@@ -481,12 +481,15 @@ describe('OptionsWatcher', () => {
 		await options.ready;
 
 		let arrived;
+		let changed = 0;
 		options.on('ready', (value) => {
 			arrived = value;
 		});
+		options.on('change', () => changed++);
 		writeFileSync(configFilePath, stringify({ graphqlSchema: DEFAULT_CONFIG.graphqlSchema }), 'utf-8');
 		await options._refreshForTests();
 		assert.deepEqual(arrived, DEFAULT_CONFIG.graphqlSchema, 'a truthy fallback must not mask the config arrival');
+		assert.equal(changed, 0, 'the first source config is an arrival, not a merge');
 
 		const removed = once(options, 'remove');
 		writeFileSync(configFilePath, stringify({ http: { port: 9926 } }), 'utf-8');
@@ -662,6 +665,13 @@ describe('OptionsWatcher', () => {
 		const removed = once(options, 'remove');
 		rmSync(configFilePath);
 		await removed;
+		const fallbackRoot = options.getRoot();
+		assert.notStrictEqual(fallbackRoot, DEFAULT_CONFIG, 'a reset must clone the root defaults');
+		assert.notStrictEqual(
+			fallbackRoot.graphqlSchema,
+			DEFAULT_CONFIG.graphqlSchema,
+			'a reset must clone nested scope defaults'
+		);
 
 		// `await removed` resumes as a microtask of chokidar's own `unlink` dispatch, so the
 		// recreate below lands while chokidar is still tearing that watch down and its `add` is not
