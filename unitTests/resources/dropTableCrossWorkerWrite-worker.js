@@ -7,7 +7,7 @@ const { waitFor } = require('../waitFor.js');
 const { table } = require('#src/resources/databases');
 const { createBlob } = require('#src/resources/blob');
 const { logger } = require('#src/utility/logging/logger');
-const { onMessageByType } = require('#js/server/threads/manageThreads');
+const { onMessageByType, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const MESSAGE_TYPE = 'drop-table-cross-worker-test';
 const CONTROL_TYPE = 'drop-table-cross-worker-control';
@@ -18,6 +18,7 @@ let TestTable;
 function runWorkerFixture() {
 	onMessageByType(CONTROL_TYPE, () => {});
 	setupTestDBPath();
+	setMainIsWorker(true);
 	process.on('unhandledRejection', (error) => report('unhandled-rejection', { error: error?.stack ?? String(error) }));
 	const originalError = logger.error;
 	logger.error = (...args) => {
@@ -54,7 +55,7 @@ function runWorkerFixture() {
 					// record lock until that write has settled either way.
 					TestTable.get(id, {}).then(
 						async () => {
-							report('get-resolved');
+							report('get-resolved', { commitInFlight: TestTable.primaryStore.hasLock(id) });
 							try {
 								await waitFor(() => !TestTable.primaryStore.hasLock(id), {
 									timeout: 30000,
