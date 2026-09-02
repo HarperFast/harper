@@ -347,14 +347,9 @@ const STRUCTURES = 7;
 // Whole-table "reload" marker: a control entry (no record) signalling that a table was bulk-reloaded
 // and subscribers should re-read it. Used after a copyApply base copy, whose per-row snapshot writes
 // carry no audit entry (harper-pro#489). The entry type lives in the low nibble of the action byte
-// (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, 9/10 are the record
-// lock transitions, 11 is the remote sequence update, leaving 12/13 free for future actions. Markers
-// are always written LOCAL_ONLY so an unknown type never reaches a peer.
+// (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, leaving 9–15 free for
+// future actions. Markers are always written LOCAL_ONLY so an unknown type never reaches a peer.
 const RELOAD = 8;
-// Record lock transitions (harper#483): header-only, version-changing entries keyed to the record.
-// The LOCK entry's version is the lock generation token. Phase 0 writes both LOCAL_ONLY.
-const LOCK = 9;
-const UNLOCK = 10;
 export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
@@ -392,10 +387,6 @@ const EVENT_TYPES = {
 	[STRUCTURES]: 'structures',
 	reload: RELOAD,
 	[RELOAD]: 'reload',
-	lock: LOCK,
-	[LOCK]: 'lock',
-	unlock: UNLOCK,
-	[UNLOCK]: 'unlock',
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
 };
