@@ -167,6 +167,25 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).name, 'patched');
 		});
 
+		it('re-stages a holder write past an ungated rewrite that moved the record during the critical section', async () => {
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1, name: 'start' });
+			let movedVersion;
+			await transaction(async () => {
+				const record = await LockTest.lock(recordId);
+				// a canonical-source apply is never gated; it carries the generation forward and bumps the version
+				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 50, name: 'source' }));
+				movedVersion = entryOf(recordId).version;
+				assert.ok(entryOf(recordId).lockVersion, 'the source apply kept the lock');
+				record.set('n', 7);
+				await record.save();
+			});
+			const final = entryOf(recordId);
+			assert.strictEqual(final.value.n, 7, 'the holder write is not lost below the moved version');
+			assert.ok(final.version > movedVersion, 'and landed as the newest version');
+			assert.strictEqual(isLocked(recordId), false);
+		});
+
 		it('must be acquired before the transaction writes', async () => {
 			const recordId = id();
 			await assert.rejects(

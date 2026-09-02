@@ -337,6 +337,9 @@ export type TransactionWrite = {
 	gateOnLock?: boolean;
 	// held back by gateOnLock this round; commit() waits for the release and re-stages it
 	gated?: boolean;
+	// a holder write whose record moved past the transaction's timestamp; commit() re-stages the
+	// transaction with a fresh one instead of letting the write land as the older version
+	restage?: boolean;
 	// the held (node-owned) lock the writing instance carries, which makes this a holder write
 	lockHandle?: RecordLockHandle;
 	// validate() ran; it is not repeated when a gated write is finally staged
@@ -515,10 +518,12 @@ export class DatabaseTransaction implements Transaction {
 	 * Whether `operation` must wait for a record lock before staging. Only Table.ts's local record
 	 * mutations opt in; canonical-source applies and replay never wait, they preserve the generation.
 	 */
-	protected gateLockedWrite(operation: TransactionWrite): boolean {
+	protected gateLockedWrite(operation: TransactionWrite, txnTime: number): boolean {
 		if (operation.gateOnLock !== true || this.sourceApply || this.isReplay) return false;
-		const entry = operation.entry;
-		if (!entry || !(entry.metadataFlags & LOCKED)) return false;
+		if (!operation.entry || !(operation.entry.metadataFlags & LOCKED)) return false;
+		// Locked path only: the write's basis may be as old as the lock itself (a holder writes through
+		// the record it locked), so it is refreshed past any snapshot before the verdict and the commit.
+		const entry = (operation.entry = operation.store.getEntry(operation.key));
 		const verdict = lockGateVerdict(entry, [
 			operation.lockHandle,
 			this.recordLockFor(operation.store, writeKeyId(operation.key)),
@@ -529,8 +534,54 @@ export class DatabaseTransaction implements Transaction {
 				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
 				409
 			);
+		if (verdict === 'holder') {
+			// an ungated rewrite (a source fill, a replicated apply) moved the record past this
+			// transaction's timestamp; landing below it would resequence the holder's write as older
+			if (!(entry.version >= txnTime)) return false;
+			operation.restage = true;
+			return true;
+		}
 		operation.gated = true;
 		return true;
+	}
+
+	/**
+	 * Drop the native handle's staged work before a wait or a re-stage: nothing of this round may
+	 * commit, and a sibling write's intent must not sit in the verification table while the holder
+	 * this transaction waits for is trying to commit. With iterators still streaming through the
+	 * handle it stays open for them and the re-stage takes a fresh handle instead.
+	 */
+	private discardStagedRound(): boolean {
+		const staged = this.transaction;
+		if (!staged) return false;
+		if (this.readTxnsUsed > 1) {
+			if (!this.writesAbandoned) {
+				this.writesAbandoned = true;
+				try {
+					(staged as { abandonWrites?: () => void }).abandonWrites?.();
+				} catch (error) {
+					harperLogger.warn?.('Failed to release write intents before a record lock wait', error);
+				}
+			}
+			return true;
+		}
+		this.detachOwnedTransaction();
+		abortNativeTransaction(staged, 'discarding writes staged before a record lock wait');
+		return false;
+	}
+
+	private restageAfter(version: number, replayNeeded: boolean, options: CommitOptions): MaybePromise<CommitResolution> {
+		this.retries++; // the commit handlers re-base on the reloaded entries
+		this.timestamp = Math.max(
+			(this.db as any).getMonotonicTimestamp?.() ?? getNextMonotonicTime(),
+			version + LOCK_VERSION_STEP
+		);
+		if (replayNeeded) {
+			const replay = new RocksTransaction(this.db.store as RocksStore, { coordinatedRetry: true });
+			replay.setTimestamp(this.timestamp);
+			return this.commit({ ...options, transaction: replay });
+		}
+		return this.commit(options);
 	}
 
 	/**
@@ -583,35 +634,20 @@ export class DatabaseTransaction implements Transaction {
 	 * writes and log batch are discarded with the old one.
 	 */
 	private waitForRecordUnlocks(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
-		return this.parkForRecordUnlocks(gated).then((releasedVersion) => {
-			this.retries++; // the commit handlers re-base on the reloaded entries
-			this.timestamp = Math.max(
-				(this.db as any).getMonotonicTimestamp?.() ?? getNextMonotonicTime(),
-				releasedVersion + LOCK_VERSION_STEP
-			);
-			const staged = this.transaction;
-			if (staged) {
-				if (this.readTxnsUsed > 1) {
-					// Iterators still stream through the handle: it stays open for them, but nothing staged in
-					// it may commit, so the replay goes through a fresh handle like the outstanding-iterators
-					// branch of commit().
-					if (!this.writesAbandoned) {
-						this.writesAbandoned = true;
-						try {
-							(staged as { abandonWrites?: () => void }).abandonWrites?.();
-						} catch (error) {
-							harperLogger.warn?.('Failed to release write intents while waiting for a record lock', error);
-						}
-					}
-					const replay = new RocksTransaction(this.db.store as RocksStore, { coordinatedRetry: true });
-					replay.setTimestamp(this.timestamp);
-					return this.commit({ ...options, transaction: replay });
-				}
-				this.detachOwnedTransaction();
-				abortNativeTransaction(staged, 'discarding writes staged before a record lock wait');
-			}
-			return this.commit(options);
-		});
+		const replayNeeded = this.discardStagedRound();
+		return this.parkForRecordUnlocks(gated).then((releasedVersion) =>
+			this.restageAfter(releasedVersion, replayNeeded, options)
+		);
+	}
+
+	private restageHolderWrites(restage: TransactionWrite[], options: CommitOptions): MaybePromise<CommitResolution> {
+		const replayNeeded = this.discardStagedRound();
+		let version = 0;
+		for (const write of restage) {
+			write.restage = false;
+			if (write.entry?.version > version) version = write.entry.version;
+		}
+		return this.restageAfter(version, replayNeeded, options);
 	}
 
 	setCommitPhase(committing: boolean): void {
@@ -1064,7 +1100,7 @@ export class DatabaseTransaction implements Transaction {
 		// Checked every round: a retry round reloads the entry, and the record may have been locked since
 		// the write first staged. Before `before`, so a gated write reaches no source and saves no blob
 		// until the lock clears.
-		if (this.gateLockedWrite(operation)) return;
+		if (this.gateLockedWrite(operation, txnTime)) return;
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
@@ -1171,6 +1207,8 @@ export class DatabaseTransaction implements Transaction {
 				}
 				const gated = this.writes.filter((write) => write?.gated);
 				if (gated.length > 0) return this.waitForRecordUnlocks(gated, options);
+				const restage = this.writes.filter((write) => write?.restage);
+				if (restage.length > 0) return this.restageHolderWrites(restage, options);
 				// The save loop above can be what opened this transaction's native handle — save() attaches
 				// one when it had none, which is every ImmediateTransaction commit since its getReadTxn
 				// opens none — leaving the local captured before the loop empty while that handle holds

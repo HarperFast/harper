@@ -114,19 +114,20 @@ export function nextLockVersion(txnTime: number, existingVersion: number | undef
 }
 
 /**
- * Whether a write may stage against `entry` now: undefined when it may, 'wait' when another party's
- * live generation gates it, 'lost' when the writer's own generation was superseded.
+ * Whether a write may stage against `entry` now: undefined when the record is not locked, 'holder'
+ * when the writer holds its live generation, 'wait' when another party does, 'lost' when the
+ * writer's own generation was superseded.
  */
 export function lockGateVerdict(
 	entry: Partial<Entry> | undefined,
 	holders: Array<RecordLockHandle | undefined>,
-	now = Date.now()
-): 'wait' | 'lost' | undefined {
+	now?: number
+): 'holder' | 'wait' | 'lost' | undefined {
 	if (!isLockedLive(entry, now)) return;
 	let sawHandle = false;
 	for (const handle of holders) {
 		if (!handle) continue;
-		if (handle.lockVersion === entry.lockVersion) return;
+		if (handle.lockVersion === entry.lockVersion) return 'holder';
 		sawHandle = true;
 	}
 	return sawHandle ? 'lost' : 'wait';

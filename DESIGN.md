@@ -159,8 +159,9 @@ Consequences that shape the code:
   on the doorbell (bounded per transaction by `LOCKED_WRITE_WAIT_MS`, then 423) and then re-stages
   the _whole_ write set on a fresh native handle with a timestamp past the released version. The
   handle is replaced because a write landing with a version older than the release is resequenced as
-  out-of-order and, for a full put, dropped. Nothing of a gated write is in the verification table
-  while it waits, so the holder's UNLOCK never parks behind it. `publish()` to a record is gated too:
+  out-of-order and, for a full put, dropped. The handle is discarded _before_ the park, so neither the
+  gated write nor any sibling in the transaction holds a verification-table intent while the holder
+  this transaction waits for is committing. `publish()` to a record is gated too:
   a message rewrites the record's version, which would order a holder's later write below it. LMDB's
   `commit()` runs the same gate before its optimistic batch and again inside its exclusive fallback,
   whose own reads are what that path writes against.
@@ -169,9 +170,12 @@ Consequences that shape the code:
   a transaction that already wrote (`lock() must be called before the transaction writes`) and bumps
   the link's timestamp when it acquires; on RocksDB it also drops the scope's pre-lock read snapshot
   (when no iterator holds it) so the rest of the scope reads what it locked and its commit does not
-  conflict with the LOCK write. The returned record stages its `save()` lazily — an update staged at
-  `lock()` time would be dropped by a held lock's wrapper transaction completing before the caller
-  writes.
+  conflict with the LOCK write. The gate re-reads a locked record snapshot-free before a holder write
+  stages (the write's basis can be as old as the lock), and if an ungated rewrite — a source fill, a
+  replicated apply — moved the record past the transaction's timestamp, `commit()` re-stages the
+  transaction with a fresh one rather than let the holder's write land as the older version. The
+  returned record stages its `save()` lazily — an update staged at `lock()` time would be dropped by
+  a held lock's wrapper transaction completing before the caller writes.
 - **Release.** A transaction-scoped handle (the default) is registered on the store link; every commit
   or abort of that link releases it — its own conditional UNLOCK, logged on failure, awaited by the
   commit and by `transaction()`'s abort path. `{ hold: true }` attaches the handle to the returned

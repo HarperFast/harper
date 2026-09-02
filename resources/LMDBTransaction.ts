@@ -205,18 +205,30 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		// Record-lock gate (harper#483): a write to a record another party holds waits for the release,
 		// then the whole batch re-runs against reloaded entries with a timestamp past the release.
-		const gated: TransactionWrite[] = [];
-		for (const write of this.writes) {
-			if (write.gateOnLock !== true || write.key == null) continue;
-			if (retries > 0 || !write.entry) write.entry = write.store.getEntry(write.key);
-			if (this.gateLockedWrite(write)) gated.push(write);
-		}
-		const parkThenRecommit = (parked: TransactionWrite[]) =>
-			this.parkForRecordUnlocks(parked).then((releasedVersion) => {
-				this.timestamp = Math.max(getNextMonotonicTime(), releasedVersion + LOCK_VERSION_STEP);
+		const gatedWrites = (): TransactionWrite[] => {
+			const gated: TransactionWrite[] = [];
+			for (const write of this.writes) {
+				if (write.gateOnLock !== true || write.key == null) continue;
+				write.restage = false;
+				if (retries > 0 || !write.entry) write.entry = write.store.getEntry(write.key);
+				if (this.gateLockedWrite(write, txnTime)) gated.push(write);
+			}
+			return gated;
+		};
+		// A gated write parks until its lock is released; a holder write whose record moved past this
+		// timestamp only needs the batch re-run with a fresh one. Either way the whole batch re-runs.
+		const recommitAfter = (gated: TransactionWrite[]) => {
+			const parked = gated.filter((write) => write.gated);
+			let version = 0;
+			for (const write of gated) if (write.entry?.version > version) version = write.entry.version;
+			const recommit = (releasedVersion: number) => {
+				this.timestamp = Math.max(getNextMonotonicTime(), version, releasedVersion) + LOCK_VERSION_STEP;
 				return this.commit({ ...options, timestamp: this.timestamp, retries: retries + 1 });
-			});
-		if (gated.length > 0) return parkThenRecommit(gated);
+			};
+			return parked.length > 0 ? this.parkForRecordUnlocks(parked).then(recommit) : recommit(0);
+		};
+		const gated = gatedWrites();
+		if (gated.length > 0) return recommitAfter(gated);
 		// a lock that lands between the gate above and the exclusive fallback's own reads
 		let gatedInExclusive: TransactionWrite[] = [];
 		const doWrite = (write) => {
@@ -283,7 +295,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						write.entry = write.store.getEntry(write.key);
 					}
 					gatedInExclusive = this.writes.filter(
-						(write) => write.gateOnLock === true && write.key != null && this.gateLockedWrite(write)
+						(write) => write.gateOnLock === true && write.key != null && this.gateLockedWrite(write, txnTime)
 					);
 					if (gatedInExclusive.length > 0) return false; // nothing written; parked and re-run below
 					for (const write of this.writes) doWrite(write);
@@ -335,7 +347,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						};
 					});
 				} else {
-					if (gatedInExclusive.length > 0) return parkThenRecommit(gatedInExclusive);
+					if (gatedInExclusive.length > 0) return recommitAfter(gatedInExclusive);
 					// if the transaction failed, we need to retry. First record this as an increased risk of contention/retry
 					// for future transactions
 					if (db) {
