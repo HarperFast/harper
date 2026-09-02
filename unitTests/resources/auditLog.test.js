@@ -1508,6 +1508,23 @@ describe('Audit log', () => {
 				assert.strictEqual(corrupt.nextCalls(), 1, 'the latched iterator is not re-polled');
 			});
 
+			it('a hook that re-enters next() leaves its removal to the outermost call, without dropping an entry', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3), entry(4)]));
+				let nestedPulls = 0;
+				const iterable = store.getRange({
+					excludeLogs: [],
+					onCorruptFrame: (error, logName) => {
+						iterable.removeLog(logName);
+						if (!iterable[Symbol.iterator]().next().done) nestedPulls++;
+					},
+				});
+				const versions = [];
+				for (const record of iterable) versions.push(record.version);
+				assert.deepStrictEqual(versions, [1, 2, 3, 4]);
+				assert.strictEqual(nestedPulls, 1);
+			});
+
 			it('a rejecting async hook is contained and logged with the log name', async () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2)]));
