@@ -34,6 +34,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
 import { isMainThread } from 'worker_threads';
 import { TLSSocket } from 'node:tls';
+import { publishTrustedAuthorities } from './certificateVerification/trustedIssuers.ts';
 
 const CERT_VALIDITY_DAYS = 3650;
 // Default interval (ms) for the periodic cert-file re-read safety net. The chokidar (inotify)
@@ -1212,6 +1213,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 						scheduleRebuild();
 						return;
 					}
+					// only listener selectors publish: a one-shot client selector's pass may see no authority rows
+					if (liveReload) publishTrustedAuthorities(caCerts.values());
 					// A successful pass ends any warn latches so a later recurrence logs again.
 					if (server) {
 						server.tlsSelectorWaitedForSystemDb = false;
