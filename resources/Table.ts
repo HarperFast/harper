@@ -2042,10 +2042,9 @@ export function makeTable(options) {
 				if (changes && Object.keys(changes).length > 0) {
 					this.#savingOperation = null;
 					return when(this._writeUpdate(this.getId(), changes, false), () => {
-						// If the staged write was dropped (hasChanges returned false — the set() call
-						// produced no effective change), clear #changes so re-entering save() here does
-						// not stage again, which would produce an infinite loop.
 						if (this.#savingOperation?.dropped) {
+							// Dropped (no effective change): clear #changes to prevent re-staging on the
+							// recursive save() call below.
 							this.#changes = undefined;
 							return;
 						}
@@ -2147,7 +2146,8 @@ export function makeTable(options) {
 				invalidated: true,
 				entry: this.#entry,
 				gateOnLock: gateLocalWrite(options),
-				lockKey: lockAttemptKey(tableId, id),
+				lockTableId: tableId,
+				lockId: id,
 				lockHandle: this.#lockHandle,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
@@ -2197,7 +2197,8 @@ export function makeTable(options) {
 				invalidated: true,
 				entry: this.#entry,
 				gateOnLock: gateLocalWrite(options),
-				lockKey: lockAttemptKey(tableId, id),
+				lockTableId: tableId,
+				lockId: id,
 				lockHandle: this.#lockHandle,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
@@ -2634,7 +2635,8 @@ export function makeTable(options) {
 				// a canonical-source apply carries the record's true state and preserves a lock; only local
 				// writers wait for one
 				gateOnLock: gateLocalWrite(options),
-				lockKey: lockAttemptKey(tableId, id),
+				lockTableId: tableId,
+				lockId: id,
 				lockHandle: this.#lockHandle,
 				validate: (txnTime, committedBy = transaction, operation?) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
@@ -3404,7 +3406,8 @@ export function makeTable(options) {
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
 				gateOnLock: gateLocalWrite(options),
-				lockKey: lockAttemptKey(tableId, id),
+				lockTableId: tableId,
+				lockId: id,
 				lockHandle: this.#lockHandle,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
@@ -4967,7 +4970,8 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				// a message rewrites the record's version, which would reorder a holder's later write below it
 				gateOnLock: gateLocalWrite(options, id),
-				lockKey: id !== null ? lockAttemptKey(tableId, id) : undefined,
+				lockTableId: tableId,
+				lockId: id, // null id means no gate (lockKey stays undefined; gateLockedWrite skips tryLock)
 				lockHandle: this.#lockHandle,
 				validate: () => {
 					if (!(context as any)?.source) {

@@ -186,6 +186,12 @@ true }` attaches the handle to the returned instance as `#lockHandle` instead; `
   lease/deadline to rocksdb-js `LockHandle` so waiters can evict a timed-out holder without waiting.
 - **Not supported on LMDB.** `lock()` throws 501; `gateLockedWrite` guards on `typeof store.tryLock !==
 'function'` and returns false to avoid crashing if a gated write somehow reaches that path on LMDB.
+- **`lock()` is reachable from the REST/operations API.** `Resource.static.lock` is registered via
+  `transactional()` (`type: 'update', method: 'lock', optionsAsData: true`) and appears in the
+  `defineTable.ts` static-method union; a caller can pass `{ hold: true }` over HTTP.  The handle
+  returned to a REST caller is serialized as a record response; `unlock()` is an in-process instance
+  method only, so a REST-acquired hold can only be released by the lease timer or process exit.
+  Coordination for REST-held locks is a Phase 1 concern.
 
 Not in Phase 0, by design: replication of lock transitions, gating of replicated writes, lease renewal,
 subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: replicate lock request/grant/

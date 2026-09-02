@@ -16,6 +16,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 // record's version and stored bytes are unchanged by acquiring or releasing a lock.
 describe('Record locks (harper#483)', () => {
 	let LockTest;
+	let LockTestTimed; // table with assignUpdatedTime to verify restage timestamp propagation
 	let nextId = 1;
 	const id = () => `lock-${nextId++}`;
 	before(function () {
@@ -25,6 +26,15 @@ describe('Record locks (harper#483)', () => {
 			table: 'RecordLockTest',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'name' }],
+		});
+		LockTestTimed = table({
+			table: 'RecordLockTestTimed',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'n' },
+				{ name: '__updatedtime__', type: 'number', assignUpdatedTime: true },
+			],
 		});
 	});
 
@@ -394,6 +404,57 @@ describe('Record locks (harper#483)', () => {
 			await holder.save(); // must complete without looping
 			assert.strictEqual((await LockTest.get(recordId)).n, 42);
 			await holder.unlock();
+		});
+
+		it('a 423 from an expired deadline releases gate handles without waiting for a park', async function () {
+			// Hits the waitForPendingKeys entry-check 423 (lockWaitDeadline already elapsed on first call).
+			if (isLMDB) return this.skip();
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			const bHolder = await LockTest.lock(idB, { hold: true, lease: 5000 });
+			setLockedWriteWaitMs(0); // deadline = now + 0 = now → entry check fires immediately
+			try {
+				await transaction(async () => {
+					await LockTest.put({ id: idA, n: 1 }); // gates A
+					await LockTest.put({ id: idB, n: 1 }); // gated on B
+				});
+				assert.fail('expected 423');
+			} catch (err) {
+				assert.strictEqual(err.statusCode, 423, `expected 423, got ${err.statusCode}`);
+			} finally {
+				setLockedWriteWaitMs(LOCKED_WRITE_WAIT_MS);
+				await bHolder.unlock();
+			}
+			// A's gate handle must be released; a fresh write must proceed without blocking.
+			await LockTest.put({ id: idA, n: 2 });
+			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A writable after 423 entry-check');
+		});
+
+		it('a holder write restaged past an ungated rewrite carries the restaged timestamp as updatedTime', async function () {
+			// A sourceApply write bypasses the gate; it moves the record forward while the lock is held.
+			// The holder's subsequent write must restage and re-run validate() so __updatedtime__ reflects
+			// the restaged txnTime, not the pre-restage timestamp.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTestTimed.put({ id: recordId, n: 0 });
+			let ungatedVersion;
+			await transaction(async () => {
+				const holder = await LockTestTimed.lock(recordId);
+				// sourceApply is never gated — it moves the record past the holder's txnTime.
+				await transaction({ sourceApply: true }, () => LockTestTimed.put({ id: recordId, n: 1 }));
+				ungatedVersion = LockTestTimed.primaryStore.getEntry(recordId).version;
+				// Holder write triggers restage; validate() must re-run with the new txnTime.
+				holder.set('n', 2);
+				await holder.save();
+			});
+			const record = await LockTestTimed.get(recordId);
+			assert.strictEqual(record.n, 2, 'holder write landed');
+			assert.ok(
+				record.__updatedtime__ > ungatedVersion,
+				`updatedTime ${record.__updatedtime__} must be after ungated version ${ungatedVersion}`
+			);
 		});
 	});
 
