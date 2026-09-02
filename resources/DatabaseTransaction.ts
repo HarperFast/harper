@@ -544,13 +544,9 @@ export class DatabaseTransaction implements Transaction {
 
 		if (handle?.keyId === keyId && !handle.released) {
 			operation.lockHandle = handle;
-			// Only explicit lock() holders (hold=true) need the snapshot-free version check.
-			// Gate handles (hold=false) already own the native lock — re-enter tryLock below would
-			// conflict with ourselves, and the native lock prevents concurrent commits anyway, so
-			// no restage is needed. Skipping the version check for gate handles also prevents the
-			// synchronous recursion: commit → restageHolderWrites → restageAfter → commit → ...
-			// that fires when a concurrent ungated writer keeps the entry version ahead of txnTime.
-			if (handle.hold) {
+			// Only an explicit lock() holder (a leased handle) re-reads for an ungated rewrite; a gate handle
+			// already owns the key, and restaging it on a version race recursed without bound (CI stack overflow).
+			if (handle.expiresAt !== Infinity) {
 				const entry = (operation.entry = operation.store.getEntry(operation.key));
 				if (entry && entry.version >= txnTime) {
 					operation.restage = true;
