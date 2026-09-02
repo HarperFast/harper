@@ -1462,6 +1462,17 @@ New watch sites must go through it. As of this writing the sites are `components
 `server/threads/manageThreads.js`, and `resources/blob.ts`. `fs.watchFile` (`utility/logging/readLog.ts`)
 is stat polling with no fs-event handle and is outside this invariant.
 
+Five of those six sites arm the watch through `guardedWatch()` (`utility/watcherFallback.ts`) rather
+than calling `chokidar.watch`/`fs.watch` directly — it installs a process-level guard for a second,
+unrelated failure (a watched path deleted out from under a non-persistent chokidar watcher raises an
+unhandled async `EPERM`; see that file's header comment) but does no canonicalization of its own.
+Every caller still resolves its own path first and passes the resolved path in, exactly as when they
+called `chokidar.watch` directly, so the invariant holds through the wrapper. `utility/watcherFallback.ts`
+itself is the one file that touches `chokidar` without canonicalizing — the watch-sites source scan
+(`unitTests/utility/watchPath.test.js`) lists it as a native watch site (it does arm one) but exempts
+it from the per-file canonicalization check, since canonicalizing is its callers' job, not its own —
+the same relationship raw `chokidar.watch` has to the other five sites.
+
 Two consequences worth knowing before adding a caller. `EntryHandler` is the one place where the
 canonical path is load-bearing past the `fs.watch` call: chokidar's `ignored` predicate receives
 absolute paths built from `cwd`, so its bases must be derived from the same spelling, while event

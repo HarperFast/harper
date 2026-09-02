@@ -26,6 +26,8 @@ const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
 const {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
+	claimLostNativeWatchError,
+	guardedWatch,
 	isWatcherExhaustionError,
 	warnWatcherFallback,
 } = require('../../utility/watcherFallback.ts');
@@ -49,7 +51,6 @@ function getRequireModules() {
 		);
 	return requireModules;
 }
-const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
@@ -1538,7 +1539,7 @@ if (isMainThread) {
 		let usingPolling = watchTarget.mustPoll;
 		let liveWatcher;
 		const openWatcher = () => {
-			const opened = (liveWatcher = chokidar.watch(watchTarget.path, {
+			const opened = (liveWatcher = guardedWatch(watchTarget.path, {
 				persistent: false,
 				...(usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
@@ -1549,6 +1550,7 @@ if (isMainThread) {
 				// This runs on the thread that owns every worker, and chokidar emits 'error' unguarded for
 				// anything but ENOENT/ENOTDIR.
 				.on('error', (error) => {
+					if (claimLostNativeWatchError(error)) return;
 					if (isWatcherExhaustionError(error)) {
 						if (usingPolling || liveWatcher !== opened) return;
 						warnWatcherFallback(dir);

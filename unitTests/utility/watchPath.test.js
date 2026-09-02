@@ -155,7 +155,15 @@ describe('watchPath', () => {
 			'resources/blob.ts',
 			'security/keys.ts',
 			'server/threads/manageThreads.js',
+			'utility/watcherFallback.ts',
 		];
+
+		// Sites whose own file canonicalization call is exempt: `guardedWatch` in
+		// utility/watcherFallback.ts is the shared primitive underneath every
+		// `guardedWatch(...)` call site below, taking an already-resolved path from
+		// its caller rather than resolving one of its own — the same relationship
+		// raw `chokidar.watch` has to the other listed sites.
+		const CANONICALIZES_VIA_CALLER = new Set(['utility/watcherFallback.ts']);
 
 		// `watch`, not `watchFile`: the latter is stat polling with no fs-event handle, so it is outside
 		// the invariant (`utility/logging/readLog.ts`). `node:fs/promises` counts — its async iterator
@@ -168,6 +176,7 @@ describe('watchPath', () => {
 			new RegExp(`\\{[^}]*\\bwatch\\b[^}]*\\}\\s*=\\s*require\\(\\s*['"]${FS_MODULE}['"]\\s*\\)`),
 			new RegExp(`require\\(\\s*['"]${FS_MODULE}['"]\\s*\\)\\s*\\.watch\\s*\\(`),
 			/\bfs(?:Promises|p)?\.watch\s*\(/,
+			/\bguardedWatch\s*\(/,
 		];
 
 		const repoRoot = join(__dirname, '..', '..');
@@ -212,9 +221,12 @@ describe('watchPath', () => {
 		});
 
 		// File-level: catches a site that never canonicalizes, not a second raw watch beside a
-		// canonicalized one.
+		// canonicalized one. A CANONICALIZES_VIA_CALLER site is skipped here: its own callers are
+		// each listed in NATIVE_WATCH_SITES too (none of them exempted), so this same loop already
+		// requires every one of them to canonicalize before calling it.
 		it('all route their path through the canonicalization helper', () => {
 			for (const site of NATIVE_WATCH_SITES) {
+				if (CANONICALIZES_VIA_CALLER.has(site)) continue;
 				const source = readFileSync(join(repoRoot, site), 'utf8');
 				assert.ok(
 					/\bresolveWatchTarget\b|\bcanonicalizeWatchPath\b/.test(source),
