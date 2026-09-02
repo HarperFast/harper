@@ -81,9 +81,9 @@ describe('purgeAgedLogs', () => {
 		const before = Date.now();
 		purgeAgedLogs(store);
 
-		assert.deepEqual(store.order, ['floor', 'purge'], 'the floor must be recorded before the purge runs');
-		assert.deepEqual(store.floorWrites.length, 1, 'exactly one floor write');
-		assert.equal(
+		assert.deepStrictEqual(store.order, ['floor', 'purge'], 'the floor must be recorded before the purge runs');
+		assert.strictEqual(store.floorWrites.length, 1, 'exactly one floor write');
+		assert.strictEqual(
 			store.floorWrites[0],
 			store.calls[0].before,
 			'the floor and the purge cutoff must be the same instant'
