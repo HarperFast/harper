@@ -155,7 +155,7 @@ describe('audit staleness floor', () => {
 			if (Audited.auditStore.reusableIterable) return this.skip(); // RocksDB getKeys is unimplemented
 			const { establishAuditFloor } = require('#src/resources/auditStore');
 			const rolled = tableInOwnDatabase('RolledBack');
-			const future = Date.now() + 3_600_000; // an entry timestamped ahead of the clock
+			const future = Date.now() + 3_600_000;
 			rolled.auditStore.putSync(future, new Uint8Array(0));
 			await rolled.auditStore.remove(AUDIT_FLOOR_KEY);
 			assert.strictEqual(rolled.oldestRetainedAuditTime(), Infinity, 'precondition: no floor recorded');
@@ -342,7 +342,8 @@ describe('audit staleness floor', () => {
 		});
 
 		it('but a pass with nothing eligible writes no floor at all', async function () {
-			if (Audited.auditStore.reusableIterable) return this.skip(); // the Rocks branch runs on demand, not on a loop
+			// the Rocks branch purges whole log files, so it has no per-entry eligibility probe to assert on
+			if (Audited.auditStore.reusableIterable) return this.skip();
 			const idle = tableInOwnDatabase('Idle');
 			await idle.put('recent', { name: 'kept' });
 			const before = idle.oldestRetainedAuditTime();
@@ -471,16 +472,17 @@ describe('audit staleness floor', () => {
 		}
 	});
 
-	it('leaves an audit store whose only key is the floor enumerable-key-free', function () {
+	it('keeps the floor key out of the enumerable audit keys', function () {
 		// openAuditStore's time-reversal check does `time > Date.now()` over getKeys({reverse, limit: 1}).
-		// If the floor's symbol key were enumerated there, a database whose audit log is still empty
-		// would compare a Symbol and throw during open. The audit key encoder does not yield it.
+		// A symbol reaching that comparison throws, so a database whose audit log holds no entries yet —
+		// only the floor and last-removed markers — would fail to open. The audit key encoder does not
+		// yield symbol keys, which is what keeps that check numeric.
 		if (Audited.auditStore.reusableIterable) return this.skip(); // RocksDB getKeys is unimplemented
 		const fresh = tableInOwnDatabase('KeyOnlyFloor');
 		assert.ok(Number.isFinite(fresh.oldestRetainedAuditTime()), 'precondition: a floor is recorded');
 		const keys = [];
 		for (const key of fresh.auditStore.getKeys({ reverse: true, limit: 1 })) keys.push(key);
-		assert.deepStrictEqual(keys, [], 'the floor key must not surface as an enumerable audit key');
+		assert.deepStrictEqual(keys, [], 'no marker symbol may surface as an enumerable audit key');
 	});
 
 	it('reports the database floor for a table whose own auditing is off', () => {
