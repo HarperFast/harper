@@ -1607,24 +1607,35 @@ describe('Audit log', () => {
 				}
 			});
 
-			it('contains a hook failure when the logger also fails', () => {
+			it('contains a hook failure when either logger call fails', () => {
 				const store = storeWith(corruptLogNamed('corrupt', [entry(1)], 2048), healthyLogNamed('healthy', [entry(2)]));
 				const originalError = harperLogger.error;
+				const originalWarn = harperLogger.warn;
+				let warnings = 0;
+				let hookCalls = 0;
 				harperLogger.error = () => {
+					throw new Error('logger failure');
+				};
+				harperLogger.warn = () => {
+					warnings++;
 					throw new Error('logger failure');
 				};
 				try {
 					const versions = [];
 					for (const record of store.getRange({
 						onCorruptFrame: () => {
+							hookCalls++;
 							throw new Error('hook failure');
 						},
 					})) {
 						versions.push(record.version);
 					}
 					assert.deepStrictEqual(versions, [1, 2]);
+					assert.strictEqual(warnings, 1);
+					assert.strictEqual(hookCalls, 1);
 				} finally {
 					harperLogger.error = originalError;
+					harperLogger.warn = originalWarn;
 				}
 			});
 
