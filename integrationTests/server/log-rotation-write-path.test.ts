@@ -4,12 +4,12 @@
  *
  * This drives request-shaped log volume through real HTTP workers, which is where that volume comes
  * from in production and where the old code had no rotator at all, and finishes well inside one
- * audit interval so nothing but the write path can be doing the rotating. On `main` it fails at the
- * first assertion: zero archives.
+ * audit interval so nothing but the write path can be doing the rotating.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { join, resolve } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,10 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 				logging: {
 					level: 'notify',
 					file: true,
-					rotation: { enabled: true, maxSize: '64K', path: rotatedDir },
+					// compress on: the only configuration in which an archive is destroyed, and therefore
+					// the only one that exercises the generation coordinator's release-then-unlink path
+					// through the real thread mesh rather than a fake transport.
+					rotation: { enabled: true, maxSize: '64K', compress: true, path: rotatedDir },
 				},
 			},
 		});
@@ -58,6 +61,16 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		}
 	}
 
+	function compressedArchivePaths(): string[] {
+		try {
+			return readdirSync(rotatedDir)
+				.filter((name) => name.endsWith('.gz'))
+				.map((name) => join(rotatedDir, name));
+		} catch {
+			return [];
+		}
+	}
+
 	test('bounds every generation and keeps every request marker exactly once', { timeout: 120_000 }, async () => {
 		for (let i = 0; i < REQUEST_COUNT; i++) {
 			const response = await fetch(new URL(`/LogBurst/request-${i}`, ctx.harper.httpURL));
@@ -67,6 +80,14 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 
 		const archives = archivePaths();
 		ok(archives.length > 0, 'expected the write path to rotate the log inside one audit interval');
+
+		// Compression only happens after every writing thread has answered that it released the
+		// archived inode, so a published .gz is the coordinator working through the real thread mesh.
+		const deadline = Date.now() + 30_000;
+		while (compressedArchivePaths().length === 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
+		ok(compressedArchivePaths().length > 0, 'expected at least one archive to be compressed and published');
 
 		// Every generation is bounded by the cap plus one check quantum and one in-flight payload per
 		// writing thread — a function of maxSize and thread count, never of how fast the log is written.
@@ -81,10 +102,10 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 			ok(size < bound, `${archive} reached ${size} bytes against a ${MAX_SIZE_BYTES}-byte cap`);
 		}
 
-		const contents = [join(logDir, 'hdb.log'), ...archives]
+		const contents = [join(logDir, 'hdb.log'), ...archives, ...compressedArchivePaths()]
 			.map((file) => {
 				try {
-					return readFileSync(file, 'utf8');
+					return file.endsWith('.gz') ? gunzipSync(readFileSync(file)).toString('utf8') : readFileSync(file, 'utf8');
 				} catch {
 					return '';
 				}

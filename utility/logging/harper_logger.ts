@@ -898,8 +898,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		// is the request path at full rate. Go straight to stdio until the cooldown expires.
 		if (logFD && !(retryAppendAfter > performance.now()) && (rotationGuard?.beforeAppend() ?? true)) {
 			let startTime = performance.now();
-			// Encoded once when the size guard is on, so its byte accounting reads a length instead of
-			// re-scanning the string appendFileSync is about to encode anyway.
+			// Encoded once, so the guard's accounting reads a length instead of re-scanning the string.
 			const data = rotationGuard ? Buffer.from(payload) : payload;
 			try {
 				fs.appendFileSync(logFD, data);

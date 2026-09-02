@@ -112,17 +112,47 @@ export function isArchivePendingQuiescence(archivePath: string) {
 	return unprovenArchives.has(archivePath);
 }
 
+// Bounded per pass: a peer that never answers must not let the retry queue outlive the audit
+// interval and starve retention, which is the only thing that bounds the rotated directory.
+const MAX_RETRIES_PER_PASS = 4;
+
 export async function retryPendingGenerations() {
+	let attempts = 0;
 	for (const [archivePath, pending] of [...unprovenArchives]) {
+		if (attempts++ >= MAX_RETRIES_PER_PASS) return;
 		if (!existsSync(archivePath)) {
 			unprovenArchives.delete(archivePath);
 			continue;
 		}
 		if (!(await requestGenerationClose(pending.generation))) continue;
 		unprovenArchives.delete(archivePath);
-		// One archive that will not compress must not stop the rest of the queue, or the tick that
-		// drives it — retention runs after this and needs the tick to reach it.
+		// One archive that will not compress must not stop the rest of the queue.
 		if (pending.compress) await compressArchive(archivePath).catch(() => {});
+	}
+}
+
+/**
+ * Compress archives left plain by any isolate, found on disk rather than in this isolate's memory.
+ * Write-path rotations happen mostly in the HTTP workers, whose unproven-archive bookkeeping the
+ * main thread cannot see, so without this a worker's archive would silently stay uncompressed for
+ * the life of the process however the operator configured `compress`.
+ * Only safe to call once quiescence has been proven for the whole directory.
+ */
+export async function compressPendingArchives(rotatedLogDir: string) {
+	let files;
+	try {
+		files = await fsProm.readdir(rotatedLogDir);
+	} catch (error) {
+		if (error.code !== 'ENOENT') throw error;
+		return;
+	}
+	let compressed = 0;
+	for (const file of files) {
+		if (!file.endsWith('.log') || files.includes(`${file}.gz`)) continue;
+		if (compressed++ >= MAX_RETRIES_PER_PASS) return;
+		const archivePath = join(rotatedLogDir, file);
+		if (unprovenArchives.has(archivePath)) continue;
+		await compressArchive(archivePath).catch(() => {});
 	}
 }
 
@@ -172,6 +202,12 @@ export function createRotationGuard(options: any) {
 	const { logPath, maxBytes, rotatedLogDir, compress, getLogIdentity, closeLogFile, report, onRotated } = options;
 	const checkQuantum = Math.max(1, Math.floor(maxBytes / CHECK_QUANTUM_DIVISOR));
 	mkdirSync(rotatedLogDir, { recursive: true });
+	// Rotation is a rename, and a rename across devices can never succeed. Refusing to build the guard
+	// here turns a misconfiguration that would otherwise fail closed on every write — ending file
+	// logging for the life of the process — into one startup error and today's unrotated behavior.
+	if (statSync(rotatedLogDir).dev !== statSync(dirname(logPath)).dev) {
+		throw new Error(`the rotation directory ${rotatedLogDir} is on a different filesystem than ${logPath}`);
+	}
 	let bytesUntilCheck = checkQuantum;
 	let retryAfter = 0;
 	let rotationPending = false;
@@ -181,7 +217,7 @@ export function createRotationGuard(options: any) {
 		// log rotates on its first write rather than on the first audit tick a minute later.
 		bytesUntilCheck = Math.min(checkQuantum, Math.max(0, maxBytes - statSync(logPath).size));
 	} catch {
-		// No log file yet; a full quantum is the right first window.
+		// No log file yet.
 	}
 	return { beforeAppend, recordWrite, checkQuantum };
 
@@ -215,6 +251,14 @@ export function createRotationGuard(options: any) {
 			checkAndRotate();
 			rotationPending = false;
 		} catch (error) {
+			// Losing the race is the normal multi-writer outcome, not a failure: another thread (or the
+			// audit tick) renamed the generation between this thread's stat and its rename. The file is
+			// under the cap now, which is all this check wanted.
+			if (error.code === 'ENOENT') {
+				closeLogFile();
+				rotationPending = false;
+				return;
+			}
 			rotationPending = true;
 			retryAfter = performance.now() + ROTATION_RETRY_COOLDOWN;
 			closeLogFile();

@@ -1594,7 +1594,6 @@ if (isMainThread) {
 	});
 }
 
-// Required from here, not from logging, so the coordinator's listeners are registered in every
-// meshed thread before any port can deliver to them, without logging ever importing this module.
-// Last in the file: it calls back into onThreadExit, whose listener array is declared below.
+// From here, not from logging, which must never import this module. Last in the file because it
+// calls onThreadExit, whose listener array is declared above it.
 require('./logRotationTransport.ts');

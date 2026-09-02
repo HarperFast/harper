@@ -10,8 +10,7 @@ const { requestGenerationClose } = require('#src/utility/logging/logGenerationCo
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
 
-// Long enough that the audit tick can never be what rotates: every assertion below is about the
-// write path itself. On origin/main this makes the whole suite fail — nothing else checks the size.
+// Long enough that the audit tick can never fire, so every assertion below is about the write path.
 const NEVER_TICKS = 3600000;
 const TEST_ROOT = path.join(__dirname, 'rotationGuardLogs');
 

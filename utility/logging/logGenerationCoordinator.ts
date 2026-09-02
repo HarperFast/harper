@@ -33,8 +33,9 @@ const sinksByPath = new Map<string, { identity(): any; close(): void }>();
 const pendingByRequest = new Map<string, { expected: Set<number>; settle: (proven: boolean) => void }>();
 let requestCounter = 0;
 
-export function setRotationTransport(newTransport: RotationTransport) {
+export function setRotationTransport(newTransport?: RotationTransport) {
 	transport = newTransport;
+	if (!newTransport) return;
 	newTransport.onMessage(LOG_GENERATION_ROTATED, (message) => {
 		releaseLocally(message);
 		newTransport.sendToThread(message.originator, {
