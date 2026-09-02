@@ -284,7 +284,7 @@ describe('dropTable ghost regression', () => {
 				return originalRemoveSync.call(this, key, ...rest);
 			};
 			return () => {
-				delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
+				delete dbisDb.removeSync;
 			};
 		};
 		const storageLogger = harperLogger.forComponent('storage');
@@ -404,7 +404,7 @@ describe('dropTable ghost regression', () => {
 				`a later interrupted drop must be retried again, not skipped on the previous drop's spent budget (attempts stuck at ${attempts})`
 			);
 		} finally {
-			delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
+			delete dbisDb.removeSync;
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -469,7 +469,7 @@ describe('dropTable ghost regression', () => {
 				`generation B must get its own budget instead of inheriting A's spent count (attempts stuck at ${attempts})`
 			);
 		} finally {
-			delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
+			delete dbisDb.removeSync;
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -572,7 +572,7 @@ describe('dropTable ghost regression', () => {
 			resetDatabases();
 			getDatabases();
 		} finally {
-			delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
+			delete dbisDb.removeSync;
 		}
 
 		assert.ok(

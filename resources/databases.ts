@@ -32,7 +32,7 @@ const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { databasePaths, deleteRootBlobPathsForDB, getBlobPathsForDatabaseName } from './blob.ts';
+import { databasePaths, deleteRootBlobPathsForDB, getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
@@ -55,6 +55,8 @@ import {
 	scanLifecycleMarkers,
 	RESTORE_META_DIR,
 	type RestoreLock,
+	assertDropTargetsRemovable,
+	removeDroppedDatabaseFiles,
 } from '../dataLayer/restoreMarker.ts';
 
 /**
@@ -1996,17 +1998,23 @@ export async function dropDatabase(databaseName) {
 		for (const tableName in dbTables) databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 		await rootStore.auditStore?.stopAuditCleanup?.();
-		closeDatabase(databaseName);
+		// the environment's close is asynchronous: the file must not be unlinked under it
+		const closing: Promise<unknown>[] = [];
+		closeDatabase(databaseName, closing);
+		await Promise.all(closing);
 		await unlink(rootStore.path);
 		await deleteRootBlobPathsForDB(rootStore);
 		return;
 	}
 
 	const path = rootStore.path;
+	const blobRoots: string[] = getRootBlobPathsForDB(rootStore as any) ?? [];
 	const lock = beginDropOfDatabase(path, databaseName);
 	let lockSettled = false;
 	let destructionStarted = false;
 	try {
+		// refused before anything is closed or announced, so there is nothing to reload
+		assertDropTargetsRemovable(path, blobRoots);
 		for (const tableName in dbTables) databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 		closeDatabase(databaseName);
@@ -2027,7 +2035,8 @@ export async function dropDatabase(databaseName) {
 		}
 		destructionStarted = true;
 		rootStore.destroy();
-		await deleteRootBlobPathsForDB(rootStore as any);
+		// a removal that fails throws past completeDrop: the marker stays for the next scan to finish
+		await removeDroppedDatabaseFiles(path, blobRoots);
 		lockSettled = true;
 		completeDrop(lock);
 	} finally {
@@ -2044,14 +2053,16 @@ export async function dropDatabase(databaseName) {
  * touching its files. Used by the restore_backup flow: every thread must release its handles so
  * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
- * progress, per the restore marker checks in the scan).
+ * progress, per the restore marker checks in the scan). Store closes that return a promise (LMDB
+ * environments) are collected into `closing` when it is given.
  */
-export function closeDatabase(databaseName: string): boolean {
+export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]): boolean {
 	const dbTables = databases[databaseName];
 	const rootStores = new Set<any>();
 	const closeStore = (store: any, description: string) => {
 		try {
-			store?.close?.();
+			const result = store?.close?.();
+			if (closing && typeof result?.then === 'function') closing.push(result);
 		} catch (error) {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
 		}
@@ -2060,6 +2071,20 @@ export function closeDatabase(databaseName: string): boolean {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
+		// the class goes with the database: its timers, callbacks and reclamation handler must not
+		// outlive it (cleanup also closes its RocksDB column families; LMDB sub-databases close below)
+		if (typeof table.cleanup === 'function') {
+			try {
+				table.cleanup();
+			} catch (error) {
+				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
+			}
+		}
+		if (table.primaryStore instanceof RocksDatabase) continue;
+		for (const indexName in table.indices || {}) {
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		}
+		closeStore(table.primaryStore, `table ${tableName}`);
 	}
 	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
 	// an open root store, tracked only on the defined-database entry rather than any table — include
@@ -2071,18 +2096,10 @@ export function closeDatabase(databaseName: string): boolean {
 	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
 	// synchronous purgeLogs() call with nothing suspended mid-removal.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
-	for (const tableName in dbTables ?? {}) {
-		const table: any = dbTables[tableName];
-		if (!table?.primaryStore) continue;
-		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
-		}
-		closeStore(table.primaryStore, `table ${tableName}`);
-	}
 	// A rescan that skipped this database (its lifecycle marker was already present) has removed it
 	// from `databases`, but the root store an earlier rescan opened is still cached, still open, and
 	// still counts against the drop or restore that is waiting for every thread to let go of it.
-	const cachedRoot = rocksdbDatabaseEnvs.get(join(resolveDatabaseStorageRoot(databaseName), databaseName));
+	const cachedRoot = rocksdbDatabaseEnvs.get(resolveDatabasePath(databaseName));
 	if (cachedRoot) rootStores.add(cachedRoot);
 	if (!dbTables && rootStores.size === 0) return false;
 	for (const rootStore of rootStores) {
@@ -2203,10 +2220,25 @@ function armVersionedIndexEncoder(dbi: any, rootStore: any) {
 	if (dbi.encoder) dbi.encoder.autoVersion = true;
 }
 
+// A custom object index (an HNSW graph) lives in a primary-style store keyed by node; an ordinary
+// index is a dupSort store keyed by value. Neither can be driven through the other's wrapper.
+function indexUsesObjectStore(attribute: any): boolean {
+	return !!(
+		attribute.isPrimaryKey ||
+		(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore)
+	);
+}
+
+/** Whether an open index store is the wrapper `openIndex` would choose for the attribute as it is now defined. */
+function indexStoreMatches(dbi: any, rootStore: RootDatabaseKind, attribute: any): boolean {
+	const objectStorage = indexUsesObjectStore(attribute);
+	if (rootStore instanceof RocksDatabase) return dbi instanceof RocksIndexStore === !objectStorage;
+	return dbi.dupSort == null || Boolean(dbi.dupSort) === !objectStorage;
+}
+
 // opens an index, consulting with custom indexes that may use alternate store configuration
 function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
-	const objectStorage =
-		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
+	const objectStorage = indexUsesObjectStore(attribute);
 	const dbiInit = createOpenDBIObject(!objectStorage, objectStorage);
 	// Custom-index object stores (e.g. HNSW vector graphs) hold fixed-shape internal nodes —
 	// numeric-keyed per-level connection arrays and quantized bins — that rely on random-access
@@ -2756,10 +2788,18 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				// the live table's index store is reused: a fresh handle assigned over it below would leave the
 				// old one open but unreachable, and one such handle per index per schema change is what
-				// keeps a database open long after every table released it
-				const dbi = indices[attribute.name]
-					? prepareIndexStore(indices[attribute.name], dbiKey, rootStore, attribute)
-					: openIndex(dbiKey, rootStore, attribute);
+				// keeps a database open long after every table released it — unless the index changed kind,
+				// when the store must be reopened as the other wrapper (the structural change below rebuilds it)
+				let dbi = indices[attribute.name];
+				if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
+					try {
+						dbi.close?.();
+					} catch (error) {
+						logger.warn(`Error closing the ${attribute.name} index of ${tableName} before reopening it:`, error);
+					}
+					dbi = undefined;
+				}
+				dbi = dbi ? prepareIndexStore(dbi, dbiKey, rootStore, attribute) : openIndex(dbiKey, rootStore, attribute);
 				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
@@ -2958,9 +2998,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		return tableName + '/';
 	}
 	// The catalog of a published table stays, but a class the registration never accepted is
-	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers
-	// and reclamation handler live for the process. The stores stay open: the table is durable, and
-	// whichever scan reloads it opens its own handles.
+	// unreachable, so release what makeTable() registered process-wide — its timers, its reclamation
+	// handler and this thread's store handles — instead of leaving them live for the process. The
+	// table is durable, and whichever scan reloads it opens its own handles.
 	function discardUnregisteredClass() {
 		try {
 			Table.cleanup();

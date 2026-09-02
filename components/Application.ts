@@ -44,6 +44,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import {
 	confirmWindowsProcessTreeGone,
 	type WindowsProcessTreeIdentity,
+	ROOT_SPAWN_ALLOWANCE_MS,
 } from '../server/threads/windowsProcessTree.ts';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -3940,9 +3941,9 @@ function spawnWithEnv(
 		const treeIdentity: WindowsProcessTreeIdentity = {
 			rootPid: trackedProcessId ?? 0,
 			rootKnownAt: Date.now(),
-			rootStartedWithinMs: 1_000,
+			rootStartedWithinMs: ROOT_SPAWN_ALLOWANCE_MS,
 		};
-		if (trackedProcessId) registerProcessGroup(trackedProcessId);
+		if (trackedProcessId) registerProcessGroup(trackedProcessId, treeIdentity.rootKnownAt);
 		let processGroupIsTracked = Boolean(trackedProcessId);
 		const untrackProcessGroup = () => {
 			if (!processGroupIsTracked || !trackedProcessId) return;

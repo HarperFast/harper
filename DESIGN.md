@@ -1001,7 +1001,9 @@ worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), 
 per-database lock and writes the marker typed `drop` (second line), every thread releases its
 handles on the ITC `close_database` message (`ITC_SCHEMA_OPERATIONS`, never an API operation),
 `waitForDatabaseClosedProcessWide` checks rocksdb-js's registry, and only then are the directory and
-its blob roots destroyed and the marker cleared. A handle that remains — a running job (job workers
+its blob roots destroyed — through the same strict removal as boot-time recovery (`removeDroppedDatabaseFiles`:
+nothing deleted through a symlink, parent directories fsynced, the first failed removal keeps the
+marker) — and the marker cleared. A handle that remains — a running job (job workers
 never receive broadcasts), or a component holding its own `RocksDatabase` — fails the drop with 409
 instead of being force-closed: a destroy under a concurrent open is what recreates the directory
 and leaves its `LOCK` held for the life of the process (HarperFast/rocksdb-js#818). A crash between

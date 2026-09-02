@@ -9,7 +9,7 @@ const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData }
 const { spawnSync } = require('node:child_process');
 const { readdirSync, readFileSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
-const { confirmWindowsProcessTreeGone } = require('./windowsProcessTree.ts');
+const { confirmWindowsProcessTreeGone, ROOT_SPAWN_ALLOWANCE_MS } = require('./windowsProcessTree.ts');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
@@ -1108,7 +1108,7 @@ const zombieGroupScanTimes = new Map();
 const processGroupLivenessStates = new Map();
 // When each group's root was registered — by then it was already running, which is what lets the
 // Windows scan tell our root from a later process that recycled its PID.
-const processGroupRegisteredAt = new Map();
+const processGroupSpawnedAt = new Map();
 
 function processGroupExists(processGroupId) {
 	try {
@@ -1249,30 +1249,32 @@ async function waitForProcessGroupExit(processGroupId) {
 // a real failure and the target having already exited, so only a reported success bounds the
 // root's lifetime up front (a terminated process cannot spawn); otherwise the scan latches the
 // root's exit itself, re-terminating the root while it is still found running as ours. Either
-// way the wait confirms via the process table — reclamation must not proceed on a guess.
-function waitForWindowsGroupExit(processGroupId, registeredAt, killedAt) {
+// way the wait confirms via the process table — reclamation must not proceed on a guess. The
+// root was known to be running at `spawnedAt`, the spawner's clock as its spawn returned, carried
+// with the registration so the cross-thread hop adds nothing to the window before it.
+function waitForWindowsGroupExit(processGroupId, spawnedAt, killedAt) {
 	return confirmWindowsProcessTreeGone(
 		{
 			rootPid: processGroupId,
-			rootKnownAt: registeredAt ?? killedAt ?? Date.now(),
-			rootStartedWithinMs: 5_000,
+			rootKnownAt: spawnedAt ?? killedAt ?? Date.now(),
+			rootStartedWithinMs: ROOT_SPAWN_ALLOWANCE_MS,
 			rootExitedAt: killedAt,
 		},
 		{ pollMs: PROCESS_GROUP_TERMINATION_POLL_MS, label: `process group ${processGroupId}` }
 	);
 }
 
-function addProcessGroup(ownerThreadId, processGroupId) {
+function addProcessGroup(ownerThreadId, processGroupId, spawnedAt) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
 	let processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
 	processGroups.add(processGroupId);
-	processGroupRegisteredAt.set(processGroupId, Date.now());
+	processGroupSpawnedAt.set(processGroupId, Number.isFinite(spawnedAt) ? spawnedAt : Date.now());
 }
 
 function removeProcessGroup(ownerThreadId, processGroupId) {
 	clearProcessGroupLivenessState(processGroupId);
-	processGroupRegisteredAt.delete(processGroupId);
+	processGroupSpawnedAt.delete(processGroupId);
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return;
 	processGroups.delete(processGroupId);
@@ -1308,10 +1310,10 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	}
 	const termination = Promise.all(
 		groupIds.map((processGroupId) => {
-			const registeredAt = processGroupRegisteredAt.get(processGroupId);
-			processGroupRegisteredAt.delete(processGroupId);
+			const spawnedAt = processGroupSpawnedAt.get(processGroupId);
+			processGroupSpawnedAt.delete(processGroupId);
 			return process.platform === 'win32'
-				? waitForWindowsGroupExit(processGroupId, registeredAt, killedAt.get(processGroupId))
+				? waitForWindowsGroupExit(processGroupId, spawnedAt, killedAt.get(processGroupId))
 				: waitForProcessGroupExit(processGroupId);
 		})
 	).finally(() => {
@@ -1323,9 +1325,10 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	return termination;
 }
 
-function registerProcessGroup(processGroupId) {
-	if (isMainThread) addProcessGroup(threadId, processGroupId);
-	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId });
+// `spawnedAt`: the caller's clock as the group's root process was spawned (it was running by then).
+function registerProcessGroup(processGroupId, spawnedAt = Date.now()) {
+	if (isMainThread) addProcessGroup(threadId, processGroupId, spawnedAt);
+	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId, spawnedAt });
 }
 
 function unregisterProcessGroup(processGroupId) {
@@ -1437,7 +1440,7 @@ function addPort(port, keepRef, isJobWorker) {
 	port
 		.on('message', (message) => {
 			if (message.type === REGISTER_PROCESS_GROUP) {
-				addProcessGroup(portThreadId, message.processGroupId);
+				addProcessGroup(portThreadId, message.processGroupId, message.spawnedAt);
 			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
 				removeProcessGroup(portThreadId, message.processGroupId);
 			} else if (message.type === ADDED_PORT) {
