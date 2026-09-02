@@ -197,8 +197,10 @@ describe('watcherFallback', () => {
 			assert.equal(code, 0, `harness exited ${code}: ${stderr}`);
 			assert.match(stdout, /claimed=12/);
 			// 12 claims => warnings at occurrence 1 and 10, and no others.
-			const warnings = `${stdout}${stderr}`.match(/failed asynchronously/g) ?? [];
-			assert.equal(warnings.length, 2, `expected 2 warnings across 12 claims, got ${warnings.length}`);
+			const warned = [...`${stdout}${stderr}`.matchAll(/failed asynchronously.*?occurrence (\d+)/g)].map(
+				([, occurrence]) => Number(occurrence)
+			);
+			assert.deepEqual(warned, [1, 10], `expected warnings at occurrences 1 and 10, got ${warned.join(', ')}`);
 		});
 
 		// The guard sees every uncaught exception in the process, so the bound that keeps it from
