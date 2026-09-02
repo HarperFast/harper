@@ -29,9 +29,9 @@ export interface WindowsProcessTreeIdentity {
 	/** Epoch ms at which the root was already running: after spawn returned, or at group registration. */
 	rootKnownAt: number;
 	/**
-	 * How long before `rootKnownAt` the root may have started (`ROOT_SPAWN_ALLOWANCE_MS` when that
-	 * timestamp was taken as spawn returned). Bounds the children of a root whose own creation time
-	 * was never observed.
+	 * How long before `rootKnownAt` the root may have started: the interval measured around the
+	 * `spawn` call, or `ROOT_SPAWN_ALLOWANCE_MS` when that was not measured. Bounds the children of
+	 * a root whose own creation time was never observed.
 	 */
 	rootStartedWithinMs?: number;
 	/** The root's own creation time, once a scan has seen it running as ours; the exact child bound. */
@@ -69,8 +69,10 @@ export interface WindowsProcessTreeWaitOptions {
 
 // Date.now() and Win32_Process.CreationDate read the same system clock; this covers its resolution.
 const CLOCK_SKEW_MS = 50;
-// A process exists before `spawn` returns, so a `rootKnownAt` taken then is after its creation by
-// no more than the stall between the two — an event loop pause, never a network hop.
+// The root is created inside the `spawn` call, so the interval measured around that call is the
+// exact bound on how much earlier than `rootKnownAt` it may have started. This is the fallback for a
+// registration that carried no such interval: a stall between the two — an event loop pause, never
+// a network hop.
 export const ROOT_SPAWN_ALLOWANCE_MS = 1_000;
 export const WINDOWS_TREE_POLL_MS = 25;
 const WINDOWS_TREE_POLL_MAX_MS = 5_000;
