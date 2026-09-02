@@ -72,7 +72,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { CONDITIONAL_PATCH, HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -799,7 +799,6 @@ export function makeTable(options) {
 						viaNodeId: event.viaNodeId,
 						// use per-event expiresAt: batched txn context only holds the first event's expiration
 						expiresAt: event.expiresAt,
-						ifExists: event.ifExists,
 						// bulk base-copy snapshot frame: apply current-state directly, without an audit/transaction-log
 						// entry or out-of-order resequencing (harper-pro#480). Only set for copy frames (between
 						// COPY_START and COPY_COMPLETE); post-copy audit-replay frames apply normally.
@@ -2423,9 +2422,10 @@ export function makeTable(options) {
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
 			const context = this.getContext();
 			const ifExists = (context as Context)?.ifExists === true;
-			if (ifExists) (context as Context).ifExists = false;
+			// A source patch runs before the local commit check, so it cannot honor this condition.
 			if (ifExists && (this.constructor as any).source)
 				throw new Error('ifExists patches are not supported on source-backed tables');
+			if (ifExists) (context as Context).ifExists = false;
 			const options = ifExists ? { ifExists: true } : undefined;
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat.
@@ -4401,7 +4401,6 @@ export function makeTable(options) {
 							version: auditRecord.version,
 							type,
 							beginTxn,
-							ifExists: auditRecord.type === 'patch' && Boolean(auditRecord.extendedType & CONDITIONAL_PATCH),
 						};
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.

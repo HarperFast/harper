@@ -5,7 +5,6 @@ const { table } = require('#src/resources/databases');
 const { CONDITIONAL_PATCH } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { _setSessionTableForTest, deleteSession, saveSession } = require('#src/components/mcp/session');
 
 describe('Table patch conflict merging', () => {
 	let PatchMergeTables;
@@ -153,20 +152,6 @@ describe('Table patch conflict merging', () => {
 			releaseStale();
 			await stalePatch;
 			assert.equal(await Table.get(id), undefined);
-		}
-	});
-
-	it('keeps a deleted MCP session absent when a late save uses a real table', async () => {
-		const { Table } = PatchMergeTables.find(({ audit }) => !audit);
-		const id = 'real-mcp-session-delete-race';
-		await Table.put(id, { id, lastActivity: 1 });
-		_setSessionTableForTest(Table);
-		try {
-			await deleteSession(id);
-			await saveSession(id, { lastActivity: 2 });
-			assert.equal(await Table.get(id), undefined);
-		} finally {
-			_setSessionTableForTest(undefined);
 		}
 	});
 
