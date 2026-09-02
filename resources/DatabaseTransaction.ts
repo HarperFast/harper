@@ -569,11 +569,22 @@ export class DatabaseTransaction implements Transaction {
 		if (!lockKey) return false;
 		if (typeof operation.store.tryLock !== 'function') return false;
 
+		// Uncontended path: try without a closure; only allocate the wake callback under contention.
+		if (operation.store.tryLock(lockKey)) {
+			const gateHandle = makeKeyLockHandle(operation.store, lockKey, keyId);
+			this.registerRecordLock(gateHandle);
+			operation.lockHandle = gateHandle;
+			return false;
+		}
+
+		// Contended: register a wake callback so we are notified when the key is released.
 		let wakeResolve: (() => void) | undefined;
-		const acquired = operation.store.tryLock(lockKey, () => {
-			wakeResolve?.();
-		});
-		if (acquired) {
+		if (
+			operation.store.tryLock(lockKey, () => {
+				wakeResolve?.();
+			})
+		) {
+			// Lock released between the two tryLock calls; acquired without the wake callback.
 			const gateHandle = makeKeyLockHandle(operation.store, lockKey, keyId);
 			this.registerRecordLock(gateHandle);
 			operation.lockHandle = gateHandle;
@@ -1251,6 +1262,9 @@ export class DatabaseTransaction implements Transaction {
 			}
 		} catch (err) {
 			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
+			// options.transaction is a replay handle created by restageAfter for this round; a save-loop
+			// throw leaves it with staged write intents that must be aborted to avoid WAL pinning.
+			abortNativeTransaction(options.transaction, 'cleanup replay handle after save-loop throw');
 			throw err;
 		}
 		this.validated = this.writes.length;
@@ -1660,14 +1674,20 @@ export class DatabaseTransaction implements Transaction {
 			);
 		} catch (err) {
 			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
+			// Sync throw from the when() callback (null first-arg path): options.transaction may still
+			// hold staged write intents from the save loop (e.g. deadline throw before transaction.commit()).
+			abortNativeTransaction(options.transaction, 'cleanup replay handle after sync callback throw');
 			throw err;
 		}
 		// when()'s sync path (null first arg) has no try/catch, so a callback throw — e.g. the 423
 		// from waitForPendingKeys' entry check — propagates without calling reject or abort().
-		// The catch below covers that path; the Promise .catch covers the async (completions > 0) path.
+		// The catch above covers that path; the Promise .catch covers the async (completions > 0) path.
 		if ((committed as any)?.then) {
 			return (committed as Promise<CommitResolution>).catch((err) => {
 				if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
+				// Async rejection: options.transaction may have staged write intents (e.g. native commit
+				// failed before its intents cleared). Abort is idempotent if the native layer already did.
+				abortNativeTransaction(options.transaction, 'cleanup replay handle after async rejection');
 				throw err;
 			});
 		}

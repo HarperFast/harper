@@ -56,7 +56,7 @@ export interface ResolvedRecordLockOptions {
 export interface RecordLockHandle {
 	store: any;
 	key: any[]; // lockAttemptKey, passed to store.tryLock / store.unlock
-	keyId: unknown; // writeKeyId(id), Map key in the per-transaction recordLocks sub-map
+	keyId: unknown; // writeKeyId(id), used to scan the per-transaction recordLocks array
 	expiresAt: number;
 	hold: boolean;
 	released: boolean;
@@ -93,11 +93,59 @@ export function lockAttemptKey(tableId: number, id: any): any[] {
 
 const warnedLeaseTimerStores = new WeakSet();
 
-/**
- * Create a key-lock handle. Gate handles (lease = undefined) have no expiry timer and are released
- * when the transaction commits or aborts via releaseRecordLocks. Lock() handles have a lease timer
- * that fires store.unlock() if the holder never calls release().
- */
+/** A key-lock handle with prototype methods so gate handles (no lease) carry no per-instance closures. */
+class KeyLockHandle implements RecordLockHandle {
+	store: any;
+	key: any[];
+	keyId: unknown;
+	expiresAt: number;
+	hold: boolean;
+	released = false;
+	expired = false;
+	#timer: ReturnType<typeof setTimeout> | undefined;
+
+	constructor(store: any, key: any[], keyId: unknown, lease?: number, hold = false) {
+		this.store = store;
+		this.key = key;
+		this.keyId = keyId;
+		this.expiresAt = lease != null ? Date.now() + lease : Infinity;
+		this.hold = hold;
+		if (lease != null) {
+			this.#timer = setTimeout(() => this.#onLeaseExpire(), lease).unref();
+		}
+	}
+
+	#onLeaseExpire() {
+		if (this.released) return;
+		this.released = true;
+		this.expired = true;
+		try {
+			this.store.unlock(this.key);
+		} catch (err) {
+			if (!warnedLeaseTimerStores.has(this.store)) {
+				warnedLeaseTimerStores.add(this.store);
+				harperLogger.warn?.('record lock lease timer failed (store may have been dropped)', err);
+			}
+		}
+	}
+
+	release(): boolean {
+		if (this.released) return false;
+		this.released = true;
+		clearTimeout(this.#timer);
+		try {
+			this.store.unlock(this.key);
+		} catch (err) {
+			if (!warnedLeaseTimerStores.has(this.store)) {
+				warnedLeaseTimerStores.add(this.store);
+				harperLogger.warn?.('record lock release failed (store may have been dropped)', err);
+			}
+		}
+		return true;
+	}
+}
+
+/** Gate handles (lease = undefined) have no expiry timer; released by releaseRecordLocks on commit/abort. */
 export function makeKeyLockHandle(
 	store: any,
 	key: any[],
@@ -105,47 +153,7 @@ export function makeKeyLockHandle(
 	lease?: number,
 	hold = false
 ): RecordLockHandle {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const handle: RecordLockHandle = {
-		store,
-		key,
-		keyId,
-		expiresAt: lease != null ? Date.now() + lease : Infinity,
-		hold,
-		released: false,
-		expired: false,
-		release(): boolean {
-			if (handle.released) return false;
-			handle.released = true;
-			clearTimeout(timer);
-			try {
-				store.unlock(key);
-			} catch (err) {
-				if (!warnedLeaseTimerStores.has(store)) {
-					warnedLeaseTimerStores.add(store);
-					harperLogger.warn?.('record lock release failed (store may have been dropped)', err);
-				}
-			}
-			return true;
-		},
-	};
-	if (lease != null) {
-		timer = setTimeout(() => {
-			if (!handle.released) {
-				handle.released = true;
-				handle.expired = true;
-				try {
-					store.unlock(key);
-				} catch (err) {
-					if (!warnedLeaseTimerStores.has(store)) {
-						warnedLeaseTimerStores.add(store);
-						harperLogger.warn?.('record lock lease timer failed (store may have been dropped)', err);
-					}
-				}
-			}
-		}, lease).unref();
-	}
-	return handle;
+	return new KeyLockHandle(store, key, keyId, lease, hold);
 }
 
 /**

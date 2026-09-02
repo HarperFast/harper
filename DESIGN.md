@@ -174,14 +174,22 @@ true }` neutralizes the gate handle and creates a fresh handle with the requeste
   write's `keyId`, `gateLockedWrite` re-uses it. It re-reads the entry: if an ungated rewrite (source fill,
   replicated apply) moved the record past the transaction's timestamp, `operation.restage = true` is set
   and `commit()` re-stages the transaction with `restageHolderWrites` (bounded by `LOCKED_WRITE_WAIT_MS`).
-- **Release.** A transaction-scoped handle (the default) is in the `recordLocks` map; every commit or abort
+- **Release.** A transaction-scoped handle (the default) is in the `recordLocks` array; every commit or abort
   of the link calls `releaseRecordLocks()` which iterates and calls `handle.release()` on each. `{ hold:
 true }` attaches the handle to the returned instance as `#lockHandle` instead; `unlock()` calls
   `handle.release()` directly (synchronous, returns false if already released). When no iterators are open
   (`readTxnsUsed <= 1`) the read snapshot is released and `snapshotFree` is set so subsequent reads see
   current state; when iterators are open `setTimestamp` re-pins the same handle, and plain reads in that
   scope keep the pre-lock snapshot — only the holder's own writes bypass it through the gate re-entrancy
-  path.
+  path. A `{ hold: true }` lock does not need the snapshot drop a scoped lock applies: `#reloadLocked`
+  reads the record directly from `primaryStore.getEntry(id)` (no transaction, no snapshot), so the
+  reloaded value always reflects the latest committed state at lock-acquisition time regardless of any
+  prior snapshot the transaction was holding.
+- **Replay-handle lifetime.** `restageAfter` creates a native `RocksTransaction` (marked `coordinatedRetry`)
+  and passes it as `options.transaction` into the recursive `commit()`. Every error exit of that `commit()`
+  call aborts `options.transaction` before propagating — including the save-loop sync throw, the
+  `when()`-callback sync throw, and the async rejection path — so iterators-open restage rounds can never
+  leak a native handle with staged write intents.
 - **Crash / thread death.** A process crash releases all key locks (process-wide in-memory). A worker
   thread termination releases its locks too: rocksdb-js's `~DBHandle()` destructor calls
   `lockReleaseByOwner(this)` on env teardown, releasing every key the terminated thread's handle held.

@@ -460,19 +460,16 @@ describe('Record locks (harper#483)', () => {
 
 	describe('deadlock prevention and successive parks', function () {
 		it('cross-writes {A,B} and {B,A} both commit without deadlock (single-thread cooperative scheduling)', async function () {
-			// This test exercises the acquire-loop deadlock path within Node's cooperative scheduler;
-			// it does not force a true concurrent cross-thread interleaving.
-			// A third party holds both keys so both transactions enter waitForPendingKeys simultaneously
-			// and compete for the same two keys in opposite program order.
-			// Without canonical-order sort: T1 acquires A then waits for B; T2 acquires B then waits for A → deadlock.
-			// With sort: both sort to the same order and serialize without deadlock.
+			// A third party holds both keys so T1 and T2 must both park before any acquire can proceed.
+			// The delay(50) is a scheduling heuristic, not a guaranteed interleaving point; this test
+			// asserts the final outcome (both commits succeed) rather than proving the acquire loop was
+			// reached simultaneously.
 			if (isLMDB) return this.skip();
 			this.timeout(5000);
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
 			await LockTest.put({ id: idB, n: 0 });
-			// Third-party holder blocks both keys so T1 and T2 are both forced into waitForPendingKeys.
 			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
 			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
 			const t1 = transaction(async () => {
@@ -489,9 +486,8 @@ describe('Record locks (harper#483)', () => {
 				() => 'ok',
 				(e) => e
 			);
-			// Give both transactions time to stage all writes and gate on both keys.
+			// Heuristic pause so both transactions have time to stage and park before we release.
 			await delay(50);
-			// Release both keys simultaneously so both T1 and T2 wake and enter the acquire loop at once.
 			await holderA.unlock();
 			await holderB.unlock();
 			const [res1, res2] = await Promise.all([t1, t2]);
@@ -532,6 +528,27 @@ describe('Record locks (harper#483)', () => {
 			await commit;
 			assert.strictEqual((await LockTest.get(idA)).n, 99);
 			assert.strictEqual((await LockTest.get(idB)).n, 99);
+		});
+	});
+
+	describe('hold snapshot freshness', function () {
+		it('{hold:true} lock() reloads the latest committed value, not the transaction snapshot', async function () {
+			// Verifies that #reloadLocked reads primaryStore.getEntry(id) directly (no snapshot),
+			// so a bump by another context between the transaction start and the lock() call is visible.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				// Pull the record into the transaction snapshot (n=0 at this point).
+				await LockTest.get(recordId);
+				// Another context writes n=10 while this transaction's snapshot is still pinned.
+				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 10 }));
+				// lock({hold:true}) reloads from primaryStore.getEntry — must see n=10, not n=0.
+				const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				holder.set('n', holder.getProperty('n') + 1);
+				await holder.save();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 11, 'hold read reflects the bump, not the stale snapshot');
 		});
 	});
 
