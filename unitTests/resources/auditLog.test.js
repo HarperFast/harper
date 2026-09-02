@@ -397,7 +397,6 @@ describe('Audit log', () => {
 			database: 'deleteHistoryMarkerTestDB',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
-		// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
 		if (MarkerTable.auditStore.reusableIterable) return this.skip();
 		// the last-removed marker is written fire-and-forget when the audit store opens; wait for its
 		// key (not its decoded value, which would itself trigger and cache away the bug) to land
