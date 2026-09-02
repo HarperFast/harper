@@ -13,6 +13,7 @@ import {
 	unlinkSync,
 	writeSync,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
@@ -332,25 +333,52 @@ export function recoverInterruptedDrop(
 		if (content.split('\n', 1)[0] !== dbName) {
 			throw new Error(`Refusing to recover a drop of '${dbName}': its marker names a different database`);
 		}
-		if (isSymbolicLink(dbPath)) throw new Error(`Refusing to delete '${dbPath}': it is a symbolic link`);
-		for (const blobRoot of options.blobRoots) {
-			if (isSymbolicLink(blobRoot))
-				throw new Error(`Refusing to delete blob root '${blobRoot}': it is a symbolic link`);
-		}
+		assertDropTargetsRemovable(dbPath, options.blobRoots);
 		remove(dbPath);
 		for (const blobRoot of options.blobRoots) remove(blobRoot);
-		// the directory removals must be durable before the marker's removal is, or a power loss can
-		// bring the database entry back with no marker to finish it
-		fsyncDir(root);
-		for (const blobRoot of options.blobRoots) {
-			if (existsSync(dirname(blobRoot))) fsyncDir(dirname(blobRoot));
-		}
+		fsyncDropRemovals(dbPath, options.blobRoots);
 		unlinkSync(markerPath);
 		fsyncDir(restoreMetaDir(dbPath));
 		return 'recovered';
 	} finally {
 		fileLockRelease(token);
 	}
+}
+
+/** A database directory or blob root that is a symbolic link is not the database: refuse to delete through it. */
+export function assertDropTargetsRemovable(dbPath: string, blobRoots: string[]): void {
+	if (isSymbolicLink(dbPath)) throw new Error(`Refusing to delete '${dbPath}': it is a symbolic link`);
+	for (const blobRoot of blobRoots) {
+		if (isSymbolicLink(blobRoot)) throw new Error(`Refusing to delete blob root '${blobRoot}': it is a symbolic link`);
+	}
+}
+
+/**
+ * The directory removals must be durable before the marker's removal is, or a power loss can bring
+ * the database entry back with no marker to finish it.
+ */
+export function fsyncDropRemovals(dbPath: string, blobRoots: string[]): void {
+	fsyncDir(dirname(dbPath));
+	for (const blobRoot of blobRoots) {
+		if (existsSync(dirname(blobRoot))) fsyncDir(dirname(blobRoot));
+	}
+}
+
+/**
+ * The online half of what `recoverInterruptedDrop` does at boot: remove what is left of a dropped
+ * database's directory and its blob roots, durably, and fail on the first removal that does not
+ * succeed — the caller then keeps its marker for the next scan to finish the deletion, instead of
+ * reporting a drop complete with blobs still on disk. `remove` is injectable for tests.
+ */
+export async function removeDroppedDatabaseFiles(
+	dbPath: string,
+	blobRoots: string[],
+	remove: (path: string) => Promise<void> = (path) => rm(path, { recursive: true, force: true })
+): Promise<void> {
+	assertDropTargetsRemovable(dbPath, blobRoots);
+	await remove(dbPath);
+	for (const blobRoot of blobRoots) await remove(blobRoot);
+	fsyncDropRemovals(dbPath, blobRoots);
 }
 
 /**

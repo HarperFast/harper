@@ -24,6 +24,7 @@ const {
 	abandonDrop,
 	lifecycleMarkerKind,
 	recoverInterruptedDrop,
+	removeDroppedDatabaseFiles,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
 const { symlinkSync, readFileSync, lstatSync } = require('node:fs');
@@ -354,6 +355,42 @@ describe('restoreMarker', function () {
 			assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), /symbolic link/);
 			assert.ok(existsSync(join(elsewhere, 'precious')));
 			assert.equal(checkRestoreState(dbPath), 'incomplete');
+		});
+
+		describe('removeDroppedDatabaseFiles (the online drop)', function () {
+			it('removes the directory remnants and every blob root', async function () {
+				leaveInterruptedDrop();
+				await removeDroppedDatabaseFiles(dbPath, [blobRoot]);
+				assert.ok(!existsSync(dbPath));
+				assert.ok(!existsSync(blobRoot));
+			});
+
+			it('rejects on the first removal that fails, so the caller keeps its marker', async function () {
+				leaveInterruptedDrop();
+				await assert.rejects(
+					removeDroppedDatabaseFiles(dbPath, [blobRoot], async (path) => {
+						if (path === blobRoot) throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+						rmSync(path, { recursive: true, force: true });
+					}),
+					/EBUSY/
+				);
+				assert.ok(!existsSync(dbPath));
+				assert.ok(existsSync(join(blobRoot, 'leftover.bin')));
+				assert.equal(checkRestoreState(dbPath), 'incomplete');
+			});
+
+			it('refuses a blob root that is a symbolic link before removing anything', async function () {
+				leaveInterruptedDrop();
+				const elsewhere = join(tempDir, 'elsewhere');
+				mkdirSync(elsewhere, { recursive: true });
+				writeFileSync(join(elsewhere, 'precious'), 'x');
+				const linkedRoot = join(tempDir, 'blobs', 'linked');
+				symlinkSync(elsewhere, linkedRoot, 'dir');
+				await assert.rejects(removeDroppedDatabaseFiles(dbPath, [blobRoot, linkedRoot]), /symbolic link/);
+				assert.ok(existsSync(join(dbPath, 'CURRENT')));
+				assert.ok(existsSync(join(blobRoot, 'leftover.bin')));
+				assert.ok(existsSync(join(elsewhere, 'precious')));
+			});
 		});
 
 		it('keeps the marker when a deletion fails, so the next scan tries again', function () {
