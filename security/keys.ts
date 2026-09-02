@@ -36,6 +36,7 @@ import { isMainThread } from 'worker_threads';
 import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { TLSSocket } from 'node:tls';
+import { publishTrustedAuthorities } from './certificateVerification/trustedIssuers.ts';
 
 const CERT_VALIDITY_DAYS = 3650;
 // Default interval (ms) for the periodic cert-file re-read safety net. The chokidar (inotify)
@@ -1407,6 +1408,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					for (const [hostname, context] of candidateContexts) secureContexts.set(hostname, context);
 					caCerts.clear();
 					for (const [subject, certificate] of candidateCAs) caCerts.set(subject, certificate);
+					// only listener selectors publish: a one-shot client selector's pass may see no authority rows
+					if (liveReload) publishTrustedAuthorities(caCerts.values());
 					hasWildcards = candidateHasWildcards;
 					if (candidateDefault) {
 						(SNICallback as any).defaultContext = defaultContext = candidateDefault;
