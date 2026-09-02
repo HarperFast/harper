@@ -66,6 +66,23 @@ harper deploy \
 
 > Use `package=$(pwd)` if your current directory is the application directory.
 
+## Shutdown Cleanup
+
+Applications with work that must complete, or be acknowledged outside the process, before a thread exits — buffered writes to flush, a registration to withdraw from an external service, a distributed lock to release — need a hook to do it when Harper stops or restarts. Restarts are frequent during local development, since `harper dev` restarts worker threads on every file change, and deploying with `restart=true` does the same on a running instance.
+
+Harper signals this by calling `scope.close()` on each worker thread, which emits a `'close'` event on the plugin API [`Scope`](./plugin-api.md#class-scope). Listen for it to run cleanup:
+
+```js
+export function handleApplication(scope) {
+	const service = startService();
+	scope.once('close', async () => {
+		await service.close();
+	});
+}
+```
+
+See [Cleanup on Shutdown](./plugin-api.md#cleanup-on-shutdown) for the full shutdown sequence, including how async cleanup is awaited and the time limit it must finish within.
+
 ## Remote Management
 
 Managing applications on a remote Harper instance uses the same operations as local management. The recommended approach is to log in first using `harper login` to store an authentication token:
