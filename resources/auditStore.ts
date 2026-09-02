@@ -487,7 +487,9 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 	// `=== true` because a RocksDB transactionSync swallows an aborted transaction and returns
 	// undefined rather than throwing (see RecordEncoder.saveStructures, which relies on the same
 	// contract). Treating that as success is the fail-open this floor exists to close: the caller
-	// would go on to prune with no durable record that it did.
+	// would go on to prune with no durable record that it did. The LMDB branch additionally reads its
+	// write back, since its containment cannot distinguish a failing put from a replaced one; the
+	// RocksDB branch needs no read-back because a native putSync failure throws out of the callback.
 	const committed =
 		auditStore instanceof RocksTransactionLogStore
 			? transactionOwner.transactionSync(
@@ -514,6 +516,11 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 						auditStore
 							.put(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)))
 							?.catch?.((error) => warnContained('Error writing the audit retention floor', error));
+						// Read back inside the transaction, because the containment above cannot tell a
+						// replaced put from a failing one and must not let either report a commit: a caller
+						// that prunes on a floor never recorded is the fail-open this whole function guards.
+						// Reads in an LMDB write transaction see its own writes, so this is the durable value.
+						if (decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY)) !== floor) return false;
 					}
 					return true;
 				});

@@ -301,6 +301,24 @@ describe('audit staleness floor', () => {
 			assert.throws(() => raiseAuditFloor(undefined, Date.now()), /has no audit store/);
 		});
 
+		it('does not report a commit when the floor write fails silently', function () {
+			// The containment around the LMDB put cannot tell a failing write from a replaced one, so the
+			// transaction reads its own write back. Without that, a rejected put was swallowed, the callback
+			// still returned true, and the caller pruned against a floor that was never recorded.
+			if (Audited.auditStore.reusableIterable) return this.skip(); // LMDB write branch
+			const swallowed = tableInOwnDatabase('Swallowed');
+			const before = swallowed.oldestRetainedAuditTime();
+			const store = swallowed.auditStore;
+			const realPut = store.put.bind(store);
+			store.put = () => Promise.reject(new Error('simulated floor write failure'));
+			try {
+				assert.throws(() => raiseAuditFloor(store, before + 60_000), /did not commit/);
+			} finally {
+				store.put = realPut;
+			}
+			assert.strictEqual(swallowed.oldestRetainedAuditTime(), before, 'and the floor must not have moved');
+		});
+
 		it('does not prune when the floor cannot be recorded', () => {
 			let purgeCalls = 0;
 			const failingStore = {
