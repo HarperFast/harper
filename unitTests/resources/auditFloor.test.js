@@ -202,6 +202,37 @@ describe('audit staleness floor', () => {
 			assert.strictEqual(floorless.oldestRetainedAuditTime(), Infinity);
 		});
 
+		it('raises normally when a floor appears between the pre-check and the transaction', () => {
+			// The pre-check is lock-free, so another worker's establishAuditFloor can land in the window.
+			// Treating that as "still absent" would write the unknown sentinel — or, worse, write nothing and
+			// let the prune run against a floor left below its cutoff. Simulated by hiding the record from
+			// the pre-check read only; the transaction sees the real store.
+			const raced = tableInOwnDatabase('Raced');
+			const established = raced.oldestRetainedAuditTime();
+			assert.ok(Number.isFinite(established), 'precondition: a real floor is recorded');
+			const cutoff = established + 60_000;
+			const store = raced.auditStore;
+			const realGetBinary = store.getBinary.bind(store);
+			let hidden = false;
+			store.getBinary = (key) => {
+				if (!hidden && key === AUDIT_FLOOR_KEY) {
+					hidden = true;
+					return undefined; // the pre-check observes no record
+				}
+				return realGetBinary(key);
+			};
+			try {
+				raiseAuditFloor(store, cutoff);
+			} finally {
+				store.getBinary = realGetBinary;
+			}
+			assert.strictEqual(
+				raced.oldestRetainedAuditTime(),
+				cutoff,
+				'the raced-in record must take the monotonic raise, not the unknown sentinel'
+			);
+		});
+
 		it('leaves an unknown floor unknown when a prune tries to raise it', () => {
 			// A cutoff says nothing about the history the store lost before we started tracking it.
 			Metadata.auditStore.putSync(AUDIT_FLOOR_KEY, new Uint8Array(4));

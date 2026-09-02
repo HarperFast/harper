@@ -560,20 +560,25 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// database, a cutoff below one a wider prune already set), and taking the env write lock to
 	// discover that serializes every worker's boot and reclamation on it. The in-transaction guards
 	// below stay authoritative.
+	// Skips only the case it can prove is a no-op: a record that exists and already sits at or above
+	// the cutoff. An absent record is NOT decided here — the presence question is settled inside the
+	// transaction below, because another worker's establishAuditFloor can land between this read and
+	// that write.
 	if (auditStore?.getBinary) {
 		const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
-		if (stored === undefined) {
-			// About to prune a store with no floor record at all — establishAuditFloor failed, or never
-			// ran. Persist the unknown sentinel rather than returning: leaving no marker lets the next
-			// open stamp a FINITE epoch, and a prune bound above that epoch (a future `endTime`, or a
-			// rolled-back clock) then certifies cursors whose history this prune deleted. Unknown is the
-			// honest value, because a store with no record may also have been pruned before this run.
-			updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : AUDIT_FLOOR_UNKNOWN));
-			return;
-		}
-		if (!(cutoff > decodeAuditFloor(stored))) return;
+		if (stored !== undefined && !(cutoff > decodeAuditFloor(stored))) return;
 	}
-	updateAuditFloor(auditStore, (current) => (cutoff > current ? cutoff : undefined));
+	updateAuditFloor(auditStore, (current, recorded) => {
+		// Still no record, and we are about to prune: persist the unknown sentinel. Leaving no marker
+		// lets the next open stamp a FINITE epoch, and a prune bound above that epoch (a future
+		// `endTime`, or a rolled-back clock) then certifies cursors whose history this prune deleted.
+		// Unknown is the honest value, because a store with no record may have been pruned before this
+		// run too.
+		if (!recorded) return AUDIT_FLOOR_UNKNOWN;
+		// A record appeared while we were getting here, so this is an ordinary monotonic raise: pruning
+		// to `cutoff` against a floor left below it is exactly the silent gap this function prevents.
+		return cutoff > current ? cutoff : undefined;
+	});
 }
 
 /**
