@@ -306,8 +306,6 @@ describe('Record locks (harper#483)', () => {
 		});
 
 		it('abort during pendingWake cancels the park and strands no handle', async function () {
-			// Blocker-2 regression: an abort that lands while waitForPendingKeys is parked must reject
-			// the commit, not strand a handle on the closed transaction or commit an empty write set.
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
@@ -361,6 +359,41 @@ describe('Record locks (harper#483)', () => {
 			await LockTest.put({ id: idA, n: 2 });
 			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A is writable after the failed transaction');
 			await bHolder.unlock();
+		});
+
+		it('a 409 from an expired holder strands no gate handles on sibling keys', async function () {
+			if (isLMDB) return this.skip();
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			const expired = await LockTest.lock(idB, { hold: true, lease: 100 });
+			await delay(150);
+			const currentHolder = await LockTest.lock(idB, { hold: true });
+			await assert.rejects(
+				() =>
+					transaction(async () => {
+						await LockTest.put({ id: idA, n: 1 });
+						expired.set('n', 99);
+						await expired.save();
+					}),
+				(err) => err.statusCode === 409
+			);
+			// A's gate handle must have been released; a fresh write must not block.
+			await LockTest.put({ id: idA, n: 2 });
+			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A writable after 409');
+			await currentHolder.unlock();
+		});
+
+		it('save() on a lockWritable record with no effective change does not loop', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 42 });
+			const holder = await LockTest.lock(recordId, { hold: true });
+			holder.set('n', 42); // same value — hasChanges returns false
+			await holder.save(); // must complete without looping
+			assert.strictEqual((await LockTest.get(recordId)).n, 42);
+			await holder.unlock();
 		});
 	});
 

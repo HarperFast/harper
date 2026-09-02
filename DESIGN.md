@@ -192,6 +192,34 @@ subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: repl
 release as control transaction-log entries with Ricart–Agrawala-style (timestamp, nodeId) tiebreaking; once
 every node gates its local writers on a distributed grant, no record version bump is needed.
 
+**Restage timestamp.** `restageAfter` uses the native rocksdb-js process-wide monotonic generator
+(`db.getMonotonicTimestamp()`), not the JS per-thread generator (`getNextMonotonicTime`). The two
+sequences are independent; mixing them can interleave timestamps unpredictably. If the native generator
+has not yet advanced past the peer version being restaged past, the timestamp is nudged by 0.001 ms —
+the same exposure any local write already has against a future-dated replicated version arriving after
+wall clock. Phase 1 follow-up: add an explicit advance API to the rocksdb-js generator so the nudge
+goes through the authoritative path.
+
+**Hold handles and re-entrancy scope.** A hold handle registered in `link.recordLocks` enables
+re-entrant writes through `gateLockedWrite` only while that link's transaction is open. Once the
+acquiring transaction commits, `releaseRecordLocks` removes non-hold gate handles; the hold handle
+stays registered on the resource instance (`#lockHandle`) and on the link for as long as `unlock()`
+has not been called. Writing through the returned record after the acquiring transaction committed is
+fine (each write auto-commits as an ImmediateTransaction). Taking the lock again in a second
+`transaction()` scope issues a fresh lock() call rather than relying on the first hold still being
+re-entrant in that new scope.
+
+**Untested scenarios (single-threaded unit tests).** Two scenarios cannot be exercised with a single
+JS thread:
+
+- _Abort during the `acquireRecordKey` await window._ The async gap between `tryLock` failing and the
+  `onUnlocked` callback is short in practice, and injecting an abort during that window requires two
+  concurrent threads.
+- _The 503 restage deadline._ `restageHolderWrites` fires when a holder's write cannot commit because
+  an ungated writer keeps moving the record past the transaction's timestamp. Triggering this requires
+  a concurrent ungated writer that interleaves between the restage-check and the commit attempt, which
+  has no scheduling slot in single-threaded tests.
+
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
 `txnForContext` builds an `ImmediateTransaction` for a context slot that is empty or holds

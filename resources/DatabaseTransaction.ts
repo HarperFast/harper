@@ -1,6 +1,6 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
-import { advanceMonotonicTime, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getLockedWriteWaitMs, acquireRecordKey, makeKeyLockHandle, type RecordLockHandle } from './recordLock.ts';
@@ -581,7 +581,16 @@ export class DatabaseTransaction implements Transaction {
 
 	private restageAfter(version: number, replayNeeded: boolean, options: CommitOptions): MaybePromise<CommitResolution> {
 		this.retries++;
-		this.timestamp = advanceMonotonicTime(version);
+		// Use the native rocksdb-js process-wide monotonic generator so the restage timestamp is
+		// from the same sequence as every other commit on this process.  The JS per-thread generator
+		// (getNextMonotonicTime) is a separate sequence; mixing the two means timestamps from the two
+		// sequences can interleave unpredictably.  If the native generator has not yet advanced past
+		// `version`, nudge it by 0.001 ms — the same exposure any local write already has against a
+		// future-dated replicated version.  Phase 1 follow-up: add an explicit advance API to the
+		// rocksdb-js generator so this nudge can go through the authoritative path.
+		let ts = (this.db as any).getMonotonicTimestamp?.() ?? 0;
+		if (ts <= version) ts = version + 0.001;
+		this.timestamp = ts;
 		if (replayNeeded) {
 			const replay = new RocksTransaction(this.db.store as RocksStore, { coordinatedRetry: true });
 			replay.setTimestamp(this.timestamp);
@@ -1182,10 +1191,18 @@ export class DatabaseTransaction implements Transaction {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
-		for (let i = 0; i < this.writes.length; i++) {
-			let operation = this.writes[i];
-			if (!operation || (this.retries === 0 && operation.saved)) continue;
-			this.save(operation, transaction, i < this.validated, options);
+		try {
+			for (let i = 0; i < this.writes.length; i++) {
+				let operation = this.writes[i];
+				if (!operation || (this.retries === 0 && operation.saved)) continue;
+				this.save(operation, transaction, i < this.validated, options);
+			}
+		} catch (err) {
+			// A synchronous throw from the save loop (e.g. 409 from gateLockedWrite on an expired hold
+			// handle) escapes before the when() rejection handler below can call abort(), stranding any
+			// gate handles registered in the same loop pass. Catch here so no save-loop throw skips it.
+			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
+			throw err;
 		}
 		this.validated = this.writes.length;
 		const completions = this.completions;

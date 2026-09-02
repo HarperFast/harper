@@ -2041,7 +2041,16 @@ export function makeTable(options) {
 				const changes = this.#changes;
 				if (changes && Object.keys(changes).length > 0) {
 					this.#savingOperation = null;
-					return when(this._writeUpdate(this.getId(), changes, false), () => this.save());
+					return when(this._writeUpdate(this.getId(), changes, false), () => {
+						// If the staged write was dropped (hasChanges returned false — the set() call
+						// produced no effective change), clear #changes so re-entering save() here does
+						// not stage again, which would produce an infinite loop.
+						if (this.#savingOperation?.dropped) {
+							this.#changes = undefined;
+							return;
+						}
+						return this.save();
+					});
 				}
 				if (!operation) return;
 			}
@@ -2418,7 +2427,8 @@ export function makeTable(options) {
 				TableResource._updateResource(fresh, primaryStore.getEntry(id));
 				if (holdHandle) {
 					fresh.#lockHandle = holdHandle;
-					this.#lockHandle = undefined;
+					// Do not clear this.#lockHandle: the original instance keeps its own hold on its
+					// own id; the fresh instance owns the hold on the target id independently.
 				}
 				fresh.#lockWritable = true;
 				return fresh;
