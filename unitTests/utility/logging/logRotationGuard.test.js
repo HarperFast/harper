@@ -54,6 +54,28 @@ describe('Test log rotation on the write path (#1877)', () => {
 		}
 	}
 
+	function readGenerations(logPath, rotatedDir) {
+		return [logPath, ...archives(rotatedDir)]
+			.map((file) => {
+				try {
+					return fs.readFileSync(file, 'utf8');
+				} catch {
+					return '';
+				}
+			})
+			.join('');
+	}
+
+	function waitForContent(logPath, rotatedDir, ...expected) {
+		return waitFor(
+			() => {
+				const all = readGenerations(logPath, rotatedDir);
+				return expected.every((marker) => all.includes(marker)) ? all : false;
+			},
+			{ timeout: 10000, message: `the log never contained ${expected.join(', ')}` }
+		);
+	}
+
 	function activeSize(logPath) {
 		try {
 			return fs.statSync(logPath).size;
@@ -91,24 +113,20 @@ describe('Test log rotation on the write path (#1877)', () => {
 		assert.ok(activeSize(logPath) < 4000, 'expected a fresh, small active log');
 	});
 
-	it('keeps every message exactly once across the active log and the archives', () => {
+	it('keeps every message exactly once across the active log and the archives', async () => {
 		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
 		const total = 300;
 		for (let i = 0; i < total; i++) logger.error(`unique-marker-${i}-${'y'.repeat(40)}`);
 		logger.closeLogFile();
-		const contents = [logPath, ...archives(rotatedDir)]
-			.map((file) => {
-				try {
-					return fs.readFileSync(file, 'utf8');
-				} catch {
-					return '';
-				}
-			})
-			.join('');
+		// The sink buffers under load and flushes on a timer, so wait for the last entry, not for a
+		// fixed moment.
+		const contents = await waitForContent(logPath, rotatedDir, `unique-marker-${total - 1}-`);
 		for (let i = 0; i < total; i++) {
 			const occurrences = contents.split(`unique-marker-${i}-`).length - 1;
 			assert.strictEqual(occurrences, 1, `marker ${i} appeared ${occurrences} times across all generations`);
 		}
+		// The rotation notice keeps the log's own line shape, which readLog parses by level.
+		assert.match(contents, /^\S+ \[[^\]]+\] \[notify\]: hdb\.log rotated, old log moved to \S+$/m);
 	});
 
 	it('never rotates when rotation is disabled, even with a maxSize set', () => {
@@ -145,27 +163,8 @@ describe('Test log rotation on the write path (#1877)', () => {
 		logger.closeLogFile();
 
 		assert.ok(archives(rotatedDir).length > 0, 'expected rotation with a worker thread writing');
-		const readAll = () =>
-			[logPath, ...archives(rotatedDir)]
-				.map((file) => {
-					try {
-						return fs.readFileSync(file, 'utf8');
-					} catch {
-						return '';
-					}
-				})
-				.join('');
 		// Both sinks flush on a timer under load, so wait for the last entry rather than racing it.
-		const contents = await waitFor(
-			() => {
-				const all = readAll();
-				return all.includes(`worker-marker-199-`) && all.includes(`main-marker-199-`) ? all : false;
-			},
-			{
-				timeout: 10000,
-				message: 'the last marker from each thread never reached the log',
-			}
-		);
+		const contents = await waitForContent(logPath, rotatedDir, 'worker-marker-199-', 'main-marker-199-');
 		for (const prefix of ['main-marker', 'worker-marker']) {
 			for (let i = 0; i < 200; i++) {
 				const occurrences = contents.split(`${prefix}-${i}-`).length - 1;

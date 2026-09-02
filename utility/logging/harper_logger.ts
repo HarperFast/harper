@@ -844,7 +844,9 @@ function getFileLogger(path, rotation, isExternalInstance) {
 				closeLogFile,
 				report: reportRotationProblem,
 				onRotated(archivePath) {
-					logToFile(`log rotated, old log moved to ${archivePath}`);
+					// Same shape as every other line in the file: written straight to the sink, this
+					// bypasses the prefix createLogger's logPrepend adds, and readLog parses by level.
+					logToFile(`[${SERVICE_NAME}/${threadId}] [notify]: hdb.log rotated, old log moved to ${archivePath}`);
 				},
 			});
 		} catch (error) {
