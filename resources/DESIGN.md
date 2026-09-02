@@ -129,7 +129,7 @@ first and a throw from it is what stops the prune.
 | `Table.deleteHistory`                                                        | LMDB (`RocksTransactionLogStore.remove()` is a no-op, so it must NOT raise) |
 | `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                     |
 
-Five things that are easy to get wrong here:
+Six things that are easy to get wrong here:
 
 - **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
   surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
@@ -137,12 +137,18 @@ Five things that are easy to get wrong here:
   survives _below_ the newest entry it removed. Measured, LMDB: highest removed `…147.797`, oldest
   surviving `…143.309` — a log-derived floor would have certified a cursor at `…145`.
 - **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is a different key from
-  the retired `last-removed`, whose values were written after removal and by only one of the five
-  paths. A store with no record has retention history we cannot account for — including the empty
-  audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts` deliberately does not
-  migrate it, and the audit-DBI-less result of a table-scoped backup taken without `include_audit` —
-  so `openAuditStore` stamps `Date.now()` as a one-time resync epoch. There is no permissive-baseline
-  case: creating the audit DBI proves the DBI was absent, not that the database is new.
+  `last-removed`, which is still live and still maintained by the LMDB retention loop (#2338 hardened
+  its write path and added tests for the retry-carry — do not remove it). They coexist because they
+  answer different questions: `last-removed` records where the LMDB loop got to, after the fact,
+  while the floor is written ahead of every one of the five prune paths and its commit is verified.
+  A value found under `last-removed` therefore cannot be told apart from one carrying those
+  guarantees, which is why the floor needs its own key rather than reusing it.
+- **A store with no floor record is a store whose retention history we cannot account for.** That
+  includes the empty audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts`
+  deliberately does not migrate it, and the audit-DBI-less result of a table-scoped backup taken
+  without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a
+  one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the
+  DBI was absent, not that the database is new.
 - **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what
   `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under
   that same name, and a backdated or replicated write makes the two differ. A cursor saved from
