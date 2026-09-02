@@ -17,7 +17,12 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { WORKER_COUNT, assertEveryWorkerStarted, NO_FULL_WORKER_COVERAGE } from './recordCachingWorkers.ts';
+import {
+	WORKER_COUNT,
+	assertEveryWorkerStarted,
+	NO_FULL_WORKER_COVERAGE,
+	NO_MULTI_WORKER_HTTP,
+} from './recordCachingWorkers.ts';
 import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching');
@@ -102,7 +107,7 @@ async function waitForTable(httpURL: string, authHeader: string): Promise<void> 
 
 // ── Scenario 1 & 2: 4-worker cache invalidation + load ──────────────────────
 
-suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_FULL_WORKER_COVERAGE }, (ctx: ContextWithHarper) => {
+suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_MULTI_WORKER_HTTP }, (ctx: ContextWithHarper) => {
 	let httpURL: string;
 	let authHeader: string;
 
@@ -121,28 +126,33 @@ suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_FULL_WORKER_COVERA
 		await teardownHarper(ctx);
 	});
 
-	test('S1 cache invalidation: a PUT must not leave a stale cached value on ANY worker', async () => {
-		const id = 's1-record';
-		await putRecord(httpURL, authHeader, id, 'original', 1);
+	// Only S1 needs every worker; S2 is a load test and keeps running where coverage is unreachable.
+	test(
+		'S1 cache invalidation: a PUT must not leave a stale cached value on ANY worker',
+		{ skip: NO_FULL_WORKER_COVERAGE },
+		async () => {
+			const id = 's1-record';
+			await putRecord(httpURL, authHeader, id, 'original', 1);
 
-		// Warm every worker's cache, so the update below has a stale entry to invalidate everywhere.
-		for (const view of await readCacheOnEveryWorker(httpURL, authHeader, id)) {
-			strictEqual(view.cached?.name, 'original', `worker ${view.threadId} did not warm with the original value`);
+			// Warm every worker's cache, so the update below has a stale entry to invalidate everywhere.
+			for (const view of await readCacheOnEveryWorker(httpURL, authHeader, id)) {
+				strictEqual(view.cached?.name, 'original', `worker ${view.threadId} did not warm with the original value`);
+			}
+
+			await putRecord(httpURL, authHeader, id, 'updated', 2);
+
+			const first = await getRecord(httpURL, authHeader, id);
+			strictEqual(first?.name, 'updated', 'GET after PUT must not return stale cached value');
+			strictEqual(first?.counter, 2, 'counter must reflect the update');
+
+			for (const view of await readCacheOnEveryWorker(httpURL, authHeader, id)) {
+				strictEqual(view.cached?.name, 'updated', `worker ${view.threadId} still caches a stale name`);
+				strictEqual(view.cached?.counter, 2, `worker ${view.threadId} still caches a stale counter`);
+				strictEqual(view.read?.name, 'updated', `worker ${view.threadId} still reads a stale name through Table`);
+				strictEqual(view.read?.counter, 2, `worker ${view.threadId} still reads a stale counter through Table`);
+			}
 		}
-
-		await putRecord(httpURL, authHeader, id, 'updated', 2);
-
-		const first = await getRecord(httpURL, authHeader, id);
-		strictEqual(first?.name, 'updated', 'GET after PUT must not return stale cached value');
-		strictEqual(first?.counter, 2, 'counter must reflect the update');
-
-		for (const view of await readCacheOnEveryWorker(httpURL, authHeader, id)) {
-			strictEqual(view.cached?.name, 'updated', `worker ${view.threadId} still caches a stale name`);
-			strictEqual(view.cached?.counter, 2, `worker ${view.threadId} still caches a stale counter`);
-			strictEqual(view.read?.name, 'updated', `worker ${view.threadId} still reads a stale name through Table`);
-			strictEqual(view.read?.counter, 2, `worker ${view.threadId} still reads a stale counter through Table`);
-		}
-	});
+	);
 
 	test(
 		'S2 write-then-read under load: 50 records × 200 reads all return correct values',
