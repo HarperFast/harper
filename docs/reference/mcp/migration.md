@@ -23,13 +23,13 @@ This page covers what changes for you and how to migrate.
 | Rate limiting                | Not present                                      | Per-session, per-tool token-bucket on both profiles                                             |
 | Audit logging                | Operations API audit log only                    | Dedicated `mcp.audit` category with credential redaction                                        |
 | Per-attribute permissions    | Not honored in the tool surface                  | Narrowed at schema-derivation time                                                              |
-| Config                       | Env vars + addon's own JSON                      | Top-level `mcp:` block in `harperdb-config.yaml`                                                |
+| Config                       | Env vars + addon's own JSON                      | Top-level `mcp:` block in `harper-config.yaml`                                                  |
 
 ## Migration checklist
 
 ### 1. Enable the built-in MCP surface
 
-Add an `mcp:` block to `harperdb-config.yaml`. The minimal "turn it on" form is:
+Add an `mcp:` block to `harper-config.yaml`. The minimal "turn it on" form is:
 
 ```yaml
 mcp:

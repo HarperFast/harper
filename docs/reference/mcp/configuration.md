@@ -6,7 +6,7 @@ title: MCP Configuration
 
 <VersionBadge version="v5.1.0" />
 
-All MCP configuration lives under the top-level `mcp:` block in `harperdb-config.yaml`. Each profile (`operations`, `application`) is enabled by the **presence** of its sub-block — there is no separate `enabled` flag. A minimal "turn it on" config is therefore just:
+All MCP configuration lives under the top-level `mcp:` block in `harper-config.yaml`. Each profile (`operations`, `application`) is enabled by the **presence** of its sub-block — there is no separate `enabled` flag. A minimal "turn it on" config is therefore just:
 
 ```yaml
 mcp:

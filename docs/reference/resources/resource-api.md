@@ -745,7 +745,7 @@ async get(target) {
 
 ### Session and Login from a Resource
 
-The context returned by `getContext()` exposes `login` and `session` for handling sign-in/out flows in a custom Resource. Sessions require `authentication.enableSessions: true` in `harperdb-config.yaml`.
+The context returned by `getContext()` exposes `login` and `session` for handling sign-in/out flows in a custom Resource. Sessions require `authentication.enableSessions: true` in `harper-config.yaml`.
 
 ```typescript
 export class SignIn extends Resource {

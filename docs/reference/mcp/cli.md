@@ -31,7 +31,7 @@ harper mcp [subcommand] [flags]
 
 With no `--target` flag, the CLI connects to the Harper running on the same host via the operations API Unix Domain Socket — the same socket `bin/cliOperations` uses. Filesystem permissions on the socket are the access gate; no credentials are required or sent.
 
-The UDS path is derived from `operationsApi.network.domainSocket` in `harperdb-config.yaml` and is typically `<rootPath>/sockets/operations-server`.
+The UDS path is derived from `operationsApi.network.domainSocket` in `harper-config.yaml` and is typically `<rootPath>/sockets/operations-server`.
 
 ### Network HTTPS / HTTP
 
