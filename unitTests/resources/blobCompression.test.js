@@ -617,4 +617,16 @@ describe('Blob compression (harper#2443)', () => {
 		// a fresh read now serves the repaired, healthy content
 		assert((await streamToBuffer((await CompressionTest.get(230)).blob.stream())).equals(payload));
 	});
+
+	it('fails an auto-compressed write whose content length disagrees with its declared size', async () => {
+		setCompressionConfig({ default: { codec: 'deflate' } });
+		// A source that ends cleanly having delivered fewer bytes than the size declared on the blob. The
+		// header is stamped from the declared size up front, so without the finish-time byte-count check the
+		// file would commit and inflate to the wrong length — a permanent 500 no reader could ever serve,
+		// where an uncompressed short body would read as retryable-incomplete.
+		const blob = createBlob(Readable.from([Buffer.alloc(20000, 'x')]), { type: 'text/plain' });
+		blob.size = 50000;
+		await CompressionTest.put({ id: 240, blob }).catch(() => {});
+		await assert.rejects(blob.written, /deflated 20000 bytes but its header declares 50000/);
+	});
 });

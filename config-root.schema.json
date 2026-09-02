@@ -546,7 +546,8 @@
 								]
 							}
 						}
-					}
+					},
+					"additionalProperties": false
 				},
 				"blobReadTimeout": {
 					"type": "number",

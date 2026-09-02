@@ -311,7 +311,7 @@ class BlobReadError extends Error {
  * an uncompressed blob its length on disk proves nothing, and inflating a partial deflate stream
  * errors. Resolving means the writer (if any) has finished — not that this caller holds the lock.
  */
-function waitForBlobWriteCompletion(storageInfo: StorageInfo): Promise<boolean> {
+function waitForBlobWriteCompletion(storageInfo: StorageInfo): Promise<void> {
 	const store = storageInfo.store;
 	const lockKey = storageInfo.fileId + ':blob';
 	return new Promise((resolve, reject) => {
@@ -324,11 +324,11 @@ function waitForBlobWriteCompletion(storageInfo: StorageInfo): Promise<boolean> 
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			resolve(true); // we waited for a held writer lock to release
+			resolve();
 		}
 		if (store.tryLock(lockKey, onReleased)) {
 			store.unlock(lockKey);
-			return resolve(false); // no writer held the lock; nothing was waited on
+			return resolve();
 		}
 		timer = setTimeout(() => {
 			if (settled) return;
@@ -699,17 +699,31 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			// The writer's lock is the only completeness authority for a compressed body (the header
 			// stores the uncompressed size, so body length proves nothing; a partial deflate stream
 			// errors on inflate). Wait for it — bounded, like every other blob read wait (#1423).
-			const waited = await waitForBlobWriteCompletion(storageInfo);
+			await waitForBlobWriteCompletion(storageInfo);
 			if (cancelled || fd == null) return;
-			if (waited) {
-				// A held writer lock may have been an in-place repair, which finishes by renaming a
-				// fresh (uncompressed) file over the path (repairBlobFile holds this same lock for its
-				// whole duration) — orphaning the descriptor we opened before the wait. Reopen so the
-				// header re-read and the stream below see the current file, not the stale inode;
-				// otherwise a healthy repaired blob would inflate as a torn deflate body and return a
-				// permanent 500. Mirrors openStoredBlobBody's re-sniff. The prefix read from the old
-				// inode is discarded — the fresh descriptor streams the body from just past the header.
-				close(fd);
+			// An in-place repair renames a fresh (uncompressed) file over the path while holding the
+			// writer lock, so the descriptor we opened before the wait can be left on the orphaned inode.
+			// The repair may finish either during our wait or in the gap between the first read and the
+			// lock probe, so detect it by file identity rather than by whether we waited: if the path now
+			// resolves to a different inode than our descriptor, the file was swapped. Reopen so the header
+			// re-read and the stream below see the current file — a repaired (uncompressed) header is then
+			// reported retryable 503 (mirroring openStoredBlobBody), and the prefix read from the old inode
+			// is discarded. If the inode is unchanged the descriptor is still valid and the same-fd re-read
+			// still catches an in-place PENDING/ERROR stamp (harper-pro#481).
+			let fileSwapped = false;
+			try {
+				fileSwapped = fstatSync(fd).ino !== statSync(filePath).ino;
+			} catch {
+				// the path is momentarily unstatable; fall through to the header re-read, which reports the
+				// outcome. The blob hold makes a vanished path unlikely here.
+			}
+			if (fileSwapped) {
+				// Null `fd` before closing it: a closed descriptor number left in `fd` across the await
+				// below would be closed a second time by a concurrent cancel()/closeFd() — after the OS may
+				// have reassigned it to an unrelated file or socket (#1457).
+				const staleFd = fd;
+				fd = null;
+				close(staleFd);
 				fd = await new Promise<number>((resolveOpen, rejectOpen) =>
 					open(filePath, 'r', (error, openedFd) => (error ? rejectOpen(error) : resolveOpen(openedFd)))
 				);
@@ -2142,6 +2156,24 @@ function writeBlobWithStream(
 							else void replaceTarget();
 						});
 					} else void replaceTarget();
+					return;
+				}
+				if (compressedStream && (blob as { size?: number }).size !== compressedStream.bytesWritten) {
+					// A known-size compressed write stamped the declared size into the header up front, but
+					// the source ended with a different content length. Unlike the uncompressed path — whose
+					// short body reads as retryable-incomplete (503) — this file would inflate to the wrong
+					// size and every reader would reject it as permanently corrupt (500). Fail the save so the
+					// record never commits a reference to an unreadable file (matches the storedCodec verifier
+					// and the repair size check); the unreferenced file is left for orphan GC. The unknown-size
+					// path syncs blob.size to bytesWritten before reaching here, so it never trips this.
+					store.unlock(lockKey);
+					reject(
+						new Error(
+							`Blob ${fileId} deflated ${compressedStream.bytesWritten} bytes but its header declares ${(blob as { size?: number }).size}`
+						)
+					);
+					close(fd);
+					(writeStream as any).fd = null;
 					return;
 				}
 				store.unlock(lockKey);

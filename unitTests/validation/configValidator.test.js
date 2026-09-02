@@ -185,6 +185,12 @@ describe('Test configValidator module', () => {
 			const bad_field_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_field_obj.storage.blobs = { compression: { default: { treshold: 1000000 } } };
 			expect(configValidator(bad_field_obj).error).to.not.eql(undefined);
+
+			// a misspelled property directly under storage.blobs (e.g. `compresion:`) must also fail, not
+			// validate clean and silently leave compression off
+			const bad_blobs_key_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_blobs_key_obj.storage.blobs = { compresion: { default: { codec: 'deflate' } } };
+			expect(configValidator(bad_blobs_key_obj).error).to.not.eql(undefined);
 		});
 
 		it('Test logging in config_schema with bad values', () => {

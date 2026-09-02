@@ -390,7 +390,11 @@ export function configValidator(configJson, skipFsValidation = false) {
 					// a typo'd key would otherwise silently never match anything
 					.unknown(false)
 					.optional(),
-			}).optional(),
+			})
+				// reject a misspelled property directly under storage.blobs (e.g. `compresion:`), which the
+				// top-level validate()'s allowUnknown:true would otherwise accept and silently leave off
+				.unknown(false)
+				.optional(),
 			compression: Joi.alternatives([
 				boolean.optional(),
 				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
