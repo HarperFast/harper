@@ -113,6 +113,7 @@ describe('audit staleness floor', () => {
 			['NaN', encodeFloorBytes(NaN)],
 			['negative infinity', encodeFloorBytes(-Infinity)],
 			['a negative time', encodeFloorBytes(-1)],
+			['negative zero', encodeFloorBytes(-0)],
 		];
 
 		let Metadata, trustedFloor;
@@ -175,6 +176,30 @@ describe('audit staleness floor', () => {
 			assert.strictEqual(Metadata.oldestRetainedAuditTime(), Infinity);
 			establishAuditFloor(Metadata.auditStore);
 			assert.strictEqual(Metadata.oldestRetainedAuditTime(), Infinity, 'reopen must not lower it');
+		});
+
+		it('persists the unknown sentinel when a prune finds no floor record at all', async () => {
+			// Returning without a marker would let the next open stamp a FINITE epoch, and a prune bound
+			// above it — a future endTime, or a rolled-back clock — would then certify cursors whose history
+			// this prune deleted.
+			const floorless = tableInOwnDatabase('Floorless');
+			// On RocksDB the floor lives in the root store and the log store's own remove() is a no-op,
+			// so clearing it goes through the root store there.
+			const floorlessRoot = floorless.auditStore.rootStore;
+			if (typeof floorlessRoot.removeSync === 'function') floorlessRoot.removeSync(AUDIT_FLOOR_KEY);
+			await floorless.auditStore.remove(AUDIT_FLOOR_KEY);
+			assert.strictEqual(floorless.auditStore.getBinary(AUDIT_FLOOR_KEY), undefined, 'precondition: no floor record');
+			raiseAuditFloor(floorless.auditStore, Date.now());
+			assert.notStrictEqual(
+				floorless.auditStore.getBinary(AUDIT_FLOOR_KEY),
+				undefined,
+				'the prune must leave a record behind'
+			);
+			assert.strictEqual(floorless.oldestRetainedAuditTime(), Infinity, 'and it must read as unknown');
+			// and a later open must not talk it back down to a finite epoch
+			const { establishAuditFloor } = require('#src/resources/auditStore');
+			establishAuditFloor(floorless.auditStore);
+			assert.strictEqual(floorless.oldestRetainedAuditTime(), Infinity);
 		});
 
 		it('leaves an unknown floor unknown when a prune tries to raise it', () => {

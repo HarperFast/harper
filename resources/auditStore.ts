@@ -456,7 +456,11 @@ function decodeAuditFloor(stored: any): number {
 	if (stored?.byteLength !== 8) return AUDIT_FLOOR_UNKNOWN;
 	FLOOR_BUFFER.set(stored);
 	const floor = FLOOR_TARGET[0];
-	return Number.isFinite(floor) && floor >= 0 ? floor : AUDIT_FLOOR_UNKNOWN;
+	// `Object.is` for -0, which passes `>= 0` and would then read as a permissive zero — every cursor
+	// safe — from bytes with the sign bit set that nothing here writes. raiseAuditFloor rejects the
+	// same value as a cutoff; the read side has to agree or corrupt metadata fails open.
+	if (!Number.isFinite(floor) || floor < 0 || Object.is(floor, -0)) return AUDIT_FLOOR_UNKNOWN;
+	return floor;
 }
 
 /** Own eight bytes per write: the store must never be handed a live view of the reused module buffer. */
@@ -551,13 +555,24 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// happen. Only scheduleAuditCleanup and purgeAgedLogs check read-only themselves, so for
 	// deleteHistory and the whole-database purge this throw is the guard.
 	if (isReadOnlyMode()) throw new Error('Cannot record the audit retention floor: the database is read-only');
-	// Lock-free pre-check: most calls cannot move the floor (a RocksDB reclamation pass on an idle
+	// Lock-free pre-check, getBinary-guarded so this optimization never decides the error a store with
+	// no audit store reports. Most calls cannot move the floor (a RocksDB reclamation pass on an idle
 	// database, a cutoff below one a wider prune already set), and taking the env write lock to
-	// discover that serializes every worker's boot and reclamation on it. The in-transaction guard
-	// below stays authoritative.
-	// getBinary-guarded so this optimization never decides the error a store with no audit store
-	// reports.
-	if (auditStore?.getBinary && !(cutoff > getAuditFloor(auditStore))) return;
+	// discover that serializes every worker's boot and reclamation on it. The in-transaction guards
+	// below stay authoritative.
+	if (auditStore?.getBinary) {
+		const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
+		if (stored === undefined) {
+			// About to prune a store with no floor record at all — establishAuditFloor failed, or never
+			// ran. Persist the unknown sentinel rather than returning: leaving no marker lets the next
+			// open stamp a FINITE epoch, and a prune bound above that epoch (a future `endTime`, or a
+			// rolled-back clock) then certifies cursors whose history this prune deleted. Unknown is the
+			// honest value, because a store with no record may also have been pruned before this run.
+			updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : AUDIT_FLOOR_UNKNOWN));
+			return;
+		}
+		if (!(cutoff > decodeAuditFloor(stored))) return;
+	}
 	updateAuditFloor(auditStore, (current) => (cutoff > current ? cutoff : undefined));
 }
 
