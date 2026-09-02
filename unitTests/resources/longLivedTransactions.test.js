@@ -248,10 +248,24 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.match(warningsMatching('Harper transaction has held')[0][0], /state: source-apply\+commit-phase/);
 		});
 
-		it('backs off like the sweep and never throws', function () {
-			reportLongLivedHolder(holder());
-			reportLongLivedHolder(holder());
+		it('backs off like the sweep, skipping the staged-write walk on a suppressed report', function () {
+			let counted = 0;
+			const counting = () =>
+				holder({
+					countPendingWrites: () => {
+						counted++;
+						return 3;
+					},
+				});
+			reportLongLivedHolder(counting());
+			reportLongLivedHolder(counting());
 			assert.strictEqual(warningsMatching('Harper transaction has held').length, 1);
+			// The walk is O(chain x writes) and the #2471 shape holds a huge write set for hours, so a
+			// suppressed report must not pay for it.
+			assert.strictEqual(counted, 1, 'the suppressed report must not count staged writes');
+		});
+
+		it('never throws', function () {
 			assert.doesNotThrow(() => reportLongLivedHolder(holder({ states: null })));
 		});
 	});
@@ -332,7 +346,6 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			harperLogger.error = (...args) => errorLines.push(args);
 			setRegistryStatusForTests(status(database('/db/wedged', [4, 90000], [5, 3600000])));
 			try {
-				// A commit that has not settled is exactly the harper#2001 shape checkOverloaded() sheds on.
 				trackAStuckCommit();
 				await waitFor(() => {
 					try {
