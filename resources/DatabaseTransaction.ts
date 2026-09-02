@@ -24,7 +24,7 @@ const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
 // is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
+let MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
@@ -366,9 +366,8 @@ export class DatabaseTransaction implements Transaction {
 	// keep a write-holding head immortal.
 	declare writeTimeout: number;
 	timeoutBudget = 0;
-	// When this instance's native handle was opened (0 = none). Declared with a numeric initializer so
-	// the class shape stays monomorphic on the write path; the single clock read per handle is what lets
-	// the monitor age a handle without calling into the registry every tick.
+	// Initialized rather than `declare`d so the class shape stays monomorphic on the write path. One clock
+	// read per handle is what lets the monitor age a handle without calling into the registry every tick.
 	handleOpenedAt = 0;
 	// save() only stages here; ImmediateTransaction overrides it to commit, which addWrite must not defer
 	saveCommits = false;
@@ -1616,16 +1615,18 @@ function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void 
 	// limit indefinitely and so never reaches the over-limit branches at all.
 	if (txn.timeout > 0) states.push('active');
 	if (states.length === 0) states.push('over-limit');
-	let pendingWrites = 0;
-	for (let link: DatabaseTransaction = txn; link; link = link.next)
-		for (const write of link.writes) if (write) pendingWrites++;
 	reportLongLivedHolder({
 		databasePath: (txn.db as any)?.rootStore?.path,
 		nativeId: txn.transaction.id,
 		ageMs,
-		databaseName: (txn.db as any)?.rootStore?.databaseName ?? (txn.db as any)?.name,
+		databaseName: (txn.db as any)?.rootStore?.databaseName,
 		tableName: (txn.db as any)?.name,
-		pendingWrites,
+		countPendingWrites: () => {
+			let pendingWrites = 0;
+			for (let link: DatabaseTransaction = txn; link; link = link.next)
+				for (const write of link.writes) if (write) pendingWrites++;
+			return pendingWrites;
+		},
 		states,
 		timeoutBudget: txn.timeoutBudget,
 		startedFrom: txn.startedFrom,
@@ -1644,8 +1645,6 @@ function startMonitoringTxns() {
 	function monitorTransaction(txn: DatabaseTransaction) {
 =======
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
-		// Once per tick, not per transaction: the value is config-backed and every transaction on this
-		// tick is measured against the same threshold.
 		const reportThresholdMs = getReportThresholdMs();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
@@ -1748,6 +1747,17 @@ startMonitoringTxns();
  */
 export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
+}
+
+/**
+ * Test seam: the queue time after which checkOverloaded() sheds writes. A test cannot otherwise reach
+ * that branch without waiting out the real 45s limit, which left the stuck-commit log — the line an
+ * operator reads during an outage — with no coverage at all. Returns the previous value to restore.
+ */
+export function setMaxOutstandingTxnDuration(ms: number): number {
+	const previous = MAX_OUTSTANDING_TXN_DURATION;
+	MAX_OUTSTANDING_TXN_DURATION = ms;
+	return previous;
 }
 
 /** Test seam: whether the monitor supervises this logical transaction for its writes. */

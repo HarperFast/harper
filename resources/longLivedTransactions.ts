@@ -72,7 +72,10 @@ function markReported(state: ReportState, ageMs: number): void {
 export function getReportThresholdMs(): number {
 	const configured = envMngr.get(CONFIG_PARAMS.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD);
 	if (configured == null) return DEFAULT_REPORT_THRESHOLD_MS;
-	const ms = convertToMS(configured);
+	// convertToMS returns 0 for anything that is neither string nor number, which YAML hands us for
+	// `yes`/`no` (booleans) and for an object left by a config merge — indistinguishable from the
+	// documented 0 that disables reporting, so it would silently switch off what the operator configured.
+	const ms = typeof configured === 'string' || typeof configured === 'number' ? convertToMS(configured) : NaN;
 	if (ms === 0) return 0;
 	if (!Number.isFinite(ms) || ms < 0) {
 		if (!invalidThresholdWarned) {
@@ -94,7 +97,12 @@ export function getReportThresholdMs(): number {
  */
 export function runLongLivedTransactionSweep(): void {
 	const thresholdMs = getReportThresholdMs();
-	if (thresholdMs === 0 || !registryStatusFn) return;
+	if (thresholdMs === 0 || !registryStatusFn) {
+		// Disabling and re-enabling must not leave a still-live handle sitting behind a backoff ceiling
+		// it accrued before the pause, which would delay its first report after the operator asked for one.
+		if (thresholdMs === 0 && sweepReports.size > 0) sweepReports.clear();
+		return;
+	}
 	try {
 		const status = registryStatusFn();
 		const seen = new Set<string>();
@@ -160,7 +168,10 @@ export type LongLivedHolder = {
 	ageMs: number;
 	databaseName?: string;
 	tableName?: string;
-	pendingWrites: number;
+	// A thunk, not a number: the caller's count walks the whole staged write set, and the backoff below
+	// suppresses most ticks — the #2471 shape is a transaction holding a large write set for hours, so
+	// paying for that walk on every suppressed tick is the one cost this reporting must not add.
+	countPendingWrites: () => number;
 	states: string[];
 	timeoutBudget?: number;
 	startedFrom?: { resourceName: string; method: string };
@@ -175,7 +186,10 @@ export type LongLivedHolder = {
 export function reportLongLivedHolder(holder: LongLivedHolder): void {
 	try {
 		const thresholdMs = getReportThresholdMs();
-		if (thresholdMs === 0) return;
+		if (thresholdMs === 0) {
+			if (attributionReports.size > 0) attributionReports.clear();
+			return;
+		}
 		const expiredBefore = Date.now() - ATTRIBUTION_STATE_TTL_MS;
 		for (const [key, state] of attributionReports) if (state.touchedAt < expiredBefore) attributionReports.delete(key);
 		const state = observeHandle(
@@ -190,7 +204,7 @@ export function reportLongLivedHolder(holder: LongLivedHolder): void {
 		logger.warn?.(
 			`Harper transaction has held RocksDB transaction ${holder.nativeId} for ${prettyDuration(holder.ageMs)} ` +
 				`on thread ${threadId}, database ${holder.databaseName ?? '?'}${table} (${holder.databasePath ?? '?'}), ` +
-				`holding ${holder.pendingWrites} staged write(s), state: ${holder.states.join('+')}` +
+				`holding ${holder.countPendingWrites()} staged write(s), state: ${holder.states.join('+')}` +
 				(holder.timeoutBudget ? `, open-transaction budget ${holder.timeoutBudget}ms` : '') +
 				(holder.startedFrom?.resourceName
 					? `, started from ${holder.startedFrom.resourceName}${holder.startedFrom.method ? '.' + holder.startedFrom.method : ''}`
@@ -217,7 +231,12 @@ export function describeHolderCandidates(
 	try {
 		const target = resolve(databasePath);
 		const details = registryStatusFn().find((database) => resolve(database.path) === target)?.transactionDetails;
-		if (!details) return '';
+		if (!details) {
+			// No entry at all is different from a database with no other handles, and only the former means
+			// the join between a store's path and the registry's path has drifted.
+			logger.debug?.(`No registry entry for ${target}; cannot offer holder candidates for its stuck commit`);
+			return '';
+		}
 		const candidates = details.filter((handle) => handle.id !== excludeNativeId).sort((a, b) => b.ageMs - a.ageMs);
 		if (candidates.length === 0) return '';
 		const named = candidates
@@ -233,12 +252,12 @@ export function describeHolderCandidates(
 	}
 }
 
-/** Test seam: substitute the registry accessor (pass undefined to simulate an older binding). */
+/** Test seam; undefined simulates a binding with no registryStatus(). */
 export function setRegistryStatusForTests(fn?: RegistryStatusFn): void {
 	registryStatusFn = fn;
 }
 
-/** Test seam: clear per-handle backoff state, the once-per-process warnings, and any armed sweep. */
+/** Test seam: the backoff state, once-per-process warnings and armed sweep that outlive a single test. */
 export function resetLongLivedTransactionReportsForTests(): void {
 	sweepReports.clear();
 	attributionReports.clear();

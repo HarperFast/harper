@@ -17,6 +17,14 @@ const {
 	startLongLivedTransactionReporting,
 } = require('#src/resources/longLivedTransactions');
 const { registryStatus } = require('@harperfast/rocksdb-js');
+const {
+	DatabaseTransaction,
+	getOutstandingCommits,
+	setMaxOutstandingTxnDuration,
+	trackOutstandingCommit,
+} = require('#src/resources/DatabaseTransaction');
+const harperLogger = require('#src/utility/logging/harper_logger');
+const { table } = require('#src/resources/databases');
 const { waitFor } = require('../waitFor.js');
 
 const THRESHOLD = CONFIG_PARAMS.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD;
@@ -86,7 +94,9 @@ describe('Long-lived transaction reporting (#2471)', () => {
 
 		// 'abc' -> convertToMS -> NaN, and a negative is not a duration. Falling through to the
 		// default matters: the alternative is silently disabling the reporting the operator asked for.
-		for (const invalid of ['abc', -1, Infinity]) {
+		// `true` is what YAML gives for `longTransactionReportThreshold: yes`; convertToMS returns 0 for it,
+		// which is indistinguishable from the documented disable value.
+		for (const invalid of ['abc', -1, Infinity, true, {}]) {
 			it(`falls back to the default for ${String(invalid)} and warns once`, function () {
 				env.setProperty(THRESHOLD, invalid);
 				assert.strictEqual(getReportThresholdMs(), 300000);
@@ -208,7 +218,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			ageMs: 3600000,
 			databaseName: 'data',
 			tableName: 'Orders',
-			pendingWrites: 3,
+			countPendingWrites: () => 3,
 			states: ['source-apply'],
 			startedFrom: { resourceName: 'Orders', method: 'put' },
 			...overrides,
@@ -283,6 +293,110 @@ describe('Long-lived transaction reporting (#2471)', () => {
 
 		it('returns nothing when the database has no path', function () {
 			assert.strictEqual(describeHolderCandidates(undefined, 1), '');
+		});
+	});
+
+	// checkOverloaded() is the surface an operator actually reads during an outage, and it is the only
+	// one wired to a real wedged commit. Driving it needs the queue limit lowered, because the real one
+	// is 45s.
+	describe('the stuck-commit log names holder candidates', () => {
+		let restoreDuration, settleTrackedCommit;
+
+		// The tracked node unlinks only when its promise settles, and the list is process-wide: leaving one
+		// outstanding would 503 every write in every later suite on this thread once it aged past the limit.
+		function trackAStuckCommit() {
+			trackOutstandingCommit(
+				new Promise((resolve) => (settleTrackedCommit = resolve)),
+				{ name: 'Wedged', rootStore: { databaseName: 'data', path: '/db/wedged' } },
+				{ resourceName: 'Wedged', method: 'put' },
+				{ id: 4 }
+			);
+		}
+
+		beforeEach(function () {
+			restoreDuration = setMaxOutstandingTxnDuration(1);
+			settleTrackedCommit = undefined;
+		});
+
+		afterEach(async function () {
+			setMaxOutstandingTxnDuration(restoreDuration);
+			settleTrackedCommit?.();
+			// trackOutstandingCommit unlinks on a `.then` continuation, so yield until it has run.
+			await waitFor(() => getOutstandingCommits().count === 0, 2000);
+		});
+
+		it('appends the candidates to the 503-raising error, and still raises the 503', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			const errorLines = [];
+			const originalError = harperLogger.error;
+			harperLogger.error = (...args) => errorLines.push(args);
+			setRegistryStatusForTests(status(database('/db/wedged', [4, 90000], [5, 3600000])));
+			try {
+				// A commit that has not settled is exactly the harper#2001 shape checkOverloaded() sheds on.
+				trackAStuckCommit();
+				await waitFor(() => {
+					try {
+						new DatabaseTransaction().checkOverloaded();
+						return false;
+					} catch (error) {
+						assert.strictEqual(error.statusCode, 503, 'the shed must still be a 503');
+						return true;
+					}
+				}, 2000);
+			} finally {
+				harperLogger.error = originalError;
+			}
+			assert.strictEqual(errorLines.length, 1, 'the stuck commit must be logged once');
+			const line = errorLines[0][0];
+			assert.match(line, /Live transaction handles on this database/);
+			assert.match(line, /5 \(open 1h 0m 0s\)/, 'the older candidate must be named');
+			assert.ok(!/oldest first: 4 /.test(line), 'the wedged commit is not its own holder');
+		});
+
+		// The suffix is a diagnostic on the failure path: it must never become the failure.
+		it('still raises the 503 when the registry throws while building the suffix', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			const originalError = harperLogger.error;
+			harperLogger.error = () => {};
+			setRegistryStatusForTests(() => {
+				throw new Error('boom');
+			});
+			try {
+				trackAStuckCommit();
+				await waitFor(() => {
+					try {
+						new DatabaseTransaction().checkOverloaded();
+						return false;
+					} catch (error) {
+						assert.strictEqual(error.statusCode, 503);
+						return true;
+					}
+				}, 2000);
+			} finally {
+				harperLogger.error = originalError;
+			}
+		});
+	});
+
+	// A store's rootStore.path is what checkOverloaded() hands the lookup, and registryStatus() reports
+	// the database's own path — if those two ever stop being the same string, every candidate list goes
+	// silently empty. Asserted against the real registry rather than a stub, which is the only way to
+	// catch a drift in either producer.
+	describe('the store path joins to the registry path', () => {
+		it('finds a real table’s database in the real registry', function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			setRegistryStatusForTests(registryStatus);
+			const JoinTable = table({
+				table: 'HolderJoinTable',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const storePath = JoinTable.primaryStore.rootStore.path;
+			assert.ok(storePath, 'a table store must expose its database path');
+			assert.ok(
+				registryStatus().some((entry) => path.resolve(entry.path) === path.resolve(storePath)),
+				'the path checkOverloaded() looks up must be a path the registry reports'
+			);
 		});
 	});
 
