@@ -14,8 +14,9 @@
  * gone — first, so the read-back cannot be answered by surviving source files, and each blob is
  * compared against the sha256 its seed call returned.
  *
- * What it does not cover: restoring under a different database name or with more than one blob root
- * (`unitTests/bin/copyDbIntegrity.test.js:250`), and channel 4's failure path — no per-record copy
+ * What it does not cover: restoring under a different database name (that is
+ * `unitTests/bin/copyDbIntegrity.test.js:250`), a database with more than one blob root — nothing
+ * exercises `rootIndex > 0` anywhere today — and channel 4's failure path, since no per-record copy
  * failure is induced here, so only the healthy exit-0 shape is asserted.
  *
  * `copy-db` is LMDB-only (`copyDb` rejects a RocksDB database outright), hence the engine pin.
@@ -53,8 +54,8 @@ const HARPER_OPTIONS: StartHarperOptions = {
 const SEED_TIMEOUT_MS = 60_000;
 const COPY_TIMEOUT_MS = 120_000;
 const READY_TIMEOUT_MS = 60_000;
-// Above the framework's own CI startup ceiling, so a slow boot fails with its diagnosis rather than
-// with a bare test timeout.
+// The framework's own CI startup ceiling; the budgets below add to it so a slow boot fails with
+// startHarper's diagnosis rather than with a bare test timeout.
 const BOOT_TIMEOUT_MS = 300_000;
 
 /** Every non-empty file under a tree, relative to it. Disk truth, not API truth. */
@@ -86,8 +87,6 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 	const dbPath = () => join(ctx.harper.dataRootDir, 'database', `${DATABASE}.mdb`);
 	const blobRoot = () => join(ctx.harper.dataRootDir, 'blobs', DATABASE);
 
-	// Populated by the copy step so the later tests assert against one real invocation rather than
-	// each shelling the CLI again.
 	let copyRoot = '';
 	let copyTarget = '';
 	let copyExit: number | null = null;
@@ -238,8 +237,7 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 			existsSync(blobCompanion),
 			`copy-db must write the source's blob roots to ${blobCompanion}; copy tree: ${JSON.stringify(filesUnder(copyRoot).slice(0, 20))}`
 		);
-		// `<rootIndex>/<shard1>/<shard2>/<fileId>`, plus the README documenting that layout — which is
-		// the only instruction an operator gets for the restore this suite performs below.
+		// The only instruction an operator gets for the restore this suite performs below.
 		ok(existsSync(join(blobCompanion, 'README.md')), `${blobCompanion} must document its layout in README.md`);
 		const copiedBlobs = filesUnder(blobCompanion).filter((f) => f !== 'README.md');
 		ok(
