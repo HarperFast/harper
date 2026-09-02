@@ -15,20 +15,6 @@ export const MIN_LOCK_LEASE_MS = 100;
 export const MAX_LOCK_LEASE_MS = 300_000;
 export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 export const MAX_LOCK_TIMEOUT_MS = 300_000;
-/** How long a write to a record another party holds waits for the release before failing (423). */
-export const LOCKED_WRITE_WAIT_MS = 30_000;
-
-let lockedWriteWaitMs = LOCKED_WRITE_WAIT_MS;
-
-/** Override for tests; must not lower the production default in production code. */
-export function setLockedWriteWaitMs(ms: number): void {
-	lockedWriteWaitMs = ms;
-}
-
-export function getLockedWriteWaitMs(): number {
-	return lockedWriteWaitMs;
-}
-
 const LOCK_KEY_PREFIX = Symbol.for('record-lock');
 
 export interface RecordLockOptions {
@@ -61,6 +47,15 @@ export interface RecordLockHandle {
 	hold: boolean;
 	released: boolean;
 	expired: boolean;
+	/** Monotonic timestamp at which tryLock succeeded; used as the base version for holder writes. */
+	acquiredAt: number;
+	/**
+	 * Return the next version to stamp a holder write with. Starts at acquiredAt; increments by
+	 * the minimum monotonic step for every subsequent call so sequential saves on the same hold do
+	 * not collide on version while still staying ≤ any concurrent write that happened after
+	 * lock acquisition.
+	 */
+	nextHolderVersion(): number;
 	release(): boolean;
 }
 
@@ -93,7 +88,6 @@ export function lockAttemptKey(tableId: number, id: any): any[] {
 
 const warnedLeaseTimerStores = new WeakSet();
 
-/** A key-lock handle with prototype methods so gate handles (no lease) carry no per-instance closures. */
 class KeyLockHandle implements RecordLockHandle {
 	store: any;
 	key: any[];
@@ -102,17 +96,29 @@ class KeyLockHandle implements RecordLockHandle {
 	hold: boolean;
 	released = false;
 	expired = false;
+	acquiredAt: number;
+	#lastHolderVersion: number | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 
-	constructor(store: any, key: any[], keyId: unknown, lease?: number, hold = false) {
+	constructor(store: any, key: any[], keyId: unknown, lease?: number, hold = false, acquiredAt?: number) {
 		this.store = store;
 		this.key = key;
 		this.keyId = keyId;
 		this.expiresAt = lease != null ? Date.now() + lease : Infinity;
 		this.hold = hold;
+		this.acquiredAt = acquiredAt ?? store.getMonotonicTimestamp();
 		if (lease != null) {
 			this.#timer = setTimeout(() => this.#onLeaseExpire(), lease).unref();
 		}
+	}
+
+	nextHolderVersion(): number {
+		// Minimum monotonic step matches getNextMonotonicTime()'s own increment.
+		const MIN_STEP = 0.000488;
+		const next =
+			this.#lastHolderVersion != null ? Math.max(this.#lastHolderVersion + MIN_STEP, this.acquiredAt) : this.acquiredAt;
+		this.#lastHolderVersion = next;
+		return next;
 	}
 
 	#onLeaseExpire() {
@@ -145,23 +151,21 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 }
 
-/** Gate handles (lease = undefined) have no expiry timer; released by releaseRecordLocks on commit/abort. */
 export function makeKeyLockHandle(
 	store: any,
 	key: any[],
 	keyId: unknown,
 	lease?: number,
-	hold = false
+	hold = false,
+	acquiredAt?: number
 ): RecordLockHandle {
-	return new KeyLockHandle(store, key, keyId, lease, hold);
+	return new KeyLockHandle(store, key, keyId, lease, hold, acquiredAt);
 }
 
 /**
  * Acquire the native key lock for a record, looping until acquired or deadline passes. Re-entrant
  * within a transaction: if the transaction already holds this key (non-expired handle in its
  * recordLocks map) the existing handle is returned without a second tryLock.
- *
- * Used by both `lock()` (with a user lease) and the write-gate's async commit path (no lease).
  */
 export async function acquireRecordKey(
 	txn: { recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined },
@@ -181,7 +185,7 @@ export async function acquireRecordKey(
 		const acquired = store.tryLock(key, () => {
 			wakeResolve?.();
 		});
-		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold);
+		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, store.getMonotonicTimestamp());
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
 		await new Promise<void>((resolve) => {

@@ -1,15 +1,9 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
+import { ServerError } from '../utility/errors/hdbError.ts';
+import { type RecordLockHandle } from './recordLock.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
-import {
-	getLockedWriteWaitMs,
-	acquireRecordKey,
-	makeKeyLockHandle,
-	lockAttemptKey,
-	type RecordLockHandle,
-} from './recordLock.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -290,7 +284,7 @@ export type TransactionWrite = {
 	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
-	validate?: (txnTime: number, committedBy: DatabaseTransaction, operation?: TransactionWrite) => void;
+	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
@@ -330,16 +324,13 @@ export type TransactionWrite = {
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
-	gateOnLock?: boolean;
-	lockKey?: any[];
-	lockTableId?: number;
-	lockId?: any;
-	gated?: boolean;
-	pendingWake?: Promise<void>;
-	restage?: boolean;
+	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
+	// used in DatabaseTransaction.save() to inject the acquisition timestamp as the write's version.
 	lockHandle?: RecordLockHandle;
-	validated?: boolean;
-	dropped?: boolean;
+	// Per-operation holder version, set once on first save() and reused on retry so that
+	// ImmediateTransaction's sequential immediateCommit saves don't collide: each write carries its
+	// own stamp independently of this.timestamp, which may not reset to 0 between saves.
+	lockStamp?: number;
 };
 
 /**
@@ -463,327 +454,8 @@ export class DatabaseTransaction implements Transaction {
 	committing = false;
 	commitPhaseTicks = 0;
 	declare commitChainHead?: DatabaseTransaction;
-	// O(1) lookup in recordLockFor; O(N total handles) iteration in releaseRecordLocks.
+	// O(1) lookup in recordLockFor; only lock() handles are registered here (no gate handles).
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
-	declare lockWaitDeadline?: number;
-	declare hasGatedWrites?: boolean;
-	declare pendingWakeReject?: (error: any) => void;
-	// The replay native transaction created by restageAfter for a record-lock restage round.
-	// Tracked explicitly so the catch/rejection paths abort only this handle, never the main
-	// native handle that ERR_BUSY/coordinated-retry passes as options.transaction.
-	declare replayTransaction?: RocksTransactionWithRetry;
-
-	registerRecordLock(handle: RecordLockHandle): void {
-		if (!this.recordLocks) this.recordLocks = new Map();
-		let storeMap = this.recordLocks.get(handle.store);
-		if (!storeMap) this.recordLocks.set(handle.store, (storeMap = new Map()));
-		storeMap.set(handle.keyId, handle);
-	}
-
-	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
-		const storeMap = this.recordLocks?.get(store);
-		if (!storeMap) return undefined;
-		const h = storeMap.get(keyId);
-		if (!h) return undefined;
-		if (!h.released) return h; // live
-		// Both expired and explicitly-released handles are pruned: expired ones must not remain as
-		// sentinels, because a later plain write to the same key in the same context would
-		// incorrectly receive a 409 (lock-lost).  The 409 is only appropriate when the write itself
-		// was made through the expired handle (checked in gateLockedWrite via operation.lockHandle).
-		storeMap.delete(keyId);
-		return undefined;
-	}
-
-	unregisterRecordLock(handle: RecordLockHandle): void {
-		const storeMap = this.recordLocks?.get(handle.store);
-		if (storeMap?.get(handle.keyId) === handle) storeMap.delete(handle.keyId);
-	}
-
-	/**
-	 * Release every transaction-scoped lock this link holds. Synchronous: the native key unlock
-	 * fires waiting callbacks cross-thread but returns immediately.
-	 *
-	 * When gateOnly is true, only gate handles (expiresAt === Infinity, acquired internally as part
-	 * of the write-gate mechanism) are released. Scoped lock() handles (leased, hold=false, finite
-	 * expiresAt) are kept, so callers that park on one key while holding a scoped lock on another
-	 * do not inadvertently drop the scoped lock's protection during the park.
-	 */
-	releaseRecordLocks(gateOnly = false): void {
-		const recordLocks = this.recordLocks;
-		if (!recordLocks) return;
-		for (const [store, storeMap] of recordLocks) {
-			for (const [keyId, handle] of storeMap) {
-				if (handle.hold) continue;
-				if (gateOnly && handle.expiresAt !== Infinity) continue;
-				handle.release();
-				storeMap.delete(keyId);
-			}
-			if (storeMap.size === 0) recordLocks.delete(store);
-		}
-		if (recordLocks.size === 0) this.recordLocks = undefined;
-	}
-
-	/**
-	 * Whether `operation` must wait for a record lock before staging. Only Table.ts's local record
-	 * mutations opt in (gateOnLock + lockKey); canonical-source applies and replay never wait.
-	 *
-	 * For the holder's own writes: re-entrant (returns false) unless an ungated rewrite moved the
-	 * record past this transaction's timestamp, in which case the write is marked for restage.
-	 *
-	 * For other writes: tryLock synchronously; on success create a gate handle and proceed; on
-	 * failure store a wake Promise (resolves when the key may be free) and mark gated.
-	 */
-	protected gateLockedWrite(operation: TransactionWrite, txnTime: number): boolean {
-		if (operation.gateOnLock !== true || this.sourceApply || this.isReplay) return false;
-		const keyId = writeKeyId(operation.key);
-		const opHandle = operation.lockHandle;
-		// Expired lease: the holder's key was stolen; reject rather than re-attempting tryLock.
-		if (opHandle?.keyId === keyId && opHandle.expired)
-			throw new ClientError(
-				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
-				409
-			);
-		const handle =
-			opHandle?.keyId === keyId && !opHandle.released
-				? opHandle
-				: this.recordLocks && this.recordLockFor(operation.store, keyId);
-
-		if (handle?.keyId === keyId && !handle.released) {
-			operation.lockHandle = handle;
-			// Only an explicit lock() holder (a leased handle) re-reads for an ungated rewrite; a gate handle
-			// already owns the key, and restaging it on a version race recursed without bound (CI stack overflow).
-			if (handle.expiresAt !== Infinity) {
-				const entry = (operation.entry = operation.store.getEntry(operation.key));
-				if (entry && entry.version >= txnTime) {
-					operation.restage = true;
-					this.hasGatedWrites = true;
-					return true;
-				}
-			}
-			return false;
-		}
-
-		if (!operation.lockKey && operation.lockTableId !== undefined)
-			operation.lockKey =
-				operation.lockId !== null && operation.lockId !== undefined
-					? lockAttemptKey(operation.lockTableId, operation.lockId)
-					: undefined;
-		const lockKey = operation.lockKey;
-		if (!lockKey) return false;
-		if (typeof operation.store.tryLock !== 'function') return false;
-
-		let wakeResolve: (() => void) | undefined;
-		const acquired =
-			operation.store.tryLock(lockKey) ||
-			operation.store.tryLock(lockKey, () => {
-				wakeResolve?.();
-			});
-		if (acquired) {
-			const gateHandle = makeKeyLockHandle(operation.store, lockKey, keyId);
-			this.registerRecordLock(gateHandle);
-			operation.lockHandle = gateHandle;
-			return false;
-		}
-
-		operation.gated = true;
-		operation.pendingWake = new Promise<void>((resolve) => {
-			wakeResolve = resolve;
-		});
-		this.hasGatedWrites = true;
-		return true;
-	}
-
-	/**
-	 * Drop the native handle's staged work before a restage: the current round's writes must not
-	 * commit at the wrong timestamp. With iterators still streaming through the handle it stays open
-	 * and the re-stage takes a fresh replay transaction instead.
-	 */
-	private discardStagedRound(): boolean {
-		const staged = this.transaction;
-		if (!staged) return false;
-		if (this.readTxnsUsed > 1) {
-			if (!this.writesAbandoned) {
-				this.writesAbandoned = true;
-				try {
-					(staged as { abandonWrites?: () => void }).abandonWrites?.();
-				} catch (error) {
-					harperLogger.warn?.('Failed to release write intents before a record lock restage', error);
-				}
-			}
-			return true;
-		}
-		this.detachOwnedTransaction();
-		abortNativeTransaction(staged, 'discarding writes staged before a record lock restage');
-		return false;
-	}
-
-	private restageAfter(version: number, replayNeeded: boolean, options: CommitOptions): MaybePromise<CommitResolution> {
-		this.retries++;
-		// Native rocksdb-js process-wide generator; floor-nudge when ahead of wall clock.
-		let ts = (this.db as any).getMonotonicTimestamp?.() ?? 0;
-		if (ts <= version) ts = version + 0.001;
-		this.timestamp = ts;
-		// Every write must re-validate with the new txnTime so updatedTime and hasChanges reflect the
-		// restaged timestamp.  Also clear stale restage flags; gateLockedWrite re-sets them if the new
-		// txnTime is still behind the entry's version.
-		for (const write of this.writes) {
-			if (write) {
-				write.validated = false;
-				write.restage = false;
-			}
-		}
-		if (replayNeeded) {
-			const replay = new RocksTransaction(this.db.store as RocksStore, { coordinatedRetry: true });
-			replay.setTimestamp(this.timestamp);
-			this.replayTransaction = replay as RocksTransactionWithRetry;
-			return this.commit({ ...options, transaction: replay });
-		}
-		return this.commit(options);
-	}
-
-	/**
-	 * Abort any replay handle in options.transaction and discard the current staged round.
-	 * Returns the updated options (transaction cleared) and whether a replay is needed.
-	 * Shared by waitForPendingKeys and restageHolderWrites.
-	 */
-	private discardReplay(options: CommitOptions): { replayNeeded: boolean; options: CommitOptions } {
-		if (options.transaction) {
-			abortNativeTransaction(options.transaction, 'discarding replay handle before restage');
-			if (this.replayTransaction === options.transaction) this.replayTransaction = undefined;
-			options = { ...options, transaction: undefined };
-		}
-		return { replayNeeded: this.discardStagedRound(), options };
-	}
-
-	/**
-	 * Acquire native key locks for writes that could not be staged because another party held their
-	 * key. Releases all gate handles before acquiring to prevent staging-phase deadlocks (T1 holds A
-	 * parks on B; T2 holds B parks on A). After release, acquires ALL gate-eligible writes — not just
-	 * the failed subset — in a canonical (lockTableId, encoded key) order. Acquiring only the gated
-	 * subset risks livelock: W1 acquires A while W2 acquires B, both re-stage, each grabs the
-	 * other's first key synchronously and gates on the second again indefinitely. Acquiring the full
-	 * set canonically means the re-stage's synchronous gate finds every key re-entrant and proceeds
-	 * without contention. Hold handles (from explicit lock() calls) are excluded; the caller controls
-	 * their ordering.
-	 */
-	private waitForPendingKeys(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
-		const now = Date.now();
-		this.lockWaitDeadline ??= now + getLockedWriteWaitMs();
-		if (now >= this.lockWaitDeadline)
-			throw new ClientError(`Record ${String(gated[0].key)} is locked and was not released in time`, 423);
-
-		const { replayNeeded, options: updatedOptions } = this.discardReplay(options);
-		options = updatedOptions;
-		// Release only gate handles (expiresAt === Infinity) before parking — prevents hold-A/wait-B
-		// vs hold-B/wait-A deadlocks on gate keys while keeping any scoped lock() handles in the
-		// registry; dropping a scoped hold during the park would let another party write the locked
-		// key under the caller's hold.
-		this.releaseRecordLocks(true);
-
-		const allGateEligible = this.writes
-			.filter(
-				(w): w is TransactionWrite =>
-					w?.gateOnLock === true && !w.lockHandle?.hold && w.lockKey != null && typeof w.store?.tryLock === 'function'
-			)
-			.sort((a, b) => {
-				if (a.lockTableId !== b.lockTableId) return (a.lockTableId ?? 0) - (b.lockTableId ?? 0);
-				const aKey = String(writeKeyId(a.key));
-				const bKey = String(writeKeyId(b.key));
-				return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
-			});
-
-		this.setCommitPhase(true);
-		const deadline = this.lockWaitDeadline;
-
-		let maxReleasedVersion = 0;
-		const acquire = async () => {
-			for (const write of allGateEligible) {
-				const remaining = deadline - Date.now();
-				if (remaining <= 0)
-					throw new ClientError(`Record ${String(write.key)} is locked and was not released in time`, 423);
-				if (this.timedOut) throw transactionOpenTooLongError();
-				if (this.open === TRANSACTION_STATE.CLOSED)
-					throw new ServerError('Transaction was aborted while waiting for a record lock', 500);
-
-				const keyId = writeKeyId(write.key);
-				if (write.pendingWake) {
-					await new Promise<void>((resolve, reject) => {
-						this.pendingWakeReject = reject;
-						const timer = setTimeout(
-							() => reject(new ClientError(`Record ${String(write.key)} is locked and was not released in time`, 423)),
-							deadline - Date.now()
-						);
-						write.pendingWake!.then(() => {
-							clearTimeout(timer);
-							this.pendingWakeReject = undefined;
-							resolve();
-						}, reject);
-					});
-					write.pendingWake = undefined;
-					// Re-check after the wake await: an abort during the park must not proceed to acquire.
-					if (this.timedOut) throw transactionOpenTooLongError();
-					if (this.open === TRANSACTION_STATE.CLOSED)
-						throw new ServerError('Transaction was aborted while waiting for a record lock', 500);
-				}
-
-				const handle = await acquireRecordKey(
-					this,
-					write.store,
-					write.lockKey!,
-					keyId,
-					deadline - Date.now(),
-					undefined
-				);
-				// Re-check after the acquire await: an abort during the lock acquisition must not
-				// register the handle on a closed transaction (key stranded) or commit an empty write set.
-				if (this.timedOut || this.open === TRANSACTION_STATE.CLOSED) {
-					handle.release();
-					throw this.timedOut
-						? transactionOpenTooLongError()
-						: new ServerError('Transaction was aborted while waiting for a record lock', 500);
-				}
-				this.registerRecordLock(handle);
-				write.lockHandle = handle;
-				write.gated = false;
-
-				const entryVersion = write.store.getEntry(write.key)?.version ?? 0;
-				if (entryVersion > maxReleasedVersion) maxReleasedVersion = entryVersion;
-			}
-		};
-
-		return acquire().then(
-			() => {
-				this.setCommitPhase(false);
-				return this.restageAfter(maxReleasedVersion, replayNeeded, options);
-			},
-			(err) => {
-				this.setCommitPhase(false);
-				this.abort();
-				throw err;
-			}
-		);
-	}
-
-	private restageHolderWrites(restage: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
-		this.lockWaitDeadline ??= Date.now() + getLockedWriteWaitMs(); // same deadline as waitForPendingKeys
-		if (Date.now() >= this.lockWaitDeadline) {
-			this.abort();
-			throw new ServerError(
-				`Record ${String(restage[0].key)} kept being rewritten past this transaction, so the holder's write could not commit`,
-				503
-			);
-		}
-		const { replayNeeded, options: updatedOptions } = this.discardReplay(options);
-		options = updatedOptions;
-		let version = 0;
-		for (const write of restage) {
-			if (write.entry?.version > version) version = write.entry.version;
-		}
-		// Yield before each restage round so the stack unwinds and the deadline is observable even
-		// under rapid concurrent ungated writes.  Without this, commit→restageHolderWrites→restageAfter
-		// →commit→… recurses synchronously until Node's call-stack limit (stack overflow on CI).
-		return Promise.resolve().then(() => this.restageAfter(version, replayNeeded, options));
-	}
 
 	setCommitPhase(committing: boolean): void {
 		// A commit phase covers the sealed write set across the whole multi-store chain.
@@ -1003,6 +675,45 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	registerRecordLock(handle: RecordLockHandle): void {
+		if (!this.recordLocks) this.recordLocks = new Map();
+		let storeMap = this.recordLocks.get(handle.store);
+		if (!storeMap) this.recordLocks.set(handle.store, (storeMap = new Map()));
+		storeMap.set(handle.keyId, handle);
+	}
+
+	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
+		const storeMap = this.recordLocks?.get(store);
+		if (!storeMap) return undefined;
+		const h = storeMap.get(keyId);
+		if (!h) return undefined;
+		if (!h.released) return h;
+		// Prune released handles so they don't accumulate; an expired handle checking re-entrancy
+		// would otherwise be seen as the holder and incorrectly granted access.
+		storeMap.delete(keyId);
+		return undefined;
+	}
+
+	unregisterRecordLock(handle: RecordLockHandle): void {
+		const storeMap = this.recordLocks?.get(handle.store);
+		if (storeMap?.get(handle.keyId) === handle) storeMap.delete(handle.keyId);
+	}
+
+	/** Release every transaction-scoped lock() handle this link owns. */
+	releaseRecordLocks(): void {
+		const recordLocks = this.recordLocks;
+		if (!recordLocks) return;
+		for (const [store, storeMap] of recordLocks) {
+			for (const [keyId, handle] of storeMap) {
+				if (handle.hold) continue; // hold handles outlive the transaction; released by unlock()
+				handle.release();
+				storeMap.delete(keyId);
+			}
+			if (storeMap.size === 0) recordLocks.delete(store);
+		}
+		if (recordLocks.size === 0) this.recordLocks = undefined;
+	}
+
 	/**
 	 * Discard the staged write set (committed or aborted); the per-key chain must go with it so a
 	 * reused transaction never bases a write on a previous batch's staged state.
@@ -1014,9 +725,7 @@ export class DatabaseTransaction implements Transaction {
 		// context's current transaction as it did before `stagedIn` existed.
 		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
-		this.replayTransaction = undefined;
 		this.writesByKey = undefined;
-		this.lockWaitDeadline = undefined;
 	}
 
 	/**
@@ -1177,6 +886,19 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
+		// A write staged through a held record lock uses the lock's acquisition timestamp so that any
+		// concurrent write stamped at its real (later) time wins under the existing LWW ordering — the
+		// holder's read-modify-write is coherent with the state it locked, and a concurrent write landing
+		// after the lock is acquired but before the holder commits is treated as happening "after" the lock.
+		// Use a per-operation lockStamp (set once, reused on retry) rather than gating on this.timestamp:
+		// ImmediateTransaction commits each write immediately, and this.timestamp may not reliably reset
+		// to 0 between sequential saves, causing a later save to skip injection and reuse a stale stamp.
+		if (operation.lockHandle?.hold) {
+			if (!operation.lockStamp) {
+				operation.lockStamp = operation.lockHandle.nextHolderVersion();
+			}
+			this.timestamp = operation.lockStamp;
+		}
 		let txnTime = this.timestamp;
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
 		// be retained for outstanding read iterators; staging into it would silently discard the write
@@ -1225,21 +947,13 @@ export class DatabaseTransaction implements Transaction {
 		if (reloadEntry || operation.entry === undefined) {
 			operation.entry = operation.store.getEntry(operation.key, { transaction });
 		}
-		if (!operation.validated) {
-			operation.validated = true;
-			if ((operation.validate?.(txnTime, this, operation) as any) === false) {
-				operation.commit = () => {}; // noop if we try again
-				operation.saved = true;
-				return;
-			}
-		}
-		// Checked every round: a retry round reloads the entry, and the record may have been locked since
-		// the write first staged. Before `before`, so a gated write reaches no source and saves no blob
-		// until the lock clears.
-		if (this.gateLockedWrite(operation, txnTime)) return;
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
+			if ((operation.validate?.(txnTime, this) as any) === false) {
+				operation.commit = () => {}; // noop if we try again
+				return;
+			}
 			let result: Promise<void> = operation.before?.() as Promise<void>;
 			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;
@@ -1269,25 +983,10 @@ export class DatabaseTransaction implements Transaction {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
-		try {
-			for (let i = 0; i < this.writes.length; i++) {
-				let operation = this.writes[i];
-				if (!operation || (this.retries === 0 && operation.saved)) continue;
-				this.save(operation, transaction, i < this.validated, options);
-			}
-		} catch (err) {
-			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
-			else this.releaseRecordLocks(); // a commit that already closed itself (retries exhausted) still owns gate handles
-			// Abort any record-lock replay handle created by restageAfter: a save-loop throw leaves it
-			// with staged write intents that must be released to avoid WAL pinning. Only abort the
-			// replay handle, never a caller/retry-passed handle (ERR_BUSY passes the main native handle
-			// as options.transaction; aborting it while iterators stream its snapshot corrupts reads).
-			const replayToAbort = this.replayTransaction;
-			if (replayToAbort) {
-				this.replayTransaction = undefined;
-				abortNativeTransaction(replayToAbort, 'cleanup replay handle after save-loop throw');
-			}
-			throw err;
+		for (let i = 0; i < this.writes.length; i++) {
+			let operation = this.writes[i];
+			if (!operation || (this.retries === 0 && operation.saved)) continue;
+			this.save(operation, transaction, i < this.validated, options);
 		}
 		this.validated = this.writes.length;
 		const completions = this.completions;
@@ -1296,436 +995,387 @@ export class DatabaseTransaction implements Transaction {
 		if (completions.length > 0) {
 			this.setCommitPhase(true);
 		}
-		const finishWithoutNativeCommit = () => {
-			const txnResolution: CommitResolution = {
-				txnTime: this.timestamp,
-			};
-			if (this.next) {
-				// now run any other transactions
-				options.timestamp = this.timestamp;
-				// as above: the next store must not inherit this store's explicit native transaction
-				let nextResolution;
-				try {
-					nextResolution = this.next?.commit(options.transaction ? { ...options, transaction: undefined } : options);
-				} catch (error) {
-					// A synchronous throw reaches neither rejection handler below, and the head has already
-					// committed — surrender ownership here too, or the scope stays resumable on top of a
-					// half-landed multi-store commit.
-					this.endScopeOwnership();
-					throw error;
+		return when(
+			completions.length > 0 ? Promise.all(completions) : null,
+			() => {
+				if (completions.length > 0) this.setCommitPhase(false);
+				// The transaction can be aborted underneath us while we are parked in the await above — by the
+				// monitor once the commit phase outlives its grace, or through the multi-store poison chain.
+				// abort() cleared the write set and released the handle, so resuming would commit nothing and
+				// resolve as SUCCESS: the caller is told its write landed when it was dropped, and a write
+				// carrying a blob is left holding an instance whose file was unlinked (issue #2062).
+				if (this.timedOut) throw transactionOpenTooLongError();
+				if (stagedWrites > 0 && this.writes.length === 0 && this.open === TRANSACTION_STATE.CLOSED)
+					throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
+				if (this.writes.length > this.validated) {
+					// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
+					return this.commit(options);
 				}
-				if ((nextResolution as any)?.then)
-					return (nextResolution as any)?.then(
-						(nextResolution) => {
-							// Only once the chained store's own commit has SETTLED: rotating first would leave the
-							// scope resumable after a partially failed mid-scope commit.
-							this.completeMidScopeCommit(options);
-							return {
-								txnTime: this.timestamp,
-								next: nextResolution,
-							};
-						},
-						(error) => {
-							// A chained store's commit failed, so this multi-store commit half-landed. Surrender
-							// ownership as the head's own failure branch does: a handler that catches this and
-							// commits again must not rotate on top of it, and must not have the failed link
-							// dropped from the chain before its abort can clean up its blobs.
-							this.endScopeOwnership();
-							throw error;
+				// The save loop above can be what opened this transaction's native handle — save() attaches
+				// one when it had none, which is every ImmediateTransaction commit since its getReadTxn
+				// opens none — leaving the local captured before the loop empty while that handle holds
+				// every staged write, for the detach below to drop uncommitted (issue #2288). Only when
+				// the local is empty: a truthy one is what the loop staged into, and the retained-handle
+				// and replay branches below deliberately commit a handle other than this.transaction.
+				if (!transaction) transaction = this.transaction;
+				this.open = TRANSACTION_STATE.CLOSED;
+				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
+				// coordinatedRetry, or void on a normal commit/abort.
+				let commitResolution: Promise<number | void> | void;
+				// Consume this commit's own read reference — exactly once per read handle: retry
+				// recursions, immediate-commit re-entries, and a second top-level commit() (wrapper
+				// commit after an explicit in-handler commit) must not steal a reference owned by an
+				// outstanding iterator (doneReadTxn() would then never release the native handle).
+				if (!this.baseReadRefConsumed) {
+					this.baseReadRefConsumed = true;
+					this.readTxnsUsed--;
+				}
+				if (this.readTxnsUsed > 0) {
+					// Outstanding iterators still stream through this.transaction — their native iterators
+					// live inside it (GetIterator wraps its write batch + snapshot), so committing or
+					// aborting the handle now would invalidate them mid-stream. Leave it open for the
+					// iterators (doneReadTxn() aborts it when the last one finishes) and commit the writes
+					// NOW by replaying them onto a fresh transaction, the same shape as the ERR_TRY_AGAIN
+					// replay below: entries reload through the new transaction and re-resolve against
+					// current state, and conflicts surface through the normal retry ladder. Deferring the
+					// native commit to doneReadTxn() instead (the old LINGERING state) meant anything that
+					// kept the last iterator from finishing cleanly — a hung stream, the long-transaction
+					// monitor's timeout abort — dropped writes the caller had already been told committed.
+					this.writes = this.writes.filter((write) => write); // filter out removed entries
+					if (this.writes.length > 0) {
+						if (!options.transaction) {
+							if (!replayedWritesWarned) {
+								replayedWritesWarned = true;
+								harperLogger.warn?.(
+									`Committing while read iterators are still open: ${this.writes.length} staged write(s) must be re-staged and committed on a second transaction, doubling their write work` +
+										(this.startedFrom ? `, from ${this.startedFrom.resourceName}.${this.startedFrom.method}` : '') +
+										`. Fully consume (or close) iterators before committing to avoid this. Logged once per process.`
+								);
+							}
+							// Deliberately NOT marked isRetry and NOT carrying over the original's onCommit:
+							// audit/txn-log entries batch natively on the transaction they were staged into and
+							// are only durably written by that transaction's commit attempt (an abort discards
+							// them — unlike the ERR_TRY_AGAIN replay below, where the original's FAILED commit
+							// attempt already wrote its log batch). The original handle here never attempts a
+							// commit, so the replayed stagings must re-append their entries into the replay
+							// transaction's own batch — which also installs the replay's own commit hook.
+							const replayTransaction = new RocksTransaction(
+								(this.writes[0].store.store ?? this.db.store) as RocksStore,
+								{ coordinatedRetry: true }
+							);
+							if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
+							this.retries++; // a replay round: commit handlers re-base on the reloaded entries
+							for (const operation of this.writes) {
+								this.save(operation, replayTransaction, true, options);
+							}
+							transaction = replayTransaction;
 						}
-					);
-				txnResolution.next = nextResolution as any;
-			}
-			this.completeMidScopeCommit(options);
-			return txnResolution;
-		};
-		let committed;
-		try {
-			committed = when(
-				completions.length > 0 ? Promise.all(completions) : null,
-				() => {
-					if (completions.length > 0) this.setCommitPhase(false);
-					// The transaction can be aborted underneath us while we are parked in the await above — by the
-					// monitor once the commit phase outlives its grace, or through the multi-store poison chain.
-					// abort() cleared the write set and released the handle, so resuming would commit nothing and
-					// resolve as SUCCESS: the caller is told its write landed when it was dropped, and a write
-					// carrying a blob is left holding an instance whose file was unlinked (issue #2062).
-					if (this.timedOut) throw transactionOpenTooLongError();
-					if (stagedWrites > 0 && this.writes.length === 0 && this.open === TRANSACTION_STATE.CLOSED)
-						throw new ServerError('Transaction was aborted while its commit was waiting on pre-commit work', 500);
-					if (this.writes.length > this.validated) {
-						// check just in case we got any more transactions while we were waiting, if so just recursively continue to finish the additional writes now
-						return this.commit(options);
+						// with options.transaction set this is a retry round — the save loop above already
+						// re-staged the writes into it
+						commitResolution = transaction.commit() as Promise<void>;
+						recordCommitLatency(commitResolution, performance.now());
+						// Write-queue-depth accounting for this replay commit happens uniformly below, via
+						// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
+						// dedicated accounting here (as a prior version of this replay path did) used to leave
+						// write-transaction-queue-depth, the one metric that can observe a commit that never
+						// settles (harper#2001), reading zero for exactly this path.
 					}
-					if (this.hasGatedWrites) {
-						this.hasGatedWrites = false;
-						const gated = this.writes.filter((write) => write?.gated);
-						if (gated.length > 0) return this.waitForPendingKeys(gated, options);
-						const restage = this.writes.filter((write) => write?.restage);
-						if (restage.length > 0) return this.restageHolderWrites(restage, options);
+					// No commit will ever run on the retained handle — the replay above owns these
+					// writes — so this is the only place its write intents can be released. Left in
+					// place, other writers' coordinated-retry commits park on them until the last
+					// iterator finishes (harper#2001). Reads through the handle, including
+					// read-your-own-writes, keep working. Once only: a coordinated-retry or backoff
+					// round re-enters this branch on the same retained handle. Fenced like the other
+					// post-submit steps here: the replay commit is already in flight, so a throw must
+					// not skip onCommit/the chain-store commit below. Optional: rocksdb-js < 2.7
+					// lacks the method.
+					if (!this.writesAbandoned) {
+						this.writesAbandoned = true;
+						try {
+							(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
+						} catch (error) {
+							harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
+						}
 					}
-					// The save loop above can be what opened this transaction's native handle — save() attaches
-					// one when it had none, which is every ImmediateTransaction commit since its getReadTxn
-					// opens none — leaving the local captured before the loop empty while that handle holds
-					// every staged write, for the detach below to drop uncommitted (issue #2288). Only when
-					// the local is empty: a truthy one is what the loop staged into, and the retained-handle
-					// and replay branches below deliberately commit a handle other than this.transaction.
-					if (!transaction) transaction = this.transaction;
-					this.open = TRANSACTION_STATE.CLOSED;
-					// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
-					// coordinatedRetry, or void on a normal commit/abort.
-					let commitResolution: Promise<number | void> | void;
-					// Consume this commit's own read reference — exactly once per read handle: retry
-					// recursions, immediate-commit re-entries, and a second top-level commit() (wrapper
-					// commit after an explicit in-handler commit) must not steal a reference owned by an
-					// outstanding iterator (doneReadTxn() would then never release the native handle).
-					if (!this.baseReadRefConsumed) {
-						this.baseReadRefConsumed = true;
-						this.readTxnsUsed--;
-					}
-					if (this.readTxnsUsed > 0) {
-						// Outstanding iterators still stream through this.transaction — their native iterators
-						// live inside it (GetIterator wraps its write batch + snapshot), so committing or
-						// aborting the handle now would invalidate them mid-stream. Leave it open for the
-						// iterators (doneReadTxn() aborts it when the last one finishes) and commit the writes
-						// NOW by replaying them onto a fresh transaction, the same shape as the ERR_TRY_AGAIN
-						// replay below: entries reload through the new transaction and re-resolve against
-						// current state, and conflicts surface through the normal retry ladder. Deferring the
-						// native commit to doneReadTxn() instead (the old LINGERING state) meant anything that
-						// kept the last iterator from finishing cleanly — a hung stream, the long-transaction
-						// monitor's timeout abort — dropped writes the caller had already been told committed.
+				} else {
+					// no more reads need to be performed, just commit/abort based if there are any writes
+					this.detachOwnedTransaction(); // any further operations operate immediately
+					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
-							if (!options.transaction) {
-								if (!replayedWritesWarned) {
-									replayedWritesWarned = true;
-									harperLogger.warn?.(
-										`Committing while read iterators are still open: ${this.writes.length} staged write(s) must be re-staged and committed on a second transaction, doubling their write work` +
-											(this.startedFrom ? `, from ${this.startedFrom.resourceName}.${this.startedFrom.method}` : '') +
-											`. Fully consume (or close) iterators before committing to avoid this. Logged once per process.`
-									);
-								}
-								// Deliberately NOT marked isRetry and NOT carrying over the original's onCommit:
-								// audit/txn-log entries batch natively on the transaction they were staged into and
-								// are only durably written by that transaction's commit attempt (an abort discards
-								// them — unlike the ERR_TRY_AGAIN replay below, where the original's FAILED commit
-								// attempt already wrote its log batch). The original handle here never attempts a
-								// commit, so the replayed stagings must re-append their entries into the replay
-								// transaction's own batch — which also installs the replay's own commit hook.
-								const replayTransaction = new RocksTransaction(
-									(this.writes[0].store.store ?? this.db.store) as RocksStore,
-									{ coordinatedRetry: true }
-								);
-								if (this.timestamp) replayTransaction.setTimestamp(this.timestamp);
-								this.retries++; // a replay round: commit handlers re-base on the reloaded entries
-								for (const operation of this.writes) {
-									this.save(operation, replayTransaction, true, options);
-								}
-								transaction = replayTransaction;
-							}
-							// with options.transaction set this is a retry round — the save loop above already
-							// re-staged the writes into it
-							commitResolution = transaction.commit() as Promise<void>;
-							recordCommitLatency(commitResolution, performance.now());
-							// Write-queue-depth accounting for this replay commit happens uniformly below, via
-							// trackOutstandingCommit(commitResolution) — see that function's comment. Omitting
-							// dedicated accounting here (as a prior version of this replay path did) used to leave
-							// write-transaction-queue-depth, the one metric that can observe a commit that never
-							// settles (harper#2001), reading zero for exactly this path.
-						}
-						// No commit will ever run on the retained handle — the replay above owns these
-						// writes — so this is the only place its write intents can be released. Left in
-						// place, other writers' coordinated-retry commits park on them until the last
-						// iterator finishes (harper#2001). Reads through the handle, including
-						// read-your-own-writes, keep working. Once only: a coordinated-retry or backoff
-						// round re-enters this branch on the same retained handle. Fenced like the other
-						// post-submit steps here: the replay commit is already in flight, so a throw must
-						// not skip onCommit/the chain-store commit below. Optional: rocksdb-js < 2.7
-						// lacks the method.
-						if (!this.writesAbandoned) {
-							this.writesAbandoned = true;
+							// The transaction was created with coordinatedRetry:true (see
+							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
+							// sentinel (a number) is why commitResolution is typed
+							// Promise<number | void>; it is handled in the resolve callback below.
+							commitResolution = transaction.commit();
+							// Record how long this commit stays outstanding (submit → settle) as a distribution
+							// metric. This is the same clock the overload check uses (trackOutstandingCommit
+							// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
+							// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
+							// conflict retry rejects this promise and issues a fresh commit(), which is tracked as
+							// its own attempt, so recording per attempt matches the overload semantics.
+							// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
+							// Promise<void> here because the widening union defeats flow analysis on the prior
+							// cast assignment; re-assert it — this branch's commit() result is always a Promise.
+							recordCommitLatency(commitResolution as Promise<void>, performance.now());
+							// Write-queue-depth accounting for this commit happens uniformly below, via
+							// trackOutstandingCommit(commitResolution) — see that function's comment. A
+							// transient-conflict retry rejects this promise and issues a fresh commit()
+							// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
+						} else {
 							try {
-								(this.transaction as { abandonWrites?: () => void } | null)?.abandonWrites?.();
-							} catch (error) {
-								harperLogger.warn?.('Failed to release write intents on a retained read transaction', error);
-							}
-						}
-					} else {
-						// no more reads need to be performed, just commit/abort based if there are any writes
-						this.detachOwnedTransaction(); // any further operations operate immediately
-						if (transaction) {
-							this.writes = this.writes.filter((write) => write); // filter out removed entries
-							if (this.writes.length > 0) {
-								// The transaction was created with coordinatedRetry:true (see
-								// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
-								// sentinel (a number) is why commitResolution is typed
-								// Promise<number | void>; it is handled in the resolve callback below.
-								commitResolution = transaction.commit();
-								// Record how long this commit stays outstanding (submit → settle) as a distribution
-								// metric. This is the same clock the overload check uses (trackOutstandingCommit
-								// stamps each attempt at submit), so a rising p99/p999 is the leading indicator for the
-								// "Outstanding write transactions have too long of queue" (503) rejection. A transient-
-								// conflict retry rejects this promise and issues a fresh commit(), which is tracked as
-								// its own attempt, so recording per attempt matches the overload semantics.
-								// commitResolution's declared type (Promise<number | void> | void) doesn't narrow to
-								// Promise<void> here because the widening union defeats flow analysis on the prior
-								// cast assignment; re-assert it — this branch's commit() result is always a Promise.
-								recordCommitLatency(commitResolution as Promise<void>, performance.now());
-								// Write-queue-depth accounting for this commit happens uniformly below, via
-								// trackOutstandingCommit(commitResolution) — see that function's comment. A
-								// transient-conflict retry rejects this promise and issues a fresh commit()
-								// (re-entering here), which trackOutstandingCommit tracks as its own attempt.
-							} else {
-								try {
-									commitResolution = transaction.abort();
-								} catch {
-									// The transaction has uncommitted writes that were already cleared from
-									// this.writes by a concurrent immediate-commit path (e.g. writes made with
-									// an explicitly-reused closed transaction). Those writes are handled by the
-									// concurrent commit, so there is nothing left to do here.
-								}
+								commitResolution = transaction.abort();
+							} catch {
+								// The transaction has uncommitted writes that were already cleared from
+								// this.writes by a concurrent immediate-commit path (e.g. writes made with
+								// an explicitly-reused closed transaction). Those writes are handled by the
+								// concurrent commit, so there is nothing left to do here.
 							}
 						}
 					}
+				}
 
-					if (commitResolution) {
-						// Read the table off the write itself, not this.db, which is whichever table first
-						// claimed this per-database transaction in txnForContext and so can name the wrong
-						// table when a transaction spans more than one table in the same database.
-						trackOutstandingCommit(commitResolution, this.writes[0]?.store, this.startedFrom, transaction);
-						const completions = [];
-						return commitResolution.then(
-							(commitResult) => {
-								if (commitResult === RETRY_NOW_VALUE) {
-									this.retries++;
-									harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
-									// Mark this specific native transaction as a retry so RocksTransactionLogStore
-									// skips re-writing its already-staged txn-log entries (#2).
-									(transaction as RocksTransactionWithRetry).isRetry = true;
-									// Mirror the ERR_BUSY cap/warn policy: non-sourceApply transactions abort
-									// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
-									if (this.retries > MAX_RETRIES) {
-										if (!this.sourceApply) {
-											// giving up: poison and abort the whole linked chain so no link leaks its native
-											// handle / read snapshot — or any unpublished transaction-log position — until GC.
-											this.abortChainAfterRetries(transaction);
-											throw new ServerError(
-												`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
-											);
-										}
-										if (this.retries % MAX_RETRIES === 0) {
-											harperLogger.warn?.(
-												`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} coordinated retries; continuing to retry`
-											);
-										}
+				if (commitResolution) {
+					// Read the table off the write itself, not this.db, which is whichever table first
+					// claimed this per-database transaction in txnForContext and so can name the wrong
+					// table when a transaction spans more than one table in the same database.
+					trackOutstandingCommit(commitResolution, this.writes[0]?.store, this.startedFrom, transaction);
+					const completions = [];
+					return commitResolution.then(
+						(commitResult) => {
+							if (commitResult === RETRY_NOW_VALUE) {
+								this.retries++;
+								harperLogger.debug?.('coordinated retry', transaction.id, this.retries);
+								// Mark this specific native transaction as a retry so RocksTransactionLogStore
+								// skips re-writing its already-staged txn-log entries (#2).
+								(transaction as RocksTransactionWithRetry).isRetry = true;
+								// Mirror the ERR_BUSY cap/warn policy: non-sourceApply transactions abort
+								// at MAX_RETRIES; sourceApply transactions keep retrying with periodic warn.
+								if (this.retries > MAX_RETRIES) {
+									if (!this.sourceApply) {
+										// giving up: poison and abort the whole linked chain so no link leaks its native
+										// handle / read snapshot — or any unpublished transaction-log position — until GC.
+										this.abortChainAfterRetries(transaction);
+										throw new ServerError(
+											`After ${MAX_RETRIES} coordinated retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+										);
 									}
-									return this.commit({ ...options, transaction });
+									if (this.retries % MAX_RETRIES === 0) {
+										harperLogger.warn?.(
+											`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} coordinated retries; continuing to retry`
+										);
+									}
 								}
-								// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
-								// rejection — or a synchronous throw — via logging rather than failing the commit, since
-								// the write is already durable.
-								try {
-									const onCommitResult = (transaction as any).onCommit?.();
-									if (onCommitResult?.then)
-										onCommitResult.catch((error) => harperLogger.warn?.('onCommit handler failed after commit', error));
-								} catch (error) {
-									harperLogger.warn?.('onCommit handler failed after commit', error);
-								}
-								// Gate handles are released as soon as this store's write is durable, before anything
-								// that can throw synchronously (chain commit, blob cleanup) so no throw skips it.
-								this.releaseRecordLocks();
-								if (this.next) {
-									// never forward options.transaction (a retry/replay round's HEAD-store handle) to
-									// the next store — it must commit its own writes through its own transaction
+								return this.commit({ ...options, transaction });
+							}
+							// onCommit may be async (e.g. RocksTransactionLogStore emits 'aftercommit'). Surface a
+							// rejection — or a synchronous throw — via logging rather than failing the commit, since
+							// the write is already durable.
+							try {
+								const onCommitResult = (transaction as any).onCommit?.();
+								if (onCommitResult?.then)
+									onCommitResult.catch((error) => harperLogger.warn?.('onCommit handler failed after commit', error));
+							} catch (error) {
+								harperLogger.warn?.('onCommit handler failed after commit', error);
+							}
+							if (this.next) {
+								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
+								// the next store — it must commit its own writes through its own transaction
+								completions.push(
+									this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
+								);
+							}
+							if (options?.flush) {
+								completions.push(this.writes[0].store.flushed);
+							}
+							if (this.replicatedConfirmation) {
+								// if we want to wait for replication confirmation, we need to track the transaction times
+								// and when replication notifications come in, we count the number of confirms until we reach the desired number
+								const databaseName = this.writes[0].store.rootStore.databaseName;
+								const lastEntry = this.lastConfirmableEntry();
+								if (confirmReplication && lastEntry) {
 									completions.push(
-										this.next.commit(options.transaction ? { ...options, transaction: undefined } : options)
+										confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
 									);
 								}
-								if (options?.flush) {
-									completions.push(this.writes[0].store.flushed);
-								}
-								if (this.replicatedConfirmation) {
-									// if we want to wait for replication confirmation, we need to track the transaction times
-									// and when replication notifications come in, we count the number of confirms until we reach the desired number
-									const databaseName = this.writes[0].store.rootStore.databaseName;
-									const lastEntry = this.lastConfirmableEntry();
-									if (confirmReplication && lastEntry) {
-										completions.push(
-											confirmReplication(databaseName, (lastEntry as any).version, this.replicatedConfirmation)
-										);
-									}
-								}
-								// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
-								// or whose stored record a later write to the same key replaced without an audit entry
-								// keeping its blobs reachable (checked against the final committed record, so a blob the
-								// later write retained survives). Deferred until here so a retry that *would* have
-								// referenced the blob can flip skipped/superseded back to false first.
-								for (const write of this.writes) {
-									if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
-										cleanupUnusedBlobs(
-											write.savedBlobs,
-											collectRetainedFileIds(write.store.getEntry(write.key)?.value)
-										);
-								}
-								// now reset transactions tracking; this transaction be reused and committed again
-								this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
-								this.clearWrites();
-								if (options.doneWriting) this.endScopeOwnership();
-								this.releaseContext(!!options.doneWriting);
-								let txnTime = this.timestamp;
-								this.timestamp = 0; // reset the timestamp as well
-								return Promise.all(completions).then(
-									() => {
-										// Only once the chained store's commit has settled, as on the synchronous path: a
-										// partially failed mid-scope commit must not leave the scope resumable.
-										this.completeMidScopeCommit(options);
-										return {
-											txnTime,
-										};
-									},
-									(error) => {
-										// As on the synchronous path: a completion that failed (a chained store's commit,
-										// a replication confirmation) leaves this commit partly landed, so ownership goes
-										// with it rather than letting a later commit rotate on top.
-										this.endScopeOwnership();
-										throw error;
-									}
-								);
-							},
-							(error) => {
-								// Coordinated transactions surface conflicts as RETRY_NOW (handled in the
-								// resolve branch above) and never reach here with ERR_BUSY. But not every
-								// write transaction is coordinated — a write that reaches save() with no
-								// prior getReadTxn() (immediate/publish/invalidate writes) is created
-								// without coordinatedRetry and still rejects with ERR_BUSY on conflict.
-								// Keep the backoff retry as the fallback for those paths.
-								//
-								// ERR_BUSY: optimistic-transaction write conflict. ERR_TRY_AGAIN: RocksDB kTryAgain —
-								// the transaction's snapshot sequence fell outside the memtable conflict-check window
-								// (max_write_buffer_size_to_maintain), which happens under bulk-ingest bursts such as a
-								// migration full-table copy. Both are transient and retryable. Before ERR_TRY_AGAIN was
-								// retried here, the rejection propagated out of the unawaited onCommit() handler as an
-								// unhandled rejection and the write was silently dropped — records lost mid-copy (#308).
-								if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
-									// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
-									// for future transactions
-									this.retries++;
-									harperLogger.debug?.('retrying', transaction.id, this.retries);
-									// ERR_BUSY and ERR_TRY_AGAIN are both retried by recommitting the SAME native
-									// transaction. ERR_BUSY recovers because the save loop re-writes each key, re-tracking
-									// it at the current sequence. ERR_TRY_AGAIN — a snapshot stranded outside the memtable
-									// conflict-check window after a bulk-ingest flush — used to fail forever on recommit
-									// because the native layer left the stranded snapshot in place; rocksdb-js now resets
-									// the transaction onto a fresh snapshot on the failed TryAgain commit, exactly as it
-									// always did for IsBusy, so the re-run's save loop re-resolves against current state and
-									// converges. Keeping the same transaction means its committedPosition survives the reset
-									// (WAL write-once, rocksdb-js#668) and its onCommit hook stays attached, so the
-									// already-staged change-feed entry publishes only when the retry really commits — no
-									// premature publish, and no fresh-transaction replay that would drop the entry.
-									// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
-									(transaction as RocksTransactionWithRetry).isRetry = true;
-									if (this.retries > 2) {
-										// Transactions applying data from a canonical source of truth (replication peer or
-										// external caching source) must never drop a write on a transient conflict: there is no
-										// re-subscribe / sequence-id-resume path, so a dropped write would leave this node
-										// permanently diverged (harper-pro#348). Such transactions retry without a cap; the source
-										// apply loop serializes commits (backpressure), so contention clears rather than
-										// compounding. Request-path transactions keep the MAX_RETRIES cap and surface a loud error.
-										const neverDropOnConflict = this.sourceApply;
-										if (this.retries > MAX_RETRIES) {
-											if (!neverDropOnConflict) {
-												// giving up: poison and abort the whole linked chain so no link leaks its native
-												// handle / read snapshot until GC.
-												this.abortChainAfterRetries(transaction);
-												throw new ServerError(
-													`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
-												);
-											}
-											// Uncapped retry can otherwise stall silently (debug logging is off in production);
-											// surface periodic visibility into a stalled source-apply commit.
-											if (this.retries % MAX_RETRIES === 0) {
-												harperLogger.warn?.(
-													`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} retries; continuing to retry`
-												);
-											}
-										}
-										// start delaying, back off to try to space out transactions and avoid excessive conflicts
-										return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
-											this.commit({ ...options, transaction })
-										);
-									}
-									return this.commit({ ...options, transaction }); // try again
-								} else {
-									// terminal (non-conflict) failure: release the native handle so it doesn't leak;
-									// usually already released by the failed commit itself, abort for the unexpected
-									// case (same defensive pattern as the retry-exhaustion give-up above)
-									try {
-										transaction.abort();
-									} catch (abortError) {
-										harperLogger.debug?.('aborting transaction after failed commit', abortError);
-									}
-									// A terminal failure is just as final as a success — release the context's
-									// back-reference here too, or transaction.ts's onComplete() (which has no
-									// rejection handler of its own) would leave a long-lived context pinning this
-									// CLOSED wrapper forever.
-									// A failed commit must never be followed by a resumed segment: this generation is
-									// finished and its durability is unknown, so ownership goes with it.
+							}
+							// commit succeeded; clean up files for any writes whose commit-handler took an early-return,
+							// or whose stored record a later write to the same key replaced without an audit entry
+							// keeping its blobs reachable (checked against the final committed record, so a blob the
+							// later write retained survives). Deferred until here so a retry that *would* have
+							// referenced the blob can flip skipped/superseded back to false first.
+							for (const write of this.writes) {
+								if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
+									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+							}
+							// now reset transactions tracking; this transaction be reused and committed again
+							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
+							this.clearWrites();
+							this.releaseRecordLocks();
+							if (options.doneWriting) this.endScopeOwnership();
+							this.releaseContext(!!options.doneWriting);
+							let txnTime = this.timestamp;
+							this.timestamp = 0; // reset the timestamp as well
+							return Promise.all(completions).then(
+								() => {
+									// Only once the chained store's commit has settled, as on the synchronous path: a
+									// partially failed mid-scope commit must not leave the scope resumable.
+									this.completeMidScopeCommit(options);
+									return {
+										txnTime,
+									};
+								},
+								(error) => {
+									// As on the synchronous path: a completion that failed (a chained store's commit,
+									// a replication confirmation) leaves this commit partly landed, so ownership goes
+									// with it rather than letting a later commit rotate on top.
 									this.endScopeOwnership();
-									this.releaseContext(!!options.doneWriting);
-									this.releaseRecordLocks();
 									throw error;
 								}
+							);
+						},
+						(error) => {
+							// Coordinated transactions surface conflicts as RETRY_NOW (handled in the
+							// resolve branch above) and never reach here with ERR_BUSY. But not every
+							// write transaction is coordinated — a write that reaches save() with no
+							// prior getReadTxn() (immediate/publish/invalidate writes) is created
+							// without coordinatedRetry and still rejects with ERR_BUSY on conflict.
+							// Keep the backoff retry as the fallback for those paths.
+							//
+							// ERR_BUSY: optimistic-transaction write conflict. ERR_TRY_AGAIN: RocksDB kTryAgain —
+							// the transaction's snapshot sequence fell outside the memtable conflict-check window
+							// (max_write_buffer_size_to_maintain), which happens under bulk-ingest bursts such as a
+							// migration full-table copy. Both are transient and retryable. Before ERR_TRY_AGAIN was
+							// retried here, the rejection propagated out of the unawaited onCommit() handler as an
+							// unhandled rejection and the write was silently dropped — records lost mid-copy (#308).
+							if (error.code === 'ERR_BUSY' || error.code === 'ERR_TRY_AGAIN') {
+								// if the transaction failed due to concurrent changes, we need to retry. First record this as an increased risk of contention/retry
+								// for future transactions
+								this.retries++;
+								harperLogger.debug?.('retrying', transaction.id, this.retries);
+								// ERR_BUSY and ERR_TRY_AGAIN are both retried by recommitting the SAME native
+								// transaction. ERR_BUSY recovers because the save loop re-writes each key, re-tracking
+								// it at the current sequence. ERR_TRY_AGAIN — a snapshot stranded outside the memtable
+								// conflict-check window after a bulk-ingest flush — used to fail forever on recommit
+								// because the native layer left the stranded snapshot in place; rocksdb-js now resets
+								// the transaction onto a fresh snapshot on the failed TryAgain commit, exactly as it
+								// always did for IsBusy, so the re-run's save loop re-resolves against current state and
+								// converges. Keeping the same transaction means its committedPosition survives the reset
+								// (WAL write-once, rocksdb-js#668) and its onCommit hook stays attached, so the
+								// already-staged change-feed entry publishes only when the retry really commits — no
+								// premature publish, and no fresh-transaction replay that would drop the entry.
+								// Mark the native transaction as a retry so RocksTransactionLogStore skips re-staging entries.
+								(transaction as RocksTransactionWithRetry).isRetry = true;
+								if (this.retries > 2) {
+									// Transactions applying data from a canonical source of truth (replication peer or
+									// external caching source) must never drop a write on a transient conflict: there is no
+									// re-subscribe / sequence-id-resume path, so a dropped write would leave this node
+									// permanently diverged (harper-pro#348). Such transactions retry without a cap; the source
+									// apply loop serializes commits (backpressure), so contention clears rather than
+									// compounding. Request-path transactions keep the MAX_RETRIES cap and surface a loud error.
+									const neverDropOnConflict = this.sourceApply;
+									if (this.retries > MAX_RETRIES) {
+										if (!neverDropOnConflict) {
+											// giving up: poison and abort the whole linked chain so no link leaks its native
+											// handle / read snapshot until GC.
+											this.abortChainAfterRetries(transaction);
+											throw new ServerError(
+												`After ${MAX_RETRIES} retries, unable to commit transaction, transaction is in conflict with ongoing writes`
+											);
+										}
+										// Uncapped retry can otherwise stall silently (debug logging is off in production);
+										// surface periodic visibility into a stalled source-apply commit.
+										if (this.retries % MAX_RETRIES === 0) {
+											harperLogger.warn?.(
+												`Source-applied transaction ${transaction.id} still in conflict after ${this.retries} retries; continuing to retry`
+											);
+										}
+									}
+									// start delaying, back off to try to space out transactions and avoid excessive conflicts
+									return delay(Math.min(this.retries * this.retries, MAX_RETRY_DELAY_MS)).then(() =>
+										this.commit({ ...options, transaction })
+									);
+								}
+								return this.commit({ ...options, transaction }); // try again
+							} else {
+								// terminal (non-conflict) failure: release the native handle so it doesn't leak;
+								// usually already released by the failed commit itself, abort for the unexpected
+								// case (same defensive pattern as the retry-exhaustion give-up above)
+								try {
+									transaction.abort();
+								} catch (abortError) {
+									harperLogger.debug?.('aborting transaction after failed commit', abortError);
+								}
+								// A terminal failure is just as final as a success — release the context's
+								// back-reference here too, or transaction.ts's onComplete() (which has no
+								// rejection handler of its own) would leave a long-lived context pinning this
+								// CLOSED wrapper forever.
+								// A failed commit must never be followed by a resumed segment: this generation is
+								// finished and its durability is unknown, so ownership goes with it.
+								this.endScopeOwnership();
+								this.releaseContext(!!options.doneWriting);
+								this.releaseRecordLocks();
+								throw error;
+							}
+						}
+					);
+				}
+				for (const write of this.writes) {
+					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
+						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+				}
+				this.clearWrites();
+				this.releaseRecordLocks();
+				if (options.doneWriting) this.endScopeOwnership();
+				this.releaseContext(!!options.doneWriting);
+				const txnResolution: CommitResolution = {
+					txnTime: this.timestamp,
+				};
+				if (this.next) {
+					// now run any other transactions
+					options.timestamp = this.timestamp;
+					// as above: the next store must not inherit this store's explicit native transaction
+					let nextResolution;
+					try {
+						nextResolution = this.next?.commit(options.transaction ? { ...options, transaction: undefined } : options);
+					} catch (error) {
+						// A synchronous throw reaches neither rejection handler below, and the head has already
+						// committed — surrender ownership here too, or the scope stays resumable on top of a
+						// half-landed multi-store commit.
+						this.endScopeOwnership();
+						throw error;
+					}
+					if ((nextResolution as any)?.then)
+						return (nextResolution as any)?.then(
+							(nextResolution) => {
+								// Only once the chained store's own commit has SETTLED: rotating first would leave the
+								// scope resumable after a partially failed mid-scope commit.
+								this.completeMidScopeCommit(options);
+								return {
+									txnTime: this.timestamp,
+									next: nextResolution,
+								};
+							},
+							(error) => {
+								// A chained store's commit failed, so this multi-store commit half-landed. Surrender
+								// ownership as the head's own failure branch does: a handler that catches this and
+								// commits again must not rotate on top of it, and must not have the failed link
+								// dropped from the chain before its abort can clean up its blobs.
+								this.endScopeOwnership();
+								throw error;
 							}
 						);
-					}
-					this.releaseRecordLocks();
-					for (const write of this.writes) {
-						if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
-							cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
-					}
-					this.clearWrites();
-					if (options.doneWriting) this.endScopeOwnership();
-					this.releaseContext(!!options.doneWriting);
-					return finishWithoutNativeCommit();
-				},
-				(error) => {
-					this.setCommitPhase(false);
-					this.abort();
-					throw error;
+					txnResolution.next = nextResolution as any;
 				}
-			);
-		} catch (err) {
-			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
-			else this.releaseRecordLocks();
-			// Sync throw from the when() callback (null first-arg path): a restage replay handle may
-			// still hold staged write intents (e.g. deadline throw before transaction.commit()). Only
-			// abort the replay handle tracked in this.replayTransaction — never options.transaction
-			// directly, since ERR_BUSY passes the main native handle there.
-			const replayToAbort = this.replayTransaction;
-			if (replayToAbort) {
-				this.replayTransaction = undefined;
-				abortNativeTransaction(replayToAbort, 'cleanup replay handle after sync callback throw');
+				this.completeMidScopeCommit(options);
+				return txnResolution;
+			},
+			(error) => {
+				this.setCommitPhase(false);
+				this.abort();
+				throw error;
 			}
-			throw err;
-		}
-		// when()'s sync path (null first arg) has no try/catch, so a callback throw — e.g. the 423
-		// from waitForPendingKeys' entry check — propagates without calling reject or abort().
-		// The catch above covers that path; the Promise .catch covers the async (completions > 0) path.
-		if ((committed as any)?.then) {
-			return (committed as Promise<CommitResolution>).catch((err) => {
-				if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
-				else this.releaseRecordLocks();
-				// Async rejection: abort only the restage replay handle if one is live; never abort
-				// options.transaction directly (may be the main handle under ERR_BUSY retry).
-				const replayToAbort = this.replayTransaction;
-				if (replayToAbort) {
-					this.replayTransaction = undefined;
-					abortNativeTransaction(replayToAbort, 'cleanup replay handle after async rejection');
-				}
-				throw err;
-			});
-		}
-		return committed;
+		);
 	}
 	/**
 	 * A successful commit that is NOT the scope's final one leaves the scope still running and still
@@ -1766,17 +1416,12 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	abort(): void {
-		while (this.readTxnsUsed > 0) this.doneReadTxn();
+		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
-		const wakeReject = this.pendingWakeReject;
-		if (wakeReject) {
-			this.pendingWakeReject = undefined;
-			wakeReject(new ServerError('Transaction was aborted while waiting for a record lock', 500));
-		}
 		this.drainCompletions();
 		try {
-			this.releaseRecordLocks();
 			for (const write of this.writes) {
 				if (write?.savedBlobs)
 					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
@@ -1784,6 +1429,7 @@ export class DatabaseTransaction implements Transaction {
 		} finally {
 			this.endScopeOwnership(); // the scope is over; nothing may rotate this instance again
 			this.clearWrites();
+			this.releaseRecordLocks();
 			// A timeout-poisoned abort (abortDueToTimeout()) is the one abort that is NOT "reuse-free":
 			// Resource.ts's dispatcher deliberately keeps joining a `timedOut` transaction (instead of
 			// starting a fresh one) so the rest of the logical operation fails atomically via the
@@ -1939,44 +1585,29 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		super();
 		this.db = db;
 	}
+	_pendingInnerCommit: Promise<any> | undefined;
 	save(...args: any[]): any {
-		const operation = args[0];
+		const transaction = args[0];
 		if (this.isCommitting) {
-			// Pass the caller's native transaction through so super.save() reuses it rather than
-			// creating a fresh one.  Without this, super.save() gets null, hits immediateCommit when
-			// open=CLOSED, and recursively calls commit() → save() without bound (stack overflow on a
-			// restage path that has retries > 0).
-			return super.save(operation, args[1] ?? (null as any), true);
+			// if we are in the commit, do the save and force a reload so we get a read within the transaction.
+			// When the transaction is already CLOSED (a subsequent sequential save after the first committed),
+			// DatabaseTransaction.save() creates a fresh native transaction and commits it immediately
+			// (immediateCommit = true), returning an async Promise. Stash that Promise so the outer save
+			// (isCommitting = false) can return it to addWrite — without this the caller's await save()
+			// resolves before the write is durable (fire-and-forget).
+			const innerResult: any = super.save(transaction, null as any, true);
+			if (innerResult?.then) this._pendingInnerCommit = innerResult;
 		} else {
 			this.isCommitting = true;
-			const commitResult = this.commit();
-			// Synchronously reset the cached timestamp so the next sequential save() call gets a
-			// fresh one.  Without this, a second save() that starts before the async native
-			// T_rock.commit() resolves inherits the first save's txnTime, causing gateLockedWrite to
-			// see entry.version === txnTime and spuriously trigger a restage (and then the
-			// isCommitting=true recursion above).  The async success handler also resets it, but that
-			// fires after the native commit — too late for a rapid sequential save.
-			this._timestamp = 0;
-			const result = when(commitResult, () => {
+			return when(this.commit(), () => {
 				this.isCommitting = false;
+				const pending = this._pendingInnerCommit;
+				this._pendingInnerCommit = undefined;
+				return pending;
 			});
-			if ((result as any)?.then) {
-				return (result as any).then(undefined, (err: any) => {
-					this.isCommitting = false;
-					throw err;
-				});
-			}
-			return result;
 		}
 	}
 
-	clearWrites(): void {
-		super.clearWrites();
-		// Reset open so the next save() goes through the OPEN attach path (which awaits the native
-		// commit) rather than the immediateCommit path (which returns a synchronous result and leaves
-		// the native T_rock.commit() unobserved by the caller's await).
-		if (!this.transaction && !this.timedOut) this.open = TRANSACTION_STATE.OPEN;
-	}
 	declare _timestamp: number;
 	// @ts-expect-error accessor overriding property
 	get timestamp() {
