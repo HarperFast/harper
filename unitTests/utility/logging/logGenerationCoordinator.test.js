@@ -41,6 +41,7 @@ function fakeTransport({ peers = [1, 2], autoRespond = true, quiescenceTimeout =
 				type: coordinator.LOG_GENERATION_CLOSED,
 				request,
 				threadId,
+				logPaths: ['/a/component/own.log'],
 			});
 		},
 		deliverRotation(message) {
@@ -173,12 +174,17 @@ describe('Test log generation coordinator (#1877)', () => {
 
 	it('lets retention proceed only when every peer has released its stale descriptors', async () => {
 		const stalled = fakeTransport({ autoRespond: false });
-		assert.strictEqual(await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 }), false);
+		const unproven = await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 });
+		assert.strictEqual(unproven.released, false);
 		assert.strictEqual(stalled.broadcasts.at(-1).keepIno, 1);
 
 		const answering = fakeTransport();
-		assert.strictEqual(await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 }), true);
+		const proven = await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 });
+		assert.strictEqual(proven.released, true);
 		assert.strictEqual(answering.broadcasts.at(-1).keepDev, 1);
+		// A peer's own registered log paths come back with its answer: a component loads in a worker,
+		// so the thread that runs retention only learns about that log this way.
+		assert.ok(proven.liveLogPaths.has('/a/component/own.log'), 'expected a peer-reported live log path');
 	});
 
 	it('leaves the plain archive authoritative when compression fails', async () => {

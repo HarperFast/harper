@@ -131,11 +131,18 @@ describe('Test log rotation on the write path (#1877)', () => {
 
 	it('rotates from inside a buffered flush without duplicating or losing the batch', async () => {
 		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
-		// The sink starts buffering once it thinks it is spending more than ~2% of the time writing,
-		// which a few very large entries achieve; from then on a flush is a whole batch at once, and
-		// the rotation it triggers writes its notice back through this same sink mid-flush.
-		for (let i = 0; i < 6; i++) logger.error('warming the buffer', 'w'.repeat(200000));
+		// The sink starts buffering once it thinks it is spending more than ~2% of its time writing,
+		// which a handful of multi-megabyte entries achieve on any machine; from then on a flush is a
+		// whole batch at once, and the rotation it triggers writes its notice back through this same
+		// sink while that batch is still in hand.
+		for (let i = 0; i < 6; i++) logger.error('warming the buffer', 'w'.repeat(4000000));
 		for (let i = 0; i < 40; i++) logger.error(`batched-marker-${i}-${'b'.repeat(120)}`);
+		// The precondition, asserted rather than assumed: unbuffered, these would already be on disk,
+		// the batch path would never be exercised, and the assertions below would pass vacuously.
+		assert.ok(
+			!readGenerations(logPath, rotatedDir).includes('batched-marker-39-'),
+			'expected the markers to still be buffered; this test cannot exercise the batch path otherwise'
+		);
 		logger.notify('flushing the batch');
 
 		const contents = await waitForContent(logPath, rotatedDir, 'batched-marker-39-');
