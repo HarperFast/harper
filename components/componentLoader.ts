@@ -11,6 +11,8 @@ import {
 } from 'node:fs';
 import { join, basename, dirname, sep } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
+
+import { isDeployValidating } from '../server/serverHelpers/deployValidationState.ts';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
@@ -56,14 +58,23 @@ import { materializeGlobalSecrets, processComponentEnv } from './componentSecret
 import { PluginModule } from './PluginModule.ts';
 import {
 	getEnvBuiltInComponents,
+	recoverInterruptedActivations,
 	recoverInterruptedComponentExtraction,
 	recoverInterruptedComponentExtractions,
+	unsettleableComponentsFromDisk,
 } from './Application.ts';
 import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+
 let loadedComponents = new Map<any, any>();
+
+// Marks a registry entry as belonging to a deploy validation's throwaway load, so cleanup can tell whether
+// an ordinary load has since ADOPTED that module. Checking "was it already loaded?" before the fact is not
+// enough: ownership changes after that check when a real load reuses the entry while the validation is
+// still running, and deleting it then removes a module a live consumer depends on.
+const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
 const componentLoadTails = new Map<string, Promise<void>>();
@@ -178,14 +189,52 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 export async function loadComponentDirectories(
 	loadedPluginModules?: Map<any, any>,
 	loadedResources?: Resources,
-	readyComponentPromises: ComponentReadyPromises = new WeakMap()
+	readyComponentPromises: ComponentReadyPromises = new WeakMap(),
+	// Settled by boot BEFORE installApplications(), because that installs from the root config and would
+	// otherwise reinstall the previous release over an already-live candidate. `undefined` on a worker,
+	// which never runs that pass — distinct from an empty map, which would claim nothing is unreconciled.
+	interruptedActivationFailures?: Map<string, Error>
 ) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
 	const cycleResources = resources;
-	let failedRecoveries = new Map<string, Error>();
+	const failedRecoveries = new Map<string, Error>(interruptedActivationFailures ?? []);
+	if (!interruptedActivationFailures) {
+		// No verdict from boot means this is a worker, which never runs the recovery pass. It reads the same
+		// evidence instead: a component whose activation could not be settled must not load here either,
+		// since workers are what actually serve it.
+		//
+		// Settlement itself runs here too, not just the read-only check. A worker can be auto-restarted at any
+		// time — including mid-activation — and the legacy pass below then has an unsettled journal in front
+		// of it, which it refuses to restore against: the component stalls instead of loading. Main-thread
+		// startup sequencing does not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
+		// the component preparation lock, which is cross-thread and cross-process, and the pass is idempotent.
+		try {
+			for (const [component, error] of await recoverInterruptedActivations(CF_ROUTES_DIR)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			harperLogger.warn(
+				'Could not settle interrupted component activations on this thread:',
+				errorForLog(error instanceof Error ? error : new Error(String(error)))
+			);
+		}
+		// Plus anything a previous pass recorded as unsettleable, which settlement above leaves in place.
+		try {
+			for (const [component, error] of await unsettleableComponentsFromDisk(CF_ROUTES_DIR)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			harperLogger.warn(
+				'Could not check for unsettled component activations:',
+				errorForLog(error instanceof Error ? error : new Error(String(error)))
+			);
+		}
+	}
 	try {
-		failedRecoveries = await recoverInterruptedComponentExtractions(CF_ROUTES_DIR);
+		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
+			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+		}
 	} catch (error) {
 		const recoveryError = error instanceof Error ? error : new Error(String(error));
 		harperLogger.warn(
@@ -394,6 +443,51 @@ export const loadedPaths = new Map();
 export const mainThreadInitialized = new Map<string, any>();
 
 let errorReporter;
+/**
+ * Forget that a directory was loaded, so a throwaway load does not retain it forever. `loadedPaths` is
+ * keyed by realpath and never pruned, and every deploy validates a candidate under a fresh
+ * `.deploy-staging/<uuid>/` path — so without this the map grows by one dead entry per deploy for the life
+ * of the process.
+ */
+export function forgetLoadedPath(componentDirectory: string): void {
+	let resolved: string | undefined;
+	try {
+		resolved = realpathSync(componentDirectory);
+	} catch {
+		// Already renamed live or discarded; fall through and prune by prefix anyway.
+	}
+	if (resolved) loadedPaths.delete(resolved);
+	// Nested `loadComponent()` calls register plugin and dependency realpaths UNDER the candidate, so
+	// deleting only the root leaves those behind — one dead entry per nested load, per deploy, forever.
+	const prefixes = [componentDirectory, resolved].filter(Boolean) as string[];
+	for (const key of loadedPaths.keys()) {
+		if (typeof key === 'string' && prefixes.some((prefix) => key === prefix || key.startsWith(prefix + sep))) {
+			loadedPaths.delete(key);
+		}
+	}
+}
+
+/**
+ * Release exactly the modules a throwaway validation load registered, as collected by that load's
+ * `collectLoadedModules` set.
+ *
+ * Exactly those, not a before/after diff of the global registry: validations are serialized with each other
+ * but not with ordinary loads, so a deferred real load for another component can register between the two
+ * snapshots — and a diff would then delete that live module.
+ */
+export function forgetLoadedModules(modules: Iterable<any>): void {
+	// Only entries STILL owned by that validation. Validations serialize with each other but not with
+	// ordinary loads, so a real load can adopt a module the validation registered while it is still running —
+	// re-registering the same entry as live — and deleting it afterwards would take a live module with it.
+	for (const module of modules) {
+		if (loadedComponents.get(module) === VALIDATION_OWNED) loadedComponents.delete(module);
+	}
+}
+
+/** So a caller that installs a reporter can put the previous one back when it is done with it. */
+export function getErrorReporter() {
+	return errorReporter;
+}
 export function setErrorReporter(reporter) {
 	errorReporter = reporter;
 }
@@ -1000,8 +1094,17 @@ export async function loadComponent(
 							resources,
 							...componentConfig,
 						})) || extensionModule;
-				loadedComponents.set(extensionModule, true);
-				collectLoadedModules?.add(extensionModule);
+				// `collectLoadedModules` serves two different purposes, so the two decisions below are made
+				// separately. A deferred ORDINARY load passes one too, to await readiness — for that it has to
+				// collect what it loaded whether or not the module was already registered. Only a VALIDATION
+				// restricts its set, because there the set doubles as the cleanup list and a shared
+				// `rest`/`graphql` module already live from a real load must not go on it.
+				const validating = isDeployValidating();
+				if (!validating || !loadedComponents.has(extensionModule)) collectLoadedModules?.add(extensionModule);
+				// Ownership follows the validation CONTEXT, not the presence of a collect set. Keying it on the
+				// set labelled a deferred ordinary load's registrations validation-owned, which would let the
+				// next validation that collects that module delete a live one.
+				loadedComponents.set(extensionModule, validating ? VALIDATION_OWNED : true);
 
 				if (
 					(extensionModule.handleFile ||

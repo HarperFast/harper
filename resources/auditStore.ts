@@ -120,14 +120,23 @@ const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 /**
- * Key of this database's audit retention floor. Its *presence* is what marks the floor trustworthy,
- * which is why this is not the retired `last-removed` key: values stored there were written after the
- * removal, and by only one of the five prune paths, so a legacy value cannot be told apart from one
- * carrying the write-ahead and monotonicity guarantees `raiseAuditFloor` now provides.
+ * Key of this database's audit retention floor — the staleness horizon `getAuditFloor` reports.
+ * Its *presence* is what marks the floor trustworthy, which is why it is not the `last-removed`
+ * marker above: that one is written after its removals and by only one of the five prune paths, so a
+ * value found there cannot be told apart from one carrying the write-ahead and monotonicity
+ * guarantees `raiseAuditFloor` provides. The two coexist deliberately and answer different
+ * questions.
  */
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
 /** No trustworthy floor: the highest possible floor, so every cursor compares as stale. */
 const AUDIT_FLOOR_UNKNOWN = Infinity;
+
+/** Last resort on a detached path: a failing log sink must not itself become an unhandled rejection. */
+function warnContained(message: string, error: unknown) {
+	try {
+		harperLogger.warn(message, error);
+	} catch {}
+}
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
 let timestampErrored = false;
 export function openAuditStore(rootStore) {
@@ -140,7 +149,14 @@ export function openAuditStore(rootStore) {
 			create: false,
 			...AUDIT_STORE_OPTIONS,
 		});
-		if (!auditStore) auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+		if (!auditStore) {
+			// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
+			auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+			// this open path is synchronous, so nothing downstream can own the write's rejection
+			updateLastRemoved(auditStore, 1)?.catch?.((error) =>
+				warnContained('Error initializing the audit log last-removed marker', error)
+			);
+		}
 		const superGetRange = auditStore.getRange.bind(auditStore);
 		auditStore.getRange = function (options) {
 			if (options.values === false) return superGetRange(options); // getKeys shouldn't be modified
@@ -162,6 +178,7 @@ export function openAuditStore(rootStore) {
 		return {
 			remove() {
 				delete deleteCallbacks[tableId];
+				if (auditStore.tableStores[tableId] === table) delete auditStore.tableStores[tableId];
 			},
 		};
 	};
@@ -171,7 +188,15 @@ export function openAuditStore(rootStore) {
 	let pendingCleanupResolve: (() => void) | null = null;
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
-	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	auditStore.auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	let cleanupStopped = false;
+	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
+	// getLastRemoved() reporting a boundary the entries behind it have already been deleted past
+	let pendingLastRemoved: number | undefined;
+	const isRocksAuditStore = auditStore instanceof RocksTransactionLogStore;
+	// A pass yields, so the store can be closed underneath it. Every touch of the environment after a
+	// resume — cursor advance, cursor release, marker write, re-arm — has to re-check.
+	const storeClosing = () => auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing';
 	onStorageReclamation(rootStore.path, (priority) => {
 		cleanupPriority = priority; // update the priority
 		if (priority) {
@@ -182,35 +207,23 @@ export function openAuditStore(rootStore) {
 	/**
 	 * Schedules a pass of the audit cleanup loop. The returned promise fulfills once the pass that
 	 * serves this call has finished, so callers (notably tests) can await completion instead of
-	 * guessing a delay. Two things it does not promise: a pass removes at most
+	 * guessing a delay. Two things it does not promise: an LMDB pass removes at most
 	 * MAX_DELETES_PER_CLEANUP entries before rescheduling itself, so fulfillment means "that pass
 	 * finished", not "the audit log is fully pruned"; and a pass that failed logs and fulfills rather
 	 * than rejecting, since this promise doubles as the loop's serialization barrier.
 	 */
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
 		// Skip audit cleanup/purge in read-only mode
-		if (isReadOnlyMode()) return Promise.resolve();
-		if (auditStore instanceof RocksTransactionLogStore) {
-			const before = Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority);
-			try {
-				raiseAuditFloor(auditStore, before);
-				auditStore.rootStore.purgeLogs({ before });
-			} catch (error) {
-				// Reclamation calls this without awaiting and this branch has no timer loop to reschedule
-				// it, so an escaping throw is an unhandled rejection with no log line. Warn as the LMDB
-				// pass below does; a floor already advanced past a failed purge only over-reports.
-				harperLogger.warn('Error during audit log purge', error);
-			}
-			return Promise.resolve();
-		}
+		if (cleanupStopped || isReadOnlyMode()) return Promise.resolve();
 
-		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
+		if (newCleanupDelay) auditStore.auditCleanupDelay = newCleanupDelay;
 		// the pass we are about to cancel has not started, so its callers are handed over to this one
 		const supersededResolve = pendingCleanupResolve;
 		clearTimeout(pendingCleanup);
 		const resolution = new Promise<void>((resolve) => {
 			pendingCleanupResolve = resolve;
-			pendingCleanup = setTimeout(async () => {
+			const runCleanupPass = async () => {
+				pendingCleanup = null;
 				pendingCleanupResolve = null; // started, so a later schedule can no longer cancel this pass
 				// claim the serialization slot before yielding: assigning it after the await lets every
 				// pass released by the same resolution run concurrently over the same range
@@ -218,70 +231,160 @@ export function openAuditStore(rootStore) {
 				lastCleanupResolution = resolution;
 				await previousCleanup;
 				// query for audit entries that are old
-				if (auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
+				if (cleanupStopped || storeClosing()) {
 					// nothing to clean up and nothing to reschedule, but leaving `resolution` pending would
 					// wedge the loop permanently: it is now the resolution every later pass awaits
 					resolve();
 					return;
 				}
+				const passCleanupPriority = cleanupPriority;
 				let deleted = 0;
+				let lastKey: any;
 				try {
-					// remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
-					const end = Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority);
-					// Probe before raising, so an idle database does not write a floor transaction on every
-					// pass forever. `end` is fixed and audit keys only move forward, so an empty probe means
-					// the loop below finds nothing either.
-					let hasEligibleEntry = false;
-					for (const _entry of auditStore.getRange({ start: 1, end, snapshot: false, limit: 1 }))
-						hasEligibleEntry = true;
-					if (hasEligibleEntry) raiseAuditFloor(auditStore, end);
-					for (const auditRecord of auditStore.getRange({
-						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
-						snapshot: false,
-						end,
-					})) {
+					if (isRocksAuditStore) {
+						const before = Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority);
+						raiseAuditFloor(auditStore, before);
+						auditStore.rootStore.purgeLogs({ before });
+					} else {
+						// Driven explicitly rather than with for-of: this loop suspends on the awaits below, and a
+						// close landing mid-pass closes the env under it. for-of calls next() before the body, so a
+						// check inside the body advances the cursor first — the guard has to precede every next().
+						// remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+						const end = Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority);
+						// Probe before raising, so an idle database does not write a floor transaction on every
+						// pass forever. `end` is fixed and audit keys only move forward, so an empty probe means
+						// the loop below finds nothing either.
+						const entries = auditStore
+							.getRange({
+								start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
+								snapshot: false,
+								end,
+							})
+							[Symbol.iterator]();
 						try {
-							// awaited so a rejection (not just a synchronous throw) is caught here instead of
-							// escaping as an unhandled rejection once a later iteration's promise replaces this one
-							await removeAuditEntry(auditStore, auditRecord);
-						} catch (error) {
-							harperLogger.warn('Error removing audit entry', error);
-						}
-						await new Promise(setImmediate);
-						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
-							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-							auditCleanupDelay = 10; // and keep trying very soon
-							break;
+							// Raised off the first eligible entry rather than a separate probe range: one cursor,
+							// so a pass over an idle database writes no floor at all, and nothing else observing
+							// this range sees an extra advance. Still strictly before any removal — see
+							// raiseAuditFloor.
+							let floorRaised = false;
+							while (!cleanupStopped && !storeClosing()) {
+								const entry = entries.next();
+								if (entry.done) break;
+								const auditRecord = entry.value;
+								if (!floorRaised) {
+									raiseAuditFloor(auditStore, end);
+									floorRaised = true;
+								}
+								try {
+									// awaited so a rejection (not just a synchronous throw) is caught here instead of
+									// escaping as an unhandled rejection once a later iteration's promise replaces this one
+									await removeAuditEntry(auditStore, auditRecord);
+								} catch (error) {
+									harperLogger.warn('Error removing audit entry', error);
+								}
+								lastKey = auditRecord.key;
+								await new Promise(setImmediate);
+								if (++deleted >= MAX_DELETES_PER_CLEANUP) {
+									// limit the amount we cleanup per event turn so we don't use too much memory/CPU
+									auditStore.auditCleanupDelay = 10; // and keep trying very soon
+									break;
+								}
+							}
+						} finally {
+							// for-of released the underlying cursor on break; an explicit loop owes that itself.
+							// Skipped only once the root is closing: releasing a cursor into a closed env reaches
+							// native code, while a retirement that leaves the env open still owes the release.
+							if (!storeClosing()) entries.return?.();
 						}
 					}
 				} catch (error) {
-					// the timer callback is detached, so anything escaping here lands as an unhandled
-					// rejection instead of a log line — and skips the reschedule below with it
+					// a failed scan is a log line, not a retired loop: the bookkeeping and reschedule below
+					// still run
 					harperLogger.warn('Error during audit log cleanup', error);
 				} finally {
-					// resolve() first and unconditionally: a throw from the rest of this block must not
-					// skip settling `resolution` — that's the serialization barrier every later pass
-					// awaits, and never settling it wedges the cleanup loop for the life of the store.
-					resolve();
-					if (deleted === 0) {
-						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
-						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
-						// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
-						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
-						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
-					} else {
-						// if we did delete something, do updates faster
-						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
+					try {
+						if (isRocksAuditStore) {
+							// eligibility only changes on rotation/flush, so the LMDB backoff — keyed on a per-entry
+							// delete count — would only rescan the same segments
+							auditStore.auditCleanupDelay = Math.max(
+								DEFAULT_AUDIT_CLEANUP_DELAY,
+								Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
+							);
+						} else {
+							if (deleted === 0) {
+								// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
+								// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
+								// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
+								// retention over ~248 days grows it past 2^31 where halving it wraps negative.
+								auditStore.auditCleanupDelay = Math.max(
+									1,
+									Math.min(auditStore.auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY)
+								);
+							} else {
+								pendingLastRemoved = lastKey;
+								// and do updates faster
+								if (auditStore.auditCleanupDelay > 100) auditStore.auditCleanupDelay = auditStore.auditCleanupDelay / 2;
+							}
+							// skipped when the store was retired or closed mid-pass — this writes to the audit
+							// store — and carried to the next pass instead, so a failed write is not lost
+							if (pendingLastRemoved !== undefined && !cleanupStopped && !storeClosing()) {
+								const marker = pendingLastRemoved;
+								try {
+									// awaited so the barrier below covers the write, and so a rejection is logged
+									// here rather than escaping the detached timer callback
+									await updateLastRemoved(auditStore, marker);
+									if (pendingLastRemoved === marker) pendingLastRemoved = undefined;
+								} catch (error) {
+									harperLogger.warn('Error recording the last removed audit entry', error);
+								}
+							}
+						}
+					} finally {
+						// settled and re-armed whatever the bookkeeping above threw: this promise is both the
+						// serialization barrier every later pass awaits and the drain barrier
+						// stopAuditCleanup() hands its callers, so never settling it wedges both
+						resolve();
+						// both conjuncts are backstops, not the ownership rule — see DESIGN.md: the arming
+						// sites already restrict Rocks to the last worker
+						if (
+							!cleanupStopped &&
+							!storeClosing() &&
+							(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))
+						) {
+							scheduleAuditCleanup();
+						}
 					}
-					scheduleAuditCleanup();
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
-			}, auditCleanupDelay).unref();
+			};
+			pendingCleanup = setTimeout(() => {
+				// nothing owns the timer callback's promise, so anything the pass lets escape — including a
+				// throw from the logging inside its own containment — would land as an unhandled rejection
+				runCleanupPass().catch((error) => {
+					warnContained('Error during audit log cleanup', error);
+					resolve();
+				});
+			}, auditStore.auditCleanupDelay).unref();
 		});
 		if (supersededResolve) resolution.then(supersededResolve);
 		return resolution;
 	}
 	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
+	/**
+	 * Retires the cleanup loop for good, and returns a drain barrier: the promise settles once the pass
+	 * that was already running has finished. Retirement alone only stops the loop admitting more work —
+	 * a pass suspended inside `await removeAuditEntry()` still has a write queued whose DBI the native
+	 * writer consumes later, so a caller that closes or unlinks stores must await this first. The
+	 * synchronous teardown paths cannot; the in-pass status checks are what covers them.
+	 */
+	auditStore.stopAuditCleanup = function (): Promise<void> {
+		cleanupStopped = true;
+		clearTimeout(pendingCleanup);
+		pendingCleanup = null;
+		pendingCleanupResolve?.();
+		pendingCleanupResolve = null;
+		return lastCleanupResolution ?? Promise.resolve();
+	};
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup();
 	}
@@ -319,6 +422,18 @@ export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Pro
 	return tombstoneRemoval ? Promise.all([tombstoneRemoval, auditRemoval]).then(() => undefined) : auditRemoval;
 }
 
+function updateLastRemoved(auditStore, lastKey) {
+	FLOAT_TARGET[0] = lastKey;
+	return auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+}
+
+export function getLastRemoved(auditStore) {
+	const lastRemoved = auditStore.get(Symbol.for('last-removed'));
+	if (lastRemoved) {
+		FLOAT_BUFFER.set(lastRemoved);
+		return FLOAT_TARGET[0];
+	}
+}
 /**
  * Read the recorded floor, normalizing anything we cannot trust to AUDIT_FLOOR_UNKNOWN. Reads bytes
  * rather than going through the store's value decoder, which would read these eight raw float bytes
@@ -375,9 +490,19 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 			: transactionOwner.transactionSync(() => {
 					const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
 					const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
+					// `put` rather than `putSync`, and inside the transaction: lmdb's putSync is itself
+					// `put(...) === SYNC_PROMISE_SUCCESS`, so it drops whatever put returns — and a put that
+					// hands back a real rejection (a replaced one, as the marker-failure fixtures install)
+					// leaks it with no owner. Within a write transaction put writes synchronously and returns
+					// an already-resolved sentinel, so the value is visible immediately either way and this
+					// only takes ownership of the failure case.
 					// asBinary: a legacy standalone audit root's encoder has no Uint8Array passthrough, so raw
 					// bytes would reach createAuditEntry and throw. This bypasses both encoders.
-					if (floor !== undefined) auditStore.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
+					if (floor !== undefined) {
+						auditStore
+							.put(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)))
+							?.catch?.((error) => warnContained('Error writing the audit retention floor', error));
+					}
 					return true;
 				});
 	if (committed !== true) throw new Error('The audit retention floor transaction did not commit');
@@ -473,7 +598,7 @@ export function establishAuditFloor(auditStore: any): void {
 		// Never fail a database open over this. An unrecorded floor already reads as unknown, which is
 		// the fail-closed answer; aborting startup instead would turn a metadata write failure into an
 		// outage. The next open retries.
-		harperLogger.warn('Could not establish the audit retention floor; it will read as unknown', error);
+		warnContained('Error initializing the audit retention floor', error);
 	}
 }
 

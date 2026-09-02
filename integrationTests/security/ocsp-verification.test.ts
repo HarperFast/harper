@@ -127,6 +127,76 @@ suite(
 			});
 		});
 
+		test('should accept valid certificate on a resumed TLS session with OCSP check', async () => {
+			// Discriminates a working issuer resolver from a broken one: without the issuer, fail-closed
+			// would turn this valid resumed session into a 401 exactly like the revoked case below.
+			const agent = new https.Agent({ keepAlive: false, maxCachedSessions: 10 });
+			const request = () =>
+				new Promise<{ status: number; reused: boolean }>((resolve, reject) => {
+					const req = https.request(
+						`https://${ctx.harper.hostname}:${HTTPS_PORT}/`,
+						{
+							agent,
+							cert: readFileSync(ocspResponder!.certs.valid.cert),
+							key: readFileSync(ocspResponder!.certs.valid.key),
+							ca: readFileSync(ocspResponder!.certs.ca),
+							rejectUnauthorized: false,
+						},
+						(res) => {
+							const reused = (res.socket as import('node:tls').TLSSocket).isSessionReused();
+							res.resume();
+							res.on('end', () => resolve({ status: res.statusCode!, reused }));
+						}
+					);
+					req.on('error', (err: any) => reject(new Error(`Request failed: ${err.code || err.message}`)));
+					req.end();
+				});
+			try {
+				const first = await request();
+				ok(first.status !== 401, `Expected valid cert to be accepted on the full handshake, got: ${first.status}`);
+				const second = await request();
+				ok(second.reused, 'Second connection should have resumed the TLS session');
+				ok(second.status !== 401, `Expected valid cert to be accepted on the resumed session, got: ${second.status}`);
+			} finally {
+				agent.destroy();
+			}
+		});
+
+		test('should reject revoked certificate on a resumed TLS session with OCSP check', async () => {
+			// A resumed session carries no client chain, so the issuer must come from Harper's own CA set
+			// (nodejs/node#65579 has the same effect on every connection on Node 26.8.0/26.8.1).
+			const agent = new https.Agent({ keepAlive: false, maxCachedSessions: 10 });
+			const request = () =>
+				new Promise<{ status: number; reused: boolean }>((resolve, reject) => {
+					const req = https.request(
+						`https://${ctx.harper.hostname}:${HTTPS_PORT}/`,
+						{
+							agent,
+							cert: readFileSync(ocspResponder!.certs.revoked.cert),
+							key: readFileSync(ocspResponder!.certs.revoked.key),
+							ca: readFileSync(ocspResponder!.certs.ca),
+							rejectUnauthorized: false,
+						},
+						(res) => {
+							const reused = (res.socket as import('node:tls').TLSSocket).isSessionReused();
+							res.resume();
+							res.on('end', () => resolve({ status: res.statusCode!, reused }));
+						}
+					);
+					req.on('error', (err: any) => reject(new Error(`Request failed: ${err.code || err.message}`)));
+					req.end();
+				});
+			try {
+				const first = await request();
+				ok(first.status === 401, `Expected 401 for revoked cert on the full handshake, got: ${first.status}`);
+				const second = await request();
+				ok(second.reused, 'Second connection should have resumed the TLS session');
+				ok(second.status === 401, `Expected 401 for revoked cert on the resumed session, got: ${second.status}`);
+			} finally {
+				agent.destroy();
+			}
+		});
+
 		test('should cache OCSP responses and serve valid certificate after responder stops', async () => {
 			const validCert = readFileSync(ocspResponder!.certs.valid.cert);
 			const validKey = readFileSync(ocspResponder!.certs.valid.key);

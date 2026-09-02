@@ -5,7 +5,6 @@ import { assertTableTargetNotBranched } from './branchGuard.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
-import { once } from 'node:events';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -64,7 +63,7 @@ server.knownGraphQLDirectives.push(
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	let initialLoadComplete = false;
-	const entryHandler = scope.handleEntry(async (entry) => {
+	scope.handleEntry(async (entry) => {
 		if (initialLoadComplete) {
 			scope.requestRestart();
 			return;
@@ -81,20 +80,51 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			entry.urlPath,
 			entry.absolutePath,
 			scope.resources,
-			scope.applicationScope?.branches
+			scope.applicationScope?.branches,
+			scope.logger
 		);
 	});
-	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
-	initialLoadPromise.then(() => {
+	// Settles with the load's real outcome, so a diagnosed failure is not left for the loader's watchdog
+	// to report while it holds the plugin-wide load lock (#1917). The flag advances either way: a schema
+	// corrected afterwards belongs on the restart path.
+	return scope.waitForInitialLoads().finally(() => {
 		initialLoadComplete = true;
 	});
-	return initialLoadPromise;
 }
 
-async function processGraphQLSchema(gqlContent, urlPath, filePath, resources, branches?: Map<string, unknown>) {
+function describeLocation(loc: { startToken?: { line: number; column: number } } | undefined) {
+	const token = loc?.startToken;
+	return token ? `line ${token.line}, column ${token.column}` : 'an unknown location';
+}
+
+async function processGraphQLSchema(
+	gqlContent,
+	urlPath,
+	filePath,
+	resources,
+	branches?: Map<string, unknown>,
+	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger
+) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
-	const { parse, Source, Kind } = await import('graphql');
-	const ast = parse(new Source(gqlContent.toString(), filePath));
+	const { parse, Source, Kind, specifiedDirectives } = await import('graphql');
+	let ast;
+	try {
+		ast = parse(new Source(gqlContent.toString(), filePath));
+	} catch (error) {
+		// GraphQLError.toString() is the only rendering carrying the source excerpt and caret; `.stack`,
+		// which the logger prefers, points at Harper internals. It stays out of the thrown message: a
+		// failed component's ErrorResource message becomes the REST problem title.
+		logger.error?.(`Invalid GraphQL schema in ${filePath}:\n${error}`);
+		throw new Error(`Invalid GraphQL schema${urlPath ? ` at ${urlPath}` : ''}`);
+	}
+	// Spec-defined and schema-declared directives are not unknown just because Harper ignores them.
+	const recognizedDirectives = new Set([
+		...server.knownGraphQLDirectives,
+		...specifiedDirectives.map((directive) => directive.name),
+	]);
+	for (const definition of ast.definitions) {
+		if (definition.kind === Kind.DIRECTIVE_DEFINITION) recognizedDirectives.add(definition.name.value);
+	}
 	const types = new Map();
 	const tables = [];
 	// we begin by iterating through the definitions in the AST to get the types and convert them
@@ -176,7 +206,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources, br
 					for (const directive of field.directives) {
 						const directiveName = directive.name.value;
 						if (directiveName === 'primaryKey') {
-							if (hasPrimaryKey) console.warn('Can not define two attributes as a primary key at', directive.loc);
+							if (hasPrimaryKey)
+								logger.warn?.(
+									`Can not define two attributes as a primary key, at ${describeLocation(directive.loc)} in ${filePath}`
+								);
 							else {
 								property.isPrimaryKey = true;
 								hasPrimaryKey = true;
@@ -252,8 +285,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources, br
 									authorizedRoles.push((arg.value as StringValueNode).value);
 								}
 							}
-						} else if (server.knownGraphQLDirectives.includes(directiveName)) {
-							console.warn(`@${directiveName} is an unknown directive, at`, directive.loc);
+						} else if (!recognizedDirectives.has(directiveName)) {
+							logger.warn?.(
+								`@${directiveName} is an unknown field directive, at ${describeLocation(directive.loc)} in ${filePath}`
+							);
 						}
 					}
 					// @embed targets a vector column and auto-indexes it with HNSW; resolved after all
@@ -310,7 +345,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources, br
 		} else if (property.type === 'array') connectPropertyType(property.elements);
 		else if (!PRIMITIVE_TYPES.includes(property.type)) {
 			if (getWorkerIndex() === 0)
-				console.error(
+				logger.error?.(
 					`The type ${property.type} is unknown at line ${property.location.line}, column ${property.location.column}, in ${filePath}`
 				);
 		}
@@ -337,11 +372,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources, br
 		try {
 			assertTableTargetNotBranched(branches, typeDef.database, typeDef.table, 'a GraphQL @table directive');
 		} catch (error) {
-			// Reported and skipped rather than thrown: a rejection here is a pending operation of the
-			// entry handler, and `Scope` never emits `initialLoadComplete` once one rejects, so the
-			// plugin would stall to its timeout and fail with a message naming nothing about branching.
-			// Skipping leaves the base schema untouched, which is the point of the refusal.
-			harperLogger.error?.((error as Error).message);
+			// Reported and skipped rather than thrown: the refusal is scoped to this one branched table,
+			// and skipping leaves the base schema untouched, which is the point of it. The rest of the
+			// schema — and the rest of the application — still loads.
+			logger.error?.((error as Error).message);
 			continue;
 		}
 		typeDef.tableClass = table(typeDef);

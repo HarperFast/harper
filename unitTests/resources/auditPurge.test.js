@@ -48,11 +48,14 @@ describe('purgeAgedLogs', () => {
 			// baseline is what a database that has provably pruned nothing carries. An absent floor would
 			// instead mean "unknown", which a prune deliberately leaves alone.
 			getBinary: () => new Uint8Array(Float64Array.of(1).buffer),
-			putSync(_key, value) {
+			// `put`, as updateAuditFloor calls inside its write transaction; lmdb returns an
+			// already-resolved sentinel there, so the write is still synchronous
+			put(_key, value) {
 				// the real write wraps the bytes in lmdb's asBinary(), which bypasses both engines' encoders
 				const wrapped = Object.values(value)[0] ?? value;
 				const bytes = Uint8Array.from(Object.values(wrapped));
 				store.floorWrites.push(new Float64Array(bytes.buffer)[0]);
+				return Promise.resolve(true);
 			},
 		};
 		return store;

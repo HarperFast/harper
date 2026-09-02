@@ -98,7 +98,7 @@ describe('certificateVerification/index.ts', function () {
 		});
 
 		describe('insufficient certificate chain', function () {
-			it('should return no-issuer-cert when chain length < 2', async function () {
+			it('should reject under fail-closed when no issuer is in the chain or the trusted authorities', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: true },
@@ -109,7 +109,7 @@ describe('certificateVerification/index.ts', function () {
 				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
 
 				assert.deepStrictEqual(result, {
-					valid: true,
+					valid: false,
 					status: 'no-issuer-cert',
 					method: 'disabled',
 				});
@@ -119,9 +119,9 @@ describe('certificateVerification/index.ts', function () {
 				assert.strictEqual(verifyOCSPStub.called, false);
 			});
 
-			it('should return no-issuer-cert when first cert has no issuer', async function () {
+			it('should allow under fail-open when no issuer is in the chain or the trusted authorities', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
-					failureMode: 'fail-closed',
+					failureMode: 'fail-open',
 					crl: { enabled: true },
 					ocsp: { enabled: true },
 				});
@@ -134,6 +134,21 @@ describe('certificateVerification/index.ts', function () {
 
 				assert.strictEqual(result.status, 'no-issuer-cert');
 				assert.strictEqual(result.valid, true);
+				assert.strictEqual(verifyCRLStub.called, false);
+				assert.strictEqual(verifyOCSPStub.called, false);
+			});
+
+			it('should report disabled rather than reject when both methods are disabled', async function () {
+				getCachedCertificateVerificationConfigStub.returns({
+					failureMode: 'fail-closed',
+					crl: { enabled: false },
+					ocsp: { enabled: false },
+				});
+				extractCertificateChainStub.returns([{ cert: Buffer.from('cert1'), issuer: null }]);
+
+				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
+
+				assert.deepStrictEqual(result, { valid: true, status: 'disabled', method: 'disabled' });
 			});
 		});
 
