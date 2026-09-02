@@ -45,8 +45,6 @@ parentPort
 					parentPort.postMessage({ type: 'incremented', intervals });
 					break;
 				}
-				case 'shutdown':
-					process.exit(0);
 			}
 		} catch (error) {
 			parentPort.postMessage({

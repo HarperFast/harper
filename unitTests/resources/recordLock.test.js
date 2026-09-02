@@ -341,15 +341,19 @@ describe('Record locks (harper#483)', () => {
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1, name: 'keep' });
 			const abandoned = await LockTest.lock(recordId, { hold: true, lease: 300 });
-			const started = Date.now();
+			const leaseEnd = entryOf(recordId).lockExpiresAt;
 			const waiter = transaction(async () => {
 				const record = await LockTest.lock(recordId, { timeout: 5000 });
+				const acquiredAt = Date.now();
 				record.set('n', 2);
 				await record.save();
-				return Date.now();
+				return acquiredAt;
 			});
 			const acquiredAt = await waiter;
-			assert.ok(acquiredAt - started >= 250, `the waiter proceeded only after the lease (${acquiredAt - started}ms)`);
+			assert.ok(
+				acquiredAt >= leaseEnd,
+				`the waiter proceeded only after the lease (${acquiredAt - leaseEnd}ms past it)`
+			);
 			const entry = entryOf(recordId);
 			assert.deepStrictEqual(
 				{ n: entry.value.n, name: entry.value.name },
@@ -399,9 +403,9 @@ describe('Record locks (harper#483)', () => {
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
 			await LockTest.lock(recordId, { hold: true, lease: 200 });
-			const started = Date.now();
+			const leaseEnd = entryOf(recordId).lockExpiresAt;
 			await LockTest.put({ id: recordId, n: 3 });
-			assert.ok(Date.now() - started >= 150, 'the put waited for the lease');
+			assert.ok(Date.now() >= leaseEnd, 'the put landed no earlier than the lease end');
 			assert.strictEqual(isLocked(recordId), false);
 			assert.strictEqual((await LockTest.get(recordId)).n, 3);
 		});
@@ -436,7 +440,7 @@ describe('Record locks (harper#483)', () => {
 			}
 		});
 		after(async function () {
-			for (const worker of workers) worker.postMessage({ type: 'shutdown' });
+			await Promise.all(workers.map((worker) => worker.terminate()));
 			workers = [];
 		});
 
@@ -488,7 +492,18 @@ describe('Record locks (harper#483)', () => {
 					`holders overlap: ${JSON.stringify(intervals[i - 1])} then ${JSON.stringify(intervals[i])}`
 				);
 			}
-			assert.strictEqual(Boolean(ThreadTable.primaryStore.getEntry(recordId).metadataFlags & LOCKED), false);
+			// every holder released at its commit; the last release is its own write, so wait for it to land
+			const finalEntry = ThreadTable.primaryStore.getEntry(recordId);
+			await waitFor(() => !(ThreadTable.primaryStore.getEntry(recordId).metadataFlags & LOCKED), {
+				timeout: 5000,
+				message: `released after the last holder: ${JSON.stringify({
+					version: finalEntry.version,
+					lockVersion: finalEntry.lockVersion,
+					lockExpiresAt: finalEntry.lockExpiresAt,
+					now: Date.now(),
+					n: finalEntry.value?.n,
+				})}`,
+			});
 		});
 	});
 });

@@ -131,11 +131,10 @@ suite(`record locks serialize across ${WORKERS} workers`, { skip: skipSuite }, (
 		strictEqual(held.status, 200, `held: ${JSON.stringify(held.body)}`);
 		ok(held.body.lockVersion > 0, 'the lock generation is on the record');
 
-		const started = Date.now();
 		const write = await put(id, { n: 2, holders: 1 });
 		ok(write.status === 200 || write.status === 204, `the write landed (${write.status})`);
-		ok(write.elapsed >= LEASE - 200, `the write waited for the lease (${write.elapsed}ms)`);
-		ok(Date.now() - started < LEASE + 5_000, 'and proceeded promptly after it');
+		ok(Date.now() >= held.body.lockExpiresAt, `the write landed no earlier than the lease end (${write.elapsed}ms)`);
+		ok(write.elapsed < LEASE + 5_000, 'and proceeded promptly after it');
 
 		const after = await get(id);
 		strictEqual(after.status, 200, 'the record survived the abandoned lock');
