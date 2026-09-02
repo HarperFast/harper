@@ -484,19 +484,28 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 	const transactionOwner = auditStore?.rootStore ?? auditStore;
 	if (!transactionOwner?.transactionSync)
 		throw new Error('Cannot record the audit retention floor: this database has no audit store');
-	// `=== true` because a RocksDB transactionSync swallows an aborted transaction and returns
-	// undefined rather than throwing (see RecordEncoder.saveStructures, which relies on the same
-	// contract). Treating that as success is the fail-open this floor exists to close: the caller
-	// would go on to prune with no durable record that it did. The LMDB branch additionally reads its
-	// write back, since its containment cannot distinguish a failing put from a replaced one; the
-	// RocksDB branch needs no read-back because a native putSync failure throws out of the callback.
+	// Both branches read their own write back and report `false` on mismatch, and the caller below
+	// demands an explicit `true`. Neither half of that is belt-and-braces:
+	//  - a RocksDB transactionSync swallows an aborted transaction and returns undefined rather than
+	//    throwing (see RecordEncoder.saveStructures, which relies on the same contract), so a missing
+	//    `=== true` reads an uncommitted write as success;
+	//  - and a write that fails without throwing would otherwise be indistinguishable from one that
+	//    landed, which is the fail-open this floor exists to close — a caller that prunes against a
+	//    floor never recorded. The LMDB half provably needs it (its containment for a replaced `put`
+	//    cannot tell a rejection from a failure); the RocksDB half is verified the same way rather
+	//    than resting on the assumption that a native putSync always throws.
+	// Reads inside a write transaction see that transaction's own writes on both engines (measured),
+	// so the read-back observes what commit will make durable.
 	const committed =
 		auditStore instanceof RocksTransactionLogStore
 			? transactionOwner.transactionSync(
 					(txn) => {
 						const stored = txn.getBinarySync(AUDIT_FLOOR_KEY);
 						const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
-						if (floor !== undefined) txn.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
+						if (floor !== undefined) {
+							txn.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
+							if (decodeAuditFloor(txn.getBinarySync(AUDIT_FLOOR_KEY)) !== floor) return false;
+						}
 						return true;
 					},
 					{ retryOnBusy: true }
@@ -516,10 +525,6 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 						auditStore
 							.put(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)))
 							?.catch?.((error) => warnContained('Error writing the audit retention floor', error));
-						// Read back inside the transaction, because the containment above cannot tell a
-						// replaced put from a failing one and must not let either report a commit: a caller
-						// that prunes on a floor never recorded is the fail-open this whole function guards.
-						// Reads in an LMDB write transaction see its own writes, so this is the durable value.
 						if (decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY)) !== floor) return false;
 					}
 					return true;
