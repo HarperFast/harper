@@ -861,7 +861,9 @@ export function setReadTxnExpiration(ms: number) {
 }
 export function setNextEncoding(timestamp: number, metadata: number, expiresAt = -1, nodeId = -1, residencyId = 0) {
 	timestampNextEncoding = timestamp;
-	metadataInNextEncoding = metadata;
+	// A copied record carries no lock generation: locks are node-local and leased, and only
+	// recordUpdater can supply the fields the bit requires.
+	metadataInNextEncoding = metadata & ~LOCKED;
 	expiresAtNextEncoding = expiresAt;
 	nodeIdAtNextEncoding = nodeId;
 	residencyIdAtNextEncoding = residencyId;

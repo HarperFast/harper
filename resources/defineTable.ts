@@ -28,6 +28,7 @@
 import { table, type Table } from './databases.ts';
 import { attributeToFragment } from './jsonSchemaTypes.ts';
 import type { RecordLockOptions } from './recordLock.ts';
+import type { WritableRecord } from './ResourceInterface.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Field model — phantom-typed Field. Flags are set via GETTER PROPERTIES (no call):
@@ -236,7 +237,7 @@ interface TypedVerbs<S extends Shape> {
 	post(record: InsertOf<S>, context?: any): MaybePromise<unknown>;
 	patch(id: IdOf<S>, changes: PatchOf<S>, context?: any): MaybePromise<unknown>;
 	update(id: IdOf<S>, updates?: PatchOf<S>, context?: any): MaybePromise<InstanceOf<S>>;
-	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<InstanceOf<S>>;
+	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<WritableRecord<InstanceOf<S>>>;
 	delete(id: IdOf<S>, context?: any): MaybePromise<unknown>;
 	search(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
 	query(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;

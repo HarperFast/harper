@@ -7,6 +7,7 @@ import {
 	LOCKED,
 	LOCKED_WRITE_WAIT_MS,
 	LOCK_VERSION_STEP,
+	isLockedLive,
 	lockGateVerdict,
 	waitForRecordUnlock,
 	type RecordLockHandle,
@@ -465,10 +466,9 @@ export class DatabaseTransaction implements Transaction {
 	committing = false;
 	commitPhaseTicks = 0;
 	declare commitChainHead?: DatabaseTransaction;
-	// Transaction-scoped record locks by store and key identity (harper#483): holder writes pass the
-	// lock gate, and every commit or abort of this link releases them.
+	// Transaction-scoped record locks by store and key identity (harper#483); released by every commit
+	// or abort of this link.
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
-	// When a commit that is waiting for a record lock gives up (423), fixed at the first wait.
 	declare lockWaitDeadline?: number;
 	declare lockWait?: { cancel: () => void };
 
@@ -500,9 +500,11 @@ export class DatabaseTransaction implements Transaction {
 		for (const locksForStore of recordLocks.values()) {
 			for (const handle of locksForStore.values()) {
 				releases.push(
-					handle
-						.release()
-						.catch((error) => harperLogger.warn?.('Failed to release a record lock after the transaction', error))
+					handle.release().catch((error) => {
+						try {
+							harperLogger.warn?.('Failed to release a record lock after the transaction', error);
+						} catch {}
+					})
 				);
 			}
 		}
@@ -553,7 +555,11 @@ export class DatabaseTransaction implements Transaction {
 		let until = this.lockWaitDeadline;
 		for (const write of gated) if (write.entry.lockExpiresAt < until) until = write.entry.lockExpiresAt;
 		this.setCommitPhase(true);
-		const waits = gated.map((write) => waitForRecordUnlock(write.store, writeKeyId(write.key), until));
+		const waits = gated.map((write) =>
+			waitForRecordUnlock(write.store, writeKeyId(write.key), until, () =>
+				isLockedLive(write.store.getEntry(write.key))
+			)
+		);
 		this.lockWait = { cancel: () => waits.forEach((wait) => wait.cancel()) };
 		return Promise.race(waits.map((wait) => wait.promise)).then(() => {
 			this.lockWait = undefined;
@@ -573,9 +579,8 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * After the wait, re-stage the whole write set on a fresh native handle with a fresh timestamp. The
-	 * gated writes staged nothing, so no write intent of theirs could hold up the release they waited
-	 * for; the first round's staged writes and log batch are discarded with their handle.
+	 * After the wait, re-stage the whole write set on a fresh native handle: the first round's staged
+	 * writes and log batch are discarded with the old one.
 	 */
 	private waitForRecordUnlocks(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
 		return this.parkForRecordUnlocks(gated).then((releasedVersion) => {
@@ -1470,6 +1475,10 @@ export class DatabaseTransaction implements Transaction {
 								// finished and its durability is unknown, so ownership goes with it.
 								this.endScopeOwnership();
 								this.releaseContext(!!options.doneWriting);
+								// The record locks this scope holds go with it too; their conditional UNLOCK writes
+								// are independent of the failed handle, and the original error is what surfaces.
+								const releasing = this.releaseRecordLocks();
+								if (releasing) return releasing.then(() => Promise.reject(error));
 								throw error;
 							}
 						}

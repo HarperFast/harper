@@ -696,8 +696,8 @@ export function makeTable(options) {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
-		#lockHandle?: RecordLockHandle; // a held (node-owned) record lock this instance carries (harper#483)
-		#lockWritable?: boolean; // returned by lock(): save() stages the changes made since on its own
+		#lockHandle?: RecordLockHandle; // a held ({ hold: true }) record lock
+		#lockWritable?: boolean;
 		declare getProperty: (name: string) => any;
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
@@ -2443,6 +2443,42 @@ export function makeTable(options) {
 			}
 			return Promise.resolve(false);
 		}
+		/**
+		 * Crash-recovery replay of an UNLOCK entry (replayLogs.ts): the primary store's WAL is off, so a
+		 * release the flush had not reached would otherwise leave the row locked for a lease. Applied only
+		 * when the row is still exactly the state that UNLOCK released, so a phantom entry from a failed
+		 * conditional commit never clears a later generation.
+		 */
+		_writeUnlockReplay(id: Id, version: number, previousVersion: number) {
+			const transaction = txnForContext(this.getContext());
+			transaction.addWrite({
+				key: id,
+				store: primaryStore,
+				skipReplicationConfirmation: true,
+				commit: (_txnTime: number, existing: Entry | undefined, _retry: boolean, nativeTransaction: any) => {
+					if (!existing || !(existing.metadataFlags & LOCKED) || existing.version !== previousVersion) return;
+					updateRecord(
+						id,
+						existing.value ?? null,
+						existing,
+						version,
+						existing.metadataFlags & (INVALIDATED | EVICTED | LOCAL_ONLY),
+						true,
+						{
+							expiresAt: existing.expiresAt,
+							residencyId: existing.residencyId,
+							additionalAuditRefs: existing.additionalAuditRefs,
+							transaction: nativeTransaction,
+							tableToTrack: null,
+							unlock: true,
+						},
+						'unlock',
+						false,
+						null
+					);
+				},
+			});
+		}
 		static operation(operation, context) {
 			operation.table ||= tableName;
 			operation.schema ||= databaseName;
@@ -3412,7 +3448,8 @@ export function makeTable(options) {
 						return;
 					}
 					updateIndices(id, existingRecord, null, transaction && { transaction });
-					if (audit || trackDeletes) {
+					// a live generation stays on a tombstone: removing the row would remove the lock with it
+					if (audit || trackDeletes || isLockedLive(existingEntry)) {
 						updateRecord(
 							id,
 							null,
@@ -4945,6 +4982,9 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry: this.#entry,
 				nodeName: (context as any)?.nodeName,
+				// a message rewrites the record's version, which would reorder a holder's later write below it
+				gateOnLock: options?.nodeId == null && id !== null,
+				lockHandle: this.#lockHandle,
 				validate: () => {
 					if (!(context as any)?.source) {
 						transaction.checkOverloaded();
@@ -6386,6 +6426,7 @@ export function makeTable(options) {
 							user,
 							expiresAt: existing?.expiresAt,
 							residencyId: existing?.residencyId,
+							additionalAuditRefs: existing?.additionalAuditRefs,
 							transaction: nativeTransaction,
 							tableToTrack: null,
 							...(type === 'lock' ? { lock: { lockVersion: version, lockExpiresAt } } : { unlock: true }),
@@ -6430,6 +6471,9 @@ export function makeTable(options) {
 		const attemptKey = lockAttemptKey(tableId, id);
 		const user = (context as any)?.user;
 		while (true) {
+			if (Date.now() >= deadline) {
+				throw new ClientError(`Record ${String(id)} is locked and was not released within ${options.timeout}ms`, 423);
+			}
 			const attempted = await serializeLockAttempt(
 				primaryStore,
 				attemptKey,
@@ -6449,14 +6493,15 @@ export function makeTable(options) {
 				}
 			);
 			if (attempted && 'version' in attempted) {
+				// a generation that expired before its commit resolved is not a lock; take it over instead
+				if (attempted.lockExpiresAt <= Date.now()) continue;
 				scheduleCleanup(); // arm the sweep that clears a generation whose holder never releases it
 				return makeLockHandle(id, keyId, attempted.version, attempted.lockExpiresAt, options.hold, user);
 			}
-			if (Date.now() >= deadline) {
-				throw new ClientError(`Record ${String(id)} is locked and was not released within ${options.timeout}ms`, 423);
-			}
 			if (attempted && 'heldUntil' in attempted)
-				await waitForRecordUnlock(primaryStore, keyId, Math.min(attempted.heldUntil, deadline)).promise;
+				await waitForRecordUnlock(primaryStore, keyId, Math.min(attempted.heldUntil, deadline), () =>
+					isLockedLive(primaryStore.getEntry(id))
+				).promise;
 		}
 	}
 	function makeLockHandle(

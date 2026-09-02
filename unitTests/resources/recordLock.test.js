@@ -97,7 +97,14 @@ describe('Record locks (harper#483)', () => {
 
 		it('validates its options', async () => {
 			const recordId = id();
-			for (const options of [{ lease: -1 }, { lease: 'soon' }, { timeout: 0 }, { lease: 10e6 }, { hold: 'yes' }]) {
+			for (const options of [
+				{ lease: -1 },
+				{ lease: 5 },
+				{ lease: 'soon' },
+				{ timeout: 0 },
+				{ lease: 10e6 },
+				{ hold: 'yes' },
+			]) {
 				await assert.rejects(
 					async () => LockTest.lock(recordId, options),
 					(error) => error.statusCode === 400
@@ -223,18 +230,76 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'then the delayed create applied');
 		});
 
-		it('does not gate publish, and a holder invalidate keeps the generation', async () => {
+		it('gates a non-holder publish; a holder publish and invalidate keep the generation', async () => {
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
 			const holder = await LockTest.lock(recordId, { hold: true });
 			const generation = entryOf(recordId).lockVersion;
-			await LockTest.publish(recordId, { hello: 'world' });
-			assert.strictEqual(entryOf(recordId).lockVersion, generation, 'publish preserved the lock');
+			const published = LockTest.publish(recordId, { hello: 'world' });
+			assert.strictEqual(await settlement(published), 'pending', 'a message rewrites the version, so it waits');
+			await holder.publish({ hello: 'holder' });
+			assert.strictEqual(entryOf(recordId).lockVersion, generation, 'the holder publish preserved the lock');
 			await holder.invalidate();
-			const invalidated = entryOf(recordId);
-			assert.strictEqual(invalidated.lockVersion, generation, 'invalidate preserved the lock');
+			assert.strictEqual(entryOf(recordId).lockVersion, generation, 'invalidate preserved the lock');
 			await holder.unlock();
+			await published;
 			assert.strictEqual(isLocked(recordId), false);
+		});
+
+		it('gates a numeric id 0 (a valid key that is falsy)', async function () {
+			if (isLMDB) this.skip(); // LMDB does not store key 0 at all today (pre-existing)
+			await LockTest.put({ id: 0, n: 1 });
+			const holder = await LockTest.lock(0, { hold: true });
+			const put = LockTest.put({ id: 0, n: 2 });
+			assert.strictEqual(await settlement(put), 'pending');
+			await holder.unlock();
+			await put;
+			assert.strictEqual((await LockTest.get(0)).n, 2);
+		});
+
+		it('a holder delete on an unaudited table leaves a locked tombstone, so the lock outlives the row', async function () {
+			// LMDB's immediate transaction only commits eager instance writes through save(); a bare
+			// instance delete() outside a scope stays staged there (pre-existing), so RocksDB only
+			if (isLMDB) this.skip();
+			const NoAudit = table({
+				table: 'RecordLockNoAudit',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
+				audit: false,
+				trackDeletes: false,
+			});
+			const recordId = id();
+			await NoAudit.put({ id: recordId, n: 1 });
+			const holder = await NoAudit.lock(recordId, { hold: true });
+			await holder.delete(); // the instance delete resolves before its immediate commit lands
+			const tombstone = await waitFor(
+				() => {
+					const entry = NoAudit.primaryStore.getEntry(recordId);
+					return entry && entry.value == null && entry;
+				},
+				{ message: 'the row is gone' }
+			);
+			assert.ok(tombstone.metadataFlags & LOCKED, 'but the generation stays on a tombstone');
+			const put = NoAudit.put({ id: recordId, n: 2 });
+			assert.strictEqual(await settlement(put), 'pending', 'so a re-create still waits for the holder');
+			await holder.unlock();
+			await put;
+			assert.strictEqual((await NoAudit.get(recordId)).n, 2);
+		});
+
+		it("lock and unlock carry the record's out-of-order audit refs forward", async function () {
+			if (isLMDB) this.skip(); // additionalAuditRefs are a RocksDB dedup guard
+			const recordId = id();
+			const now = Date.now();
+			await LockTest.put({ id: recordId, n: 1, name: 'first' }, { timestamp: now - 3000 });
+			await LockTest.patch(recordId, { name: 'newer' }, { timestamp: now - 1000 });
+			await LockTest.patch(recordId, { n: 2 }, { timestamp: now - 2000 }); // out of order under the newer patch
+			const refs = entryOf(recordId).additionalAuditRefs;
+			assert.ok(refs?.length > 0, `the out-of-order patch left a ref: ${JSON.stringify(refs)}`);
+			const holder = await LockTest.lock(recordId, { hold: true });
+			assert.deepStrictEqual(entryOf(recordId).additionalAuditRefs, refs, 'kept by LOCK');
+			await holder.unlock();
+			assert.deepStrictEqual(entryOf(recordId).additionalAuditRefs, refs, 'kept by UNLOCK');
 		});
 
 		it('fails a waiting lock with 423 at its timeout', async () => {

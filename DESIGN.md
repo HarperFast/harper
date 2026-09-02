@@ -160,8 +160,10 @@ Consequences that shape the code:
   the _whole_ write set on a fresh native handle with a timestamp past the released version. The
   handle is replaced because a write landing with a version older than the release is resequenced as
   out-of-order and, for a full put, dropped. Nothing of a gated write is in the verification table
-  while it waits, so the holder's UNLOCK never parks behind it. `publish()` is exempt: a message is not
-  a record mutation. LMDB's `commit()` runs the same gate before its optimistic batch.
+  while it waits, so the holder's UNLOCK never parks behind it. `publish()` to a record is gated too:
+  a message rewrites the record's version, which would order a holder's later write below it. LMDB's
+  `commit()` runs the same gate before its optimistic batch and again inside its exclusive fallback,
+  whose own reads are what that path writes against.
 - **A holder's writes must carry a timestamp past the generation**, or they are the older write in a
   version comparison. A transaction's timestamp is fixed by its first staged write, so `lock()` refuses
   a transaction that already wrote (`lock() must be called before the transaction writes`) and bumps
@@ -183,8 +185,16 @@ Consequences that shape the code:
   gets 409 `Record lock was lost` while another party's generation is live.
 - **The bit survives every rewrite** at the `recordUpdater` choke point: invalidate, relocate,
   publish, source resolution and holder writes carry a live generation forward unless the write is
-  the lock transition itself (`options.lock`/`options.unlock`). A source-resolved delete of a locked
-  record leaves a locked tombstone rather than removing the row.
+  the lock transition itself (`options.lock`/`options.unlock`). A delete under a live generation —
+  the holder's own, or a source-resolved one — leaves a locked tombstone whatever the table's audit
+  settings, because removing the row would remove the lock with it.
+- **Crash recovery.** The primary store's WAL is off, so a transition the flush had not reached is
+  replayed from the transaction log like any write. A LOCK is not replayed: its holder died with the
+  process, and a flushed one expires by its lease. An UNLOCK is replayed conditionally
+  (`_writeUnlockReplay`: only onto the exact version it released), so a row is never left locked for
+  a lease by a release that did not reach the flush, and a phantom entry from a failed conditional
+  commit never clears a later generation. `bin/copyDb` strips the bit when it migrates a store: a
+  copied record carries no lock.
 - **No downgrade past a locked record.** The two lock fields sit before the value in the record's
   metadata, so an older Harper decodes a LOCKED record's value from the wrong offset. Do not downgrade
   a node below this release once any table has been locked.

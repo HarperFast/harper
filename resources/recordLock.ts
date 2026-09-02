@@ -22,11 +22,21 @@ import type { Id } from './ResourceInterface.ts';
 export const LOCKED = 4;
 
 /** A lock generation is live until its lease passes; an expired one is treated as released. */
-export function isLockedLive(entry: Partial<Entry> | undefined | null, now = Date.now()): boolean {
-	return !!entry && (entry.metadataFlags & LOCKED) !== 0 && entry.lockExpiresAt > now;
+export function isLockedLive(entry: Partial<Entry> | undefined | null, now?: number): boolean {
+	if (!entry || !(entry.metadataFlags & LOCKED)) return false; // the unlocked path never reads the clock
+	return entry.lockExpiresAt > (now ?? Date.now());
+}
+
+/** Log without letting a throwing sink turn cleanup after a durable commit into a failure. */
+function warnQuietly(message: string, error: unknown): void {
+	try {
+		harperLogger.warn?.(message, error);
+	} catch {}
 }
 
 export const DEFAULT_LOCK_LEASE_MS = 30_000;
+/** Below this a generation can expire before its own commit resolves, handing back a lock already lost. */
+export const MIN_LOCK_LEASE_MS = 100;
 export const MAX_LOCK_LEASE_MS = 300_000;
 export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 export const MAX_LOCK_TIMEOUT_MS = 300_000;
@@ -73,10 +83,12 @@ export interface RecordLockHandle {
 	release(): Promise<boolean>;
 }
 
-function requireDuration(name: string, value: unknown, fallback: number, max: number): number {
+function requireDuration(name: string, value: unknown, fallback: number, min: number, max: number): number {
 	if (value === undefined) return fallback;
-	if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
-		throw new ClientError(`Lock option ${name} must be a positive number of milliseconds, but received ${value}`);
+	if (typeof value !== 'number' || !Number.isFinite(value) || value < min)
+		throw new ClientError(
+			`Lock option ${name} must be a number of milliseconds of at least ${min}, but received ${value}`
+		);
 	if (value > max) throw new ClientError(`Lock option ${name} must not exceed ${max}ms, but received ${value}`);
 	return value;
 }
@@ -87,8 +99,8 @@ export function resolveLockOptions(options?: RecordLockOptions | null): Resolved
 	const hold = options?.hold ?? false;
 	if (typeof hold !== 'boolean') throw new ClientError(`Lock option hold must be a boolean, but received ${hold}`);
 	return {
-		lease: requireDuration('lease', options?.lease, DEFAULT_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS),
-		timeout: requireDuration('timeout', options?.timeout, DEFAULT_LOCK_TIMEOUT_MS, MAX_LOCK_TIMEOUT_MS),
+		lease: requireDuration('lease', options?.lease, DEFAULT_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS),
+		timeout: requireDuration('timeout', options?.timeout, DEFAULT_LOCK_TIMEOUT_MS, 1, MAX_LOCK_TIMEOUT_MS),
 		hold,
 	};
 }
@@ -159,27 +171,28 @@ export async function serializeLockAttempt<T>(
 }
 
 type Waiter = {
-	slot: number;
-	seq: number;
 	keyId: unknown;
 	settle: (woken: boolean) => void;
 };
+// Waiters are grouped by doorbell slot, so a notification costs one counter read per slot that has
+// waiters, not one per waiter; `seen` is the slot's counter when the group last (re)checked it.
+type SlotGroup = { seen: number; waiters: Set<Waiter> };
 type Doorbell = {
 	slots: Int32Array;
 	buffer: { notify(): void };
-	waiters: Set<Waiter>;
+	bySlot: Map<number, SlotGroup>;
 	perKey: Map<unknown, number>;
+	count: number;
 };
 const doorbells = new WeakMap<object, Doorbell>();
 
 function doorbellFor(store: any): Doorbell {
 	let doorbell = doorbells.get(store);
 	if (doorbell) return doorbell;
-	doorbell = { slots: undefined as any, buffer: undefined as any, waiters: new Set(), perKey: new Map() };
+	doorbell = { slots: undefined as any, buffer: undefined as any, bySlot: new Map(), perKey: new Map(), count: 0 };
 	const bell = doorbell;
 	// One table-wide shared buffer of per-slot release counters: a release bumps its key's slot and
-	// notifies every thread; a waiter compares its slot, so an unrelated key's release costs it one
-	// integer read, not a record re-read.
+	// notifies every thread; only the slots whose counter moved wake their waiters.
 	bell.buffer = store.getUserSharedBuffer(DOORBELL_KEY, new ArrayBuffer(DOORBELL_SLOTS * 4), {
 		callback: () => wakeWaiters(bell),
 	});
@@ -199,40 +212,52 @@ function slotOf(keyId: unknown): number {
 }
 
 function wakeWaiters(doorbell: Doorbell) {
-	for (const waiter of doorbell.waiters) {
-		if (Atomics.load(doorbell.slots, waiter.slot) !== waiter.seq) waiter.settle(true);
+	for (const [slot, group] of doorbell.bySlot) {
+		const seq = Atomics.load(doorbell.slots, slot);
+		if (seq === group.seen) continue;
+		group.seen = seq;
+		for (const waiter of group.waiters) waiter.settle(true);
 	}
 }
 
 /**
  * Wait until the record's lock is released (resolves true) or `until` passes (false). The wake-up is
- * advisory: a caller re-reads the record on every wake and decides from that.
+ * advisory: a caller re-reads the record on every wake and decides from that. `stillLocked` is
+ * consulted once the waiter is registered, so a release that lands between the caller's read and the
+ * registration cannot be slept through.
  */
 export function waitForRecordUnlock(
 	store: any,
 	keyId: unknown,
-	until: number
+	until: number,
+	stillLocked?: () => boolean
 ): { promise: Promise<boolean>; cancel: () => void } {
 	const doorbell = doorbellFor(store);
 	const waitingOnKey = doorbell.perKey.get(keyId) ?? 0;
-	if (waitingOnKey >= MAX_WAITERS_PER_KEY || doorbell.waiters.size >= MAX_WAITERS_PER_WORKER)
+	if (waitingOnKey >= MAX_WAITERS_PER_KEY || doorbell.count >= MAX_WAITERS_PER_WORKER)
 		throw new ClientError('Too many requests are waiting for record locks, please try again later', 429);
 	doorbell.perKey.set(keyId, waitingOnKey + 1);
+	doorbell.count++;
 	const slot = slotOf(keyId);
+	let group = doorbell.bySlot.get(slot);
+	if (!group) doorbell.bySlot.set(slot, (group = { seen: Atomics.load(doorbell.slots, slot), waiters: new Set() }));
 	let settle: (woken: boolean) => void;
 	const promise = new Promise<boolean>((resolve) => {
-		const waiter: Waiter = { slot, seq: Atomics.load(doorbell.slots, slot), keyId, settle: undefined as any };
+		const waiter: Waiter = { keyId, settle: undefined as any };
 		const timer = setTimeout(() => waiter.settle(false), Math.max(0, until - Date.now()));
 		settle = waiter.settle = (woken: boolean) => {
-			if (!doorbell.waiters.delete(waiter)) return;
+			if (!group.waiters.delete(waiter)) return;
+			if (group.waiters.size === 0) doorbell.bySlot.delete(slot);
+			doorbell.count--;
 			clearTimeout(timer);
 			const remaining = (doorbell.perKey.get(keyId) ?? 1) - 1;
 			if (remaining > 0) doorbell.perKey.set(keyId, remaining);
 			else doorbell.perKey.delete(keyId);
 			resolve(woken);
 		};
-		doorbell.waiters.add(waiter);
+		group.waiters.add(waiter);
 	});
+	if (stillLocked && !stillLocked()) settle(true);
 	return { promise, cancel: () => settle(false) };
 }
 
@@ -244,6 +269,6 @@ export function notifyRecordUnlocked(store: any, keyId: unknown): void {
 		doorbell.buffer.notify();
 		wakeWaiters(doorbell);
 	} catch (error) {
-		harperLogger.warn?.('Failed to notify record lock waiters', error);
+		warnQuietly('Failed to notify record lock waiters', error);
 	}
 }

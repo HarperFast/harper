@@ -265,9 +265,12 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 						tableInstance._writeInvalidate(recordId, record, options);
 						break;
 					case 'lock':
+						// The generation's holder died with the process; a LOCK the flush did not reach is simply
+						// gone, and one it did reach expires by its lease. Nothing to restore.
+						break;
 					case 'unlock':
-						// a lock generation is record state the RocksDB write batch already carried; a lease that
-						// outlived the crash expires on its own
+						// but an UNLOCK the flush did not reach must not leave the row locked for a lease
+						tableInstance._writeUnlockReplay(recordId, auditRecord.version, auditRecord.previousVersion);
 						break;
 					case 'structures': {
 						const structuresAsBinary = auditRecord.getBinaryValue(primaryStore);

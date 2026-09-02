@@ -207,16 +207,18 @@ export class LMDBTransaction extends DatabaseTransaction {
 		// then the whole batch re-runs against reloaded entries with a timestamp past the release.
 		const gated: TransactionWrite[] = [];
 		for (const write of this.writes) {
-			if (write.gateOnLock !== true || !write.key) continue;
+			if (write.gateOnLock !== true || write.key == null) continue;
 			if (retries > 0 || !write.entry) write.entry = write.store.getEntry(write.key);
 			if (this.gateLockedWrite(write)) gated.push(write);
 		}
-		if (gated.length > 0) {
-			return this.parkForRecordUnlocks(gated).then((releasedVersion) => {
+		const parkThenRecommit = (parked: TransactionWrite[]) =>
+			this.parkForRecordUnlocks(parked).then((releasedVersion) => {
 				this.timestamp = Math.max(getNextMonotonicTime(), releasedVersion + LOCK_VERSION_STEP);
 				return this.commit({ ...options, timestamp: this.timestamp, retries: retries + 1 });
 			});
-		}
+		if (gated.length > 0) return parkThenRecommit(gated);
+		// a lock that lands between the gate above and the exclusive fallback's own reads
+		let gatedInExclusive: TransactionWrite[] = [];
 		const doWrite = (write) => {
 			const completion = write.commit(txnTime, write.entry, retries);
 			if (typeof completion?.then === 'function') {
@@ -279,9 +281,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);
-						doWrite(write);
 					}
-					return true; // success. always success
+					gatedInExclusive = this.writes.filter(
+						(write) => write.gateOnLock === true && write.key != null && this.gateLockedWrite(write)
+					);
+					if (gatedInExclusive.length > 0) return false; // nothing written; parked and re-run below
+					for (const write of this.writes) doWrite(write);
+					return true;
 				});
 				resolution = transactionResolution.then((committed) =>
 					commitCompletions ? Promise.all(commitCompletions).then(() => committed) : committed
@@ -329,6 +335,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 						};
 					});
 				} else {
+					if (gatedInExclusive.length > 0) return parkThenRecommit(gatedInExclusive);
 					// if the transaction failed, we need to retry. First record this as an increased risk of contention/retry
 					// for future transactions
 					if (db) {
