@@ -29,31 +29,35 @@ interface RotationTransport {
 }
 
 let transport: RotationTransport | undefined;
-const sinksByPath = new Map<string, (ino: number, dev: number) => void>();
-const pendingByGeneration = new Map<string, { expected: Set<number>; settle: (proven: boolean) => void }>();
-let generationCounter = 0;
+const sinksByPath = new Map<string, { identity(): any; close(): void }>();
+const pendingByRequest = new Map<string, { expected: Set<number>; settle: (proven: boolean) => void }>();
+let requestCounter = 0;
 
 export function setRotationTransport(newTransport: RotationTransport) {
 	transport = newTransport;
 	newTransport.onMessage(LOG_GENERATION_ROTATED, (message) => {
-		closeLocalDescriptorsOn(message);
+		releaseLocally(message);
 		newTransport.sendToThread(message.originator, {
 			type: LOG_GENERATION_CLOSED,
-			generation: message.generation,
+			request: message.request,
 			threadId: newTransport.threadId,
 		});
 	});
 	newTransport.onMessage(LOG_GENERATION_CLOSED, (message) => {
-		recordPeerResponse(message.generation, message.threadId);
+		recordPeerResponse(message.request, message.threadId);
 	});
 	newTransport.onThreadExit((threadId) => {
-		// An exited thread cannot hold a descriptor, so its exit answers every generation it owed.
-		for (const generation of [...pendingByGeneration.keys()]) recordPeerResponse(generation, threadId);
+		// An exited thread cannot hold a descriptor, so its exit answers everything it owed.
+		for (const request of [...pendingByRequest.keys()]) recordPeerResponse(request, threadId);
 	});
 }
 
-export function registerLogSink(logPath: string, closeIfInodeMatches: (ino: number, dev: number) => void) {
-	sinksByPath.set(logPath, closeIfInodeMatches);
+/**
+ * Registered by the file sink itself, not by the size guard: a thread that writes this log but has
+ * no guard still holds a descriptor, and an answer from it has to mean the descriptor is gone.
+ */
+export function registerLogSink(logPath: string, sink: { identity(): any; close(): void }) {
+	sinksByPath.set(logPath, sink);
 }
 
 export function unregisterLogSink(logPath: string) {
@@ -61,57 +65,99 @@ export function unregisterLogSink(logPath: string) {
 }
 
 export function nextGenerationId() {
-	return `${process.pid}-${transport?.threadId ?? 0}-${generationCounter++}`;
+	return nextRequestId();
+}
+
+function nextRequestId() {
+	return `${process.pid}-${transport?.threadId ?? 0}-${requestCounter++}`;
 }
 
 /**
- * Tell every writer to release an archived generation, without waiting. Worth doing even when the
- * archive will never be destroyed: a peer still holding the moved inode keeps appending to it.
+ * Ask every writer of `logPath` to release the descriptors this request names, and resolve to
+ * whether they all provably did. `false` means the caller must leave those archives in place — it
+ * is never safe to unlink an inode a peer may still be appending to.
  */
+function requestRelease(message: any): Promise<boolean> {
+	releaseLocally(message);
+	const expected = new Set<number>(transport ? transport.peerThreadIds() : []);
+	if (!transport || expected.size === 0) return Promise.resolve(true);
+	const request = message.request;
+	return new Promise((resolve) => {
+		let timer;
+		const settle = (proven) => {
+			clearTimeout(timer);
+			pendingByRequest.delete(request);
+			resolve(proven);
+		};
+		pendingByRequest.set(request, { expected, settle });
+		timer = setTimeout(() => settle(false), transport.quiescenceTimeout ?? DEFAULT_QUIESCENCE_TIMEOUT);
+		timer.unref?.();
+		transport.broadcast({ ...message, originator: transport.threadId });
+	});
+}
+
+/** One archived generation: release any descriptor still pointing at the inode that was renamed. */
+export function requestGenerationClose(generation: any): Promise<boolean> {
+	return requestRelease({
+		type: LOG_GENERATION_ROTATED,
+		request: generation.generation,
+		logPath: generation.logPath,
+		ino: generation.ino,
+		dev: generation.dev,
+	});
+}
+
+/**
+ * Every generation but the live one, in a single round trip. Retention deletes archives this
+ * process may not have rotated — a worker's unproven archive is invisible to the main thread's own
+ * bookkeeping — so it proves the whole set at once rather than asking per archive.
+ */
+export function requestStaleDescriptorRelease(logPath: string, active: any): Promise<boolean> {
+	return requestRelease({
+		type: LOG_GENERATION_ROTATED,
+		request: nextRequestId(),
+		logPath,
+		keepIno: active?.ino,
+		keepDev: active?.dev,
+	});
+}
+
+/** Tell every writer about an archived generation without waiting for the answer. */
 export function announceGeneration(generation: any) {
-	closeLocalDescriptorsOn(generation);
+	releaseLocally({
+		type: LOG_GENERATION_ROTATED,
+		request: generation.generation,
+		logPath: generation.logPath,
+		ino: generation.ino,
+		dev: generation.dev,
+	});
 	transport?.broadcast({
 		type: LOG_GENERATION_ROTATED,
+		request: generation.generation,
 		logPath: generation.logPath,
-		generation: generation.generation,
 		ino: generation.ino,
 		dev: generation.dev,
 		originator: transport.threadId,
 	});
 }
 
-/**
- * Announce an archived generation and resolve to whether every peer has provably released it.
- * `false` means the caller must leave the plain archive in place — it is never safe to unlink an
- * inode a peer may still be appending to.
- */
-export function requestGenerationClose(generation: any): Promise<boolean> {
-	const expected = new Set<number>(transport ? transport.peerThreadIds() : []);
-	if (!transport || expected.size === 0) {
-		announceGeneration(generation);
-		return Promise.resolve(true);
-	}
-	return new Promise((resolve) => {
-		let timer;
-		const settle = (proven) => {
-			clearTimeout(timer);
-			pendingByGeneration.delete(generation.generation);
-			resolve(proven);
-		};
-		pendingByGeneration.set(generation.generation, { expected, settle });
-		timer = setTimeout(() => settle(false), transport.quiescenceTimeout ?? DEFAULT_QUIESCENCE_TIMEOUT);
-		timer.unref?.();
-		announceGeneration(generation);
-	});
-}
-
-function recordPeerResponse(generationId: string, threadId: number) {
-	const pending = pendingByGeneration.get(generationId);
+function recordPeerResponse(request: string, threadId: number) {
+	const pending = pendingByRequest.get(request);
 	if (!pending) return;
 	pending.expected.delete(threadId);
 	if (pending.expected.size === 0) pending.settle(true);
 }
 
-function closeLocalDescriptorsOn(generation: any) {
-	sinksByPath.get(generation.logPath)?.(generation.ino, generation.dev);
+function releaseLocally(message: any) {
+	const sink = sinksByPath.get(message.logPath);
+	if (!sink) return;
+	const identity = sink.identity();
+	if (message.keepIno === undefined) {
+		// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
+		// closing is the only answer that can still be called a release.
+		if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
+		return;
+	}
+	if (identity && identity.ino === message.keepIno && identity.dev === message.keepDev) return;
+	sink.close();
 }
