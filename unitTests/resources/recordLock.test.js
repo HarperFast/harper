@@ -305,6 +305,36 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1);
 		});
 
+		it('abort during pendingWake cancels the park and strands no handle', async function () {
+			// Blocker-2 regression: an abort that lands while waitForPendingKeys is parked must reject
+			// the commit, not strand a handle on the closed transaction or commit an empty write set.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+
+			// Stage a put inside a transaction scope so we can abort the scope externally
+			let parkTxn;
+			const parked = transaction((txn) => {
+				parkTxn = txn;
+				LockTest.put({ id: recordId, n: 1 });
+			});
+
+			// Give the commit one tick to enter waitForPendingKeys and park on the wake promise
+			await new Promise((r) => setImmediate(r));
+			assert.ok(parkTxn, 'transaction was captured');
+			parkTxn.abort();
+
+			await assert.rejects(
+				() => parked,
+				(err) => err.statusCode === 500
+			);
+			// No handle was stranded: after the holder releases, a fresh put succeeds immediately
+			await holder.unlock();
+			await LockTest.put({ id: recordId, n: 2 });
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'fresh put succeeded, no stranded handle');
+		});
+
 		it('a 423 from a locked write releases gate locks and aborts the transaction', async function () {
 			if (isLMDB) return this.skip();
 			const idA = id();
