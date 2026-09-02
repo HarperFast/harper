@@ -1,35 +1,25 @@
 /**
- * `copy-db` and the blob store — end-to-end regression coverage for harper#2048 (channels 3 and 4),
+ * End-to-end regression coverage for harper#2048 channel 3 (`copy-db` never copied the blob store),
  * fixed by harper#2098.
  *
- * A record's blob BYTES live outside the LMDB environment, under `{rootPath}/blobs/{db}/`, and are
- * addressed by database NAME rather than by the environment file's path. `copyDb()` (bin/copyDb.ts,
- * behind the documented `copy-db <source> <target>` CLI verb at bin/harper.ts) byte-copies the
- * environment's dbis, so before harper#2098 the copy carried every record's `fileId` reference and
- * none of the files those references resolve to — a partial, silent loss, because inline attributes
- * survived byte-exact. It also kept exit 0 through per-record copy failures.
+ * A record's blob bytes live outside the LMDB environment, under `{rootPath}/blobs/{db}/`, and are
+ * addressed by database NAME rather than by the environment file's path, so an environment copy on
+ * its own carries every `fileId` reference and none of the files they resolve to. `copyDb()` now
+ * writes the source's blob roots to `<target>-blobs/<rootIndex>/` beside the copy.
  *
- * harper#2098's unit coverage (unitTests/bin/copyDbIntegrity.test.js) drives `copyDb()` directly;
- * this suite is the complementary end-to-end proof through the public CLI: it seeds file-backed
- * blobs plus inline controls over HTTP, runs `copy-db` at an external target, then performs the
- * restore the copy's own README documents — the environment file back to `database/{db}.mdb`, each
- * `<rootIndex>/` tree of the `<target>-blobs` companion directory back into the matching blob root —
- * and reads every seeded record back through HTTP.
+ * harper#2098's unit coverage (`unitTests/bin/copyDbIntegrity.test.js`) drives `copyDb()` directly.
+ * This suite is the public-CLI counterpart: it seeds over HTTP, runs `copy-db <source> <target>`,
+ * performs the restore the companion directory's README documents, restarts Harper onto it, and
+ * reads every seeded record back. The source environment and blob root are removed — and asserted
+ * gone — first, so the read-back cannot be answered by surviving source files, and each blob is
+ * compared against the sha256 its seed call returned.
  *
- * The read-back is the assertion that carries the contract. Counting files under a `blobs`-shaped
- * path only proves that something landed there; it cannot tell a restorable copy from one whose
- * records are undecodable or point at the wrong bytes. So the source environment and blob root are
- * REMOVED before the restore (asserted gone, so the read-back cannot be answered by surviving source
- * files), and every blob is compared against the sha256 its seed call returned.
+ * What it does not cover: restoring under a different database name or with more than one blob root
+ * (`unitTests/bin/copyDbIntegrity.test.js:250`), and channel 4's failure path — no per-record copy
+ * failure is induced here, so only the healthy exit-0 shape is asserted.
  *
- * Scope note: harper#2048 also reached `storage.compactOnStart`, but not with this consequence.
- * compactOnStart swaps the copy into the SAME rootPath and moves only `database/{db}.mdb`, leaving
- * `blobs/{db}/` adjacent and resolvable — which is why it copies with `blobs: 'preserve-source-roots'`.
- * Asserted below so nobody "fixes" compactOnStart chasing this.
- *
- * Harness note: the CLI reads `ROOTPATH` (not `HARPER_ROOT_PATH`), and an empty CLI output means it
- * never located the database — a harness problem, asserted separately so it is never scored as a
- * finding about `copy-db`.
+ * `copy-db` is LMDB-only (`copyDb` rejects a RocksDB database outright), hence the engine pin.
+ * The CLI reads `ROOTPATH`, not `HARPER_ROOT_PATH`.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -58,8 +48,14 @@ const INLINE_DOCS = 4; // controls: no blob attribute at all, so they survive on
 const DATABASE = 'data';
 const HARPER_OPTIONS: StartHarperOptions = {
 	config: { logging: { console: true, level: 'error' } },
-	env: { HARPER_STORAGE_ENGINE: 'lmdb' }, // copy-db is the LMDB path
+	env: { HARPER_STORAGE_ENGINE: 'lmdb' },
 };
+const SEED_TIMEOUT_MS = 60_000;
+const COPY_TIMEOUT_MS = 120_000;
+const READY_TIMEOUT_MS = 60_000;
+// Above the framework's own CI startup ceiling, so a slow boot fails with its diagnosis rather than
+// with a bare test timeout.
+const BOOT_TIMEOUT_MS = 300_000;
 
 /** Every non-empty file under a tree, relative to it. Disk truth, not API truth. */
 function filesUnder(dir: string): string[] {
@@ -68,8 +64,11 @@ function filesUnder(dir: string): string[] {
 		let entries;
 		try {
 			entries = readdirSync(d, { withFileTypes: true });
-		} catch {
-			return;
+		} catch (error: any) {
+			// An absent directory is an answer; anything else would report as an empty tree and be
+			// misread as data loss.
+			if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return;
+			throw error;
 		}
 		for (const e of entries) {
 			const p = join(d, e.name);
@@ -87,23 +86,23 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 	const dbPath = () => join(ctx.harper.dataRootDir, 'database', `${DATABASE}.mdb`);
 	const blobRoot = () => join(ctx.harper.dataRootDir, 'blobs', DATABASE);
 
-	// Populated by the copy step so the later tests assert against one real invocation rather
-	// than each shelling the CLI again.
+	// Populated by the copy step so the later tests assert against one real invocation rather than
+	// each shelling the CLI again.
 	let copyRoot = '';
 	let copyTarget = '';
 	let copyExit: number | null = null;
 	let copyOut = '';
 	let sourceBlobCount = 0;
-	// sha256 of each seeded blob, as reported by the seeding call — the byte-exact expectation
-	// the restored read-back is compared against.
+	// sha256 of each seeded blob, as reported by the seeding call — the byte-exact expectation the
+	// restored read-back is compared against.
 	const seededBlobSha = new Map<string, string>();
 	const seededInlineNote = new Map<string, string>();
 
-	// Poll the fixture route directly until it answers; never restartHttpWorkers() against a
-	// pre-installed fixture (fire-and-forget, races the worker respawn).
+	// Never restartHttpWorkers() against a pre-installed fixture: it is fire-and-forget and races
+	// the worker respawn.
 	async function waitForFixtureRoute(label: string) {
 		client = createApiClient(ctx.harper);
-		const deadline = Date.now() + 60_000;
+		const deadline = Date.now() + READY_TIMEOUT_MS;
 		while (Date.now() < deadline) {
 			try {
 				const probe = await client.reqRest('/Verify/?key=none').timeout(2000);
@@ -113,7 +112,7 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 			}
 			await new Promise((r) => setTimeout(r, 250));
 		}
-		ok(false, `harper did not serve /Verify/ with 200 within 60s ${label} — boot failed`);
+		ok(false, `harper did not serve /Verify/ with 200 within ${READY_TIMEOUT_MS}ms ${label} — boot failed`);
 	}
 
 	async function verify(key: string) {
@@ -122,34 +121,45 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 		return response.body;
 	}
 
-	before(async () => {
-		await setupHarperWithFixture(ctx, FIXTURE_PATH, HARPER_OPTIONS);
-		await waitForFixtureRoute('on first boot');
+	before(
+		async () => {
+			await setupHarperWithFixture(ctx, FIXTURE_PATH, HARPER_OPTIONS);
+			await waitForFixtureRoute('on first boot');
 
-		const seed = async (payload: Record<string, unknown>) => {
-			const r = await fetch(`${ctx.harper.httpURL}/Seed/`, {
-				method: 'POST',
-				headers: { 'Authorization': client.headers.Authorization, 'content-type': 'application/json' },
-				body: JSON.stringify(payload),
-			});
-			const text = await r.text();
-			ok(r.status < 300, `seed ${JSON.stringify(payload)} expected 2xx, got ${r.status}: ${text.slice(0, 300)}`);
-			return JSON.parse(text);
-		};
-		for (let i = 0; i < BLOB_DOCS; i++) {
-			const key = `blob-${i}`;
-			const seeded = await seed({ kind: 'blob', key, size: BLOB_SIZE });
-			ok(seeded.sha, `seeding ${key} returned no sha to compare the restored blob against: ${JSON.stringify(seeded)}`);
-			strictEqual(seeded.size, BLOB_SIZE, `seeding ${key} stored ${seeded.size} bytes, not the requested ${BLOB_SIZE}`);
-			seededBlobSha.set(key, seeded.sha);
-		}
-		for (let i = 0; i < INLINE_DOCS; i++) {
-			const key = `inline-${i}`;
-			const note = `inline-control-${i}`;
-			await seed({ kind: 'inline', key, note });
-			seededInlineNote.set(key, note);
-		}
-	});
+			const seed = async (payload: Record<string, unknown>) => {
+				const r = await fetch(`${ctx.harper.httpURL}/Seed/`, {
+					method: 'POST',
+					headers: { 'Authorization': client.headers.Authorization, 'content-type': 'application/json' },
+					body: JSON.stringify(payload),
+					signal: AbortSignal.timeout(SEED_TIMEOUT_MS),
+				});
+				const text = await r.text();
+				ok(r.status < 300, `seed ${JSON.stringify(payload)} expected 2xx, got ${r.status}: ${text.slice(0, 300)}`);
+				return JSON.parse(text);
+			};
+			for (let i = 0; i < BLOB_DOCS; i++) {
+				const key = `blob-${i}`;
+				const seeded = await seed({ kind: 'blob', key, size: BLOB_SIZE });
+				ok(
+					seeded.sha,
+					`seeding ${key} returned no sha to compare the restored blob against: ${JSON.stringify(seeded)}`
+				);
+				strictEqual(
+					seeded.size,
+					BLOB_SIZE,
+					`seeding ${key} stored ${seeded.size} bytes, not the requested ${BLOB_SIZE}`
+				);
+				seededBlobSha.set(key, seeded.sha);
+			}
+			for (let i = 0; i < INLINE_DOCS; i++) {
+				const key = `inline-${i}`;
+				const note = `inline-control-${i}`;
+				await seed({ kind: 'inline', key, note });
+				seededInlineNote.set(key, note);
+			}
+		},
+		{ timeout: BOOT_TIMEOUT_MS + READY_TIMEOUT_MS + SEED_TIMEOUT_MS }
+	);
 
 	after(async () => {
 		try {
@@ -159,15 +169,14 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 		}
 	});
 
-	test('PRECONDITION: the seeded blobs are file-backed on disk and read back from the source', async () => {
+	test('the seeded blobs are file-backed on disk and read back from the source', async () => {
 		sourceBlobCount = filesUnder(blobRoot()).length;
 		ok(
 			sourceBlobCount >= BLOB_DOCS,
-			`NON-VACUOUS PRECONDITION: expected >= ${BLOB_DOCS} blob files under ${blobRoot()}, found ${sourceBlobCount}. ` +
-				`Without file-backed blobs every assertion below is vacuous.`
+			`expected >= ${BLOB_DOCS} blob files under ${blobRoot()}, found ${sourceBlobCount}. Without ` +
+				`file-backed blobs every assertion below is vacuous.`
 		);
-		// The same read-back the restored copy is held to, run against the source first: a failure
-		// here is a seeding/fixture problem, not a copy-db one.
+		// The same read-back the restored copy is held to: a failure here is a seeding problem.
 		for (const [key, sha] of seededBlobSha) {
 			const record = await verify(key);
 			strictEqual(record.sha, sha, `source ${key} does not read back as seeded: ${JSON.stringify(record)}`);
@@ -178,54 +187,60 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 		}
 	});
 
-	test('copy-db runs against the instance and reports success without per-record failures', async () => {
-		copyTarget = join(mkdtempSync(join(tmpdir(), 'copydb-')), 'data-copy.mdb');
-		copyRoot = resolve(copyTarget, '..');
+	test(
+		'copy-db copies the database to an external target, exits 0, and logs no per-record failure',
+		{ timeout: COPY_TIMEOUT_MS + READY_TIMEOUT_MS },
+		async () => {
+			copyRoot = mkdtempSync(join(tmpdir(), 'copydb-'));
+			copyTarget = join(copyRoot, 'data-copy.mdb');
 
-		await killHarper(ctx); // the CLI opens the environment itself
-		const cli = resolve(import.meta.dirname, '../../dist/bin/harper.js');
-		ok(existsSync(cli), `expected a built CLI at ${cli} — run npm run build first`);
+			await killHarper(ctx); // the CLI opens the environment itself
+			const cli = resolve(import.meta.dirname, '../../dist/bin/harper.js');
+			ok(existsSync(cli), `expected a built CLI at ${cli} — run npm run build first`);
 
-		try {
-			const r = await run(process.execPath, [cli, 'copy-db', DATABASE, copyTarget], {
-				env: { ...process.env, ROOTPATH: ctx.harper.dataRootDir },
-				maxBuffer: 32 * 1024 * 1024,
-			});
-			copyExit = 0;
-			copyOut = `${r.stdout}\n${r.stderr}`;
-		} catch (e: any) {
-			// e.code is a signal name (string) when the child was killed (e.g. maxBuffer overrun) —
-			// normalize so downstream `copyExit === 0` comparisons don't silently pass a string.
-			copyExit = typeof e.code === 'number' ? e.code : 1;
-			copyOut = `${e.stdout ?? ''}\n${e.stderr ?? ''}`;
+			try {
+				const r = await run(process.execPath, [cli, 'copy-db', DATABASE, copyTarget], {
+					env: { ...process.env, ...HARPER_OPTIONS.env, ROOTPATH: ctx.harper.dataRootDir },
+					maxBuffer: 32 * 1024 * 1024,
+					timeout: COPY_TIMEOUT_MS,
+				});
+				copyExit = 0;
+				copyOut = `${r.stdout}\n${r.stderr}`;
+			} catch (e: any) {
+				// e.code is a signal name (string) when the child was killed (timeout, maxBuffer overrun)
+				// — normalize so downstream `copyExit === 0` comparisons don't silently pass a string.
+				copyExit = typeof e.code === 'number' ? e.code : 1;
+				copyOut = `${e.stdout ?? ''}\n${e.stderr ?? ''}`;
+				if (e.killed) copyOut += `\ncopy-db was killed after ${COPY_TIMEOUT_MS}ms (${e.signal}) without completing`;
+			}
+
+			// A successful run always logs its progress, so empty output means the CLI never located
+			// the database — a setup failure rather than a copy-db defect.
+			ok(
+				copyOut.trim().length > 0,
+				`copy-db produced no output at all — it almost certainly never located the database. exit=${copyExit}`
+			);
+			ok(existsSync(copyTarget), `copy-db should have produced ${copyTarget}. Output:\n${copyOut.slice(-1500)}`);
+
+			const recordFailures = (copyOut.match(/Error copying record/g) ?? []).length;
+			strictEqual(
+				recordFailures,
+				0,
+				`copy-db logged ${recordFailures} per-record copy failure(s). Output:\n${copyOut.slice(-1500)}`
+			);
+			strictEqual(copyExit, 0, `copy-db exited ${copyExit}. Output:\n${copyOut.slice(-1500)}`);
 		}
+	);
 
-		// Distinguish "the CLI ran and did something" from "the CLI never found the database".
-		// The latter is a harness problem and must not be reported as a finding about copy-db.
-		ok(
-			copyOut.trim().length > 0,
-			`copy-db produced no output at all — it almost certainly never located the database (harness problem, not a defect). exit=${copyExit}`
-		);
-		ok(existsSync(copyTarget), `copy-db should have produced ${copyTarget}. Output:\n${copyOut.slice(-1500)}`);
-
-		// harper#2048 ch.4: per-record failures were logged while the exit code stayed 0, which is
-		// what turned a degraded copy into silent data loss.
-		const recordFailures = (copyOut.match(/Error copying record/g) ?? []).length;
-		strictEqual(
-			recordFailures,
-			0,
-			`copy-db logged ${recordFailures} per-record copy failure(s). Output:\n${copyOut.slice(-1500)}`
-		);
-		strictEqual(copyExit, 0, `copy-db exited ${copyExit}. Output:\n${copyOut.slice(-1500)}`);
-	});
-
-	test('the copy carries the blob store in its companion directory', () => {
+	test('the copy carries the blob store, and the README its restore is defined by', () => {
 		const blobCompanion = `${copyTarget}-blobs`;
 		ok(
 			existsSync(blobCompanion),
 			`copy-db must write the source's blob roots to ${blobCompanion}; copy tree: ${JSON.stringify(filesUnder(copyRoot).slice(0, 20))}`
 		);
-		// `<rootIndex>/<shard1>/<shard2>/<fileId>`, plus the README documenting that layout.
+		// `<rootIndex>/<shard1>/<shard2>/<fileId>`, plus the README documenting that layout — which is
+		// the only instruction an operator gets for the restore this suite performs below.
+		ok(existsSync(join(blobCompanion, 'README.md')), `${blobCompanion} must document its layout in README.md`);
 		const copiedBlobs = filesUnder(blobCompanion).filter((f) => f !== 'README.md');
 		ok(
 			copiedBlobs.length >= BLOB_DOCS,
@@ -234,66 +249,67 @@ suite('copy-db and the blob store (harper#2048)', { skip: process.platform === '
 		);
 	});
 
-	test('SCOPE: compactOnStart is unaffected — copy-db leaves blobs/ in the source rootPath', () => {
-		// Recorded as an assertion rather than a comment so the distinction survives: compactOnStart
-		// moves database/{db}.mdb into backup/ and the copy into its place, both inside rootPath, so
-		// the source blob roots it copies with `preserve-source-roots` have to still be there.
+	test('copy-db leaves the source blob roots in place', () => {
+		// The precondition `compactOnStart` relies on: it copies with `blobs: 'preserve-source-roots'`
+		// because it swaps the copy back into the same rootPath under the same database name, so the
+		// existing roots have to still resolve.
 		const stillThere = filesUnder(blobRoot()).length;
-		ok(
-			stillThere >= BLOB_DOCS,
-			`blobs/ must remain in the source rootPath — that is why the compactOnStart channel survives — found ${stillThere}`
-		);
+		ok(stillThere >= BLOB_DOCS, `copy-db must not disturb the source blob root — found ${stillThere} file(s)`);
 	});
 
-	test('the copy restores byte-exact: blob payloads and inline attributes read back', async () => {
-		// Checked before anything is removed: without both halves of the copy this test would tear
-		// down the source and then fail on a missing file, which reads as a restore defect.
-		ok(
-			existsSync(copyTarget) && existsSync(`${copyTarget}-blobs`),
-			`the copy step must have produced both ${copyTarget} and its -blobs companion before the restore`
-		);
-
-		// The documented restore (see the companion directory's README.md): the environment file
-		// goes back to database/{db}.mdb, and each `<rootIndex>/` tree goes back into the matching
-		// blob root of the database name the copy is restored as. Index 0 is the single default
-		// root, `<rootPath>/blobs/<db>`.
-		await rm(dbPath(), { force: true });
-		await rm(`${dbPath()}-lock`, { force: true });
-		await rm(blobRoot(), { recursive: true, force: true });
-		ok(
-			!existsSync(dbPath()) && !existsSync(blobRoot()),
-			`NON-VACUOUS PRECONDITION: the source environment and blob root must be gone before the restore, ` +
-				`or the read-back below could be answered by surviving source files rather than by the copy`
-		);
-
-		await cp(copyTarget, dbPath());
-		await cp(join(`${copyTarget}-blobs`, '0'), blobRoot(), { recursive: true });
-
-		await startHarper(ctx, HARPER_OPTIONS);
-		await waitForFixtureRoute('after restoring the copy');
-
-		for (const [key, sha] of seededBlobSha) {
-			const record = await verify(key);
-			ok(record.present, `${key} is missing from the restored copy: ${JSON.stringify(record)}`);
-			ok(record.hasPayload, `${key} restored without its blob attribute: ${JSON.stringify(record)}`);
-			strictEqual(record.size, BLOB_SIZE, `${key} restored with ${record.size} bytes: ${JSON.stringify(record)}`);
-			strictEqual(
-				record.sha,
-				sha,
-				`${key}'s blob bytes did not survive the copy: seeded sha256 ${sha}, restored ${record.sha}. ` +
-					`A copy whose fileId references resolve to the wrong bytes fails here and nowhere else.`
+	test(
+		'the copy restores byte-exact: blob payloads and inline attributes read back',
+		{ timeout: BOOT_TIMEOUT_MS + READY_TIMEOUT_MS },
+		async () => {
+			// Checked before anything is removed: without both halves of the copy this test would tear
+			// down the source and then fail on a missing file, which reads as a restore defect.
+			ok(
+				existsSync(copyTarget) && existsSync(`${copyTarget}-blobs`),
+				`the copy step must have produced both ${copyTarget} and its -blobs companion before the restore`
 			);
-		}
-		for (const [key, note] of seededInlineNote) {
-			const record = await verify(key);
-			ok(record.present, `inline control ${key} is missing from the restored copy: ${JSON.stringify(record)}`);
-			strictEqual(
-				record.hasPayload,
-				false,
-				`inline control ${key} is not inline — it has a blob attribute, so it no longer controls for the ` +
-					`"inline attributes survive while blob bytes do not" half of harper#2048: ${JSON.stringify(record)}`
+
+			// The restore the companion README documents: the environment file goes back to
+			// database/{db}.mdb, and each `<rootIndex>/` tree goes back into the matching blob root of
+			// the database name the copy is restored as. Index 0 is the single default root,
+			// `<rootPath>/blobs/<db>`.
+			await rm(dbPath(), { force: true });
+			await rm(`${dbPath()}-lock`, { force: true });
+			await rm(blobRoot(), { recursive: true, force: true });
+			ok(
+				!existsSync(dbPath()) && !existsSync(blobRoot()),
+				`the source environment and blob root must be gone before the restore, or the read-back below ` +
+					`could be answered by surviving source files rather than by the copy`
 			);
-			strictEqual(record.note, note, `inline control ${key} did not survive byte-exact: ${JSON.stringify(record)}`);
+
+			await cp(copyTarget, dbPath());
+			await cp(join(`${copyTarget}-blobs`, '0'), blobRoot(), { recursive: true });
+
+			await startHarper(ctx, HARPER_OPTIONS);
+			await waitForFixtureRoute('after restoring the copy');
+
+			for (const [key, sha] of seededBlobSha) {
+				const record = await verify(key);
+				ok(record.present, `${key} is missing from the restored copy: ${JSON.stringify(record)}`);
+				ok(record.hasPayload, `${key} restored without its blob attribute: ${JSON.stringify(record)}`);
+				strictEqual(record.size, BLOB_SIZE, `${key} restored with ${record.size} bytes: ${JSON.stringify(record)}`);
+				strictEqual(
+					record.sha,
+					sha,
+					`${key}'s blob bytes did not survive the copy: seeded sha256 ${sha}, restored ${record.sha}. ` +
+						`A copy whose fileId references resolve to the wrong bytes fails here and nowhere else.`
+				);
+			}
+			for (const [key, note] of seededInlineNote) {
+				const record = await verify(key);
+				ok(record.present, `inline control ${key} is missing from the restored copy: ${JSON.stringify(record)}`);
+				strictEqual(
+					record.hasPayload,
+					false,
+					`inline control ${key} has a blob attribute, so it no longer controls for the "inline data ` +
+						`survives while blob bytes do not" half of harper#2048: ${JSON.stringify(record)}`
+				);
+				strictEqual(record.note, note, `inline control ${key} did not survive byte-exact: ${JSON.stringify(record)}`);
+			}
 		}
-	});
+	);
 });
