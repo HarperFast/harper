@@ -118,6 +118,13 @@ const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
+
+/** Last resort on a detached path: a failing log sink must not itself become an unhandled rejection. */
+function warnContained(message: string, error: unknown) {
+	try {
+		harperLogger.warn(message, error);
+	} catch {}
+}
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
 let timestampErrored = false;
 export function openAuditStore(rootStore) {
@@ -135,7 +142,7 @@ export function openAuditStore(rootStore) {
 			auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
 			// this open path is synchronous, so nothing downstream can own the write's rejection
 			updateLastRemoved(auditStore, 1)?.catch?.((error) =>
-				harperLogger.warn('Error initializing the audit log last-removed marker', error)
+				warnContained('Error initializing the audit log last-removed marker', error)
 			);
 		}
 		const superGetRange = auditStore.getRange.bind(auditStore);
@@ -167,9 +174,7 @@ export function openAuditStore(rootStore) {
 	let pendingCleanupResolve: (() => void) | null = null;
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
-	// The chosen cadence lives on the store rather than in the closure: it is the loop's own observable
-	// state, and the only other way to read it is to replace the process-global setTimeout, which
-	// swallows the re-arm of every other audit store in the process.
+	// on the store, not in the closure: the cadence is observable state the retention tests read
 	auditStore.auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
 	let cleanupStopped = false;
 	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
@@ -308,11 +313,9 @@ export function openAuditStore(rootStore) {
 							}
 						}
 					} finally {
-						// settled unconditionally, whatever the bookkeeping above did: this is the
-						// serialization barrier every later pass awaits, and the drain barrier
-						// stopAuditCleanup() hands its callers, so never settling it wedges both.
-						// Re-armed unconditionally for the same reason — a throw from the bookkeeping
-						// (a failing log sink is the realistic one) must not retire the loop for good.
+						// settled and re-armed whatever the bookkeeping above threw: this promise is both the
+						// serialization barrier every later pass awaits and the drain barrier
+						// stopAuditCleanup() hands its callers, so never settling it wedges both
 						resolve();
 						// both conjuncts are backstops, not the ownership rule — see DESIGN.md: the arming
 						// sites already restrict Rocks to the last worker
@@ -331,9 +334,7 @@ export function openAuditStore(rootStore) {
 				// nothing owns the timer callback's promise, so anything the pass lets escape — including a
 				// throw from the logging inside its own containment — would land as an unhandled rejection
 				runCleanupPass().catch((error) => {
-					try {
-						harperLogger.warn('Error during audit log cleanup', error);
-					} catch {}
+					warnContained('Error during audit log cleanup', error);
 					resolve();
 				});
 			}, auditStore.auditCleanupDelay).unref();

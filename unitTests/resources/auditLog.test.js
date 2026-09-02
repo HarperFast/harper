@@ -161,10 +161,8 @@ describe('Audit log', () => {
 			setAuditRetention(60_000, 10_000);
 		}
 	});
-	// Driven through the store's own cadence rather than a replaced global setTimeout: every audit store
-	// in the process shares that global, so a stub keyed only on the delay swallows the re-arm of the
-	// shared LMDB fixture's loop too, which under HARPER_STORAGE_ENGINE=lmdb runs at a sub-second cadence
-	// by the time this test starts.
+	// Reads the store's own cadence rather than replacing the global setTimeout: that global is shared by
+	// every audit store in the process, so a stub keyed on the delay swallows other loops' re-arms.
 	it('holds Rocks cleanup at the retention-derived cadence whatever a pass purges', async function () {
 		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-cadence-'));
 		const rootStore = new RocksDatabase(scratch).open();
@@ -1520,46 +1518,51 @@ describe('Audit cleanup retirement', () => {
 		});
 	}
 
-	// The initializing marker write has no downstream owner: openAuditStore() is synchronous and
-	// returns the store, so a rejection here escapes as an unhandled rejection unless it is contained
-	// at the call site.
-	it('contains a rejected last-removed initialization write instead of letting it escape the open', async function () {
-		const rootStore = openScratchStore();
-		const originalWarn = harperLogger.warn;
-		let unhandledRejection;
-		const onUnhandledRejection = (reason) => (unhandledRejection = reason);
-		process.on('unhandledRejection', onUnhandledRejection);
-		const realOpenDB = rootStore.openDB.bind(rootStore);
-		let opens = 0;
-		// the scratch environment has no audit store yet, so the create:false probe returns nothing and
-		// openAuditStore takes the initialize-a-new-store branch on its own
-		rootStore.openDB = (name, options) => {
-			opens++;
-			const store = realOpenDB(name, options);
-			if (store) store.put = () => Promise.reject(new Error('simulated marker initialization failure'));
-			return store;
-		};
-		const warnings = [];
-		harperLogger.warn = (...args) => warnings.push(args);
-		let auditStore;
-		try {
-			auditStore = openAuditStore(rootStore);
-			assert.equal(opens, 2, 'the fixture must take the branch that initializes a new audit store');
-			await waitFor(
-				() => warnings.some(([message]) => message === 'Error initializing the audit log last-removed marker'),
-				{
-					timeout: 1000,
-					message: 'the rejected initialization write was never logged',
-				}
-			);
-			assert.equal(unhandledRejection, undefined, 'the initialization write must not escape the synchronous open');
-		} finally {
-			harperLogger.warn = originalWarn;
-			process.off('unhandledRejection', onUnhandledRejection);
-			rootStore.openDB = realOpenDB;
-			auditStore?.stopAuditCleanup();
-			removeStorageReclamation(rootStore.path);
-			if (rootStore.status !== 'closed') await rootStore.close();
-		}
-	});
+	// The initializing marker write has no downstream owner: openAuditStore() is synchronous and returns
+	// the store, so a rejection here escapes unless it is contained at the call site — and the
+	// containment has to survive its own log sink throwing.
+	for (const loggingThrows of [true, false]) {
+		it(`contains a rejected last-removed initialization write (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async function () {
+			const rootStore = openScratchStore();
+			const originalWarn = harperLogger.warn;
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => (unhandledRejection = reason);
+			process.on('unhandledRejection', onUnhandledRejection);
+			const realOpenDB = rootStore.openDB.bind(rootStore);
+			let opens = 0;
+			// the scratch environment has no audit store yet, so the create:false probe returns nothing and
+			// openAuditStore takes the initialize-a-new-store branch on its own
+			rootStore.openDB = (name, options) => {
+				opens++;
+				const store = realOpenDB(name, options);
+				if (store) store.put = () => Promise.reject(new Error('simulated marker initialization failure'));
+				return store;
+			};
+			const warnings = [];
+			harperLogger.warn = (...args) => {
+				warnings.push(args);
+				if (loggingThrows) throw new Error('simulated logging failure');
+			};
+			let auditStore;
+			try {
+				auditStore = openAuditStore(rootStore);
+				assert.equal(opens, 2, 'the fixture must take the branch that initializes a new audit store');
+				await waitFor(
+					() => warnings.some(([message]) => message === 'Error initializing the audit log last-removed marker'),
+					{ timeout: 1000, message: 'the rejected initialization write was never logged' }
+				);
+				await delay(20);
+				assert.equal(unhandledRejection, undefined, 'the initialization write must not escape the synchronous open');
+			} finally {
+				harperLogger.warn = originalWarn;
+				process.off('unhandledRejection', onUnhandledRejection);
+				rootStore.openDB = realOpenDB;
+				auditStore?.stopAuditCleanup();
+				removeStorageReclamation(rootStore.path);
+				if (rootStore.status !== 'closed') await rootStore.close();
+			}
+		});
+	}
 });
