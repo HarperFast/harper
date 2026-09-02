@@ -18,22 +18,30 @@ function patternBuffer(seed, size) {
 	return out;
 }
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+const DEFAULT_SEED_SIZE = 256 * 1024;
+const MAX_SEED_SIZE = 4 * 1024 * 1024;
 
+// `loadAsInstance = false` dispatches instance methods as (query, data) — with (data) alone every
+// seeded field reads as undefined, which silently writes one record under the key "undefined".
 export class Seed extends Resource {
 	static loadAsInstance = false;
-	async post(body) {
+	async post(_query, body) {
 		const key = String(body.key);
 		if (String(body?.kind ?? 'blob') === 'inline') {
 			await Doc.put({ key, note: String(body.note ?? key) });
 			return { ok: true, key, kind: 'inline' };
 		}
-		const bytes = patternBuffer(key, Number(body.size) || 256 * 1024);
-		await Doc.put({ key, payload: createBlob(bytes, { type: 'application/octet-stream' }), note: sha256(bytes) });
-		return { ok: true, key, kind: 'blob', sha: sha256(bytes) };
+		const requested = Number(body.size) || DEFAULT_SEED_SIZE;
+		const bytes = patternBuffer(key, Math.min(Math.max(requested, 1), MAX_SEED_SIZE));
+		const sha = sha256(bytes);
+		await Doc.put({ key, payload: createBlob(bytes, { type: 'application/octet-stream' }), note: sha });
+		return { ok: true, key, kind: 'blob', size: bytes.length, sha };
 	}
 }
 
-// Read-back over the current database; also serves as the readiness probe.
+// Read-back over the current database; also serves as the readiness probe. Reports the blob's own
+// sha256 rather than whether it matches the record's `note`, so the caller compares against the
+// value seeding returned instead of against another field of the same (possibly corrupt) record.
 export class Verify extends Resource {
 	static loadAsInstance = false;
 	async get(query) {
@@ -41,9 +49,9 @@ export class Verify extends Resource {
 		try {
 			const rec = await Doc.get(key);
 			if (!rec) return { ok: true, present: false, key };
-			if (!rec.payload) return { ok: true, present: true, key, hasPayload: false };
+			if (!rec.payload) return { ok: true, present: true, key, hasPayload: false, note: rec.note };
 			const bytes = Buffer.from(await rec.payload.bytes());
-			return { ok: true, present: true, key, hasPayload: true, size: bytes.length, match: sha256(bytes) === rec.note };
+			return { ok: true, present: true, key, hasPayload: true, size: bytes.length, note: rec.note, sha: sha256(bytes) };
 		} catch (e) {
 			return { ok: false, key, error: String(e?.message ?? e).slice(0, 200) };
 		}
