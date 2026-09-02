@@ -41,6 +41,10 @@ import {
 	writeFile,
 } from 'node:fs/promises';
 import { spawn, type ChildProcess } from 'node:child_process';
+import {
+	confirmWindowsProcessTreeGone,
+	type WindowsProcessTreeIdentity,
+} from '../server/threads/windowsProcessTree.ts';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, createReadStream, existsSync, lstatSync, renameSync } from 'node:fs';
@@ -3931,6 +3935,13 @@ function spawnWithEnv(
 			detached: process.platform !== 'win32',
 		});
 		const trackedProcessId = childProcess.pid;
+		// Read live by the Windows tree scan: a root that exits mid-wait must bound its children
+		// from that moment, since its PID is reusable from then on.
+		const treeIdentity: WindowsProcessTreeIdentity = {
+			rootPid: trackedProcessId ?? 0,
+			rootKnownAt: Date.now(),
+			rootStartedWithinMs: 1_000,
+		};
 		if (trackedProcessId) registerProcessGroup(trackedProcessId);
 		let processGroupIsTracked = Boolean(trackedProcessId);
 		const untrackProcessGroup = () => {
@@ -3947,7 +3958,7 @@ function spawnWithEnv(
 		});
 		const timeout = setTimeout(() => {
 			didTimeout = true;
-			void terminateProcessTree(childProcess, closePromise).then(
+			void terminateProcessTree(childProcess, closePromise, treeIdentity).then(
 				() => {
 					// Only untrack once terminateProcessTree has confirmed the group is actually gone.
 					// The direct child can emit 'close' mid-grace-period (e.g. right after SIGTERM)
@@ -4014,6 +4025,7 @@ function spawnWithEnv(
 		});
 
 		childProcess.on('exit', (code, signal) => {
+			treeIdentity.rootExitedAt = Date.now();
 			spawnLogger.debug?.(`Direct child exited with code ${code}, signal ${signal}; awaiting stdio close`);
 		});
 
@@ -4039,7 +4051,7 @@ function spawnWithEnv(
 			// when a timeout is already driving its own terminateProcessTree call for this process.
 			if (!didTimeout && trackedProcessId) {
 				try {
-					await terminateProcessTree(childProcess, closePromise);
+					await terminateProcessTree(childProcess, closePromise, treeIdentity);
 				} catch (error) {
 					untrackProcessGroup();
 					flushOutput();
@@ -4109,71 +4121,6 @@ export async function waitForConfirmedTermination(
 	while (await isAlive()) await delay(pollMs);
 }
 
-export async function waitForWindowsTreeTermination(
-	attemptTermination: () => boolean | Promise<boolean>,
-	treeIsAlive: () => boolean | null | Promise<boolean | null>,
-	pollMs: number = PROCESS_TERMINATION_POLL_MS
-): Promise<void> {
-	for (;;) {
-		// A successful taskkill exit only proves the request was accepted, not that the whole tree
-		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
-		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
-		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
-		// `true` or `null` (unknown) must keep the loop retrying.
-		await attemptTermination();
-		if ((await treeIsAlive()) === false) return;
-		await delay(pollMs);
-	}
-}
-
-async function windowsProcessTreeIsAlive(rootPid: number): Promise<boolean | null> {
-	// Query the process table rather than probing only the parent PID: descendants retain their
-	// ParentProcessId after the parent exits, which is exactly the taskkill "process not found" race.
-	// Exit code 1 must mean "queried the process table and positively found nothing" — never
-	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
-	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
-	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
-	// failure into its own exit code (2), which the caller below already treats as unknown.
-	const script =
-		"$ErrorActionPreference = 'Stop'; try { " +
-		`$rootPid = ${rootPid}; ` +
-		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
-		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
-		'while ($frontier.Count -gt 0) { ' +
-		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
-		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
-		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
-		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
-		'$frontier = $next }; ' +
-		'if ($found) { exit 0 } else { exit 1 } ' +
-		'} catch { exit 2 }';
-	return new Promise<boolean | null>((resolve) => {
-		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-			stdio: 'ignore',
-			windowsHide: true,
-		});
-		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
-		query.once('error', () => resolve(null));
-	});
-}
-
-async function terminateWindowsProcessTree(childProcess: ChildProcess): Promise<void> {
-	if (!childProcess.pid) return;
-	const rootPid = childProcess.pid;
-	await waitForWindowsTreeTermination(
-		() =>
-			new Promise<boolean>((resolve) => {
-				const taskkill = spawn('taskkill', ['/pid', String(rootPid), '/T', '/F'], {
-					stdio: 'ignore',
-					windowsHide: true,
-				});
-				taskkill.once('close', (code) => resolve(code === 0));
-				taskkill.once('error', () => resolve(false));
-			}),
-		() => windowsProcessTreeIsAlive(rootPid)
-	);
-}
-
 async function waitForProcessClose(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
 	let timer: ReturnType<typeof setTimeout>;
 	const closeTimeout = new Promise<false>((resolve) => {
@@ -4190,13 +4137,19 @@ async function waitForProcessClose(childProcess: ChildProcess, closePromise: Pro
 	}
 }
 
-export async function terminateProcessTree(childProcess: ChildProcess, closePromise: Promise<void>): Promise<void> {
+export async function terminateProcessTree(
+	childProcess: ChildProcess,
+	closePromise: Promise<void>,
+	treeIdentity: WindowsProcessTreeIdentity
+): Promise<void> {
 	if (!childProcess.pid) {
 		await waitForProcessClose(childProcess, closePromise);
 		return;
 	}
 	if (process.platform === 'win32') {
-		await terminateWindowsProcessTree(childProcess);
+		await confirmWindowsProcessTreeGone(treeIdentity, {
+			label: `pid ${childProcess.pid} (${childProcess.spawnargs.join(' ')})`,
+		});
 		await waitForProcessClose(childProcess, closePromise);
 		return;
 	}

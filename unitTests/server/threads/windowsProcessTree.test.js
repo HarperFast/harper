@@ -1,0 +1,324 @@
+'use strict';
+
+const assert = require('node:assert');
+const { spawn } = require('node:child_process');
+
+const {
+	confirmWindowsProcessTreeGone,
+	parseProcessTable,
+	queryWindowsProcessTable,
+	selectWindowsProcessTree,
+	taskkillInvocation,
+} = require('#src/server/threads/windowsProcessTree');
+
+// The Windows process-tree confirmation behind component installs (Application.ts) and dead-worker
+// process-group reclamation (manageThreads.js). Windows recycles a freed PID almost immediately and
+// a process keeps its ParentProcessId after that parent exits, so membership is decided by lifetime
+// rather than by PID alone. These tests drive the selection and the wait loop with synthetic
+// process tables; the last group runs the real PowerShell query, on Windows only.
+
+const ROOT = 4000;
+const SPAWNED_AT = 1_000_000;
+const EXITED_AT = SPAWNED_AT + 700;
+
+function row(pid, ppid, created, name = 'node.exe') {
+	return { pid, ppid, created, name };
+}
+
+function pids(members) {
+	return members.map((member) => member.pid).sort((a, b) => a - b);
+}
+
+describe('selectWindowsProcessTree', () => {
+	it('keeps a descendant chain created during the root lifetime after the root has exited', () => {
+		const table = [
+			row(ROOT, 1, SPAWNED_AT + 5, 'cmd.exe'),
+			row(4100, ROOT, SPAWNED_AT + 200),
+			row(4200, 4100, EXITED_AT + 5_000, 'conhost.exe'),
+		];
+		const members = selectWindowsProcessTree(table, {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+		});
+		assert.deepEqual(pids(members), [4100, 4200]);
+	});
+
+	it('ignores a process that recycled the exited root PID, and its children', () => {
+		const table = [
+			row(ROOT, 900, EXITED_AT + 30, 'WmiPrvSE.exe'),
+			row(5100, ROOT, EXITED_AT + 60),
+			row(5200, 5100, EXITED_AT + 90),
+		];
+		const members = selectWindowsProcessTree(table, {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+		});
+		assert.deepEqual(members, []);
+	});
+
+	it('ignores an older process whose stale ParentProcessId is a PID our root later received', () => {
+		const orphans = [
+			row(6000, ROOT, SPAWNED_AT - 1_200, 'orphan.exe'),
+			row(6100, ROOT, SPAWNED_AT - 30_000, 'orphan.exe'),
+			row(6200, ROOT, SPAWNED_AT - 600_000, 'older.exe'),
+		];
+		const spawnLocal = { rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootStartedWithinMs: 1_000, rootExitedAt: EXITED_AT };
+		assert.deepEqual(selectWindowsProcessTree(orphans, spawnLocal), []);
+		// a registration hop allows more slack before rootKnownAt, and admits the youngest orphan
+		const registered = { ...spawnLocal, rootStartedWithinMs: 5_000 };
+		assert.deepEqual(pids(selectWindowsProcessTree(orphans, registered)), [6000]);
+		// unless the root's own creation time is known, which is the exact bound
+		assert.deepEqual(selectWindowsProcessTree(orphans, { ...registered, rootCreatedAt: SPAWNED_AT - 900 }), []);
+	});
+
+	it('bounds direct children by the root row itself while it is still running', () => {
+		const table = [
+			row(ROOT, 1, SPAWNED_AT - 900, 'cmd.exe'),
+			row(6000, ROOT, SPAWNED_AT - 1_200),
+			row(4100, ROOT, SPAWNED_AT - 800),
+		];
+		const members = selectWindowsProcessTree(
+			table,
+			{ rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootStartedWithinMs: 5_000 },
+			EXITED_AT
+		);
+		assert.deepEqual(pids(members), [ROOT, 4100]);
+	});
+
+	it('counts the root itself only while it runs and is the process we spawned', () => {
+		const ours = [row(ROOT, 1, SPAWNED_AT - 300, 'cmd.exe')];
+		assert.deepEqual(pids(selectWindowsProcessTree(ours, { rootPid: ROOT, rootKnownAt: SPAWNED_AT }, EXITED_AT)), [
+			ROOT,
+		]);
+		const recycled = [row(ROOT, 1, SPAWNED_AT + 5_000, 'cmd.exe')];
+		assert.deepEqual(selectWindowsProcessTree(recycled, { rootPid: ROOT, rootKnownAt: SPAWNED_AT }, EXITED_AT), []);
+		// once its exit is known, even a row still showing our creation time is a process on its way out
+		assert.deepEqual(
+			selectWindowsProcessTree(ours, { rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootExitedAt: EXITED_AT }),
+			[]
+		);
+	});
+
+	it('bounds a still-running root only by the current time', () => {
+		const table = [row(ROOT, 1, SPAWNED_AT - 5, 'cmd.exe'), row(4100, ROOT, SPAWNED_AT + 90_000)];
+		const members = selectWindowsProcessTree(table, { rootPid: ROOT, rootKnownAt: SPAWNED_AT }, SPAWNED_AT + 100_000);
+		assert.deepEqual(pids(members), [ROOT, 4100]);
+	});
+
+	it('does not admit a child created before its parent (a recycled parent PID at depth)', () => {
+		const table = [row(4100, ROOT, SPAWNED_AT + 200), row(4200, 4100, SPAWNED_AT - 5_000)];
+		const members = selectWindowsProcessTree(table, {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+		});
+		assert.deepEqual(pids(members), [4100]);
+	});
+
+	it('never attributes a process without a creation time to the tree', () => {
+		const table = [row(4100, ROOT, null)];
+		const members = selectWindowsProcessTree(table, {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+		});
+		assert.deepEqual(members, []);
+	});
+});
+
+describe('taskkillInvocation', () => {
+	it('kills through the root alone while the root is a member, and every member by its own PID once it is not', () => {
+		const child = row(4100, ROOT, SPAWNED_AT + 200);
+		const grandchild = row(4200, 4100, SPAWNED_AT + 300);
+		// /T frees the descendants' PIDs, so a same-round per-PID kill could hit whatever recycled them
+		assert.deepEqual(taskkillInvocation([row(ROOT, 1, SPAWNED_AT), child, grandchild], ROOT), [
+			'/pid',
+			String(ROOT),
+			'/T',
+			'/F',
+		]);
+		assert.deepEqual(taskkillInvocation([child, grandchild], ROOT), ['/F', '/pid', '4100', '/pid', '4200']);
+		assert.equal(taskkillInvocation([], ROOT), null);
+	});
+});
+
+describe('parseProcessTable', () => {
+	it('reads the rows the PowerShell query emits and rejects anything else', () => {
+		assert.deepEqual(
+			parseProcessTable(
+				'[{"pid":4,"ppid":0,"name":"System","created":null},{"pid":7,"ppid":4,"name":"a.exe","created":12}]'
+			),
+			[
+				{ pid: 4, ppid: 0, created: null, name: 'System' },
+				{ pid: 7, ppid: 4, created: 12, name: 'a.exe' },
+			]
+		);
+		assert.deepEqual(parseProcessTable('﻿[{"pid":1,"ppid":0}]'), [{ pid: 1, ppid: 0, created: null, name: undefined }]);
+		assert.deepEqual(parseProcessTable('{"pid":1,"ppid":0,"created":5}'), [
+			{ pid: 1, ppid: 0, created: 5, name: undefined },
+		]);
+		assert.deepEqual(parseProcessTable('[]'), []);
+		assert.equal(parseProcessTable('not json'), null);
+		assert.equal(parseProcessTable('"text"'), null);
+		assert.equal(parseProcessTable('[{"pid":"1","ppid":0}]'), null);
+	});
+});
+
+describe('confirmWindowsProcessTreeGone', () => {
+	const exitedIdentity = () => ({ rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootExitedAt: EXITED_AT });
+
+	it('terminates the members each scan finds and returns only once a scan finds none', async () => {
+		const child = row(4100, ROOT, SPAWNED_AT + 200);
+		const scans = [[child], [child], []];
+		const kills = [];
+		await confirmWindowsProcessTreeGone(exitedIdentity(), {
+			scan: async () => scans.shift(),
+			kill: async (members, rootPid) => kills.push([pids(members), rootPid]),
+			pollMs: 1,
+		});
+		assert.deepEqual(kills, [
+			[[4100], ROOT],
+			[[4100], ROOT],
+		]);
+		assert.equal(scans.length, 0);
+	});
+
+	it('treats an unreadable process table as unknown, not gone', async () => {
+		const scans = [null, null, []];
+		let kills = 0;
+		await confirmWindowsProcessTreeGone(exitedIdentity(), {
+			scan: async () => scans.shift(),
+			kill: async () => kills++,
+			pollMs: 1,
+		});
+		assert.equal(scans.length, 0);
+		assert.equal(kills, 0);
+	});
+
+	it('does not wait on a process that merely recycled the exited root PID', async () => {
+		let scans = 0;
+		await confirmWindowsProcessTreeGone(exitedIdentity(), {
+			scan: async () => {
+				scans++;
+				return [row(ROOT, 900, EXITED_AT + 30, 'WmiPrvSE.exe'), row(5100, ROOT, EXITED_AT + 60)];
+			},
+			kill: async () => assert.fail('nothing to kill'),
+			pollMs: 1,
+		});
+		assert.equal(scans, 1);
+	});
+
+	it('keeps terminating a root whose exit was never observed while it is still found running as ours', async () => {
+		// manageThreads' path: the synchronous taskkill was not confirmed, so the root may still be up.
+		const identity = { rootPid: ROOT, rootKnownAt: SPAWNED_AT };
+		const root = row(ROOT, 1, SPAWNED_AT - 10, 'cmd.exe');
+		const child = row(4100, ROOT, SPAWNED_AT + 200);
+		let clock = SPAWNED_AT + 1_000;
+		const scans = [[root, child], [child], []];
+		const kills = [];
+		await confirmWindowsProcessTreeGone(identity, {
+			scan: async () => scans.shift(),
+			kill: async (members, rootPid) => kills.push(taskkillInvocation(members, rootPid)),
+			now: () => (clock += 100),
+			pollMs: 1,
+		});
+		assert.deepEqual(kills, [
+			['/pid', String(ROOT), '/T', '/F'],
+			['/F', '/pid', '4100'],
+		]);
+		// the exit was latched from the first scan that no longer found the root, so a process that
+		// recycles its PID afterwards is never mistaken for it
+		assert.ok(
+			identity.rootExitedAt >= SPAWNED_AT + 1_000 && identity.rootExitedAt < clock,
+			String(identity.rootExitedAt)
+		);
+		assert.equal(identity.rootCreatedAt, SPAWNED_AT - 10);
+	});
+
+	it('latches the root exit after the scan, so a child born during that scan is still waited on', async () => {
+		const identity = { rootPid: ROOT, rootKnownAt: SPAWNED_AT };
+		let clock = SPAWNED_AT + 1_000;
+		let lateChild;
+		const scans = [
+			async () => {
+				// the snapshot is taken early in a slow scan; the root exits and a last child appears after it
+				clock += 2_000;
+				lateChild = row(4100, ROOT, clock - 500);
+				return [lateChild];
+			},
+			async () => [lateChild],
+			async () => [],
+		];
+		const kills = [];
+		await confirmWindowsProcessTreeGone(identity, {
+			scan: () => scans.shift()(),
+			kill: async (members) => kills.push(pids(members)),
+			now: () => (clock += 100),
+			pollMs: 1,
+		});
+		assert.deepEqual(kills, [[4100], [4100]]);
+	});
+
+	it('names the survivors once the wait is long enough to be a problem, and backs off its polling', async () => {
+		const survivor = row(4100, ROOT, SPAWNED_AT + 200, 'node.exe');
+		let clock = SPAWNED_AT;
+		const warnings = [];
+		let remaining = 3;
+		const started = Date.now();
+		await confirmWindowsProcessTreeGone(exitedIdentity(), {
+			scan: async () => {
+				clock += 4_000;
+				return remaining-- > 0 ? [survivor] : [];
+			},
+			kill: async () => {},
+			now: () => clock,
+			warn: (message) => warnings.push(message),
+			pollMs: 5,
+			maxPollMs: 20,
+			label: 'npm.cmd install',
+		});
+		assert.equal(warnings.length, 1, warnings.join('\n'));
+		assert.match(
+			warnings[0],
+			/process tree of npm\.cmd install remains unconfirmed after \d+ms: live members 4100 \(node\.exe\) created 1970-/
+		);
+		// 5 + 10 + 20 ms of polling between four scans, doubling to the cap
+		assert.ok(Date.now() - started >= 30, `polls should back off: ${Date.now() - started}ms`);
+	});
+});
+
+describe('queryWindowsProcessTable', function () {
+	before(function () {
+		if (process.platform !== 'win32') this.skip();
+	});
+
+	it('lists a spawned child with a creation time bracketed by the spawn, and the tree confirms gone once killed', async function () {
+		this.timeout(60_000);
+		const before = Date.now();
+		const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		const identity = { rootPid: child.pid, rootKnownAt: Date.now() };
+		child.on('exit', () => {
+			identity.rootExitedAt = Date.now();
+		});
+		const table = await queryWindowsProcessTable();
+		assert.ok(Array.isArray(table), 'the process table query should succeed on Windows');
+		assert.ok(
+			table.some((process) => process.pid === require('node:process').pid),
+			'the current process should be in the table'
+		);
+		const spawned = table.find((process) => process.pid === child.pid);
+		assert.ok(spawned, 'the spawned child should be in the table');
+		assert.ok(
+			spawned.created !== null && spawned.created >= before - 5_000 && spawned.created <= Date.now() + 50,
+			`creation time ${spawned.created} should sit between ${before} and now`
+		);
+		assert.deepEqual(pids(selectWindowsProcessTree(table, identity)), [child.pid]);
+		await confirmWindowsProcessTreeGone(identity, { label: 'unit test child' });
+		assert.ok(child.exitCode !== null || child.signalCode !== null, 'the child should have been terminated');
+	});
+});
