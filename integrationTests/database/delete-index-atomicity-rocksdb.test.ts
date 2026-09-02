@@ -38,7 +38,7 @@
  *   npm run test:integration -- "integrationTests/database/delete-index-atomicity-rocksdb.test.ts"
  */
 import { suite, test, before, after } from 'node:test';
-import { ok, strictEqual } from 'node:assert';
+import { ok, rejects, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -57,7 +57,13 @@ const MAX_TXN_OPEN_MS = 1000;
 // on elapsed wall-clock.
 const HOLD_MS = 15_000;
 const LOG_FILES = ['hdb.log', 'stdout.log', 'stderr.log'];
+const ORACLE_OPEN_ATTEMPTS = 6;
+const ORACLE_OPEN_BACKOFF_MS = 50;
 const skipSuite = process.platform === 'win32';
+
+function errorMessage(error: unknown): string {
+	return String((error as Error)?.message ?? error);
+}
 
 suite(
 	'#1854 audit:false delete must not orphan secondary-index entries (raw RocksDB oracle)',
@@ -105,7 +111,7 @@ suite(
 					}
 					lastProbeError = `status ${probe.status}`;
 				} catch (error) {
-					lastProbeError = String((error as Error)?.message ?? error);
+					lastProbeError = errorMessage(error);
 				}
 				await sleep(250);
 			}
@@ -129,14 +135,7 @@ suite(
 		});
 
 		after(async () => {
-			for (const db of dbiCache.values()) {
-				try {
-					db.close();
-				} catch {
-					/* ignore */
-				}
-			}
-			dbiCache.clear();
+			closeOracleHandles();
 			await teardownHarper(ctx);
 		});
 
@@ -181,10 +180,11 @@ suite(
 			return false;
 		}
 
-		/** Must precede every raw read; see the file header for why both halves are required. */
-		async function refreshOracle(): Promise<void> {
+		async function flushThroughFixture(): Promise<void> {
 			const res = await postJSON('/Flush/', {});
 			strictEqual(res.status, 200, 'flush control should succeed');
+		}
+		function closeOracleHandles(): void {
 			for (const db of dbiCache.values()) {
 				try {
 					db.close();
@@ -194,9 +194,63 @@ suite(
 			}
 			dbiCache.clear();
 		}
-		function openDbi(name: string): RocksDatabase {
-			if (!dbiCache.has(name)) dbiCache.set(name, RocksDatabase.open(rootPath, { name, readOnly: true }));
-			return dbiCache.get(name)!;
+		/** Must precede every raw read; see the file header for why both halves are required. */
+		async function refreshOracle(): Promise<void> {
+			await flushThroughFixture();
+			closeOracleHandles();
+		}
+		/**
+		 * The one open failure worth reopening for: a compaction in the Harper process under test
+		 * unlinked an SST while this handle was opening. `readOnly: true` maps to
+		 * `rocksdb::DB::OpenForReadOnly`, which replays the MANIFEST into a file list and then opens
+		 * those files while holding no reference on any of them, so a file the list names can already
+		 * be gone. RocksDB's `The file MANIFEST-NNNNNN may be corrupted` wording means exactly that
+		 * here and nothing is damaged: the keys live on in the compaction's output file.
+		 * HarperFast/rocksdb-js#812 is the durable fix — a secondary-mode open, which pins the files
+		 * it lists.
+		 *
+		 * Deliberately unmatched: `Database does not exist`, which is what rocksdb-js reports for
+		 * *every* `IsIOError()` out of a read-only open (src/binding/database/db_descriptor.cpp),
+		 * file name and errno discarded. Retrying it would fold EACCES, EMFILE and a disk read error
+		 * into a six-attempt wait ending in a compaction-race message none of them caused; every
+		 * failure this race has produced so far carries the full text above instead.
+		 */
+		function isCompactionRaceOpenError(error: unknown): boolean {
+			const message = errorMessage(error);
+			return message.includes('No such file or directory') && /\b\d+\.sst\b/.test(message);
+		}
+		async function openWithCompactionRetry<T>(label: string, open: (attempt: number) => T | Promise<T>): Promise<T> {
+			let lastError: unknown;
+			for (let attempt = 1; attempt <= ORACLE_OPEN_ATTEMPTS; attempt++) {
+				if (attempt > 1) await sleep(ORACLE_OPEN_BACKOFF_MS * 2 ** (attempt - 2));
+				try {
+					const opened = await open(attempt);
+					if (attempt > 1)
+						console.log(
+							`[#1854 oracle] read-only open of ${label} recovered on attempt ${attempt}/${ORACLE_OPEN_ATTEMPTS} after: ${errorMessage(lastError)}`
+						);
+					return opened;
+				} catch (error) {
+					if (!isCompactionRaceOpenError(error)) throw error;
+					lastError = error;
+				}
+			}
+			throw new Error(
+				`oracle could not open ${label} read-only in ${ORACLE_OPEN_ATTEMPTS} attempts; the last RocksDB error is the cause`,
+				{ cause: lastError }
+			);
+		}
+		async function openDbi(name: string): Promise<RocksDatabase> {
+			const cached = dbiCache.get(name);
+			if (cached) return cached;
+			const db = await openWithCompactionRetry(`column family "${name}"`, async (attempt) => {
+				// Re-flushed before each reopen so the snapshot that finally opens still post-dates
+				// every write under test, whatever the retries cost.
+				if (attempt > 1) await flushThroughFixture();
+				return RocksDatabase.open(rootPath, { name, readOnly: true });
+			});
+			dbiCache.set(name, db);
+			return db;
 		}
 		/**
 		 * Whether a live record exists under this primary key, via a direct point lookup that no
@@ -223,15 +277,16 @@ suite(
 		 * with a null value; the plain RocksDatabase class decodes that key here, with no Harper
 		 * subclass interpreting it.
 		 */
-		function rawIndexEntries(table: string, attribute: string): Array<{ key: string; id: string }> {
-			return [...openDbi(`${table}/${attribute}`).getRange()].map((e: { key: [unknown, unknown] }) => ({
+		async function rawIndexEntries(table: string, attribute: string): Promise<Array<{ key: string; id: string }>> {
+			const dbi = await openDbi(`${table}/${attribute}`);
+			return [...dbi.getRange()].map((e: { key: [unknown, unknown] }) => ({
 				key: String(e.key[0]),
 				id: String(e.key[1]),
 			}));
 		}
 		/** Index entries whose id has no live record — the dangling entries #1854 produced. */
 		async function findPhantoms(table: string, attribute: string): Promise<Array<{ key: string; id: string }>> {
-			const entries = rawIndexEntries(table, attribute);
+			const entries = await rawIndexEntries(table, attribute);
 			const live = new Map<string, boolean>();
 			for (const e of entries) if (!live.has(e.id)) live.set(e.id, await hasLiveRecord(table, e.id));
 			return entries.filter((e) => !live.get(e.id));
@@ -242,13 +297,61 @@ suite(
 			strictEqual(res.status, 200, `seeding ${table} must succeed, or every assertion below is vacuous`);
 		}
 
+		test('the oracle reopens only for the compaction race, and fails fast on anything else', async () => {
+			// Verbatim RocksDB messages: the first is what the flake actually threw, the second is what
+			// rocksdb-js collapses every read-only IO error into (see isCompactionRaceOpenError).
+			const missingSst = new Error(
+				`Corruption: Corruption: IO error: No such file or directory: While open a file for random read: ${rootPath}/000046.sst: No such file or directory  The file ${rootPath}/MANIFEST-000005 may be corrupted.`
+			);
+			const collapsed = new Error('Database does not exist');
+
+			let attempts = 0;
+			const opened = await openWithCompactionRetry('the retry contract', () => {
+				attempts++;
+				if (attempts <= 2) throw missingSst;
+				return 'opened';
+			});
+			strictEqual(opened, 'opened', 'the oracle must reopen past a compaction race');
+			strictEqual(attempts, 3, 'and must stop reopening the moment an open succeeds');
+
+			for (const failFast of [
+				new Error(
+					`Corruption: block checksum mismatch: stored = 2454123, computed = 88123  in ${rootPath}/000046.sst offset 0 size 1234`
+				),
+				new Error('Invalid argument: Column family not found: ItemF/category'),
+				collapsed,
+			]) {
+				attempts = 0;
+				await rejects(
+					openWithCompactionRetry('the retry contract', () => {
+						attempts++;
+						throw failFast;
+					}),
+					(error: Error) => error === failFast,
+					`the oracle must surface "${failFast.message.slice(0, 40)}" unchanged`
+				);
+				strictEqual(attempts, 1, 'and must not reopen for it');
+			}
+
+			attempts = 0;
+			await rejects(
+				openWithCompactionRetry('the retry contract', () => {
+					attempts++;
+					throw missingSst;
+				}),
+				(error: Error) => error.cause === missingSst,
+				'an exhausted budget must still carry the original RocksDB error'
+			);
+			strictEqual(attempts, ORACLE_OPEN_ATTEMPTS, 'and must be bounded');
+		});
+
 		// Run against both tables: an audit:true control arm whose oracle has never been shown to
 		// work on that table cannot be trusted to go red.
 		for (const table of ['ItemF', 'ItemT']) {
 			test(`oracle proof (${table}): sees a seeded index entry, and sees it vanish on a normal delete`, async () => {
 				await seed(table, [{ id: 'proof-1', category: 'PROOF' }]);
 				await refreshOracle();
-				let entries = rawIndexEntries(table, 'category').filter((e) => e.key === 'PROOF');
+				let entries = (await rawIndexEntries(table, 'category')).filter((e) => e.key === 'PROOF');
 				strictEqual(entries.length, 1, 'oracle should see exactly 1 raw index entry for PROOF after seed');
 				strictEqual(entries[0].id, 'proof-1', 'raw index entry should point at proof-1');
 				ok(await hasLiveRecord(table, 'proof-1'), 'proof-1 should be a live record after seed');
@@ -257,7 +360,7 @@ suite(
 				strictEqual(res.status, 200, 'ordinary delete should succeed');
 
 				await refreshOracle();
-				entries = rawIndexEntries(table, 'category').filter((e) => e.key === 'PROOF');
+				entries = (await rawIndexEntries(table, 'category')).filter((e) => e.key === 'PROOF');
 				strictEqual(entries.length, 0, 'oracle should see the PROOF index entry vanish after a normal delete');
 				ok(!(await hasLiveRecord(table, 'proof-1')), 'proof-1 should no longer be a live record after a normal delete');
 			});
@@ -312,7 +415,7 @@ suite(
 					await refreshOracle();
 					ok(await hasLiveRecord(table, removeId), `${removeId} must exist before the held transaction deletes it`);
 					ok(
-						rawIndexEntries(table, 'category').some((e) => e.key === 'ARMA-DEL' && e.id === removeId),
+						(await rawIndexEntries(table, 'category')).some((e) => e.key === 'ARMA-DEL' && e.id === removeId),
 						`${removeId} must be indexed before the held transaction deletes it`
 					);
 
@@ -355,7 +458,7 @@ suite(
 
 					await refreshOracle();
 					const phantoms = await findPhantoms(table, 'category');
-					const indexEntries = rawIndexEntries(table, 'category');
+					const indexEntries = await rawIndexEntries(table, 'category');
 					// Whether the update landed depends on which side of the abort it fell on, so the check
 					// is only that a surviving row is reachable through the index at all.
 					const missing: string[] = [];
@@ -404,7 +507,7 @@ suite(
 				await refreshOracle();
 				ok(await hasLiveRecord(table, id), `${id} must exist before the aborted delete`);
 				ok(
-					rawIndexEntries(table, 'category').some((e) => e.key === 'ARMB' && e.id === id),
+					(await rawIndexEntries(table, 'category')).some((e) => e.key === 'ARMB' && e.id === id),
 					`${id} must be indexed before the aborted delete`
 				);
 
@@ -419,7 +522,7 @@ suite(
 
 				await refreshOracle();
 				const primaryHasId = await hasLiveRecord(table, id);
-				const indexHasEntry = rawIndexEntries(table, 'category').some((e) => e.key === 'ARMB' && e.id === id);
+				const indexHasEntry = (await rawIndexEntries(table, 'category')).some((e) => e.key === 'ARMB' && e.id === id);
 
 				console.log(
 					`\n[#1854 Arm B ${table}] status=${res.status} primaryHasId=${primaryHasId} indexHasEntry=${indexHasEntry}`
