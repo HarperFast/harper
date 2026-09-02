@@ -9,6 +9,31 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// `realpathSync.native`, because a native watch has to be armed on the long-path form: on a
+// Windows CI runner `os.tmpdir()` is the 8.3 spelling (`C:\Users\RUNNER~1\...`), and libuv
+// aborts the process — not the watch — when the long path it resolves for an event no longer
+// prefix-matches the directory the watch was armed on. Every production watcher canonicalizes for
+// this reason (utility/watchPath.ts); a harness modelling one has to as well.
+const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'harper-lost-watch-')));
+
+// Harper's logger takes its destination from the ambient install — the boot properties file in the
+// user's home — and where there is none it drops every line instead. The warn cadence asserted
+// below is only observable if this harness brings its own configuration, so point ROOTPATH at one
+// before the logger module loads and reads it.
+fs.writeFileSync(
+	path.join(root, 'harper-config.yaml'),
+	[
+		`rootPath: ${JSON.stringify(root)}`,
+		'logging:',
+		'  level: info',
+		`  root: ${JSON.stringify(path.join(root, 'log'))}`,
+		'  file: false',
+		'  stdStreams: true',
+		'',
+	].join('\n')
+);
+process.env.ROOTPATH = root;
+
 const {
 	claimLostNativeWatchError,
 	guardedWatch,
@@ -53,7 +78,6 @@ if (mode === 'prepend-ordering') {
 	});
 }
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-lost-watch-'));
 const watched = path.join(root, 'component');
 fs.mkdirSync(path.join(watched, 'resources'), { recursive: true });
 fs.writeFileSync(path.join(watched, 'config.yaml'), 'name: fixture\n');
