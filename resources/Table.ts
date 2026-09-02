@@ -2426,11 +2426,7 @@ export function makeTable(options) {
 				(handle) => {
 					link.registerRecordLock(handle);
 					if (!resolved.hold) {
-						// Stamp the link's version clock at acquisition time if not yet fixed. A concurrent
-						// write that lands between lock() and the holder's first write uses real (later) time
-						// and gets a higher version, so it wins under LWW — the correct outcome. This must
-						// run even when no read transaction exists yet (link.transaction = undefined), because
-						// the first write creates the native txn and would otherwise pick up the current time.
+						// Pin the transaction clock at acquisition so concurrent writes (real, later time) win under LWW.
 						if (!link.timestamp) link.timestamp = handle.acquiredAt;
 						if (link.transaction) {
 							// The read snapshot predates the lock; drop it so the scope reads what it locked.

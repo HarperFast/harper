@@ -224,6 +224,8 @@ the same exposure any local write already has against a future-dated replicated 
 wall clock. Phase 1 follow-up: add an explicit advance API to the rocksdb-js generator so the nudge
 goes through the authoritative path.
 
+**Acquisition timestamp and mixed transactions.** A hold write stamps the transaction clock with the lock's `acquiredAt` value (via `lockStamp = handle.nextHolderVersion()`), so a concurrent write at real (later) time wins under LWW — the write ordering is coherent with the state the holder read at lock time. The stamp is applied only when the transaction has no timestamp yet (`if (!this.timestamp) this.timestamp = lockStamp`): a transaction that already has a fixed timestamp (because another write ran first) keeps that timestamp, and the hold write inherits it. In a mixed transaction (hold write + other writes), the transaction carries one timestamp for all writes; if that timestamp is later than `acquiredAt`, the LWW guarantee does not hold for the held record in that batch. **Recommendation:** write held records in their own transaction or through the record returned by `lock()` (which always commits via `ImmediateTransaction` and stamps each save independently), rather than mixing hold writes with other writes in a shared `transaction()` scope.
+
 **Hold handles and re-entrancy scope.** A hold handle registered in `link.recordLocks` enables
 re-entrant writes through `gateLockedWrite` only while that link's transaction is open. Once the
 acquiring transaction commits, `releaseRecordLocks` removes non-hold gate handles; the hold handle

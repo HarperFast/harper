@@ -206,14 +206,21 @@ describe('Record locks (harper#483)', () => {
 			await LockTest.put({ id: recordId, n: 0 });
 
 			// Case A: holder write, no concurrent write → holder's value lands.
+			const beforeLock = Date.now();
 			const holderA = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			// Delay a few ms so write time > lock time; the entry version should still be ≤ lock time.
+			await delay(5);
+			const beforeSave = Date.now();
 			holderA.set('n', 7);
 			await holderA.save();
 			const afterHolderOnly = await LockTest.get(recordId);
 			assert.strictEqual(afterHolderOnly.n, 7, 'holder write lands when no concurrent write exists');
 			const holderOnlyVersion = entryOf(recordId).version;
-			// The holder's write version must be ≤ real wall-clock time (not later than now).
+			// Version must be a realistic timestamp and must have been stamped at lock-acquisition time,
+			// not at write time: if stamped at write time it would be ≥ beforeSave (after the delay).
 			assert.ok(holderOnlyVersion <= Date.now() + 5, 'version is a realistic timestamp');
+			assert.ok(holderOnlyVersion >= beforeLock - 5, 'version is at or after lock-acquisition time');
+			assert.ok(holderOnlyVersion < beforeSave, 'version was stamped at acquisition, not at write time');
 			await holderA.unlock();
 
 			// Case B: concurrent write at t1 > t0 beats the holder write.

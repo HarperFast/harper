@@ -886,18 +886,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
-		// A write staged through a held record lock uses the lock's acquisition timestamp so that any
-		// concurrent write stamped at its real (later) time wins under the existing LWW ordering — the
-		// holder's read-modify-write is coherent with the state it locked, and a concurrent write landing
-		// after the lock is acquired but before the holder commits is treated as happening "after" the lock.
-		// Use a per-operation lockStamp (set once, reused on retry) rather than gating on this.timestamp:
-		// ImmediateTransaction commits each write immediately, and this.timestamp may not reliably reset
-		// to 0 between sequential saves, causing a later save to skip injection and reuse a stale stamp.
+		// Hold write: stamp the transaction clock once — only when no timestamp is fixed yet.
+		// A mixed transaction that already has a timestamp (set by an earlier write) uses it as-is.
 		if (operation.lockHandle?.hold) {
-			if (!operation.lockStamp) {
-				operation.lockStamp = operation.lockHandle.nextHolderVersion();
-			}
-			this.timestamp = operation.lockStamp;
+			if (!operation.lockStamp) operation.lockStamp = operation.lockHandle.nextHolderVersion();
+			if (!this.timestamp) this.timestamp = operation.lockStamp;
 		}
 		let txnTime = this.timestamp;
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
