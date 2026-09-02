@@ -1937,8 +1937,8 @@ export function makeTable(options) {
 		 */
 		update(updates: Record & RecordObject, fullUpdate: true);
 		update(updates: Partial<Record & RecordObject>, target?: RequestTarget);
-		update(target: RequestTarget, updates?: any);
-		update(target: any, updates?: any) {
+		update(target: RequestTarget, updates?: any, options?: any);
+		update(target: any, updates?: any, options?: any) {
 			let id: Id;
 			// determine if it is a legacy call
 			const directInstance =
@@ -1997,12 +1997,12 @@ export function makeTable(options) {
 							this.#changes = updates;
 							// `when` awaits the embed hook (when `@embed` is active) before resolving,
 							// so the caller's `save()` doesn't run before the write is staged.
-							return when(this._writeUpdate(id, this.#changes, false), () => this);
+							return when(this._writeUpdate(id, this.#changes, false, options), () => this);
 						});
 					});
 				}
 			}
-			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
+			return when(this._writeUpdate(id, this.#changes, fullUpdate, options), () => this);
 		}
 
 		/**
@@ -2420,13 +2420,17 @@ export function makeTable(options) {
 			target: RequestTarget,
 			recordUpdate: Partial<Record & RecordObject>
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
+			const context = this.getContext();
+			const ifExists = (context as Context)?.ifExists === true;
+			if (ifExists) delete (context as Context).ifExists;
+			const options = ifExists ? { ifExists: true } : undefined;
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat.
 				// `when` settles the embed hook before `save()` so the write is staged first.
-				return when(this.update(target, false), () => this.save() as any) as any;
+				return when(this.update(target, false, options), () => this.save() as any) as any;
 			} else {
 				// standard path, ensure there is no return object
-				return when(this.update(target, recordUpdate), () => {
+				return when(this.update(target, recordUpdate, options), () => {
 					return when(this.save() as any, () => undefined); // wait for the update and save, but return undefined
 				}) as any;
 			}
@@ -2438,6 +2442,7 @@ export function makeTable(options) {
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
+			const ifExists = !fullUpdate && options?.ifExists === true;
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -2588,6 +2593,11 @@ export function makeTable(options) {
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
+					// Validate existence here because optimistic retries do not rerun the staging-time validation.
+					if (ifExists && existingRecord == null) {
+						write.skipped = true;
+						return;
+					}
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;

@@ -1,10 +1,9 @@
 /**
  * MCP session store backed by the `system.mcp_session` Harper table.
  *
- * Eviction is delegated to Harper's native TTL (`Table.setTTLExpiration`):
- * every write to a session record updates its `version`, which Harper uses
- * to determine expiration. So calling `saveSession(id, changes)` on each request
- * gives sliding-window idle semantics for free — no custom timer, no sweep.
+ * Eviction is delegated to Harper's native TTL (`Table.setTTLExpiration`).
+ * Active-session writes use the table default for sliding-window idle expiry.
+ * Legacy deletion tombstones retain their explicit `expiresAt` during upgrades.
  *
  * Spec: when a request bears an `Mcp-Session-Id` the server doesn't
  * recognize (expired, terminated, or unknown), the server MUST return HTTP
@@ -34,9 +33,6 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
  * is identical either way.)
  */
 const EVICTION_WINDOW_SECONDS = 60;
-/** Bounds tombstone storage; structural validation remains the post-eviction backstop. */
-const TOMBSTONE_LIFETIME_MS = 5 * 60 * 1000;
-
 export interface McpSessionRecord {
 	id: string;
 	protocolVersion: string;
@@ -65,25 +61,13 @@ export interface McpSessionRecord {
 	 * to clients that declared support. Undefined = client declared none.
 	 */
 	clientCapabilities?: Record<string, unknown>;
-	/** A client-terminated session id can never become active again (#1368). */
+	/** Legacy deletion tombstone retained for rolling-upgrade compatibility. */
 	terminated?: true;
-	/** Per-record Table expiration used to bound tombstone retention. */
+	/** Per-record expiration retained for legacy deletion tombstones. */
 	expiresAt?: number;
 }
 
 type McpSessionUpdate = Partial<Pick<McpSessionRecord, 'initialized' | 'lastActivity' | 'logLevel' | 'subscriptions'>>;
-type McpSessionPayload = Omit<McpSessionRecord, 'id' | 'terminated' | 'expiresAt'>;
-
-const SCRUBBED_SESSION_PAYLOAD = {
-	protocolVersion: undefined,
-	initialized: undefined,
-	user: undefined,
-	createdAt: undefined,
-	lastActivity: undefined,
-	logLevel: undefined,
-	subscriptions: undefined,
-	clientCapabilities: undefined,
-} satisfies Record<keyof McpSessionPayload, undefined>;
 
 let _sessionTable: Table | undefined;
 
@@ -181,16 +165,11 @@ export async function loadSession(id: string): Promise<McpSessionRecord | null> 
  * Persist changed session fields without overwriting concurrent updates.
  */
 export async function saveSession(id: string, changes: McpSessionUpdate): Promise<void> {
-	await (getTable() as any).patch(id, { id, ...changes });
+	await (getTable() as any).patch(id, changes, { ifExists: true });
 }
 
 export async function deleteSession(id: string): Promise<void> {
-	await (getTable() as any).patch(id, {
-		id,
-		terminated: true,
-		expiresAt: Date.now() + TOMBSTONE_LIFETIME_MS,
-		...SCRUBBED_SESSION_PAYLOAD,
-	});
+	await (getTable() as any).delete(id);
 	// Tear down ancillary per-session in-memory state — the `tools/list`
 	// pagination cache and the per-session rate-limit buckets. Without
 	// these, every session that ever paged or called a tool leaves orphan

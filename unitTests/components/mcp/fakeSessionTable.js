@@ -5,7 +5,8 @@ function makeFakeSessionTable() {
 		async put(record) {
 			store.set(record.id, { ...record });
 		},
-		async patch(id, changes) {
+		async patch(id, changes, context) {
+			if (context?.ifExists && !store.has(id)) return;
 			store.set(id, { ...store.get(id), ...changes });
 		},
 		async get(id) {
