@@ -140,10 +140,7 @@ describe('Array-valued property scoping', () => {
 		it('indexed array: same matching records as unindexed', async function () {
 			// unique ids: which leg leads the scan is estimate-dependent, so the harper#2434
 			// duplicate pattern is not stable here
-			assert.deepStrictEqual(
-				await collectUniqueIds(searchRest('sizesIdx=ge=175&sizesIdx=le=180')),
-				[1, 2, 4, 6]
-			);
+			assert.deepStrictEqual(await collectUniqueIds(searchRest('sizesIdx=ge=175&sizesIdx=le=180')), [1, 2, 4, 6]);
 		});
 		it.skip('harper#2434: indexed lead condition must not duplicate records into the result', async function () {
 			assert.deepStrictEqual(await collectIds(searchRest('sizesIdx=ge=175&sizesIdx=le=180')), [1, 2, 4, 6]);
@@ -202,9 +199,7 @@ describe('Array-valued property scoping', () => {
 		});
 		it('programmatic string value against numeric elements: same result', async function () {
 			assert.deepStrictEqual(
-				await collectIds(
-					Widgets.search({ conditions: [{ attribute: 'sizes', comparator: 'contains', value: '17' }] })
-				),
+				await collectIds(Widgets.search({ conditions: [{ attribute: 'sizes', comparator: 'contains', value: '17' }] })),
 				[1, 2, 4]
 			);
 		});
