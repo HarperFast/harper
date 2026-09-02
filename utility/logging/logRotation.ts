@@ -120,7 +120,9 @@ export async function retryPendingGenerations() {
 		}
 		if (!(await requestGenerationClose(pending.generation))) continue;
 		unprovenArchives.delete(archivePath);
-		if (pending.compress) await compressArchive(archivePath);
+		// One archive that will not compress must not stop the rest of the queue, or the tick that
+		// drives it — retention runs after this and needs the tick to reach it.
+		if (pending.compress) await compressArchive(archivePath).catch(() => {});
 	}
 }
 

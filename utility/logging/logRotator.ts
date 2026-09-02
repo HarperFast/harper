@@ -86,8 +86,6 @@ function logRotator({
 		// the logger instead, so one bad tick (e.g. an unexpected fs error) never kills rotation for
 		// the rest of the process's life.
 		try {
-			// A missing/relocated active log file only invalidates the rotation checks below — retention cleanup
-			// must still run. So skip the individual check on ENOENT rather than returning from the whole tick.
 			if (maxBytes) {
 				try {
 					// statSync, and the rename in the same turn: an await here lets a writing thread rotate
@@ -105,7 +103,8 @@ function logRotator({
 						hdbLogger.notify(`hdb.log rotated, old log moved to ${lastRotatedLogPath}`);
 					}
 				} catch (err) {
-					// A missing/relocated active log only invalidates this check — retention must still run
+					// A missing or already-rotated active log only invalidates this check; retention below
+					// must still run, so skip the check rather than leaving the whole tick.
 					if (err.code !== 'ENOENT') throw err;
 				}
 			}
