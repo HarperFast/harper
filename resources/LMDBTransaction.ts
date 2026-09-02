@@ -13,7 +13,6 @@ import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
 import { Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
 import type { RootDatabaseKind } from './databases.ts';
-import { LOCKED_WRITE_WAIT_MS, LOCK_VERSION_STEP } from './recordLock.ts';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const trackedTxns = new Set<DatabaseTransaction>();
@@ -203,42 +202,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 		let commitCompletions: Promise<void>[];
 		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
-		// Record-lock gate (harper#483): a write to a record another party holds waits for the release,
-		// then the whole batch re-runs against reloaded entries with a timestamp past the release.
-		const gatedWrites = (): TransactionWrite[] => {
-			const gated: TransactionWrite[] = [];
-			for (const write of this.writes) {
-				if (write.gateOnLock !== true || write.key == null) continue;
-				write.restage = false;
-				if (retries > 0 || !write.entry) write.entry = write.store.getEntry(write.key);
-				if (this.gateLockedWrite(write, txnTime)) gated.push(write);
-			}
-			return gated;
-		};
-		// A gated write parks until its lock is released; a holder write whose record moved past this
-		// timestamp only needs the batch re-run with a fresh one. Either way the whole batch re-runs.
-		const recommitAfter = (gated: TransactionWrite[]) => {
-			const parked = gated.filter((write) => write.gated);
-			let version = 0;
-			for (const write of gated) if (write.entry?.version > version) version = write.entry.version;
-			const recommit = (releasedVersion: number) => {
-				this.timestamp = Math.max(getNextMonotonicTime(), version, releasedVersion) + LOCK_VERSION_STEP;
-				return this.commit({ ...options, timestamp: this.timestamp, retries: retries + 1 });
-			};
-			if (parked.length > 0) return this.parkForRecordUnlocks(parked).then(recommit);
-			// bounded like the park: a record that keeps moving under its holder must not spin the commit
-			this.lockWaitDeadline ??= Date.now() + LOCKED_WRITE_WAIT_MS;
-			if (Date.now() >= this.lockWaitDeadline)
-				throw new ServerError(
-					`Record ${String(gated[0].key)} kept being rewritten past this transaction, so the holder's write could not commit`,
-					503
-				);
-			return recommit(0);
-		};
-		const gated = gatedWrites();
-		if (gated.length > 0) return recommitAfter(gated);
-		// a lock that lands between the gate above and the exclusive fallback's own reads
-		let gatedInExclusive: TransactionWrite[] = [];
 		const doWrite = (write) => {
 			const completion = write.commit(txnTime, write.entry, retries);
 			if (typeof completion?.then === 'function') {
@@ -301,13 +264,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 					for (const write of this.writes) {
 						// we load latest data while in the transaction
 						write.entry = write.store.getEntry(write.key);
+						doWrite(write);
 					}
-					gatedInExclusive = this.writes.filter(
-						(write) => write.gateOnLock === true && write.key != null && this.gateLockedWrite(write, txnTime)
-					);
-					if (gatedInExclusive.length > 0) return false; // nothing written; parked and re-run below
-					for (const write of this.writes) doWrite(write);
-					return true;
+					return true; // success. always success
 				});
 				resolution = transactionResolution.then((committed) =>
 					commitCompletions ? Promise.all(commitCompletions).then(() => committed) : committed
@@ -347,15 +306,13 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.clearWrites();
 					this.timestamp = 0;
 					this.next = null;
-					const releasing = this.releaseRecordLocks();
-					if (releasing) completions.push(releasing);
+					this.releaseRecordLocks();
 					return Promise.all(completions).then(() => {
 						return {
 							txnTime,
 						};
 					});
 				} else {
-					if (gatedInExclusive.length > 0) return recommitAfter(gatedInExclusive);
 					// if the transaction failed, we need to retry. First record this as an increased risk of contention/retry
 					// for future transactions
 					if (db) {
@@ -367,30 +324,26 @@ export class LMDBTransaction extends DatabaseTransaction {
 				}
 			});
 		}
-		const finishWithoutWrites = (): any => {
-			const txnResolution: CommitResolution = {
-				txnTime,
-			};
-			if (this.next) {
-				// now run any other transactions
-				const nextResolution = this.next?.commit(options);
-				if ((nextResolution as any)?.then)
-					return (nextResolution as any)?.then((nextResolution) => ({
-						txnTime,
-						next: nextResolution,
-					}));
-				txnResolution.next = nextResolution as any;
-			}
-			return txnResolution;
+		const txnResolution: CommitResolution = {
+			txnTime,
 		};
-		const releasing = this.releaseRecordLocks();
-		return releasing ? releasing.then(finishWithoutWrites) : finishWithoutWrites();
+		this.releaseRecordLocks();
+		if (this.next) {
+			// now run any other transactions
+			const nextResolution = this.next?.commit(options);
+			if ((nextResolution as any)?.then)
+				return (nextResolution as any)?.then((nextResolution) => ({
+					txnTime,
+					next: nextResolution,
+				}));
+			txnResolution.next = nextResolution as any;
+		}
+		return txnResolution;
 	}
-	abort(): Promise<void> | void {
+	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
-		this.lockWait?.cancel();
-		const releasing = this.releaseRecordLocks();
+		this.releaseRecordLocks();
 		this.drainCompletions();
 		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
 		// (retaining any fileId the current on-disk record still references — an aborted write may carry an
@@ -401,7 +354,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 		}
 		// reset the transaction
 		this.clearWrites();
-		return releasing;
 	}
 	save(..._args: any[]): any {
 		// noop for LMDB

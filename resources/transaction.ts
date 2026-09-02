@@ -63,7 +63,7 @@ export function transaction<T>(
 			return (result as any).then(onComplete, onError);
 		}
 	} catch (error) {
-		return onError(error);
+		onError(error);
 	}
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
@@ -77,15 +77,10 @@ export function transaction<T>(
 			return result;
 		}
 	}
-	// if the transaction function throws an error, we abort; a record lock the scope held is released
-	// before the error reaches the caller, so a retry can take the lock straight away
+	// if the transaction function throws an error, we abort
 	function onError(error) {
-		const aborted = transaction.abort();
-		if ((aborted as any)?.then) return (aborted as any).then(rethrow, rethrow);
+		transaction.abort();
 		throw error;
-		function rethrow() {
-			throw error;
-		}
 	}
 }
 
