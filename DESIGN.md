@@ -361,9 +361,107 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
 
+## A deploy builds off to the side, is validated, and only then goes live
+
+`deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, runs the
+load validation against _that_ tree, and only then activates it. Activation is one compensating
+transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
+into the live path.
+
+The ordering is the design. Two things used to be wrong in a way each other hid:
+
+- **The live tree was moved aside first**, so the component was broken for the whole extract +
+  `npm install`. Worse than unavailable — the live path held the _new_ code before its dependencies were
+  installed, so requests during a deploy hit an unrunnable tree. `stage-swap-availability.test.ts`
+  samples the live path through a deliberately blocked install and fails against the old ordering.
+- **Validation ran after the swap committed**, so a component that installed cleanly but threw at load
+  went live anyway while the operation returned an error. Validation is now a callback preparation
+  invokes between build and activation, so a rejected candidate is never published. Note this is a
+  load-error PROBE, not a safety guarantee: it executes the component's own top-level code with
+  incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
+  deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
+  is separate work; this only fixed the order.
+  **Root config is deliberately NOT part of this transaction.** It is still written before the build and
+  never rolled back, so `installApplications()` can reinstall a rejected release at the next restart —
+  unchanged from before this change. Making config an effect of the activation was implemented and then
+  pulled back out: it kept surfacing durability and locking problems that had nothing to do with the tree
+  swap (a memoized config object a disk write does not refresh, `atomicWriteFile` not fsyncing, writers that
+  do not share the publication lock). It is tracked as its own step so the tree half can land on its own
+  evidence.
+
+### Recovering an interrupted activation
+
+Every control file is dot-prefixed — `.activation.json`, `.component`, `.complete`, `.unsettled` — because
+a deployment directory holds the candidate tree under the _component's_ own name beside them, and
+`isJoinableComponentName` rejects a leading dot. An undotted control file shares that namespace: a component
+named `activation.json` would put its tree on the journal path and activate with no journal at all, and one
+named `unsettled` would make every settle throw. `assertApplicationConfig` rejects any name
+`isJoinableComponentName` rejects, so the collision is unreachable from a root-config key as well as from a
+deploy. Ownership inferred from a directory name is validated the same way, so a control file cannot
+impersonate a component either.
+
+A journal-LESS staging directory is not ambiguous: it is what a successful settlement leaves when its
+best-effort sweep fails. Both the deploy path and boot recovery pass over one rather than failing it closed,
+because a verdict written there would outlive the deployment and, once its sidecar became readable again, be
+attributed to a live component that never held an unsettled activation.
+
+An `.activation.json` journal is written beside the candidate — with a `.complete` marker recording that
+build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()` can
+settle a crash at any boundary. Both go to a temp name, are fsynced, then linked into place, so the final
+name never exists with partial contents; the candidate's own contents are fsynced before `.complete` is
+written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
+installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
+
+The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
+refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
+own `component` field OR by the deployment's ownership sidecar, whichever can be read, because restoring is
+the destructive step and takes the conservative union while settlement keeps the precise intersection.
+Ordering settlement
+ahead of it is not enough, because a worker can be respawned mid-activation with no settlement in front of
+it, and settlement that _fails_ deliberately keeps the journal while the same boot carries on. The refusal
+is scoped to the branch that actually restores a tree — a record that was already retired has nothing to
+restore, so that component still loads. Where no journal is attributable to the component, the legacy pass applies
+unchanged: a crash in that path also leaves an in-progress aside with the live tree present, and retiring
+it there would keep a half-written tree instead of restoring the good one.
+
+Settlement runs on **every thread**, not only main, for the same reason. It is safe anywhere because each
+deployment is settled under the cross-process component preparation lock and the pass is idempotent. It
+_probes_ for that lock — a 250 ms try, no renewal, matching the legacy boot probe — rather than queueing:
+it runs before every component load on every thread, so waiting behind a live deploy's `npm install` would
+load no components at all until that install finished. A held lock means a live deploy, and a live deploy
+settles its own journal.
+
+Ambiguity exists mainly while the live path is absent, and there `.complete` is the roll-forward authority:
+without it the candidate was never validated, so the committed tree in the aside wins. Live-present with a
+candidate is normally pre-swap (or already rolled back) — discard the candidate — **unless a rollback
+record shows the live tree had already been moved aside**. Then whatever is at the live path was recreated
+afterwards by something else, and settling either way would destroy both the committed tree and the
+validated candidate, so that component fails closed with both still on disk.
+Live-present without a candidate is a lost tail — finish forward; never revert a completed activation.
+Neither a live tree nor a rollback record is unrecoverable, so that component fails closed rather than
+guessing. Every branch is idempotent, so a crash _during_ recovery is settled by the next run, and
+failures are per component so one unsettleable component does not stop healthy siblings loading.
+
+Directory fsync is best-effort by necessity — Node cannot fsync a directory on Windows — so the protocol
+never depends on it. Roll-forward requires the journal, the candidate and `.complete` to all be
+observable, which means a lost directory update degrades to a roll back rather than to a wrong decision.
+
+Retiring the rollback record only marks the displaced tree disposable; both the activation path and
+recovery then sweep it, or the components root would grow by a whole component version per deploy. The
+retire is **correctness, not hygiene** — that marker is what stops the legacy pass treating the record as
+authoritative once the journal is gone — so a failure to retire propagates and the component fails closed
+with its journal intact. Only the sweep itself is best-effort, because it costs disk rather than a wrong
+decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
+and the journal removal: the journal is what would carry the activation forward after a power loss.
+
+Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
+request can still see a gap); validation does not run on the main-thread deploy path; and config
+publication is not yet an effect of this transaction, as above.
+
 ## Component preparation is serialized across worker threads
 
-`prepareApplication()` performs one destructive transaction against a component directory: extract the incoming payload, then run its dependency installer. Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
+`prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
