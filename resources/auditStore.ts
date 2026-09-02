@@ -128,6 +128,14 @@ const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
  * questions.
  */
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
+/**
+ * The floor's own eight bytes, deliberately NOT the FLOAT_TARGET/FLOAT_BUFFER pair the `last-removed`
+ * marker uses: decoding a floor writes into its buffer on every read, including the pre-check on each
+ * prune, while `updateLastRemoved` hands the shared buffer to an async `put` it has not yet consumed.
+ * Sharing them would let a floor read rewrite a marker still in flight.
+ */
+const FLOOR_TARGET = new Float64Array(1);
+const FLOOR_BUFFER = new Uint8Array(FLOOR_TARGET.buffer);
 /** No trustworthy floor: the highest possible floor, so every cursor compares as stale. */
 const AUDIT_FLOOR_UNKNOWN = Infinity;
 
@@ -446,15 +454,15 @@ function decodeAuditFloor(stored: any): number {
 	// RocksDB's getBinarySync is typed to also return a length; anything that is not exactly the
 	// eight bytes we write is metadata written by something else.
 	if (stored?.byteLength !== 8) return AUDIT_FLOOR_UNKNOWN;
-	FLOAT_BUFFER.set(stored);
-	const floor = FLOAT_TARGET[0];
+	FLOOR_BUFFER.set(stored);
+	const floor = FLOOR_TARGET[0];
 	return Number.isFinite(floor) && floor >= 0 ? floor : AUDIT_FLOOR_UNKNOWN;
 }
 
 /** Own eight bytes per write: the store must never be handed a live view of the reused module buffer. */
 function encodeAuditFloor(floor: number): Uint8Array {
-	FLOAT_TARGET[0] = floor;
-	return FLOAT_BUFFER.slice();
+	FLOOR_TARGET[0] = floor;
+	return FLOOR_BUFFER.slice();
 }
 
 /**

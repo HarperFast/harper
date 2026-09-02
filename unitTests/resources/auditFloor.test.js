@@ -153,12 +153,10 @@ describe('audit staleness floor', () => {
 
 		it('bootstraps above the newest retained entry, not below it, when the clock has rolled back', async function () {
 			if (Audited.auditStore.reusableIterable) return this.skip(); // RocksDB getKeys is unimplemented
-			// A clock that has gone backwards would otherwise stamp a floor BELOW history the database may
-			// already have pruned. The newest retained entry is a lower bound the clock cannot argue with.
 			const { establishAuditFloor } = require('#src/resources/auditStore');
 			const rolled = tableInOwnDatabase('RolledBack');
-			const future = Date.now() + 3_600_000;
-			rolled.auditStore.putSync(future, new Uint8Array(0)); // an entry timestamped ahead of the clock
+			const future = Date.now() + 3_600_000; // an entry timestamped ahead of the clock
+			rolled.auditStore.putSync(future, new Uint8Array(0));
 			await rolled.auditStore.remove(AUDIT_FLOOR_KEY);
 			assert.strictEqual(rolled.oldestRetainedAuditTime(), Infinity, 'precondition: no floor recorded');
 			establishAuditFloor(rolled.auditStore);
