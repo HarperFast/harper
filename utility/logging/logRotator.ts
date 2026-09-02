@@ -10,6 +10,7 @@ import { convertToMS } from '../common_utils.ts';
 import { onStorageReclamation } from '../../server/storageReclamation.ts';
 import { requestStaleDescriptorRelease } from './logGenerationCoordinator.ts';
 import {
+	compressPendingArchives,
 	INVALID_MAX_SIZE_MSG,
 	isArchivePendingQuiescence,
 	parseMaxSize,
@@ -79,7 +80,12 @@ function logRotator({
 	// convert date.now to minutes
 	let lastRotationTime = Date.now();
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
+	let tickInFlight = false;
 	const setIntervalId = setInterval(async () => {
+		// setInterval does not await the callback, and one pass can now wait on peers; overlapping
+		// passes would work the same archive twice and double-compress it.
+		if (tickInFlight) return;
+		tickInFlight = true;
 		// The tick is async but setInterval doesn't await it, so any error that escapes this callback
 		// becomes an unhandled rejection rather than surfacing anywhere useful — and since it isn't
 		// caught, it also skips the retention cleanup below. Contain everything here and report via
@@ -121,11 +127,6 @@ function logRotator({
 					}
 				}
 			}
-			// A generation this process could not prove released is retried here rather than abandoned:
-			// the tick is the only recurring opportunity to compress it, and it must happen before
-			// retention below, which would otherwise be the thing that unlinks it.
-			await retryPendingGenerations();
-
 			if (retention || reclamationPriority) {
 				// Retention deletes archives regardless of which thread rotated them, and a worker's own
 				// unproven-archive bookkeeping is invisible here, so prove the whole set in one round
@@ -137,6 +138,9 @@ function logRotator({
 					if (err.code !== 'ENOENT') throw err;
 				}
 				const released = await requestStaleDescriptorRelease(logger.path, activeStats);
+				// Once the whole directory is proven quiescent, anything still plain there is an archive
+				// some isolate could not finish — including a worker's, which this thread cannot see.
+				if (released && compressArchives) await compressPendingArchives(rotatedLogDir);
 
 				// remove old logs after retention time
 				// adjust retention time if there is a reclamation priority in place
@@ -165,8 +169,13 @@ function logRotator({
 					}
 				}
 			}
+			// Last: retention is what bounds the rotated directory, so a stranded generation waiting on a
+			// peer must never be ahead of it.
+			await retryPendingGenerations();
 		} catch (err) {
 			hdbLogger.error('Error during log rotation audit tick for', logger.path, err);
+		} finally {
+			tickInFlight = false;
 		}
 	}, auditInterval ?? LOG_AUDIT_INTERVAL).unref();
 	return {

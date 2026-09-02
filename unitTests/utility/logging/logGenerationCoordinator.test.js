@@ -56,6 +56,9 @@ describe('Test log generation coordinator (#1877)', () => {
 
 	before(() => fs.mkdirpSync(TEST_ROOT));
 	after(() => {
+		// The coordinator's transport is module state; a fake left installed would follow every later
+		// suite in the same mocha process.
+		coordinator.setRotationTransport(undefined);
 		try {
 			fs.removeSync(TEST_ROOT);
 		} catch {}

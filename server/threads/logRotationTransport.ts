@@ -7,7 +7,7 @@ import { threadId } from 'node:worker_threads';
 import { setRotationTransport } from '../../utility/logging/logGenerationCoordinator.ts';
 import { broadcast, onMessageByType, onThreadExit } from './manageThreads.js';
 
-// The connected-ports array with `sendToThread`, assigned to the `threads` global by manageThreads.
+// Assigned to the `threads` global by manageThreads.
 declare const threads: {
 	sendToThread(threadId: number, message: any): boolean;
 	[index: number]: { threadId?: number };
