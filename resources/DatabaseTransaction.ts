@@ -647,12 +647,28 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Acquire the native key locks for writes that could not be staged because another party held
-	 * their key. Discards the current staged round and releases all non-hold gate handles before
-	 * parking — releasing prevents cross-transaction deadlocks where T1 holds key A and parks on B
-	 * while T2 holds B and parks on A. Hold handles (from explicit lock() calls) survive because
-	 * the caller controls their ordering. After all keys are acquired, re-stages the whole write set
-	 * with a fresh timestamp via restageAfter — identical to the restageHolderWrites path.
+	 * Abort any replay handle in options.transaction and discard the current staged round.
+	 * Returns the updated options (transaction cleared) and whether a replay is needed.
+	 * Shared by waitForPendingKeys and restageHolderWrites.
+	 */
+	private discardReplay(options: CommitOptions): { replayNeeded: boolean; options: CommitOptions } {
+		if (options.transaction) {
+			abortNativeTransaction(options.transaction, 'discarding replay handle before restage');
+			options = { ...options, transaction: undefined };
+		}
+		return { replayNeeded: this.discardStagedRound(), options };
+	}
+
+	/**
+	 * Acquire native key locks for writes that could not be staged because another party held their
+	 * key. Releases all gate handles before acquiring to prevent staging-phase deadlocks (T1 holds A
+	 * parks on B; T2 holds B parks on A). After release, acquires ALL gate-eligible writes — not just
+	 * the failed subset — in a canonical (lockTableId, encoded key) order. Acquiring only the gated
+	 * subset risks livelock: W1 acquires A while W2 acquires B, both re-stage, each grabs the
+	 * other's first key synchronously and gates on the second again indefinitely. Acquiring the full
+	 * set canonically means the re-stage's synchronous gate finds every key re-entrant and proceeds
+	 * without contention. Hold handles (from explicit lock() calls) are excluded; the caller controls
+	 * their ordering.
 	 */
 	private waitForPendingKeys(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
 		const now = Date.now();
@@ -660,29 +676,30 @@ export class DatabaseTransaction implements Transaction {
 		if (now >= this.lockWaitDeadline)
 			throw new ClientError(`Record ${String(gated[0].key)} is locked and was not released in time`, 423);
 
-		// Discard any replay handle's staged write intents before parking.
-		if (options.transaction) {
-			abortNativeTransaction(options.transaction, 'discarding replay round before re-staging after park');
-			options = { ...options, transaction: undefined };
-		}
-		const replayNeeded = this.discardStagedRound();
+		const { replayNeeded, options: updatedOptions } = this.discardReplay(options);
+		options = updatedOptions;
 		// Release gate handles before parking — prevents hold-A/wait-B vs hold-B/wait-A deadlocks.
 		this.releaseRecordLocks();
-		// Canonical acquire order prevents deadlocks when two transactions compete for the same key
-		// set in opposite program order: both sort to the same order and serialize naturally.
-		gated.sort((a, b) => {
-			if (a.lockTableId !== b.lockTableId) return (a.lockTableId ?? 0) - (b.lockTableId ?? 0);
-			const aKey = String(writeKeyId(a.key));
-			const bKey = String(writeKeyId(b.key));
-			return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
-		});
+
+		// All gate-eligible writes, sorted canonically — not just the failed subset.
+		const allGateEligible = this.writes
+			.filter(
+				(w): w is TransactionWrite =>
+					w?.gateOnLock === true && !w.lockHandle?.hold && w.lockKey != null && typeof w.store?.tryLock === 'function'
+			)
+			.sort((a, b) => {
+				if (a.lockTableId !== b.lockTableId) return (a.lockTableId ?? 0) - (b.lockTableId ?? 0);
+				const aKey = String(writeKeyId(a.key));
+				const bKey = String(writeKeyId(b.key));
+				return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+			});
 
 		this.setCommitPhase(true);
 		const deadline = this.lockWaitDeadline;
 
 		let maxReleasedVersion = 0;
 		const acquire = async () => {
-			for (const write of gated) {
+			for (const write of allGateEligible) {
 				const remaining = deadline - Date.now();
 				if (remaining <= 0)
 					throw new ClientError(`Record ${String(write.key)} is locked and was not released in time`, 423);
@@ -758,12 +775,8 @@ export class DatabaseTransaction implements Transaction {
 				503
 			);
 		}
-		// Discard any replay handle's staged write intents before restaging.
-		if (options.transaction) {
-			abortNativeTransaction(options.transaction, 'discarding replay round before holder restage');
-			options = { ...options, transaction: undefined };
-		}
-		const replayNeeded = this.discardStagedRound();
+		const { replayNeeded, options: updatedOptions } = this.discardReplay(options);
+		options = updatedOptions;
 		let version = 0;
 		for (const write of restage) {
 			if (write.entry?.version > version) version = write.entry.version;

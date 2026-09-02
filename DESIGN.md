@@ -158,9 +158,12 @@ true }` neutralizes the gate handle and creates a fresh handle with the requeste
   `registerRecordLock`, `recordLockFor`, and `unregisterRecordLock` manage it. Both `lock()` and the write
   gate scan the array before calling `tryLock`; a re-entrant call returns the existing live handle.
   Expired-by-timer handles are kept until superseded by a re-lock (live handles sort first in `recordLockFor`);
-  explicitly-released handles are pruned eagerly. The acquire loop in `waitForPendingKeys` sorts by
-  `(lockTableId, encoded keyId)` to guarantee a canonical order regardless of program-order differences
-  between competing transactions, preventing acquire-loop deadlocks.
+  explicitly-released handles are pruned eagerly. `waitForPendingKeys` acquires **all** gate-eligible
+  writes (not just the failed subset) in canonical `(lockTableId, encoded keyId)` order before re-staging.
+  Acquiring only the failed subset causes livelock: W1 acquires A while W2 acquires B, both re-stage,
+  each grabs the other's first key synchronously and gates on the complement again indefinitely (until
+  max-retries → 503). Acquiring the full set ensures the re-stage's synchronous gate finds every key
+  re-entrant and no new gating occurs.
 - **The gate acts at staging, not at park.** `gateLockedWrite` in `DatabaseTransaction.save()` runs for
   every write marked `gateOnLock` (local mutations: update, delete, invalidate, relocate, publish; never a
   replicated, source-notified, or copy-applied write, nor replay). It calls `tryLock` synchronously. On

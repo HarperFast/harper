@@ -459,11 +459,11 @@ describe('Record locks (harper#483)', () => {
 	});
 
 	describe('deadlock prevention and successive parks', function () {
-		it('cross-writes {A,B} and {B,A} both commit without deadlock (single-thread cooperative scheduling)', async function () {
-			// A third party holds both keys so T1 and T2 must both park before any acquire can proceed.
-			// The delay(50) is a scheduling heuristic, not a guaranteed interleaving point; this test
-			// asserts the final outcome (both commits succeed) rather than proving the acquire loop was
-			// reached simultaneously.
+		it('cross-writes {A,B} and {B,A} both commit without livelock (single-thread cooperative scheduling)', async function () {
+			// Single-thread scheduling cannot force the symmetric interleaving that would expose livelock
+			// in a real multi-thread run; this test asserts the outcome (both 'ok') rather than proving
+			// the acquire loop was entered simultaneously. Livelock would manifest as 503 (max retries),
+			// so assertion failures indicate the canonical-acquire-order invariant is broken.
 			if (isLMDB) return this.skip();
 			this.timeout(5000);
 			const idA = id();
@@ -499,31 +499,26 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(finalB === 1 || finalB === 2, `B=${finalB} is not from either transaction`);
 		});
 
-		it('successive parks on two keys released in order commit without stale intent leak (single-thread cooperative scheduling)', async function () {
-			// This test exercises the stale-replay-handle path within Node's cooperative scheduler;
-			// it does not force a true concurrent cross-thread interleaving.
-			// A second gated write appears after the first park: B becomes held while T was parked on A.
-			// Without MAJOR-2 fix: the options.transaction replay handle from the first restage keeps
-			// stale write intents for B, corrupting the second restage.
+		it('successive parks on two keys commit after each release (single-thread cooperative scheduling)', async function () {
+			// T writes A (held by holderA) and B (free). holderB = await LockTest.lock(idB) succeeding
+			// immediately after T starts is the observable that proves T's gate on B was already released
+			// (waitForPendingKeys released it before parking on A). Both n=99 after commit verifies that
+			// neither the first nor second restage dropped a write.
 			if (isLMDB) return this.skip();
 			this.timeout(5000);
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
 			await LockTest.put({ id: idB, n: 0 });
-			// A is held; B is free initially.
 			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
-			// T writes both A and B: A is gated, B's gate handle is acquired (then released per MAJOR-1 fix).
 			const ctx = {};
 			const commit = transaction(ctx, async () => {
 				await LockTest.put({ id: idA, n: 99 });
 				await LockTest.put({ id: idB, n: 99 });
 			});
-			// After T releases B's gate handle (MAJOR-1) holderB can acquire B.
+			// holderB succeeding here proves T's gate on B was released (MAJOR-1) before T parked on A.
 			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
-			// Release A: T parks, acquires A, restages, finds B now held → second park on B.
 			await holderA.unlock();
-			// Release B: T acquires B, second restage, commits.
 			await holderB.unlock();
 			await commit;
 			assert.strictEqual((await LockTest.get(idA)).n, 99);
