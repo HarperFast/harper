@@ -12,6 +12,8 @@ testUtils.preTestPrep();
 const { Application, prepareApplication, markCandidateComplete } = require('#src/components/Application');
 const { certifyCandidate } = require('#src/components/certifyCandidate');
 const { packageDirectory } = require('#src/components/packageComponent');
+const { rootApplicationLoadOptions } = require('#src/components/componentLoader');
+const { getConfigObj } = require('#src/config/configUtils');
 
 /** A component payload whose `resource.js` runs `body` when the component is loaded. */
 async function payloadThatRunsOnLoad(rootDir, name, version, body) {
@@ -155,5 +157,39 @@ describe('deploy certification', () => {
 			else process.env.HARPER_SAFE_MODE = priorSafeMode;
 			await rm(rootDir, { recursive: true, force: true });
 		}
+	});
+
+	describe('branch-configured components', () => {
+		// A branch's location is derived only from the application and database names, so a certification
+		// load that resolved branches the way boot does would open the store the LIVE version is serving
+		// from — a candidate could mutate rows, throw, be rejected, and leave the live version serving the
+		// mutation. So certification never applies them, and the caller is told to skip certifying instead.
+		const appName = 'branch_certify_probe';
+
+		afterEach(() => {
+			delete getConfigObj()[appName];
+		});
+
+		it('reports the component as branch-configured and withholds the branch settings', () => {
+			getConfigObj()[appName] = { branchedDatabases: ['data'] };
+
+			const forBoot = rootApplicationLoadOptions(appName);
+			const forCertification = rootApplicationLoadOptions(appName, { forCertification: true });
+
+			assert.deepStrictEqual(forBoot.options.branchedDatabases, ['data'], 'boot still gets its branches');
+			assert.ok(
+				!('branchedDatabases' in forCertification.options),
+				'certification is never handed the live branch settings'
+			);
+			assert.strictEqual(forCertification.branchConfigured, true, 'and the caller is told to skip certifying');
+		});
+
+		it('reports an ordinary component as not branch-configured', () => {
+			getConfigObj()[appName] = { package: 'npm:whatever@1.0.0' };
+
+			const forCertification = rootApplicationLoadOptions(appName, { forCertification: true });
+
+			assert.strictEqual(forCertification.branchConfigured, false, 'so it is certified normally');
+		});
 	});
 });
