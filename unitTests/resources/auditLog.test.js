@@ -9,7 +9,6 @@ const {
 	createAuditEntry,
 	transactionKeyEncoder,
 	removeAuditEntry,
-	getLastRemoved,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
@@ -389,22 +388,30 @@ describe('Audit log', () => {
 		}
 	});
 	it('deleteHistory does not misdecode the last-removed marker as a corrupt audit entry', async function () {
-		// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
-		if (AuditedTable.auditStore.reusableIterable) return this.skip();
-		await AuditedTable.deleteHistory(Date.now() + 60_000); // start from a clean backlog
-		// the last-removed marker is written fire-and-forget when the audit store opens; wait for it
-		// rather than assuming it has already landed by the time this test runs
-		await waitFor(() => getLastRemoved(AuditedTable.auditStore) !== undefined, {
-			timeout: 5000,
-			message: 'expected the audit store to have a last-removed marker',
+		// A fresh table/audit store, not the shared AuditedTable: lmdb-js caches a key's decoded
+		// value once readAuditEntry() has been run on it (by any earlier test's getRange/get over
+		// the same store), so re-scanning the marker on the shared fixture would silently hit that
+		// cache instead of re-triggering the decode this test exists to catch.
+		const MarkerTable = table({
+			table: 'DeleteHistoryMarkerTable',
+			database: 'deleteHistoryMarkerTestDB',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
-		await AuditedTable.put(900, { name: 'has-history' });
+		// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
+		if (MarkerTable.auditStore.reusableIterable) return this.skip();
+		// the last-removed marker is written fire-and-forget when the audit store opens; wait for its
+		// key (not its decoded value, which would itself trigger and cache away the bug) to land
+		await waitFor(() => [...MarkerTable.auditStore.getRange({ start: 0, end: 1, values: false })].length > 0, {
+			timeout: 5000,
+			message: 'expected the audit store to have a last-removed marker key',
+		});
+		await MarkerTable.put(1, { name: 'has-history' });
 
 		const originalError = harperLogger.error;
 		const errors = [];
 		harperLogger.error = (...args) => errors.push(args);
 		try {
-			await AuditedTable.deleteHistory(Date.now() + 60_000);
+			await MarkerTable.deleteHistory(Date.now() + 60_000);
 		} finally {
 			harperLogger.error = originalError;
 		}
