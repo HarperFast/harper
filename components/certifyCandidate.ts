@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { MessageChannel, Worker } from 'node:worker_threads';
 
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { buildWorkerExecArgv } from '../server/threads/manageThreads.js';
+import {
+	buildWorkerExecArgv,
+	buildWorkerResourceLimits,
+	isProcessShuttingDown,
+} from '../server/threads/manageThreads.js';
 
 /**
  * How long a certification load may take before the candidate is rejected.
@@ -29,7 +33,12 @@ let active = 0;
 const waiting: (() => void)[] = [];
 
 async function acquireSlot(): Promise<() => void> {
-	if (active >= MAX_CONCURRENT_CERTIFICATIONS) await new Promise<void>((resolve) => waiting.push(resolve));
+	// Claimed BEFORE yielding to a waiter, not after. Decrementing and then resolving a waiter whose
+	// `active++` runs a microtask later left a window any other caller could admit itself through, so the
+	// documented bound did not hold. The slot is handed straight from releaser to waiter instead.
+	while (active >= MAX_CONCURRENT_CERTIFICATIONS) {
+		await new Promise<void>((resolve) => waiting.push(resolve));
+	}
 	active++;
 	let released = false;
 	return () => {
@@ -64,6 +73,13 @@ export async function certifyCandidate(
 	appName: string,
 	{ timeoutMs = DEFAULT_CERTIFICATION_TIMEOUT_MS }: { timeoutMs?: number } = {}
 ): Promise<CertificationOutcome> {
+	// The same guard `startWorker` applies. A deploy racing shutdown would otherwise spawn a thread the
+	// shutdown path does not know about, and then wait out its deadline on a process that is leaving.
+	if (isProcessShuttingDown()) {
+		const error: any = new Error(`Cannot certify ${appName} while the Harper process is shutting down`);
+		error.statusCode = 503;
+		return { certified: false, error };
+	}
 	const releaseSlot = await acquireSlot();
 	// The COMPILED sibling, referenced the way `jobRunner` references `jobProcess.js`: workers load from the
 	// build output, and `__dirname` resolves there without assuming where the package root is.
@@ -105,6 +121,10 @@ export async function certifyCandidate(
 					// Harper's own module graph at all — a module that imports JSON fails outright — so this is
 					// shared with `startWorker` rather than reconstructed.
 					execArgv: buildWorkerExecArgv(),
+					// Bounded like every other Harper worker. Without limits a candidate whose top-level load
+					// builds a large in-memory index balloons a thread nothing constrains, and the OOM killer
+					// takes the whole process down mid-deploy — while the previous release was healthy.
+					resourceLimits: buildWorkerResourceLimits(),
 					argv: process.argv.slice(2),
 				});
 			} catch (error) {

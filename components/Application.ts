@@ -2157,8 +2157,8 @@ export async function markCandidateComplete(
  *
  * - **Certified** — a validator loaded this exact tree under the real application identity and mount.
  *   Activation mints `.complete`.
- * - **Stage only** — safe mode. It may not execute configured code, so it can certify nothing, and nothing
- *   uncertified gets published. Deferrable, because safe mode is transient.
+ * - **Uncertified, activate anyway** — safe mode. It may not execute configured code, so it certifies
+ *   nothing, and it activates without minting `.complete`.
  * - **Uncertified, activate anyway** — a branch-configured component. A branch's location is derived only
  *   from the application and database names, so a certification load would open the store the LIVE version
  *   is serving from; a candidate could mutate rows, throw, be rejected, and leave the live version serving
@@ -2173,10 +2173,25 @@ async function certifyPreparedCandidate(
 	deploymentId: string,
 	candidateDirPath: string,
 	options: PrepareApplicationOptions
-): Promise<{ certified: boolean; stageOnly?: boolean }> {
+): Promise<{ certified: boolean }> {
+	// SAFE MODE ACTIVATES, uncertified. An earlier draft staged without activating, on the reasoning that
+	// safe mode is transient so the candidate could wait — but nothing resumes it: the staged tree carries
+	// no journal, so `recoverInterruptedActivations` removes it as build residue at the next start, while
+	// `deploy_component` had already returned success, replicated the operation and run its restart phase.
+	// An operator booting into safe mode to replace the component crashing the node would have got a 200,
+	// live peers, and a node that came back running the broken component with the fix deleted.
+	//
+	// So it takes the same shape as the branch-configured case below: the deploy happens, and it earns no
+	// authority. `.complete` is never written, so a crash mid-swap rolls back to the committed tree.
 	const safeMode =
 		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
-	if (safeMode) return { certified: false, stageOnly: true };
+	if (safeMode) {
+		application.logger.warn(
+			`Deploying ${application.name} without certification: safe mode must not execute configured code, so ` +
+				`no validator can vouch for this candidate`
+		);
+		return { certified: false };
+	}
 
 	const { rootApplicationLoadOptions } = await import('./componentLoader.ts');
 	const loadOptions = rootApplicationLoadOptions(application.name, { forCertification: true });
@@ -3578,19 +3593,7 @@ export async function prepareApplication(application: Application, options: Prep
 						// `.complete` — the marker recovery treats as proof a validation happened. Leaving it to the
 						// caller meant three of this function's four production call sites minted that authority
 						// without ever asking for a verdict.
-						const certification = await certifyPreparedCandidate(application, deploymentId, candidateDirPath, options);
-						if (certification.stageOnly) {
-							// Safe mode: it may not execute configured code, so it can certify nothing — and a
-							// candidate nothing certified must not be published. Staged and left for the next
-							// ordinary-mode preparation to certify and activate. Safe mode is transient, so
-							// "pending" here resolves on its own, which is why this differs from the
-							// branch-configured case below.
-							application.logger.warn(
-								`Staged ${application.name} without activating it: safe mode cannot certify a candidate, ` +
-									`and an uncertified candidate is not published`
-							);
-							return;
-						}
+						await certifyPreparedCandidate(application, deploymentId, candidateDirPath, options);
 						if (!application.isNewComponent) {
 							application.packageMetadataChanged = installedRuntimeChanged(
 								previousPackageMetadata,

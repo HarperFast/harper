@@ -143,6 +143,8 @@ const messagesQueuedByType = new Map();
 
 module.exports = {
 	buildWorkerExecArgv,
+	buildWorkerResourceLimits,
+	isProcessShuttingDown,
 	startWorker,
 	restartWorkers,
 	shutdownWorkers,
@@ -346,6 +348,28 @@ listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
  * `new Worker()` cannot even load a module that imports JSON. Shared rather than copied so the two spawn
  * paths cannot drift on something this load-bearing.
  */
+/** Whether the process is tearing down, so no new worker of any kind should be started. */
+function isProcessShuttingDown() {
+	return processShuttingDown;
+}
+
+/**
+ * The heap bounds every Harper worker runs under. Shared with the non-topology spawn path so a validator
+ * thread is constrained like a serving one — an unbounded module graph in a candidate's top-level load
+ * would otherwise be the OOM killer's problem, taken out on the whole process.
+ */
+function buildWorkerResourceLimits(threadCount) {
+	let availableMemory = process.constrainedMemory?.() || totalmem();
+	availableMemory = Math.min(availableMemory, totalmem(), 20000 * MB);
+	const maxOldMemory =
+		resolveThreadHeapMemoryMb(envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY)) ??
+		Math.max(Math.floor(availableMemory / MB / (10 + (threadCount || 1) / 4)), 512);
+	return {
+		maxOldGenerationSizeMb: maxOldMemory,
+		maxYoungGenerationSizeMb: Math.min(Math.max(maxOldMemory >> 6, 16), 64),
+	};
+}
+
 function buildWorkerExecArgv() {
 	const isBun = typeof globalThis.Bun !== 'undefined';
 	const execArgv = isBun
@@ -392,18 +416,12 @@ function startWorker(path, options = {}) {
 	// 16 threads: 20% of total memory per thread
 	// 64 threads: 11% of total memory per thread
 	// (and then limit to their license limit, if they have one)
-	let availableMemory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
-	// and lower than total memory
-	availableMemory = Math.min(availableMemory, totalmem(), 20000 * MB);
-	const maxOldMemory =
-		resolveThreadHeapMemoryMb(envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY)) ??
-		Math.max(Math.floor(availableMemory / MB / (10 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization594965
 	// https://github.com/nodejs/node/issues/42511
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
-	const maxYoungMemory = Math.min(Math.max(maxOldMemory >> 6, 16), 64);
+	const resourceLimits = buildWorkerResourceLimits(options.threadCount);
 
 	const channelsToConnect = [];
 	const portsToSend = [];
@@ -419,10 +437,7 @@ function startWorker(path, options = {}) {
 	const execArgv = buildWorkerExecArgv();
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
-		resourceLimits: {
-			maxOldGenerationSizeMb: maxOldMemory,
-			maxYoungGenerationSizeMb: maxYoungMemory,
-		},
+		resourceLimits,
 		execArgv,
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:

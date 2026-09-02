@@ -125,11 +125,15 @@ describe('deploy certification', () => {
 		}
 	});
 
-	it('stages without activating in safe mode, so nothing uncertified is published', async function () {
-		// Safe mode may not execute configured code, so it can certify nothing — and a candidate nothing
-		// certified must not be published. It is also transient, which is why "pending" is the right answer
-		// here and the wrong one for a branch-configured component: the next ordinary preparation certifies
-		// and activates this.
+	it('deploys in safe mode without certifying, rather than staging a candidate nothing resumes', async function () {
+		// Safe mode may not execute configured code, so it certifies nothing — and it deploys anyway, minting
+		// no `.complete`.
+		//
+		// An earlier draft staged WITHOUT activating, reasoning that safe mode is transient so the candidate
+		// could wait. Nothing resumes it: the staged tree carries no journal, so recovery removes it as build
+		// residue at the next start — while the operation had already reported success, replicated, and run
+		// its restart phase. An operator booting into safe mode to replace the component crashing the node
+		// would have got a 200 and a node that came back running the broken component with the fix deleted.
 		this.timeout(30000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'certify-safe-mode-'));
 		const componentDirPath = join(rootDir, 'shop');
@@ -148,10 +152,9 @@ describe('deploy certification', () => {
 			await prepareApplication(application);
 			assert.strictEqual(
 				JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version,
-				'1.0.0',
-				'the live version is untouched — the candidate was staged, not activated'
+				'2.0.0',
+				'the deploy takes effect — safe mode is when an operator most needs it to'
 			);
-			assert.ok(existsSync(join(rootDir, '.deploy-staging')), 'and the staged candidate is kept for later');
 		} finally {
 			if (priorSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
 			else process.env.HARPER_SAFE_MODE = priorSafeMode;
