@@ -375,6 +375,26 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1);
 		});
 
+		it('re-stages an overrun holder past an ungated rewrite that cleared its expired generation', async () => {
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			let movedVersion;
+			await transaction(async () => {
+				const record = await LockTest.lock(recordId, { lease: 200 });
+				await delay(250); // the critical section overruns its lease
+				// a source apply then rewrites the record; the expired generation goes with it
+				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 50 }));
+				const moved = entryOf(recordId);
+				movedVersion = moved.version;
+				assert.strictEqual(isLocked(recordId), false, 'the expired bit is gone');
+				record.set('n', 7);
+				await record.save();
+			});
+			const final = entryOf(recordId);
+			assert.strictEqual(final.value.n, 7, 'the overrun holder write is not dropped below the rewrite');
+			assert.ok(final.version > movedVersion, 'it landed as the newest version');
+		});
+
 		it('a plain write after the lease clears the bit', async () => {
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
