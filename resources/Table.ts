@@ -5555,7 +5555,7 @@ export function makeTable(options) {
 			let entriesDeleted = 0;
 			try {
 				for (const auditRecord of auditStore.getRange({
-					start: 0,
+					start: 1, // 0 is encoded as all zeros with audit store's special encoder, and will include symbols (see getHistory)
 					end: endTime,
 				})) {
 					await rest(); // yield to other async operations

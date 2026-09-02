@@ -9,6 +9,7 @@ const {
 	createAuditEntry,
 	transactionKeyEncoder,
 	removeAuditEntry,
+	getLastRemoved,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
@@ -386,6 +387,32 @@ describe('Audit log', () => {
 			AuditedTable.auditStore.remove = originalRemove;
 			await AuditedTable.deleteHistory(cutoff());
 		}
+	});
+	it('deleteHistory does not misdecode the last-removed marker as a corrupt audit entry', async function () {
+		// rocksdb doesn't use deleteHistory (see ResourceBridge.deleteTransactionLogsBefore); this.skip()
+		if (AuditedTable.auditStore.reusableIterable) return this.skip();
+		await AuditedTable.deleteHistory(Date.now() + 60_000); // start from a clean backlog
+		// the last-removed marker is written fire-and-forget when the audit store opens; wait for it
+		// rather than assuming it has already landed by the time this test runs
+		await waitFor(() => getLastRemoved(AuditedTable.auditStore) !== undefined, {
+			timeout: 5000,
+			message: 'expected the audit store to have a last-removed marker',
+		});
+		await AuditedTable.put(900, { name: 'has-history' });
+
+		const originalError = harperLogger.error;
+		const errors = [];
+		harperLogger.error = (...args) => errors.push(args);
+		try {
+			await AuditedTable.deleteHistory(Date.now() + 60_000);
+		} finally {
+			harperLogger.error = originalError;
+		}
+		assert.equal(
+			errors.some((args) => args[0] === 'Reading audit entry error'),
+			false,
+			`deleteHistory must not attempt to decode the last-removed marker as an audit entry: ${JSON.stringify(errors)}`
+		);
 	});
 	it('deleteHistory limits concurrent removals without serializing them', async function () {
 		if (AuditedTable.auditStore.reusableIterable) return this.skip();
