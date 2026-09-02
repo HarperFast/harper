@@ -24,7 +24,7 @@ function fakeTransport({ peers = [1, 2], autoRespond = true, quiescenceTimeout =
 		broadcast(message) {
 			transport.broadcasts.push(message);
 			if (!autoRespond) return;
-			for (const peer of peers) transport.respond(peer, message.generation);
+			for (const peer of peers) transport.respond(peer, message.request);
 		},
 		sendToThread() {},
 		onMessage(type, handler) {
@@ -36,10 +36,10 @@ function fakeTransport({ peers = [1, 2], autoRespond = true, quiescenceTimeout =
 		peerThreadIds() {
 			return peers;
 		},
-		respond(threadId, generation) {
+		respond(threadId, request) {
 			handlers.get(coordinator.LOG_GENERATION_CLOSED)({
 				type: coordinator.LOG_GENERATION_CLOSED,
-				generation,
+				request,
 				threadId,
 			});
 		},
@@ -116,14 +116,21 @@ describe('Test log generation coordinator (#1877)', () => {
 		fs.writeFileSync(logPath, 'held\n');
 		const held = fs.statSync(logPath);
 		let closed = 0;
-		coordinator.registerLogSink(logPath, (ino, dev) => {
-			if (ino === held.ino && dev === held.dev) closed++;
+		coordinator.registerLogSink(logPath, {
+			identity: () => ({ ino: held.ino, dev: held.dev }),
+			close: () => closed++,
 		});
-		transport.deliverRotation({ logPath, generation: 'g', ino: held.ino, dev: held.dev, originator: 0 });
+		transport.deliverRotation({ logPath, request: 'g', ino: held.ino, dev: held.dev, originator: 0 });
 		assert.strictEqual(closed, 1, 'expected the sink to be asked to close its descriptor');
 		// A generation this sink never held must not close anything.
-		transport.deliverRotation({ logPath, generation: 'g2', ino: held.ino + 1, dev: held.dev, originator: 0 });
+		transport.deliverRotation({ logPath, request: 'g2', ino: held.ino + 1, dev: held.dev, originator: 0 });
 		assert.strictEqual(closed, 1, 'expected a foreign generation to leave the descriptor alone');
+
+		// The batched form retention uses is the inverse: release everything but the live generation.
+		transport.deliverRotation({ logPath, request: 'r1', keepIno: held.ino, keepDev: held.dev, originator: 0 });
+		assert.strictEqual(closed, 1, 'expected the live generation to be kept');
+		transport.deliverRotation({ logPath, request: 'r2', keepIno: held.ino + 1, keepDev: held.dev, originator: 0 });
+		assert.strictEqual(closed, 2, 'expected a stale descriptor to be released');
 		coordinator.unregisterLogSink(logPath);
 	});
 
@@ -149,6 +156,16 @@ describe('Test log generation coordinator (#1877)', () => {
 		assert.ok(!isArchivePendingQuiescence(generation.archivePath), 'expected the retry to clear the archive');
 		assert.ok(fs.pathExistsSync(`${generation.archivePath}.gz`), 'expected the retry to compress it');
 		assert.ok(!fs.pathExistsSync(generation.archivePath), 'expected the plain archive to be removed');
+	});
+
+	it('lets retention proceed only when every peer has released its stale descriptors', async () => {
+		const stalled = fakeTransport({ autoRespond: false });
+		assert.strictEqual(await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 }), false);
+		assert.strictEqual(stalled.broadcasts.at(-1).keepIno, 1);
+
+		const answering = fakeTransport();
+		assert.strictEqual(await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 }), true);
+		assert.strictEqual(answering.broadcasts.at(-1).keepDev, 1);
 	});
 
 	it('leaves the plain archive authoritative when compression fails', async () => {

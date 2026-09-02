@@ -8,6 +8,7 @@ import hdbLogger from './harper_logger.ts';
 import { CONFIG_PARAMS } from '../hdbTerms.ts';
 import { convertToMS } from '../common_utils.ts';
 import { onStorageReclamation } from '../../server/storageReclamation.ts';
+import { requestStaleDescriptorRelease } from './logGenerationCoordinator.ts';
 import {
 	INVALID_MAX_SIZE_MSG,
 	isArchivePendingQuiescence,
@@ -127,6 +128,17 @@ function logRotator({
 			await retryPendingGenerations();
 
 			if (retention || reclamationPriority) {
+				// Retention deletes archives regardless of which thread rotated them, and a worker's own
+				// unproven-archive bookkeeping is invisible here, so prove the whole set in one round
+				// trip: every peer releases any descriptor that is not on the live generation.
+				let activeStats;
+				try {
+					activeStats = statSync(logger.path);
+				} catch (err) {
+					if (err.code !== 'ENOENT') throw err;
+				}
+				const released = await requestStaleDescriptorRelease(logger.path, activeStats);
+
 				// remove old logs after retention time
 				// adjust retention time if there is a reclamation priority in place
 				const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
@@ -144,7 +156,7 @@ function logRotator({
 						const archivePath = path.join(rotatedLogDir, file);
 						// Unlinking an inode a stalled writer still holds loses whatever it writes next
 						// just as surely as compressing over it would, so retention waits for the same proof.
-						if (isArchivePendingQuiescence(archivePath)) continue;
+						if (!released || isArchivePendingQuiescence(archivePath)) continue;
 						const fileStats = await fsProm.stat(archivePath);
 						if (Date.now() - fileStats.mtimeMs > retentionMs) {
 							await fsProm.unlink(archivePath);

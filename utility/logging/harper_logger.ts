@@ -799,7 +799,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		// Registered by the sink, not by the size guard: a thread that writes this file but has no
 		// guard (no maxSize, or rotation driven only by interval) still holds a descriptor, and an
 		// answer from it has to mean "released" rather than only "handler ran".
-		registerLogSink(path, closeDescriptorOnGeneration);
+		registerLogSink(path, { identity: () => logFDIdentity, close: closeLogFile });
 	}
 	// An undefined rotation means "this caller has no opinion", not "turn rotation off" — that is
 	// what `enabled: false` says. Several loggers are created for one path during startup and the
@@ -928,12 +928,6 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
 		} else writeToStdioDirectly(process.stdout, payload);
 		if (logBuffer) logBuffer = null;
-	}
-
-	function closeDescriptorOnGeneration(ino, dev) {
-		// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
-		// closing is the only answer that can still be called a release.
-		if (!logFDIdentity || (logFDIdentity.ino === ino && logFDIdentity.dev === dev)) closeLogFile();
 	}
 
 	function closeLogFile(_unused?: any) {
