@@ -53,9 +53,10 @@ export function blobSnapshotDir(backupDir: string, backupId: number): string {
 /**
  * Hard-link `src` to `dest`, falling back to a copy when the two are on different filesystems (or
  * the filesystem does not support additional hard links). Never creates a symlink. Returns false
- * when the source vanishes so the caller can substitute a marker for it.
+ * when the source vanishes so the caller can substitute a marker for it. `counts.copied` is what a
+ * caller on a latency budget needs: the fallback turns a constant-time clone into an O(bytes) one.
  */
-async function linkOrCopy(src: string, dest: string): Promise<boolean> {
+async function linkOrCopy(src: string, dest: string, counts?: { copied: number }): Promise<boolean> {
 	await mkdir(dirname(dest), { recursive: true });
 	try {
 		await link(src, dest);
@@ -77,21 +78,36 @@ async function linkOrCopy(src: string, dest: string): Promise<boolean> {
 				if (copyError.code === 'ENOENT') return false;
 				throw copyError;
 			}
+			if (counts) counts.copied++;
 			return true;
 		}
 		if (error.code === 'EEXIST') {
 			await unlink(dest);
-			return linkOrCopy(src, dest);
+			return linkOrCopy(src, dest, counts);
 		}
 		throw error;
 	}
 	return true;
 }
 
-/**
- * Put one blob file into the snapshot, returning how the entry was captured.
- */
-async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobCaptureDisposition> {
+/** What a substituted marker says happened, so a branch clone doesn't report itself as a backup. */
+export interface CaptureMarkerReasons {
+	gone: string;
+	pending: string;
+}
+
+const BACKUP_MARKER_REASONS: CaptureMarkerReasons = {
+	gone: 'blob was deleted while this backup was being taken',
+	pending: 'blob was not yet complete when this backup was taken',
+};
+
+/** Put one blob file into the destination, returning how the entry was captured. */
+async function captureBlobFile(
+	srcPath: string,
+	destPath: string,
+	reasons: CaptureMarkerReasons = BACKUP_MARKER_REASONS,
+	counts?: { copied: number }
+): Promise<BlobCaptureDisposition> {
 	let disposition: BlobCaptureDisposition;
 	try {
 		disposition = await classifyBlobFileForCapture(srcPath);
@@ -107,19 +123,11 @@ async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobC
 	}
 	if (disposition === 'skip') return disposition;
 	if (disposition === 'capture') {
-		if (await linkOrCopy(srcPath, destPath)) return disposition;
+		if (await linkOrCopy(srcPath, destPath, counts)) return disposition;
 		disposition = 'gone';
 	}
 	await mkdir(dirname(destPath), { recursive: true });
-	await writeFile(
-		destPath,
-		createCaptureMarker(
-			disposition,
-			disposition === 'gone'
-				? 'blob was deleted while this backup was being taken'
-				: 'blob was not yet complete when this backup was taken'
-		)
-	);
+	await writeFile(destPath, createCaptureMarker(disposition, disposition === 'gone' ? reasons.gone : reasons.pending));
 	return disposition;
 }
 
@@ -127,15 +135,22 @@ async function captureBlobFile(srcPath: string, destPath: string): Promise<BlobC
  * Recursively copy every file under `srcRoot` into `destRoot` (hard-link-else-copy), preserving the
  * relative directory structure. Missing `srcRoot` is a no-op (a database with no blobs yet).
  *
- * `classify` belongs to the snapshot direction only; restore must replace exactly what the snapshot
- * holds.
+ * `classify` substitutes a marker for a file that is mid-write or already gone, so the destination
+ * fails loudly on that blob rather than carrying a truncated one. It belongs to the capture direction
+ * only; restore must replace exactly what the snapshot holds.
+ *
+ * Also used by branch materialization (harper#644), which clones a base's blob roots into the
+ * branch's own so the OS inode refcount does the reference counting. Its walk runs inside a window
+ * other threads wait on, which is what `onProgress` is for.
  */
-async function copyTree(
+export async function copyTree(
 	srcRoot: string,
 	destRoot: string,
-	classify = false
-): Promise<{ substituted: number; captured: number }> {
-	const counts = { substituted: 0, captured: 0 };
+	classify = false,
+	reasons?: CaptureMarkerReasons,
+	onProgress?: () => void
+): Promise<{ substituted: number; captured: number; copied: number }> {
+	const counts = { substituted: 0, captured: 0, copied: 0 };
 	if (!existsSync(srcRoot)) return counts;
 	const stack: string[] = [srcRoot];
 	while (stack.length > 0) {
@@ -154,12 +169,13 @@ async function copyTree(
 			} else if (entry.isFile()) {
 				const destPath = join(destRoot, relative(srcRoot, srcPath));
 				if (classify) {
-					const disposition = await captureBlobFile(srcPath, destPath);
+					const disposition = await captureBlobFile(srcPath, destPath, reasons, counts);
 					if (disposition === 'pending' || disposition === 'gone') counts.substituted++;
 					else if (disposition === 'capture') counts.captured++;
 				} else {
-					await linkOrCopy(srcPath, destPath);
+					await linkOrCopy(srcPath, destPath, counts);
 				}
+				onProgress?.();
 			}
 			// symlinks/other node types in a blob root are not expected and are intentionally skipped
 		}
