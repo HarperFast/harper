@@ -1,15 +1,13 @@
 'use strict';
 
-// Rotation-only coordination between the isolates that write the same log file. Every isolate keeps
-// its own descriptor on the active log (harper_logger's per-thread `fileLoggers`), so a rename by
-// one of them leaves the others appending to the archived inode until their CLOSE_LOG_FD_TIMEOUT
-// fires. Compression then unlinks that inode, and anything written after gzip reached EOF is gone.
-// This module makes the archived generation's quiescence provable instead of timing-dependent: the
-// rotating isolate announces the generation, peers close any descriptor on it and answer, and the
-// plain archive is only ever destroyed once every peer has answered or exited.
+// Every isolate holds its own descriptor on the shared log file, so a rename by one of them leaves
+// the others appending to the archived inode. Destroying that inode — compression's unlink, or
+// retention's — loses whatever they write next, and no size comparison can rule out a write that has
+// not happened yet. This makes the release provable: peers close matching descriptors and answer,
+// and an archive is destroyed only once every peer has answered or exited.
 //
-// Dependency-pure by construction: the thread layer injects its transport (see
-// server/threads/logRotationTransport.ts), because harper_logger must never reach manageThreads.
+// The thread layer injects the transport (server/threads/logRotationTransport.ts); harper_logger
+// must never reach manageThreads.
 
 export const LOG_GENERATION_ROTATED = 'log_generation_rotated';
 export const LOG_GENERATION_CLOSED = 'log_generation_closed';
@@ -54,8 +52,8 @@ export function setRotationTransport(newTransport?: RotationTransport) {
 }
 
 /**
- * Registered by the file sink itself, not by the size guard: a thread that writes this log but has
- * no guard still holds a descriptor, and an answer from it has to mean the descriptor is gone.
+ * Registered by the file sink, not the size guard: a thread with no guard still holds a descriptor,
+ * and its answer has to mean the descriptor is gone.
  */
 export function registerLogSink(logPath: string, sink: { identity(): any; close(): void }) {
 	sinksByPath.set(logPath, sink);

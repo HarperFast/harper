@@ -129,6 +129,22 @@ describe('Test log rotation on the write path (#1877)', () => {
 		assert.match(contents, /^\S+ \[[^\]]+\] \[notify\]: hdb\.log rotated, old log moved to \S+$/m);
 	});
 
+	it('rotates from inside a buffered flush without duplicating or losing the batch', async () => {
+		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
+		// The sink starts buffering once it thinks it is spending more than ~2% of the time writing,
+		// which a few very large entries achieve; from then on a flush is a whole batch at once, and
+		// the rotation it triggers writes its notice back through this same sink mid-flush.
+		for (let i = 0; i < 6; i++) logger.error('warming the buffer', 'w'.repeat(200000));
+		for (let i = 0; i < 40; i++) logger.error(`batched-marker-${i}-${'b'.repeat(120)}`);
+		logger.notify('flushing the batch');
+
+		const contents = await waitForContent(logPath, rotatedDir, 'batched-marker-39-');
+		for (let i = 0; i < 40; i++) {
+			const occurrences = contents.split(`batched-marker-${i}-`).length - 1;
+			assert.strictEqual(occurrences, 1, `batched-marker-${i} appeared ${occurrences} times across all generations`);
+		}
+	});
+
 	it('never rotates when rotation is disabled, even with a maxSize set', () => {
 		const { logger, logPath, rotatedDir } = newCase({ enabled: false, maxSize: '1K' });
 		for (let i = 0; i < 200; i++) logger.error(`disabled rotation line ${i} ${'z'.repeat(60)}`);
