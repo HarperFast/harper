@@ -460,6 +460,9 @@ export function establishAuditFloor(auditStore: any): void {
 	// database may already have pruned, certifying a stale cursor. The newest retained entry is a
 	// lower bound the clock cannot argue with — everything at or above it is demonstrably still here —
 	// so take whichever is later. (openAuditStore separately error-logs the reversal itself.)
+	// Bounded by what survives, and RocksTransactionLogStore.getKeys() is unimplemented, so there this
+	// reduces to Date.now(); an accepted limitation of stamping rather than leaving a floorless store
+	// permanently unknown, which would make every upgraded deployment fail closed forever.
 	let epoch = Date.now();
 	for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
 		if (typeof newest === 'number' && newest > epoch) epoch = newest;
