@@ -1020,11 +1020,8 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
 					else respHeaders.set(k, String(v));
 				}
-				// Fastify's own headers win, but the chain's identity/cache floor is not discarded with
-				// them: authentication stamps `Cache-Control: private, no-cache` and
-				// `Vary: Authorization, Cookie` on a credential-dependent response, and a deferred
-				// credential can now reach this fallback (#2418, #1565). Node preserves these via
-				// `nodeResponse.setHeader` before emitting 'unhandled'; do the equivalent here.
+				// Preserve the chain's identity/cache floor while allowing Fastify-set headers to win,
+				// matching the Node fallback's header precedence.
 				mergeChainHeadersIntoFallback(headers, respHeaders);
 				if (universalHeaders.length > 0) applyUniversalHeaders(respHeaders);
 				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
@@ -1485,9 +1482,7 @@ export async function bunDelegateToNodeServer(
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
-			// See mergeChainHeadersIntoFallback: Fastify's headers win, but authentication's
-			// identity/cache floor on a credential-dependent response is preserved rather than dropped
-			// with the rest of the chain response (#2418, #1565).
+			// Preserve the chain's identity/cache floor while allowing Fastify-set headers to win.
 			mergeChainHeadersIntoFallback(chainHeaders, webHeaders);
 			if (universalHeaders.length > 0) applyUniversalHeaders(webHeaders);
 			const responseStream = injectResult.stream();
@@ -1554,12 +1549,9 @@ const builtChainPorts: Record<string, Map<string, number | string>> = {
  * Builds `chains[port]` from the current `listeners` and, when `port` is the 'all' pseudo-port,
  * rebuilds every other already-built chain of the same kind too.
  *
- * An entry registered on 'all' is folded into each concrete port's chain when that chain is built,
- * so a registration arriving after those chains exist — an application catch-all mounted
- * `after: 'rest'`, say — would otherwise update only `chains.all`, which nothing serves, leaving
- * every bound port running the chain it had beforehand (#2418). Rebuilding is a pure function of
- * the listener list and the port, so re-running it for an already-built port can only reproduce
- * that port's order or extend it with the entry just registered.
+ * A late registration on 'all' must rebuild every concrete port; rebuilding only `chains.all`
+ * leaves bound ports with stale listener order. Chain construction is a pure function of the
+ * listener list and port, so rebuilding cannot alter earlier ordering decisions.
  */
 function buildChains(
 	chains: Record<string, Function>,

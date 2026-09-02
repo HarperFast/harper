@@ -1,10 +1,9 @@
 /**
- * End-to-end proof for #2418: an app-port credential Harper does not recognize is not rejected
- * until route ownership is known.
+ * End-to-end proof that an app-port credential Harper does not recognize is not rejected until
+ * route ownership is known.
  *
  * The chain under test is the real one — `authentication -> rest -> application catch-all` — served
- * by a real Harper instance. On the pre-fix revision `security/auth.ts` answered 401 while parsing
- * the credential, so every "reaches the application catch-all" assertion below fails there.
+ * by a real Harper instance.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/security/deferred-credential-rejection.test.ts"

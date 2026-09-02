@@ -421,9 +421,8 @@ async function findAndValidateUser(username: string, pw?: string | null, validat
 	const userTmp = usersWithRolesMap.get(username);
 	if (!userTmp) {
 		if (!validatePassword) return { username };
-		// Tagged as a credential rejection (#2418): callers must be able to tell "this credential is
-		// not acceptable" apart from a fault raised while loading the user cache above, which shares
-		// the 4xx range but must fail closed instead of deferring to application authorization.
+		// The tag distinguishes an absent user from user-cache faults that share the 4xx range but must
+		// fail closed instead of deferring to application authorization.
 		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 

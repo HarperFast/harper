@@ -226,14 +226,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				}
 			}
 		}
-		// Route ownership is now settled — either a resource matched or this is Harper's OpenAPI
-		// document — so a credential the authentication middleware deferred is decided here rather
-		// than travelling on to an application catch-all (#2418). Every path that reaches an
-		// application instead returned via `nextHandler` above.
-		//
-		// Returned as the authentication middleware's own response descriptor rather than thrown: a
-		// throw would be rendered by the catch below as an RFC 9457 Problem Details document, which is
-		// not the `{error: message}` body a rejected credential has always produced.
+		// A matched resource or OpenAPI document settles ownership. Return authentication's response
+		// descriptor directly so REST's Problem Details mapping cannot change its wire contract.
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
 		if ((resource as any)?.isCaching) {
@@ -567,8 +561,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
 					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
 				} else {
-					// Harper owns this socket's route, so a deferred credential is rejected here too
-					// rather than being carried into the resource as anonymous (#2418).
+					// A matched resource owns this socket; do not carry rejection into it as anonymous.
 					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
 					recordAction(

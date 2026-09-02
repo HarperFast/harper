@@ -243,10 +243,8 @@ export async function authentication(request, nextHandler) {
 											status: -1,
 										});
 									} catch (refreshError) {
-										// A refresh-validation *fault* (user store down, a password-validation crash)
-										// must not be swallowed: rethrowing the outer ordinary rejection would tag an
-										// outage as a deferrable unknown credential. Only after an ordinary tagged
-										// refresh rejection is the original operation-token rejection restored.
+										// Preserve refresh-validation faults; only a tagged rejection permits falling
+										// back to the original operation-token rejection.
 										if (!isCredentialRejection(refreshError)) throw refreshError;
 										throw error;
 									}
@@ -257,12 +255,8 @@ export async function authentication(request, nextHandler) {
 							}
 							break;
 						default:
-							// A scheme Harper does not implement (`Digest`, an application's own, or a
-							// header with no scheme token at all) previously matched no case and threw
-							// nothing, so it continued as an anonymous request — on a Harper-owned route
-							// that is precisely the downgrade this change exists to prevent. Rejecting it
-							// here routes it through the same audit, fail-closed, and deferral handling as
-							// an unrecognized Basic or Bearer credential.
+							// Unsupported schemes are credential rejections so a Harper-owned route cannot
+							// interpret their lack of a Harper principal as anonymous access.
 							throw credentialRejectionError(
 								AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
 								HTTP_STATUS_CODES.UNAUTHORIZED
@@ -277,16 +271,11 @@ export async function authentication(request, nextHandler) {
 						}
 					}
 
-					// #2418: route ownership isn't known yet, so an ordinary credential rejection is not
-					// decided here. Two cases are still answered in-line rather than deferred:
-					//  - an internal fault (unreadable JWT keys, storage failure, a bug), which must fail
-					//    closed instead of letting an outage hand the request to application authorization;
-					//  - the operations API, where Harper owns every route, so there is nothing to defer to.
+					// Only tagged credential rejections on the application port may defer. Operations
+					// routes are always Harper-owned, and internal faults must fail closed.
 					const internalFault = !isCredentialRejection(err);
 					if (request.isOperationsServer || internalFault) {
-						// An internal fault's own message describes Harper's internals (a missing system
-						// table, a key path) and is not the client's to read, so it is logged here and the
-						// client gets the same generic failure a rejected credential gets.
+						// Internal fault details belong in server logs, not authentication responses.
 						if (internalFault) authLogger.error('Authentication failed internally', errorForLog(err));
 						return applyResponseHeaders({
 							status: 401,
@@ -300,9 +289,7 @@ export async function authentication(request, nextHandler) {
 				}
 
 				if (credentialRejection) {
-					// Continue with no principal and the inbound Authorization header untouched. Any
-					// Harper-owned layer rejects this via assertNoDeferredCredentialRejection; only a
-					// request no Harper route owns reaches an application catch-all.
+					// Preserve the header and leave the principal unset until a route owner settles it.
 					deferCredentialRejection(request, credentialRejection, strategy);
 				} else {
 					authorizationCache.set(authorization, newUser);

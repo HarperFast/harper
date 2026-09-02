@@ -581,12 +581,8 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				return nextLayer(request);
 			}
 
-			// Harper owns /graphql, so a credential the authentication middleware deferred is rejected
-			// here instead of reaching a resolver as an anonymous request (#2418). Settled ahead of the
-			// try/catch on purpose: the GraphQL error mapping below renders every failure as
-			// `{errors:[{message}]}` in a GraphQL media type, but a rejected credential has always been
-			// answered by authentication itself with `{error: message}` in the request's negotiated
-			// serialization, and that contract is what callers depend on.
+			// GraphQL owns this route. Settle before its error mapping can change authentication's
+			// negotiated `{error: message}` response or expose the request to resolvers as anonymous.
 			const settledCredentialRejection = settleDeferredCredentialRejection(request);
 			if (settledCredentialRejection) return settledCredentialRejection;
 

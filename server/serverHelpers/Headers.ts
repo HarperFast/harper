@@ -173,19 +173,10 @@ function headerValueString(value: unknown): string {
  * Folds the middleware chain's response headers into the headers a fallback server produced for the
  * same request.
  *
- * When the chain declines a request (`status: -1`) the Bun and uWS adapters hand it to legacy Fastify
- * and build their response headers solely from Fastify's reply, dropping everything the chain had
- * already decided. The Node adapter does not: it copies the chain headers onto the `ServerResponse`
- * before emitting `unhandled`. That divergence used to be invisible, because a request carrying an
- * unrecognized credential never reached a fallback — authentication answered it in line. Deferral
- * (#2418) makes it reachable, and with it the identity floor authentication stamps on a
- * credential-dependent response (`Cache-Control: private, no-cache`, `Vary: Authorization, Cookie`
- * — #1565).
- *
- * Fastify wins every header it actually set; the chain only fills gaps. `Vary` is unioned rather than
- * replaced, and the chain's private cache scope is re-applied unless the final response explicitly
- * opts into shared caching (`public`/`s-maxage`), which is RFC 9111's opt-in and the same signal
- * `security/auth.ts` honours.
+ * Bun and uWS construct a new response from legacy Fastify when the chain declines a request, so the
+ * chain's credential-dependent cache policy must be merged explicitly. Fastify wins headers it set,
+ * `Vary` is unioned, and private cache scope is re-applied unless the final response explicitly opts
+ * into RFC 9111 shared caching with `public` or `s-maxage`.
  */
 export function mergeChainHeadersIntoFallback<
 	T extends {

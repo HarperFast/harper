@@ -23,9 +23,8 @@ export type DeferredCredentialRejection = {
 
 /**
  * The status every credential rejection resolves to, whether it is answered in-line or deferred.
- * `security/auth.ts` has always answered a rejected credential with 401 regardless of the
- * underlying error's own `statusCode` (a 403 `token expired`, for instance), so pinning it here is
- * what keeps a deferred rejection byte-identical to the in-line one it replaces.
+ * Authentication answers a rejected credential with 401 regardless of the underlying error's own
+ * `statusCode`, so pinning it here keeps immediate and deferred rejections byte-identical.
  */
 const CREDENTIAL_REJECTION_STATUS = 401;
 
@@ -56,13 +55,12 @@ export function getDeferredCredentialRejection(request: any): DeferredCredential
 
 /**
  * The response an owning layer returns once it has established Harper owns the route: exactly the
- * descriptor `security/auth.ts` used to return in-line, so the wire contract a rejected credential
- * has always produced survives the move downstream.
+ * descriptor `security/auth.ts` returns in-line, so immediate and deferred rejection share a wire
+ * contract.
  *
  * Owner-specific error mapping must not run first. REST renders a thrown error as an RFC 9457
- * Problem Details document and GraphQL as `{errors:[…]}`; before deferral existed, neither ever saw
- * a rejected credential, because authentication answered `{error: message}` in the request's
- * negotiated serialization before route matching (#2418).
+ * Problem Details document and GraphQL as `{errors:[…]}` rather than authentication's negotiated
+ * `{error: message}` response.
  *
  * Returns `undefined` when nothing was deferred, so a caller can `return settled ?? …` inline.
  */
@@ -71,8 +69,7 @@ export function settleDeferredCredentialRejection(
 ): { status: number; headers: Headers; body: string | Buffer } | undefined {
 	const deferred = getDeferredCredentialRejection(request);
 	if (!deferred) return undefined;
-	// The negotiated serializer is the same one `serializeMessage` selects below; naming it in
-	// Content-Type keeps the body self-describing on a path that historically emitted none.
+	// Name the serializer explicitly so the response body remains self-describing.
 	const contentType = (request?.headers ? findBestSerializer(request).type : undefined) ?? 'application/json';
 	return {
 		status: deferred.status,

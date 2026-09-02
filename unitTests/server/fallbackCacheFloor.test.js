@@ -3,9 +3,8 @@
 /**
  * The Bun and uWS adapters hand a request the middleware chain declined (`status: -1`) to legacy
  * Fastify and build their response headers from Fastify's reply. Node does not lose the chain's
- * headers on that path — it copies them onto the `ServerResponse` before emitting 'unhandled' — and
- * before #2418 the divergence was unreachable, because an unrecognized credential never survived
- * authentication. Deferral makes it reachable, so the identity floor authentication stamps on a
+ * headers on that path — it copies them onto the `ServerResponse` before emitting 'unhandled'. The
+ * identity floor authentication stamps on a
  * credential-dependent response (`Cache-Control: private, no-cache`, `Vary: Authorization, Cookie`
  * — #1565) has to survive both fallbacks.
  *

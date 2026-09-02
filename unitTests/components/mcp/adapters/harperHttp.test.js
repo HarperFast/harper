@@ -103,9 +103,8 @@ describe('mcp/adapters/harperHttp', () => {
 		/**
 		 * `mcp.application` mounts this handler `after: 'authentication'`, and REST declines an
 		 * unmatched `/mcp`, so this handler is where route ownership is finally known. Authentication
-		 * now defers an unrecognized credential instead of answering 401 in line, which leaves
-		 * `request.user` unset — the same shape as an anonymous request. Without settlement here, an
-		 * invalid credential opened an MCP session that the base revision answered with 401.
+		 * leaves `request.user` unset — the same shape as an anonymous request. Settlement prevents the
+		 * credential from opening an anonymous MCP session.
 		 */
 		function deferredRequest(overrides = {}) {
 			const request = {

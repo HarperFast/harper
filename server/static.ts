@@ -312,14 +312,8 @@ export function handleApplication(scope: Scope) {
 	});
 
 	scope.server.http(
-		// Ownership invariant (#2418): every response this handler originates — both index redirects,
-		// the served file, and both `fallthrough: false` not-found forms — is Harper answering for the
-		// URL, so a credential the authentication middleware deferred rather than rejecting in line is
-		// settled before that response is built, with no URL exempted. Settling before the response body
-		// is resolved also keeps a rejected credential from turning a missing file or bad `notFound`
-		// config into a 500 the pre-deferral revision answered with 401. Only the `next(req)` fallthrough
-		// leaves the deferral in place: there Harper declines the URL, so a downstream owner or an
-		// application catch-all applies its own scheme.
+		// Every response this handler originates claims the URL, so settle before redirects, files, or
+		// non-fallthrough not-found handling. Only `next(req)` leaves ownership and rejection unsettled.
 		(req, next) => {
 			// TODO: Not sure if the isWebSocket check is still necessary
 			if (req.method !== 'GET' || req.isWebSocket) return next(req);
@@ -418,8 +412,7 @@ export function handleApplication(scope: Scope) {
 				return next(req);
 			}
 
-			// Otherwise, handle not found — settled once here, covering both the built-in 404 and the
-			// configured `notFound` response below.
+			// This handler owns both not-found forms, so settle before resolving the configured body.
 			const settledCredentialRejection = settleDeferredCredentialRejection(req);
 			if (settledCredentialRejection) return settledCredentialRejection;
 

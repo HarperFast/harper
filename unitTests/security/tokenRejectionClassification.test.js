@@ -2,12 +2,9 @@
 
 /**
  * `validateToken()` decides whether a Bearer failure is "this token is not acceptable" or "Harper
- * could not evaluate it". Only the first may be deferred past route matching (#2418), so this suite
+ * could not evaluate it". Only the first may be deferred past route matching, so this suite
  * drives the real `validateOperationToken`/`validateRefreshToken` against real RSA key material and
  * asserts the classification the authentication middleware then acts on.
- *
- * On the pre-fix revision the internal-fault cases here fail: every 4xx was converted to a tagged
- * `invalid token`, so a user-store or key-material fault was indistinguishable from a forged token.
  */
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();

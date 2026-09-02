@@ -70,10 +70,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					return next(ws, request, chainCompletion);
 				}
 
-				// Declining to delegate settles route ownership: this socket is Harper's. A credential the
-				// authentication middleware deferred rather than answering in line (#2418) leaves
-				// `request.user` unset, which would otherwise open an anonymous MQTT session where the
-				// base revision returned 401 before the upgrade.
+				// Reject any credential rejection already recorded before MQTT session initialization.
 				const deferred = getDeferredCredentialRejection(request);
 				if (deferred) {
 					return ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, deferred.message);

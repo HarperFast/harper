@@ -462,7 +462,7 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		// Only a client-side rejection may be reported as one. Everything else here — unreadable or
 		// malformed JWT key material, a storage failure inside findAndValidateUser, a bug — propagates
 		// unmasked, because callers distinguish a rejected credential from an internal authentication
-		// fault and only the former is deferred past route matching (#2418). Masking a fault as
+		// fault and only the former is deferred past route matching. Masking a fault as
 		// `invalid token` would let a key or storage outage read as an unknown credential.
 		if (!isTokenRejection(err)) throw err;
 
@@ -487,7 +487,7 @@ const KEY_MATERIAL_FAULT = /secretOrPublicKey|asymmetric key|PEM routines|^error
  * True only when `err` says the presented token is not acceptable, rather than that Harper failed to
  * evaluate it. Never inferred from the 4xx range: `findAndValidateUser()` lazily loads the user cache
  * and can surface a default-status-400 `ClientError` from a missing system table, which is a storage
- * fault wearing a client-error status (#2418).
+ * fault wearing a client-error status.
  */
 function isTokenRejection(err: any): boolean {
 	if (isCredentialRejection(err)) return true;
