@@ -20,6 +20,8 @@ These headers are included in all Harper REST API responses:
 | `etag`          | `"abc123"`         | Encoded version/last-modification time of the returned record. Used for conditional requests.                                                                                                             |
 | `location`      | `/MyTable/new-id`  | Returned on `POST` responses. Contains the path to the newly created record.                                                                                                                              |
 
+Collection responses to a [count request](./querying.md#pagination-and-total-count) additionally include `Content-Range`, `Range-Unit`, and `Preference-Applied` (<VersionBadge version="v5.3.0" />).
+
 ## Cache-Control
 
 <VersionBadge version="v5.2.0" />
@@ -99,6 +101,19 @@ Accept-Encoding: gzip, br
 ```
 
 Compression is particularly effective for JSON responses. For binary formats like CBOR, compression provides diminishing returns compared to the already-compact encoding.
+
+### Prefer
+
+<VersionBadge version="v5.3.0" />
+
+Opt in to a total match count on a collection `GET`/`HEAD`, returned via the `Content-Range` response header for pagination:
+
+```http
+GET /Product/?category=software&limit(0,25)
+Prefer: count=estimated
+```
+
+Accepts `count=exact` (precise, scans the full matched set) or `count=estimated` (fast, approximate). See [Pagination and Total Count](./querying.md#pagination-and-total-count) for the full request/response contract.
 
 ### Authorization
 
