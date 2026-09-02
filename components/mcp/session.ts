@@ -3,7 +3,6 @@
  *
  * Eviction is delegated to Harper's native TTL (`Table.setTTLExpiration`).
  * Active-session writes use the table default for sliding-window idle expiry.
- * Legacy deletion tombstones retain their explicit `expiresAt` during upgrades.
  *
  * Spec: when a request bears an `Mcp-Session-Id` the server doesn't
  * recognize (expired, terminated, or unknown), the server MUST return HTTP
@@ -28,9 +27,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
 
 /**
  * Window between expiration and physical eviction. Short, but long enough
- * to absorb clock skew and let a late client request resolve to a tombstone
- * 404 rather than a "session never existed" 404. (The client recovery path
- * is identical either way.)
+ * to absorb clock skew before the expired row is physically removed.
  */
 const EVICTION_WINDOW_SECONDS = 60;
 export interface McpSessionRecord {

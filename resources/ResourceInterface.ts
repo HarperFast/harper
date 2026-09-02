@@ -103,7 +103,7 @@ export interface Context {
 	lastModified?: number;
 	/**	 The time	at which a saved record should expire */
 	expiresAt?: number;
-	/** Apply this patch only if the record exists when the write commits. Consumed by the next patch operation. */
+	/** Apply this patch only if the local record exists when the write commits. Consumed by the next patch operation. */
 	ifExists?: boolean;
 	/**	 Indicates that caching should not be applied */
 	noCache?: boolean;

@@ -468,12 +468,12 @@ A handful of design points are non-obvious and easy to break:
   **both**, because it may arrive with no open GET stream.
 
 - **Client session deletion is a durable terminal state.** An authenticated POST can load a session on one
-  worker while a client DELETE commits on another, so physical row absence cannot represent termination: a
-  late unconditional save would recreate the row. `deleteSession` instead writes a short-lived `terminated`
-  tombstone, all post-creation persistence uses field-level patches so optimistic retries preserve it, and
-  `loadSession` rejects both tombstones and structurally incomplete rows that a patch could recreate after
-  tombstone eviction. New save sites must persist only their changed fields; a whole-record patch can revert
-  concurrent logging or subscription state.
+  worker while a client DELETE commits on another. `deleteSession` deletes the row, and every post-creation
+  write goes through `saveSession`, whose commit-time `ifExists` condition prevents a late patch from recreating
+  it. The condition is preserved in transaction-log replay, while `loadSession` also rejects legacy `terminated`
+  tombstones and structurally incomplete rows during rolling upgrades. New save sites must go through
+  `saveSession` and persist only their changed fields; a whole-record patch can revert concurrent logging or
+  subscription state.
 
 - **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
   assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a

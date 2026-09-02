@@ -72,7 +72,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { CONDITIONAL_PATCH, HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -799,6 +799,7 @@ export function makeTable(options) {
 						viaNodeId: event.viaNodeId,
 						// use per-event expiresAt: batched txn context only holds the first event's expiration
 						expiresAt: event.expiresAt,
+						ifExists: event.ifExists,
 						// bulk base-copy snapshot frame: apply current-state directly, without an audit/transaction-log
 						// entry or out-of-order resequencing (harper-pro#480). Only set for copy frames (between
 						// COPY_START and COPY_COMPLETE); post-copy audit-replay frames apply normally.
@@ -1937,8 +1938,8 @@ export function makeTable(options) {
 		 */
 		update(updates: Record & RecordObject, fullUpdate: true);
 		update(updates: Partial<Record & RecordObject>, target?: RequestTarget);
-		update(target: RequestTarget, updates?: any, options?: any);
-		update(target: any, updates?: any, options?: any) {
+		update(target: RequestTarget, updates?: any, options?: { ifExists?: boolean });
+		update(target: any, updates?: any, options?: { ifExists?: boolean }) {
 			let id: Id;
 			// determine if it is a legacy call
 			const directInstance =
@@ -2422,7 +2423,9 @@ export function makeTable(options) {
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
 			const context = this.getContext();
 			const ifExists = (context as Context)?.ifExists === true;
-			if (ifExists) delete (context as Context).ifExists;
+			if (ifExists) (context as Context).ifExists = false;
+			if (ifExists && (this.constructor as any).source)
+				throw new Error('ifExists patches are not supported on source-backed tables');
 			const options = ifExists ? { ifExists: true } : undefined;
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat.
@@ -2593,11 +2596,7 @@ export function makeTable(options) {
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
-					// Validate existence here because optimistic retries do not rerun the staging-time validation.
-					if (ifExists && existingRecord == null) {
-						write.skipped = true;
-						return;
-					}
+					const skipMissingRecord = ifExists && existingRecord == null;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -2612,6 +2611,11 @@ export function makeTable(options) {
 
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
+					// validate() runs only on the first attempt, so retries must recheck existence in commit.
+					if (skipMissingRecord) {
+						write.skipped = true;
+						return;
+					}
 					let omitLocalRecord = false;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
@@ -3146,6 +3150,7 @@ export function makeTable(options) {
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
+								ifExists,
 							},
 							type,
 							false,
@@ -4396,6 +4401,7 @@ export function makeTable(options) {
 							version: auditRecord.version,
 							type,
 							beginTxn,
+							ifExists: auditRecord.type === 'patch' && Boolean(auditRecord.extendedType & CONDITIONAL_PATCH),
 						};
 						// Queued events are filtered when the queue drains through send() below; events sent
 						// directly (queue already drained) are filtered here. Each event is filtered once.
