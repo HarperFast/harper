@@ -22,6 +22,14 @@ export const WORKER_COUNT = Number.isInteger(parsedWorkerCount) && parsedWorkerC
 export const NO_MULTI_WORKER_HTTP = process.platform === 'win32' || process.platform === 'darwin';
 
 /**
+ * Bun does not spread connections over its HTTP workers the way the Node path does: measured on CI,
+ * 128 fresh connections all landed on one thread while `system_information` reported four. So a
+ * suite that must reach EVERY worker cannot run there, though suites that only tolerate a partial
+ * pool still exercise the cache paths under Bun.
+ */
+export const NO_FULL_WORKER_COVERAGE = NO_MULTI_WORKER_HTTP || process.env.HARPER_RUNTIME === 'bun';
+
+/**
  * Run `fn` over `items` with at most `limit` in flight at once. These suites issue fresh-
  * connection requests (no keep-alive) to spray across the worker pool; firing hundreds at
  * once via an unbounded Promise.all risks ephemeral-port/socket exhaustion on constrained CI

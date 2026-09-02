@@ -22,7 +22,7 @@
  * trusting a fixed-width fan-out to have covered them.
  *
  * Skipped on LMDB (PrimaryRocksDatabase is RocksDB-specific) and where Harper cannot spread HTTP
- * across workers (NO_MULTI_WORKER_HTTP).
+ * across workers to every one of them (NO_FULL_WORKER_COVERAGE).
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -31,7 +31,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-import { WORKER_COUNT, assertEveryWorkerStarted, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertEveryWorkerStarted, NO_FULL_WORKER_COVERAGE } from './recordCachingWorkers.ts';
 import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-invalidate');
@@ -48,7 +48,7 @@ type GetResult = {
 
 suite(
 	'record-caching value-shape edge: object <-> invalidated-null [rocksdb] multi-worker',
-	{ skip: SKIP || NO_MULTI_WORKER_HTTP },
+	{ skip: SKIP || NO_FULL_WORKER_COVERAGE },
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
 		let httpURL: string;

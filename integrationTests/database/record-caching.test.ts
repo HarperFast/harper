@@ -17,7 +17,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { WORKER_COUNT, assertEveryWorkerStarted, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertEveryWorkerStarted, NO_FULL_WORKER_COVERAGE } from './recordCachingWorkers.ts';
 import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching');
@@ -102,7 +102,7 @@ async function waitForTable(httpURL: string, authHeader: string): Promise<void> 
 
 // ── Scenario 1 & 2: 4-worker cache invalidation + load ──────────────────────
 
-suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_MULTI_WORKER_HTTP }, (ctx: ContextWithHarper) => {
+suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_FULL_WORKER_COVERAGE }, (ctx: ContextWithHarper) => {
 	let httpURL: string;
 	let authHeader: string;
 
