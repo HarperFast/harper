@@ -174,7 +174,6 @@ export function openAuditStore(rootStore) {
 	let pendingCleanupResolve: (() => void) | null = null;
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
-	// on the store, not in the closure: the cadence is observable state the retention tests read
 	auditStore.auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
 	let cleanupStopped = false;
 	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
