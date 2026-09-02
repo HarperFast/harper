@@ -24,9 +24,9 @@ import { nextGenerationId, requestGenerationClose } from './logGenerationCoordin
 // Each writer re-checks the file after this many bytes of its own output. Fixed, not "the remaining
 // budget": a remaining budget assumes one thread's stat accounts for the other threads' future
 // bytes, so T writers each seeing ~maxBytes left can add ~T * maxBytes before any of them looks
-// again. A fixed quantum caps every writer's blind window at quantum + one payload regardless of
-// what the others do, making the bound a function of maxSize and thread count rather than of write
-// rate or scheduler delay.
+// again. A fixed quantum caps every writer's blind window at quantum + the flush that crosses it,
+// independently of scheduler delay. That flush is one batch, and the sink batches under load, so the
+// bound is maxBytes + T * (quantum + batch) rather than a function of elapsed time.
 const CHECK_QUANTUM_DIVISOR = 16;
 const ROTATION_RETRY_COOLDOWN = 5000;
 const SIZE_UNIT_MULTIPLIERS = { K: 1e3, M: 1e6, G: 1e9 };
@@ -34,19 +34,16 @@ const SIZE_UNIT_MULTIPLIERS = { K: 1e3, M: 1e6, G: 1e9 };
 export const INVALID_MAX_SIZE_MSG = "'maxSize' must be a positive size with a K, M or G unit (for example '64M')";
 
 /**
- * Convert a `logging.rotation.maxSize` value to bytes, or undefined if it is not a usable size.
- * One definition, shared with validation/configValidator.ts: a value this rejects must not reach
- * the write path, where a zero/negative/NaN limit would trip the size check on every flush.
+ * Convert `logging.rotation.maxSize` to bytes, or undefined if it cannot be a byte limit. One
+ * definition, shared with validation/configValidator.ts.
  */
 export function parseMaxSize(maxSize: any) {
 	if (typeof maxSize !== 'string') return undefined;
 	const multiplier = SIZE_UNIT_MULTIPLIERS[maxSize.slice(-1)];
 	if (!multiplier) return undefined;
 	const size = maxSize.slice(0, -1);
-	// Number(), not a stricter grammar: every mantissa that produces a usable cap today keeps
-	// working, exponent notation included. What is rejected is only what cannot be a cap at all —
-	// `parseInt` accepted '0K', '-1K' and '1xK', which become a limit of 0, a negative number, and
-	// NaN. Sampled once a minute those merely misbehave; on the write path they are checked per flush.
+	// Number(), not a stricter grammar, so every mantissa that produces a usable cap today keeps
+	// working — exponent notation included. `parseInt` also accepted '0K', '-1K' and '1xK'.
 	if (size.trim() === '') return undefined;
 	const bytes = Number(size) * multiplier;
 	return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
@@ -56,10 +53,8 @@ export function resolveRotatedLogDir(logPath: string, configuredPath?: string) {
 	return configuredPath || join(dirname(logPath), 'rotated');
 }
 
-// Monotonically increasing across every rotation in this isolate; combined with the pid and thread
-// id this guarantees two archive names cannot collide even when two threads rotate two different
-// sources within the same millisecond. threadId is load-bearing now that any writing thread can
-// rotate: worker threads share the process's pid, and this counter is per-isolate module state.
+// threadId is load-bearing in the suffix below: worker threads share the process pid, and this
+// counter is per-isolate, so pid+seq alone cannot keep two threads' archives apart.
 let rotationSequence = 0;
 
 // The archive directory defaults to the log's own directory (`logging.rotation.path` defaults to
@@ -108,16 +103,26 @@ export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeL
  */
 export async function publishArchivedGeneration(generation: any, compress?: boolean) {
 	if (!(await requestGenerationClose(generation))) {
-		unprovenArchives.set(generation.archivePath, { generation, compress });
+		rememberUnprovenArchive(generation.archivePath, { generation, compress });
 		return generation.archivePath;
 	}
 	return compress ? compressArchive(generation.archivePath) : generation.archivePath;
 }
 
-// Generations this process archived but could not prove released. Tracked whether or not they are
-// to be compressed: retention unlinks archives too, and unlinking an inode a stalled writer still
-// holds loses whatever it writes next just as surely as gzip would.
+// Generations this isolate archived but could not prove released, as a retry queue for compression —
+// not as the safety mechanism. Safety is the release the audit tick proves for the whole directory
+// before anything is deleted, and the archives themselves are found on disk, so a bounded queue that
+// forgets its oldest entries loses nothing. Bounded because write-path rotation happens mostly in
+// the HTTP workers, and only the main thread runs a tick to drain it.
+const MAX_UNPROVEN_ARCHIVES = 64;
 const unprovenArchives = new Map<string, any>();
+
+function rememberUnprovenArchive(archivePath: string, pending: any) {
+	unprovenArchives.set(archivePath, pending);
+	while (unprovenArchives.size > MAX_UNPROVEN_ARCHIVES) {
+		unprovenArchives.delete(unprovenArchives.keys().next().value);
+	}
+}
 
 export function isArchivePendingQuiescence(archivePath: string) {
 	return unprovenArchives.has(archivePath);

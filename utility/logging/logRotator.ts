@@ -65,9 +65,8 @@ function logRotator({
 		hdbLogger.error(`Ignoring logging.rotation.maxSize '${maxSize}': ${INVALID_MAX_SIZE_MSG}`);
 	}
 
-	// One compress decision for both rotation paths. The write-path guard can only read the rotation
-	// block (environmentManager imports harper_logger, so it is unreachable from the sink), so a tick
-	// that consulted only the env would apply a different destruction policy to the same log.
+	// The rotation block first, because that is all the write-path guard can read: environmentManager
+	// imports harper_logger, so the sink cannot reach it, and two sources would mean two policies.
 	const compressArchives = compress ?? envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
 
 	// Convert interval param to ms.

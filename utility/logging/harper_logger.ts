@@ -801,11 +801,9 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		// answer from it has to mean "released" rather than only "handler ran".
 		registerLogSink(path, { identity: () => logFDIdentity, close: closeLogFile });
 	}
-	// An undefined rotation means "this caller has no opinion", not "turn rotation off" — that is
-	// what `enabled: false` says. Several loggers are created for one path during startup and the
-	// later ones carry no rotation block of their own, so treating undefined as a reconfiguration
-	// tears down the rotation the earlier, configured caller asked for (the same shape of loss #1880
-	// fixed for updateLogger's inheritance).
+	// An undefined rotation means "no opinion", not "off" — that is what `enabled: false` says.
+	// Several loggers are created for one path during startup and the later ones carry no rotation
+	// block, so treating undefined as a reconfiguration tore down the configured caller's rotation.
 	const reconfigured = rotation !== undefined && JSON.stringify(rotation) !== JSON.stringify(logger.rotation);
 	if (reconfigured) {
 		logger.rotation = rotation;
@@ -892,6 +890,12 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	// this is called on a timer, and will write the log buffer to the file
 	function logQueuedData(entry?: any) {
 		const payload = logBuffer ? logBuffer.join('') : entry;
+		// Released before anything can re-enter this sink. The rotation notice is written from inside
+		// the append below, and a re-entrant flush that still saw this batch would either write every
+		// line of it a second time into the new generation, or be swallowed when this call clears the
+		// buffer on its way out.
+		logBuffer = null;
+		if (payload === undefined) return;
 		// A file that just refused a write will refuse the next one too, and every attempt costs a
 		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
 		// is the request path at full rate. Go straight to stdio until the cooldown expires.
@@ -901,14 +905,14 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		openLogFile(undefined);
 		if (logFD && mayAppend) {
 			let startTime = performance.now();
-			// Encoded once, so the guard's accounting reads a length instead of re-scanning the string.
-			const data = rotationGuard ? Buffer.from(payload) : payload;
 			try {
-				fs.appendFileSync(logFD, data);
+				fs.appendFileSync(logFD, payload);
 				// Both cleared, so a volume that fills again months later reports itself again
 				retryAppendAfter = undefined;
 				loggedAppendError = false;
-				rotationGuard?.recordWrite((data as Buffer).length);
+				// byteLength, not a Buffer: appendFileSync writes a string through Node's own encoder
+				// without allocating, and rotation is on by default so this runs on every flush.
+				rotationGuard?.recordWrite(Buffer.byteLength(payload));
 			} catch (error) {
 				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
 				// A log write must never take the process down: on an exhausted volume this throws from
@@ -921,7 +925,6 @@ function getFileLogger(path, rotation, isExternalInstance) {
 					writeToStdioDirectly(process.stderr, `Harper cannot write to its log file: ${error}\n`);
 				}
 				writeToStdioDirectly(process.stdout, payload);
-				logBuffer = null;
 				return;
 			}
 			let endTime = performance.now();
@@ -929,7 +932,6 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			// will start buffering
 			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
 		} else writeToStdioDirectly(process.stdout, payload);
-		if (logBuffer) logBuffer = null;
 	}
 
 	function closeLogFile(_unused?: any) {
