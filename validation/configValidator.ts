@@ -373,6 +373,30 @@ export function configValidator(configJson, skipFsValidation = false) {
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
+			blobs: Joi.object({
+				compression: Joi.object()
+					.pattern(
+						// exact content type, 'type/*' wildcard, or the 'default' entry
+						/^([\w.+-]+\/(\*|[\w.+-]+)|default)$/,
+						Joi.alternatives([
+							Joi.valid(false),
+							// .unknown(false) so a typo'd nested field (e.g. `treshold`) is rejected instead of
+							// silently inheriting the top-level validate() allowUnknown:true and falling back to
+							// the default threshold — matching config-root.schema.json.
+							Joi.object({ codec: Joi.valid('deflate').optional(), threshold: number.min(0).optional() }).unknown(
+								false
+							),
+						])
+					)
+					// fail on keys that are not a content type, a 'type/*' wildcard, or 'default' —
+					// a typo'd key would otherwise silently never match anything
+					.unknown(false)
+					.optional(),
+			})
+				// reject a misspelled property directly under storage.blobs (e.g. `compresion:`), which the
+				// top-level validate()'s allowUnknown:true would otherwise accept and silently leave off
+				.unknown(false)
+				.optional(),
 			compression: Joi.alternatives([
 				boolean.optional(),
 				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
