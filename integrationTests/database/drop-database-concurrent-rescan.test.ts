@@ -12,14 +12,21 @@
  *
  * This drives the same shape: many column families per table (one open per family in the
  * reconcile), several worker threads (one reconcile each), and a schema change fired into the
- * middle of every drop_table so the rescan lands while the tombstone exists. It pins the half
- * that is deterministic — every thread releases the dropped database when the drop is announced,
- * so a same-name recreate loads cleanly and a job worker still boots. The destroy-vs-open window
- * itself (the dropped directory reappearing, the LOCK held for the life of the process) is not
- * closed yet, so it is not asserted here.
+ * middle of every drop_table so the rescan lands while the tombstone exists — and pins both halves:
+ * every thread releases the dropped database when the drop is announced, so a same-name recreate
+ * loads cleanly and a job worker still boots; and the directory is destroyed only once nothing in
+ * the process can open it (the drop marker makes every rescan skip it, and the registry is checked
+ * first), so it never comes back and no thread ever reports the LOCK held. The two suites after it
+ * pin the protocol's edges: a handle Harper does not manage makes the drop fail closed, and a drop
+ * interrupted after its marker is finished by the next scan.
  */
 import { suite, test, before, after } from 'node:test';
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, doesNotMatch, ok, strictEqual } from 'node:assert';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startHarper, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error the apiTests helpers have no type declarations; runtime resolves fine
@@ -123,6 +130,14 @@ suite('drop_database under concurrent schema rescans (rocksdb)', { skip: skipSui
 			await dropTable;
 			await operation({ operation: 'drop_database', database: DATABASE });
 			await churn;
+			ok(
+				!(DATABASE in (await operation({ operation: 'describe_all' }))),
+				`iteration ${iteration}: the dropped database is back`
+			);
+			ok(
+				!existsSync(join(ctx.harper.dataRootDir, 'database', DATABASE)),
+				`iteration ${iteration}: the dropped directory is back on disk`
+			);
 		}
 
 		// Every thread's rescan must survive the database coming back under the same name: a thread
@@ -150,5 +165,155 @@ suite('drop_database under concurrent schema rescans (rocksdb)', { skip: skipSui
 		});
 		const job = await awaitJob(started.job_id);
 		strictEqual(job.status, 'COMPLETE', `job after the drops did not complete: ${JSON.stringify(job)}`);
+
+		ok(ctx.harper.logDir, 'the instance log directory is needed to assert on server-side errors');
+		doesNotMatch(
+			readFileSync(join(ctx.harper.logDir!, 'hdb.log'), 'utf8'),
+			/lock hold by current process/,
+			'a thread reopened the database while it was being destroyed'
+		);
 	});
 });
+
+// Opens its own rocksdb-js handle on a database directory from inside a worker — the "loaded
+// component holding its own instance" case Harper can neither track nor close.
+const HOLD_RESOURCES_JS =
+	"import { createRequire } from 'node:module';\n" +
+	`const { RocksDatabase } = createRequire(${JSON.stringify(join(resolve(import.meta.dirname, '..', '..'), 'package.json'))})('@harperfast/rocksdb-js');\n` +
+	'let held;\n' +
+	'export class DatabaseHold extends Resource {\n' +
+	'\tstatic loadAsInstance = false;\n' +
+	'\tget() {\n' +
+	'\t\treturn { held: Boolean(held) };\n' +
+	'\t}\n' +
+	'\tpost(query, data) {\n' +
+	'\t\theld?.close();\n' +
+	'\t\theld = data?.path ? RocksDatabase.open(data.path) : undefined;\n' +
+	'\t\treturn { held: Boolean(held) };\n' +
+	'\t}\n' +
+	'}\n';
+
+suite(
+	'drop_database fails closed while a handle it does not manage stays open (rocksdb)',
+	{ skip: skipSuite },
+	(ctx: ContextWithHarper) => {
+		let authorization: string;
+
+		async function operation(body: Record<string, unknown>): Promise<{ status: number; body: any }> {
+			const response = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			});
+			const text = await response.text();
+			return { status: response.status, body: JSON.parse(text) };
+		}
+
+		async function hold(path: string | null): Promise<void> {
+			const response = await fetch(`${ctx.harper.httpURL}/DatabaseHold/`, {
+				method: 'POST',
+				headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ path }),
+			});
+			const text = await response.text();
+			strictEqual(response.status, 200, `hold request failed: ${text}`);
+			deepStrictEqual(JSON.parse(text), { held: path !== null });
+		}
+
+		before(async () => {
+			// one worker, so the release lands on the thread that holds the handle
+			await startHarper(ctx, { config: { threads: { count: 1 } }, env: { HARPER_STORAGE_ENGINE: 'rocksdb' } });
+			authorization = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
+			await installAppComponent(createApiClient(ctx.harper), {
+				project: 'database-hold',
+				files: { 'config.yaml': 'jsResource:\n  files: resources.js\nrest: true\n', 'resources.js': HOLD_RESOURCES_JS },
+				probePath: '/DatabaseHold/',
+				restartTimeoutMs: 120_000,
+			});
+		});
+
+		after(async () => {
+			await teardownHarper(ctx);
+		});
+
+		test('refuses with 409 while the handle is open, and drops once it is released', async () => {
+			const databaseDir = join(ctx.harper.dataRootDir, 'database', 'heldopen');
+			strictEqual((await operation({ operation: 'create_database', database: 'heldopen' })).status, 200);
+			strictEqual(
+				(await operation({ operation: 'create_table', database: 'heldopen', table: 't', primary_key: 'id' })).status,
+				200
+			);
+			strictEqual(
+				(await operation({ operation: 'insert', database: 'heldopen', table: 't', records: [{ id: 1 }] })).status,
+				200
+			);
+			await hold(databaseDir);
+
+			const refused = await operation({ operation: 'drop_database', database: 'heldopen' });
+			strictEqual(refused.status, 409, `expected a 409, got ${refused.status}: ${JSON.stringify(refused.body)}`);
+			ok(/held open/.test(refused.body.error), refused.body.error);
+			// nothing was destroyed, and every thread reloaded it
+			ok('heldopen' in (await operation({ operation: 'describe_all' })).body, 'the refused drop lost the database');
+			const rows = await operation({ operation: 'sql', sql: 'SELECT id FROM heldopen.t' });
+			deepStrictEqual(rows.body, [{ id: 1 }]);
+			ok(existsSync(databaseDir));
+
+			await hold(null);
+			strictEqual((await operation({ operation: 'drop_database', database: 'heldopen' })).status, 200);
+			ok(!('heldopen' in (await operation({ operation: 'describe_all' })).body));
+			ok(!existsSync(databaseDir));
+		});
+	}
+);
+
+suite(
+	'an interrupted drop_database is finished by the next scan (rocksdb)',
+	{ skip: skipSuite },
+	(ctx: ContextWithHarper) => {
+		let authorization: string;
+		let databaseDir: string;
+		let blobRoot: string;
+		let markerPath: string;
+
+		before(async () => {
+			// Pre-seed the data root with what a crash between the drop marker and the deletions leaves
+			// behind: a directory the scan would otherwise open as a database, its blob root, and the marker.
+			const dataRootDir = await mkdtemp(join(tmpdir(), 'harper-interrupted-drop-'));
+			ctx.harper = { dataRootDir };
+			databaseDir = join(dataRootDir, 'database', 'crashy');
+			mkdirSync(databaseDir, { recursive: true });
+			writeFileSync(join(databaseDir, 'CURRENT'), 'MANIFEST-000001\n');
+			writeFileSync(join(databaseDir, 'MANIFEST-000001'), '');
+			blobRoot = join(dataRootDir, 'blobs', 'crashy');
+			mkdirSync(blobRoot, { recursive: true });
+			writeFileSync(join(blobRoot, 'leftover.bin'), 'x');
+			const metaDir = join(dataRootDir, 'database', '`restore`');
+			mkdirSync(metaDir, { recursive: true });
+			markerPath = join(metaDir, `${createHash('sha256').update('crashy').digest('hex').slice(0, 32)}.restoring`);
+			writeFileSync(markerPath, 'crashy\ndrop started 2026-09-02T00:00:00.000Z\n');
+			await startHarper(ctx, { config: { logging: { level: 'info' } }, env: { HARPER_STORAGE_ENGINE: 'rocksdb' } });
+			authorization = `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`;
+		});
+
+		after(async () => {
+			await teardownHarper(ctx);
+		});
+
+		test('the database, its blob root and the marker are gone, and the name is free again', async () => {
+			ok(!existsSync(databaseDir), 'the half-dropped directory should have been removed at boot');
+			ok(!existsSync(blobRoot), 'the blob root should have been removed with it');
+			ok(!existsSync(markerPath), 'the marker should go only after both are gone');
+			const request = async (body: Record<string, unknown>) => {
+				const response = await fetch(ctx.harper.operationsAPIURL, {
+					method: 'POST',
+					headers: { 'Authorization': authorization, 'Content-Type': 'application/json' },
+					body: JSON.stringify(body),
+				});
+				return { status: response.status, body: await response.json() };
+			};
+			ok(!('crashy' in (await request({ operation: 'describe_all' })).body));
+			strictEqual((await request({ operation: 'create_database', database: 'crashy' })).status, 200);
+			ok(existsSync(databaseDir));
+		});
+	}
+);

@@ -985,3 +985,12 @@ export const AUTH_AUDIT_TYPES = {
 	AUTHENTICATION: 'authentication',
 	AUTHORIZATION: 'authorization',
 } as const;
+
+/**
+ * Schema ITC messages that are not operations: they never enter the operations dispatch table, so
+ * nothing outside the process can send one.
+ */
+export const ITC_SCHEMA_OPERATIONS = {
+	/** Every thread releases its handles on the named database; its rescan then skips the database while its lifecycle marker is held. */
+	CLOSE_DATABASE: 'close_database',
+} as const;
