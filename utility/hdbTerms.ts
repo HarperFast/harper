@@ -651,6 +651,8 @@ export const CONFIG_PARAMS = {
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
 	REPLICATION_BLOBGAPRECONNECTMS: 'replication_blobGapReconnectMs',
+	REPLICATION_BLOBGAPESCALATIONCYCLES: 'replication_blobGapEscalationCycles',
+	REPLICATION_BLOBGAPESCALATIONMS: 'replication_blobGapEscalationMs',
 	REPLICATION_COPYCURSORFLUSHBYTES: 'replication_copyCursorFlushBytes',
 	REPLICATION_COPYCURSORFLUSHINTERVALMS: 'replication_copyCursorFlushIntervalMs',
 	REPLICATION_BLOBSENDDRAINTIMEOUT: 'replication_blobSendDrainTimeout',

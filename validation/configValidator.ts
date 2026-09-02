@@ -259,6 +259,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			pingTimeout: number.min(1).optional().empty(null),
 			copyTimeout: number.min(1).optional().empty(null),
 			blobGapReconnectMs: number.min(1000).optional().empty(null),
+			blobGapEscalationCycles: number.integer().min(0).optional().empty(null),
+			blobGapEscalationMs: number.integer().min(0).optional().empty(null),
 			copyCursorFlushBytes: number.min(1).optional().empty(null),
 			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
