@@ -179,16 +179,16 @@ GET /Product/?sort(+rating,-price)
 
 Use `limit(start,end)` to page through a collection, and opt in to a total match count with the `Prefer` request header (`Prefer: count=exact`) so a client can render pagination (for example "1-25 of 1,234") without a second request.
 
-Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a `limit()` within a supported page size — a request with no `limit()`, an oversized one, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
+Counting is opt-in: without the header, no count is computed and no count headers are returned. It applies only to `GET`/`HEAD` requests and requires a bounded page — the `limit()` must be a non-negative integer no larger than **10,000**, and the requested window (offset + limit) no larger than **1,000,000**. A request with no `limit()`, one outside those bounds, or a non-numeric one is served normally with no count headers, since counting an unbounded page would defeat the point of paging.
 
 ### Requesting a count
 
 Send a `Prefer` header on a `GET` (or `HEAD`) request to a collection:
 
-| Value             | Meaning                                                                                                                                           |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `count=exact`     | The exact number of matching records. Scans the full matched set, so it is opt-in per mount (see below) and served as an estimate unless enabled. |
-| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                                                                |
+| Value             | Meaning                                                                                                                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `count=exact`     | The exact number of matching records. Scans the full matched set, so it is off by default (see [below](#enabling-exact-counts)) and served as an estimate unless enabled for the REST interface. |
+| `count=estimated` | A fast planner/table estimate. Cheap, approximate.                                                                                                                                               |
 
 ```http
 GET /Product/?category=software&limit(0,25)
@@ -212,11 +212,11 @@ Range-Unit: items
 Preference-Applied: count=exact
 ```
 
-The response status is always `200` — `Content-Range` is informational (Harper does not use `206 Partial Content`). A `HEAD` request with `Prefer: count=` returns the count headers with no body, a cheap way to ask "how many match?" without transferring the page. When CORS is enabled, these three headers are added to `Access-Control-Expose-Headers` so browser clients can read them cross-origin.
+The response status is always `200` — `Content-Range` is informational (Harper does not use `206 Partial Content`). A `HEAD` request with a `count` preference returns the count headers with no body — it saves transferring the page, but `count=exact` still scans the matched set (subject to the same guardrails), so it is a bandwidth-saving pre-flight, not a low-cost counting shortcut. When CORS is enabled, these three headers are added to `Access-Control-Expose-Headers` so browser clients can read them cross-origin.
 
 ### Unavailable totals
 
-The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that reaches its internal work limit, or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
+The total is reported as `*` (for example `Content-Range: items 0-24/*`) when it cannot be produced — an exact scan that hits its guardrail (counting the tail past the requested page is bounded by a 1,000,000-row cap and a ~1-second budget, and abandons the total rather than truncating the page), or a query with no cardinality estimate (for example a `!=` or `=ct=` (contains) condition). `Preference-Applied` still echoes the requested mode, so an unavailable total (`.../*`) is distinct from a request that asked for no count.
 
 ### Enabling exact counts
 
@@ -227,7 +227,7 @@ rest:
   exactCount: true
 ```
 
-Without it, a `count=exact` request is served as an estimate (the response reports `Preference-Applied: count=estimated`). Estimated counts are always available.
+Without it, a `count=exact` request is served as an estimate (the response reports `Preference-Applied: count=estimated`). Estimated counts do not require `exactCount`; when no estimate is available, the total is reported as `*`.
 
 <VersionBadge version="v4.3.0" />
 
