@@ -129,7 +129,7 @@ first and a throw from it is what stops the prune.
 | `Table.deleteHistory`                                                        | LMDB (`RocksTransactionLogStore.remove()` is a no-op, so it must NOT raise) |
 | `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                     |
 
-Six things that are easy to get wrong here:
+Seven things that are easy to get wrong here:
 
 - **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
   surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
@@ -153,6 +153,12 @@ Six things that are easy to get wrong here:
   `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under
   that same name, and a backdated or replicated write makes the two differ. A cursor saved from
   `getHistory` cannot be compared against the floor.
+- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
+  purge granularity means the branch cannot know which entries a purge will drop, and the floor is
+  written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
+  file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
+  them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
+  entry, so it raises off the first one it finds instead.
 - **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
   bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
   spelling the check that way would read corrupt metadata as safe.

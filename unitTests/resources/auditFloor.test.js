@@ -319,6 +319,33 @@ describe('audit staleness floor', () => {
 			assert.strictEqual(swallowed.oldestRetainedAuditTime(), before, 'and the floor must not have moved');
 		});
 
+		it('does not report a commit when the unknown sentinel itself fails to write', function () {
+			// The read-back compares the value it wrote. On a FLOORLESS store the value is the unknown
+			// sentinel, and `decodeAuditFloor(undefined)` is that same sentinel — so equality alone said
+			// "landed" for a write that never happened, on exactly the store where the marker matters most.
+			// Both other write-failure tests seed a finite floor first, so neither reaches this.
+			if (Audited.auditStore.reusableIterable) return this.skip(); // LMDB write branch
+			const floorless = tableInOwnDatabase('SentinelFails');
+			const store = floorless.auditStore;
+			const floorlessRoot = store.rootStore;
+			if (typeof floorlessRoot.removeSync === 'function') floorlessRoot.removeSync(AUDIT_FLOOR_KEY);
+			return store.remove(AUDIT_FLOOR_KEY).then(() => {
+				assert.strictEqual(store.getBinary(AUDIT_FLOOR_KEY), undefined, 'precondition: no floor record');
+				const realPut = store.put.bind(store);
+				store.put = () => Promise.resolve(true); // accepted, but nothing is stored
+				try {
+					assert.throws(() => raiseAuditFloor(store, Date.now()), /did not commit/);
+				} finally {
+					store.put = realPut;
+				}
+				assert.strictEqual(
+					store.getBinary(AUDIT_FLOOR_KEY),
+					undefined,
+					'and still no record, so the caller must not have pruned'
+				);
+			});
+		});
+
 		it('does not prune when the floor cannot be recorded', () => {
 			let purgeCalls = 0;
 			const failingStore = {

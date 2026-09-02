@@ -463,6 +463,16 @@ function decodeAuditFloor(stored: any): number {
 	return floor;
 }
 
+/**
+ * Did the floor write land? A record has to be PRESENT, not merely decode to the value we wrote:
+ * `decodeAuditFloor(undefined)` is the unknown sentinel too, so on a floorless store — where the
+ * resolver writes exactly that sentinel — comparing decoded values alone reported a commit for a
+ * write that never happened, and the caller pruned with nothing persisted.
+ */
+function floorWriteLanded(stored: any, floor: number): boolean {
+	return stored !== undefined && decodeAuditFloor(stored) === floor;
+}
+
 /** Own eight bytes per write: the store must never be handed a live view of the reused module buffer. */
 function encodeAuditFloor(floor: number): Uint8Array {
 	FLOOR_TARGET[0] = floor;
@@ -504,7 +514,7 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 						const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
 						if (floor !== undefined) {
 							txn.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
-							if (decodeAuditFloor(txn.getBinarySync(AUDIT_FLOOR_KEY)) !== floor) return false;
+							if (!floorWriteLanded(txn.getBinarySync(AUDIT_FLOOR_KEY), floor)) return false;
 						}
 						return true;
 					},
@@ -525,7 +535,7 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 						auditStore
 							.put(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)))
 							?.catch?.((error) => warnContained('Error writing the audit retention floor', error));
-						if (decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY)) !== floor) return false;
+						if (!floorWriteLanded(auditStore.getBinary(AUDIT_FLOOR_KEY), floor)) return false;
 					}
 					return true;
 				});
@@ -613,31 +623,33 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
  */
 export function establishAuditFloor(auditStore: any): void {
 	if (isReadOnlyMode()) return;
-	// Absence of the record, not `getAuditFloor() === AUDIT_FLOOR_UNKNOWN`: a record that exists but
-	// decodes to unknown — corrupt bytes, or the Infinity a prune-everything stored — is already the
-	// fail-closed answer, and stamping over it would LOWER a floor that is never supposed to lower.
-	// The check is repeated inside the transaction (the `recorded` argument), because between this
-	// read and that write another worker's prune can store exactly such a value; this read only keeps
-	// the common case — a floor already established, every worker, every database, every boot — off
-	// the env write lock.
-	if (auditStore.getBinary(AUDIT_FLOOR_KEY) !== undefined) return;
-	// Not bare Date.now(): a clock that has rolled back would bootstrap a floor BELOW history this
-	// database may already have pruned, certifying a stale cursor. The newest retained entry is a
-	// lower bound the clock cannot argue with — everything at or above it is demonstrably still here —
-	// so take whichever is later. (openAuditStore separately error-logs the reversal itself.)
-	// Bounded by what survives, and RocksTransactionLogStore.getKeys() is unimplemented, so there this
-	// reduces to Date.now(); an accepted limitation of stamping rather than leaving a floorless store
-	// permanently unknown, which would make every upgraded deployment fail closed forever.
-	let epoch = Date.now();
-	for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
-		if (typeof newest === 'number' && newest > epoch) epoch = newest;
-	}
+	// Every read and write in here is inside the try: the contract is that a database open never fails
+	// over this metadata, and a throwing getBinary/getKeys would escape to initStores just as a
+	// throwing write would.
 	try {
+		// Absence of the record, not `getAuditFloor() === AUDIT_FLOOR_UNKNOWN`: a record that exists but
+		// decodes to unknown — corrupt bytes, or the Infinity a prune-everything stored — is already the
+		// fail-closed answer, and stamping over it would LOWER a floor that is never supposed to lower.
+		// The check is repeated inside the transaction (the `recorded` argument), because between this
+		// read and that write another worker's prune can store exactly such a value; this read only keeps
+		// the common case — a floor already established, every worker, every database, every boot — off
+		// the env write lock.
+		if (auditStore.getBinary(AUDIT_FLOOR_KEY) !== undefined) return;
+		// Not bare Date.now(): a clock that has rolled back would bootstrap a floor BELOW history this
+		// database may already have pruned, certifying a stale cursor. The newest retained entry is a
+		// lower bound the clock cannot argue with — everything at or above it is demonstrably still here —
+		// so take whichever is later. Bounded by what survives, and RocksTransactionLogStore.getKeys() is
+		// unimplemented, so there this reduces to Date.now(); an accepted limitation of stamping rather
+		// than leaving a floorless store permanently unknown, which would make every upgraded deployment
+		// fail closed forever.
+		let epoch = Date.now();
+		for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
+			if (typeof newest === 'number' && newest > epoch) epoch = newest;
+		}
 		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : epoch));
 	} catch (error) {
-		// Never fail a database open over this. An unrecorded floor already reads as unknown, which is
-		// the fail-closed answer; aborting startup instead would turn a metadata write failure into an
-		// outage. The next open retries.
+		// An unrecorded floor already reads as unknown, which is the fail-closed answer; aborting startup
+		// instead would turn a metadata failure into an outage. The next open retries.
 		warnContained('Error initializing the audit retention floor', error);
 	}
 }
@@ -665,9 +677,13 @@ export function establishAuditFloor(auditStore: any): void {
  * Closing that requires validating the cursor inside the resume itself (harper#2448); until then a
  * lost race degrades to the truncation that happens today, never to anything worse.
  *
- * Under the storage-pressure retention shrink (`auditRetention / (1 + priority²)`) this reports
- * post-hoc reality rather than the configured window — that is the contract, not an approximation
- * of it.
+ * **On RocksDB the floor tracks the configured horizon, not retained reality.** That branch purges at
+ * whole-log-file granularity, so it cannot know before the fact which entries a purge will drop, and
+ * the floor has to be written first — so every retention pass advances it to
+ * `Date.now() - auditRetention / (1 + priority²)` whether or not a file was dropped. Entries below
+ * that horizon are routinely still on disk, and a consumer holding a cursor among them is told to
+ * resync. Conservative in the one safe direction, and the reason the LMDB branch (which can see a
+ * single eligible entry) instead raises off the first one it finds.
  *
  * **Not covered: copying a database's state without its history.** `restore_backup` replaces a
  * database with the backup's, floor and all, and a RocksDB checkpoint (a branch database) copies the
