@@ -94,6 +94,8 @@ export async function certifyCandidate(
 	// never returns, its slot is never released, and `prepareApplication` waits inside the preparation lock
 	// forever. Two of those and the node stops deploying until it restarts.
 	let exited: Promise<void> | undefined;
+	// Set when a validator outlives its termination grace, so its slot is deliberately not returned.
+	let slotHeld = false;
 	let settled = false;
 	let timer: NodeJS.Timeout | undefined;
 	// A channel of its own, NOT `parentPort`: Harper's worker machinery uses that for its own ITC traffic,
@@ -198,7 +200,22 @@ export async function certifyCandidate(
 				} else {
 					await Promise.race([worker.terminate(), grace()]);
 				}
-				await Promise.race([exited ?? Promise.resolve(), grace()]);
+				const outcome = await Promise.race([
+					(exited ?? Promise.resolve()).then(() => 'exited' as const),
+					grace().then(() => 'still-running' as const),
+				]);
+				// A validator that would not die keeps its slot. Releasing it would let the node start another
+				// thread while a runaway one is still holding the candidate tree open and consuming the heap
+				// this cap exists to bound — and the caller is about to sweep that tree. Bounded by
+				// MAX_CONCURRENT_CERTIFICATIONS either way, so the worst case is that certification stops on
+				// this thread and says so, rather than quietly overcommitting.
+				if (outcome === 'still-running') {
+					slotHeld = true;
+					harperLogger.error(
+						`The validator certifying ${appName} did not exit within ${TERMINATION_GRACE_MS}ms; holding its ` +
+							`slot, and its candidate tree may still be open`
+					);
+				}
 			} catch (error) {
 				harperLogger.warn(
 					`Could not terminate the validator for ${appName}; its candidate tree may still be open:`,
@@ -209,6 +226,6 @@ export async function certifyCandidate(
 		if (timer) clearTimeout(timer);
 		// Both ends, or the channel keeps this thread's event loop referenced.
 		verdicts.close();
-		releaseSlot();
+		if (!slotHeld) releaseSlot();
 	}
 }

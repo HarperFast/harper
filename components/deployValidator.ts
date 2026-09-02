@@ -5,7 +5,7 @@
 import { realExit } from '../server/threads/workerProcessGuard.ts';
 
 import { basename } from 'node:path';
-import { workerData } from 'node:worker_threads';
+import { parentPort, workerData } from 'node:worker_threads';
 
 import { HDB_ROOT_DIR_NAME } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -71,6 +71,14 @@ async function certify(): Promise<void> {
 		}
 	}
 }
+
+// The receiver for the parent's Bun force-exit. Registered HERE rather than relied on as an import side
+// effect of `manageThreads`' worker block: `terminate()` segfaults under Bun, so that message is the only
+// way the parent can end this thread, and a capability that important should not depend on which modules
+// happened to load.
+parentPort?.on('message', (message: any) => {
+	if (message?.type === 'force-exit') realExit(0);
+});
 
 function report(verdict: { ok: true } | { ok: false; message: string; stack?: string }): void {
 	// Its own channel rather than `parentPort`, which carries Harper's ITC traffic. A closed or absent
