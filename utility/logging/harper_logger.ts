@@ -13,6 +13,7 @@ import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { _assignPackageExport } from '../../globals.js';
 import { Console } from 'console';
 import { inspect, types } from 'node:util';
+import { createRotationGuard, INVALID_MAX_SIZE_MSG, parseMaxSize, resolveRotatedLogDir } from './logRotation.ts';
 
 const { isNativeError } = types;
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
@@ -109,7 +110,16 @@ export function updateLogger(logger: any, logOptions: any, name?: string, mainLo
 	// rotation entirely (#1877). Excluded when `logger` IS mainLoggerRef: the fallback would just
 	// reassign mainLogger.rotation to itself, making it impossible to ever clear main's rotation.
 	const inheritedRotation = logOptions.rotation ?? (logger === mainLoggerRef ? undefined : mainLoggerRef?.rotation);
-	if (inheritedRotation && inheritedRotation === mainLoggerRef?.rotation) {
+	let path = logOptions.path;
+	if (path) {
+		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+	} else if (logOptions.root) {
+		path = join(logOptions.root, logName);
+	} else {
+		path = mainLoggerRef.path;
+		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+	}
+	if (inheritedRotation && inheritedRotation === mainLoggerRef?.rotation && path !== mainLoggerRef?.path) {
 		// This logger has no rotation block of its own and is inheriting main's wholesale — but
 		// inheriting `rotation.path` too would point this logger's archives at wherever main
 		// archives to. If this logger's file lives on a different filesystem/volume than that
@@ -120,20 +130,17 @@ export function updateLogger(logger: any, logOptions: any, name?: string, mainLo
 		// goes through `logOptions.rotation` above, not this fallback. Clone rather than mutate:
 		// `inheritedRotation` is the literal object shared by mainLogger.rotation and every other
 		// component that inherited it.
+		//
+		// Only when the paths differ. A logger writing to main's own file shares main's rotation
+		// state — file loggers are cached per path — so stripping there discards the operator's
+		// configured rotation.path for the main log itself, which no EXDEV risk justifies.
 		const { path: _inheritedPath, ...rotationWithoutPath } = inheritedRotation;
 		logger.rotation = rotationWithoutPath;
 	} else {
 		logger.rotation = inheritedRotation;
 	}
-	let path = logOptions.path;
-	if (path) {
-		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
-	} else if (logOptions.root) {
-		path = join(logOptions.root, logName);
-	} else {
-		path = mainLoggerRef.path;
-		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
-	}
+	// After the rotation above: assigning `path` goes through the setter that rebuilds this path's
+	// file logger, and it reads `logger.rotation` as it stands at that moment.
 	if (path) logger.path = path;
 	else console.error('No path for logger', logOptions);
 	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLoggerRef?.level ?? LOG_LEVEL_HIERARCHY.info;
@@ -764,6 +771,8 @@ export function createLogger(options: any = {} as any) {
 const LOG_TIME_USAGE_THRESHOLD = 100;
 // How long to write straight to stdio after the log file refuses an append.
 const APPEND_RETRY_COOLDOWN = 5000;
+// Ceiling on how often a failing rotation may report itself; the failure repeats every check point.
+const ROTATION_REPORT_INTERVAL = 60000;
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
  * @param path
@@ -775,14 +784,31 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	let logFD, loggedFDError, loggedAppendError, logTimer, retryAppendAfter;
 	let logBuffer;
 	let logTimeUsage = 0;
+	let rotationGuard,
+		logFDIdentity,
+		nextRotationReport = 0;
 	if (!logger) {
 		logger = logToFile;
 		logger.closeLogFile = closeLogFile;
+		// Only the first call for a path keeps its closure; later calls get the cached logger back and
+		// their own logFD/logBuffer are dead. The guard has to be installed through the live closure.
+		logger.installRotationGuard = installRotationGuard;
 		logger.path = path;
 		fileLoggers.set(path, logger);
 	}
-	if (isMainThread && JSON.stringify(rotation) !== JSON.stringify(logger.rotation)) {
+	// An undefined rotation means "this caller has no opinion", not "turn rotation off" — that is
+	// what `enabled: false` says. Several loggers are created for one path during startup and the
+	// later ones carry no rotation block of their own, so treating undefined as a reconfiguration
+	// tears down the rotation the earlier, configured caller asked for (the same shape of loss #1880
+	// fixed for updateLogger's inheritance).
+	const reconfigured = rotation !== undefined && JSON.stringify(rotation) !== JSON.stringify(logger.rotation);
+	if (reconfigured) {
 		logger.rotation = rotation;
+		// Every writing thread, and synchronously: request logging is produced by the HTTP workers, and
+		// at the rates that make maxSize matter a deferred guard misses megabytes before it exists.
+		logger.installRotationGuard(rotation);
+	}
+	if (isMainThread && reconfigured) {
 		setTimeout(() => {
 			logger.rotator?.end();
 			if (!rotation) return;
@@ -798,6 +824,40 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		}, 100);
 	}
 	return logger;
+	function installRotationGuard(newRotation) {
+		rotationGuard = undefined;
+		if (!newRotation || newRotation.enabled === false) return;
+		const maxBytes = parseMaxSize(newRotation.maxSize);
+		if (!maxBytes) {
+			if (newRotation.maxSize != null) reportRotationProblem(`logging.rotation.maxSize: ${INVALID_MAX_SIZE_MSG}`);
+			return;
+		}
+		try {
+			rotationGuard = createRotationGuard({
+				logPath: path,
+				maxBytes,
+				rotatedLogDir: resolveRotatedLogDir(path, newRotation.path),
+				// From the rotation block rather than environmentManager (which logRotator still reads):
+				// environmentManager imports this module, so it cannot be reached from the write path.
+				compress: newRotation.compress,
+				getLogIdentity: () => logFDIdentity,
+				closeLogFile,
+				report: reportRotationProblem,
+				onRotated(archivePath) {
+					logToFile(`log rotated, old log moved to ${archivePath}`);
+				},
+			});
+		} catch (error) {
+			reportRotationProblem(`log rotation is disabled for ${path}: ${error}`);
+		}
+	}
+	function reportRotationProblem(text) {
+		// Straight to stdio, never back through this sink: the sink is what rotation is failing on.
+		// Rate-limited rather than once-only, so a later, different failure is still reported.
+		if (nextRotationReport > performance.now()) return;
+		nextRotationReport = performance.now() + ROTATION_REPORT_INTERVAL;
+		writeToStdioDirectly(process.stderr, `Harper log rotation problem — ${text}\n`);
+	}
 	function logToFile(log) {
 		let entry = `${new Date().toISOString()} ${log}${log.endsWith('\n') ? '' : '\n'}`;
 		if (logBuffer) {
@@ -829,13 +889,17 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		// A file that just refused a write will refuse the next one too, and every attempt costs a
 		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
 		// is the request path at full rate. Go straight to stdio until the cooldown expires.
-		if (logFD && !(retryAppendAfter > performance.now())) {
+		if (logFD && !(retryAppendAfter > performance.now()) && (rotationGuard?.beforeAppend() ?? true)) {
 			let startTime = performance.now();
+			// Encoded once when the size guard is on, so its byte accounting reads a length instead of
+			// re-scanning the string appendFileSync is about to encode anyway.
+			const data = rotationGuard ? Buffer.from(payload) : payload;
 			try {
-				fs.appendFileSync(logFD, payload);
+				fs.appendFileSync(logFD, data);
 				// Both cleared, so a volume that fills again months later reports itself again
 				retryAppendAfter = undefined;
 				loggedAppendError = false;
+				rotationGuard?.recordWrite((data as Buffer).length);
 			} catch (error) {
 				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
 				// A log write must never take the process down: on an exhausted volume this throws from
@@ -864,6 +928,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			fs.closeSync(logFD);
 		} catch {}
 		logFD = null;
+		logFDIdentity = null;
 		if (isExternalInstance) mainLogFd = null;
 	}
 
@@ -871,6 +936,14 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		if (!logFD) {
 			try {
 				logFD = fs.openSync(path, 'a');
+				// Which generation this descriptor belongs to, recorded once here so the size guard's
+				// checkpoint needs a single pathname stat to tell whether the file has moved under it.
+				try {
+					const opened = fs.fstatSync(logFD);
+					logFDIdentity = { ino: opened.ino, dev: opened.dev };
+				} catch {
+					logFDIdentity = null;
+				}
 				if (isExternalInstance) mainLogFd = logFD;
 			} catch (error) {
 				if (error.code === 'ENOENT' && !isRetry) {

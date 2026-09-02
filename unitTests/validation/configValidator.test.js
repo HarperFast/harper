@@ -503,6 +503,19 @@ describe('Test configValidator module', () => {
 				"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'"
 			);
 		});
+
+		it('rejects sizes that cannot be a byte limit, and keeps the ones that can (#1877)', () => {
+			const validate_rotation_max_size = config_val.__get__('validateRotationMaxSize');
+			const helpers = { message: () => 'rejected' };
+			// parseInt accepted all of these; on the write path a 0, negative or NaN limit is checked
+			// per flush rather than once a minute, so they are now refused where operators see it.
+			for (const value of ['0K', '-1K', '1xK']) {
+				expect(validate_rotation_max_size(value, helpers), value).to.equal('rejected');
+			}
+			for (const value of ['64M', '3G', '1e3K', '0.1K']) {
+				expect(validate_rotation_max_size(value, helpers), value).to.equal(value);
+			}
+		});
 	});
 
 	describe('Test setDefaultThreads function', () => {
