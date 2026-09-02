@@ -463,42 +463,34 @@ export class DatabaseTransaction implements Transaction {
 	committing = false;
 	commitPhaseTicks = 0;
 	declare commitChainHead?: DatabaseTransaction;
-	// Transaction-scoped record locks (harper#483); released by every commit or abort of this link.
-	// Flat array: typical transactions hold 1–3 handles; linear scan beats two Maps on this scale.
-	declare recordLocks?: RecordLockHandle[];
+	// Two-level Map: outer key = store object, inner key = writeKeyId(id).
+	// O(1) lookup in recordLockFor; O(N total handles) iteration in releaseRecordLocks.
+	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
 	declare lockWaitDeadline?: number;
 	declare hasGatedWrites?: boolean;
 	declare pendingWakeReject?: (error: any) => void;
 
 	registerRecordLock(handle: RecordLockHandle): void {
-		(this.recordLocks ??= []).push(handle);
+		if (!this.recordLocks) this.recordLocks = new Map();
+		let storeMap = this.recordLocks.get(handle.store);
+		if (!storeMap) this.recordLocks.set(handle.store, (storeMap = new Map()));
+		storeMap.set(handle.keyId, handle);
 	}
 
 	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
-		const recordLocks = this.recordLocks;
-		if (!recordLocks) return undefined;
-		let expired: RecordLockHandle | undefined;
-		for (let i = 0; i < recordLocks.length; i++) {
-			const h = recordLocks[i];
-			if (h.store !== store || h.keyId !== keyId) continue;
-			if (!h.released) return h; // live handle — return immediately
-			if (h.expired) {
-				expired ??= h; // keep first expired handle; a live one may follow
-			} else {
-				// Explicitly released (not by timer): prune so a re-lock sees a clean slot.
-				recordLocks.splice(i, 1);
-				i--;
-			}
-		}
-		// Only reached when no live handle was found; return the expired sentinel (if any) so
-		// gateLockedWrite can throw 409 when the caller's lease fired before their write landed.
-		return expired;
+		const storeMap = this.recordLocks?.get(store);
+		if (!storeMap) return undefined;
+		const h = storeMap.get(keyId);
+		if (!h) return undefined;
+		if (!h.released) return h; // live
+		if (h.expired) return h; // expired — caller may throw 409
+		storeMap.delete(keyId); // explicitly released: prune so re-lock sees a clean slot
+		return undefined;
 	}
 
 	unregisterRecordLock(handle: RecordLockHandle): void {
-		if (!this.recordLocks) return;
-		const i = this.recordLocks.indexOf(handle);
-		if (i !== -1) this.recordLocks.splice(i, 1);
+		const storeMap = this.recordLocks?.get(handle.store);
+		if (storeMap?.get(handle.keyId) === handle) storeMap.delete(handle.keyId);
 	}
 
 	/**
@@ -508,12 +500,15 @@ export class DatabaseTransaction implements Transaction {
 	releaseRecordLocks(): void {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
-		this.recordLocks = recordLocks.filter((handle) => {
-			if (handle.hold) return true;
-			handle.release();
-			return false;
-		});
-		if (this.recordLocks.length === 0) this.recordLocks = undefined;
+		for (const [store, storeMap] of recordLocks) {
+			for (const [keyId, handle] of storeMap) {
+				if (handle.hold) continue;
+				handle.release();
+				storeMap.delete(keyId);
+			}
+			if (storeMap.size === 0) recordLocks.delete(store);
+		}
+		if (recordLocks.size === 0) this.recordLocks = undefined;
 	}
 
 	/**
@@ -569,22 +564,14 @@ export class DatabaseTransaction implements Transaction {
 		if (!lockKey) return false;
 		if (typeof operation.store.tryLock !== 'function') return false;
 
-		// Uncontended path: try without a closure; only allocate the wake callback under contention.
-		if (operation.store.tryLock(lockKey)) {
-			const gateHandle = makeKeyLockHandle(operation.store, lockKey, keyId);
-			this.registerRecordLock(gateHandle);
-			operation.lockHandle = gateHandle;
-			return false;
-		}
-
-		// Contended: register a wake callback so we are notified when the key is released.
+		// Try without a closure first; only allocate the wake callback under contention.
 		let wakeResolve: (() => void) | undefined;
-		if (
+		const acquired =
+			operation.store.tryLock(lockKey) ||
 			operation.store.tryLock(lockKey, () => {
 				wakeResolve?.();
-			})
-		) {
-			// Lock released between the two tryLock calls; acquired without the wake callback.
+			});
+		if (acquired) {
 			const gateHandle = makeKeyLockHandle(operation.store, lockKey, keyId);
 			this.registerRecordLock(gateHandle);
 			operation.lockHandle = gateHandle;

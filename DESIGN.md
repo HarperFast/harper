@@ -162,7 +162,7 @@ true }` neutralizes the gate handle and creates a fresh handle with the requeste
   writes (not just the failed subset) in canonical `(lockTableId, encoded keyId)` order before re-staging.
   Acquiring only the failed subset causes livelock: W1 acquires A while W2 acquires B, both re-stage,
   each grabs the other's first key synchronously and gates on the complement again indefinitely (until
-  max-retries → 503). Acquiring the full set ensures the re-stage's synchronous gate finds every key
+  max-retries → 423). Acquiring the full set ensures the re-stage's synchronous gate finds every key
   re-entrant and no new gating occurs.
 - **The gate acts at staging, not at park.** `gateLockedWrite` in `DatabaseTransaction.save()` runs for
   every write marked `gateOnLock` (local mutations: update, delete, invalidate, relocate, publish; never a

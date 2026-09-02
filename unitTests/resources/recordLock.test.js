@@ -500,10 +500,9 @@ describe('Record locks (harper#483)', () => {
 		});
 
 		it('successive parks on two keys commit after each release (single-thread cooperative scheduling)', async function () {
-			// T writes A (held by holderA) and B (free). holderB = await LockTest.lock(idB) succeeding
-			// immediately after T starts is the observable that proves T's gate on B was already released
-			// (waitForPendingKeys released it before parking on A). Both n=99 after commit verifies that
-			// neither the first nor second restage dropped a write.
+			// Asserts the commit outcome (both n=99); does not verify the internal park count.
+			// holderB = await LockTest.lock(idB) succeeding immediately after T starts is the observable
+			// that proves T's gate on B was already released before T parked on A.
 			if (isLMDB) return this.skip();
 			this.timeout(5000);
 			const idA = id();
@@ -516,7 +515,6 @@ describe('Record locks (harper#483)', () => {
 				await LockTest.put({ id: idA, n: 99 });
 				await LockTest.put({ id: idB, n: 99 });
 			});
-			// holderB succeeding here proves T's gate on B was released (MAJOR-1) before T parked on A.
 			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
 			await holderA.unlock();
 			await holderB.unlock();
@@ -586,6 +584,28 @@ describe('Record locks (harper#483)', () => {
 				await LockTest.put({ id: recordId, n: 1 });
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
+		});
+	});
+
+	describe('performance: gate-handle registry is O(1) per lookup', function () {
+		it('5000-write transaction completes in bounded time (O(N) with Map registry)', async function () {
+			// A quadratic (O(N²)) registry would hit ~12M iterations at N=5000, easily exceeding 5 s.
+			if (isLMDB) return this.skip();
+			this.timeout(10000);
+			const N = 5000;
+			const ids = Array.from({ length: N }, () => id());
+			// Seed without gating so the seed itself is not subject to the registry scan cost.
+			await transaction({ sourceApply: true }, async () => {
+				for (const rid of ids) await LockTest.put({ id: rid, n: 0 });
+			});
+			const t0 = Date.now();
+			await transaction(async () => {
+				for (const rid of ids) await LockTest.put({ id: rid, n: 1 });
+			});
+			const elapsed = Date.now() - t0;
+			assert.ok(elapsed < 5000, `5000-write transaction took ${elapsed}ms — expected < 5000ms`);
+			assert.strictEqual((await LockTest.get(ids[0])).n, 1, 'first record committed');
+			assert.strictEqual((await LockTest.get(ids[N - 1])).n, 1, 'last record committed');
 		});
 	});
 
