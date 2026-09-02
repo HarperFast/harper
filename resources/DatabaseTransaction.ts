@@ -331,9 +331,9 @@ export type TransactionWrite = {
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
 	gateOnLock?: boolean;
-	lockKey?: any[]; // built lazily from lockTableId/lockId on first tryLock attempt
-	lockTableId?: number; // table id for lazy lockKey construction
-	lockId?: any; // record id for lazy lockKey construction
+	lockKey?: any[];
+	lockTableId?: number;
+	lockId?: any;
 	gated?: boolean;
 	pendingWake?: Promise<void>;
 	restage?: boolean;
@@ -475,7 +475,24 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	recordLockFor(store: any, keyId: unknown): RecordLockHandle | undefined {
-		return this.recordLocks?.find((h) => h.store === store && h.keyId === keyId);
+		const recordLocks = this.recordLocks;
+		if (!recordLocks) return undefined;
+		let expired: RecordLockHandle | undefined;
+		for (let i = 0; i < recordLocks.length; i++) {
+			const h = recordLocks[i];
+			if (h.store !== store || h.keyId !== keyId) continue;
+			if (!h.released) return h; // live handle — return immediately
+			if (h.expired) {
+				expired ??= h; // keep first expired handle; a live one may follow
+			} else {
+				// Explicitly released (not by timer): prune so a re-lock sees a clean slot.
+				recordLocks.splice(i, 1);
+				i--;
+			}
+		}
+		// Only reached when no live handle was found; return the expired sentinel (if any) so
+		// gateLockedWrite can throw 409 when the caller's lease fired before their write landed.
+		return expired;
 	}
 
 	unregisterRecordLock(handle: RecordLockHandle): void {
@@ -512,9 +529,19 @@ export class DatabaseTransaction implements Transaction {
 	protected gateLockedWrite(operation: TransactionWrite, txnTime: number): boolean {
 		if (operation.gateOnLock !== true || this.sourceApply || this.isReplay) return false;
 		const keyId = writeKeyId(operation.key);
+		const opHandle = operation.lockHandle;
+		// An expired operation.lockHandle means the holder's lease fired while the write was in flight;
+		// fail immediately — there is no point attempting tryLock when another party already holds the key.
+		if (opHandle?.keyId === keyId && opHandle.expired)
+			throw new ClientError(
+				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
+				409
+			);
+		// Use the live opHandle for re-entry; otherwise look in the transaction's registered handles
+		// (covers static-verb writes and restaged writes whose opHandle was released before parking).
 		const handle =
-			operation.lockHandle?.keyId === keyId
-				? operation.lockHandle
+			opHandle?.keyId === keyId && !opHandle.released
+				? opHandle
 				: this.recordLocks && this.recordLockFor(operation.store, keyId);
 
 		if (handle?.keyId === keyId && handle.expired) {
@@ -612,12 +639,11 @@ export class DatabaseTransaction implements Transaction {
 
 	/**
 	 * Acquire the native key locks for writes that could not be staged because another party held
-	 * their key. Discards the current staged round first so no stale version references survive
-	 * while we wait and no verification-table intents are held during the park. After all keys are
-	 * acquired, re-stages the whole write set with a fresh timestamp via restageAfter — identical
-	 * to the restageHolderWrites path.
-	 *
-	 * Lock ordering: two transactions each waiting for the other's key both time out at 30 s (423).
+	 * their key. Discards the current staged round and releases all non-hold gate handles before
+	 * parking — releasing prevents cross-transaction deadlocks where T1 holds key A and parks on B
+	 * while T2 holds B and parks on A. Hold handles (from explicit lock() calls) survive because
+	 * the caller controls their ordering. After all keys are acquired, re-stages the whole write set
+	 * with a fresh timestamp via restageAfter — identical to the restageHolderWrites path.
 	 */
 	private waitForPendingKeys(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
 		const now = Date.now();
@@ -625,7 +651,18 @@ export class DatabaseTransaction implements Transaction {
 		if (now >= this.lockWaitDeadline)
 			throw new ClientError(`Record ${String(gated[0].key)} is locked and was not released in time`, 423);
 
+		// A round that staged into options.transaction (a replay or coordinated-retry handle) keeps
+		// write intents on that handle; discard it before parking so no stale intents survive the wait.
+		if (options.transaction) {
+			abortNativeTransaction(options.transaction, 'discarding replay round before re-staging after park');
+			options = { ...options, transaction: undefined };
+		}
 		const replayNeeded = this.discardStagedRound();
+		// Release non-hold gate handles before parking to prevent cross-transaction deadlocks:
+		// T1 holding A and waiting for B while T2 holds B and waits for A would otherwise time out.
+		// The re-stage re-runs gateLockedWrite for every write and re-acquires the gate handles.
+		// Hold handles survive; the caller controls their ordering.
+		this.releaseRecordLocks();
 
 		this.setCommitPhase(true);
 		const deadline = this.lockWaitDeadline;
@@ -707,6 +744,10 @@ export class DatabaseTransaction implements Transaction {
 				`Record ${String(restage[0].key)} kept being rewritten past this transaction, so the holder's write could not commit`,
 				503
 			);
+		}
+		if (options.transaction) {
+			abortNativeTransaction(options.transaction, 'discarding replay round before holder restage');
+			options = { ...options, transaction: undefined };
 		}
 		const replayNeeded = this.discardStagedRound();
 		let version = 0;

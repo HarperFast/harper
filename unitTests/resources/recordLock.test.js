@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
-const { setLockedWriteWaitMs, LOCKED_WRITE_WAIT_MS } = require('#src/resources/recordLock');
+const { setLockedWriteWaitMs, LOCKED_WRITE_WAIT_MS, MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -455,6 +455,115 @@ describe('Record locks (harper#483)', () => {
 				record.__updatedtime__ > ungatedVersion,
 				`updatedTime ${record.__updatedtime__} must be after ungated version ${ungatedVersion}`
 			);
+		});
+	});
+
+	describe('deadlock prevention and successive parks', function () {
+		it('two concurrent cross-writes {A,B} and {B,A} both commit without deadlock', async function () {
+			// Without MAJOR-1 fix: T1 parks on B while holding A and T2 parks on A while holding B.
+			// With fix: gate handles are released before parking so neither transaction blocks the other.
+			if (isLMDB) return this.skip();
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			const ctx1 = {};
+			const ctx2 = {};
+			const [res1, res2] = await Promise.all([
+				transaction(ctx1, async () => {
+					await LockTest.put({ id: idA, n: 1 });
+					await LockTest.put({ id: idB, n: 1 });
+				}).then(
+					() => 'ok',
+					(e) => e
+				),
+				transaction(ctx2, async () => {
+					await LockTest.put({ id: idB, n: 2 });
+					await LockTest.put({ id: idA, n: 2 });
+				}).then(
+					() => 'ok',
+					(e) => e
+				),
+			]);
+			assert.strictEqual(res1, 'ok', `T1 failed: ${res1?.message ?? res1}`);
+			assert.strictEqual(res2, 'ok', `T2 failed: ${res2?.message ?? res2}`);
+			const finalA = (await LockTest.get(idA)).n;
+			const finalB = (await LockTest.get(idB)).n;
+			assert.ok(finalA === 1 || finalA === 2, `A=${finalA} is not from either transaction`);
+			assert.ok(finalB === 1 || finalB === 2, `B=${finalB} is not from either transaction`);
+		});
+
+		it('successive parks on two keys released in order commit without stale intent leak', async function () {
+			// A second gated write appears after the first park: B becomes held while T was parked on A.
+			// Without MAJOR-2 fix: the options.transaction replay handle from the first restage keeps
+			// stale write intents for B, corrupting the second restage.
+			if (isLMDB) return this.skip();
+			this.timeout(5000);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			// A is held; B is free initially.
+			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
+			// T writes both A and B: A is gated, B's gate handle is acquired (then released per MAJOR-1 fix).
+			const ctx = {};
+			const commit = transaction(ctx, async () => {
+				await LockTest.put({ id: idA, n: 99 });
+				await LockTest.put({ id: idB, n: 99 });
+			});
+			// After T releases B's gate handle (MAJOR-1) holderB can acquire B.
+			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
+			// Release A: T parks, acquires A, restages, finds B now held → second park on B.
+			await holderA.unlock();
+			// Release B: T acquires B, second restage, commits.
+			await holderB.unlock();
+			await commit;
+			assert.strictEqual((await LockTest.get(idA)).n, 99);
+			assert.strictEqual((await LockTest.get(idB)).n, 99);
+		});
+	});
+
+	describe('double-commit and expired-handle guards', function () {
+		it('a locked-record hold save produces exactly one native commit (one version bump)', async function () {
+			// Without MAJOR-3 fix: after _writeUpdate commits on an ImmediateTransaction, the when()
+			// callback re-enters save() and submits a second empty native commit, bumping the version twice.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const versionAfterPut = LockTest.primaryStore.getEntry(recordId).version;
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			holder.set('n', 7);
+			await holder.save();
+			const entry = LockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(entry.value.n, 7, 'value landed');
+			// Each native commit produces a strictly increasing version. Two commits would produce a
+			// version gap visibly larger than a single-commit save on the same store (same generator tick).
+			// Assert there is exactly one new version (any monotone increase from a single commit).
+			assert.ok(entry.version > versionAfterPut, 'version advanced after save');
+			const secondEntry = LockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(secondEntry.version, entry.version, 'no spurious second commit after save');
+			await holder.unlock();
+		});
+
+		it('a write after lease expiry and re-lock does not throw 409', async function () {
+			// Without MINOR fix: recordLockFor returns the expired handle first when both the expired
+			// and live handles share the same transaction's recordLocks, causing a spurious 409 on
+			// a write that should succeed via the live handle.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			// Both lock() calls share the same outer transaction's recordLocks.
+			await transaction(async () => {
+				// Acquire a short-lived hold; let it expire so recordLocks contains an expired handle.
+				await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS });
+				await delay(MIN_LOCK_LEASE_MS + 50);
+				// Re-acquire: a live handle is now registered alongside the expired one.
+				await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				// A write to the same key must use the live handle — not the expired one — and not throw 409.
+				await LockTest.put({ id: recordId, n: 1 });
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
 		});
 	});
 

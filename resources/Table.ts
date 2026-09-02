@@ -2042,12 +2042,14 @@ export function makeTable(options) {
 				if (changes && Object.keys(changes).length > 0) {
 					this.#savingOperation = null;
 					return when(this._writeUpdate(this.getId(), changes, false), () => {
-						if (this.#savingOperation?.dropped) {
-							// Dropped (no effective change): clear #changes to prevent re-staging on the
-							// recursive save() call below.
+						const op = this.#savingOperation;
+						if (op?.dropped) {
 							this.#changes = undefined;
 							return;
 						}
+						// On an ImmediateTransaction _writeUpdate already committed the write (op.saved = true).
+						// Do not re-enter save() or it submits a second empty native commit.
+						if (op?.saved) return;
 						return this.save();
 					});
 				}
