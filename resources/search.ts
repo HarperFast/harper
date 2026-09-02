@@ -1131,7 +1131,7 @@ export function estimateCondition(table) {
 					for (const subCondition of condition.conditions) {
 						estimateConditionForTable(subCondition);
 						estimatedCount = isFinite(estimatedCount)
-							? (estimatedCount * subCondition.estimated_count) / estimatedEntryCount(table.primaryStore)
+							? (estimatedCount * subCondition.estimated_count) / (estimatedEntryCount(table.primaryStore) || 1)
 							: subCondition.estimated_count;
 					}
 				}
@@ -1174,8 +1174,10 @@ export function estimateCondition(table) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
 				if (condition.value === null && searchType === 'ne') {
-					condition.estimated_count =
-						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0);
+					condition.estimated_count = Math.max(
+						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0),
+						0
+					);
 				} else condition.estimated_count = Infinity;
 			} else if (searchType === 'in') {
 				const attribute_name = condition[0] ?? condition.attribute;
@@ -1619,16 +1621,18 @@ export function flattenKey(key) {
 	return key;
 }
 
-function estimatedEntryCount(store) {
+export function estimatedEntryCount(store) {
 	const now = Date.now();
 	if ((store.estimatedEntryCountExpires || 0) < now) {
-		// use getStats for LMDB because it is fast path, otherwise RocksDB can handle fast path on its own
-		store.estimatedEntryCount = store instanceof RocksDatabase ? store.getKeysCount() : store.getStats().entryCount;
+		// getStats is the LMDB fast path; for RocksDB, estimate-num-keys is O(1) where an exact
+		// getKeysCount() would iterate the entire store
+		store.estimatedEntryCount =
+			store instanceof RocksDatabase ? store.getEstimatedKeyCount() : store.getStats().entryCount;
 		store.estimatedEntryCountExpires = now + 10000;
 	}
 	return store.estimatedEntryCount;
 }
 
 export function intersectionEstimate(store, left, right) {
-	return (left * right) / estimatedEntryCount(store);
+	return (left * right) / Math.max(estimatedEntryCount(store), 1);
 }
