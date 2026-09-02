@@ -1507,6 +1507,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
  */
 function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
 	const reclamationPaths = new Set<string>([path]);
+	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
 		if (store?.path) reclamationPaths.add(store.path);
 		try {
@@ -1791,6 +1792,10 @@ export async function dropDatabase(databaseName) {
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
 		if (rootStore) {
+			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
+			// already running has released the stores this is about to close and unlink
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
 					rootStore.close();
@@ -1805,6 +1810,8 @@ export async function dropDatabase(databaseName) {
 			// a tableless database resolves its root store here rather than in the loop above, so take
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
@@ -1842,17 +1849,27 @@ export function closeDatabase(databaseName: string): boolean {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
-		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
-		}
-		closeStore(table.primaryStore, `table ${tableName}`);
 	}
 	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
 	// an open root store, tracked only on the defined-database entry rather than any table — include
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
+	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
+	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
+	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
+	// synchronous purgeLogs() call with nothing suspended mid-removal.
+	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
+	for (const tableName in dbTables) {
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
+		for (const indexName in table.indices || {}) {
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		}
+		closeStore(table.primaryStore, `table ${tableName}`);
+	}
 	for (const rootStore of rootStores) {
+		removeStorageReclamation(rootStore.path);
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
