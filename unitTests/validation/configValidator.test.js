@@ -228,6 +228,8 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include(
 				"'replication.blobGapEscalationMs' must be greater than or equal to 0"
 			);
+			config.replication = { blobGapEscalationMs: 2.5 };
+			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
 
 		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {
