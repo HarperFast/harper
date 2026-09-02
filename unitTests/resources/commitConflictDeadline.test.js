@@ -5,6 +5,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getOutstandingCommits } = require('#src/resources/DatabaseTransaction');
+const { waitFor } = require('../waitFor');
 const { setTimeout: delay } = require('node:timers/promises');
 const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
 
@@ -104,6 +105,40 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		await DeadlineA.put({ id, name: 'deadline' }, context);
 	};
 
+	// Every other case here plants the clock, so without this one the single line that ARMS the
+	// deadline in production could be deleted and the suite would stay green while the feature became
+	// a no-op: `elapsedPastCommitBudget()` would read `undefined` and every commit would fall back to
+	// the attempt cap.
+	it('arms the budget clock on the first native submission and releases it when the commit settles', async function () {
+		this.timeout(15000);
+		let releaseCommit;
+		const held = new Promise((resolve) => (releaseCommit = resolve));
+		const { Transaction } = require('@harperfast/rocksdb-js');
+		const originalCommit = Transaction.prototype.commit;
+		const targetDb = DeadlineA.primaryStore.store.db;
+		let holdNext = true;
+		Transaction.prototype.commit = function (...args) {
+			if (this.store?.db !== targetDb || !holdNext) return originalCommit.apply(this, args);
+			holdNext = false;
+			return held.then(() => originalCommit.apply(this, args));
+		};
+		pendingRestores.push(() => (Transaction.prototype.commit = originalCommit));
+		let txn;
+		const context = {};
+		const done = transaction(context, async () => {
+			await DeadlineA.get('arm', context);
+			await DeadlineA.put({ id: 'arm', name: 'armed' }, context);
+			txn = context.transaction;
+		});
+		await waitFor(() => typeof txn?.commitStartedAt === 'number', {
+			message: 'production must stamp the chain root at its first native commit submission',
+		});
+		releaseCommit();
+		await done;
+		assert.equal(txn.commitStartedAt, undefined, 'the clock must be released once the commit settles');
+		assert.equal((await DeadlineA.get('arm'))?.name, 'armed');
+	});
+
 	it('abandons a coordinated-retry commit with a retryable 503 once the budget is spent', async function () {
 		this.timeout(15000);
 		const { attempts } = conflictCommits(DeadlineA, 'retryNow');
@@ -152,6 +187,30 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		);
 		assert.equal(attempts.length, 1, 'the second store inherits the spent budget rather than starting a new one');
 		assert.equal((await DeadlineA.get('chained'))?.name, 'chain-a', 'the head really did land durably');
+	});
+
+	// The other half of "nothing landed durably": a scope that already committed a segment mid-handler
+	// has rotated onto a new generation, so replaying the request would write that segment twice.
+	it('refuses to call a commit retryable once an earlier mid-scope segment landed', async function () {
+		this.timeout(15000);
+		const context = {};
+		let rotated = false;
+		const { outcome, error } = await outcomeOf(
+			transaction(context, async () => {
+				await DeadlineA.get('mid-scope', context);
+				await DeadlineA.put({ id: 'mid-scope', name: 'segment-one' }, context);
+				await context.transaction.commit();
+				rotated = context.transaction.snapshotFree;
+				await DeadlineA.put({ id: 'mid-scope-2', name: 'segment-two' }, context);
+				conflictCommits(DeadlineA, 'retryNow');
+				context.transaction.commitStartedAt = performance.now() - WELL_PAST_BUDGET_MS;
+			})
+		);
+		assert.ok(rotated, 'the mid-handler commit should have rotated the scope onto a new generation');
+		assert.equal(outcome, 'rejected');
+		assert.equal(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
+		assert.equal(error.retryable, false, 'the first segment already landed, so a replay would repeat it');
+		assert.equal((await DeadlineA.get('mid-scope'))?.name, 'segment-one', 'the first segment really did land');
 	});
 
 	// Source-applied writes have no resubscribe/sequence-resume path, so dropping one permanently

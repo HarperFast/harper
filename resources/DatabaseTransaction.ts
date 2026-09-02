@@ -74,16 +74,14 @@ let outstandingCommitCount = 0;
 // the whole thread, regardless of how many distinct commits individually cross the threshold — see
 // the comment at the log site for why a per-commit-only dedup isn't enough under sustained overload.
 const OVERLOAD_LOG_MIN_INTERVAL_MS = 1000;
-let lastOverloadLogAt = -Infinity;
-
-// Shared by the two sites that report a commit stuck behind write intents — the bystander-shedding
-// log in checkOverloaded() and the abandonment log in abandonCommitAfterDeadline(). One wedge
-// episode produces both, so they share the cooldown: separate limiters would double the flood the
-// cooldown exists to prevent. Mutates only when it grants, so a caller that also has its own
-// suppression (checkOverloaded's per-node `logged`) must test that first.
-function allowStuckCommitLog(now: number): boolean {
-	if (now - lastOverloadLogAt <= OVERLOAD_LOG_MIN_INTERVAL_MS) return false;
-	lastOverloadLogAt = now;
+// One cooldown per reporting site, not one shared: `shed` fires on every bystander write during a
+// wedge and would starve `abandon`, which names a different transaction and is the only server-side
+// record of why a request was failed. Mutates only when it grants, so a caller with its own
+// suppression as well (checkOverloaded's per-node `logged`) must test that first.
+const lastStuckCommitLogAt = { shed: -Infinity, abandon: -Infinity };
+function allowStuckCommitLog(site: 'shed' | 'abandon', now: number): boolean {
+	if (now - lastStuckCommitLogAt[site] <= OVERLOAD_LOG_MIN_INTERVAL_MS) return false;
+	lastStuckCommitLogAt[site] = now;
 	return true;
 }
 
@@ -759,7 +757,7 @@ export class DatabaseTransaction implements Transaction {
 			// original per-request log was fixed to avoid, just shifted from per-request to per-commit.
 			// A commit skipped by the cooldown is NOT marked `logged`, so it still gets a log later if
 			// it's still the oldest once the cooldown clears, rather than going silent forever.
-			if (!oldestOutstandingCommit.logged && allowStuckCommitLog(now)) {
+			if (!oldestOutstandingCommit.logged && allowStuckCommitLog('shed', now)) {
 				// Log once per stuck commit (not once per rejected request, harper#2001): a wedged
 				// thread otherwise logs nothing at all server-side while rejecting every write with a
 				// 503, which was the single biggest obstacle to root-causing a recurrence. The flag lives
@@ -1110,8 +1108,8 @@ export class DatabaseTransaction implements Transaction {
 					// claimed this per-database transaction in txnForContext and so can name the wrong
 					// table when a transaction spans more than one table in the same database.
 					trackOutstandingCommit(commitResolution, this.writes[0]?.store, this.startedFrom, transaction);
-					// Stamp the chain root on its FIRST native submission; every retry round and every
-					// chained store re-enters here and must inherit that one clock, not restart it.
+					// Every retry round and every chained store re-enters here and must inherit the chain
+					// root's clock rather than restart it, so only the first submission stamps.
 					const chainRoot = this.root ?? this;
 					if (chainRoot.commitStartedAt === undefined) chainRoot.commitStartedAt = performance.now();
 					const completions = [];
@@ -1297,13 +1295,12 @@ export class DatabaseTransaction implements Transaction {
 							}
 						}
 					);
-					// The clock ends with the logical commit it measures, however that ends — success, retry
-					// exhaustion, abandonment, a terminal failure. `commitOutcome` settles at exactly that
-					// point (its success branch awaits the chained stores' own commits), so releasing here
-					// covers every terminal exit; a clock left set would make a reused transaction's next
-					// batch abandon on its first conflict. Released through the RETURNED promise rather than a
-					// second subscriber on `commitOutcome`: a subscriber would mark a dropped commit rejection
-					// as handled and silence the unhandled-rejection that surfaces it.
+					// `commitOutcome` settles when the LOGICAL commit ends — its success branch awaits the
+					// chained stores' own commits — so releasing here covers every terminal exit (success,
+					// retry exhaustion, abandonment, terminal failure) in one place rather than five.
+					// Released through the RETURNED promise rather than a second subscriber on
+					// `commitOutcome`: a subscriber would mark a dropped commit rejection as handled and
+					// silence the unhandled-rejection that surfaces it.
 					return commitOutcome.then(
 						(resolution) => {
 							chainRoot.commitStartedAt = undefined;
@@ -1478,7 +1475,7 @@ export class DatabaseTransaction implements Transaction {
 		const elapsed = Math.round(elapsedMs);
 		const budget = this.commitConflictBudget();
 		const retryable = !this.root && !this.snapshotFree;
-		if (allowStuckCommitLog(performance.now())) {
+		if (allowStuckCommitLog('abandon', performance.now())) {
 			harperLogger.error(
 				`Abandoning a write transaction: its commit has been in write-intent conflict for ${elapsed}ms ` +
 					`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
