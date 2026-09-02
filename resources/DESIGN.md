@@ -12,24 +12,24 @@ See also: `../DESIGN.md` for cross-cutting non-obvious internals (RecordObject p
 
 ## File overview
 
-| File                    | Purpose                                                                                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `Resource.ts`           | Base class; `transactional()` wrapper; method routing                                                                                |
-| `Table.ts`              | Table-as-Resource implementation. Factory `makeTable()` returns a `TableResource` subclass per table. **See section markers below.** |
-| `Resources.ts`          | Registry mapping URL paths → Resource classes                                                                                        |
-| `RequestTarget.ts`      | Parses path/query into a structured target                                                                                           |
-| `ResourceInterface.ts`  | Type definitions (`Context`, `Record`, etc.)                                                                                         |
-| `RecordEncoder.ts`      | msgpack encoding + `entryMap` (record → storage entry)                                                                               |
-| `IterableEventQueue.ts` | Async iterable used for subscriptions and streaming responses                                                                        |
-| `transaction.ts`        | Per-request transaction object stored in `contextStorage`                                                                            |
-| `auditStore.ts`         | Append-only audit log records                                                                                                        |
+| File                    | Purpose                                                                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Resource.ts`           | Base class; `transactional()` wrapper; method routing                                                                                        |
+| `Table.ts`              | Table-as-Resource implementation. Factory `makeTable()` returns a `TableResource` subclass per table. **See section markers below.**         |
+| `Resources.ts`          | Registry mapping URL paths → Resource classes                                                                                                |
+| `RequestTarget.ts`      | Parses path/query into a structured target                                                                                                   |
+| `ResourceInterface.ts`  | Type definitions (`Context`, `Record`, etc.)                                                                                                 |
+| `RecordEncoder.ts`      | msgpack encoding + `entryMap` (record → storage entry)                                                                                       |
+| `IterableEventQueue.ts` | Async iterable used for subscriptions and streaming responses                                                                                |
+| `transaction.ts`        | Per-request transaction object stored in `contextStorage`                                                                                    |
+| `auditStore.ts`         | Append-only audit log records                                                                                                                |
 | `recordLock.ts`         | Exclusive record locks (harper#483): option contract, native key lock primitives (`lockAttemptKey`, `makeKeyLockHandle`, `acquireRecordKey`) |
-| `nodeIdMapping.ts`      | Maps node IDs ↔ timestamps for replication ordering                                                                                  |
-| `openApi.ts`            | Generates OpenAPI/JSON Schema from `@export` schemas                                                                                 |
-| `defineTable.ts`        | Code-first table authoring (`defineTable` + `types`) — a TS front-end to the canonical `table()` model                               |
-| `defineResource.ts`     | Per-method request contract (`defineResource` / `Resource.withSchema`, `t`, `schemaOf`) — typed handlers + edge validation           |
-| `jsonSchemaTypes.ts`    | Shared `JsonSchemaFragment` IR + `attributeToFragment` projector (one vocabulary for validation/OpenAPI/MCP)                         |
-| `analytics/`            | Telemetry recording (separate from monitoring)                                                                                       |
+| `nodeIdMapping.ts`      | Maps node IDs ↔ timestamps for replication ordering                                                                                          |
+| `openApi.ts`            | Generates OpenAPI/JSON Schema from `@export` schemas                                                                                         |
+| `defineTable.ts`        | Code-first table authoring (`defineTable` + `types`) — a TS front-end to the canonical `table()` model                                       |
+| `defineResource.ts`     | Per-method request contract (`defineResource` / `Resource.withSchema`, `t`, `schemaOf`) — typed handlers + edge validation                   |
+| `jsonSchemaTypes.ts`    | Shared `JsonSchemaFragment` IR + `attributeToFragment` projector (one vocabulary for validation/OpenAPI/MCP)                                 |
+| `analytics/`            | Telemetry recording (separate from monitoring)                                                                                               |
 
 ---
 
@@ -68,7 +68,7 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | `#section: authz-hooks`          | `allowRead`, `allowUpdate`, `allowCreate`, `allowDelete`.                                                                                                                                                                                                                                                                                                                                                        |
 | `#section: write-path-public`    | `update()`, `save()`, `addTo()`, `subtractFrom()`, `getMetadata`, `getRecord`, `getChanges`, `_setChanges`, `setRecord`, `invalidate()`, `operation()`, `put()`, `create()`, `patch()`.                                                                                                                                                                                                                          |
 | `#section: write-path-internals` | **`_writeUpdate()` — the central write routine** (versioning, conflict resolution, audit, residency, replication metadata, blob orphan tracking). The `write.skipped` flag mentioned in `../DESIGN.md` is set in this method's early-return paths. Also `_writeInvalidate`, `_writeRelocate`, `_recordRelocate`, `evict()`, `lock()`/`unlock()` (record locks — see `../DESIGN.md`), `delete()`, `_writeDelete`. |
-| `isPlainOptions`                  | _(after the class)_ argument-position helper for `lock()` (distinguishes `lock(options)` from `lock(target, options)`) |
+| `isPlainOptions`                 | _(after the class)_ argument-position helper for `lock()` (distinguishes `lock(options)` from `lock(target, options)`)                                                                                                                                                                                                                                                                                           |
 | `#section: search-query`         | `search()` (the query engine — index selection, filter evaluation), `transformToOrderedSelect` (select-clause ordering), `transformEntryForSelect` (record → response shape).                                                                                                                                                                                                                                    |
 | `#section: pub-sub`              | `subscribe()` (subscription request handling, replay, cursor management), `subscribeOnThisThread`, `doesExist()`, `publish()`, `_writePublish()`.                                                                                                                                                                                                                                                                |
 | `#section: validation`           | `validate(record, patch?)` — schema enforcement, computed attributes, attribute coercion.                                                                                                                                                                                                                                                                                                                        |
