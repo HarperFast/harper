@@ -606,11 +606,20 @@ export class DatabaseTransaction implements Transaction {
 		let until = this.lockWaitDeadline;
 		for (const write of gated) if (write.entry.lockExpiresAt < until) until = write.entry.lockExpiresAt;
 		this.setCommitPhase(true);
-		const waits = gated.map((write) =>
-			waitForRecordUnlock(write.store, writeKeyId(write.key), until, () =>
-				isLockedLive(write.store.getEntry(write.key))
-			)
-		);
+		const waits: Array<ReturnType<typeof waitForRecordUnlock>> = [];
+		try {
+			for (const write of gated)
+				waits.push(
+					waitForRecordUnlock(write.store, writeKeyId(write.key), until, () =>
+						isLockedLive(write.store.getEntry(write.key))
+					)
+				);
+		} catch (error) {
+			// a later key hit the waiter cap: the earlier registrations must not hold their slots for the wait
+			for (const wait of waits) wait.cancel();
+			this.setCommitPhase(false);
+			throw error;
+		}
 		this.lockWait = { cancel: () => waits.forEach((wait) => wait.cancel()) };
 		return Promise.race(waits.map((wait) => wait.promise)).then(() => {
 			this.lockWait = undefined;

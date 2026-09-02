@@ -173,10 +173,14 @@ describe('Record locks (harper#483)', () => {
 			let movedVersion;
 			await transaction(async () => {
 				const record = await LockTest.lock(recordId);
+				const lockVersion = entryOf(recordId).lockVersion;
 				// a canonical-source apply is never gated; it carries the generation forward and bumps the version
 				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 50, name: 'source' }));
-				movedVersion = entryOf(recordId).version;
-				assert.ok(entryOf(recordId).lockVersion, 'the source apply kept the lock');
+				const moved = entryOf(recordId);
+				movedVersion = moved.version;
+				assert.strictEqual(moved.value.n, 50, 'the source apply landed while the lock was held');
+				assert.ok(movedVersion > lockVersion, 'and moved the record past the lock generation');
+				assert.strictEqual(moved.lockVersion, lockVersion, 'keeping the generation');
 				record.set('n', 7);
 				await record.save();
 			});
