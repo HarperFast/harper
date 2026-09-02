@@ -454,7 +454,7 @@ describe('activation transaction', () => {
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
-		await activateCandidateApplication(app, 'd1');
+		await activateCandidateApplication(app, 'd1', { certified: false });
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false, 'staging is cleaned up');
@@ -484,7 +484,7 @@ describe('activation transaction', () => {
 
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
-		await activateCandidateApplication(app, 'd1');
+		await activateCandidateApplication(app, 'd1', { certified: false });
 
 		const linkPath = path.join(live, 'node_modules', 'probe');
 		const target = await fs.readlink(linkPath);
@@ -518,7 +518,7 @@ describe('activation transaction', () => {
 
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
-		await activateCandidateApplication(app, 'd1');
+		await activateCandidateApplication(app, 'd1', { certified: false });
 
 		assert.strictEqual(
 			await fs.readlink(path.join(live, 'node_modules', 'shared')),
@@ -548,7 +548,7 @@ describe('activation transaction', () => {
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
-		await activateCandidateApplication(app, 'd1');
+		await activateCandidateApplication(app, 'd1', { certified: false });
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(app.isNewComponent, true, 'and it is recognized as a new component');

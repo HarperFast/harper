@@ -157,6 +157,35 @@ function rootConfigMount(appName: string): ScopeMount | undefined {
  *   branchedDatabases: [data]
  * ```
  */
+/**
+ * The load options boot uses for a root-config application, so a deploy's certification load can be built
+ * from the same place instead of hand-plumbing a subset and drifting from it.
+ *
+ * `branchedDatabases` is REPORTED, not applied, when `forCertification` is set. A branch's location is
+ * derived only from the application and database names (`resources/branchDatabase.ts`), so a certification
+ * load that resolved branches the way boot does would open the very store the live application is serving
+ * from — a candidate could mutate rows, then throw, then be rejected, leaving the live version serving the
+ * mutation. Certifying against the base store instead is no better: it is not a rehearsal of the real
+ * thing and can write to base. So the caller is told the component is branch-configured and skips
+ * certification for it rather than certifying something it did not test.
+ */
+export function rootApplicationLoadOptions(
+	appName: string,
+	{ forCertification = false }: { forCertification?: boolean } = {}
+): { ok: true; options: Record<string, unknown>; branchConfigured: boolean } | { ok: false } {
+	const mountResult = tryRootConfigMount(appName);
+	if (!mountResult.ok) return { ok: false };
+	const branchedDatabases = rootConfigBranchedDatabases(appName);
+	const options: Record<string, unknown> = {
+		isRoot: false,
+		autoReload: false,
+		appName,
+		mount: mountResult.mount,
+	};
+	if (!forCertification) options.branchedDatabases = branchedDatabases;
+	return { ok: true, options, branchConfigured: branchedDatabases !== undefined };
+}
+
 function rootConfigBranchedDatabases(appName: string): string[] | true | undefined {
 	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return undefined;
 	return (getConfigObj()?.[appName] as any)?.branchedDatabases;
@@ -269,15 +298,11 @@ export async function loadComponentDirectories(
 						}
 						return;
 					}
-					const mountResult = tryRootConfigMount(appName);
-					if (!mountResult.ok) return;
+					const loadOptions = rootApplicationLoadOptions(appName);
+					if (!loadOptions.ok) return;
 					const loadedModules = new Set<any>();
 					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
-						isRoot: false,
-						autoReload: false,
-						appName,
-						mount: mountResult.mount,
-						branchedDatabases: rootConfigBranchedDatabases(appName),
+						...loadOptions.options,
 						collectLoadedModules: loadedModules,
 					});
 					await readyComponentModules(loadedModules, readyComponentPromises);

@@ -142,6 +142,7 @@ const listenersByType = new Map();
 const messagesQueuedByType = new Map();
 
 module.exports = {
+	buildWorkerExecArgv,
 	startWorker,
 	restartWorkers,
 	shutdownWorkers,
@@ -338,6 +339,43 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 listenersByType.set(THREAD_INFO, null);
 listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
+/**
+ * The interpreter flags and preloads every Harper worker needs to load Harper's own module graph.
+ *
+ * Exported because a worker that must NOT join the serving topology still needs exactly these: a bare
+ * `new Worker()` cannot even load a module that imports JSON. Shared rather than copied so the two spawn
+ * paths cannot drift on something this load-bearing.
+ */
+function buildWorkerExecArgv() {
+	const isBun = typeof globalThis.Bun !== 'undefined';
+	const execArgv = isBun
+		? []
+		: [
+				'--enable-source-maps',
+				'--experimental-vm-modules', // used for giving applications their own top level scope
+				'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
+				'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
+			];
+	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
+		execArgv.push('--heapsnapshot-near-heap-limit=1');
+	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
+	// script so they can instrument all subsequent Harper and app module loads. Resolved once
+	// (config and installed components are fixed for the process lifetime). `threads.preload`
+	// uses --import (ESM/loader-hook registration, e.g. dd-trace/register.js — the entry that
+	// instruments worker threads); `threads.preloadRequire` uses --require for CJS agents that
+	// document that path (e.g. dd-trace/init, Dynatrace OneAgent). --import is URL-based, so
+	// resolved paths are passed as file URLs. Not supported under Bun, which does not use
+	// execArgv here. Safe mode also omits preloads because they are configured code,
+	// which safe mode must not resolve or execute.
+	const isSafeMode =
+		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
+	if (!isBun && !isSafeMode) {
+		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
+		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
+	}
+	return execArgv;
+}
+
 function startWorker(path, options = {}) {
 	if (processShuttingDown) {
 		const error = new Error('Cannot start a worker while the Harper process is shutting down');
@@ -378,32 +416,7 @@ function startWorker(path, options = {}) {
 
 	if (!extname(path)) path += '.js';
 
-	const isBun = typeof globalThis.Bun !== 'undefined';
-	const execArgv = isBun
-		? []
-		: [
-				'--enable-source-maps',
-				'--experimental-vm-modules', // used for giving applications their own top level scope
-				'--disable-warning=ExperimentalWarning', // yeah, yeah, we know it is experimental
-				'--expose-internals', // expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
-			];
-	if (!isBun && envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
-		execArgv.push('--heapsnapshot-near-heap-limit=1');
-	// Preload configured modules (e.g. an APM agent like dd-trace) before the worker's entry
-	// script so they can instrument all subsequent Harper and app module loads. Resolved once
-	// (config and installed components are fixed for the process lifetime). `threads.preload`
-	// uses --import (ESM/loader-hook registration, e.g. dd-trace/register.js — the entry that
-	// instruments worker threads); `threads.preloadRequire` uses --require for CJS agents that
-	// document that path (e.g. dd-trace/init, Dynatrace OneAgent). --import is URL-based, so
-	// resolved paths are passed as file URLs. Not supported under Bun, which does not use
-	// execArgv here. Safe mode also omits preloads because they are configured code,
-	// which safe mode must not resolve or execute.
-	const isSafeMode =
-		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
-	if (!isBun && !isSafeMode) {
-		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
-		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
-	}
+	const execArgv = buildWorkerExecArgv();
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
