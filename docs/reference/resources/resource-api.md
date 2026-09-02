@@ -740,6 +740,8 @@ Returns the current context, which includes:
 - `user` — User object with username, role, and authorization information
 - `transaction` — The current transaction
 
+`getContext()` is a Resource instance method. A static verb is not an instance, so it reads the context from the trailing argument the request path passes it — `(target, context)` for `get`/`delete`, `(target, data, context)` for `put`/`patch`/`post`. A direct server-side call supplies that argument only if the caller passes one, so use the [`getContext()` export](#getcontext-context-1) from the `harper` module when a static method must work on both paths.
+
 When triggered by HTTP, the context is the `Request` object with these additional properties:
 
 - `url` — Full local path including query string
@@ -764,11 +766,11 @@ Executes a Harper operations API call using this table as the target. Set `autho
 
 ### `getCurrentUser(): User | undefined`
 
-Returns the user associated with the current request, or `undefined` if no user is authenticated. The returned object exposes the username, role, and `role.permission` flags.
+Returns the user associated with the current request, or `undefined` if no user is authenticated. The returned object exposes the username, role, and `role.permission` flags. This is a Resource **instance** method; a static verb reads the same user from the context it is passed, as `context.user`:
 
 ```javascript
-async get(target) {
-	const user = this.getCurrentUser();
+static async get(_target, context) {
+	const user = context?.user;
 	if (!user) return new Response(null, { status: 401 });
 	return { username: user.username, role: user.role };
 }
@@ -778,14 +780,14 @@ async get(target) {
 
 ### Session and Login from a Resource
 
-The context returned by `getContext()` exposes `login` and `session` for handling sign-in/out flows in a custom Resource. Sessions require `authentication.enableSessions: true` in `harper-config.yaml`.
+The request context exposes `login` and `session` for handling sign-in/out flows in a custom Resource. A static verb receives it as its trailing argument — `(target, data, context)` for `post`. Sessions require `authentication.enableSessions: true` in `harperdb-config.yaml`.
 
 ```typescript
 export class SignIn extends Resource {
-	async post(_target, data) {
-		const context = this.getContext();
+	static async post(_target, data, context) {
+		const { username, password } = (await data) ?? {};
 		try {
-			await context.login(data.username, data.password);
+			await context.login(username, password);
 		} catch {
 			return new Response('Invalid credentials', { status: 403 });
 		}
@@ -794,16 +796,15 @@ export class SignIn extends Resource {
 }
 
 export class SignOut extends Resource {
-	async post() {
-		const context = this.getContext();
-		if (!context.session) return new Response(null, { status: 401 });
-		await context.session.delete(context.session.id);
+	static async post(_target, _data, context) {
+		if (!context?.session?.user) return new Response(null, { status: 401 });
+		await context.session.update({ user: null });
 		return new Response('Logged out', { status: 200 });
 	}
 }
 ```
 
-`context.login(username, password)` verifies credentials and establishes the session cookie on success. To end a session, delete it via `context.session.delete(context.session.id)`.
+`context.login(username, password)` verifies credentials and establishes the session cookie on success. To end a session, clear its user with `context.session.update({ user: null })` — [`update`](../http/api.md#properties) is the session's only mutator. `context.session` is an empty object rather than `undefined` when sessions are enabled and the request carries no session cookie, so test `context?.session?.user` to detect an established session.
 
 Cookie-based sessions are intended for browser clients. For non-browser clients (CLI tools, mobile apps, service-to-service), use JWT issuance — see [JWT Authentication](../security/jwt-authentication.md).
 

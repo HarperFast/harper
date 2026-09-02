@@ -55,8 +55,8 @@ export class MyTable extends tables.MyTable {
 	}
 
 	static async post(target, data) {
-		// custom action on POST
-		this.create({ ...(await data), status: 'pending' });
+		// custom action on POST; return the write so the response waits for the commit
+		return this.create({ ...(await data), status: 'pending' });
 	}
 }
 ```

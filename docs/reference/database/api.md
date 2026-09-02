@@ -249,19 +249,21 @@ await Photo.put({ id, data: blob });
 
 ### Accepting Binary in JSON Requests
 
-REST clients that can't post raw binary typically send base64 inside JSON. Decode in the resource override and wrap with `createBlob`, recording the MIME type so it round-trips on read:
+REST clients that can't post raw binary typically send base64 inside JSON. Decode in the resource override and wrap with `createBlob`, recording the MIME type so it round-trips on read. The `record` parameter is a promise for the request body, so `await` it once before inspecting it — reading fields off the unresolved promise silently yields `undefined` and stores the raw base64 string:
 
 ```typescript
 import { type RequestTargetOrId, tables, createBlob } from 'harper';
 
 export class Photo extends tables.Photo {
 	static async post(target: RequestTargetOrId, record: any) {
-		if (record.data) {
-			record.data = createBlob(Buffer.from(record.data, record.encoding || 'base64'), {
-				type: record.contentType || 'application/octet-stream',
+		const body = await record;
+		if (!body) return new Response('A JSON body is required', { status: 400 });
+		if (body.data) {
+			body.data = createBlob(Buffer.from(body.data, body.encoding || 'base64'), {
+				type: body.contentType || 'application/octet-stream',
 			});
 		}
-		return super.post(target, record);
+		return super.post(target, body);
 	}
 }
 ```
