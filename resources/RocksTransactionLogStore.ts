@@ -633,3 +633,4 @@ export class RocksTransactionLogStore extends EventEmitter {
 		// is added in `resources/Table.ts`
 	}
 }
+
