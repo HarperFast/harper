@@ -48,19 +48,10 @@ jobs:
             # the full 22/24/26 matrix runs on push to main/release and on the nightly schedule.
             echo "node-versions=[24]" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.node-version }}" == "all" ] || [ -z "${{ github.event.inputs.node-version }}" ]; then
-            # TEMPORARY: pinned to 26.5.0 instead of floating "26" — 26.5.1's llhttp/undici bump
-            # (deps: llhttp 9.4.2->9.4.3, undici 8.7.0->8.9.0) exposed a genuine Harper-side defect
-            # (TTL-reset-on-write silently loses to the eviction sweep on the operations-API/SQL/
-            # custom-resource write surfaces; confirmed NOT an undici-client artifact via a curl-based
-            # discriminator, and NOT a request-latency race via direct commit timing) plus a
-            # pre-existing per-thread config-reload race (#1747) made more visible by the same bump.
-            # Remove this pin once the underlying race is fixed — see harper#2025, which stays open
-            # until then. Do not extend this pin to unit-test.yml or other workflows without new evidence.
-            echo "node-versions=[22, 24, \"26.5.0\"]" >> $GITHUB_OUTPUT
+            echo "node-versions=[22, 24, 26]" >> $GITHUB_OUTPUT
           else
-            # Manual dispatch intentionally does NOT apply the 26.5.0 pin above: selecting "26"
-            # here floats to the latest 26.x release, so it doubles as the live reproducer for
-            # checking whether harper#2025 is still reproducing on the newest Node 26 patch.
+            # Manual dispatch runs exactly the requested version; a major such as "26" floats to
+            # its latest release, which is how a suspected Node regression gets reproduced on demand.
             echo "node-versions=[${{ github.event.inputs.node-version }}]" >> $GITHUB_OUTPUT
           fi
 
