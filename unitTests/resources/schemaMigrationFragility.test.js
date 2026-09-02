@@ -129,6 +129,8 @@ describe('schema-migration fragility: silent gaps when per-record indexing error
 			};
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
+		// the thread keeps this index handle across reloads, so the retry below needs the mock gone
+		if (tagIndex) delete tagIndex.put;
 
 		// With the fix, the index must NOT be silently complete when errors occurred.
 		// The fix leaves isIndexing = true and sets indexingFailed = true so:
@@ -290,6 +292,8 @@ describe('schema-migration fragility: outer catch does not persist indexingFaile
 
 		// Wait for runIndexing to finish (the outer catch swallows the error).
 		if (Tbl.indexingOperation) await Tbl.indexingOperation.catch(() => {});
+		// the thread keeps this index handle across reloads, so the retry below needs the mock gone
+		if (tagIndex) delete tagIndex.clear;
 
 		// Verify: simulate restart by resetting and re-opening.
 		// The outer catch should have persisted indexingFailed=true in the attribute descriptor.

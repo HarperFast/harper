@@ -993,11 +993,23 @@ this fix doesn't attempt to solve. `deploy_component`/`package_component` still 
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
 
-## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
+## RocksDB backup/restore and drop: the lifecycle lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`, `dropDatabase` in `resources/databases.ts`)
 
 The `restore_backup` operation restores a user database on a live server by closing it across all
 worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), and reloading it.
-Three non-obvious mechanics keep that safe:
+`drop_database` destroys a directory the same way and runs the same protocol: `beginDrop` takes the
+per-database lock and writes the marker typed `drop` (second line), every thread releases its
+handles on the ITC `close_database` message (`ITC_SCHEMA_OPERATIONS`, never an API operation),
+`waitForDatabaseClosedProcessWide` checks rocksdb-js's registry, and only then are the directory and
+its blob roots destroyed and the marker cleared. A handle that remains — a running job (job workers
+never receive broadcasts), or a component holding its own `RocksDatabase` — fails the drop with 409
+instead of being force-closed: a destroy under a concurrent open is what recreates the directory
+and leaves its `LOCK` held for the life of the process (HarperFast/rocksdb-js#818). A crash between
+the marker and the deletions leaves an incomplete `drop` marker, which the next scan on any thread
+finishes under the lock (`recoverInterruptedDrop`: the marker's name must be a single directory name
+whose key matches, nothing deleted through a symlink, the marker last); a failure there leaves the
+database unloaded and is logged once — never thrown through `getDatabases()`, which runs at worker
+boot. Three non-obvious mechanics keep the restore half safe:
 
 - **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
   each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock

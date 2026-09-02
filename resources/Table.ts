@@ -1685,6 +1685,10 @@ export function makeTable(options) {
 						return removeTombstonedCatalog();
 					});
 					if (removed) await dbisDb.committed;
+					// A dropped column family's handles still count as open on the database until they are
+					// closed, and nothing else ever closes them once the table has left the catalog — an
+					// open handle is what stops drop_database and restore_backup from taking the database.
+					TableResource.closeStores();
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
 					// transactional rather than this spin lock, so keep the awaited drop
@@ -5671,6 +5675,20 @@ export function makeTable(options) {
 			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
+			// a table that left the catalog (dropped elsewhere, or never finished loading) must not keep
+			// its column-family handles open on this thread; see dropTable
+			TableResource.closeStores();
+		}
+		/** Release this thread's handles on the table's RocksDB column families; LMDB sub-databases stay open with their environment. */
+		static closeStores() {
+			if (!(primaryStore instanceof RocksDatabase)) return;
+			for (const store of [...Object.values(indices), primaryStore]) {
+				try {
+					(store as any)?.close?.();
+				} catch (error) {
+					harperLogger.debug?.(`Error closing a store of ${databaseName}.${tableName}:`, error);
+				}
+			}
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
