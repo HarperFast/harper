@@ -197,3 +197,4 @@ Tests: `../unitTests/resources/defineResource.test.js`, `../unitTests/resources/
 - When adding a new early-return path inside a commit handler in `_writeUpdate`, follow the blob-cleanup protocol documented in `../DESIGN.md` ("Blob orphan cleanup").
 - If you add a new top-level section to `Table.ts`, drop a `// #section: <name>` marker at its start and add a row to the section map above.
 - Tests for this layer live in `../unitTests/resources/`.
+
