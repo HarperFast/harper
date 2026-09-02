@@ -106,6 +106,10 @@ function logRotator({
 							active
 						);
 						lastRotatedLogPath = await publishArchivedGeneration(generation, compressArchives);
+						// The interval clock counts from the last rotation of any kind. Without this an
+						// instance whose uptime has passed `interval` archives a freshly-created log every
+						// interval on top of the size rotations already doing the work.
+						lastRotationTime = Date.now();
 						hdbLogger.notify(`hdb.log rotated, old log moved to ${lastRotatedLogPath}`);
 					}
 				} catch (err) {
