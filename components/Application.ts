@@ -2124,7 +2124,7 @@ export async function markCandidateComplete(
 				`certified it, and \`${CANDIDATE_COMPLETE_MARKER}\` is what recovery treats as proof that one did`
 		);
 	}
-	await syncCandidateTree(componentDirPath, deploymentId);
+
 	try {
 		await writeControlFileDurably(candidateComponentFilePath(componentDirPath, deploymentId), componentName);
 	} catch (error) {
@@ -2230,6 +2230,14 @@ export async function activateCandidateApplication(application: Application, dep
 	if (!candidateStat || !(candidateStat.isDirectory() || candidateStat.isSymbolicLink())) {
 		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
 	}
+
+	// Durability first, and for EVERY activation — certified or not. This used to live inside
+	// `markCandidateComplete`, so skipping the mint skipped the fsync too: an uncertified swap (a
+	// branch-configured component, or safe mode) committed a tree whose contents were never flushed, and
+	// `syncRenameParents` only syncs directory entries. A power loss shortly after such a deploy returned
+	// success would leave the live path holding zero-length files, with the aside already retired.
+	// Certification decides what the tree MEANS; it was never what makes it durable.
+	await syncCandidateTree(liveDirPath, deploymentId);
 
 	// The RECORD decides, never the caller. An argument saying "this one is certified" would be the forgeable
 	// proof the internal record exists to avoid — and an exported function with such a flag lets any caller

@@ -29,6 +29,9 @@ const DEFAULT_CERTIFICATION_TIMEOUT_MS = 120_000;
  */
 const MAX_CONCURRENT_CERTIFICATIONS = 2;
 
+/** How long to wait for a validator to actually go away before giving up and saying so. */
+const TERMINATION_GRACE_MS = 5000;
+
 let active = 0;
 const waiting: (() => void)[] = [];
 
@@ -85,6 +88,12 @@ export async function certifyCandidate(
 	// build output, and `__dirname` resolves there without assuming where the package root is.
 	const entry = join(__dirname, './deployValidator.js');
 	let worker: Worker | undefined;
+	// Installed the moment the worker exists, NOT in the `finally`. Attaching it later races the exit it is
+	// meant to observe: the validator `realExit`s immediately after posting, so on any turn where the parent
+	// sees the exit before the queued verdict, a listener attached afterwards never fires — `certifyCandidate`
+	// never returns, its slot is never released, and `prepareApplication` waits inside the preparation lock
+	// forever. Two of those and the node stops deploying until it restarts.
+	let exited: Promise<void> | undefined;
 	let settled = false;
 	let timer: NodeJS.Timeout | undefined;
 	// A channel of its own, NOT `parentPort`: Harper's worker machinery uses that for its own ITC traffic,
@@ -106,7 +115,7 @@ export async function certifyCandidate(
 			const fail = (message: string) => settle({ certified: false, error: new Error(message) });
 
 			try {
-				worker = new Worker(entry, {
+				const started = new Worker(entry, {
 					workerData: {
 						candidateDirPath,
 						appName,
@@ -127,6 +136,8 @@ export async function certifyCandidate(
 					resourceLimits: buildWorkerResourceLimits(),
 					argv: process.argv.slice(2),
 				});
+				worker = started;
+				exited = new Promise<void>((resolve) => started.once('exit', () => resolve()));
 			} catch (error) {
 				// A synchronous spawn throw is a deploy failure, not a candidate failure — and specifically
 				// not a success. Under thread pressure a node will refuse deploys rather than publish
@@ -175,16 +186,19 @@ export async function certifyCandidate(
 		// reported rather than treated as cleanup done: the caller is about to remove a tree this thread
 		// may still be reading.
 		if (worker) {
-			const exited = new Promise<void>((resolve) => worker!.once('exit', () => resolve()));
+			// Every wait here is bounded. This runs in a `finally` that the caller's deploy is blocked on, so a
+			// termination that never settles would hold the preparation lock indefinitely — the same failure
+			// as the missed-exit race above, arrived at from the other side.
+			const grace = () => new Promise<void>((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS).unref?.());
 			try {
 				if (typeof (globalThis as any).Bun !== 'undefined') {
+					// `terminate()` triggers a NAPI segfault under Bun; `manageThreads` asks the worker to exit
+					// itself for the same reason.
 					worker.postMessage({ type: 'force-exit' });
-					const grace = new Promise<void>((resolve) => setTimeout(resolve, 5000).unref?.());
-					await Promise.race([exited, grace]);
 				} else {
-					await worker.terminate();
-					await exited;
+					await Promise.race([worker.terminate(), grace()]);
 				}
+				await Promise.race([exited ?? Promise.resolve(), grace()]);
 			} catch (error) {
 				harperLogger.warn(
 					`Could not terminate the validator for ${appName}; its candidate tree may still be open:`,
