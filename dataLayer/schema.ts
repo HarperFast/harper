@@ -15,7 +15,7 @@ import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonError
 
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
-import { transformReq } from '../utility/common_utils.ts';
+import { transformReq, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
 
@@ -382,13 +382,24 @@ export function cleanupOrphanBlobs(request: any) {
 	if (!request.database) throw new ClientError('Must provide "database" name for search for orphaned blobs');
 	const database: any = (databases as any)[request.database];
 	if (!database) throw new ClientError(`Unknown database '${request.database}'`);
+	// Coerced rather than read as raw truthiness: `"false"` is truthy in JS, so an operator who asked
+	// for a real reclaim would silently get a dry run (and vice versa for a form-encoded `"true"`).
+	// An uninterpretable value is rejected instead of guessed — this operation deletes files.
+	const dryRun = coerceDryRun(request.dryRun);
 	// don't await, it will probably take hours — but a rejection here must not take the process down
-	cleanupOrphans((databases as any)[request.database], request.database, request.dryRun).catch((error) =>
+	cleanupOrphans((databases as any)[request.database], request.database, dryRun).catch((error) =>
 		logger.error?.('Orphaned blob cleanup failed', error)
 	);
 	return {
-		message: request.dryRun
+		message: dryRun
 			? 'Orphaned blobs check started (dry run, nothing will be deleted), check logs for the count and bytes found'
 			: 'Orphaned blobs cleanup started, check logs for progress',
 	};
+}
+
+function coerceDryRun(value: any): boolean {
+	if (value == null) return false;
+	const coerced = autoCastBooleanStrict(value);
+	if (typeof coerced !== 'boolean') throw new ClientError(`"dryRun" must be a boolean, received '${value}'`);
+	return coerced;
 }
