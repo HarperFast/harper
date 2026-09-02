@@ -60,6 +60,11 @@ describe('purgeAgedLogs', () => {
 		store.failFloorWrite = () => {
 			failFloorWrite = true;
 		};
+		// A floorless store is the case where the resolver writes the unknown sentinel, and where a
+		// read-back comparing decoded values alone cannot tell that write from no record at all.
+		store.startFloorless = () => {
+			stored = undefined;
+		};
 		auditStandIn.rootStore = {
 			// RocksTransactionLogStore.getBinary delegates here, which is how raiseAuditFloor's lock-free
 			// pre-check reads the floor
@@ -117,6 +122,20 @@ describe('purgeAgedLogs', () => {
 		store.failFloorWrite();
 		assert.throws(() => purgeAgedLogs(store), /did not commit/);
 		assert.deepStrictEqual(store.calls, [], 'nothing may be purged once the floor write failed');
+		assert.deepStrictEqual(store.order, ['floor'], 'and the purge must never have been reached');
+	});
+
+	it('refuses the purge when the RocksDB unknown-sentinel write does not stick', () => {
+		// The RocksDB half of the presence check. A floorless store makes the resolver write the unknown
+		// sentinel, and `decodeAuditFloor(undefined)` is that same sentinel — so a read-back comparing
+		// decoded values alone reported a commit for a write that never landed, and purgeAgedLogs (which
+		// always drives this branch in production) would have purged with nothing recorded.
+		setAuditRetention(60_000);
+		const store = fakeStore();
+		store.startFloorless();
+		store.failFloorWrite();
+		assert.throws(() => purgeAgedLogs(store), /did not commit/);
+		assert.deepStrictEqual(store.calls, [], 'nothing may be purged once the sentinel write failed');
 		assert.deepStrictEqual(store.order, ['floor'], 'and the purge must never have been reached');
 	});
 
