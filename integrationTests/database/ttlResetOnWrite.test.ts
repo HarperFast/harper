@@ -31,8 +31,8 @@
  * NO-RESET no matter how the check windows are computed. node:http isn't subject to that stall.
  * Root cause: nodejs/undici#5600 (unref'd idle-socket-validation setImmediate stalls fetch() on an
  * otherwise-idle event loop), bundled into Node via undici 8.9.0 (used by 26.5.1); fixed upstream by
- * nodejs/undici#5609. Node bundles undici 8.10.0 from 26.8.1, where the stall no longer
- * reproduces; node:http stays because the engine range still admits 26.5.1-26.7.x.
+ * nodejs/undici#5609, bundled into Node from 26.8.0. node:http stays because the engine range
+ * still admits 26.5.1-26.7.x.
  *
  * The reset/gone checks additionally classify an unmeasurable window as INCONCLUSIVE (see
  * PresenceResult/AbsenceResult below) so a transport hiccup is never reported as a TTL

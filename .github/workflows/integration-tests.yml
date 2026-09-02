@@ -75,11 +75,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
-          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
-          # 26.x release (see the comment on the manual-dispatch branch above); without this,
-          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
-          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
-          # don't pay an extra manifest lookup on every run.
+          # The 26 leg floats to the newest 26.x on every run (matrix, nightly, and dispatch); without
+          # this, setup-node silently prefers whatever 26.x is already in the runner's tool cache.
+          # 22 and 24 skip the extra manifest lookup.
           check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Install dependencies
@@ -119,11 +117,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
-          # A manual workflow_dispatch with node-version: '26' is meant to float to the latest
-          # 26.x release (see the comment on the manual-dispatch branch above); without this,
-          # setup-node would silently prefer whatever 26.x is already in the runner's tool cache.
-          # Scoped to that one floating case so the normal pinned-version jobs (22, 24, "26.5.0")
-          # don't pay an extra manifest lookup on every run.
+          # The 26 leg floats to the newest 26.x on every run (matrix, nightly, and dispatch); without
+          # this, setup-node silently prefers whatever 26.x is already in the runner's tool cache.
+          # 22 and 24 skip the extra manifest lookup.
           check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Download build artifacts
