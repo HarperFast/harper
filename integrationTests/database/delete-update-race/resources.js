@@ -33,21 +33,19 @@ export class RaceOp extends Resource {
 		}
 
 		// Fire DELETE + write concurrently
-		const [delP, writeP] = await Promise.allSettled([
-			tables.Widget.delete(key),
-			(async () => {
-				if (op === 'patch') {
-					return tables.Widget.patch(key, { value: body.value ?? 'patched', category: 'patched' });
-				} else if (op === 'put') {
-					return tables.Widget.put({ id: key, value: body.value ?? 'put', counter: 1, category: 'put' });
-				} else if (op === 'addTo') {
-					return tables.Widget.update(key, { counter: { addTo: body.delta ?? 5 } });
-				} else if (op === 'recreate') {
-					// DELETE already racing; we try create
-					return tables.Widget.create({ id: key, value: 'recreated', counter: 99, category: 'recreated' });
-				}
-			})(),
-		]);
+		const deleteP = tables.Widget.delete(key);
+		const createP = (async () => {
+			if (op === 'patch') {
+				return tables.Widget.patch(key, { value: body.value ?? 'patched', category: 'patched' });
+			} else if (op === 'put') {
+				return tables.Widget.put({ id: key, value: body.value ?? 'put', counter: 1, category: 'put' });
+			} else if (op === 'addTo') {
+				return tables.Widget.update(key, { counter: { addTo: body.delta ?? 5 } });
+			} else if (op === 'recreate') {
+				return tables.Widget.create({ id: key, value: 'recreated', counter: 99, category: 'recreated' });
+			}
+		})();
+		const [delP, writeP] = await Promise.allSettled([deleteP, createP]);
 
 		deleteError = delP.status === 'rejected' ? delP.reason?.message : null;
 		writeError = writeP.status === 'rejected' ? writeP.reason?.message : null;

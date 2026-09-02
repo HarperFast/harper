@@ -225,7 +225,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 			else {
 				// two argument form, shift the arguments
 				id = idPrefix?.[primaryKey] ?? this.getNewId();
-				context = record || {};
+				context = record ?? undefined;
 				record = idPrefix;
 			}
 		}

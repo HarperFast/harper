@@ -756,6 +756,124 @@ describe('Record locks (harper#483)', () => {
 		});
 	});
 
+	describe('recreate-after-delete race (issue-(f))', function () {
+		// Mirrors integrationTests/database/deleteUpdateRace.test.ts subtest (f):
+		// one ImmediateTransaction context (HTTP request), seed put, then
+		// Promise.allSettled([Table.delete(k), Table.create({id:k,...})]).
+		// On Linux/Bun/uWS with threads:{count:4} this hung indefinitely (no 423).
+
+		it('Promise.allSettled([delete, create-of-same-key]) does not hang — single context', async function () {
+			// Single-thread, no transaction() wrapper.  Each call creates its own
+			// ImmediateTransaction; the delete lock must not block the create path.
+			if (isLMDB) return this.skip();
+			this.timeout(10_000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			// Race: delete vs create of the same key.  Create should 409 (key exists) or
+			// succeed if delete commited first.  Neither must hang.
+			const [delP, createP] = await Promise.allSettled([
+				LockTest.delete(recordId),
+				(async () => LockTest.create({ id: recordId, n: 99 }))(),
+			]);
+			// Either outcome is valid; what matters is that Promise.allSettled resolved.
+			assert.ok(delP.status === 'fulfilled' || delP.status === 'rejected', 'delete settled');
+			assert.ok(createP.status === 'fulfilled' || createP.status === 'rejected', 'create settled');
+		});
+
+		it('Promise.allSettled([delete, create-of-same-key]) does not hang — shared ImmediateTransaction via transaction()', async function () {
+			// Use transaction() to force a shared DatabaseTransaction (covers the gated-write
+			// interaction path even if the ImmediateTransaction single-context case cannot
+			// exercise it without an HTTP framework).
+			if (isLMDB) return this.skip();
+			this.timeout(10_000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				// seed already committed; inside transaction the record is visible
+				const [delP, createP] = await Promise.allSettled([
+					LockTest.delete(recordId),
+					(async () => LockTest.create({ id: recordId, n: 99 }))(),
+				]);
+				assert.ok(delP.status === 'fulfilled' || delP.status === 'rejected', 'delete settled');
+				assert.ok(createP.status === 'fulfilled' || createP.status === 'rejected', 'create settled');
+			});
+		});
+
+		it('Promise.allSettled([delete, create-of-same-key]) does not hang — same key across threads (multi-thread)', async function () {
+			// Several worker threads each do seed-put + allSettled([delete, create]) on the
+			// SAME key concurrently.  Any unreleased gate lock or un-resolved pendingWake
+			// would block one thread indefinitely.
+			if (isLMDB) return this.skip();
+			this.timeout(10_000);
+			const THREAD_COUNT = 4;
+			const ROUNDS = 20;
+			const localWorkers = [];
+			for (let i = 0; i < THREAD_COUNT; i++) {
+				localWorkers.push(new Worker(__dirname + '/recordLock-thread.js', { workerData: { addPorts: [] } }));
+			}
+			try {
+				for (let r = 0; r < ROUNDS; r++) {
+					const recordId = id();
+					// All threads race on the SAME key.
+					const promises = localWorkers.map(
+						(w) =>
+							new Promise((resolve, reject) => {
+								const handler = (msg) => {
+									if (msg.type === 'recreated' || msg.type === 'error') {
+										w.removeListener('message', handler);
+										if (msg.type === 'error') reject(new Error(msg.message));
+										else resolve(msg);
+									}
+								};
+								w.on('message', handler);
+								w.postMessage({ type: 'recreate', id: recordId });
+							})
+					);
+					const results = await Promise.all(promises);
+					for (const res of results) {
+						assert.ok(
+							res.deleteStatus === 'fulfilled' || res.deleteStatus === 'rejected',
+							`r=${r} delete must settle`
+						);
+						assert.ok(
+							res.createStatus === 'fulfilled' || res.createStatus === 'rejected',
+							`r=${r} create must settle`
+						);
+					}
+				}
+			} finally {
+				await Promise.all(localWorkers.map((w) => w.terminate()));
+			}
+		});
+
+		it('repeated delete+create rounds do not accumulate a hung gate lock — 10 rounds', async function () {
+			// Each round: put seed → allSettled([delete, create]) → verify no gate lock lingers.
+			// A lingering unreleased gate lock would block the next round's write and eventually
+			// hit the 30 s LOCKED_WRITE_WAIT_MS → 423.  Short timeout catches an early hang.
+			if (isLMDB) return this.skip();
+			this.timeout(10_000);
+			setLockedWriteWaitMs(3_000);
+			try {
+				for (let r = 0; r < 10; r++) {
+					const recordId = id();
+					await LockTest.put({ id: recordId, n: r });
+					const [delP, createP] = await Promise.allSettled([
+						LockTest.delete(recordId),
+						(async () => LockTest.create({ id: recordId, n: 99 }))(),
+					]);
+					// Verify the round settled (no hang) by checking status.
+					assert.ok(delP.status === 'fulfilled' || delP.status === 'rejected', `r=${r} delete settled`);
+					assert.ok(createP.status === 'fulfilled' || createP.status === 'rejected', `r=${r} create settled`);
+					// Verify the next plain write succeeds (gate lock not held).
+					await LockTest.put({ id: recordId, n: 999 });
+					assert.strictEqual((await LockTest.get(recordId))?.n, 999, `r=${r} post-round write landed`);
+				}
+			} finally {
+				setLockedWriteWaitMs(LOCKED_WRITE_WAIT_MS);
+			}
+		});
+	});
+
 	describe('performance: gate-handle registry is O(1) per lookup', function () {
 		it('5000-write transaction completes in bounded time (O(N) with Map registry)', async function () {
 			// A quadratic (O(N²)) registry would hit ~12M iterations at N=5000, easily exceeding 5 s.
