@@ -891,12 +891,15 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	}
 	// this is called on a timer, and will write the log buffer to the file
 	function logQueuedData(entry?: any) {
-		openLogFile(undefined);
 		const payload = logBuffer ? logBuffer.join('') : entry;
 		// A file that just refused a write will refuse the next one too, and every attempt costs a
 		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
 		// is the request path at full rate. Go straight to stdio until the cooldown expires.
-		if (logFD && !(retryAppendAfter > performance.now()) && (rotationGuard?.beforeAppend() ?? true)) {
+		// The file is opened after the guard, not before: a guard that recovers by rotating closes this
+		// descriptor, and the write that triggered the recovery belongs in the new generation.
+		const mayAppend = !(retryAppendAfter > performance.now()) && (rotationGuard?.beforeAppend() ?? true);
+		openLogFile(undefined);
+		if (logFD && mayAppend) {
 			let startTime = performance.now();
 			// Encoded once, so the guard's accounting reads a length instead of re-scanning the string.
 			const data = rotationGuard ? Buffer.from(payload) : payload;

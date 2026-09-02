@@ -138,6 +138,13 @@ describe('Test log generation coordinator (#1877)', () => {
 		transport.deliverRotation({ logPath, request: 'r3', stale: true });
 		assert.strictEqual(closed, 3, 'expected every descriptor to be released when there is no live log');
 		coordinator.unregisterLogSink(logPath);
+
+		// A filesystem that reports ino 0 cannot prove a descriptor is on the live generation, and
+		// answering "released" without releasing is what lets an archive be destroyed under a peer.
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
+		transport.deliverRotation({ logPath, request: 'r4', stale: true, keepIno: 0, keepDev: 0 });
+		assert.strictEqual(closed, 4, 'expected an indistinguishable descriptor to be released');
+		coordinator.unregisterLogSink(logPath);
 	});
 
 	it('is not required to wait for a sink registered after the announcement', async () => {

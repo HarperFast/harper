@@ -140,7 +140,16 @@ function releaseLocally(message: any) {
 	// closing is the only answer that can still be called a release. `stale` inverts the test: keep
 	// only the live generation, and when there is no live generation to name, keep nothing.
 	if (message.stale) {
-		if (!identity || identity.ino !== message.keepIno || identity.dev !== message.keepDev) sink.close();
+		// Keep only a descriptor provably on the live generation. `ino === 0` — some Windows
+		// filesystems — cannot prove that, and answering "released" without releasing is what would
+		// let the archive be destroyed under a peer, so an indistinguishable descriptor is closed.
+		const onLiveGeneration =
+			identity &&
+			identity.ino &&
+			message.keepIno &&
+			identity.ino === message.keepIno &&
+			identity.dev === message.keepDev;
+		if (!onLiveGeneration) sink.close();
 		return;
 	}
 	if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
