@@ -454,10 +454,53 @@ with its journal intact. Only the sweep itself is best-effort, because it costs 
 decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
 and the journal removal: the journal is what would carry the activation forward after a power loss.
 
-Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+Two limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
 briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
-request can still see a gap); validation does not run on the main-thread deploy path; and config
-publication is not yet an effect of this transaction, as above.
+request can still see a gap); and config publication is not yet an effect of this transaction, as above.
+
+## Certification: `.complete` requires a verdict, and the mint enforces it
+
+`.complete` is what recovery treats as proof that a candidate both built and validated, so the function
+that writes it requires the verdict rather than trusting its caller to have asked for one. `validateCandidate`
+used to be an optional callback on `prepareApplication` and only one of its four production call sites
+supplied it — the same _one rule, N sites_ shape that produced most of this area's defects. The record of
+which candidates a validator certified is module-internal: a proof passed as an argument is one an external
+caller can forge, or a future caller can forget.
+
+The verdict comes from an **ephemeral validator thread**, not from a `startWorker` one. That function builds
+a `MessageChannel` per connected port, announces the new port to every peer, and registers for monitoring
+and restart, so a validator would join the ITC mesh — letting a candidate's top-level
+`server.registerOperation` announce itself and traffic route at a thread about to exit, at
+O(deploys × workers) channels on a large node. Only the interpreter setup is shared, as
+`buildWorkerExecArgv`; without it the thread cannot load Harper's own module graph at all. Three things the
+validator needs that are easy to miss: its own `MessageChannel` for the verdict (`parentPort` carries
+Harper's ITC traffic, so an unrelated message reads as a malformed verdict), `workerData.noServerStart`
+(or `threadServer` boots at module scope and loads every root component), and the compiled entry path.
+
+Every outcome other than an explicit passing verdict is failure — a throw, an exit without a verdict, a
+malformed message, a closed channel, a deadline — because the alternative is minting authority from
+silence. A spawn failure is a deploy failure, not a success. The worker is terminated and its exit awaited
+before its tree is swept, so a still-running candidate cannot race the sweep.
+
+Isolation contains the JS heap, the module registry, process-global registrations and component status. It
+does **not** contain databases, the filesystem, the network or native addons: a candidate can write before
+it throws.
+
+Two cases earn no authority rather than being refused — the rule is _no verdict means no authority_, never
+_no verdict means no deploy_:
+
+- **Safe mode** stages without activating. It may not execute configured code, so it certifies nothing, and
+  nothing uncertified is published. Safe mode is transient, so the next ordinary preparation finishes it.
+- **A branch-configured component** deploys uncertified. A branch's location is derived only from the
+  application and database names, so a certification load would open the store the live version is serving
+  from: a candidate could mutate rows, throw, be rejected, and leave the live version serving the mutation.
+  Certifying against the base store instead is no better. Unlike safe mode this is not deferrable —
+  certification cannot succeed for these until validation-scoped branch storage exists — so it activates as
+  it does today and simply mints no `.complete`.
+
+The guarantee is scoped to the lifetime of a preparation. A package deploy's root-config entry is still
+written before the build and never rolled back, so a rejected v2 can be re-prepared and activated after a
+restart; closing that needs config staged with activation.
 
 ## Component preparation is serialized across worker threads
 

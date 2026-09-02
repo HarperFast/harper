@@ -122,4 +122,38 @@ describe('deploy certification', () => {
 			await rm(rootDir, { recursive: true, force: true });
 		}
 	});
+
+	it('stages without activating in safe mode, so nothing uncertified is published', async function () {
+		// Safe mode may not execute configured code, so it can certify nothing — and a candidate nothing
+		// certified must not be published. It is also transient, which is why "pending" is the right answer
+		// here and the wrong one for a branch-configured component: the next ordinary preparation certifies
+		// and activates this.
+		this.timeout(30000);
+		const rootDir = await mkdtemp(join(tmpdir(), 'certify-safe-mode-'));
+		const componentDirPath = join(rootDir, 'shop');
+		await mkdir(componentDirPath, { recursive: true });
+		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shop', version: '1.0.0' }));
+
+		const application = new Application({
+			name: 'shop',
+			payload: await payloadThatRunsOnLoad(rootDir, 'shop', '2.0.0', 'module.exports = { fine: true };\n'),
+		});
+		application.dirPath = componentDirPath;
+
+		const priorSafeMode = process.env.HARPER_SAFE_MODE;
+		process.env.HARPER_SAFE_MODE = '1';
+		try {
+			await prepareApplication(application);
+			assert.strictEqual(
+				JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version,
+				'1.0.0',
+				'the live version is untouched — the candidate was staged, not activated'
+			);
+			assert.ok(existsSync(join(rootDir, '.deploy-staging')), 'and the staged candidate is kept for later');
+		} finally {
+			if (priorSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
+			else process.env.HARPER_SAFE_MODE = priorSafeMode;
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
 });
