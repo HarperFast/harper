@@ -285,6 +285,70 @@ A tombstone whose cleanup fails this way is not swept automatically — `schedul
 pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
 in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
 
+## Audit retention cleanup is a self-rearming, engine-independent lifecycle
+
+One call to `scheduleAuditCleanup` establishes a retention cadence that ends when the root store closes
+(or immediately in process-wide read-only mode). Storage-engine selection changes the work inside each pass, not whether the timer,
+serialization barrier, error containment, and re-arm exist. LMDB removes bounded batches of audit
+entries; RocksDB asks rocksdb-js to purge conservatively eligible log segments before the same time
+cutoff. Disk-pressure callbacks may accelerate the next pass and shorten the effective window, but
+ordinary retention progress must not depend on pressure.
+
+The two engines do not share a cadence rule, because their units of progress differ. LMDB's adaptive
+backoff reads a per-entry delete count: it speeds up while entries are being removed and doubles while
+idle. Rocks reclaims whole segments whose eligibility changes only on rotation/flush, so the same
+signal would only make it rescan the same files — its delay is instead a pure function of the
+pressure-adjusted retention window (a tenth of it, floored at `DEFAULT_AUDIT_CLEANUP_DELAY`).
+
+Exactly one Rocks purge loop exists per store, and that is owned by the **arming** sites, not the
+re-arm: `onStorageReclamation` registers its handler only on the last worker (it takes no
+`skipThreadCheck`), and the store-open arm gates on the same index. The last-worker conjunct on the
+re-arm is therefore unreachable through either of those paths; it is a backstop for a direct caller
+of the exported `scheduleAuditCleanup`, because a store-wide segment purge looping on every worker is
+duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
+backstop — not the registration — becomes the thing keeping the loop single.
+
+Both re-arm guards are **Rocks-only**, deliberately: the LMDB arm keeps `origin/main`'s unconditional
+re-arm, so it neither yields to an already-pending pass (a pressure-armed 100ms pass can be cancelled
+and replaced by the idle backoff) nor restricts itself to one worker. Those are pre-existing LMDB
+behaviours, not invariants this section establishes — don't read the paragraphs above as
+engine-independent.
+
+Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
+Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
+mapping cache (`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is
+never purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is
+required. Windows does not share that property: deleting a mapped segment raises a sharing violation,
+so the purge throws, is warn-logged, re-arms, and makes no progress for as long as a consumer holds the
+mapping. The continuous cadence therefore turns a Windows retention stall into a steady state rather
+than a one-off, and nothing covers it — the Rocks retention integration test skips win32.
+What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
+iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
+(rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than
+log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention —
+tracked as HarperFast/rocksdb-js#805. Continuous retention is what moves it from unreachable-in-steady-state
+to routine: a peer offline longer than `logging.auditRetention` now resumes into a purged prefix and is
+recorded as caught up, and `txnlogReplayGapBytes` observes the gap without escalating on it.
+
+Retirement is two things, and teardown needs both. `stopAuditCleanup()` latches the loop closed and
+cancels the pending timer, and it **returns a drain barrier** — a promise that settles once the pass
+already running has finished. The barrier is what makes closing stores safe: lmdb-js stamps the DBI
+number into its write instruction synchronously and the native writer consumes it later
+(`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
+delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
+transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
+`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
+environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
+re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
+stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
+`resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
+path rather than a defensive one.
+
+The last-removed marker is retained until it commits. A rejected write is logged and carried to the
+next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
+transient failure would otherwise leave the recorded boundary permanently behind the entries that
+were already removed.
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.
@@ -297,9 +361,107 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
 
+## A deploy builds off to the side, is validated, and only then goes live
+
+`deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, runs the
+load validation against _that_ tree, and only then activates it. Activation is one compensating
+transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
+into the live path.
+
+The ordering is the design. Two things used to be wrong in a way each other hid:
+
+- **The live tree was moved aside first**, so the component was broken for the whole extract +
+  `npm install`. Worse than unavailable — the live path held the _new_ code before its dependencies were
+  installed, so requests during a deploy hit an unrunnable tree. `stage-swap-availability.test.ts`
+  samples the live path through a deliberately blocked install and fails against the old ordering.
+- **Validation ran after the swap committed**, so a component that installed cleanly but threw at load
+  went live anyway while the operation returned an error. Validation is now a callback preparation
+  invokes between build and activation, so a rejected candidate is never published. Note this is a
+  load-error PROBE, not a safety guarantee: it executes the component's own top-level code with
+  incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
+  deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
+  is separate work; this only fixed the order.
+  **Root config is deliberately NOT part of this transaction.** It is still written before the build and
+  never rolled back, so `installApplications()` can reinstall a rejected release at the next restart —
+  unchanged from before this change. Making config an effect of the activation was implemented and then
+  pulled back out: it kept surfacing durability and locking problems that had nothing to do with the tree
+  swap (a memoized config object a disk write does not refresh, `atomicWriteFile` not fsyncing, writers that
+  do not share the publication lock). It is tracked as its own step so the tree half can land on its own
+  evidence.
+
+### Recovering an interrupted activation
+
+Every control file is dot-prefixed — `.activation.json`, `.component`, `.complete`, `.unsettled` — because
+a deployment directory holds the candidate tree under the _component's_ own name beside them, and
+`isJoinableComponentName` rejects a leading dot. An undotted control file shares that namespace: a component
+named `activation.json` would put its tree on the journal path and activate with no journal at all, and one
+named `unsettled` would make every settle throw. `assertApplicationConfig` rejects any name
+`isJoinableComponentName` rejects, so the collision is unreachable from a root-config key as well as from a
+deploy. Ownership inferred from a directory name is validated the same way, so a control file cannot
+impersonate a component either.
+
+A journal-LESS staging directory is not ambiguous: it is what a successful settlement leaves when its
+best-effort sweep fails. Both the deploy path and boot recovery pass over one rather than failing it closed,
+because a verdict written there would outlive the deployment and, once its sidecar became readable again, be
+attributed to a live component that never held an unsettled activation.
+
+An `.activation.json` journal is written beside the candidate — with a `.complete` marker recording that
+build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()` can
+settle a crash at any boundary. Both go to a temp name, are fsynced, then linked into place, so the final
+name never exists with partial contents; the candidate's own contents are fsynced before `.complete` is
+written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
+installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
+
+The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
+refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
+own `component` field OR by the deployment's ownership sidecar, whichever can be read, because restoring is
+the destructive step and takes the conservative union while settlement keeps the precise intersection.
+Ordering settlement
+ahead of it is not enough, because a worker can be respawned mid-activation with no settlement in front of
+it, and settlement that _fails_ deliberately keeps the journal while the same boot carries on. The refusal
+is scoped to the branch that actually restores a tree — a record that was already retired has nothing to
+restore, so that component still loads. Where no journal is attributable to the component, the legacy pass applies
+unchanged: a crash in that path also leaves an in-progress aside with the live tree present, and retiring
+it there would keep a half-written tree instead of restoring the good one.
+
+Settlement runs on **every thread**, not only main, for the same reason. It is safe anywhere because each
+deployment is settled under the cross-process component preparation lock and the pass is idempotent. It
+_probes_ for that lock — a 250 ms try, no renewal, matching the legacy boot probe — rather than queueing:
+it runs before every component load on every thread, so waiting behind a live deploy's `npm install` would
+load no components at all until that install finished. A held lock means a live deploy, and a live deploy
+settles its own journal.
+
+Ambiguity exists mainly while the live path is absent, and there `.complete` is the roll-forward authority:
+without it the candidate was never validated, so the committed tree in the aside wins. Live-present with a
+candidate is normally pre-swap (or already rolled back) — discard the candidate — **unless a rollback
+record shows the live tree had already been moved aside**. Then whatever is at the live path was recreated
+afterwards by something else, and settling either way would destroy both the committed tree and the
+validated candidate, so that component fails closed with both still on disk.
+Live-present without a candidate is a lost tail — finish forward; never revert a completed activation.
+Neither a live tree nor a rollback record is unrecoverable, so that component fails closed rather than
+guessing. Every branch is idempotent, so a crash _during_ recovery is settled by the next run, and
+failures are per component so one unsettleable component does not stop healthy siblings loading.
+
+Directory fsync is best-effort by necessity — Node cannot fsync a directory on Windows — so the protocol
+never depends on it. Roll-forward requires the journal, the candidate and `.complete` to all be
+observable, which means a lost directory update degrades to a roll back rather than to a wrong decision.
+
+Retiring the rollback record only marks the displaced tree disposable; both the activation path and
+recovery then sweep it, or the components root would grow by a whole component version per deploy. The
+retire is **correctness, not hygiene** — that marker is what stops the legacy pass treating the record as
+authoritative once the journal is gone — so a failure to retire propagates and the component fails closed
+with its journal intact. Only the sweep itself is best-effort, because it costs disk rather than a wrong
+decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
+and the journal removal: the journal is what would carry the activation forward after a power loss.
+
+Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
+request can still see a gap); validation does not run on the main-thread deploy path; and config
+publication is not yet an effect of this transaction, as above.
+
 ## Component preparation is serialized across worker threads
 
-`prepareApplication()` performs one destructive transaction against a component directory: extract the incoming payload, then run its dependency installer. Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
+`prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
