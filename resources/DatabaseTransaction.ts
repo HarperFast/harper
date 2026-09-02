@@ -463,7 +463,6 @@ export class DatabaseTransaction implements Transaction {
 	committing = false;
 	commitPhaseTicks = 0;
 	declare commitChainHead?: DatabaseTransaction;
-	// Two-level Map: outer key = store object, inner key = writeKeyId(id).
 	// O(1) lookup in recordLockFor; O(N total handles) iteration in releaseRecordLocks.
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
 	declare lockWaitDeadline?: number;
@@ -531,7 +530,6 @@ export class DatabaseTransaction implements Transaction {
 				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
 				409
 			);
-		// Live opHandle = re-entrant holder write; otherwise consult the transaction's handle registry.
 		const handle =
 			opHandle?.keyId === keyId && !opHandle.released
 				? opHandle
@@ -564,7 +562,6 @@ export class DatabaseTransaction implements Transaction {
 		if (!lockKey) return false;
 		if (typeof operation.store.tryLock !== 'function') return false;
 
-		// Try without a closure first; only allocate the wake callback under contention.
 		let wakeResolve: (() => void) | undefined;
 		const acquired =
 			operation.store.tryLock(lockKey) ||
@@ -668,7 +665,6 @@ export class DatabaseTransaction implements Transaction {
 		// Release gate handles before parking — prevents hold-A/wait-B vs hold-B/wait-A deadlocks.
 		this.releaseRecordLocks();
 
-		// All gate-eligible writes, sorted canonically — not just the failed subset.
 		const allGateEligible = this.writes
 			.filter(
 				(w): w is TransactionWrite =>
@@ -1262,6 +1258,7 @@ export class DatabaseTransaction implements Transaction {
 			}
 		} catch (err) {
 			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
+			else this.releaseRecordLocks(); // a commit that already closed itself (retries exhausted) still owns gate handles
 			// options.transaction is a replay handle created by restageAfter for this round; a save-loop
 			// throw leaves it with staged write intents that must be aborted to avoid WAL pinning.
 			abortNativeTransaction(options.transaction, 'cleanup replay handle after save-loop throw');
@@ -1674,6 +1671,7 @@ export class DatabaseTransaction implements Transaction {
 			);
 		} catch (err) {
 			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
+			else this.releaseRecordLocks();
 			// Sync throw from the when() callback (null first-arg path): options.transaction may still
 			// hold staged write intents from the save loop (e.g. deadline throw before transaction.commit()).
 			abortNativeTransaction(options.transaction, 'cleanup replay handle after sync callback throw');
@@ -1685,6 +1683,7 @@ export class DatabaseTransaction implements Transaction {
 		if ((committed as any)?.then) {
 			return (committed as Promise<CommitResolution>).catch((err) => {
 				if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
+				else this.releaseRecordLocks();
 				// Async rejection: options.transaction may have staged write intents (e.g. native commit
 				// failed before its intents cleared). Abort is idempotent if the native layer already did.
 				abortNativeTransaction(options.transaction, 'cleanup replay handle after async rejection');

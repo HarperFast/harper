@@ -154,7 +154,7 @@ Consequences that shape the code:
   `acquireRecordKey` (shared by `lock()` and the async write-gate path) loops `tryLock` → await wake →
   retry until acquired or `waitMs` elapsed (then 423). Converting a gate handle (no lease) to `{ hold:
 true }` neutralizes the gate handle and creates a fresh handle with the requested lease timer.
-- **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a flat `RecordLockHandle[]`.
+- **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a lazily allocated `Map<store, Map<keyId, handle>>` (O(1) lookup; a 5 000-write transaction stays linear).
   `registerRecordLock`, `recordLockFor`, and `unregisterRecordLock` manage it. Both `lock()` and the write
   gate scan the array before calling `tryLock`; a re-entrant call returns the existing live handle.
   Expired-by-timer handles are kept until superseded by a re-lock (live handles sort first in `recordLockFor`);
@@ -162,7 +162,7 @@ true }` neutralizes the gate handle and creates a fresh handle with the requeste
   writes (not just the failed subset) in canonical `(lockTableId, encoded keyId)` order before re-staging.
   Acquiring only the failed subset causes livelock: W1 acquires A while W2 acquires B, both re-stage,
   each grabs the other's first key synchronously and gates on the complement again indefinitely (until
-  max-retries → 423). Acquiring the full set ensures the re-stage's synchronous gate finds every key
+  the lock deadline → 423). Acquiring the full set ensures the re-stage's synchronous gate finds every key
   re-entrant and no new gating occurs.
 - **The gate acts at staging, not at park.** `gateLockedWrite` in `DatabaseTransaction.save()` runs for
   every write marked `gateOnLock` (local mutations: update, delete, invalidate, relocate, publish; never a
