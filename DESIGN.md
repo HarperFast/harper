@@ -173,8 +173,9 @@ Consequences that shape the code:
   conflict with the LOCK write. The gate re-reads a locked record snapshot-free before a holder write
   stages (the write's basis can be as old as the lock), and if an ungated rewrite — a source fill, a
   replicated apply — moved the record past the transaction's timestamp, `commit()` re-stages the
-  transaction with a fresh one rather than let the holder's write land as the older version. The
-  returned record stages its `save()` lazily — an update staged at `lock()` time would be dropped by
+  transaction with a fresh one rather than let the holder's write land as the older version; that
+  holds for an overrun holder whose lease already cleared the bit too, and it is bounded by the same
+  30 s as a gated wait (then 503). The returned record stages its `save()` lazily — an update staged at `lock()` time would be dropped by
   a held lock's wrapper transaction completing before the caller writes.
 - **Release.** A transaction-scoped handle (the default) is registered on the store link; every commit
   or abort of that link releases it — its own conditional UNLOCK, logged on failure, awaited by the

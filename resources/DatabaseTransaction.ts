@@ -332,19 +332,17 @@ export type TransactionWrite = {
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
-	// a local record mutation (set by Table.ts): while the record carries a live lock generation this
-	// transaction does not hold, the write waits for the release instead of staging (harper#483)
+	// a local record mutation (set by Table.ts): subject to the record-lock gate (harper#483)
 	gateOnLock?: boolean;
-	// held back by gateOnLock this round; commit() waits for the release and re-stages it
+	// held back by the gate this round: commit() waits for the release (gated) or re-stages the
+	// transaction with a fresh timestamp (restage, a holder write the record moved past)
 	gated?: boolean;
-	// a holder write whose record moved past the transaction's timestamp; commit() re-stages the
-	// transaction with a fresh one instead of letting the write land as the older version
 	restage?: boolean;
-	// the held (node-owned) lock the writing instance carries, which makes this a holder write
+	// the held (node-owned) lock the writing instance carries
 	lockHandle?: RecordLockHandle;
-	// validate() ran; it is not repeated when a gated write is finally staged
+	// validate() ran; not repeated when a gated write is finally staged
 	validated?: boolean;
-	// validate() found nothing to write and this transaction dropped the write; a later save() re-stages
+	// validate() found nothing to write; a later save() on a lock-returned record re-stages
 	dropped?: boolean;
 };
 
@@ -520,29 +518,30 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	protected gateLockedWrite(operation: TransactionWrite, txnTime: number): boolean {
 		if (operation.gateOnLock !== true || this.sourceApply || this.isReplay) return false;
-		if (!operation.entry || !(operation.entry.metadataFlags & LOCKED)) return false;
-		// Locked path only: the write's basis may be as old as the lock itself (a holder writes through
-		// the record it locked), so it is refreshed past any snapshot before the verdict and the commit.
+		const handle =
+			operation.lockHandle ?? (this.recordLocks && this.recordLockFor(operation.store, writeKeyId(operation.key)));
+		// the unlocked path costs one bit test; a locked record, or a holder's write, refreshes its basis
+		// past any snapshot because a holder writes through the record it locked
+		if (!handle && (!operation.entry || !(operation.entry.metadataFlags & LOCKED))) return false;
 		const entry = (operation.entry = operation.store.getEntry(operation.key));
-		const verdict = lockGateVerdict(entry, [
-			operation.lockHandle,
-			this.recordLockFor(operation.store, writeKeyId(operation.key)),
-		]);
-		if (!verdict) return false;
+		const verdict = lockGateVerdict(entry, [handle]);
 		if (verdict === 'lost')
 			throw new ClientError(
 				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
 				409
 			);
-		if (verdict === 'holder') {
-			// an ungated rewrite (a source fill, a replicated apply) moved the record past this
-			// transaction's timestamp; landing below it would resequence the holder's write as older
-			if (!(entry.version >= txnTime)) return false;
+		if (verdict === 'wait') {
+			operation.gated = true;
+			return true;
+		}
+		// an ungated rewrite (a source fill, a replicated apply) moved the record past this transaction's
+		// timestamp — with the generation still live, or after an overrun lease cleared it; landing
+		// below it would resequence the holder's write as older
+		if (handle && entry && entry.version >= txnTime) {
 			operation.restage = true;
 			return true;
 		}
-		operation.gated = true;
-		return true;
+		return false;
 	}
 
 	/**
@@ -584,13 +583,6 @@ export class DatabaseTransaction implements Transaction {
 		return this.commit(options);
 	}
 
-	/**
-	 * Park this commit until the locks gating its writes are released, then re-stage the whole write
-	 * set on a fresh native handle with a fresh timestamp. The gated writes staged nothing, so no
-	 * write intent of theirs can hold up the release they are waiting for; the timestamp is renewed
-	 * because a write landing with a version older than the release would be resequenced as
-	 * out-of-order and, for a full put, dropped.
-	 */
 	/**
 	 * Park until the locks gating these writes are released (or their leases end), bounded by one
 	 * deadline per transaction. Resolves with the highest version the gated records carry afterwards,
@@ -650,6 +642,13 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	private restageHolderWrites(restage: TransactionWrite[], options: CommitOptions): MaybePromise<CommitResolution> {
+		// bounded like the park: a record that keeps moving under its holder must not spin the commit
+		this.lockWaitDeadline ??= Date.now() + LOCKED_WRITE_WAIT_MS;
+		if (Date.now() >= this.lockWaitDeadline)
+			throw new ServerError(
+				`Record ${String(restage[0].key)} kept being rewritten past this transaction, so the holder's write could not commit`,
+				503
+			);
 		const replayNeeded = this.discardStagedRound();
 		let version = 0;
 		for (const write of restage) {

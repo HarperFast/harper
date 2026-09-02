@@ -2417,7 +2417,6 @@ export function makeTable(options) {
 				return this.#reloadLocked(id);
 			});
 		}
-		/** Load the record as it is now that the lock committed; changes made from here are staged by `save()`. */
 		#reloadLocked(id: Id) {
 			TableResource._updateResource(this, primaryStore.getEntry(id));
 			this.#changes = undefined;

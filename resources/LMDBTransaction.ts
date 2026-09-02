@@ -13,7 +13,7 @@ import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context } from './ResourceInterface.ts';
 import { Transaction as RocksTransaction } from '@harperfast/rocksdb-js';
 import type { RootDatabaseKind } from './databases.ts';
-import { LOCK_VERSION_STEP } from './recordLock.ts';
+import { LOCKED_WRITE_WAIT_MS, LOCK_VERSION_STEP } from './recordLock.ts';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const trackedTxns = new Set<DatabaseTransaction>();
@@ -225,7 +225,15 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.timestamp = Math.max(getNextMonotonicTime(), version, releasedVersion) + LOCK_VERSION_STEP;
 				return this.commit({ ...options, timestamp: this.timestamp, retries: retries + 1 });
 			};
-			return parked.length > 0 ? this.parkForRecordUnlocks(parked).then(recommit) : recommit(0);
+			if (parked.length > 0) return this.parkForRecordUnlocks(parked).then(recommit);
+			// bounded like the park: a record that keeps moving under its holder must not spin the commit
+			this.lockWaitDeadline ??= Date.now() + LOCKED_WRITE_WAIT_MS;
+			if (Date.now() >= this.lockWaitDeadline)
+				throw new ServerError(
+					`Record ${String(gated[0].key)} kept being rewritten past this transaction, so the holder's write could not commit`,
+					503
+				);
+			return recommit(0);
 		};
 		const gated = gatedWrites();
 		if (gated.length > 0) return recommitAfter(gated);

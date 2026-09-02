@@ -113,11 +113,7 @@ export function nextLockVersion(txnTime: number, existingVersion: number | undef
 	return version;
 }
 
-/**
- * Whether a write may stage against `entry` now: undefined when the record is not locked, 'holder'
- * when the writer holds its live generation, 'wait' when another party does, 'lost' when the
- * writer's own generation was superseded.
- */
+/** undefined: not locked; 'holder': the writer's live generation; 'wait': another party's; 'lost': the writer's was superseded */
 export function lockGateVerdict(
 	entry: Partial<Entry> | undefined,
 	holders: Array<RecordLockHandle | undefined>,
