@@ -23,16 +23,16 @@ describe('TransactionCommitConflictTimeoutError', () => {
 		const err = new TransactionCommitConflictTimeoutError('abandoned', true);
 		assert(err instanceof ServerError, 'should extend ServerError');
 		assert(err instanceof Error);
-		assert.equal(err.name, 'TransactionCommitConflictTimeoutError');
-		assert.equal(err.statusCode, 503);
-		assert.equal(err.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
-		assert.equal(err.message, 'abandoned');
+		assert.strictEqual(err.name, 'TransactionCommitConflictTimeoutError');
+		assert.strictEqual(err.statusCode, 503);
+		assert.strictEqual(err.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
+		assert.strictEqual(err.message, 'abandoned');
 	});
 
 	// Retryability is per-instance, not per-class: a multi-store transaction whose earlier store
 	// already committed must not advertise a retry that would replay that store's durable writes.
 	it('carries the caller-decided retryability', () => {
-		assert.equal(new TransactionCommitConflictTimeoutError('abandoned', true).retryable, true);
-		assert.equal(new TransactionCommitConflictTimeoutError('abandoned', false).retryable, false);
+		assert.strictEqual(new TransactionCommitConflictTimeoutError('abandoned', true).retryable, true);
+		assert.strictEqual(new TransactionCommitConflictTimeoutError('abandoned', false).retryable, false);
 	});
 });

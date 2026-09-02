@@ -53,7 +53,7 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		while (pendingRestores.length) pendingRestores.pop()();
 		// unhandledRejection is emitted a turn after the rejection itself, so drain before asserting
 		await delay(50);
-		assert.deepEqual(unhandled, [], 'abandonment must not leak an unhandled rejection');
+		assert.deepStrictEqual(unhandled, [], 'abandonment must not leak an unhandled rejection');
 		unhandled.length = 0;
 	});
 
@@ -135,31 +135,31 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		});
 		releaseCommit();
 		await done;
-		assert.equal(txn.commitStartedAt, undefined, 'the clock must be released once the commit settles');
-		assert.equal((await DeadlineA.get('arm'))?.name, 'armed');
+		assert.strictEqual(txn.commitStartedAt, undefined, 'the clock must be released once the commit settles');
+		assert.strictEqual((await DeadlineA.get('arm'))?.name, 'armed');
 	});
 
 	it('abandons a coordinated-retry commit with a retryable 503 once the budget is spent', async function () {
 		this.timeout(15000);
 		const { attempts } = conflictCommits(DeadlineA, 'retryNow');
 		const { outcome, error } = await outcomeOf(writePastBudget('retry-now', singleStoreWrite));
-		assert.equal(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
-		assert.equal(error.statusCode, 503);
-		assert.equal(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
-		assert.equal(error.retryable, true, 'nothing of a single-store transaction landed, so a retry is safe');
+		assert.strictEqual(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
+		assert.strictEqual(error.statusCode, 503);
+		assert.strictEqual(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
+		assert.strictEqual(error.retryable, true, 'nothing of a single-store transaction landed, so a retry is safe');
 		assert.match(error.message, /exceeding the \d+ms limit/);
-		assert.equal(attempts.length, 1, 'an already-spent budget must abandon at the first retry decision');
+		assert.strictEqual(attempts.length, 1, 'an already-spent budget must abandon at the first retry decision');
 	});
 
 	it('abandons an ERR_BUSY conflict retry on the same budget', async function () {
 		this.timeout(15000);
 		const { attempts } = conflictCommits(DeadlineA, 'reject', { code: 'ERR_BUSY' });
 		const { outcome, error } = await outcomeOf(writePastBudget('busy', singleStoreWrite));
-		assert.equal(outcome, 'rejected');
-		assert.equal(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
-		assert.equal(error.retryable, true);
+		assert.strictEqual(outcome, 'rejected');
+		assert.strictEqual(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
+		assert.strictEqual(error.retryable, true);
 		// the uncoordinated path must not spend its quadratic backoff first — the budget is already gone
-		assert.equal(attempts.length, 1, 'an already-spent budget must abandon before the backoff ladder');
+		assert.strictEqual(attempts.length, 1, 'an already-spent budget must abandon before the backoff ladder');
 	});
 
 	// The chain root's clock, not a per-attempt one: the head's own commit succeeds and only the
@@ -178,15 +178,15 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			})
 		);
 		assert.ok(chained, 'the two databases should have produced a chained transaction');
-		assert.equal(outcome, 'rejected');
-		assert.equal(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
-		assert.equal(
+		assert.strictEqual(outcome, 'rejected');
+		assert.strictEqual(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
+		assert.strictEqual(
 			error.retryable,
 			false,
 			'the first store already committed, so replaying the request would write it twice'
 		);
-		assert.equal(attempts.length, 1, 'the second store inherits the spent budget rather than starting a new one');
-		assert.equal((await DeadlineA.get('chained'))?.name, 'chain-a', 'the head really did land durably');
+		assert.strictEqual(attempts.length, 1, 'the second store inherits the spent budget rather than starting a new one');
+		assert.strictEqual((await DeadlineA.get('chained'))?.name, 'chain-a', 'the head really did land durably');
 	});
 
 	// The other half of "nothing landed durably": a scope that already committed a segment mid-handler
@@ -207,10 +207,10 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			})
 		);
 		assert.ok(rotated, 'the mid-handler commit should have rotated the scope onto a new generation');
-		assert.equal(outcome, 'rejected');
-		assert.equal(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
-		assert.equal(error.retryable, false, 'the first segment already landed, so a replay would repeat it');
-		assert.equal((await DeadlineA.get('mid-scope'))?.name, 'segment-one', 'the first segment really did land');
+		assert.strictEqual(outcome, 'rejected');
+		assert.strictEqual(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
+		assert.strictEqual(error.retryable, false, 'the first segment already landed, so a replay would repeat it');
+		assert.strictEqual((await DeadlineA.get('mid-scope'))?.name, 'segment-one', 'the first segment really did land');
 	});
 
 	// Source-applied writes have no resubscribe/sequence-resume path, so dropping one permanently
@@ -226,9 +226,13 @@ describe('request-path commits are abandoned once their conflict budget is spent
 				context.transaction.commitStartedAt = performance.now() - WELL_PAST_BUDGET_MS;
 			})
 		);
-		assert.equal(result.outcome, 'committed', 'a source-applied write must retry past the budget, not be dropped');
-		assert.equal(attempts.length, 5, 'every forced conflict was retried');
-		assert.equal((await DeadlineA.get('source'))?.name, 'source-apply');
+		assert.strictEqual(
+			result.outcome,
+			'committed',
+			'a source-applied write must retry past the budget, not be dropped'
+		);
+		assert.strictEqual(attempts.length, 5, 'every forced conflict was retried');
+		assert.strictEqual((await DeadlineA.get('source'))?.name, 'source-apply');
 	});
 
 	// A clock left set on the chain root would make the NEXT logical commit abandon on its first
@@ -237,8 +241,12 @@ describe('request-path commits are abandoned once their conflict budget is spent
 		this.timeout(20000);
 		const { restore } = conflictCommits(DeadlineA, 'retryNow');
 		const { outcome, error } = await outcomeOf(writePastBudget('reset', singleStoreWrite));
-		assert.equal(outcome, 'rejected');
-		assert.equal(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT', 'must abandon on the budget, not the attempt cap');
+		assert.strictEqual(outcome, 'rejected');
+		assert.strictEqual(
+			error.code,
+			'TRANSACTION_COMMIT_CONFLICT_TIMEOUT',
+			'must abandon on the budget, not the attempt cap'
+		);
 		restore();
 		// A fresh transaction against the same table must commit normally, and one forced conflict
 		// must still be retried rather than abandoned on a stale clock.
@@ -248,8 +256,8 @@ describe('request-path commits are abandoned once their conflict budget is spent
 			await DeadlineA.get('reset', context);
 			await DeadlineA.put({ id: 'reset', name: 'after-abandon' }, context);
 		});
-		assert.equal(attempts.length, 1, 'the retry after the forced conflict must have been allowed');
-		assert.equal((await DeadlineA.get('reset'))?.name, 'after-abandon');
-		assert.deepEqual(getOutstandingCommits(), { count: 0, oldestAgeMs: undefined }, 'no commit left tracked');
+		assert.strictEqual(attempts.length, 1, 'the retry after the forced conflict must have been allowed');
+		assert.strictEqual((await DeadlineA.get('reset'))?.name, 'after-abandon');
+		assert.deepStrictEqual(getOutstandingCommits(), { count: 0, oldestAgeMs: undefined }, 'no commit left tracked');
 	});
 });

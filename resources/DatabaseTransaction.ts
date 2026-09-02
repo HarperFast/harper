@@ -1111,7 +1111,7 @@ export class DatabaseTransaction implements Transaction {
 					// Every retry round and every chained store re-enters here and must inherit the chain
 					// root's clock rather than restart it, so only the first submission stamps.
 					const chainRoot = this.root ?? this;
-					if (chainRoot.commitStartedAt === undefined) chainRoot.commitStartedAt = performance.now();
+					if (chainRoot.commitStartedAt == null) chainRoot.commitStartedAt = performance.now();
 					const completions = [];
 					const commitOutcome = commitResolution.then(
 						(commitResult) => {
@@ -1455,7 +1455,7 @@ export class DatabaseTransaction implements Transaction {
 	private elapsedPastCommitBudget(): number {
 		if (this.sourceApply) return 0;
 		const startedAt = (this.root ?? this).commitStartedAt;
-		if (startedAt === undefined) return 0;
+		if (startedAt == null) return 0;
 		const elapsed = performance.now() - startedAt;
 		return elapsed > this.commitConflictBudget() ? elapsed : 0;
 	}
