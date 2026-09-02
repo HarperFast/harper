@@ -319,6 +319,7 @@ if (!parentPort) {
 }
 // postMessage type listeners that are registered in other ways or can be registered later
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.SCHEMA, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.USER, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
@@ -458,7 +459,10 @@ function startWorker(path, options = {}) {
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
 				startWorker(path, options);
-			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
+			} else {
+				harperLogger.error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
+				options.onRestartExhausted?.(worker);
+			}
 		}
 	});
 	workers.push(worker);
@@ -529,7 +533,7 @@ async function restartWorkers(
 			maxWorkersDown = maxWorkersDown * workers.length;
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
-		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
+		let waitingToFinish = []; // promises for workers we are replacing, spliced as each is replaced
 		// Every replacement that was started without being awaited first, so this function can still
 		// resolve only once each one is accepting connections.
 		let replacementsStarting = [];
@@ -539,6 +543,7 @@ async function restartWorkers(
 		// costs capacity until startWorker's auto-restart brings a fresh one up.
 		let workersKeptOnOldCode = 0;
 		let replacementsNotStarted = 0;
+		let replacementsFailedToStart = 0;
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
 		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
 		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
@@ -550,7 +555,9 @@ async function restartWorkers(
 		// thread keeps serving the HTTP ports throughout. This ordering is also what lets
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
-		for (let worker of workers.slice(0)) {
+		const restarting = workers.slice(0);
+		for (let index = 0; index < restarting.length; index++) {
+			const worker = restarting[index];
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
@@ -639,13 +646,15 @@ async function restartWorkers(
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
-			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown)
-				replacementsStarting.push(
-					whenWorkerStarted(worker.startCopy()).then((started) => {
-						onProgress?.();
-						return started;
-					})
-				);
+			let replacementStarting;
+			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
+				replacementStarting = whenWorkerStarted(worker.startCopy()).then((started) => {
+					if (!started) replacementsFailedToStart++;
+					onProgress?.();
+					return started;
+				});
+				replacementsStarting.push(replacementStarting);
+			}
 
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
@@ -688,17 +697,40 @@ async function restartWorkers(
 					clearTimeout(timeout);
 					onProgress?.();
 					worker.extendTerminateDeadline = undefined;
-					const index = waitingToFinish.indexOf(whenDone);
-					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
 					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
 					resolve();
 				});
 			});
-			waitingToFinish.push(whenDone);
+			// A worker counts as replaced only once its replacement is accepting connections, not merely
+			// once it has exited. This promise is held unawaited between throttle points, so it must not
+			// be able to reject.
+			const replaced = (replacementStarting ? Promise.all([whenDone, replacementStarting]) : whenDone)
+				.catch((error) => harperLogger.warn('Error waiting for a worker to be replaced', error))
+				.then(() => {
+					const at = waitingToFinish.indexOf(replaced);
+					if (at > -1) waitingToFinish.splice(at, 1);
+				});
+			waitingToFinish.push(replaced);
 			if (waitingToFinish.length >= maxWorkersDown) {
-				// throttle how many workers are draining/down at once to limit load
+				// throttle how many workers are down at once to limit load
 				await Promise.race(waitingToFinish);
+			}
+			// Readiness throttling bounds how many workers are down at once, but not how many *fail*: with
+			// replacements that never come up, walking the rest of the pool would leave nothing serving.
+			// The workers not yet touched are still running the old code, which beats none running at all.
+			if (replacementsFailedToStart >= maxWorkersDown) {
+				const untouched = restarting
+					.slice(index + 1)
+					// a worker that exited on its own mid-restart is spliced out of `workers` and
+					// auto-restarted onto the new code (see the exit handler above); it is not still on
+					// the previous code even though this loop never got to it.
+					.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other)).length;
+				harperLogger.error(
+					`${replacementsFailedToStart} replacement worker thread(s) did not start; stopping this restart with ${untouched} worker(s) still on the previous code`
+				);
+				workersKeptOnOldCode += untouched;
+				break;
 			}
 		}
 		await Promise.all(waitingToFinish);

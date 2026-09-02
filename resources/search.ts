@@ -1718,7 +1718,7 @@ export function flattenKey(key) {
 	return key;
 }
 
-function estimatedEntryCount(store) {
+export function estimatedEntryCount(store) {
 	const now = Date.now();
 	if ((store.estimatedEntryCountExpires || 0) < now) {
 		// getStats is the LMDB fast path; for RocksDB, estimate-num-keys is O(1) where an exact

@@ -38,17 +38,19 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { parsePassing, resolveTimeout } from './windowsGateChecks.mjs';
 
-/** One mocha process per entry. Whole directories, so new suites are picked up. */
+// Same filename shape `test:unit:main` collects (package.json), so a `.test.mjs` suite under
+// one of these directories is not silently skipped.
 const GROUPS = [
-	'unitTests/agent/**/*.test.js',
-	'unitTests/buildTools/**/*.test.js',
-	'unitTests/components/**/*.test.js',
-	'unitTests/config/**/*.test.js',
-	'unitTests/server/**/*.test.js',
-	'unitTests/sqlEngine/**/*.test.js',
-	'unitTests/utility/**/*.test.js',
-	'unitTests/validation/**/*.test.js',
+	'unitTests/agent/**/*test.*js',
+	'unitTests/buildTools/**/*test.*js',
+	'unitTests/components/**/*test.*js',
+	'unitTests/config/**/*test.*js',
+	'unitTests/server/**/*test.*js',
+	'unitTests/sqlEngine/**/*test.*js',
+	'unitTests/utility/**/*test.*js',
+	'unitTests/validation/**/*test.*js',
 	// Individually verified files from directories not yet covered wholesale.
 	'unitTests/resources/blob.test.js',
 ];
@@ -104,14 +106,14 @@ const EXCLUDED = [
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MOCHA = join(repoRoot, 'node_modules', 'mocha', 'bin', 'mocha.js');
-const SUMMARY = /\b(\d+) passing\b/;
-const GROUP_TIMEOUT_MS = Number(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS ?? 600_000);
+const GROUP_TIMEOUT_MS = resolveTimeout(process.env.HARPER_WINDOWS_GATE_GROUP_TIMEOUT_MS);
 
 // No --config: mocha discovers .mocharc.json itself, so the gate inherits the same
 // root config (and unitTests/mocha.init.js) as every other unit-test run.
 function runGroup(pattern) {
 	return new Promise((settle) => {
-		const args = [MOCHA, '--reporter', 'dot', pattern];
+		// --no-color: an ANSI-prefixed epilogue would defeat parsePassing()'s line anchor.
+		const args = [MOCHA, '--reporter', 'dot', '--no-color', pattern];
 		for (const excluded of EXCLUDED) args.push('--exclude', excluded);
 
 		const startedAt = Date.now();
@@ -138,7 +140,7 @@ function runGroup(pattern) {
 			// here on would interleave through later groups and through the summary table.
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			const passing = SUMMARY.exec(output)?.[1];
+			const passing = parsePassing(output);
 			if (!reason) {
 				if (timedOut) reason = `timed out after ${GROUP_TIMEOUT_MS}ms`;
 				else if (passing === undefined) reason = `exited ${code} without reporting a summary`;

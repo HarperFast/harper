@@ -60,6 +60,7 @@ import {
 	searchByIndex,
 	findAttribute,
 	estimateCondition,
+	estimatedEntryCount,
 	flattenKey,
 	COERCIBLE_OPERATORS,
 	executeConditions,
@@ -89,7 +90,12 @@ import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation, removeStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
+import {
+	onStorageReclamation,
+	removeStorageReclamation,
+	removeStorageReclamationHandler,
+	getStorageSpaceStats,
+} from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
@@ -145,6 +151,20 @@ const EVICTION_BATCH_SIZE = 100;
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
+// Guardrails for `Prefer: count=exact`: once the requested page has been collected, counting the rest
+// of the match set is bounded by BOTH a row cap and a wall-clock budget, so a paginated read can't turn
+// into an unbounded scan. Exceeding either reports an unknown total (Content-Range `.../*`) rather than
+// truncating the page. These bound the count tail, not the page itself; a genuinely expensive query
+// (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
+const MAX_EXACT_COUNT_SCAN = 1_000_000;
+const MAX_EXACT_COUNT_MS = 1_000;
+// Largest page a `Prefer: count=` request will materialize. A request whose limit exceeds this (or is
+// not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
+// streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
+const MAX_COUNT_PAGE = 10_000;
+// How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
+// check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
+const COUNT_YIELD_INTERVAL = 2_048;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -519,6 +539,10 @@ export function makeTable(options) {
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
 	let cleanupTimer: NodeJS.Timeout;
+	let recordExpirationInterval: NodeJS.Timeout;
+	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
+	const pendingCleanupResolvers = new Set<() => void>();
+	let disposed = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
@@ -567,9 +591,10 @@ export function makeTable(options) {
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
-	onStorageReclamation(primaryStore.path, (priority: number) => {
+	const reclamationHandler = (priority: number) => {
 		if (hasSourceGet) return scheduleCleanup(priority);
-	});
+	};
+	onStorageReclamation(primaryStore.path, reclamationHandler);
 
 	class Updatable extends GenericTrackedObject implements RecordObject {
 		declare set: (property: string, value: any) => void;
@@ -3624,6 +3649,10 @@ export function makeTable(options) {
 				}
 			}
 			const select = target.select;
+			// Whether the caller supplied real filter conditions — read from the raw request, NOT the
+			// planner-augmented `conditions` (which by now may carry a synthetic `sort` pseudo-condition and
+			// injected full-scan condition). Used to pick the count-estimate source below.
+			const hasUserConditions = Array.isArray(target.conditions) && target.conditions.length > 0;
 			if (conditions.length === 0) {
 				conditions = [{ attribute: primaryKey, comparator: 'greater_than', value: true }];
 			}
@@ -3707,12 +3736,117 @@ export function makeTable(options) {
 				readTxn,
 				transformToRecord
 			);
+			const offset = target.offset || 0;
+			const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
+			// `Prefer: count=` (REST pagination): materialize the requested page and attach a total record
+			// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
+			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
+			// table estimate. Opt-in only — the default streaming path below is untouched.
+			//
+			// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
+			// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
+			// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
+			// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
+			// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
+			// normal streaming path with no count. This bounds the offset too: without it a huge offset would
+			// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
+			const pageLimit = target.limit as number;
+			if (
+				target.count &&
+				Number.isInteger(pageLimit) &&
+				pageLimit >= 0 &&
+				pageLimit <= MAX_COUNT_PAGE &&
+				Number.isInteger(offset) &&
+				offset >= 0 &&
+				offset + pageLimit <= MAX_EXACT_COUNT_SCAN
+			) {
+				const wantExact = target.count === 'exact';
+				const pageEnd = offset + pageLimit;
+				const countStart = performance.now();
+				// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
+				// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
+				// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
+				// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
+				// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
+				// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
+				// filter. Report the total as unavailable for those rather than advertising it as count=exact
+				// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
+				// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
+				const touchesCustomIndex = (conds: any[]): boolean =>
+					conds.some((c: any) => {
+						if (!c) return false;
+						if (c.conditions) return touchesCustomIndex(c.conditions);
+						const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
+						return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+					});
+				const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
+				return (async () => {
+					const page: any = [];
+					let scanned = 0;
+					let exact = true;
+					try {
+						for await (const record of results) {
+							if (scanned >= offset && scanned < pageEnd) page.push(record);
+							scanned++;
+							// A store whose async iterator settles synchronously (the common indexed-scan case) would
+							// otherwise let this drain spin as one uninterrupted microtask run, blocking the event loop
+							// for the whole count. Yield to the macrotask queue periodically so concurrent requests and
+							// I/O still make progress during a large exact scan.
+							if ((scanned & (COUNT_YIELD_INTERVAL - 1)) === 0) await new Promise((resolve) => setImmediate(resolve));
+							// The page window [offset, pageEnd) is always collected in full first — the guardrail
+							// only ever abandons the running TOTAL, never truncates the page body.
+							if (scanned >= pageEnd) {
+								// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
+								// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
+								if (!wantExact || approximateResultSet) break;
+								// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
+								// large match set can't turn a bounded page fetch into an unbounded scan.
+								if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
+									exact = false;
+									break;
+								}
+							}
+						}
+					} finally {
+						// We own the iteration here (no results.onDone consumer), so release the read
+						// transaction unconditionally — including when the drain throws — or the snapshot leaks.
+						txn.doneReadTxn();
+					}
+					let total: number | null;
+					if (wantExact) {
+						// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
+						// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
+						total = exact && !approximateResultSet ? scanned : null;
+					} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
+						// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
+						// estimate; guessing would both mislead and disclose cardinality the filter hides.
+						total = null;
+					} else if (!hasUserConditions) {
+						total = estimatedEntryCount(primaryStore);
+					} else {
+						// Estimate from the real conditions only — drop the planner's synthetic `sort`
+						// pseudo-condition, which otherwise contributes a bogus (entryCount/2) cardinality.
+						const est = estimateCondition(TableResource)({
+							conditions: conditions.filter((c: any) => c.comparator !== 'sort'),
+							operator: operator ? String(operator).toLowerCase() : 'and',
+						});
+						total = isFinite(est) ? Math.round(est) : null;
+					}
+					// For an estimate, never report a total below the last row actually returned — keeps the
+					// Content-Range valid (start-end/total) when an estimate undershoots a non-empty page.
+					// Exact totals are authoritative (and an empty page past the end must not be clamped up).
+					if (!wantExact && total != null && page.length > 0 && total < offset + page.length) {
+						total = offset + page.length;
+					}
+					page.recordCount = total;
+					page.recordCountExact = wantExact && exact && !approximateResultSet;
+					page.selectApplied = true;
+					page.getColumns = getColumns;
+					return page;
+				})() as any;
+			}
 			// apply any offset/limit after all the sorting and filtering
-			if (target.offset || target.limit !== undefined)
-				results = results.slice(
-					target.offset,
-					target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
-				);
+			if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
@@ -5529,8 +5663,14 @@ export function makeTable(options) {
 			}
 			return Promise.all(promises);
 		}
+		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
+			disposed = true;
+			clearTimeout(cleanupTimer);
+			settlePendingCleanup();
+			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
+			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
@@ -5552,9 +5692,14 @@ export function makeTable(options) {
 		}
 	);
 
-	TableResource.updatedAttributes(); // on creation, update accessors as well
-	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
-	if (expiresAtProperty) runRecordExpirationEviction();
+	try {
+		TableResource.updatedAttributes(); // on creation, update accessors as well
+		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
+		if (expiresAtProperty) runRecordExpirationEviction();
+	} catch (error) {
+		TableResource.cleanup();
+		throw error;
+	}
 	return TableResource;
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
 		let hasChanges;
@@ -6618,7 +6763,13 @@ export function makeTable(options) {
 			},
 		};
 	}
+	function settlePendingCleanup() {
+		for (const resolve of pendingCleanupResolvers) resolve();
+		pendingCleanupResolvers.clear();
+	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
+		// a reclamation run may still hold this class's handler after cleanup(); a promise here would never settle
+		if (disposed) return;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority
@@ -6631,8 +6782,18 @@ export function makeTable(options) {
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
-			if (!cleanupInterval) return;
-			return new Promise((resolve) => {
+			if (!cleanupInterval) {
+				// no replacement pass is being scheduled, so nothing is left to settle a superseded one
+				settlePendingCleanup();
+				return;
+			}
+			// This pass adopts the awaiters of the pass whose timer it just cleared: they settle when
+			// this pass's scan completes, so a reclamation run is never told the storage was reclaimed
+			// before any scan ran. It has to run now, though — that run blocks its whole path on the
+			// promise, and the replacement's own slot can be a full interval out.
+			if (pendingCleanupResolvers.size > 0) runImmediately = true;
+			return new Promise<void>((resolve) => {
+				pendingCleanupResolvers.add(resolve);
 				const startOfYear = new Date();
 				startOfYear.setMonth(0);
 				startOfYear.setDate(1);
@@ -6645,6 +6806,7 @@ export function makeTable(options) {
 					? Date.now()
 					: Math.ceil((Date.now() - startOfYear.getTime()) / nextInterval) * nextInterval + startOfYear.getTime();
 				const startNextTimer = (nextScheduled) => {
+					if (disposed) return;
 					logger.trace?.(`Scheduled next cleanup scan at ${new Date(nextScheduled)}`);
 					// noinspection JSVoidFunctionReturnValueUsed
 					cleanupTimer = setTimeout(
@@ -6655,8 +6817,11 @@ export function makeTable(options) {
 								const rootStore = primaryStore.rootStore;
 								if (rootStore.status !== 'open') {
 									clearTimeout(cleanupTimer);
+									settlePendingCleanup();
 									return;
 								}
+								// snapshot: an awaiter that arrives during this scan belongs to the pass that supersedes it
+								const settling = [...pendingCleanupResolvers];
 								const MAX_CLEANUP_CONCURRENCY = 50;
 								const outstandingCleanupOperations = new Array(MAX_CLEANUP_CONCURRENCY);
 								let cleanupIndex = 0;
@@ -6736,7 +6901,10 @@ export function makeTable(options) {
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
-								resolve(undefined);
+								for (const settle of settling) {
+									pendingCleanupResolvers.delete(settle);
+									settle();
+								}
 								cleanupPriority = 0; // reset the priority
 							})),
 						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number
@@ -6755,10 +6923,10 @@ export function makeTable(options) {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (getWorkerIndex() === 0) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
-			setInterval(async () => {
+			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (runningRecordExpiration) return;
+				if (disposed || runningRecordExpiration) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;

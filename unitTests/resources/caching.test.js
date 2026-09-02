@@ -96,9 +96,10 @@ describe('Caching', () => {
 		};
 
 		CachingTable.sourcedFrom({
-			get(id) {
+			get(id, context) {
 				return new Promise((resolve) => {
 					sourceRequests++;
+					if (sourceExpiresAt !== undefined) context.expiresAt = sourceExpiresAt;
 					setTimeout(() => {
 						sourceResponses++;
 						resolve(
@@ -200,35 +201,63 @@ describe('Caching', () => {
 		sourceRequests = 0;
 		events = [];
 		const start = new Date();
-		CachingTable.setTTLExpiration(0.01);
-		await CachingTable.invalidate(23);
-		let result = await CachingTable.get(23);
-		assert.equal(result.id, 23);
-		assert.equal(result.name, 'name ' + 23);
-		assert(result.createdAt >= start);
-		assert(result.updatedAt >= start);
-		assert.equal(sourceRequests, 1);
-		await delay(5);
-		let target23 = new RequestTarget();
-		target23.id = 23;
-		result = await CachingTable.get(target23);
-		assert.equal(target23.loadedFromSource, false);
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		// let it expire
-		await delay(10);
-		result = await CachingTable.get(target23);
-		assert.equal(result.id, 23);
-		assert.equal(result.name, 'name ' + 23);
-		assert.equal(sourceRequests, 2);
-		if (events.length > 0) console.log(events);
-		//assert.equal(events.length, 0);
-		await CachingTable.put(23, { name: 'expires in past' }, { expiresAt: 0 });
-		result = await CachingTable.get(target23);
-		assert(result.createdAt >= start);
-		assert(result.updatedAt >= start);
-		assert.equal(sourceRequests, 3);
-		assert.equal(target23.loadedFromSource, true);
+		// expiry here is driven by the expiration the source reports, not by sleeping against the TTL
+		CachingTable.setTTLExpiration(30);
+		// the fill lock is only released once the fill has settled; a past expiration may also have been
+		// evicted by the cleanup scan by the time it is observed
+		const entryCommitted = (expiresAt) => {
+			if (CachingTable.primaryStore.hasLock(23)) return false;
+			const entry = CachingTable.primaryStore.getEntry(23);
+			return entry ? entry.expiresAt === expiresAt : expiresAt < Date.now();
+		};
+		try {
+			const liveExpiresAt = (sourceExpiresAt = Date.now() + 60000);
+			await CachingTable.invalidate(23);
+			let result = await CachingTable.get(23);
+			assert.equal(result.id, 23);
+			assert.equal(result.name, 'name ' + 23);
+			assert(result.createdAt >= start);
+			assert(result.updatedAt >= start);
+			assert.equal(sourceRequests, 1);
+			await waitFor(() => entryCommitted(liveExpiresAt), { message: 'the source fill should commit' });
+			let target23 = new RequestTarget();
+			target23.id = 23;
+			result = await CachingTable.get(target23);
+			assert.equal(target23.loadedFromSource, false);
+			assert.equal(result.id, 23);
+			assert.equal(sourceRequests, 1);
+			const expiredAt = (sourceExpiresAt = Date.now() - 1);
+			await CachingTable.invalidate(23);
+			await CachingTable.get(23);
+			assert.equal(sourceRequests, 2);
+			await waitFor(() => entryCommitted(expiredAt), { message: 'the expired source fill should commit' });
+			// reloading restores a live entry, so the `expiresAt: 0` write below is the only reason the
+			// last get can miss
+			const reloadedExpiresAt = (sourceExpiresAt = Date.now() + 60000);
+			result = await CachingTable.get(target23);
+			assert.equal(result.id, 23);
+			assert.equal(result.name, 'name ' + 23);
+			assert.equal(target23.loadedFromSource, true);
+			assert.equal(sourceRequests, 3);
+			await waitFor(() => entryCommitted(reloadedExpiresAt), { message: 'the reload should commit a live entry' });
+			if (events.length > 0) console.log(events);
+			//assert.equal(events.length, 0);
+			const finalExpiresAt = (sourceExpiresAt = Date.now() - 1);
+			await CachingTable.put(23, { name: 'expires in past' }, { expiresAt: 0 });
+			await waitFor(() => entryCommitted(0), { message: 'the put should commit its past expiration' });
+			const expiredTarget23 = new RequestTarget();
+			expiredTarget23.id = 23;
+			result = await CachingTable.get(expiredTarget23);
+			assert.equal(result.name, 'name ' + 23);
+			assert(result.createdAt >= start);
+			assert(result.updatedAt >= start);
+			assert.equal(sourceRequests, 4);
+			assert.equal(expiredTarget23.loadedFromSource, true);
+			// the tests below expect their own first get(23) to reach the source
+			await waitFor(() => entryCommitted(finalExpiresAt), { message: 'the last fill should commit expired' });
+		} finally {
+			sourceExpiresAt = undefined;
+		}
 	});
 
 	it('loadedFromSource is observable on the target with loadAsInstance = false (#1576)', async function () {
