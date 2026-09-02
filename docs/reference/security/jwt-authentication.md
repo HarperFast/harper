@@ -18,7 +18,7 @@ JWT authentication uses two token types:
 
 ## Create Authentication Tokens
 
-Call `create_authentication_tokens` with your Harper credentials. No `Authorization` header is required for this operation.
+Call `create_authentication_tokens` with your Harper credentials. When the request carries a `username` and `password` in the body, no `Authorization` header is required — the operation authenticates from the body. Other shapes of this operation do need an authenticated caller: sending no credentials at all mints tokens for the user the request is already authenticated as, and [minting a scoped token](#scoped-tokens-inline-role) requires an authenticated `super_user`.
 
 ```json
 {
@@ -95,7 +95,7 @@ Available since: v5.2.0
 
 A super user can mint a **scoped token**: a single JWT whose permissions are embedded in the token itself, so the bearer needs no pre-existing user or role record. This is useful for handing a limited credential (for example, read-only access) to an external service or script without provisioning it in `hdb_user`.
 
-Pass `role` as an inline role-shaped object (the same `permission` structure used by [`add_role`](../users-and-roles/overview.md), including the `operations` allowlist). The request must be authenticated as a `super_user`; no `password` may be included:
+Pass `role` as an inline role-shaped object (the same `permission` structure used by [`add_role`](../users-and-roles/overview.md), including the `operations` allowlist). Unlike the username/password flow above, this shape carries no credentials of its own — the **minter** must be authenticated as a `super_user`, and no `password` may be included in the body:
 
 ```json
 {
@@ -114,6 +114,22 @@ Pass `role` as an inline role-shaped object (the same `permission` structure use
 	"expires_in": "7d"
 }
 ```
+
+Authenticate that request the way you would any other privileged operation — Basic Auth with a `super_user`'s credentials, or a `Bearer` `operation_token` already held by one:
+
+```bash
+curl --location --request POST 'http://localhost:9925' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Basic <base64 of super_user:password>' \
+  --data-raw '{
+      "operation": "create_authentication_tokens",
+      "username": "reporting-service",
+      "role": { "permission": { "operations": ["read_only"] } },
+      "expires_in": "7d"
+  }'
+```
+
+Without an authenticated `super_user` the mint is rejected with `403 Only super_user can create a token with an inline role`. From inside a component, pass the request context and `authorize: true` to [`server.operation()`](../http/api.md#serveroperationoperation-context-authorize) so the mint is attributed to — and permission-checked against — the calling user.
 
 Response:
 

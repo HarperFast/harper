@@ -104,20 +104,35 @@ For most operations — HTTP request handlers, for example — Harper automatica
 ### Basic Usage
 
 ```javascript
-import { tables } from 'harper';
+import { isMainThread } from 'node:worker_threads';
+import { tables, transaction } from 'harper';
 const { MyTable } = tables;
 
 if (isMainThread) {
+	let running = false;
 	setInterval(async () => {
-		let data = await (await fetch('https://example.com/data')).json();
-		transaction(async (txn) => {
-			for (let item of data) {
-				await MyTable.put(item, txn);
-			}
-		});
+		if (running) return; // the previous run has not committed yet
+		running = true;
+		try {
+			let data = await (await fetch('https://example.com/data')).json();
+			await transaction(async (txn) => {
+				for (let item of data) {
+					await MyTable.put(item, txn);
+				}
+			});
+		} catch (error) {
+			logger.error('hourly import failed', error);
+		} finally {
+			running = false;
+		}
 	}, 3600000); // every hour
 }
 ```
+
+Two details matter outside a request context:
+
+- **`await` the `transaction()` call, and catch it.** An unawaited call lets the timer callback finish before the commit resolves, so a failed write is never observed; awaiting without a `catch` still leaves the rejection unhandled, because nothing awaits the callback itself.
+- **Guard against overlap when a job can outlast its interval.** A timer fires on schedule regardless of whether the previous run has committed, so two runs would open two transactions over the same rows. The `running` flag above skips a tick instead.
 
 ### Nesting
 

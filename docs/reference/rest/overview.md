@@ -39,8 +39,8 @@ rest:
 
 This section describes the **default table Resource** — the endpoints Harper registers automatically for a table, with no handler code of your own. Harper serves that default Resource only when **both** of the following are true:
 
-1. The table is exported in a schema definition with [`@export`](../database/schema.md#export).
-2. REST is enabled for the application — normally `rest: true` in `config.yaml` (see [Configuration](#configuration)); a component directory with **no configuration file at all** gets it from Harper's built-in default instead, as described below.
+1. The table is exported in a schema definition with [`@export`](../database/schema.md#export). This is always required.
+2. REST is enabled for the application. `rest: true` must be present in `config.yaml` **whenever a configuration file exists** (see [Configuration](#configuration)); a component directory with no configuration file at all inherits `rest` from Harper's built-in default instead, as described below.
 
 ```graphql
 # schema.graphql
@@ -58,7 +58,7 @@ graphqlSchema:
 rest: true
 ```
 
-Neither half is sufficient on its own. Without `@export` Harper registers no default Resource for the table, so it has no REST route and callers get `404`. Without REST enabled the REST handler is never registered for the application, so even an exported table does not respond to HTTP requests.
+Neither half is sufficient on its own. Without `@export` Harper registers no default Resource for the table, so it has no REST route and callers get `404`. Without REST enabled the REST handler is never registered for the application, so even an exported table does not respond to HTTP requests. Writing `rest: true` is what enables it in a `config.yaml` — the only way REST is enabled without that line is the no-configuration-file case below.
 
 `@export` is how the **table itself** claims the URL. When a JavaScript subclass of `tables.MyTable` should own that URL instead, omit `@export` from the schema and export the class — the class claims the route and serves whatever it implements, and REST still has to be enabled. Leaving `@export` on the schema while also exporting a same-named subclass produces conflicting endpoints. See [Extending a Table](../resources/overview.md#extending-a-table).
 

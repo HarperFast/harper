@@ -172,7 +172,7 @@ harper deploy ref=9f8c2a1 restart=true replicated=true
 
 If a `ref` can't be resolved either way, the deploy stops rather than sending the name for the cluster to resolve. Run `git fetch` and retry, or pass a full commit SHA — that needs no resolution and is always accepted.
 
-A `ref` must also name something a clone can fetch: `refs/heads/*` and `refs/tags/*`, or a bare branch or tag name. Anything else — `refs/pull/123/head`, say — is rejected up front, even if your own checkout can resolve it, because the cluster could resolve that commit and still never check it out.
+**A full commit SHA is accepted directly.** An object ID is already immutable, so there is nothing to pin it to and no resolution is attempted — SHA-based rollbacks are always valid. Every other `ref` must name something a clone can fetch: `refs/heads/*` or `refs/tags/*` if you qualify it, or a bare branch or tag name that resolves locally or on the remote. A qualified ref outside those two namespaces — `refs/pull/123/head`, say — is rejected up front, even if your own checkout can resolve it, because the cluster could resolve that commit and still never check it out.
 
 **Commit and push first.** The cluster clones from the remote, so it only sees commits that have been pushed. `by_ref` warns in both directions: when the working tree is dirty (those changes won't be part of the deploy) and when the commit being deployed isn't on any remote branch (the cluster won't be able to clone it). The second check reads your local remote-tracking refs, so run `git fetch` if you get it for a commit you know you pushed.
 
