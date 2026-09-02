@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788333844178,
+  "lastUpdate": 1788333847930,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -12246,6 +12246,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 155.87,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9a3c750133385a45269a7bae4b157cfd29ed0159",
+          "message": "test(database): promote QA-597 EAV blob type-drift regression anchor (#2449)\n\n* test(database): promote QA-597 EAV blob type-drift regression anchor\n\nPromotes the held-back fourth QA-explorer candidate from PR #1833\n(qa-explorer promote-candidates P-384): an EAV `Attribute.value: Any`\nslot driven through every inline<->Blob type-drift direction (marathon\nblob->scalar->scalar->blob->blob(replace)->scalar->delete, scalar->blob\nexternalization, blob->delete, and a pure blob-replace chain), verified\nvia sha256 round-trip fidelity both internally and over REST dot-notation\nreads, with a stale-bytes check and a decisive cleanup_orphan_blobs\nreconciliation asserting an exact live-blob-file floor.\n\nCold-rerun twice on current main (2e65550d7) at its promoted path; clean\non both runs.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EgJDxsU2Hh28d9hXMFzPdC\n\n* test(database): assert natural blob reclamation per-step in QA-597 suite\n\nIndependent pre-push review (codex + cursor-composer + harper-domain\nadjudication) found the promoted suite's T5 credited cleanup_orphan_blobs\nfor reclamation the ordinary put()/delete() path already performs ~2s\nafter each supersession, so a broken sweeper would still pass; T2's\nbefore/after global file count could also race T1's still-draining\nreclamation queue; and the scalar REST dot-notation oracle never gated\non status/value, only on \"does it look blob-shaped\".\n\nReworks the suite to assert natural reclamation (via a settle-with-\nplateau poll, matching blob-reclaim-removal-paths.test.ts's convention)\nimmediately after every drift step, so T5 now proves the live floor is\nalready exact BEFORE invoking cleanup_orphan_blobs and only exercises\nthe sweep as a safety/idempotency diagnostic. Also hardens countFiles\nto distinguish ENOENT from a real I/O fault, selects the blob database\nby name instead of readdir()'s first (unordered) entry, removes dead\nstate, and fixes a resources.js comment that overclaimed REST coverage.\n\nCold-rerun twice clean on current main (2e65550d7) after the rework.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EgJDxsU2Hh28d9hXMFzPdC\n\n* test(database): tighten QA-597 T5 ordering and drop unsafe settle plateau\n\nSecond pre-push review round found two remaining issues: T5's post-\ncleanup no-op check raced cleanup_orphan_blobs, which the product fires\nwithout awaiting (dataLayer/schema.ts) -- the check was evaluated at\n~0ms since the pre-cleanup count already matched, giving no real\ncoverage of the sweep's effects. And waitForSettle's minStableMs\nplateau could misreport a live, in-progress reclamation deferral\n(open read snapshot, or a momentarily unreadable shared hold table --\nboth legitimate per blob.ts's runReclamation) as a stuck/leaked file\nafter only 5s of its declared 20s budget.\n\nMoves T5's live-blob fidelity and deleted-row checks before the\ncleanup_orphan_blobs call (so nothing depends on that fire-and-forget\noperation's completion) and drops the plateau early-exit so a genuine\nmismatch is only reported at the full timeout. Also trims header/inline\ncomments that narrated the review process itself rather than the code,\nand fixes a wrong T4 file-count annotation (2 -> 3, not 3 -> 3).\n\nCold-rerun twice clean on current main (2e65550d7).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EgJDxsU2Hh28d9hXMFzPdC\n\n* test(database): trim remaining provenance narration in QA-597 header\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EgJDxsU2Hh28d9hXMFzPdC\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-02T04:47:24Z",
+          "url": "https://github.com/HarperFast/harper/commit/9a3c750133385a45269a7bae4b157cfd29ed0159"
+        },
+        "date": 1788333846833,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 14.32,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.25,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.77,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 18.13,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 23.49,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 16.81,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 33.17,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 14.13,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 17.94,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 53.13,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 146.68,
             "unit": "ms"
           }
         ]
