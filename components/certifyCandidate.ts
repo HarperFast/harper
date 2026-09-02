@@ -210,11 +210,18 @@ export async function certifyCandidate(
 				// MAX_CONCURRENT_CERTIFICATIONS either way, so the worst case is that certification stops on
 				// this thread and says so, rather than quietly overcommitting.
 				if (outcome === 'still-running') {
+					// Held UNTIL it actually goes away, not forever. Holding it permanently would mean each
+					// runaway validator shrinks the cap for the life of the process, and a few would stop the
+					// node deploying — trading a bounded overcommit for an unbounded outage.
 					slotHeld = true;
 					harperLogger.error(
 						`The validator certifying ${appName} did not exit within ${TERMINATION_GRACE_MS}ms; holding its ` +
-							`slot, and its candidate tree may still be open`
+							`slot until it does, and its candidate tree may still be open`
 					);
+					void (exited ?? Promise.resolve()).then(() => {
+						harperLogger.warn(`The validator certifying ${appName} exited late; returning its slot`);
+						releaseSlot();
+					});
 				}
 			} catch (error) {
 				harperLogger.warn(
