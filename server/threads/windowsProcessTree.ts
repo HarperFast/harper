@@ -29,9 +29,9 @@ export interface WindowsProcessTreeIdentity {
 	/** Epoch ms at which the root was already running: after spawn returned, or at group registration. */
 	rootKnownAt: number;
 	/**
-	 * How long before `rootKnownAt` the root may have started: nothing beyond clock resolution when
-	 * `rootKnownAt` was taken as spawn returned, the cross-thread registration hop otherwise. Bounds
-	 * the children of a root whose own creation time was never observed.
+	 * How long before `rootKnownAt` the root may have started (`ROOT_SPAWN_ALLOWANCE_MS` when that
+	 * timestamp was taken as spawn returned). Bounds the children of a root whose own creation time
+	 * was never observed.
 	 */
 	rootStartedWithinMs?: number;
 	/** The root's own creation time, once a scan has seen it running as ours; the exact child bound. */
@@ -42,6 +42,18 @@ export interface WindowsProcessTreeIdentity {
 	 * undefined while it runs; `confirmWindowsProcessTreeGone` latches it from its own scans.
 	 */
 	rootExitedAt?: number;
+	/**
+	 * Every member below the root that a scan has found, by PID with its creation time, and the
+	 * moment a later scan first found it gone. Kept so a member stays one after the parent that
+	 * linked it to the root has exited, and so its own children stay bounded by its lifetime.
+	 * `confirmWindowsProcessTreeGone` maintains it.
+	 */
+	descendants?: Map<number, WindowsTreeMemberRecord>;
+}
+
+export interface WindowsTreeMemberRecord {
+	created: number;
+	exitedAt?: number;
 }
 
 export interface WindowsProcessTreeWaitOptions {
@@ -57,6 +69,9 @@ export interface WindowsProcessTreeWaitOptions {
 
 // Date.now() and Win32_Process.CreationDate read the same system clock; this covers its resolution.
 const CLOCK_SKEW_MS = 50;
+// A process exists before `spawn` returns, so a `rootKnownAt` taken then is after its creation by
+// no more than the stall between the two — an event loop pause, never a network hop.
+export const ROOT_SPAWN_ALLOWANCE_MS = 1_000;
 export const WINDOWS_TREE_POLL_MS = 25;
 const WINDOWS_TREE_POLL_MAX_MS = 5_000;
 const WINDOWS_TREE_WARNING_MS = 5_000;
@@ -73,7 +88,6 @@ const PROCESS_TABLE_SCRIPT =
 	'[Console]::Out.Write((ConvertTo-Json -Compress -InputObject $rows)); exit 0 ' +
 	'} catch { exit 2 }';
 
-/** The live Windows process table, or null when it could not be read. */
 export function queryWindowsProcessTable(): Promise<WindowsProcessRecord[] | null> {
 	return new Promise((resolve) => {
 		const query = spawn(
@@ -115,7 +129,6 @@ export function parseProcessTable(json: string): WindowsProcessRecord[] | null {
 	return table;
 }
 
-/** The root's row while it is still running and is the process we spawned, else undefined. */
 export function findWindowsTreeRoot(
 	table: WindowsProcessRecord[],
 	identity: WindowsProcessTreeIdentity
@@ -153,6 +166,24 @@ export function selectWindowsProcessTree(
 			notAfter: (identity.rootExitedAt ?? now) + CLOCK_SKEW_MS,
 		},
 	];
+	// A member an earlier scan found is still one — by PID and creation time — after the parent
+	// that linked it to the root has exited and left no row to walk through; its children are
+	// bounded by its lifetime like any other member's, latched from the scan that first lost it.
+	for (const [pid, known] of identity.descendants ?? []) {
+		if (seen.has(pid)) continue;
+		const live = table.find((process) => process.pid === pid && process.created === known.created);
+		if (live) {
+			seen.add(pid);
+			members.push(live);
+			frontier.push({ pid, notBefore: known.created - CLOCK_SKEW_MS, notAfter: Infinity });
+		} else {
+			frontier.push({
+				pid,
+				notBefore: known.created - CLOCK_SKEW_MS,
+				notAfter: (known.exitedAt ?? now) + CLOCK_SKEW_MS,
+			});
+		}
+	}
 	while (frontier.length > 0) {
 		const next: typeof frontier = [];
 		for (const parent of frontier) {
@@ -194,6 +225,19 @@ async function killWindowsProcesses(members: WindowsProcessRecord[], rootPid: nu
 	if (args) await runTaskkill(args);
 }
 
+function rememberDescendants(identity: WindowsProcessTreeIdentity, members: WindowsProcessRecord[], scannedAt: number) {
+	const descendants = (identity.descendants ??= new Map());
+	for (const member of members) {
+		if (member.pid === identity.rootPid || member.created === null) continue;
+		if (descendants.get(member.pid)?.created !== member.created)
+			descendants.set(member.pid, { created: member.created });
+	}
+	for (const [pid, known] of descendants) {
+		if (known.exitedAt !== undefined) continue;
+		if (!members.some((member) => member.pid === pid && member.created === known.created)) known.exitedAt = scannedAt;
+	}
+}
+
 function describeMembers(members: WindowsProcessRecord[]): string {
 	return members
 		.map(
@@ -228,14 +272,16 @@ export async function confirmWindowsProcessTreeGone(
 		const table = await scan();
 		let members: WindowsProcessRecord[] | null = null;
 		if (table !== null) {
+			const scannedAt = now();
 			const root = findWindowsTreeRoot(table, identity);
 			if (root?.created != null && identity.rootCreatedAt === undefined) identity.rootCreatedAt = root.created;
-			members = selectWindowsProcessTree(table, identity, now());
+			members = selectWindowsProcessTree(table, identity, scannedAt);
 			// The root's PID is reusable the moment it exits, so from the first scan that no longer finds
 			// it running as ours, nothing created later can be its child. Stamped after the scan: the
 			// snapshot may predate the stamp, and a bound that is late keeps waiting, which is the safe
-			// direction.
-			if (!root && identity.rootExitedAt === undefined) identity.rootExitedAt = now();
+			// direction. The same goes for every other member.
+			if (!root && identity.rootExitedAt === undefined) identity.rootExitedAt = scannedAt;
+			rememberDescendants(identity, members, scannedAt);
 		}
 		if (members?.length === 0) return;
 		if (members) await kill(members, identity.rootPid);

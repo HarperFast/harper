@@ -117,6 +117,27 @@ describe('selectWindowsProcessTree', () => {
 		assert.deepEqual(pids(members), [4100]);
 	});
 
+	it('keeps a member an earlier scan recorded, and its children, after the parent linking it to the root exited', () => {
+		const grandchild = row(4200, 4100, SPAWNED_AT + 300);
+		const identity = {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+			descendants: new Map([[4100, { created: SPAWNED_AT + 200, exitedAt: EXITED_AT + 100 }]]),
+		};
+		// 4100 is gone from the table, so nothing links 4200 to the root any more
+		assert.deepEqual(pids(selectWindowsProcessTree([grandchild], identity)), [4200]);
+		// a process whose parent PID was recycled after that member exited is not its child
+		const stranger = row(4300, 4100, EXITED_AT + 5_000);
+		assert.deepEqual(pids(selectWindowsProcessTree([grandchild, stranger], identity)), [4200]);
+		// a recorded member still running is one by PID and creation time, never by PID alone
+		const recycled = row(4100, 1, EXITED_AT + 1_000, 'other.exe');
+		assert.deepEqual(pids(selectWindowsProcessTree([recycled, grandchild], identity)), [4200]);
+		const stillRunning = row(4100, ROOT, SPAWNED_AT + 200);
+		const live = { ...identity, descendants: new Map([[4100, { created: SPAWNED_AT + 200 }]]) };
+		assert.deepEqual(pids(selectWindowsProcessTree([stillRunning, grandchild], live)), [4100, 4200]);
+	});
+
 	it('never attributes a process without a creation time to the tree', () => {
 		const table = [row(4100, ROOT, null)];
 		const members = selectWindowsProcessTree(table, {
@@ -183,6 +204,24 @@ describe('confirmWindowsProcessTreeGone', () => {
 			[[4100], ROOT],
 		]);
 		assert.equal(scans.length, 0);
+	});
+
+	it('keeps waiting on a grandchild after the root and its parent both exited between scans', async () => {
+		const child = row(4100, ROOT, SPAWNED_AT + 200);
+		const grandchild = row(4200, 4100, SPAWNED_AT + 300);
+		const identity = exitedIdentity();
+		const scans = [[child, grandchild], [grandchild], [grandchild], []];
+		const kills = [];
+		await confirmWindowsProcessTreeGone(identity, {
+			scan: async () => scans.shift(),
+			kill: async (members) => kills.push(pids(members)),
+			pollMs: 1,
+		});
+		assert.deepEqual(kills, [[4100, 4200], [4200], [4200]]);
+		assert.equal(scans.length, 0);
+		assert.equal(identity.descendants.get(4100).created, SPAWNED_AT + 200);
+		assert.ok(identity.descendants.get(4100).exitedAt !== undefined, 'the exited parent is bounded');
+		assert.ok(identity.descendants.get(4200).exitedAt !== undefined);
 	});
 
 	it('treats an unreadable process table as unknown, not gone', async () => {
