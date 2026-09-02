@@ -44,7 +44,6 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import {
 	confirmWindowsProcessTreeGone,
 	type WindowsProcessTreeIdentity,
-	ROOT_SPAWN_ALLOWANCE_MS,
 } from '../server/threads/windowsProcessTree.ts';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -3926,6 +3925,10 @@ function spawnWithEnv(
 		}
 		const spawnLogger = logger.loggerWithTag(`${applicationName}:spawn:${command}`);
 
+		// The child is created inside spawn(), so the interval around the call bounds its creation
+		// time exactly — what the Windows tree scan needs to tell its children from an orphan of the
+		// PID's previous owner.
+		const spawnStartedAt = Date.now();
 		const childProcess = spawn(command, args, {
 			shell: true,
 			cwd,
@@ -3935,15 +3938,16 @@ function spawnWithEnv(
 			// and install-script descendant before the component preparation lock is released.
 			detached: process.platform !== 'win32',
 		});
+		const rootKnownAt = Date.now();
 		const trackedProcessId = childProcess.pid;
 		// Read live by the Windows tree scan: a root that exits mid-wait must bound its children
 		// from that moment, since its PID is reusable from then on.
 		const treeIdentity: WindowsProcessTreeIdentity = {
 			rootPid: trackedProcessId ?? 0,
-			rootKnownAt: Date.now(),
-			rootStartedWithinMs: ROOT_SPAWN_ALLOWANCE_MS,
+			rootKnownAt,
+			rootStartedWithinMs: rootKnownAt - spawnStartedAt,
 		};
-		if (trackedProcessId) registerProcessGroup(trackedProcessId, treeIdentity.rootKnownAt);
+		if (trackedProcessId) registerProcessGroup(trackedProcessId, rootKnownAt, spawnStartedAt);
 		let processGroupIsTracked = Boolean(trackedProcessId);
 		const untrackProcessGroup = () => {
 			if (!processGroupIsTracked || !trackedProcessId) return;

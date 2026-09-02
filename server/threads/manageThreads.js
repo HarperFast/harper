@@ -1250,26 +1250,30 @@ async function waitForProcessGroupExit(processGroupId) {
 // root's lifetime up front (a terminated process cannot spawn); otherwise the scan latches the
 // root's exit itself, re-terminating the root while it is still found running as ours. Either
 // way the wait confirms via the process table — reclamation must not proceed on a guess. The
-// root was known to be running at `spawnedAt`, the spawner's clock as its spawn returned, carried
-// with the registration so the cross-thread hop adds nothing to the window before it.
-function waitForWindowsGroupExit(processGroupId, spawnedAt, killedAt) {
+// root was created inside the spawner's spawn() call, whose start and return times travel with the
+// registration so the cross-thread hop adds nothing to the window before it.
+function waitForWindowsGroupExit(processGroupId, spawn, killedAt) {
 	return confirmWindowsProcessTreeGone(
 		{
 			rootPid: processGroupId,
-			rootKnownAt: spawnedAt ?? killedAt ?? Date.now(),
-			rootStartedWithinMs: ROOT_SPAWN_ALLOWANCE_MS,
+			rootKnownAt: spawn?.spawnedAt ?? killedAt ?? Date.now(),
+			rootStartedWithinMs:
+				spawn?.spawnStartedAt !== undefined ? spawn.spawnedAt - spawn.spawnStartedAt : ROOT_SPAWN_ALLOWANCE_MS,
 			rootExitedAt: killedAt,
 		},
 		{ pollMs: PROCESS_GROUP_TERMINATION_POLL_MS, label: `process group ${processGroupId}` }
 	);
 }
 
-function addProcessGroup(ownerThreadId, processGroupId, spawnedAt) {
+function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedAt) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
 	let processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
 	processGroups.add(processGroupId);
-	processGroupSpawnedAt.set(processGroupId, Number.isFinite(spawnedAt) ? spawnedAt : Date.now());
+	processGroupSpawnedAt.set(processGroupId, {
+		spawnedAt: Number.isFinite(spawnedAt) ? spawnedAt : Date.now(),
+		spawnStartedAt: Number.isFinite(spawnStartedAt) && spawnStartedAt <= spawnedAt ? spawnStartedAt : undefined,
+	});
 }
 
 function removeProcessGroup(ownerThreadId, processGroupId) {
@@ -1310,10 +1314,10 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	}
 	const termination = Promise.all(
 		groupIds.map((processGroupId) => {
-			const spawnedAt = processGroupSpawnedAt.get(processGroupId);
+			const spawn = processGroupSpawnedAt.get(processGroupId);
 			processGroupSpawnedAt.delete(processGroupId);
 			return process.platform === 'win32'
-				? waitForWindowsGroupExit(processGroupId, spawnedAt, killedAt.get(processGroupId))
+				? waitForWindowsGroupExit(processGroupId, spawn, killedAt.get(processGroupId))
 				: waitForProcessGroupExit(processGroupId);
 		})
 	).finally(() => {
@@ -1325,10 +1329,11 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	return termination;
 }
 
-// `spawnedAt`: the caller's clock as the group's root process was spawned (it was running by then).
-function registerProcessGroup(processGroupId, spawnedAt = Date.now()) {
-	if (isMainThread) addProcessGroup(threadId, processGroupId, spawnedAt);
-	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId, spawnedAt });
+// `spawnedAt` / `spawnStartedAt`: the caller's clock as its spawn() of the group's root returned and
+// as it was called — the root was created between the two.
+function registerProcessGroup(processGroupId, spawnedAt = Date.now(), spawnStartedAt) {
+	if (isMainThread) addProcessGroup(threadId, processGroupId, spawnedAt, spawnStartedAt);
+	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId, spawnedAt, spawnStartedAt });
 }
 
 function unregisterProcessGroup(processGroupId) {
@@ -1440,7 +1445,7 @@ function addPort(port, keepRef, isJobWorker) {
 	port
 		.on('message', (message) => {
 			if (message.type === REGISTER_PROCESS_GROUP) {
-				addProcessGroup(portThreadId, message.processGroupId, message.spawnedAt);
+				addProcessGroup(portThreadId, message.processGroupId, message.spawnedAt, message.spawnStartedAt);
 			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
 				removeProcessGroup(portThreadId, message.processGroupId);
 			} else if (message.type === ADDED_PORT) {

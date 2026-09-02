@@ -2078,6 +2078,10 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 				table.cleanup();
 			} catch (error) {
 				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
+				// the handles are what a waiting drop or restore needs released, whatever else failed
+				try {
+					table.closeStores?.();
+				} catch {}
 			}
 		}
 		if (table.primaryStore instanceof RocksDatabase) continue;
