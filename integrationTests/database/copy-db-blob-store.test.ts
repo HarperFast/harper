@@ -15,9 +15,10 @@
  * compared against the sha256 its seed call returned.
  *
  * What it does not cover: restoring under a different database name (that is
- * `unitTests/bin/copyDbIntegrity.test.js:250`), a database with more than one blob root — nothing
- * exercises `rootIndex > 0` anywhere today — and channel 4's failure path, since no per-record copy
- * failure is induced here, so only the healthy exit-0 shape is asserted.
+ * `unitTests/bin/copyDbIntegrity.test.js:250`), restoring a database with more than one blob root
+ * (`unitTests/dataLayer/blobBackup.test.js:232` copies a second root, but nothing restores one), and
+ * channel 4's failure path, since no per-record copy failure is induced here — only the healthy
+ * exit-0 shape is asserted.
  *
  * `copy-db` is LMDB-only (`copyDb` rejects a RocksDB database outright), hence the engine pin.
  * The CLI reads `ROOTPATH`, not `HARPER_ROOT_PATH`.
