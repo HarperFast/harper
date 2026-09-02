@@ -703,19 +703,16 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#handleError(error);
 	}
 
-	// Test-only: whether the watcher has fallen back to polling.
 	get _usingPollingForTests(): boolean {
 		return this.#usingPolling;
 	}
 
-	// Test-only: number of times the underlying watcher has been (re)opened.
-	// Used to assert that a close()-during-fallback race didn't install a
-	// replacement watcher.
+	// Used to assert that a close()-during-fallback race didn't install a replacement watcher.
 	get _openCountForTests(): number {
 		return this.#openCount;
 	}
 
-	// Test-only: tells a ladder rung from a watcher event.
+	// Distinguishes a ladder rung from a watcher event.
 	get _readCountForTests(): number {
 		return this.#readCount;
 	}
