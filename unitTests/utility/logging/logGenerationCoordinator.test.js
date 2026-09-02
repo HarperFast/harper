@@ -158,6 +158,33 @@ describe('Test log generation coordinator (#1877)', () => {
 		coordinator.unregisterLogSink(logPath);
 	});
 
+	it('releases stale descriptors for every log it writes, in one request', () => {
+		// The archive directory holds the archives of every component and external log sharing it, so a
+		// request scoped to one path would leave the others' archives destroyable under a live peer.
+		const transport = fakeTransport();
+		const dir = path.join(TEST_ROOT, `multiSink${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const closed = [];
+		const held = {};
+		for (const name of ['hdb.log', 'component.log', 'external.log']) {
+			const logPath = path.join(dir, name);
+			fs.writeFileSync(logPath, `${name} contents\n`);
+			held[name] = fs.statSync(logPath);
+			coordinator.registerLogSink(logPath, {
+				// hdb.log is on its live generation; the other two hold an older inode.
+				identity: () => (name === 'hdb.log' ? held[name] : { ino: held[name].ino + 1000, dev: held[name].dev }),
+				close: () => closed.push(name),
+			});
+		}
+
+		transport.deliverRotation({ request: 'multi', stale: true });
+
+		assert.deepStrictEqual(closed.sort(), ['component.log', 'external.log']);
+		for (const name of ['hdb.log', 'component.log', 'external.log']) {
+			coordinator.unregisterLogSink(path.join(dir, name));
+		}
+	});
+
 	it('is not required to wait for a sink registered after the announcement', async () => {
 		const transport = fakeTransport({ peers: [], autoRespond: false });
 		const { generation } = newGeneration();
