@@ -1912,12 +1912,24 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		this.db = db;
 	}
 	save(...args: any[]): any {
-		const transaction = args[0];
+		const operation = args[0];
 		if (this.isCommitting) {
-			super.save(transaction, null as any, true);
+			// Pass the caller's native transaction through so super.save() reuses it rather than
+			// creating a fresh one.  Without this, super.save() gets null, hits immediateCommit when
+			// open=CLOSED, and recursively calls commit() → save() without bound (stack overflow on a
+			// restage path that has retries > 0).
+			return super.save(operation, args[1] ?? (null as any), true);
 		} else {
 			this.isCommitting = true;
-			const result = when(this.commit(), () => {
+			const commitResult = this.commit();
+			// Synchronously reset the cached timestamp so the next sequential save() call gets a
+			// fresh one.  Without this, a second save() that starts before the async native
+			// T_rock.commit() resolves inherits the first save's txnTime, causing gateLockedWrite to
+			// see entry.version === txnTime and spuriously trigger a restage (and then the
+			// isCommitting=true recursion above).  The async success handler also resets it, but that
+			// fires after the native commit — too late for a rapid sequential save.
+			this._timestamp = 0;
+			const result = when(commitResult, () => {
 				this.isCommitting = false;
 			});
 			if ((result as any)?.then) {
@@ -1930,6 +1942,13 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		}
 	}
 
+	clearWrites(): void {
+		super.clearWrites();
+		// Reset open so the next save() goes through the OPEN attach path (which awaits the native
+		// commit) rather than the immediateCommit path (which returns a synchronous result and leaves
+		// the native T_rock.commit() unobserved by the caller's await).
+		if (!this.transaction && !this.timedOut) this.open = TRANSACTION_STATE.OPEN;
+	}
 	declare _timestamp: number;
 	// @ts-expect-error accessor overriding property
 	get timestamp() {

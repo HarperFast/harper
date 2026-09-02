@@ -255,6 +255,35 @@ describe('Record locks (harper#483)', () => {
 			await published;
 		});
 
+		it('two writes to the same gated key in one transaction both land without hanging (CLAIM 2)', async function () {
+			// Gemini CLAIM 2: waitForPendingKeys iterates allGateEligible (which may contain two entries
+			// for the same key), and the second entry awaits its own pendingWake even though the first
+			// iteration already acquired the key, parking until the 423 deadline.
+			// Prove it does not hang: a transaction with put(K) + patch(K) + put(L) behind a 300ms holder
+			// must commit well within 2 s.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const idK = id();
+			const idL = id();
+			await LockTest.put({ id: idK, n: 0, name: 'k-orig' });
+			await LockTest.put({ id: idL, n: 0 });
+			const holder = await LockTest.lock(idK, { hold: true, lease: 300 });
+			const t0 = Date.now();
+			const txPromise = transaction(async () => {
+				// Two writes to the same gated key K plus one to L.
+				await LockTest.put({ id: idK, n: 1 });
+				await LockTest.put({ id: idK, n: 2 }); // overwrites the first; same key
+				await LockTest.put({ id: idL, n: 9 });
+			});
+			assert.strictEqual(await settlement(txPromise, 50), 'pending', 'transaction parked on holder');
+			await holder.unlock();
+			await txPromise;
+			const elapsed = Date.now() - t0;
+			assert.ok(elapsed < 1500, `transaction took ${elapsed}ms — expected < 1500ms (not hanging)`);
+			assert.strictEqual((await LockTest.get(idK)).n, 2, 'K final write landed');
+			assert.strictEqual((await LockTest.get(idL)).n, 9, 'L write landed');
+		});
+
 		it('gates a numeric id 0 (a valid key that is falsy)', async function () {
 			if (isLMDB) this.skip(); // LMDB does not store key 0 at all today (pre-existing)
 			await LockTest.put({ id: 0, n: 1 });
@@ -590,6 +619,39 @@ describe('Record locks (harper#483)', () => {
 			const secondEntry = LockTest.primaryStore.getEntry(recordId);
 			assert.strictEqual(secondEntry.version, entry.version, 'no further commits after save');
 			await holder.unlock();
+		});
+
+		it('sequential saves on a hold-locked record each commit their own changes (CLAIM 1)', async function () {
+			// Gemini CLAIM 1: second save() re-submits the stale first #savingOperation and ignores
+			// new changes.  Verify both writes land; a third save with a new field verifies the pattern
+			// is not special-cased to two saves.  Also cover the same sequence inside a transaction().
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0, name: 'original' });
+
+			// Held lock outside a transaction scope.
+			const record = await LockTest.lock(recordId, { hold: true, lease: 10000 });
+			record.set('n', 1);
+			await record.save();
+			record.set('n', 2);
+			await record.save();
+			record.set('name', 'updated');
+			await record.save();
+			await record.unlock();
+			const afterHold = await LockTest.get(recordId);
+			assert.strictEqual(afterHold.n, 2, 'second save landed (hold, out-of-txn)');
+			assert.strictEqual(afterHold.name, 'updated', 'third save landed (hold, out-of-txn)');
+
+			// Scoped lock inside a transaction().
+			await transaction(async () => {
+				const scoped = await LockTest.lock(recordId);
+				scoped.set('n', 3);
+				await scoped.save();
+				scoped.set('n', 4);
+				await scoped.save();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 4, 'second save landed (scoped, in-txn)');
 		});
 
 		it('a write after lease expiry and re-lock does not throw 409', async function () {

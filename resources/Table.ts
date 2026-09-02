@@ -2404,20 +2404,16 @@ export function makeTable(options) {
 			const key = lockAttemptKey(tableId, id);
 			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
 				(handle) => {
-					if (resolved.hold) {
-						link.registerRecordLock(handle);
-					} else {
-						link.registerRecordLock(handle);
-						if (link.transaction) {
-							// The read snapshot predates the lock; drop it so the scope reads what it locked.
-							// With iterators open (readTxnsUsed > 1) setTimestamp re-pins the same handle;
-							// plain reads in that scope keep the pre-lock snapshot (the holder's writes still
-							// see current state through the gate re-entrancy path).
-							if (link.readTxnsUsed <= 1) {
-								link.releaseReadTxn();
-								link.snapshotFree = true;
-							} else link.transaction.setTimestamp(link.timestamp);
-						}
+					link.registerRecordLock(handle);
+					if (!resolved.hold && link.transaction) {
+						// The read snapshot predates the lock; drop it so the scope reads what it locked.
+						// With iterators open (readTxnsUsed > 1) setTimestamp re-pins the same handle;
+						// plain reads in that scope keep the pre-lock snapshot (the holder's writes still
+						// see current state through the gate re-entrancy path).
+						if (link.readTxnsUsed <= 1) {
+							link.releaseReadTxn();
+							link.snapshotFree = true;
+						} else link.transaction.setTimestamp(link.timestamp);
 					}
 					return this.#reloadLocked(id, resolved.hold ? handle : null);
 				}
