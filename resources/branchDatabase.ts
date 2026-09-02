@@ -291,6 +291,18 @@ function readBranchState(branchPath: string, storeName: string): BranchState {
 		: { state: 'complete', blobRoots: recorded.blobRoots };
 }
 
+function warnAboutUnusedBlobRoots(branchPath: string, storeName: string, blobRoots: string[]): void {
+	const configured = getBlobPathsForDatabaseName(storeName);
+	if (blobRoots.length < configured.length) {
+		logger.warn?.(
+			`Branch database at ${branchPath} keeps the ${blobRoots.length} blob root(s) it was published ` +
+				`with; the ${configured.length - blobRoots.length} storage.blobPaths entry(ies) added since are ` +
+				`not used by it. Its rows address roots by position, so only a branch rebuilt from the base ` +
+				`can take the added capacity.`
+		);
+	}
+}
+
 /**
  * Take the checkpoint into a temporary sibling and rename it into place, so a crash mid-copy leaves
  * debris rather than a half-populated directory that RocksDB would then refuse to open. Reports the
@@ -461,16 +473,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					}
 					if (existing.state === 'complete') {
 						blobRoots = existing.blobRoots;
-						const configured = getBlobPathsForDatabaseName(storeName);
-						// Once per process per branch: only the thread that won the claim reaches this.
-						if (blobRoots.length < configured.length) {
-							logger.warn?.(
-								`Branch database at ${branchPath} keeps the ${blobRoots.length} blob root(s) it was published ` +
-									`with; the ${configured.length - blobRoots.length} storage.blobPaths entry(ies) added since are ` +
-									`not used by it. Its rows address roots by position, so only a branch rebuilt from the base ` +
-									`can take the added capacity.`
-							);
-						}
+						warnAboutUnusedBlobRoots(branchPath, storeName, blobRoots);
 					} else {
 						// Absent, or leftovers that are not a store: nothing here can be lost.
 						await rm(branchPath, { recursive: true, force: true });
@@ -523,6 +526,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					`complete: ${published.state === 'damaged' ? published.problem : published.state === 'unmarked' ? published.why : published.state}`
 			);
 		}
+		warnAboutUnusedBlobRoots(branchPath, storeName, published.blobRoots);
 		// Released immediately before the open, with no `await` in between, so nothing can slip into the
 		// gap -- and so `openBranchDatabase`'s check stays strict rather than being taught to ignore a
 		// reservation, which would also make it ignore a DIFFERENT branch holding the same name.
