@@ -896,25 +896,42 @@ export class DatabaseTransaction implements Transaction {
 		if (operation.lockHandle && (operation.lockHandle.expired || operation.lockHandle.released)) {
 			throw new ClientError('Record lock lease expired', 409);
 		}
-		// Hold write: stamp the transaction clock once — only when no timestamp is fixed yet.
-		// A mixed transaction that already has a timestamp (set by an earlier write) uses it as-is.
-		if (operation.lockHandle?.hold) {
-			if (!operation.lockStamp) operation.lockStamp = operation.lockHandle.nextHolderVersion();
+		// Lock-write timestamp rules.
+		if (operation.lockHandle) {
+			const handle = operation.lockHandle;
 			if (this.open === TRANSACTION_STATE.CLOSED) {
-				// ImmediateTransaction: each save() is an independent commit; always stamp with lockStamp
-				// so sequential hold saves each get their own acquisition-time version stamp.
+				// ImmediateTransaction (hold or scoped): each save() is an independent commit; stamp
+				// with nextHolderVersion() so sequential saves each get their own monotonic stamp.
+				if (!operation.lockStamp) operation.lockStamp = handle.nextHolderVersion();
 				this.timestamp = operation.lockStamp;
-			} else if (!this.timestamp) {
-				this.timestamp = operation.lockStamp;
-			} else if (this.timestamp !== operation.lockStamp) {
-				// The OPEN transaction already carries a timestamp from a prior write; the hold write's
-				// LWW guarantee (stamp at acquiredAt so concurrent writers at real time win) no longer
-				// holds for the held record. Throw rather than silently violating the ordering contract.
-				throw new ClientError(
-					'A hold-lock write mixed into a transaction with earlier writes cannot guarantee LWW ordering; write held records in their own transaction or through the record returned by lock()',
-					400
-				);
+			} else if (handle.hold) {
+				// OPEN transaction, hold write: pin the clock to acquiredAt on the first write so
+				// concurrent writers at real (later) time win under LWW.  Using acquiredAt (not
+				// nextHolderVersion) keeps the clock stable across multiple saves in one transaction.
+				if (!this.timestamp) {
+					this.timestamp = handle.acquiredAt;
+					// Prime the nextHolderVersion counter so that a subsequent CLOSED-path save (e.g. a
+					// second sequential hold.save() outside a transaction, where this.open is CLOSED by
+					// the time the second commit runs) starts from acquiredAt+MIN_STEP rather than
+					// returning acquiredAt again (a tie with the first write's committed version, which
+					// the LWW drops). Without this, both saves land at the same version and write2 is
+					// silently dropped.
+					handle.nextHolderVersion();
+				} else if (this.timestamp > handle.acquiredAt) {
+					// Clock was set later than the hold's acquisition — prior non-hold writes ran in
+					// the same transaction after the hold was acquired.  If another writer modified
+					// the record since acquiredAt the LWW stamp is no longer safe.
+					const entry = operation.store.getEntry(operation.key);
+					if (entry && entry.version > handle.acquiredAt) {
+						throw new ClientError('Record changed during the hold; write held records in their own transaction', 409);
+					}
+					// Record unchanged since acquiredAt — safe to proceed with the existing clock.
+				}
+				// If this.timestamp <= handle.acquiredAt the clock was pinned by a prior hold write
+				// or by lock() itself; leave it as-is.
 			}
+			// Scoped lock in an OPEN transaction: lock() already pinned link.timestamp to acquiredAt;
+			// no additional stamping here — the write inherits the transaction clock.
 		}
 		let txnTime = this.timestamp;
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
@@ -1615,7 +1632,17 @@ export class ImmediateTransaction extends DatabaseTransaction {
 			super.save(transaction, null as any, true);
 		} else {
 			this.isCommitting = true;
-			return when(this.commit(), () => {
+			// A synchronous throw from commit() (e.g. a 409 from an expired lock handle) would
+			// otherwise leave isCommitting latched at true, causing every subsequent save() in this
+			// context to take the fire-and-forget if-branch and silently drop writes.
+			let commitResult: any;
+			try {
+				commitResult = this.commit();
+			} catch (err) {
+				this.isCommitting = false;
+				throw err;
+			}
+			return when(commitResult, () => {
 				this.isCommitting = false;
 			});
 		}

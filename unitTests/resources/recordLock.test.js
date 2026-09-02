@@ -376,9 +376,11 @@ describe('Record locks (harper#483)', () => {
 			// Held lock outside a transaction scope.
 			const record = await LockTest.lock(recordId, { hold: true, lease: 10000 });
 			record.set('n', 1);
-			await record.save();
+			const s1 = record.save();
+			await s1;
 			record.set('n', 2);
-			await record.save();
+			const s2 = record.save();
+			await s2;
 			record.set('name', 'updated');
 			await record.save();
 			await record.unlock();
@@ -459,6 +461,31 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 0, 'record unchanged');
 		});
 
+		it('fix 1: 409 from expired hold does not latch isCommitting (later puts land)', async function () {
+			// A synchronous throw from DatabaseTransaction.save() (e.g. expired hold 409) would
+			// leave ImmediateTransaction.isCommitting stuck at true, causing every subsequent write
+			// on the same context to fire-and-forget and silently disappear.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const holdId = id();
+			const otherId = id();
+			await LockTest.put({ id: holdId, n: 0 });
+			// Acquire and let the hold expire.
+			const holder = await LockTest.lock(holdId, { hold: true, lease: MIN_LOCK_LEASE_MS });
+			await delay(MIN_LOCK_LEASE_MS + 50);
+			holder.set('n', 99);
+			let caught;
+			try {
+				await holder.save(); // throws 409 (expired hold)
+			} catch (err) {
+				caught = err;
+			}
+			assert.strictEqual(caught?.statusCode, 409, '409 from expired hold');
+			// isCommitting must be reset; a subsequent put on the same context must land.
+			await LockTest.put({ id: otherId, n: 42 });
+			assert.strictEqual((await LockTest.get(otherId)).n, 42, 'put after 409 landed (isCommitting reset)');
+		});
+
 		it('holder delete: concurrent put survives (item 3 — _writeDelete carries lockHandle)', async function () {
 			// Phase 0: a concurrent put after the holder's delete has no obligation to be blocked.
 			// The holder delete is stamped at acquiredAt; the concurrent put at real (later) time wins under LWW.
@@ -476,56 +503,136 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual(after?.n, 99, 'concurrent put survives holder delete (LWW)');
 		});
 
-		it('scoped lock() after transaction writes throws 400 (item 4a)', async function () {
-			// lock() must be called before the transaction has any staged writes.
+		it('rule A: two-record transfer under two scoped locks commits both writes', async function () {
+			// Previously the guard "lock() must precede transaction writes" blocked the second lock()
+			// because the first lock pins link.timestamp (truthy).  With rule A that 400 is gone.
 			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 0 });
-			let caughtErr;
+			this.timeout(2000);
+			const recordA = id();
+			const recordB = id();
+			await LockTest.put({ id: recordA, n: 100 });
+			await LockTest.put({ id: recordB, n: 200 });
 			await transaction(async () => {
-				await LockTest.put({ id: recordId, n: 1 }); // write first
-				try {
-					await LockTest.lock(recordId); // then lock — should throw
-				} catch (err) {
-					caughtErr = err;
-				}
-			}).catch(() => {});
-			assert.ok(caughtErr, 'lock() after writes threw');
-			assert.strictEqual(caughtErr.statusCode, 400, '400 on lock-after-write');
+				const a = await LockTest.lock(recordA);
+				a.set('n', 99); // debit A
+				const b = await LockTest.lock(recordB);
+				b.set('n', 201); // credit B
+				await b.save();
+				await a.save();
+			});
+			assert.strictEqual((await LockTest.get(recordA)).n, 99, 'debit write (A) landed');
+			assert.strictEqual((await LockTest.get(recordB)).n, 201, 'credit write (B) landed');
 		});
 
-		it('hold write in mixed transaction with prior write throws 400 (item 4b)', async function () {
-			// Mixing a hold write into a transaction that already fixed its timestamp violates LWW.
-			// The hold lock must be acquired inside the transaction() scope so both writes share the
-			// same link.  A hold lock acquired outside never joins the inner transaction's link.
+		it('rule B: lock() in explicit transaction after prior write 409s when record changed', async function () {
+			// Writes in the transaction fix link.timestamp; a concurrent committed write to the record
+			// being locked makes entry.version > clock → 409.
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
 			const otherId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			let caughtErr;
-			let holdHandle;
 			await transaction(async () => {
-				// Acquire the hold lock inside the transaction so it shares this link.
-				holdHandle = await LockTest.lock(recordId, { hold: true, lease: 5000 });
-				// This put fixes link.timestamp to a real (later) clock value, after lock acquiredAt.
+				// Fix the transaction clock via a write to another key.
 				await LockTest.put({ id: otherId, n: 1 });
-				// Now the hold write — link.timestamp (from put) != lockStamp (from acquiredAt) → 400.
-				holdHandle.set('n', 99);
+				// Concurrent context writes recordId — bumps its version past link.timestamp.
+				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 99 }));
+				// lock(recordId) now: clock fixed earlier, record changed since → 409.
 				try {
-					await holdHandle.save();
+					await LockTest.lock(recordId);
 				} catch (err) {
 					caughtErr = err;
 				}
 			}).catch(() => {});
-			assert.ok(caughtErr, 'hold write in mixed transaction threw');
-			assert.strictEqual(caughtErr.statusCode, 400, '400 on hold write in mixed transaction');
-			if (holdHandle && !holdHandle.released) await holdHandle.unlock();
+			assert.ok(caughtErr, 'lock() after write + concurrent change threw');
+			assert.strictEqual(caughtErr.statusCode, 409, '409 when record changed since clock was fixed');
+			assert.strictEqual((await LockTest.get(recordId)).n, 99, 'concurrent write is visible');
+		});
+
+		it('rule C: scoped lock outside transaction() stamps writes; ImmediateTransaction commit releases key', async function () {
+			// In an ImmediateTransaction context each write through a scoped lock is stamped via
+			// nextHolderVersion() (independent commits).  releaseRecordLocks() is called during
+			// ImmediateTransaction.commit() — synchronously before save() resolves — so the key
+			// is already free by the time the caller resumes after await scoped.save().
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const scoped = await LockTest.lock(recordId, { lease: 5000 });
+			scoped.set('n', 1);
+			// Key is still held before save() — verify exclusion now, not after.
+			await assert.rejects(LockTest.lock(recordId, { timeout: 50 }), { statusCode: 423 }, 'key still held');
+			// save() commits the write; ImmediateTransaction.commit() releases the key synchronously.
+			await scoped.save();
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write landed');
+			// Key is already free after save(); unlock() is a no-op (returns false).
+			const released = await scoped.unlock();
+			assert.strictEqual(released, false, 'key already released by commit');
+			// Another lock must succeed immediately.
+			const next = await LockTest.lock(recordId, { lease: 5000 });
+			await next.unlock();
+		});
+
+		it('rule D: hold write 409s when link.timestamp > acquiredAt AND record changed', async function () {
+			// Acquire holdA (T_A) and holdB (T_B > T_A) inside the same transaction().
+			// Writing through holdB first pins link.timestamp = T_B (in DatabaseTransaction.save()).
+			// A sourceApply concurrent write then bumps recordA.version past T_A.
+			// Writing through holdA: link.timestamp (T_B) > holdA.acquiredAt (T_A) AND
+			// entry.version > T_A → 409.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordA = id();
+			const recordB = id();
+			await LockTest.put({ id: recordA, n: 0 });
+			await LockTest.put({ id: recordB, n: 0 });
+			let caughtErr;
+			try {
+				await transaction(async () => {
+					// holdA acquired first (acquiredAt = T_A).
+					const holdA = await LockTest.lock(recordA, { hold: true, lease: 10000 });
+					// Small delay so T_B > T_A is guaranteed at Date.now() precision.
+					await delay(2);
+					// holdB acquired later (acquiredAt = T_B > T_A).
+					const holdB = await LockTest.lock(recordB, { hold: true, lease: 10000 });
+					// Write through holdB first: DatabaseTransaction.save() sets link.timestamp = T_B.
+					holdB.set('n', 1);
+					await holdB.save();
+					// Concurrent write bumps recordA.version past T_A.
+					await transaction({ sourceApply: true }, () => LockTest.put({ id: recordA, n: 99 }));
+					// Write through holdA: link.timestamp (T_B) > holdA.acquiredAt (T_A)
+					// AND entry.version > T_A → 409.
+					holdA.set('n', 2);
+					await holdA.save();
+				});
+			} catch (err) {
+				caughtErr = err;
+			}
+			assert.ok(caughtErr, 'hold save threw when record changed since acquiredAt');
+			assert.strictEqual(caughtErr.statusCode, 409, '409 when record changed since acquiredAt');
+		});
+
+		it('rule D (no 409): sequential hold saves inside one transaction() both land', async function () {
+			// Mixing multiple hold saves for the same hold into one explicit transaction() must not
+			// throw: the clock is pinned to acquiredAt on the first save and reused on the second.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				const holdHandle = await LockTest.lock(recordId, { hold: true, lease: 10000 });
+				holdHandle.set('n', 1);
+				await holdHandle.save(); // first hold save — pins clock to acquiredAt
+				holdHandle.set('n', 2);
+				await holdHandle.save(); // second hold save — reuses pinned clock, no 409
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'second save landed (b after a)');
 		});
 
 		it('scoped→hold upgrade: second lock({hold:true}) upgrades cleanly (item 5)', async function () {
 			// Acquiring with {hold:true} on a key already scoped-locked in this transaction
 			// should upgrade (not double-release the native key or mark the handle released early).
+			// Changes staged under the scoped lock must be preserved after the upgrade (fix 3).
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
@@ -533,9 +640,12 @@ describe('Record locks (harper#483)', () => {
 			let holdHandle;
 			await transaction(async () => {
 				const scoped = await LockTest.lock(recordId); // scoped
-				scoped.set('n', 1);
+				scoped.set('n', 1); // staged under scoped lock — must survive upgrade
 				// Upgrade to hold within the same transaction
 				holdHandle = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				// #changes must still have { n: 1 } from the scoped lock set() above.
+				assert.strictEqual(holdHandle.getProperty('n'), 0, 'reloaded from store on upgrade');
+				// Overwrite with the hold write.
 				holdHandle.set('n', 2);
 				await holdHandle.save();
 			});
