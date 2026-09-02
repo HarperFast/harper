@@ -1216,7 +1216,7 @@ export function estimateCondition(table) {
 					for (const subCondition of condition.conditions) {
 						estimateConditionForTable(subCondition);
 						estimatedCount = isFinite(estimatedCount)
-							? (estimatedCount * subCondition.estimated_count) / estimatedEntryCount(table.primaryStore)
+							? (estimatedCount * subCondition.estimated_count) / (estimatedEntryCount(table.primaryStore) || 1)
 							: subCondition.estimated_count;
 					}
 				}
@@ -1266,8 +1266,10 @@ export function estimateCondition(table) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
 				if (condition.value === null && searchType === 'ne') {
-					condition.estimated_count =
-						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0);
+					condition.estimated_count = Math.max(
+						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0),
+						0
+					);
 				} else condition.estimated_count = Infinity;
 			} else if (searchType === 'in') {
 				const attribute_name = condition[0] ?? condition.attribute;
