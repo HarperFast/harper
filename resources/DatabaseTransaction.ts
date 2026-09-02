@@ -530,15 +530,13 @@ export class DatabaseTransaction implements Transaction {
 		if (operation.gateOnLock !== true || this.sourceApply || this.isReplay) return false;
 		const keyId = writeKeyId(operation.key);
 		const opHandle = operation.lockHandle;
-		// An expired operation.lockHandle means the holder's lease fired while the write was in flight;
-		// fail immediately — there is no point attempting tryLock when another party already holds the key.
+		// Expired lease: the holder's key was stolen; reject rather than re-attempting tryLock.
 		if (opHandle?.keyId === keyId && opHandle.expired)
 			throw new ClientError(
 				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
 				409
 			);
-		// Use the live opHandle for re-entry; otherwise look in the transaction's registered handles
-		// (covers static-verb writes and restaged writes whose opHandle was released before parking).
+		// Live opHandle = re-entrant holder write; otherwise consult the transaction's handle registry.
 		const handle =
 			opHandle?.keyId === keyId && !opHandle.released
 				? opHandle
@@ -651,18 +649,22 @@ export class DatabaseTransaction implements Transaction {
 		if (now >= this.lockWaitDeadline)
 			throw new ClientError(`Record ${String(gated[0].key)} is locked and was not released in time`, 423);
 
-		// A round that staged into options.transaction (a replay or coordinated-retry handle) keeps
-		// write intents on that handle; discard it before parking so no stale intents survive the wait.
+		// Discard any replay handle's staged write intents before parking.
 		if (options.transaction) {
 			abortNativeTransaction(options.transaction, 'discarding replay round before re-staging after park');
 			options = { ...options, transaction: undefined };
 		}
 		const replayNeeded = this.discardStagedRound();
-		// Release non-hold gate handles before parking to prevent cross-transaction deadlocks:
-		// T1 holding A and waiting for B while T2 holds B and waits for A would otherwise time out.
-		// The re-stage re-runs gateLockedWrite for every write and re-acquires the gate handles.
-		// Hold handles survive; the caller controls their ordering.
+		// Release gate handles before parking — prevents hold-A/wait-B vs hold-B/wait-A deadlocks.
 		this.releaseRecordLocks();
+		// Canonical acquire order prevents deadlocks when two transactions compete for the same key
+		// set in opposite program order: both sort to the same order and serialize naturally.
+		gated.sort((a, b) => {
+			if (a.lockTableId !== b.lockTableId) return (a.lockTableId ?? 0) - (b.lockTableId ?? 0);
+			const aKey = String(writeKeyId(a.key));
+			const bKey = String(writeKeyId(b.key));
+			return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+		});
 
 		this.setCommitPhase(true);
 		const deadline = this.lockWaitDeadline;
@@ -745,6 +747,7 @@ export class DatabaseTransaction implements Transaction {
 				503
 			);
 		}
+		// Discard any replay handle's staged write intents before restaging.
 		if (options.transaction) {
 			abortNativeTransaction(options.transaction, 'discarding replay round before holder restage');
 			options = { ...options, transaction: undefined };

@@ -154,9 +154,13 @@ Consequences that shape the code:
   `acquireRecordKey` (shared by `lock()` and the async write-gate path) loops `tryLock` → await wake →
   retry until acquired or `waitMs` elapsed (then 423). Converting a gate handle (no lease) to `{ hold:
 true }` neutralizes the gate handle and creates a fresh handle with the requested lease timer.
-- **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a `Map<store, Map<keyId, handle>>`.
+- **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a flat `RecordLockHandle[]`.
   `registerRecordLock`, `recordLockFor`, and `unregisterRecordLock` manage it. Both `lock()` and the write
-  gate check the map before calling `tryLock`; a re-entrant call returns the existing handle.
+  gate scan the array before calling `tryLock`; a re-entrant call returns the existing live handle.
+  Expired-by-timer handles are kept until superseded by a re-lock (live handles sort first in `recordLockFor`);
+  explicitly-released handles are pruned eagerly. The acquire loop in `waitForPendingKeys` sorts by
+  `(lockTableId, encoded keyId)` to guarantee a canonical order regardless of program-order differences
+  between competing transactions, preventing acquire-loop deadlocks.
 - **The gate acts at staging, not at park.** `gateLockedWrite` in `DatabaseTransaction.save()` runs for
   every write marked `gateOnLock` (local mutations: update, delete, invalidate, relocate, publish; never a
   replicated, source-notified, or copy-applied write, nor replay). It calls `tryLock` synchronously. On

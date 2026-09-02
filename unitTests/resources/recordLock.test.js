@@ -459,32 +459,42 @@ describe('Record locks (harper#483)', () => {
 	});
 
 	describe('deadlock prevention and successive parks', function () {
-		it('two concurrent cross-writes {A,B} and {B,A} both commit without deadlock', async function () {
-			// Without MAJOR-1 fix: T1 parks on B while holding A and T2 parks on A while holding B.
-			// With fix: gate handles are released before parking so neither transaction blocks the other.
+		it('cross-writes {A,B} and {B,A} both commit without deadlock (single-thread cooperative scheduling)', async function () {
+			// This test exercises the acquire-loop deadlock path within Node's cooperative scheduler;
+			// it does not force a true concurrent cross-thread interleaving.
+			// A third party holds both keys so both transactions enter waitForPendingKeys simultaneously
+			// and compete for the same two keys in opposite program order.
+			// Without canonical-order sort: T1 acquires A then waits for B; T2 acquires B then waits for A → deadlock.
+			// With sort: both sort to the same order and serialize without deadlock.
 			if (isLMDB) return this.skip();
+			this.timeout(5000);
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
 			await LockTest.put({ id: idB, n: 0 });
-			const ctx1 = {};
-			const ctx2 = {};
-			const [res1, res2] = await Promise.all([
-				transaction(ctx1, async () => {
-					await LockTest.put({ id: idA, n: 1 });
-					await LockTest.put({ id: idB, n: 1 });
-				}).then(
-					() => 'ok',
-					(e) => e
-				),
-				transaction(ctx2, async () => {
-					await LockTest.put({ id: idB, n: 2 });
-					await LockTest.put({ id: idA, n: 2 });
-				}).then(
-					() => 'ok',
-					(e) => e
-				),
-			]);
+			// Third-party holder blocks both keys so T1 and T2 are both forced into waitForPendingKeys.
+			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
+			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
+			const t1 = transaction(async () => {
+				await LockTest.put({ id: idA, n: 1 });
+				await LockTest.put({ id: idB, n: 1 });
+			}).then(
+				() => 'ok',
+				(e) => e
+			);
+			const t2 = transaction(async () => {
+				await LockTest.put({ id: idB, n: 2 });
+				await LockTest.put({ id: idA, n: 2 });
+			}).then(
+				() => 'ok',
+				(e) => e
+			);
+			// Give both transactions time to stage all writes and gate on both keys.
+			await delay(50);
+			// Release both keys simultaneously so both T1 and T2 wake and enter the acquire loop at once.
+			await holderA.unlock();
+			await holderB.unlock();
+			const [res1, res2] = await Promise.all([t1, t2]);
 			assert.strictEqual(res1, 'ok', `T1 failed: ${res1?.message ?? res1}`);
 			assert.strictEqual(res2, 'ok', `T2 failed: ${res2?.message ?? res2}`);
 			const finalA = (await LockTest.get(idA)).n;
@@ -493,7 +503,9 @@ describe('Record locks (harper#483)', () => {
 			assert.ok(finalB === 1 || finalB === 2, `B=${finalB} is not from either transaction`);
 		});
 
-		it('successive parks on two keys released in order commit without stale intent leak', async function () {
+		it('successive parks on two keys released in order commit without stale intent leak (single-thread cooperative scheduling)', async function () {
+			// This test exercises the stale-replay-handle path within Node's cooperative scheduler;
+			// it does not force a true concurrent cross-thread interleaving.
 			// A second gated write appears after the first park: B becomes held while T was parked on A.
 			// Without MAJOR-2 fix: the options.transaction replay handle from the first restage keeps
 			// stale write intents for B, corrupting the second restage.
@@ -524,9 +536,9 @@ describe('Record locks (harper#483)', () => {
 	});
 
 	describe('double-commit and expired-handle guards', function () {
-		it('a locked-record hold save produces exactly one native commit (one version bump)', async function () {
-			// Without MAJOR-3 fix: after _writeUpdate commits on an ImmediateTransaction, the when()
-			// callback re-enters save() and submits a second empty native commit, bumping the version twice.
+		it('a locked-record hold save writes the correct value and does not loop', async function () {
+			// Without MAJOR-3 fix: after _writeUpdate commits on an ImmediateTransaction the when()
+			// callback re-enters save() indefinitely, submitting empty native commits in a loop.
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
@@ -536,12 +548,10 @@ describe('Record locks (harper#483)', () => {
 			await holder.save();
 			const entry = LockTest.primaryStore.getEntry(recordId);
 			assert.strictEqual(entry.value.n, 7, 'value landed');
-			// Each native commit produces a strictly increasing version. Two commits would produce a
-			// version gap visibly larger than a single-commit save on the same store (same generator tick).
-			// Assert there is exactly one new version (any monotone increase from a single commit).
 			assert.ok(entry.version > versionAfterPut, 'version advanced after save');
+			// Version must be stable immediately after save() resolves; a looping re-save would keep bumping it.
 			const secondEntry = LockTest.primaryStore.getEntry(recordId);
-			assert.strictEqual(secondEntry.version, entry.version, 'no spurious second commit after save');
+			assert.strictEqual(secondEntry.version, entry.version, 'no further commits after save');
 			await holder.unlock();
 		});
 
