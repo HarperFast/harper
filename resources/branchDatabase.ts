@@ -117,21 +117,14 @@ export function claimDeadlineFor(state: BigInt64Array, budget: number): () => nu
  * stamps PENDING onto that inode IN PLACE -- through the branch's link as well, since it is the same
  * inode. The marker makes that blob fail loudly in the branch instead.
  */
-async function cloneBlobRoots(baseName: string, branchRoots: string[], progress: () => void): Promise<void> {
-	// What the base's own rows resolve through, which is not the configured list if `storage.blobPaths`
-	// changed while its store was open -- reading the configured volumes would clone an empty tree.
-	const baseRoots = getRootBlobPathsForDB(database({ database: baseName, table: undefined }) as never);
+async function cloneBlobRoots(
+	baseName: string,
+	baseRoots: string[],
+	branchRoots: string[],
+	progress: () => void
+): Promise<void> {
 	let substituted = 0;
 	let copied = 0;
-	if (baseRoots.length > branchRoots.length) {
-		// Every root the branch will have is cloned below, but the base has more than that, and a
-		// checkpointed row whose `storageIndex` lands past the branch's list resolves through nothing.
-		logger.warn?.(
-			`Branch of '${baseName}' has ${branchRoots.length} blob root(s) where the base resolves through ` +
-				`${baseRoots.length}; rows referencing the base's higher-numbered volumes will not be readable ` +
-				`in it. storage.blobPaths shrank while the base was open`
-		);
-	}
 	// A row's `storageIndex` is a position in the branch's own list, and its marker records every entry.
 	for (let index = 0; index < branchRoots.length; index++) {
 		const staging = `${branchRoots[index]}.staging`;
@@ -319,12 +312,24 @@ async function materializeBranch(
 				`the branch has nowhere of its own to keep blobs`
 		);
 	}
+	const base = database({ database: baseName, table: undefined });
+	// What the base's own rows resolve through, which is not the configured list if `storage.blobPaths`
+	// changed while its store was open. Refuse before taking a checkpoint: the configuration already
+	// proves that publishing this clone would leave rows on an omitted volume unreadable.
+	const baseRoots = getRootBlobPathsForDB(base as never);
+	if (baseRoots.length > blobRoots.length) {
+		throw new Error(
+			`Cannot create a branch of '${baseName}': the open base resolves through ${baseRoots.length} blob ` +
+				`root(s), but storage.blobPaths now provides ${blobRoots.length}; publishing the branch would ` +
+				`make rows on the omitted volume(s) unreadable`
+		);
+	}
 	await rm(staging, { recursive: true, force: true });
 	await mkdir(dirname(branchPath), { recursive: true });
 	try {
-		await database({ database: baseName, table: undefined }).createCheckpoint(staging);
+		await base.createCheckpoint(staging);
 		report.progress();
-		await cloneBlobRoots(baseName, blobRoots, report.progress);
+		await cloneBlobRoots(baseName, baseRoots, blobRoots, report.progress);
 		await writeFile(join(staging, COMPLETION_MARKER), JSON.stringify({ blobRoots } satisfies BranchCompletion));
 		await rename(staging, branchPath);
 		return blobRoots;

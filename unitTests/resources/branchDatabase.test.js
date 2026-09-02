@@ -1161,8 +1161,9 @@ describeUnlessLmdb('branch identity is unavailable across restarts and restores 
 	});
 });
 
-describeUnlessLmdb('appended blob volumes (harper#644)', () => {
-	const { mkdirSync, writeFileSync, rmSync, cpSync } = require('node:fs');
+describeUnlessLmdb('blob-volume configuration changes (harper#644)', () => {
+	const { mkdirSync, mkdtempSync, writeFileSync, rmSync, cpSync } = require('node:fs');
+	const { tmpdir } = require('node:os');
 	const { join } = require('node:path');
 	const { getBlobPathsForDatabaseName, createBlob, getFilePathForBlob } = require('#src/resources/blob');
 	const environment = require('#src/utility/environment/environmentManager');
@@ -1191,13 +1192,17 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 	 * `removeBranches` is the only exported release and it deletes, so what is on disk is set aside
 	 * and put back around it.
 	 */
-	async function reloadFromDisk(branchPath, blobRoots) {
-		const aside = [branchPath, ...blobRoots].map((path) => [path, `${path}.savedforTest`]);
-		for (const [live, saved] of aside) cpSync(live, saved, { recursive: true });
-		await removeBranches();
-		for (const [live, saved] of aside) {
-			cpSync(saved, live, { recursive: true });
-			rmSync(saved, { recursive: true, force: true });
+	async function reloadFromDisk(branch, branchPath, blobRoots) {
+		const backupRoot = mkdtempSync(join(tmpdir(), 'harper.branch-reload-'));
+		const aside = [branchPath, ...blobRoots].map((path, index) => [path, join(backupRoot, String(index))]);
+		try {
+			await branch.rootStore.createCheckpoint(aside[0][1]);
+			cpSync(join(branchPath, '.branch-complete'), join(aside[0][1], '.branch-complete'));
+			for (const [live, saved] of aside.slice(1)) cpSync(live, saved, { recursive: true });
+			await removeBranches();
+			for (const [live, saved] of aside) cpSync(saved, live, { recursive: true });
+		} finally {
+			rmSync(backupRoot, { recursive: true, force: true });
 		}
 	}
 
@@ -1221,6 +1226,18 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 			});
 		}
 		await databases.volbase.Vol.put({ id: 'seed', payload: await createBlob(PAYLOAD) });
+
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
+		table({
+			table: 'Vol',
+			database: 'volbaseShrink',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		await databases.volbaseShrink.Vol.put({ id: 'seed', payload: await createBlob(PAYLOAD) });
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
 	});
 
 	beforeEach(function () {
@@ -1232,7 +1249,7 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 		await removeBranches();
 		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
 		for (const appName of ['volApp']) {
-			for (const baseName of ['volbase', 'volbase2']) {
+			for (const baseName of ['volbase', 'volbase2', 'volbaseShrink']) {
 				rmSync(resolveBranchPath(baseName, appName), { recursive: true, force: true });
 				for (const volume of [firstVolume, secondVolume]) {
 					rmSync(join(volume, `${appName.length}_${appName}__${baseName}`), { recursive: true, force: true });
@@ -1251,7 +1268,7 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 		assert.ok(await created.tables.Vol.get('seed'), 'sanity: the branch carries the base row');
 		const branchPath = resolveBranchPath('volbase', 'volApp');
 		const recorded = getBlobPathsForDatabaseName(STORE);
-		await reloadFromDisk(branchPath, recorded);
+		await reloadFromDisk(created, branchPath, recorded);
 
 		// Every recorded root keeps its index, so every `storageIndex` a row already holds still means
 		// what it meant. Refusing the branch here would take an application offline for a configuration
@@ -1273,12 +1290,10 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 
 	it('pins a branch adopted on the waiter path, not only one this thread published', async function () {
 		this.timeout(30000);
-		await getOrCreateBranch('volbase', 'volApp');
 		const recorded = getBlobPathsForDatabaseName(STORE);
 
-		// A failed application load releases its handles without resetting the claim word, which is the
-		// state every thread that did not win the claim sees: the branch is READY and this thread has
-		// never read it. Plant a complete-looking branch that is not a database to make the load fail.
+		// A failed application load closes every handle it opened but leaves a successfully-published
+		// branch's claim READY. The next call has no cached handle and must take the waiter/adopter path.
 		const failing = resolveBranchPath('volbase2', 'volApp');
 		mkdirSync(failing, { recursive: true });
 		writeFileSync(join(failing, 'CURRENT'), 'not a database');
@@ -1338,12 +1353,23 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 		await assert.rejects(() => getOrCreateBranch('volbase', 'volApp'), /nowhere of its own to keep blobs/);
 	});
 
+	it('refuses to publish a branch after the open base loses a configured blob volume', async function () {
+		this.timeout(30000);
+		const branchPath = resolveBranchPath('volbaseShrink', 'volApp');
+
+		await assert.rejects(
+			() => getOrCreateBranch('volbaseShrink', 'volApp'),
+			/open base resolves through 2 blob root\(s\), but storage\.blobPaths now provides 1/
+		);
+		assert.strictEqual(existsSync(branchPath), false, 'an incomplete branch must not be published');
+	});
+
 	it('still refuses a branch whose recorded roots were dropped from the configuration', async function () {
 		this.timeout(30000);
 		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
-		await getOrCreateBranch('volbase', 'volApp');
+		const created = await getOrCreateBranch('volbase', 'volApp');
 		const branchPath = resolveBranchPath('volbase', 'volApp');
-		await reloadFromDisk(branchPath, getBlobPathsForDatabaseName(STORE));
+		await reloadFromDisk(created, branchPath, getBlobPathsForDatabaseName(STORE));
 
 		// Growth is compatible because it moves no index; shrinking removes root 1 outright, and every
 		// row whose `storageIndex` is 1 would resolve through nothing.
@@ -1354,9 +1380,9 @@ describeUnlessLmdb('appended blob volumes (harper#644)', () => {
 	it('still refuses a branch whose recorded roots were reordered', async function () {
 		this.timeout(30000);
 		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume, secondVolume]);
-		await getOrCreateBranch('volbase', 'volApp');
+		const created = await getOrCreateBranch('volbase', 'volApp');
 		const branchPath = resolveBranchPath('volbase', 'volApp');
-		await reloadFromDisk(branchPath, getBlobPathsForDatabaseName(STORE));
+		await reloadFromDisk(created, branchPath, getBlobPathsForDatabaseName(STORE));
 
 		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [secondVolume, firstVolume]);
 		await assert.rejects(() => getOrCreateBranch('volbase', 'volApp'), /no longer match the configured/);
