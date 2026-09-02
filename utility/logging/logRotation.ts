@@ -202,7 +202,9 @@ export function createRotationGuard(options: any) {
 	 * a write, rather than after one — the sink is on stdio in the meantime, so no append would come.
 	 */
 	function beforeAppend() {
-		if (!rotationPending) return true;
+		// `rotating` first: the rotation notice is written back through this same sink, and it must
+		// not re-enter a rotation that has not finished setting its own state.
+		if (rotating || !rotationPending) return true;
 		if (retryAfter > performance.now()) return false;
 		attemptRotation();
 		return !rotationPending;
