@@ -305,6 +305,65 @@ describe('Record locks (harper#483)', () => {
 			);
 			await holder.unlock();
 		});
+
+		it('a scoped lock() on A is not dropped while the transaction parks on B (CONFIRMED 1)', async function () {
+			// waitForPendingKeys released all non-hold handles (including leased scoped-lock handles)
+			// before parking.  A second party could then acquire A while the first was parked on B.
+			// Fix: releaseRecordLocks(gateOnly=true) during the park skips scoped lock() handles.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			// Hold B so the first transaction parks on it.
+			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
+			// First transaction: scoped lock on A, then write to B (will park).
+			const firstTxn = transaction(async () => {
+				await LockTest.lock(idA);
+				await LockTest.put({ id: idA, n: 1 });
+				await LockTest.put({ id: idB, n: 1 }); // parks here
+			});
+			// Give the first transaction time to park before we race for A.
+			await delay(80);
+			// While the first transaction is parked on B, a second party tries to lock A.
+			// The scoped lock must still be registered — the second party must get 423.
+			await assert.rejects(
+				transaction(() => LockTest.lock(idA, { timeout: 100 })),
+				(err) => err.statusCode === 423,
+				'second party must not acquire A while first party is parked on B'
+			);
+			// Release B; the first transaction commits.
+			await holderB.unlock();
+			await firstTxn;
+			assert.strictEqual((await LockTest.get(idA)).n, 1, 'first transaction write on A landed');
+			assert.strictEqual((await LockTest.get(idB)).n, 1, 'first transaction write on B landed');
+		});
+
+		it('a two-key restaged write commits atomically: both records appear with the same version (VERIFY 3)', async function () {
+			// After discardStagedRound() clears the native handle, restageAfter → commit() must re-stage
+			// all writes into one new native transaction (not per-write), so the records share a version.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			// Hold A to force the second transaction to restage.
+			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
+			const secondTxn = transaction(async () => {
+				await LockTest.put({ id: idA, n: 99 }); // gated
+				await LockTest.put({ id: idB, n: 99 });
+			});
+			await delay(80); // let it park
+			await holderA.unlock();
+			await secondTxn;
+			const entryA = LockTest.primaryStore.getEntry(idA);
+			const entryB = LockTest.primaryStore.getEntry(idB);
+			assert.strictEqual(entryA.value.n, 99, 'A written');
+			assert.strictEqual(entryB.value.n, 99, 'B written');
+			assert.strictEqual(entryA.version, entryB.version, 'A and B share the same commit version (atomic restage)');
+		});
 	});
 
 	describe('lease', () => {
@@ -673,6 +732,27 @@ describe('Record locks (harper#483)', () => {
 				await LockTest.put({ id: recordId, n: 1 });
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
+		});
+
+		it('an expired lock handle does not permanently poison plain writes to that key (FIX 6)', async function () {
+			// An expired hold handle was kept in the registry and returned by recordLockFor, causing
+			// gateLockedWrite to throw 409 for any subsequent write to that key in the same context —
+			// even plain put() calls with no lock intent.  Fix: recordLockFor prunes expired handles
+			// the same way it prunes explicitly-released ones.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				// Acquire a hold that expires; wait long enough for the lease timer to fire.
+				await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS });
+				await delay(MIN_LOCK_LEASE_MS + 50);
+				// A plain write to the same key (not through the expired handle instance) must not 409.
+				// Without the fix, recordLockFor returns the stale expired handle and gateLockedWrite
+				// would throw 409 on this path.
+				await LockTest.put({ id: recordId, n: 1 });
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'plain write committed after expiry');
 		});
 	});
 

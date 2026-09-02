@@ -207,6 +207,9 @@ true }` attaches the handle to the returned instance as `#lockHandle` instead; `
   and answers 501 for anything else (`server/REST.ts`), `KNOWN_METHODS` does not include it, and neither
   OpenAPI nor MCP enumerate it. A held lock therefore always has an in-process owner that can call
   `unlock()`; exposing lock/unlock over a protocol is a Phase 1 decision.
+- **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table `allowUpdate`/`allowWrite`
+  hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence; lock is not
+  reachable over a protocol, so application-layer authorization is the owner's responsibility.
 
 Not in Phase 0, by design: replication of lock transitions, gating of replicated writes, lease renewal,
 subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: replicate lock request/grant/

@@ -468,6 +468,10 @@ export class DatabaseTransaction implements Transaction {
 	declare lockWaitDeadline?: number;
 	declare hasGatedWrites?: boolean;
 	declare pendingWakeReject?: (error: any) => void;
+	// The replay native transaction created by restageAfter for a record-lock restage round.
+	// Tracked explicitly so the catch/rejection paths abort only this handle, never the main
+	// native handle that ERR_BUSY/coordinated-retry passes as options.transaction.
+	declare replayTransaction?: RocksTransactionWithRetry;
 
 	registerRecordLock(handle: RecordLockHandle): void {
 		if (!this.recordLocks) this.recordLocks = new Map();
@@ -482,8 +486,11 @@ export class DatabaseTransaction implements Transaction {
 		const h = storeMap.get(keyId);
 		if (!h) return undefined;
 		if (!h.released) return h; // live
-		if (h.expired) return h; // expired — caller may throw 409
-		storeMap.delete(keyId); // explicitly released: prune so re-lock sees a clean slot
+		// Both expired and explicitly-released handles are pruned: expired ones must not remain as
+		// sentinels, because a later plain write to the same key in the same context would
+		// incorrectly receive a 409 (lock-lost).  The 409 is only appropriate when the write itself
+		// was made through the expired handle (checked in gateLockedWrite via operation.lockHandle).
+		storeMap.delete(keyId);
 		return undefined;
 	}
 
@@ -495,13 +502,19 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Release every transaction-scoped lock this link holds. Synchronous: the native key unlock
 	 * fires waiting callbacks cross-thread but returns immediately.
+	 *
+	 * When gateOnly is true, only gate handles (expiresAt === Infinity, acquired internally as part
+	 * of the write-gate mechanism) are released. Scoped lock() handles (leased, hold=false, finite
+	 * expiresAt) are kept, so callers that park on one key while holding a scoped lock on another
+	 * do not inadvertently drop the scoped lock's protection during the park.
 	 */
-	releaseRecordLocks(): void {
+	releaseRecordLocks(gateOnly = false): void {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
 		for (const [store, storeMap] of recordLocks) {
 			for (const [keyId, handle] of storeMap) {
 				if (handle.hold) continue;
+				if (gateOnly && handle.expiresAt !== Infinity) continue;
 				handle.release();
 				storeMap.delete(keyId);
 			}
@@ -534,13 +547,6 @@ export class DatabaseTransaction implements Transaction {
 			opHandle?.keyId === keyId && !opHandle.released
 				? opHandle
 				: this.recordLocks && this.recordLockFor(operation.store, keyId);
-
-		if (handle?.keyId === keyId && handle.expired) {
-			throw new ClientError(
-				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
-				409
-			);
-		}
 
 		if (handle?.keyId === keyId && !handle.released) {
 			operation.lockHandle = handle;
@@ -629,6 +635,7 @@ export class DatabaseTransaction implements Transaction {
 		if (replayNeeded) {
 			const replay = new RocksTransaction(this.db.store as RocksStore, { coordinatedRetry: true });
 			replay.setTimestamp(this.timestamp);
+			this.replayTransaction = replay as RocksTransactionWithRetry;
 			return this.commit({ ...options, transaction: replay });
 		}
 		return this.commit(options);
@@ -642,6 +649,7 @@ export class DatabaseTransaction implements Transaction {
 	private discardReplay(options: CommitOptions): { replayNeeded: boolean; options: CommitOptions } {
 		if (options.transaction) {
 			abortNativeTransaction(options.transaction, 'discarding replay handle before restage');
+			if (this.replayTransaction === options.transaction) this.replayTransaction = undefined;
 			options = { ...options, transaction: undefined };
 		}
 		return { replayNeeded: this.discardStagedRound(), options };
@@ -666,8 +674,11 @@ export class DatabaseTransaction implements Transaction {
 
 		const { replayNeeded, options: updatedOptions } = this.discardReplay(options);
 		options = updatedOptions;
-		// Release gate handles before parking — prevents hold-A/wait-B vs hold-B/wait-A deadlocks.
-		this.releaseRecordLocks();
+		// Release only gate handles (expiresAt === Infinity) before parking — prevents hold-A/wait-B
+		// vs hold-B/wait-A deadlocks on gate keys while keeping any scoped lock() handles in the
+		// registry; dropping a scoped hold during the park would let another party write the locked
+		// key under the caller's hold.
+		this.releaseRecordLocks(true);
 
 		const allGateEligible = this.writes
 			.filter(
@@ -1003,6 +1014,7 @@ export class DatabaseTransaction implements Transaction {
 		// context's current transaction as it did before `stagedIn` existed.
 		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
+		this.replayTransaction = undefined;
 		this.writesByKey = undefined;
 		this.lockWaitDeadline = undefined;
 	}
@@ -1266,9 +1278,15 @@ export class DatabaseTransaction implements Transaction {
 		} catch (err) {
 			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
 			else this.releaseRecordLocks(); // a commit that already closed itself (retries exhausted) still owns gate handles
-			// options.transaction is a replay handle created by restageAfter for this round; a save-loop
-			// throw leaves it with staged write intents that must be aborted to avoid WAL pinning.
-			abortNativeTransaction(options.transaction, 'cleanup replay handle after save-loop throw');
+			// Abort any record-lock replay handle created by restageAfter: a save-loop throw leaves it
+			// with staged write intents that must be released to avoid WAL pinning. Only abort the
+			// replay handle, never a caller/retry-passed handle (ERR_BUSY passes the main native handle
+			// as options.transaction; aborting it while iterators stream its snapshot corrupts reads).
+			const replayToAbort = this.replayTransaction;
+			if (replayToAbort) {
+				this.replayTransaction = undefined;
+				abortNativeTransaction(replayToAbort, 'cleanup replay handle after save-loop throw');
+			}
 			throw err;
 		}
 		this.validated = this.writes.length;
@@ -1679,9 +1697,15 @@ export class DatabaseTransaction implements Transaction {
 		} catch (err) {
 			if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
 			else this.releaseRecordLocks();
-			// Sync throw from the when() callback (null first-arg path): options.transaction may still
-			// hold staged write intents from the save loop (e.g. deadline throw before transaction.commit()).
-			abortNativeTransaction(options.transaction, 'cleanup replay handle after sync callback throw');
+			// Sync throw from the when() callback (null first-arg path): a restage replay handle may
+			// still hold staged write intents (e.g. deadline throw before transaction.commit()). Only
+			// abort the replay handle tracked in this.replayTransaction — never options.transaction
+			// directly, since ERR_BUSY passes the main native handle there.
+			const replayToAbort = this.replayTransaction;
+			if (replayToAbort) {
+				this.replayTransaction = undefined;
+				abortNativeTransaction(replayToAbort, 'cleanup replay handle after sync callback throw');
+			}
 			throw err;
 		}
 		// when()'s sync path (null first arg) has no try/catch, so a callback throw — e.g. the 423
@@ -1691,9 +1715,13 @@ export class DatabaseTransaction implements Transaction {
 			return (committed as Promise<CommitResolution>).catch((err) => {
 				if (this.open !== TRANSACTION_STATE.CLOSED) this.abort();
 				else this.releaseRecordLocks();
-				// Async rejection: options.transaction may have staged write intents (e.g. native commit
-				// failed before its intents cleared). Abort is idempotent if the native layer already did.
-				abortNativeTransaction(options.transaction, 'cleanup replay handle after async rejection');
+				// Async rejection: abort only the restage replay handle if one is live; never abort
+				// options.transaction directly (may be the main handle under ERR_BUSY retry).
+				const replayToAbort = this.replayTransaction;
+				if (replayToAbort) {
+					this.replayTransaction = undefined;
+					abortNativeTransaction(replayToAbort, 'cleanup replay handle after async rejection');
+				}
 				throw err;
 			});
 		}
