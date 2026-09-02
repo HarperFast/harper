@@ -156,9 +156,9 @@ Consequences that shape the code:
 true }` neutralizes the gate handle and creates a fresh handle with the requested lease timer.
 - **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a lazily allocated `Map<store, Map<keyId, handle>>` (O(1) lookup; a 5 000-write transaction stays linear).
   `registerRecordLock`, `recordLockFor`, and `unregisterRecordLock` manage it. Both `lock()` and the write
-  gate scan the array before calling `tryLock`; a re-entrant call returns the existing live handle.
-  Expired-by-timer handles are kept until superseded by a re-lock (live handles sort first in `recordLockFor`);
-  explicitly-released handles are pruned eagerly. `waitForPendingKeys` acquires **all** gate-eligible
+  gate consult it before calling `tryLock`; a re-entrant call returns the existing live handle. A handle
+  expired by its lease timer stays registered until a re-lock replaces it, so a stale holder's write gets
+  409; an explicitly released handle is removed at once. `waitForPendingKeys` acquires **all** gate-eligible
   writes (not just the failed subset) in canonical `(lockTableId, encoded keyId)` order before re-staging.
   Acquiring only the failed subset causes livelock: W1 acquires A while W2 acquires B, both re-stage,
   each grabs the other's first key synchronously and gates on the complement again indefinitely (until
