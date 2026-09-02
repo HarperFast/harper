@@ -3,9 +3,9 @@
  *
  * With 4 HTTP workers, concurrent `tables.Counter.lock(id)` callers must admit exactly one holder at a
  * time: every increment lands (exact count) and the holder intervals never overlap, with holders spread
- * over more than one thread. A plain write to a record another party holds waits for the release, and
- * a holder that never releases loses the lock at the end of its lease while the record and its value
- * survive.
+ * over more than one thread. A plain write to a record another party holds proceeds immediately (no
+ * gating in Phase 0) and wins under LWW, while a holder that never releases loses the lock at lease
+ * expiry with the record intact.
  *
  * Fails-on-base proof: `RECORD_LOCK_CONTROL=1` runs the same increment burst through the fixture's
  * per-worker mutex (`mode: 'worker-mutex'`), the shape a per-worker-only lock has — the serialization
@@ -122,7 +122,10 @@ suite(`record locks serialize across ${WORKERS} workers`, { skip: skipSuite }, (
 		strictEqual(overlaps.length, 0, `holder intervals never overlap:\n${overlaps.slice(0, 5).join('\n')}`);
 	});
 
-	test('a plain write to a held record waits for the release; an abandoned holder expires with the record intact', async () => {
+	test('a plain write to a held record proceeds immediately; an abandoned holder expires with the record intact', async () => {
+		// Phase 0: plain writes are never gated on a held lock. The write proceeds at real wall-clock
+		// time and wins over the holder's write under LWW because the holder's write is stamped with
+		// the earlier acquisition timestamp.
 		const id = 'held';
 		const seeded = await put(id, { n: 1, holders: 0 });
 		ok(seeded.status === 200 || seeded.status === 204, `seeded (${seeded.status})`);
@@ -131,12 +134,11 @@ suite(`record locks serialize across ${WORKERS} workers`, { skip: skipSuite }, (
 		strictEqual(held.status, 200, `held: ${JSON.stringify(held.body)}`);
 		const write = await put(id, { n: 2, holders: 1 });
 		ok(write.status === 200 || write.status === 204, `the write landed (${write.status})`);
-		ok(write.elapsed >= LEASE - 500, `the write waited for the lease (elapsed ${write.elapsed}ms, lease ${LEASE}ms)`);
-		ok(write.elapsed < LEASE + 5_000, 'and proceeded promptly after it');
+		ok(write.elapsed < LEASE, `the write did NOT wait for the lease (elapsed ${write.elapsed}ms, lease ${LEASE}ms)`);
 
 		const recordAfter = await get(id);
 		strictEqual(recordAfter.status, 200, 'the record survived the abandoned lock');
-		strictEqual(recordAfter.body.n, 2, 'and carries the delayed write');
+		strictEqual(recordAfter.body.n, 2, 'and carries the concurrent write');
 	});
 
 	test('a lock attempt on a held record fails with 423 at its timeout', async () => {

@@ -17,14 +17,6 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
-import {
-	acquireRecordKey,
-	lockAttemptKey,
-	makeKeyLockHandle,
-	resolveLockOptions,
-	type RecordLockHandle,
-	type RecordLockOptions,
-} from './recordLock.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import type {
@@ -50,6 +42,14 @@ import {
 	TRANSACTION_STATE,
 	writeKeyId,
 } from './DatabaseTransaction.ts';
+import {
+	acquireRecordKey,
+	lockAttemptKey,
+	makeKeyLockHandle,
+	resolveLockOptions,
+	type RecordLockHandle,
+	type RecordLockOptions,
+} from './recordLock.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
@@ -100,8 +100,9 @@ import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
 import {
 	onStorageReclamation,
-	getStorageSpaceStats,
+	removeStorageReclamation,
 	removeStorageReclamationHandler,
+	getStorageSpaceStats,
 } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -483,9 +484,15 @@ function chainKeyForId(id: any): string {
 	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
 }
 
-/** True for local-origin writes that must wait behind a record lock; false for replication, notifications, copy-apply. */
-function gateLocalWrite(options: any, id: unknown = true): boolean {
-	return options?.nodeId == null && !options?.isNotification && !options?.isCopyApply && id !== null;
+/** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
+function isPlainOptions(value: unknown): boolean {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		!Array.isArray(value) &&
+		!(value instanceof URLSearchParams) &&
+		(value as any).id === undefined
+	);
 }
 
 export function makeTable(options) {
@@ -704,7 +711,7 @@ export function makeTable(options) {
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
 		#lockHandle?: RecordLockHandle; // a held ({ hold: true }) record lock
-		#lockWritable?: boolean;
+		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		declare getProperty: (name: string) => any;
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
@@ -1713,7 +1720,12 @@ export function makeTable(options) {
 					if (removeTombstonedCatalog()) await dbisDb.committed;
 				}
 			} else {
-				// legacy table per database
+				// legacy table per database. The store to retire is this table's own audit store: nothing
+				// assigns `primaryStore.auditStore` — openAuditStore() assigns `rootStore.auditStore`, and
+				// this is the reference makeTable() was handed. Awaited so a pass suspended mid-removal has
+				// released the primary DBI before it is closed and unlinked.
+				await auditStore?.stopAuditCleanup?.();
+				removeStorageReclamation(primaryStore.path);
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);
 			}
@@ -2147,9 +2159,6 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				gateOnLock: gateLocalWrite(options),
-				lockTableId: tableId,
-				lockId: id,
 				lockHandle: this.#lockHandle,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
@@ -2198,9 +2207,6 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				gateOnLock: gateLocalWrite(options),
-				lockTableId: tableId,
-				lockId: id,
 				lockHandle: this.#lockHandle,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
@@ -2301,7 +2307,6 @@ export function makeTable(options) {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
-				entry ??= primaryStore.getEntry(id, options);
 				// evictions never go in the audit log, so we can not record a deletion entry for the eviction
 				// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
 				// removed the entry entirely, but first cleanup indices
@@ -2313,11 +2318,11 @@ export function makeTable(options) {
 					const indexCleanup = primaryStore.ifVersion(id, existingVersion, () => {
 						updateIndices(id, existingRecord, null);
 					});
-					const removal = removeEntry(primaryStore, entry, existingVersion);
+					const removal = removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					updateIndices(id, existingRecord, null, options);
-					removeEntry(primaryStore, entry, options);
+					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
 				committed = true;
 				// Eviction is best-effort cleanup, run fire-and-forget from the record-expiration sweep and the
@@ -2362,6 +2367,21 @@ export function makeTable(options) {
 			}
 		}
 		/**
+		 * Static entry point: `Table.lock(id, options?)` — creates an instance in the ambient or a fresh
+		 * context and delegates to the instance `lock()`.
+		 */
+		static lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
+			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
+			if (options === undefined && isPlainOptions(target)) {
+				options = target as RecordLockOptions;
+				target = undefined;
+			}
+			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : null;
+			const context: any = contextStorage.getStore() ?? {};
+			const resource = new TableResource(id, context);
+			return resource.lock(target, options);
+		}
+		/**
 		 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
 		 * in process memory only — no durable writes — and serializes local writers to the record.
@@ -2391,8 +2411,8 @@ export function makeTable(options) {
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.released && !scoped.expired) {
 				if (resolved.hold) {
-					// Neutralize the gate handle (no lease) and create a fresh hold handle with the requested
-					// lease timer; setting released=true prevents the gate handle from double-unlocking.
+					// Upgrade scoped → held: create a fresh hold handle with the requested lease timer and
+					// retire the scoped one (setting released=true prevents it from double-unlocking).
 					link.unregisterRecordLock(scoped);
 					scoped.released = true;
 					const holdHandle = makeKeyLockHandle(primaryStore, scoped.key, scoped.keyId, resolved.lease, true);
@@ -2405,15 +2425,22 @@ export function makeTable(options) {
 			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
 				(handle) => {
 					link.registerRecordLock(handle);
-					if (!resolved.hold && link.transaction) {
-						// The read snapshot predates the lock; drop it so the scope reads what it locked.
-						// With iterators open (readTxnsUsed > 1) setTimestamp re-pins the same handle;
-						// plain reads in that scope keep the pre-lock snapshot (the holder's writes still
-						// see current state through the gate re-entrancy path).
-						if (link.readTxnsUsed <= 1) {
-							link.releaseReadTxn();
-							link.snapshotFree = true;
-						} else link.transaction.setTimestamp(link.timestamp);
+					if (!resolved.hold) {
+						// Stamp the link's version clock at acquisition time if not yet fixed. A concurrent
+						// write that lands between lock() and the holder's first write uses real (later) time
+						// and gets a higher version, so it wins under LWW — the correct outcome. This must
+						// run even when no read transaction exists yet (link.transaction = undefined), because
+						// the first write creates the native txn and would otherwise pick up the current time.
+						if (!link.timestamp) link.timestamp = handle.acquiredAt;
+						if (link.transaction) {
+							// The read snapshot predates the lock; drop it so the scope reads what it locked.
+							// With iterators open (readTxnsUsed > 1) setTimestamp re-pins the same handle;
+							// plain reads in that scope keep the pre-lock snapshot.
+							if (link.readTxnsUsed <= 1) {
+								link.releaseReadTxn();
+								link.snapshotFree = true;
+							} else link.transaction.setTimestamp(link.timestamp);
+						}
 					}
 					return this.#reloadLocked(id, resolved.hold ? handle : null);
 				}
@@ -2630,13 +2657,8 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				deferSave: true,
-				// a canonical-source apply carries the record's true state and preserves a lock; only local
-				// writers wait for one
-				gateOnLock: gateLocalWrite(options),
-				lockTableId: tableId,
-				lockId: id,
 				lockHandle: this.#lockHandle,
-				validate: (txnTime, committedBy = transaction, operation?) => {
+				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
@@ -2688,12 +2710,13 @@ export function makeTable(options) {
 											: txnTime;
 							}
 							if (createdTimeProperty) {
-								const currentEntry = operation?.entry ?? entry;
-								if (currentEntry?.value) {
+								if (entry?.value) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
-										recordUpdate[createdTimeProperty.name] = currentEntry.value[createdTimeProperty.name];
+										// make sure to retain original created time
+										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
 									}
 								} else {
+									// new entry, set created time
 									recordUpdate[createdTimeProperty.name] =
 										createdTimeProperty.type === 'Date'
 											? new Date(txnTime)
@@ -2713,7 +2736,6 @@ export function makeTable(options) {
 						}
 					} else {
 						(committedBy as any).removeWrite?.(write);
-						write.dropped = true;
 						return false;
 					}
 				},
@@ -3403,10 +3425,6 @@ export function makeTable(options) {
 				entry,
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
-				gateOnLock: gateLocalWrite(options),
-				lockTableId: tableId,
-				lockId: id,
-				lockHandle: this.#lockHandle,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
@@ -4966,11 +4984,6 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry: this.#entry,
 				nodeName: (context as any)?.nodeName,
-				// a message rewrites the record's version, which would reorder a holder's later write below it
-				gateOnLock: gateLocalWrite(options, id),
-				lockTableId: tableId,
-				lockId: id, // null id means no gate (lockKey stays undefined; gateLockedWrite skips tryLock)
-				lockHandle: this.#lockHandle,
 				validate: () => {
 					if (!(context as any)?.source) {
 						transaction.checkOverloaded();
@@ -6357,16 +6370,6 @@ export function makeTable(options) {
 			return -1;
 		}
 		return 1;
-	}
-
-	function isPlainOptions(value: unknown): boolean {
-		return (
-			typeof value === 'object' &&
-			value !== null &&
-			!Array.isArray(value) &&
-			!(value instanceof URLSearchParams) &&
-			(value as any).id === undefined
-		);
 	}
 
 	/**

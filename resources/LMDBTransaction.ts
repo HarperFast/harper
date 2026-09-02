@@ -306,7 +306,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 					this.clearWrites();
 					this.timestamp = 0;
 					this.next = null;
-					this.releaseRecordLocks();
 					return Promise.all(completions).then(() => {
 						return {
 							txnTime,
@@ -327,7 +326,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 		const txnResolution: CommitResolution = {
 			txnTime,
 		};
-		this.releaseRecordLocks();
 		if (this.next) {
 			// now run any other transactions
 			const nextResolution = this.next?.commit(options);
@@ -343,7 +341,6 @@ export class LMDBTransaction extends DatabaseTransaction {
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = TRANSACTION_STATE.CLOSED;
-		this.releaseRecordLocks();
 		this.drainCompletions();
 		// any blobs that were pre-saved as part of these writes will never be referenced; schedule deletion
 		// (retaining any fileId the current on-disk record still references — an aborted write may carry an

@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
-const { setLockedWriteWaitMs, LOCKED_WRITE_WAIT_MS, MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
+const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -14,9 +14,13 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 // Exclusive record locks (harper#483, Phase 0): the native key lock (rocksdb-js process-wide lock
 // map) is the sole authority. lock() and unlock() write nothing to the store or audit log. The
 // record's version and stored bytes are unchanged by acquiring or releasing a lock.
+//
+// Contract: lock() is mutually exclusive with other lock() calls on the same key. Ordinary writes
+// (put/patch/delete/create) are NEVER gated, waited, or restaged — they proceed at real wall-clock
+// time and win over a holder's write under LWW because the holder's write is stamped with the
+// acquisition timestamp (≤ real time of concurrent writes).
 describe('Record locks (harper#483)', () => {
 	let LockTest;
-	let LockTestTimed; // table with assignUpdatedTime to verify restage timestamp propagation
 	let nextId = 1;
 	const id = () => `lock-${nextId++}`;
 	before(function () {
@@ -26,15 +30,6 @@ describe('Record locks (harper#483)', () => {
 			table: 'RecordLockTest',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'name' }],
-		});
-		LockTestTimed = table({
-			table: 'RecordLockTestTimed',
-			database: 'test',
-			attributes: [
-				{ name: 'id', isPrimaryKey: true },
-				{ name: 'n' },
-				{ name: '__updatedtime__', type: 'number', assignUpdatedTime: true },
-			],
 		});
 	});
 
@@ -169,200 +164,124 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).name, 'patched');
 		});
 
-		it('re-stages a holder write past an ungated rewrite that moved the record during the critical section', async function () {
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1, name: 'start' });
-			let movedVersion;
-			await transaction(async () => {
-				const record = await LockTest.lock(recordId);
-				const versionAtLock = entryOf(recordId).version;
-				// a canonical-source apply is never gated; it carries the record forward and bumps the version
-				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 50, name: 'source' }));
-				const moved = entryOf(recordId);
-				movedVersion = moved.version;
-				assert.strictEqual(moved.value.n, 50, 'the source apply landed while the lock was held');
-				assert.ok(movedVersion > versionAtLock, 'and moved the record past the lock timestamp');
-				record.set('n', 7);
-				await record.save();
-			});
-			const final = entryOf(recordId);
-			assert.strictEqual(final.value.n, 7, 'the holder write is not lost below the moved version');
-			assert.ok(final.version > movedVersion, 'and landed as the newest version');
-		});
-	});
-
-	describe('write gate', () => {
-		it('delays a non-holder put until the release, then applies it without losing the holder write', async function () {
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1, name: 'start' });
-			const holder = await LockTest.lock(recordId, { hold: true });
-			const put = LockTest.put({ id: recordId, n: 10, name: 'later' });
-			assert.strictEqual(await settlement(put), 'pending', 'the put waits for the lock');
-			holder.set('n', 2);
-			await holder.save();
-			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'the holder writes through');
-			assert.strictEqual(await settlement(put, 50), 'pending', 'still waiting');
-			await holder.unlock();
-			await put;
-			const final = await LockTest.get(recordId);
-			assert.deepStrictEqual(
-				{ n: final.n, name: final.name },
-				{ n: 10, name: 'later' },
-				'the delayed put applied after the holder'
-			);
-		});
-
-		it('gates a delete and an update too', async function () {
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1 });
-			const holder = await LockTest.lock(recordId, { hold: true });
-			const deletion = LockTest.delete(recordId);
-			assert.strictEqual(await settlement(deletion), 'pending');
-			await holder.unlock();
-			await deletion;
-			assert.ok((await LockTest.get(recordId)) == null, 'deleted after the release');
-		});
-
-		it('gates the creation of a locked absent id', async function () {
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			const holder = await LockTest.lock(recordId, { hold: true });
-			assert.ok((await LockTest.get(recordId)) == null, 'no record exists');
-			assert.ok(entryOf(recordId) == null, 'no placeholder written to the store');
-			const creation = LockTest.create({ id: recordId, n: 1 });
-			assert.strictEqual(await settlement(creation), 'pending');
-			holder.set('n', 100);
-			await holder.save();
-			assert.strictEqual((await LockTest.get(recordId)).n, 100, 'the holder created it');
-			await holder.unlock();
-			await creation;
-			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'then the delayed create applied');
-		});
-
-		it('gates a non-holder publish; the holder can still invalidate without waiting', async function () {
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1 });
-			const holder = await LockTest.lock(recordId, { hold: true });
-			const published = LockTest.publish(recordId, { hello: 'world' });
-			assert.strictEqual(await settlement(published), 'pending', 'a message rewrites the version, so it waits');
-			// holder's own invalidate is re-entrant via recordLocks and proceeds without waiting
-			await holder.invalidate();
-			await holder.unlock();
-			await published;
-		});
-
-		it('two writes to the same gated key in one transaction both land without hanging (CLAIM 2)', async function () {
-			// Gemini CLAIM 2: waitForPendingKeys iterates allGateEligible (which may contain two entries
-			// for the same key), and the second entry awaits its own pendingWake even though the first
-			// iteration already acquired the key, parking until the 423 deadline.
-			// Prove it does not hang: a transaction with put(K) + patch(K) + put(L) behind a 300ms holder
-			// must commit well within 2 s.
-			if (isLMDB) return this.skip();
-			this.timeout(2000);
-			const idK = id();
-			const idL = id();
-			await LockTest.put({ id: idK, n: 0, name: 'k-orig' });
-			await LockTest.put({ id: idL, n: 0 });
-			const holder = await LockTest.lock(idK, { hold: true, lease: 300 });
-			const t0 = Date.now();
-			const txPromise = transaction(async () => {
-				// Two writes to the same gated key K plus one to L.
-				await LockTest.put({ id: idK, n: 1 });
-				await LockTest.put({ id: idK, n: 2 }); // overwrites the first; same key
-				await LockTest.put({ id: idL, n: 9 });
-			});
-			assert.strictEqual(await settlement(txPromise, 50), 'pending', 'transaction parked on holder');
-			await holder.unlock();
-			await txPromise;
-			const elapsed = Date.now() - t0;
-			assert.ok(elapsed < 1500, `transaction took ${elapsed}ms — expected < 1500ms (not hanging)`);
-			assert.strictEqual((await LockTest.get(idK)).n, 2, 'K final write landed');
-			assert.strictEqual((await LockTest.get(idL)).n, 9, 'L write landed');
-		});
-
-		it('gates a numeric id 0 (a valid key that is falsy)', async function () {
-			if (isLMDB) this.skip(); // LMDB does not store key 0 at all today (pre-existing)
-			await LockTest.put({ id: 0, n: 1 });
-			const holder = await LockTest.lock(0, { hold: true });
-			const put = LockTest.put({ id: 0, n: 2 });
-			assert.strictEqual(await settlement(put), 'pending');
-			await holder.unlock();
-			await put;
-			assert.strictEqual((await LockTest.get(0)).n, 2);
-		});
-
 		it('fails a waiting lock() with 423 at its timeout', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
-			const holder = await LockTest.lock(recordId, { hold: true });
+			await LockTest.put({ id: recordId, n: 1 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
 			await assert.rejects(
 				transaction(() => LockTest.lock(recordId, { timeout: 150 })),
 				(error) => error.statusCode === 423
 			);
 			await holder.unlock();
 		});
+	});
 
-		it('a scoped lock() on A is not dropped while the transaction parks on B (CONFIRMED 1)', async function () {
-			// waitForPendingKeys released all non-hold handles (including leased scoped-lock handles)
-			// before parking.  A second party could then acquire A while the first was parked on B.
-			// Fix: releaseRecordLocks(gateOnly=true) during the park skips scoped lock() handles.
+	describe('concurrent writes: no gating', () => {
+		it('a plain put to a held record proceeds immediately and is visible', async function () {
+			// Ordinary writes are never gated on a held lock: they proceed at real wall-clock time.
 			if (isLMDB) return this.skip();
-			this.timeout(3000);
-			const idA = id();
-			const idB = id();
-			await LockTest.put({ id: idA, n: 0 });
-			await LockTest.put({ id: idB, n: 0 });
-			// Hold B so the first transaction parks on it.
-			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
-			// First transaction: scoped lock on A, then write to B (will park).
-			const firstTxn = transaction(async () => {
-				await LockTest.lock(idA);
-				await LockTest.put({ id: idA, n: 1 });
-				await LockTest.put({ id: idB, n: 1 }); // parks here
-			});
-			// Give the first transaction time to park before we race for A.
-			await delay(80);
-			// While the first transaction is parked on B, a second party tries to lock A.
-			// The scoped lock must still be registered — the second party must get 423.
-			await assert.rejects(
-				transaction(() => LockTest.lock(idA, { timeout: 100 })),
-				(err) => err.statusCode === 423,
-				'second party must not acquire A while first party is parked on B'
-			);
-			// Release B; the first transaction commits.
-			await holderB.unlock();
-			await firstTxn;
-			assert.strictEqual((await LockTest.get(idA)).n, 1, 'first transaction write on A landed');
-			assert.strictEqual((await LockTest.get(idB)).n, 1, 'first transaction write on B landed');
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			// Put must not block waiting for the lock to be released.
+			const putP = LockTest.put({ id: recordId, n: 42 });
+			assert.strictEqual(await settlement(putP, 500), 'settled', 'put to held record is not gated');
+			assert.strictEqual((await LockTest.get(recordId)).n, 42, 'put is immediately visible');
+			// holder write after the concurrent put: acquisition timestamp < put time, so holder loses LWW
+			holder.set('n', 99);
+			await holder.save();
+			const final = await LockTest.get(recordId);
+			assert.strictEqual(final.n, 42, 'concurrent write wins over later holder write under LWW');
+			await holder.unlock();
 		});
 
-		it('a two-key restaged write commits atomically: both records appear with the same version (VERIFY 3)', async function () {
-			// After discardStagedRound() clears the native handle, restageAfter → commit() must re-stage
-			// all writes into one new native transaction (not per-write), so the records share a version.
+		it('holder write stamped at acquisition time wins against pre-lock value, loses to concurrent write', async function () {
+			// Lock K at t0; concurrent context puts K at t1 > t0; holder writes at t2.
+			// The holder's write carries version == t0 (acquisition time), so the concurrent write
+			// at t1 supersedes it. Without a concurrent write, the holder's value is the latest.
 			if (isLMDB) return this.skip();
 			this.timeout(3000);
-			const idA = id();
-			const idB = id();
-			await LockTest.put({ id: idA, n: 0 });
-			await LockTest.put({ id: idB, n: 0 });
-			// Hold A to force the second transaction to restage.
-			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
-			const secondTxn = transaction(async () => {
-				await LockTest.put({ id: idA, n: 99 }); // gated
-				await LockTest.put({ id: idB, n: 99 });
-			});
-			await delay(80); // let it park
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+
+			// Case A: holder write, no concurrent write → holder's value lands.
+			const holderA = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			holderA.set('n', 7);
+			await holderA.save();
+			const afterHolderOnly = await LockTest.get(recordId);
+			assert.strictEqual(afterHolderOnly.n, 7, 'holder write lands when no concurrent write exists');
+			const holderOnlyVersion = entryOf(recordId).version;
+			// The holder's write version must be ≤ real wall-clock time (not later than now).
+			assert.ok(holderOnlyVersion <= Date.now() + 5, 'version is a realistic timestamp');
 			await holderA.unlock();
-			await secondTxn;
-			const entryA = LockTest.primaryStore.getEntry(idA);
-			const entryB = LockTest.primaryStore.getEntry(idB);
-			assert.strictEqual(entryA.value.n, 99, 'A written');
-			assert.strictEqual(entryB.value.n, 99, 'B written');
-			assert.strictEqual(entryA.version, entryB.version, 'A and B share the same commit version (atomic restage)');
+
+			// Case B: concurrent write at t1 > t0 beats the holder write.
+			await LockTest.put({ id: recordId, n: 0, name: 'seed' });
+			const holderB = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			// Another context writes the record while the holder holds the lock.
+			await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 50, name: 'concurrent' }));
+			// Now the holder tries to overwrite — its acquisition timestamp < concurrent write's time.
+			holderB.set('n', 99);
+			await holderB.save();
+			const final = await LockTest.get(recordId);
+			assert.strictEqual(final.n, 50, 'concurrent write (later timestamp) wins over holder write');
+			assert.strictEqual(final.name, 'concurrent');
+			await holderB.unlock();
+		});
+
+		it('two lock() callers are exclusive; a plain writer on a concurrent task is not blocked', async function () {
+			// lock() is mutually exclusive with lock(), but ordinary puts proceed at any time.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+
+			// Lock holder A holds the lock.
+			const holderA = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+
+			// Contender B: lock() attempt should block until A releases.
+			let bResolved = false;
+			const bLock = transaction(async () => {
+				await LockTest.lock(recordId, { timeout: 5000 });
+				bResolved = true;
+			});
+
+			// Give the event loop a few ticks so B can attempt and park.
+			await delay(50);
+			assert.strictEqual(bResolved, false, 'lock() contender B is still waiting');
+
+			// Plain write C: must proceed immediately while A still holds.
+			const writeC = LockTest.put({ id: recordId, n: 42 });
+			assert.strictEqual(await settlement(writeC, 500), 'settled', 'plain put is not gated by the lock');
+			assert.strictEqual((await LockTest.get(recordId)).n, 42, 'plain put is visible');
+
+			// Release A: B should now acquire the lock.
+			await holderA.unlock();
+			await bLock;
+			assert.strictEqual(bResolved, true, 'lock() contender acquired after A released');
+		});
+
+		it('scoped lock: concurrent put landing after lock() wins over the holder write', async function () {
+			// Verifies acquisition-timestamp stamping for scoped (non-hold) locks:
+			// lock() pins the transaction clock at acquiredAt; a concurrent write at real (later)
+			// time gets a higher version and wins under LWW even though it arrives "after" the lock.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0, name: 'original' });
+			let holderRecord;
+			const txnPromise = transaction(async () => {
+				holderRecord = await LockTest.lock(recordId, { timeout: 5000 });
+				// Concurrent write lands while the scoped lock is held but before the holder writes.
+				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 99, name: 'concurrent' }));
+				// Full-update (put) so the out-of-order drop fires: the holder's write at T1 is
+				// superseded by the concurrent put at T2; no-audit tables drop it via the
+				// fullUpdate + precedesExisting<0 path rather than merging the patch.
+				await holderRecord.save({ id: recordId, n: 1, name: 'holder' }, true);
+			});
+			await txnPromise;
+			const after = await LockTest.get(recordId);
+			assert.strictEqual(after.n, 99, 'concurrent put wins (later timestamp beats acquisition-stamped write)');
+			assert.strictEqual(after.name, 'concurrent');
 		});
 	});
 
@@ -387,102 +306,6 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual(await abandoned.unlock(), false, 'the expired holder cannot release the key again');
 		});
 
-		it('an expired holder write fails with 409 while another party holds the record', async function () {
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1 });
-			const stale = await LockTest.lock(recordId, { hold: true, lease: 200 });
-			await delay(250);
-			const current = await LockTest.lock(recordId, { hold: true });
-			stale.set('n', 99);
-			await assert.rejects(
-				async () => stale.save(),
-				(error) => error.statusCode === 409
-			);
-			await current.unlock();
-			assert.strictEqual((await LockTest.get(recordId)).n, 1);
-		});
-
-		it('abort during pendingWake cancels the park and strands no handle', async function () {
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 0 });
-			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
-
-			// Stage a put inside a transaction scope so we can abort the scope externally
-			let parkTxn;
-			const parked = transaction((txn) => {
-				parkTxn = txn;
-				LockTest.put({ id: recordId, n: 1 });
-			});
-
-			// Give the commit one tick to enter waitForPendingKeys and park on the wake promise
-			await new Promise((r) => setImmediate(r));
-			assert.ok(parkTxn, 'transaction was captured');
-			parkTxn.abort();
-
-			await assert.rejects(
-				() => parked,
-				(err) => err.statusCode === 500
-			);
-			// No handle was stranded: after the holder releases, a fresh put succeeds immediately
-			await holder.unlock();
-			await LockTest.put({ id: recordId, n: 2 });
-			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'fresh put succeeded, no stranded handle');
-		});
-
-		it('a 423 from a locked write releases gate locks and aborts the transaction', async function () {
-			if (isLMDB) return this.skip();
-			const idA = id();
-			const idB = id();
-			await LockTest.put({ id: idA, n: 0 });
-			await LockTest.put({ id: idB, n: 0 });
-			const bHolder = await LockTest.lock(idB, { hold: true, lease: 5000 });
-			setLockedWriteWaitMs(100);
-			let failedErr;
-			try {
-				await transaction(async () => {
-					await LockTest.put({ id: idA, n: 1 });
-					await LockTest.put({ id: idB, n: 1 });
-				});
-			} catch (err) {
-				failedErr = err;
-			} finally {
-				setLockedWriteWaitMs(LOCKED_WRITE_WAIT_MS);
-			}
-			assert.ok(failedErr?.statusCode === 423, `expected 423, got ${failedErr?.statusCode}`);
-			// Pre-423 write to A must not have landed (transaction was aborted)
-			assert.strictEqual((await LockTest.get(idA)).n, 0, 'A write was rolled back with the transaction');
-			// A's gate lock must have been released; a fresh write should proceed without blocking
-			await LockTest.put({ id: idA, n: 2 });
-			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A is writable after the failed transaction');
-			await bHolder.unlock();
-		});
-
-		it('a 409 from an expired holder strands no gate handles on sibling keys', async function () {
-			if (isLMDB) return this.skip();
-			const idA = id();
-			const idB = id();
-			await LockTest.put({ id: idA, n: 0 });
-			await LockTest.put({ id: idB, n: 0 });
-			const expired = await LockTest.lock(idB, { hold: true, lease: 100 });
-			await delay(150);
-			const currentHolder = await LockTest.lock(idB, { hold: true });
-			await assert.rejects(
-				() =>
-					transaction(async () => {
-						await LockTest.put({ id: idA, n: 1 });
-						expired.set('n', 99);
-						await expired.save();
-					}),
-				(err) => err.statusCode === 409
-			);
-			// A's gate handle must have been released; a fresh write must not block.
-			await LockTest.put({ id: idA, n: 2 });
-			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A writable after 409');
-			await currentHolder.unlock();
-		});
-
 		it('save() on a lockWritable record with no effective change does not loop', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
@@ -492,150 +315,6 @@ describe('Record locks (harper#483)', () => {
 			await holder.save(); // must complete without looping
 			assert.strictEqual((await LockTest.get(recordId)).n, 42);
 			await holder.unlock();
-		});
-
-		it('a 423 from an expired deadline releases gate handles without waiting for a park', async function () {
-			// Hits the waitForPendingKeys entry-check 423 (lockWaitDeadline already elapsed on first call).
-			if (isLMDB) return this.skip();
-			const idA = id();
-			const idB = id();
-			await LockTest.put({ id: idA, n: 0 });
-			await LockTest.put({ id: idB, n: 0 });
-			const bHolder = await LockTest.lock(idB, { hold: true, lease: 5000 });
-			setLockedWriteWaitMs(0); // deadline = now + 0 = now → entry check fires immediately
-			try {
-				await transaction(async () => {
-					await LockTest.put({ id: idA, n: 1 }); // gates A
-					await LockTest.put({ id: idB, n: 1 }); // gated on B
-				});
-				assert.fail('expected 423');
-			} catch (err) {
-				assert.strictEqual(err.statusCode, 423, `expected 423, got ${err.statusCode}`);
-			} finally {
-				setLockedWriteWaitMs(LOCKED_WRITE_WAIT_MS);
-				await bHolder.unlock();
-			}
-			// A's gate handle must be released; a fresh write must proceed without blocking.
-			await LockTest.put({ id: idA, n: 2 });
-			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A writable after 423 entry-check');
-		});
-
-		it('a gated write converges after the holder commits and does not trigger restageHolderWrites', async function () {
-			// Root cause: gateLockedWrite re-entry path (line 545) fired for gate handles (hold=false),
-			// setting operation.restage=true regardless.  In multi-threaded CI an ungated concurrent write
-			// keeps entry.version > txnTime on every round, causing commit→restageHolderWrites→
-			// restageAfter→commit→… to recurse until stack overflow.
-			// Fix: the re-entry restage path only runs for hold=true handles; gate handles return false.
-			if (isLMDB) return this.skip();
-			this.timeout(1000); // loop would exhaust this before completing
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 0 });
-			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
-			// Stage a gated write — parks because the hold handle owns the key.
-			const gatedPut = LockTest.put({ id: recordId, n: 99 });
-			assert.strictEqual(await settlement(gatedPut, 100), 'pending', 'put is parked on holder');
-			// An ungated sourceApply commits to K while the gated write parks.
-			// Without fix 1 the gate handle re-entry restage path fires after waitForPendingKeys acquires
-			// the lock, potentially looping as ungated writers keep the entry version ahead of txnTime.
-			await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 1 }));
-			const versionAfterUngated = LockTest.primaryStore.getEntry(recordId).version;
-			await holder.unlock();
-			// Must converge without stack overflow; gated write wins (last-writer semantics).
-			await gatedPut;
-			const entry = LockTest.primaryStore.getEntry(recordId);
-			assert.strictEqual(entry.value.n, 99, 'gated write landed past the ungated write');
-			assert.ok(entry.version > versionAfterUngated, 'version is newer than the ungated write');
-		});
-
-		it('a holder write restaged past an ungated rewrite carries the restaged timestamp as updatedTime', async function () {
-			// A sourceApply write bypasses the gate; it moves the record forward while the lock is held.
-			// The holder's subsequent write must restage and re-run validate() so __updatedtime__ reflects
-			// the restaged txnTime, not the pre-restage timestamp.
-			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTestTimed.put({ id: recordId, n: 0 });
-			let ungatedVersion;
-			await transaction(async () => {
-				const holder = await LockTestTimed.lock(recordId);
-				// sourceApply is never gated — it moves the record past the holder's txnTime.
-				await transaction({ sourceApply: true }, () => LockTestTimed.put({ id: recordId, n: 1 }));
-				ungatedVersion = LockTestTimed.primaryStore.getEntry(recordId).version;
-				// Holder write triggers restage; validate() must re-run with the new txnTime.
-				holder.set('n', 2);
-				await holder.save();
-			});
-			const record = await LockTestTimed.get(recordId);
-			assert.strictEqual(record.n, 2, 'holder write landed');
-			assert.ok(
-				record.__updatedtime__ > ungatedVersion,
-				`updatedTime ${record.__updatedtime__} must be after ungated version ${ungatedVersion}`
-			);
-		});
-	});
-
-	describe('deadlock prevention and successive parks', function () {
-		it('cross-writes {A,B} and {B,A} both commit without livelock (single-thread cooperative scheduling)', async function () {
-			// Single-thread scheduling cannot force the symmetric interleaving that would expose livelock
-			// in a real multi-thread run; this test asserts the outcome (both 'ok') rather than proving
-			// the acquire loop was entered simultaneously. Livelock would manifest as 503 (max retries),
-			// so assertion failures indicate the canonical-acquire-order invariant is broken.
-			if (isLMDB) return this.skip();
-			this.timeout(5000);
-			const idA = id();
-			const idB = id();
-			await LockTest.put({ id: idA, n: 0 });
-			await LockTest.put({ id: idB, n: 0 });
-			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
-			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
-			const t1 = transaction(async () => {
-				await LockTest.put({ id: idA, n: 1 });
-				await LockTest.put({ id: idB, n: 1 });
-			}).then(
-				() => 'ok',
-				(e) => e
-			);
-			const t2 = transaction(async () => {
-				await LockTest.put({ id: idB, n: 2 });
-				await LockTest.put({ id: idA, n: 2 });
-			}).then(
-				() => 'ok',
-				(e) => e
-			);
-			// Heuristic pause so both transactions have time to stage and park before we release.
-			await delay(50);
-			await holderA.unlock();
-			await holderB.unlock();
-			const [res1, res2] = await Promise.all([t1, t2]);
-			assert.strictEqual(res1, 'ok', `T1 failed: ${res1?.message ?? res1}`);
-			assert.strictEqual(res2, 'ok', `T2 failed: ${res2?.message ?? res2}`);
-			const finalA = (await LockTest.get(idA)).n;
-			const finalB = (await LockTest.get(idB)).n;
-			assert.ok(finalA === 1 || finalA === 2, `A=${finalA} is not from either transaction`);
-			assert.ok(finalB === 1 || finalB === 2, `B=${finalB} is not from either transaction`);
-		});
-
-		it('successive parks on two keys commit after each release (single-thread cooperative scheduling)', async function () {
-			// Asserts the commit outcome (both n=99); does not verify the internal park count.
-			// holderB = await LockTest.lock(idB) succeeding immediately after T starts is the observable
-			// that proves T's gate on B was already released before T parked on A.
-			if (isLMDB) return this.skip();
-			this.timeout(5000);
-			const idA = id();
-			const idB = id();
-			await LockTest.put({ id: idA, n: 0 });
-			await LockTest.put({ id: idB, n: 0 });
-			const holderA = await LockTest.lock(idA, { hold: true, lease: 10000 });
-			const ctx = {};
-			const commit = transaction(ctx, async () => {
-				await LockTest.put({ id: idA, n: 99 });
-				await LockTest.put({ id: idB, n: 99 });
-			});
-			const holderB = await LockTest.lock(idB, { hold: true, lease: 10000 });
-			await holderA.unlock();
-			await holderB.unlock();
-			await commit;
-			assert.strictEqual((await LockTest.get(idA)).n, 99);
-			assert.strictEqual((await LockTest.get(idB)).n, 99);
 		});
 	});
 
@@ -662,8 +341,6 @@ describe('Record locks (harper#483)', () => {
 
 	describe('double-commit and expired-handle guards', function () {
 		it('a locked-record hold save writes the correct value and does not loop', async function () {
-			// Without MAJOR-3 fix: after _writeUpdate commits on an ImmediateTransaction the when()
-			// callback re-enters save() indefinitely, submitting empty native commits in a loop.
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
@@ -728,31 +405,10 @@ describe('Record locks (harper#483)', () => {
 				await delay(MIN_LOCK_LEASE_MS + 50);
 				// Re-acquire: a live handle is now registered alongside the expired one.
 				await LockTest.lock(recordId, { hold: true, lease: 5000 });
-				// A write to the same key must use the live handle — not the expired one — and not throw 409.
+				// A write to the same key must use the live handle — not the expired one — and not throw.
 				await LockTest.put({ id: recordId, n: 1 });
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
-		});
-
-		it('an expired lock handle does not permanently poison plain writes to that key (FIX 6)', async function () {
-			// An expired hold handle was kept in the registry and returned by recordLockFor, causing
-			// gateLockedWrite to throw 409 for any subsequent write to that key in the same context —
-			// even plain put() calls with no lock intent.  Fix: recordLockFor prunes expired handles
-			// the same way it prunes explicitly-released ones.
-			if (isLMDB) return this.skip();
-			this.timeout(2000);
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 0 });
-			await transaction(async () => {
-				// Acquire a hold that expires; wait long enough for the lease timer to fire.
-				await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS });
-				await delay(MIN_LOCK_LEASE_MS + 50);
-				// A plain write to the same key (not through the expired handle instance) must not 409.
-				// Without the fix, recordLockFor returns the stale expired handle and gateLockedWrite
-				// would throw 409 on this path.
-				await LockTest.put({ id: recordId, n: 1 });
-			});
-			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'plain write committed after expiry');
 		});
 	});
 
@@ -760,36 +416,27 @@ describe('Record locks (harper#483)', () => {
 		// Mirrors integrationTests/database/deleteUpdateRace.test.ts subtest (f):
 		// one ImmediateTransaction context (HTTP request), seed put, then
 		// Promise.allSettled([Table.delete(k), Table.create({id:k,...})]).
-		// On Linux/Bun/uWS with threads:{count:4} this hung indefinitely (no 423).
+		// On Linux/Bun/uWS with threads:{count:4} this hung indefinitely before gate removal.
 
 		it('Promise.allSettled([delete, create-of-same-key]) does not hang — single context', async function () {
-			// Single-thread, no transaction() wrapper.  Each call creates its own
-			// ImmediateTransaction; the delete lock must not block the create path.
 			if (isLMDB) return this.skip();
 			this.timeout(10_000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
-			// Race: delete vs create of the same key.  Create should 409 (key exists) or
-			// succeed if delete commited first.  Neither must hang.
 			const [delP, createP] = await Promise.allSettled([
 				LockTest.delete(recordId),
 				(async () => LockTest.create({ id: recordId, n: 99 }))(),
 			]);
-			// Either outcome is valid; what matters is that Promise.allSettled resolved.
 			assert.ok(delP.status === 'fulfilled' || delP.status === 'rejected', 'delete settled');
 			assert.ok(createP.status === 'fulfilled' || createP.status === 'rejected', 'create settled');
 		});
 
-		it('Promise.allSettled([delete, create-of-same-key]) does not hang — shared ImmediateTransaction via transaction()', async function () {
-			// Use transaction() to force a shared DatabaseTransaction (covers the gated-write
-			// interaction path even if the ImmediateTransaction single-context case cannot
-			// exercise it without an HTTP framework).
+		it('Promise.allSettled([delete, create-of-same-key]) does not hang — shared transaction()', async function () {
 			if (isLMDB) return this.skip();
 			this.timeout(10_000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			await transaction(async () => {
-				// seed already committed; inside transaction the record is visible
 				const [delP, createP] = await Promise.allSettled([
 					LockTest.delete(recordId),
 					(async () => LockTest.create({ id: recordId, n: 99 }))(),
@@ -797,102 +444,6 @@ describe('Record locks (harper#483)', () => {
 				assert.ok(delP.status === 'fulfilled' || delP.status === 'rejected', 'delete settled');
 				assert.ok(createP.status === 'fulfilled' || createP.status === 'rejected', 'create settled');
 			});
-		});
-
-		it('Promise.allSettled([delete, create-of-same-key]) does not hang — same key across threads (multi-thread)', async function () {
-			// Several worker threads each do seed-put + allSettled([delete, create]) on the
-			// SAME key concurrently.  Any unreleased gate lock or un-resolved pendingWake
-			// would block one thread indefinitely.
-			if (isLMDB) return this.skip();
-			this.timeout(10_000);
-			const THREAD_COUNT = 4;
-			const ROUNDS = 20;
-			const localWorkers = [];
-			for (let i = 0; i < THREAD_COUNT; i++) {
-				localWorkers.push(new Worker(__dirname + '/recordLock-thread.js', { workerData: { addPorts: [] } }));
-			}
-			try {
-				for (let r = 0; r < ROUNDS; r++) {
-					const recordId = id();
-					// All threads race on the SAME key.
-					const promises = localWorkers.map(
-						(w) =>
-							new Promise((resolve, reject) => {
-								const handler = (msg) => {
-									if (msg.type === 'recreated' || msg.type === 'error') {
-										w.removeListener('message', handler);
-										if (msg.type === 'error') reject(new Error(msg.message));
-										else resolve(msg);
-									}
-								};
-								w.on('message', handler);
-								w.postMessage({ type: 'recreate', id: recordId });
-							})
-					);
-					const results = await Promise.all(promises);
-					for (const res of results) {
-						assert.ok(
-							res.deleteStatus === 'fulfilled' || res.deleteStatus === 'rejected',
-							`r=${r} delete must settle`
-						);
-						assert.ok(
-							res.createStatus === 'fulfilled' || res.createStatus === 'rejected',
-							`r=${r} create must settle`
-						);
-					}
-				}
-			} finally {
-				await Promise.all(localWorkers.map((w) => w.terminate()));
-			}
-		});
-
-		it('repeated delete+create rounds do not accumulate a hung gate lock — 10 rounds', async function () {
-			// Each round: put seed → allSettled([delete, create]) → verify no gate lock lingers.
-			// A lingering unreleased gate lock would block the next round's write and eventually
-			// hit the 30 s LOCKED_WRITE_WAIT_MS → 423.  Short timeout catches an early hang.
-			if (isLMDB) return this.skip();
-			this.timeout(10_000);
-			setLockedWriteWaitMs(3_000);
-			try {
-				for (let r = 0; r < 10; r++) {
-					const recordId = id();
-					await LockTest.put({ id: recordId, n: r });
-					const [delP, createP] = await Promise.allSettled([
-						LockTest.delete(recordId),
-						(async () => LockTest.create({ id: recordId, n: 99 }))(),
-					]);
-					// Verify the round settled (no hang) by checking status.
-					assert.ok(delP.status === 'fulfilled' || delP.status === 'rejected', `r=${r} delete settled`);
-					assert.ok(createP.status === 'fulfilled' || createP.status === 'rejected', `r=${r} create settled`);
-					// Verify the next plain write succeeds (gate lock not held).
-					await LockTest.put({ id: recordId, n: 999 });
-					assert.strictEqual((await LockTest.get(recordId))?.n, 999, `r=${r} post-round write landed`);
-				}
-			} finally {
-				setLockedWriteWaitMs(LOCKED_WRITE_WAIT_MS);
-			}
-		});
-	});
-
-	describe('performance: gate-handle registry is O(1) per lookup', function () {
-		it('5000-write transaction completes in bounded time (O(N) with Map registry)', async function () {
-			// A quadratic (O(N²)) registry would hit ~12M iterations at N=5000, easily exceeding 5 s.
-			if (isLMDB) return this.skip();
-			this.timeout(10000);
-			const N = 5000;
-			const ids = Array.from({ length: N }, () => id());
-			// Seed without gating so the seed itself is not subject to the registry scan cost.
-			await transaction({ sourceApply: true }, async () => {
-				for (const rid of ids) await LockTest.put({ id: rid, n: 0 });
-			});
-			const t0 = Date.now();
-			await transaction(async () => {
-				for (const rid of ids) await LockTest.put({ id: rid, n: 1 });
-			});
-			const elapsed = Date.now() - t0;
-			assert.ok(elapsed < 5000, `5000-write transaction took ${elapsed}ms — expected < 5000ms`);
-			assert.strictEqual((await LockTest.get(ids[0])).n, 1, 'first record committed');
-			assert.strictEqual((await LockTest.get(ids[N - 1])).n, 1, 'last record committed');
 		});
 	});
 
@@ -930,37 +481,53 @@ describe('Record locks (harper#483)', () => {
 			workers = [];
 		});
 
-		it('a terminated worker thread releases its held lock', async function () {
+		it('a terminated worker thread releases its held lock so a waiter can acquire it', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await ThreadTable.put({ id: recordId, n: 1 });
-			// Start a fresh worker (outside the reusable pool) so we can terminate it cleanly
+			// Start a fresh worker (outside the reusable pool) so we can terminate it cleanly.
 			const dying = new Worker(__dirname + '/recordLock-thread.js', { workerData: { addPorts: [] } });
 			await request(dying, { type: 'hold', id: recordId, lease: 30_000 }, 'held');
-			// Verify the lock is actually held before we terminate
-			const put = ThreadTable.put({ id: recordId, n: 2 });
-			assert.strictEqual(await settlement(put), 'pending', 'put is blocked by the dying worker');
+			// Verify the lock is actually held by trying to acquire it (should 423 at short timeout).
+			await assert.rejects(
+				transaction(() => ThreadTable.lock(recordId, { timeout: 100 })),
+				(error) => error.statusCode === 423,
+				'lock() correctly returns 423 while the dying worker holds it'
+			);
+			// A plain put proceeds immediately even though the lock is held.
+			const putP = ThreadTable.put({ id: recordId, n: 2 });
+			assert.strictEqual(await settlement(putP, 500), 'settled', 'plain put is not gated by the held lock');
+			await putP;
+			// Terminate the worker; rocksdb-js ~DBHandle() calls lockReleaseByOwner.
 			await dying.terminate();
-			// rocksdb-js ~DBHandle() calls lockReleaseByOwner; the put should now proceed
-			await put;
-			assert.strictEqual((await ThreadTable.get(recordId)).n, 2, 'put landed after the worker died');
+			// Now a lock() attempt must succeed without 423.
+			await transaction(async () => {
+				const rec = await ThreadTable.lock(recordId, { timeout: 2000 });
+				rec.set('n', 3);
+				await rec.save();
+			});
+			assert.strictEqual((await ThreadTable.get(recordId)).n, 3, 'lock acquired after dying worker released it');
 		});
 
-		it('a lock held on another thread gates this thread until it is released', async function () {
+		it('two lock() callers on different threads are exclusive; a plain put on a third task is not blocked', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await ThreadTable.put({ id: recordId, n: 1 });
+			// Worker holds the lock.
 			await request(workers[0], { type: 'hold', id: recordId, lease: 5000 }, 'held');
+			// lock() on this thread returns 423 at short timeout.
 			await assert.rejects(
 				transaction(() => ThreadTable.lock(recordId, { timeout: 150 })),
 				(error) => error.statusCode === 423
 			);
+			// Plain put on this thread is NOT blocked by the held lock.
 			const put = ThreadTable.put({ id: recordId, n: 2 });
-			assert.strictEqual(await settlement(put), 'pending');
+			assert.strictEqual(await settlement(put, 500), 'settled', 'plain put not blocked by held lock');
+			await put;
+			assert.strictEqual((await ThreadTable.get(recordId)).n, 2, 'put committed');
+			// Release the worker's lock.
 			const released = await request(workers[0], { type: 'release' }, 'released');
 			assert.strictEqual(released.cleared, true);
-			await put;
-			assert.strictEqual((await ThreadTable.get(recordId)).n, 2);
 		});
 
 		it('serializes increments from every thread: exact count, no overlapping holders', async function () {

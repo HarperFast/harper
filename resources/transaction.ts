@@ -55,11 +55,10 @@ export function transaction<T>(
 	transaction.setContext(context);
 	let result;
 	try {
-		if ((context as any).isExplicit || asyncStorageContext) {
-			result = callback(transaction);
-		} else {
-			result = contextStorage.run(context, () => callback(transaction));
-		}
+		result =
+			(context as any).isExplicit || asyncStorageContext
+				? callback(transaction)
+				: contextStorage.run(context, () => callback(transaction));
 		if ((result as any)?.then) {
 			return (result as any).then(onComplete, onError);
 		}
