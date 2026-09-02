@@ -126,88 +126,61 @@ Both orders are now pinned. `addWrite` defers a write whose earlier same-key wri
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
 
-## Record locks: the conditional LOCK write is the only authority (`Table`/`DatabaseTransaction`/`recordLock`)
+## Record locks: the native key lock is the sole authority (`Table`/`DatabaseTransaction`/`recordLock`)
 
 `table.lock(id, options?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
-write access to one record. What makes a caller the holder is that _its_ version-conditional LOCK write
-committed — nothing else. The LOCK is a control write of type `lock` (audit action 9) in its own
-transaction, conditioned on the record's version as the attempt read it; it rewrites the record with the
-`LOCKED` metadata bit (0x4) and two metadata fields, `lockVersion` (the generation: the LOCK's own
-version, and the fencing token Phase 1 will check) and `lockExpiresAt` (the lease). `unlock` (action 10)
-is the same shape conditioned on `lockVersion === token`. Both are header-only audit entries stamped
-`LOCAL_ONLY` in the audit `extendedType` only — the record itself replicates as usual, so the bit is
-never mirrored into `extendedType` and `LOCAL_ONLY` is never put on the record's own metadata (that
-would make a full copy skip it). On RocksDB the control transaction's timestamp IS the version it
-writes: the audit-log key is the transaction timestamp, and the record's out-of-order history walk
-looks entries up by version. A record with no row gets a _locked placeholder_, a null-value record
-carrying the generation, so creating that id gates like any other write; an unlocked placeholder
-decays as a tombstone.
+write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
+map keyed by `[Symbol.for('record-lock'), tableId, id]`. No write goes to the store or audit log for
+`lock()` or `unlock()`. The record's version and stored bytes are unchanged when a lock is acquired or
+released; only the native key is locked in memory. This eliminates the Phase 0 blocker that required a
+version-conditional LOCK write before every update under a held lock, and removes all durable lock state
+from the on-disk format.
 
 Consequences that shape the code:
 
-- **Everything in shared memory is advisory.** The engine's `tryLock` (composite key
-  `[record-lock, tableId, id]`, distinct from `getFromSource`'s bare-id single-flight lock) only
-  serializes _attempts_ on one node, so a contender burst costs one conditional write per release
-  instead of one per contender; a wait past its bound proceeds anyway. Waiters park on a per-table
-  `getUserSharedBuffer` doorbell of per-slot release counters (`notify()` reaches every thread; each
-  waiter compares its key's slot) and on a timer at the lease end, and re-read the record on every
-  wake. A worker dying with any of this held costs a timer, never a wedge.
-- **The gate stages nothing while it waits.** `DatabaseTransaction.save()` checks every write marked
-  `gateOnLock` (Table.ts's local mutations: update, delete, invalidate, relocate; never a replicated,
-  source-notified or copy-applied write, nor replay) against the entry as this round read it. A
-  non-holder write on a live generation is held back before `before`/blob work, and `commit()` parks
-  on the doorbell (bounded per transaction by `LOCKED_WRITE_WAIT_MS`, then 423) and then re-stages
-  the _whole_ write set on a fresh native handle with a timestamp past the released version. The
-  handle is replaced because a write landing with a version older than the release is resequenced as
-  out-of-order and, for a full put, dropped. The handle is discarded _before_ the park, so neither the
-  gated write nor any sibling in the transaction holds a verification-table intent while the holder
-  this transaction waits for is committing. `publish()` to a record is gated too:
-  a message rewrites the record's version, which would order a holder's later write below it. LMDB's
-  `commit()` runs the same gate before its optimistic batch and again inside its exclusive fallback,
-  whose own reads are what that path writes against.
-- **A holder's writes must carry a timestamp past the generation**, or they are the older write in a
-  version comparison. A transaction's timestamp is fixed by its first staged write, so `lock()` refuses
-  a transaction that already wrote (`lock() must be called before the transaction writes`) and bumps
-  the link's timestamp when it acquires; on RocksDB it also drops the scope's pre-lock read snapshot
-  (when no iterator holds it) so the rest of the scope reads what it locked and its commit does not
-  conflict with the LOCK write. The gate re-reads a locked record snapshot-free before a holder write
-  stages (the write's basis can be as old as the lock), and if an ungated rewrite — a source fill, a
-  replicated apply — moved the record past the transaction's timestamp, `commit()` re-stages the
-  transaction with a fresh one rather than let the holder's write land as the older version; that
-  holds for an overrun holder whose lease already cleared the bit too, and it is bounded by the same
-  30 s as a gated wait (then 503). The returned record stages its `save()` lazily — an update staged at `lock()` time would be dropped by
-  a held lock's wrapper transaction completing before the caller writes.
-- **Release.** A transaction-scoped handle (the default) is registered on the store link; every commit
-  or abort of that link releases it — its own conditional UNLOCK, logged on failure, awaited by the
-  commit and by `transaction()`'s abort path. `{ hold: true }` attaches the handle to the returned
-  instance instead; `unlock()` releases it (deferred to the commit when that transaction already staged
-  writes on the record — the UNLOCK would wait behind them). There is no force-unlock: it would let any
-  updater clear another party's generation.
-- **Expiry is logical.** `isLockedLive` (LOCKED and `lockExpiresAt` in the future) is the test
-  everywhere; an expired bit is inert and physically cleared by the next rewrite, by a takeover LOCK,
-  or by the cleanup sweep (`clearLock`, armed by every LOCK). Eviction skips a live generation. A
-  holder whose lease expired writes freely once the record is unlocked (no fencing in Phase 0) but
-  gets 409 `Record lock was lost` while another party's generation is live.
-- **The bit survives every rewrite** at the `recordUpdater` choke point: invalidate, relocate,
-  publish, source resolution and holder writes carry a live generation forward unless the write is
-  the lock transition itself (`options.lock`/`options.unlock`). A delete under a live generation —
-  the holder's own, or a source-resolved one — leaves a locked tombstone whatever the table's audit
-  settings, because removing the row would remove the lock with it.
-- **Crash recovery.** The primary store's WAL is off, so a transition the flush had not reached is
-  replayed from the transaction log like any write. A LOCK is not replayed: its holder died with the
-  process, and a flushed one expires by its lease. An UNLOCK is replayed conditionally
-  (`_writeUnlockReplay`: only onto the exact version it released), so a row is never left locked for
-  a lease by a release that did not reach the flush, and a phantom entry from a failed conditional
-  commit never clears a later generation. `bin/copyDb` strips the bit when it migrates a store: a
-  copied record carries no lock.
-- **No downgrade past a locked record.** The two lock fields sit before the value in the record's
-  metadata, so an older Harper decodes a LOCKED record's value from the wrong offset. Do not downgrade
-  a node below this release once any table has been locked.
+- **`store.tryLock(lockKey, onUnlocked)` is the acquisition primitive.** It returns `true` immediately if
+  the key is free, or queues `onUnlocked` and returns `false`. `store.unlock(lockKey)` is ownerless —
+  any caller can release — and fires all queued callbacks. `store.hasLock(lockKey)` tests without modifying.
+  The key is `lockAttemptKey(tableId, id)` = `[LOCK_KEY_PREFIX, tableId, ...id]`, distinct from
+  `getFromSource`'s bare-id single-flight lock.
+- **`RecordLockHandle`** (`recordLock.ts`) carries `store`, `key`, `keyId`, `expiresAt`, `hold`, `released`,
+  and `expired`. `release()` is synchronous: it sets `released`, clears the lease timer, and calls
+  `store.unlock(key)`. A lease timer in the holder thread sets `expired = true` then calls
+  `store.unlock()` on fire; the stale holder's next `gateLockedWrite` check then throws 409 if another
+  party holds the key. `acquireRecordKey` (shared by `lock()` and the async write-gate path) loops
+  `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423).
+- **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a `Map<store, Map<keyId, handle>>`.
+  `registerRecordLock`, `recordLockFor`, and `unregisterRecordLock` manage it. Both `lock()` and the write
+  gate check the map before calling `tryLock`; a re-entrant call returns the existing handle.
+- **The gate acts at staging, not at park.** `gateLockedWrite` in `DatabaseTransaction.save()` runs for
+  every write marked `gateOnLock` (local mutations: update, delete, invalidate, relocate, publish; never a
+  replicated, source-notified, or copy-applied write, nor replay). It calls `tryLock` synchronously. On
+  success, a gate handle is registered on the transaction and the write proceeds. On failure, the write is
+  marked `gated` with a `pendingWake` promise (resolved by the `onUnlocked` callback). Sibling writes in
+  the same transaction are NOT discarded — only the pending write is held back. `commit()` collects all
+  `gated` writes, awaits each `pendingWake`, acquires via `acquireRecordKey`, bumps the transaction
+  timestamp past the holder's committed version (so the pending writes land strictly after), and
+  recursively commits. Bounded by `LOCKED_WRITE_WAIT_MS`, then 423.
+- **Holder writes are re-entrant.** When the transaction's `recordLocks` map already has a handle for the
+  write's `keyId`, `gateLockedWrite` re-uses it. It re-reads the entry: if an ungated rewrite (source fill,
+  replicated apply) moved the record past the transaction's timestamp, `operation.restage = true` is set
+  and `commit()` re-stages the transaction with `restageHolderWrites` (bounded by `LOCKED_WRITE_WAIT_MS`).
+- **Release.** A transaction-scoped handle (the default) is in the `recordLocks` map; every commit or abort
+  of the link calls `releaseRecordLocks()` which iterates and calls `handle.release()` on each. `{ hold:
+  true }` attaches the handle to the returned instance as `#lockHandle` instead; `unlock()` calls
+  `handle.release()` directly (synchronous, returns false if already released). The read snapshot is dropped
+  after acquiring so the scope reads what it locked.
+- **Crash / thread death.** The key lock is process-wide in memory. A process crash releases everything.
+  A worker thread death does not automatically call `store.unlock()`, so the lease timer is the bound for
+  that case: it fires in the holder thread if the thread is alive, and is set `.unref()` so it does not
+  prevent clean shutdown.
+- **Not supported on LMDB.** `lock()` throws 501; `gateLockedWrite` guards on `typeof store.tryLock !==
+  'function'` and returns false to avoid crashing if a gated write somehow reaches that path on LMDB.
 
-Not in Phase 0, by design: replication of lock transitions (both entries are LOCAL_ONLY, so a peer
-never sees an unknown action), gating of replicated writes, fencing enforcement against a stale
-holder's token, lease renewal, subscription events for lock/unlock (neither is in
-`ACTIONS_OF_INTEREST`).
+Not in Phase 0, by design: replication of lock transitions, gating of replicated writes, fencing
+enforcement against a stale holder's token (the `keyId` / generation), lease renewal, subscription events
+for lock/unlock, and lock() on LMDB. Phase 1 will add per-table distributed fencing via a token from the
+holder's `keyId`.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

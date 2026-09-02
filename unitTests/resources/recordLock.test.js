@@ -5,15 +5,14 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { LOCAL_ONLY } = require('#src/resources/auditStore');
-const { LOCKED } = require('#src/resources/recordLock');
 const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
-// Exclusive record locks (harper#483, Phase 0): the durable, version-conditional LOCK write is the
-// only authority, so every assertion here reads the record's own metadata and audit trail.
+// Exclusive record locks (harper#483, Phase 0): the native key lock (rocksdb-js process-wide lock
+// map) is the sole authority. lock() and unlock() write nothing to the store or audit log. The
+// record's version and stored bytes are unchanged by acquiring or releasing a lock.
 describe('Record locks (harper#483)', () => {
 	let LockTest;
 	let nextId = 1;
@@ -29,14 +28,6 @@ describe('Record locks (harper#483)', () => {
 	});
 
 	const entryOf = (recordId) => LockTest.primaryStore.getEntry(recordId);
-	const isLocked = (recordId) => Boolean(entryOf(recordId)?.metadataFlags & LOCKED);
-	function auditTrail(recordId) {
-		const trail = [];
-		for (const entry of LockTest.auditStore.getRange({ start: 1 })) {
-			if (entry.tableId === LockTest.tableId && entry.recordId === recordId) trail.push(entry);
-		}
-		return trail;
-	}
 	/** 'pending' when `promise` has not settled within `ms`, else 'settled'. */
 	const settlement = (promise, ms = 150) =>
 		Promise.race([
@@ -47,55 +38,48 @@ describe('Record locks (harper#483)', () => {
 			delay(ms).then(() => 'pending'),
 		]);
 
-	describe('durable lock state', () => {
-		it('a held lock sets LOCKED with a generation and unlock clears it, each as a version-changing local-only audit entry', async () => {
+	describe('pure in-memory: no store writes', () => {
+		it('lock() and unlock() do not change the record version or stored bytes', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1, name: 'one' });
+			await LockTest.put({ id: recordId, n: 1, name: 'original' });
 			const before = entryOf(recordId);
 			const record = await LockTest.lock(recordId, { hold: true, lease: 5000 });
 			const locked = entryOf(recordId);
-			assert.ok(locked.metadataFlags & LOCKED, 'LOCKED is set');
-			assert.ok(locked.version > before.version, 'LOCK bumped the record version');
-			assert.strictEqual(locked.lockVersion, locked.version, 'the lock generation is the LOCK version');
-			assert.ok(locked.lockExpiresAt > Date.now() && locked.lockExpiresAt <= Date.now() + 5000, 'lease deadline');
-			assert.deepStrictEqual({ ...locked.value }, { id: recordId, n: 1, name: 'one' }, 'value untouched');
-			assert.strictEqual(record.getProperty('name'), 'one', 'the returned record is loaded');
-
-			assert.strictEqual(await record.unlock(), true);
-			const unlocked = entryOf(recordId);
-			assert.strictEqual(unlocked.metadataFlags & LOCKED, 0, 'LOCKED cleared');
-			assert.strictEqual(unlocked.lockVersion, undefined);
-			assert.ok(unlocked.version > locked.version, 'UNLOCK bumped the record version');
-			assert.deepStrictEqual({ ...unlocked.value }, { id: recordId, n: 1, name: 'one' }, 'value survives');
-
-			const trail = auditTrail(recordId).map((entry) => ({
-				type: entry.type,
-				version: entry.version,
-				localOnly: Boolean(entry.extendedType & LOCAL_ONLY),
-				body: entry.getValue(LockTest.primaryStore),
-			}));
-			const lockEntry = trail.find((entry) => entry.type === 'lock');
-			const unlockEntry = trail.find((entry) => entry.type === 'unlock');
-			assert.ok(lockEntry && unlockEntry, `lock and unlock entries are in the audit log: ${JSON.stringify(trail)}`);
-			assert.strictEqual(lockEntry.version, locked.version);
-			assert.strictEqual(unlockEntry.version, unlocked.version);
-			assert.ok(lockEntry.localOnly && unlockEntry.localOnly, 'both are LOCAL_ONLY');
-			assert.strictEqual(lockEntry.body, undefined, 'header-only');
-			assert.strictEqual(unlockEntry.body, undefined, 'header-only');
-			assert.strictEqual(await record.unlock(), false, 'a second unlock has nothing to clear');
-		});
-
-		it('keeps a record TTL across lock and unlock', async () => {
-			const recordId = id();
-			const expiresAt = Date.now() + 600000;
-			await LockTest.put({ id: recordId, n: 1 }, { expiresAt });
-			const record = await LockTest.lock(recordId, { hold: true });
-			assert.strictEqual(entryOf(recordId).expiresAt, expiresAt);
+			assert.strictEqual(locked.version, before.version, 'lock() does not change the version');
+			assert.strictEqual(locked.metadataFlags, before.metadataFlags, 'no metadata flag changes');
+			assert.deepStrictEqual({ ...locked.value }, { id: recordId, n: 1, name: 'original' }, 'value unchanged');
+			assert.ok(record.expiresAt == null, 'the record instance has no expiresAt from the lock');
 			await record.unlock();
-			assert.strictEqual(entryOf(recordId).expiresAt, expiresAt);
+			const unlocked = entryOf(recordId);
+			assert.strictEqual(unlocked.version, before.version, 'unlock() does not change the version');
 		});
 
-		it('validates its options', async () => {
+		it('lock() writes no audit entries', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			const countBefore = [...LockTest.auditStore.getRange({ start: 1 })].filter(
+				(e) => e.tableId === LockTest.tableId && e.recordId === recordId
+			).length;
+			const record = await LockTest.lock(recordId, { hold: true });
+			await record.unlock();
+			const countAfter = [...LockTest.auditStore.getRange({ start: 1 })].filter(
+				(e) => e.tableId === LockTest.tableId && e.recordId === recordId
+			).length;
+			assert.strictEqual(countAfter, countBefore, 'no audit entries for lock/unlock');
+		});
+
+		it('throws 501 on LMDB', async function () {
+			if (!isLMDB) return this.skip();
+			await assert.rejects(
+				async () => LockTest.lock(id()),
+				(error) => error.statusCode === 501
+			);
+		});
+
+		it('validates its options', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			for (const options of [
 				{ lease: -1 },
@@ -112,31 +96,36 @@ describe('Record locks (harper#483)', () => {
 			}
 		});
 
-		it('needs a transaction unless the lock is held', async () => {
-			await assert.rejects(
-				async () => LockTest.lock(id()),
-				(error) => error.statusCode === 400 && /hold/.test(error.message)
-			);
+		it('keeps a record TTL across lock and unlock', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			const expiresAt = Date.now() + 600000;
+			await LockTest.put({ id: recordId, n: 1 }, { expiresAt });
+			const record = await LockTest.lock(recordId, { hold: true });
+			assert.strictEqual(entryOf(recordId).expiresAt, expiresAt);
+			await record.unlock();
+			assert.strictEqual(entryOf(recordId).expiresAt, expiresAt);
 		});
 	});
 
 	describe('transaction scope', () => {
-		it('releases at commit, after the holder wrote through the returned record', async () => {
+		it('releases at commit, after the holder wrote through the returned record', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
-			let lockedInside;
 			await transaction(async () => {
 				const record = await LockTest.lock(recordId);
-				lockedInside = isLocked(recordId);
 				record.set('n', record.getProperty('n') + 1);
 				await record.save();
 			});
-			assert.strictEqual(lockedInside, true);
-			assert.strictEqual(isLocked(recordId), false, 'released at commit');
 			assert.strictEqual((await LockTest.get(recordId)).n, 2);
+			// lock released: a second lock can be acquired immediately
+			const handle = await LockTest.lock(recordId, { hold: true });
+			await handle.unlock();
 		});
 
-		it('releases on abort and the write is rolled back', async () => {
+		it('releases on abort and the write is rolled back', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
 			await assert.rejects(
@@ -148,62 +137,53 @@ describe('Record locks (harper#483)', () => {
 				}),
 				/abandon/
 			);
-			assert.strictEqual(isLocked(recordId), false, 'released at abort');
 			assert.strictEqual((await LockTest.get(recordId)).n, 1);
+			// lock released: a second lock can be acquired immediately
+			const handle = await LockTest.lock(recordId, { hold: true });
+			await handle.unlock();
 		});
 
-		it('is re-entrant within the transaction and lets the static verbs write', async () => {
+		it('is re-entrant within the transaction and lets the static verbs write', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
+			const versionBefore = entryOf(recordId).version;
 			await transaction(async () => {
-				const first = await LockTest.lock(recordId);
-				const generation = entryOf(recordId).lockVersion;
 				await LockTest.lock(recordId);
-				assert.strictEqual(entryOf(recordId).lockVersion, generation, 'one generation');
+				// second lock() returns the existing handle, no second native tryLock
+				await LockTest.lock(recordId);
+				assert.strictEqual(entryOf(recordId).version, versionBefore, 're-entrant call writes nothing');
 				await LockTest.patch(recordId, { name: 'patched' });
-				assert.ok(first);
 			});
-			assert.strictEqual(isLocked(recordId), false);
 			assert.strictEqual((await LockTest.get(recordId)).name, 'patched');
 		});
 
-		it('re-stages a holder write past an ungated rewrite that moved the record during the critical section', async () => {
+		it('re-stages a holder write past an ungated rewrite that moved the record during the critical section', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1, name: 'start' });
 			let movedVersion;
 			await transaction(async () => {
 				const record = await LockTest.lock(recordId);
-				const lockVersion = entryOf(recordId).lockVersion;
-				// a canonical-source apply is never gated; it carries the generation forward and bumps the version
+				const versionAtLock = entryOf(recordId).version;
+				// a canonical-source apply is never gated; it carries the record forward and bumps the version
 				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 50, name: 'source' }));
 				const moved = entryOf(recordId);
 				movedVersion = moved.version;
 				assert.strictEqual(moved.value.n, 50, 'the source apply landed while the lock was held');
-				assert.ok(movedVersion > lockVersion, 'and moved the record past the lock generation');
-				assert.strictEqual(moved.lockVersion, lockVersion, 'keeping the generation');
+				assert.ok(movedVersion > versionAtLock, 'and moved the record past the lock timestamp');
 				record.set('n', 7);
 				await record.save();
 			});
 			const final = entryOf(recordId);
 			assert.strictEqual(final.value.n, 7, 'the holder write is not lost below the moved version');
 			assert.ok(final.version > movedVersion, 'and landed as the newest version');
-			assert.strictEqual(isLocked(recordId), false);
-		});
-
-		it('must be acquired before the transaction writes', async () => {
-			const recordId = id();
-			await assert.rejects(
-				transaction(async () => {
-					await LockTest.put({ id: recordId, n: 1 });
-					await LockTest.lock(recordId);
-				}),
-				(error) => error.statusCode === 400 && /before/.test(error.message)
-			);
 		});
 	});
 
 	describe('write gate', () => {
-		it('delays a non-holder put until the release, then applies it without losing the holder write', async () => {
+		it('delays a non-holder put until the release, then applies it without losing the holder write', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1, name: 'start' });
 			const holder = await LockTest.lock(recordId, { hold: true });
@@ -221,13 +201,10 @@ describe('Record locks (harper#483)', () => {
 				{ n: 10, name: 'later' },
 				'the delayed put applied after the holder'
 			);
-			assert.strictEqual(isLocked(recordId), false);
-			const types = auditTrail(recordId).map((entry) => entry.type);
-			assert.ok(types.includes('lock') && types.includes('unlock'), `audit trail ${types}`);
-			assert.ok(types.indexOf('unlock') < types.lastIndexOf('put'), 'the delayed put is audited after the unlock');
 		});
 
-		it('gates a delete and an update too', async () => {
+		it('gates a delete and an update too', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
 			const holder = await LockTest.lock(recordId, { hold: true });
@@ -238,11 +215,12 @@ describe('Record locks (harper#483)', () => {
 			assert.ok((await LockTest.get(recordId)) == null, 'deleted after the release');
 		});
 
-		it('gates the creation of a locked absent id (locked placeholder)', async () => {
+		it('gates the creation of a locked absent id', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			const holder = await LockTest.lock(recordId, { hold: true });
-			assert.ok((await LockTest.get(recordId)) == null, 'the placeholder is invisible');
-			assert.ok(isLocked(recordId), 'but the id carries the generation');
+			assert.ok((await LockTest.get(recordId)) == null, 'no record exists');
+			assert.ok(entryOf(recordId) == null, 'no placeholder written to the store');
 			const creation = LockTest.create({ id: recordId, n: 1 });
 			assert.strictEqual(await settlement(creation), 'pending');
 			holder.set('n', 100);
@@ -253,20 +231,17 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'then the delayed create applied');
 		});
 
-		it('gates a non-holder publish; a holder publish and invalidate keep the generation', async () => {
+		it('gates a non-holder publish; the holder can still invalidate without waiting', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
 			const holder = await LockTest.lock(recordId, { hold: true });
-			const generation = entryOf(recordId).lockVersion;
 			const published = LockTest.publish(recordId, { hello: 'world' });
 			assert.strictEqual(await settlement(published), 'pending', 'a message rewrites the version, so it waits');
-			await holder.publish({ hello: 'holder' });
-			assert.strictEqual(entryOf(recordId).lockVersion, generation, 'the holder publish preserved the lock');
+			// holder invalidate is not gated (no gateOnLock for invalidate)
 			await holder.invalidate();
-			assert.strictEqual(entryOf(recordId).lockVersion, generation, 'invalidate preserved the lock');
 			await holder.unlock();
 			await published;
-			assert.strictEqual(isLocked(recordId), false);
 		});
 
 		it('gates a numeric id 0 (a valid key that is falsy)', async function () {
@@ -280,52 +255,8 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(0)).n, 2);
 		});
 
-		it('a holder delete on an unaudited table leaves a locked tombstone, so the lock outlives the row', async function () {
-			// LMDB's immediate transaction only commits eager instance writes through save(); a bare
-			// instance delete() outside a scope stays staged there (pre-existing), so RocksDB only
-			if (isLMDB) this.skip();
-			const NoAudit = table({
-				table: 'RecordLockNoAudit',
-				database: 'test',
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
-				audit: false,
-				trackDeletes: false,
-			});
-			const recordId = id();
-			await NoAudit.put({ id: recordId, n: 1 });
-			const holder = await NoAudit.lock(recordId, { hold: true });
-			await holder.delete(); // the instance delete resolves before its immediate commit lands
-			const tombstone = await waitFor(
-				() => {
-					const entry = NoAudit.primaryStore.getEntry(recordId);
-					return entry && entry.value == null && entry;
-				},
-				{ message: 'the row is gone' }
-			);
-			assert.ok(tombstone.metadataFlags & LOCKED, 'but the generation stays on a tombstone');
-			const put = NoAudit.put({ id: recordId, n: 2 });
-			assert.strictEqual(await settlement(put), 'pending', 'so a re-create still waits for the holder');
-			await holder.unlock();
-			await put;
-			assert.strictEqual((await NoAudit.get(recordId)).n, 2);
-		});
-
-		it("lock and unlock carry the record's out-of-order audit refs forward", async function () {
-			if (isLMDB) this.skip(); // additionalAuditRefs are a RocksDB dedup guard
-			const recordId = id();
-			const now = Date.now();
-			await LockTest.put({ id: recordId, n: 1, name: 'first' }, { timestamp: now - 3000 });
-			await LockTest.patch(recordId, { name: 'newer' }, { timestamp: now - 1000 });
-			await LockTest.patch(recordId, { n: 2 }, { timestamp: now - 2000 }); // out of order under the newer patch
-			const refs = entryOf(recordId).additionalAuditRefs;
-			assert.ok(refs?.length > 0, `the out-of-order patch left a ref: ${JSON.stringify(refs)}`);
-			const holder = await LockTest.lock(recordId, { hold: true });
-			assert.deepStrictEqual(entryOf(recordId).additionalAuditRefs, refs, 'kept by LOCK');
-			await holder.unlock();
-			assert.deepStrictEqual(entryOf(recordId).additionalAuditRefs, refs, 'kept by UNLOCK');
-		});
-
-		it('fails a waiting lock with 423 at its timeout', async () => {
+		it('fails a waiting lock() with 423 at its timeout', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			const holder = await LockTest.lock(recordId, { hold: true });
 			await assert.rejects(
@@ -337,34 +268,28 @@ describe('Record locks (harper#483)', () => {
 	});
 
 	describe('lease', () => {
-		it('expires an abandoned lock: the record survives, a waiter proceeds, and the old holder has lost it', async () => {
+		it('expires an abandoned lock: the record survives, a waiter proceeds, and the old holder has lost it', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1, name: 'keep' });
 			const abandoned = await LockTest.lock(recordId, { hold: true, lease: 300 });
-			const leaseEnd = entryOf(recordId).lockExpiresAt;
 			const waiter = transaction(async () => {
 				const record = await LockTest.lock(recordId, { timeout: 5000 });
-				const acquiredAt = Date.now();
 				record.set('n', 2);
 				await record.save();
-				return acquiredAt;
 			});
-			const acquiredAt = await waiter;
-			assert.ok(
-				acquiredAt >= leaseEnd,
-				`the waiter proceeded only after the lease (${acquiredAt - leaseEnd}ms past it)`
-			);
+			await waiter;
 			const entry = entryOf(recordId);
 			assert.deepStrictEqual(
 				{ n: entry.value.n, name: entry.value.name },
 				{ n: 2, name: 'keep' },
-				'record and value survive'
+				'record and value survive the lease expiry'
 			);
-			assert.strictEqual(isLocked(recordId), false, 'the takeover generation was released at commit');
-			assert.strictEqual(await abandoned.unlock(), false, 'the expired holder cannot clear a later generation');
+			assert.strictEqual(await abandoned.unlock(), false, 'the expired holder cannot release the key again');
 		});
 
-		it('an expired holder write fails with 409 while another party holds the record', async () => {
+		it('an expired holder write fails with 409 while another party holds the record', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
 			const stale = await LockTest.lock(recordId, { hold: true, lease: 200 });
@@ -379,35 +304,21 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1);
 		});
 
-		it('re-stages an overrun holder past an ungated rewrite that cleared its expired generation', async () => {
+		it('an overrun holder write fails with 409 after the lease fires', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
-			let movedVersion;
-			await transaction(async () => {
-				const record = await LockTest.lock(recordId, { lease: 200 });
-				await delay(250); // the critical section overruns its lease
-				// a source apply then rewrites the record; the expired generation goes with it
-				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 50 }));
-				const moved = entryOf(recordId);
-				movedVersion = moved.version;
-				assert.strictEqual(isLocked(recordId), false, 'the expired bit is gone');
-				record.set('n', 7);
-				await record.save();
-			});
-			const final = entryOf(recordId);
-			assert.strictEqual(final.value.n, 7, 'the overrun holder write is not dropped below the rewrite');
-			assert.ok(final.version > movedVersion, 'it landed as the newest version');
-		});
-
-		it('a plain write after the lease clears the bit', async () => {
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1 });
-			await LockTest.lock(recordId, { hold: true, lease: 200 });
-			const leaseEnd = entryOf(recordId).lockExpiresAt;
-			await LockTest.put({ id: recordId, n: 3 });
-			assert.ok(Date.now() >= leaseEnd, 'the put landed no earlier than the lease end');
-			assert.strictEqual(isLocked(recordId), false);
-			assert.strictEqual((await LockTest.get(recordId)).n, 3);
+			// The lease fires and marks the handle expired before the holder tries to write
+			const stale = await LockTest.lock(recordId, { hold: true, lease: 200 });
+			await delay(250); // let the lease fire
+			const current = await LockTest.lock(recordId, { hold: true });
+			stale.set('n', 99);
+			await assert.rejects(
+				async () => stale.save(),
+				(error) => error.statusCode === 409
+			);
+			await current.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 1);
 		});
 	});
 
@@ -430,6 +341,7 @@ describe('Record locks (harper#483)', () => {
 			});
 		let ThreadTable;
 		before(async function () {
+			if (isLMDB) return this.skip();
 			ThreadTable = table({
 				table: 'RecordLockThread',
 				database: 'test',
@@ -445,10 +357,10 @@ describe('Record locks (harper#483)', () => {
 		});
 
 		it('a lock held on another thread gates this thread until it is released', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
 			await ThreadTable.put({ id: recordId, n: 1 });
 			await request(workers[0], { type: 'hold', id: recordId, lease: 5000 }, 'held');
-			assert.ok(Boolean(ThreadTable.primaryStore.getEntry(recordId).metadataFlags & LOCKED));
 			await assert.rejects(
 				transaction(() => ThreadTable.lock(recordId, { timeout: 150 })),
 				(error) => error.statusCode === 423
@@ -462,8 +374,9 @@ describe('Record locks (harper#483)', () => {
 		});
 
 		it('serializes increments from every thread: exact count, no overlapping holders', async function () {
+			if (isLMDB) return this.skip();
 			const recordId = id();
-			const perWorker = isLMDB ? 5 : 15;
+			const perWorker = 15;
 			const runs = workers.map((worker) =>
 				request(worker, { type: 'increment', id: recordId, count: perWorker }, 'incremented')
 			);
@@ -492,18 +405,6 @@ describe('Record locks (harper#483)', () => {
 					`holders overlap: ${JSON.stringify(intervals[i - 1])} then ${JSON.stringify(intervals[i])}`
 				);
 			}
-			// every holder released at its commit; the last release is its own write, so wait for it to land
-			const finalEntry = ThreadTable.primaryStore.getEntry(recordId);
-			await waitFor(() => !(ThreadTable.primaryStore.getEntry(recordId).metadataFlags & LOCKED), {
-				timeout: 5000,
-				message: `released after the last holder: ${JSON.stringify({
-					version: finalEntry.version,
-					lockVersion: finalEntry.lockVersion,
-					lockExpiresAt: finalEntry.lockExpiresAt,
-					now: Date.now(),
-					n: finalEntry.value?.n,
-				})}`,
-			});
 		});
 	});
 });

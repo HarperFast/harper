@@ -129,16 +129,14 @@ suite(`record locks serialize across ${WORKERS} workers`, { skip: skipSuite }, (
 		const LEASE = 1_500;
 		const held = await post('LockHold', { id, lease: LEASE });
 		strictEqual(held.status, 200, `held: ${JSON.stringify(held.body)}`);
-		ok(held.body.lockVersion > 0, 'the lock generation is on the record');
-
 		const write = await put(id, { n: 2, holders: 1 });
 		ok(write.status === 200 || write.status === 204, `the write landed (${write.status})`);
-		ok(Date.now() >= held.body.lockExpiresAt, `the write landed no earlier than the lease end (${write.elapsed}ms)`);
+		ok(write.elapsed >= LEASE - 500, `the write waited for the lease (elapsed ${write.elapsed}ms, lease ${LEASE}ms)`);
 		ok(write.elapsed < LEASE + 5_000, 'and proceeded promptly after it');
 
-		const after = await get(id);
-		strictEqual(after.status, 200, 'the record survived the abandoned lock');
-		strictEqual(after.body.n, 2, 'and carries the delayed write');
+		const recordAfter = await get(id);
+		strictEqual(recordAfter.status, 200, 'the record survived the abandoned lock');
+		strictEqual(recordAfter.body.n, 2, 'and carries the delayed write');
 	});
 
 	test('a lock attempt on a held record fails with 423 at its timeout', async () => {

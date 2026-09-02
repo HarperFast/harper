@@ -50,12 +50,9 @@ export class LockHold extends Resource {
 	async post(query, body) {
 		const id = body?.id ?? 'default';
 		const record = await tables.Counter.lock(id, { hold: true, lease: body?.lease ?? 2000 });
-		const entry = tables.Counter.primaryStore.getEntry(id);
 		return {
 			id,
 			worker: threadId,
-			lockVersion: entry?.lockVersion,
-			lockExpiresAt: entry?.lockExpiresAt,
 			n: record.getProperty('n'),
 		};
 	}
