@@ -69,6 +69,41 @@ describe('Test logRotator module', () => {
 		return rotator.getLastRotatedLogPath();
 	}
 
+	it('Finishes an archive another isolate left uncompressed, with no retention configured (#1877)', async () => {
+		// The sweep must not be gated on retention: retention is unset by default, and a worker's
+		// plain archive still has to be compressed however the operator configured `compress`.
+		fs.mkdirpSync(path.join(LOG_DIR_TEST, 'rotated'));
+		// Named as this rotator names archives — the compression sweep only touches files it can tell
+		// apart from the live logs the same directory holds.
+		const stranded = path.join(LOG_DIR_TEST, 'rotated', 'hdb-0a1b2c3d-2020-01-01T00-00-00.000Z-1-0-0.log');
+		fs.writeFileSync(stranded, 'left plain by another isolate\n');
+		await runRotator({ interval: '1D', compress: true, path: path.join(LOG_DIR_TEST, 'rotated') });
+		await waitFor(() => fs.pathExistsSync(`${stranded}.gz`), {
+			timeout: 5000,
+			message: 'Expected the audit tick to compress an archive left plain by another isolate',
+		});
+		expect(fs.pathExistsSync(stranded)).to.be.false;
+	}).timeout(TEST_TIMEOUT);
+
+	it('Never deletes or compresses a live log sharing the rotated directory (#1877)', async () => {
+		// logging.rotation.path defaults to `log`, the same directory logging.root defaults to, so the
+		// rotated directory normally holds the logs being written as well as the archives.
+		const companion = path.join(LOG_DIR_TEST, 'companion.log');
+		fs.writeFileSync(companion, 'a live log written by another logger\n');
+		const companionLogger = hdb_logger.createLogger({ stdStreams: false, path: companion, level: 'error' });
+		companionLogger.error('opens the sink so the path is registered');
+		// Aged past the retention window, and left untouched from here, so retention would delete it if
+		// a live log were ever a candidate. Large maxSize so nothing rotates; retention is the subject.
+		const past = new Date(Date.now() - 7200000);
+		fs.utimesSync(companion, past, past);
+
+		await runRotator({ maxSize: '1G', retention: '1H', compress: true });
+
+		expect(fs.pathExistsSync(companion), 'a live component log must survive retention').to.be.true;
+		expect(fs.pathExistsSync(`${companion}.gz`), 'a live component log must not be compressed').to.be.false;
+		companionLogger.closeLogFile();
+	}).timeout(TEST_TIMEOUT);
+
 	it('Test that log file is rotated if log has exceeded max size', async () => {
 		const rotated_log_path = await runRotator({ maxSize: '1K' });
 		assert(fs.statSync(rotated_log_path).size > 2000, 'Test log file should have contents after it is rotated');
