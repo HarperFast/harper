@@ -3,9 +3,8 @@
  *
  * Harper's HTTP workers share the port through SO_REUSEPORT (`server/http.ts`), so the kernel picks
  * the serving worker once per TCP connection, and `fetch()` keep-alive therefore pins a serial
- * request stream to one or two workers however many exist. Fresh connections only restore the
- * kernel's choice; `observeEveryWorker` is what makes coverage a fact, because a request that may
- * reach another worker proves nothing about the one it missed.
+ * request stream to one or two workers however many exist. Fresh connections restore the kernel's
+ * choice; `observeEveryWorker` turns that choice into coverage a suite can assert on.
  */
 
 export function fetchOnNewConnection(input: string | URL, init: RequestInit = {}): Promise<Response> {
@@ -15,11 +14,9 @@ export function fetchOnNewConnection(input: string | URL, init: RequestInit = {}
 }
 
 export interface ObserveEveryWorkerOptions {
-	/** Workers the instance was configured with — every one must answer before the caller asserts. */
 	workerCount: number;
-	/** Requests per round, issued together so the post-write observation window stays tight. */
+	/** Issued together, so the window between the caller's write ack and its last read stays tight. */
 	concurrency?: number;
-	/** Request budget before failing; the default sits far above what per-connection routing needs. */
 	maxRequests?: number;
 	timeoutMs?: number;
 }

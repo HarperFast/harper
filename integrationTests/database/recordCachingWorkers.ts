@@ -64,3 +64,16 @@ export async function assertMultiWorker(ctx: ContextWithHarper): Promise<void> {
 	const count = await observedWorkerCount(ctx);
 	ok(count >= 2, `expected >= 2 HTTP workers for cross-worker coverage, observed ${count} — suite would be vacuous`);
 }
+
+/**
+ * For suites whose assertions must reach EVERY worker: a partial pool would otherwise surface as
+ * `observeEveryWorker` burning its whole budget and reporting the workers it missed, rather than
+ * the actual cause.
+ */
+export async function assertEveryWorkerStarted(ctx: ContextWithHarper): Promise<void> {
+	const count = await observedWorkerCount(ctx);
+	ok(
+		count >= WORKER_COUNT,
+		`expected ${WORKER_COUNT} HTTP workers, observed ${count} — a worker never started, so full-worker coverage is unreachable`
+	);
+}

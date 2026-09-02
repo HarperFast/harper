@@ -1,8 +1,6 @@
 /**
- * Pins the contract of `./connectionPerRequest.ts` against a local `node:http` server: one TCP
- * connection per call, caller headers preserved and unmutated, and the worker-coverage loop's
- * concurrency, budget and failure modes. The distinct-connection assertion is what goes red if the
- * helper ever degrades to a plain `fetch()`.
+ * Pins `./connectionPerRequest.ts` against a local `node:http` server, Harper-free: the properties
+ * under test are transport-level, so an instance would add nothing.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';

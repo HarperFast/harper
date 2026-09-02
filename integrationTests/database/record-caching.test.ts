@@ -5,8 +5,8 @@
  *
  * S1 reads through CacheRecordOnWorker (record-caching/resources.js) until every configured worker
  * has answered (utils/connectionPerRequest.ts): each worker holds its own cache, and a plain REST
- * GET on a keep-alive connection cannot say which one served it. S2's 200-wide fan-out already
- * spreads across the pool, so its transport is unchanged.
+ * GET cannot say which one served it. S2 keeps its own 200-wide fan-out, which already spreads
+ * across the pool.
  *
  * Skipped on LMDB (PrimaryRocksDatabase is RocksDB-only).
  */
@@ -17,7 +17,7 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { WORKER_COUNT, assertMultiWorker, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertEveryWorkerStarted, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
 import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching');
@@ -46,7 +46,6 @@ async function readCacheOnWorker(httpURL: string, authHeader: string, id: string
 	return r.json() as Promise<WorkerCacheView>;
 }
 
-/** Reads until all `WORKER_COUNT` workers have answered, so the caller can assert about every one. */
 function readCacheOnEveryWorker(httpURL: string, authHeader: string, id: string): Promise<WorkerCacheView[]> {
 	return observeEveryWorker(
 		() => readCacheOnWorker(httpURL, authHeader, id),
@@ -115,7 +114,7 @@ suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_MULTI_WORKER_HTTP 
 		httpURL = ctx.harper.httpURL;
 		authHeader = client.headers.Authorization;
 		await waitForTable(httpURL, authHeader);
-		await assertMultiWorker(ctx);
+		await assertEveryWorkerStarted(ctx);
 	});
 
 	after(async () => {

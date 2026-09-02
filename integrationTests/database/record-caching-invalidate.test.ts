@@ -31,7 +31,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-import { WORKER_COUNT, assertMultiWorker, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertEveryWorkerStarted, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
 import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-invalidate');
@@ -74,7 +74,7 @@ suite(
 				await sleep(250);
 			}
 
-			await assertMultiWorker(ctx);
+			await assertEveryWorkerStarted(ctx);
 		});
 
 		after(async () => {
@@ -125,7 +125,6 @@ suite(
 			return body;
 		}
 
-		/** Point-GETs until every configured worker has answered, so the assertions below cover all. */
 		function getOnEveryWorker(id: string): Promise<GetResult[]> {
 			return observeEveryWorker(
 				() => getOnce(id),
