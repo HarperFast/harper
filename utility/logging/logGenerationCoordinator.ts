@@ -6,6 +6,8 @@
 //
 // The thread layer injects the transport; harper_logger must never reach manageThreads.
 
+import { statSync } from 'node:fs';
+
 export const LOG_GENERATION_ROTATED = 'log_generation_rotated';
 export const LOG_GENERATION_CLOSED = 'log_generation_closed';
 
@@ -110,22 +112,12 @@ export async function requestGenerationClose(generation: any): Promise<boolean> 
 }
 
 /**
- * Every generation but the live one, in a single round trip. Retention deletes archives this
- * process may not have rotated — a worker's unproven archive is invisible to the main thread's own
- * bookkeeping — so it proves the whole set at once rather than asking per archive.
+ * Every generation but the live one, for every log this process writes, in a single round trip.
+ * Not scoped to one path: the archive directory holds the archives of every component and external
+ * log sharing it, and retention destroys those too.
  */
-export function requestStaleDescriptorRelease(
-	logPath: string,
-	active: any
-): Promise<{ released: boolean; liveLogPaths: Set<string> }> {
-	return requestRelease({
-		type: LOG_GENERATION_ROTATED,
-		request: nextGenerationId(),
-		logPath,
-		stale: true,
-		keepIno: active?.ino,
-		keepDev: active?.dev,
-	});
+export function requestStaleDescriptorRelease(): Promise<{ released: boolean; liveLogPaths: Set<string> }> {
+	return requestRelease({ type: LOG_GENERATION_ROTATED, request: nextGenerationId(), stale: true });
 }
 
 function recordPeerResponse(request: string, threadId: number, logPaths?: string[]) {
@@ -137,23 +129,32 @@ function recordPeerResponse(request: string, threadId: number, logPaths?: string
 }
 
 function releaseLocally(message: any) {
+	if (message.stale) return releaseStaleDescriptors();
 	const sink = sinksByPath.get(message.logPath);
 	if (!sink) return;
 	const identity = sink.identity();
 	// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
-	// closing is the only answer that can still be called a release. `stale` inverts the test: keep
-	// only the live generation, and when there is no live generation to name, keep nothing.
-	if (message.stale) {
-		// Keep only a descriptor provably on the live generation: `ino === 0` (some Windows filesystems)
-		// proves nothing, and answering "released" without releasing is what destroys an archive.
-		const onLiveGeneration =
-			identity &&
-			identity.ino &&
-			message.keepIno &&
-			identity.ino === message.keepIno &&
-			identity.dev === message.keepDev;
-		if (!onLiveGeneration) sink.close();
-		return;
-	}
+	// closing is the only answer that can still be called a release.
 	if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
+}
+
+/**
+ * Release every descriptor this isolate holds that is not on the live generation of its own path.
+ * Each sink decides for itself, so nothing has to name the live inode of a log it does not own.
+ */
+function releaseStaleDescriptors() {
+	for (const [logPath, sink] of sinksByPath) {
+		const identity = sink.identity();
+		if (!identity) continue;
+		let live;
+		try {
+			live = statSync(logPath);
+		} catch {
+			sink.close();
+			continue;
+		}
+		// `ino === 0` (some Windows filesystems) proves nothing, and answering "released" without
+		// releasing is what destroys an archive under a peer.
+		if (!identity.ino || !live.ino || identity.ino !== live.ino || identity.dev !== live.dev) sink.close();
+	}
 }

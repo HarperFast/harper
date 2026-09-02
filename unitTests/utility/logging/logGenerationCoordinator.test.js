@@ -130,21 +130,31 @@ describe('Test log generation coordinator (#1877)', () => {
 		transport.deliverRotation({ logPath, request: 'g2', ino: held.ino + 1, dev: held.dev, originator: 0 });
 		assert.strictEqual(closed, 1, 'expected a foreign generation to leave the descriptor alone');
 
-		// The batched form retention uses is the inverse: release everything but the live generation.
-		transport.deliverRotation({ logPath, request: 'r1', stale: true, keepIno: held.ino, keepDev: held.dev });
+		// The batched form retention uses is the inverse, and each sink judges its own path: release
+		// every descriptor that is not on the live generation of the file it is writing.
+		transport.deliverRotation({ request: 'r1', stale: true });
 		assert.strictEqual(closed, 1, 'expected the live generation to be kept');
-		transport.deliverRotation({ logPath, request: 'r2', stale: true, keepIno: held.ino + 1, keepDev: held.dev });
-		assert.strictEqual(closed, 2, 'expected a stale descriptor to be released');
-		// No live generation to name (the active log is gone) means every descriptor is stale.
-		transport.deliverRotation({ logPath, request: 'r3', stale: true });
-		assert.strictEqual(closed, 3, 'expected every descriptor to be released when there is no live log');
+		coordinator.unregisterLogSink(logPath);
+		coordinator.registerLogSink(logPath, {
+			identity: () => ({ ino: held.ino + 1, dev: held.dev }),
+			close: () => closed++,
+		});
+		transport.deliverRotation({ request: 'r2', stale: true });
+		assert.strictEqual(closed, 2, 'expected a descriptor on an older generation to be released');
 		coordinator.unregisterLogSink(logPath);
 
 		// A filesystem that reports ino 0 cannot prove a descriptor is on the live generation, and
 		// answering "released" without releasing is what lets an archive be destroyed under a peer.
 		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
-		transport.deliverRotation({ logPath, request: 'r4', stale: true, keepIno: 0, keepDev: 0 });
-		assert.strictEqual(closed, 4, 'expected an indistinguishable descriptor to be released');
+		transport.deliverRotation({ request: 'r3', stale: true });
+		assert.strictEqual(closed, 3, 'expected an indistinguishable descriptor to be released');
+		coordinator.unregisterLogSink(logPath);
+
+		// A log whose file is gone can only be holding an archived inode.
+		fs.removeSync(logPath);
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: held.ino, dev: held.dev }), close: () => closed++ });
+		transport.deliverRotation({ request: 'r4', stale: true });
+		assert.strictEqual(closed, 4, 'expected a descriptor on a vanished path to be released');
 		coordinator.unregisterLogSink(logPath);
 	});
 
@@ -174,14 +184,13 @@ describe('Test log generation coordinator (#1877)', () => {
 
 	it('lets retention proceed only when every peer has released its stale descriptors', async () => {
 		const stalled = fakeTransport({ autoRespond: false });
-		const unproven = await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 });
+		const unproven = await coordinator.requestStaleDescriptorRelease();
 		assert.strictEqual(unproven.released, false);
-		assert.strictEqual(stalled.broadcasts.at(-1).keepIno, 1);
+		assert.strictEqual(stalled.broadcasts.at(-1).stale, true);
 
-		const answering = fakeTransport();
-		const proven = await coordinator.requestStaleDescriptorRelease('/no/such/log', { ino: 1, dev: 1 });
+		fakeTransport();
+		const proven = await coordinator.requestStaleDescriptorRelease();
 		assert.strictEqual(proven.released, true);
-		assert.strictEqual(answering.broadcasts.at(-1).keepDev, 1);
 		// A peer's own registered log paths come back with its answer: a component loads in a worker,
 		// so the thread that runs retention only learns about that log this way.
 		assert.ok(proven.liveLogPaths.has('/a/component/own.log'), 'expected a peer-reported live log path');

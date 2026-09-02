@@ -151,7 +151,7 @@ export async function compressPendingArchives(rotatedLogDir: string, files: stri
 		if (!file.endsWith('.log') || !isArchiveName(file) || files.includes(`${file}.gz`)) continue;
 		if (compressed++ >= MAX_RETRIES_PER_PASS) return;
 		const archivePath = join(rotatedLogDir, file);
-		if (liveLogPaths.has(archivePath) || unprovenArchives.has(archivePath)) continue;
+		if (liveLogPaths.has(resolve(archivePath)) || unprovenArchives.has(archivePath)) continue;
 		await compressArchive(archivePath).catch(() => {});
 	}
 }

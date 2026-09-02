@@ -119,13 +119,13 @@ function logRotator({
 			}
 
 			if (maxInterval) {
-				// The current generation's own age, so a rotation by any thread — or by a previous run —
-				// resets the clock, not just the ones this tick performed. birthtime is unsupported on
-				// some filesystems, where this falls back to the last rotation this rotator saw.
+				// Whichever origin is older. birthtime is unsupported on some filesystems, where it mirrors
+				// a write-updated ctime and would postpone interval rotation forever; taking the minimum
+				// means this can only ever rotate at least as often as the counter alone did.
 				let generationStartedAt = lastRotationTime;
 				try {
 					const born = statSync(logger.path).birthtimeMs;
-					if (born > 0) generationStartedAt = born;
+					if (born > 0) generationStartedAt = Math.min(generationStartedAt, born);
 				} catch (err) {
 					if (err.code !== 'ENOENT') throw err;
 				}
@@ -154,16 +154,10 @@ function logRotator({
 					if (err.code !== 'ENOENT') hdbLogger.error('Error reading rotated log directory', rotatedLogDir, err);
 					candidates = [];
 				}
-				let activeStats;
-				try {
-					activeStats = statSync(logger.path);
-				} catch (err) {
-					if (err.code !== 'ENOENT') throw err;
-				}
-				const { released, liveLogPaths } = await requestStaleDescriptorRelease(logger.path, activeStats);
-				liveLogPaths.add(logger.path);
+				const { released, liveLogPaths } = await requestStaleDescriptorRelease();
+				const liveLogs = new Set([...liveLogPaths, logger.path].map((p) => path.resolve(p)));
 
-				if (released && compressArchives) await compressPendingArchives(rotatedLogDir, candidates, liveLogPaths);
+				if (released && compressArchives) await compressPendingArchives(rotatedLogDir, candidates, liveLogs);
 
 				if (released && (retention || reclamationPriority)) {
 					// remove old logs after retention time
@@ -177,7 +171,7 @@ function logRotator({
 							// (`logging.rotation.path` defaults to `log`, as does `logging.root`), so it also
 							// holds the logs currently being written — including a component's, which loads in
 							// a worker and is only known here because the peers reported it.
-							if (liveLogPaths.has(archivePath)) continue;
+							if (liveLogs.has(path.resolve(archivePath))) continue;
 							// Unlinking an inode a stalled writer still holds loses whatever it writes next
 							// just as surely as compressing over it would.
 							if (isArchivePendingQuiescence(archivePath)) continue;
@@ -186,7 +180,8 @@ function logRotator({
 								await fsProm.unlink(archivePath);
 							}
 						} catch (err) {
-							hdbLogger.error('Error trying to remove log', file, err);
+							// The compression sweep above unlinks archives from this same listing.
+							if (err.code !== 'ENOENT') hdbLogger.error('Error trying to remove log', file, err);
 						}
 					}
 				}
