@@ -29,22 +29,6 @@ parentPort
 					parentPort.postMessage({ type: 'released', cleared });
 					break;
 				}
-				case 'recreate': {
-					// Mirrors RaceOp.post recreate: seed put, then allSettled([delete, create]).
-					await LockTest.put({ id: message.id, n: 0 });
-					const [delP, createP] = await Promise.allSettled([
-						LockTest.delete(message.id),
-						(async () => LockTest.create({ id: message.id, n: 99 }))(),
-					]);
-					parentPort.postMessage({
-						type: 'recreated',
-						deleteStatus: delP.status,
-						createStatus: createP.status,
-						deleteError: delP.reason?.message,
-						createError: createP.reason?.message,
-					});
-					break;
-				}
 				case 'increment': {
 					// `end` is taken before the commit (and so before the release): the critical section of
 					// one holder must end before the next holder's lock commits

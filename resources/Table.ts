@@ -2050,6 +2050,15 @@ export function makeTable(options) {
 				// A locked record stages its update here rather than at lock() time: a held lock's record is
 				// often written after the acquiring request's transaction completed, which would have dropped
 				// an update staged then. Nothing set means nothing to stage — a locked absent id stays absent.
+				// For a scoped lock: verify the lock is still alive. If #lockWritable is set but neither a
+				// hold handle nor a live scoped handle exists in recordLocks, the lease expired between lock
+				// acquisition and this save() — throw 409 so the caller doesn't silently commit stale data.
+				if (!this.#lockHandle) {
+					const link = txnForContext(this.getContext());
+					if (!link.recordLockFor(primaryStore, writeKeyId(this.getId()))) {
+						throw new ClientError('Record lock lease expired', 409);
+					}
+				}
 				const changes = this.#changes;
 				if (changes && Object.keys(changes).length > 0) {
 					this.#savingOperation = null;
@@ -2061,7 +2070,11 @@ export function makeTable(options) {
 						}
 						// On an ImmediateTransaction _writeUpdate already committed the write (op.saved = true).
 						// Do not re-enter save() or it submits a second empty native commit.
-						if (op?.saved) return;
+						// op.innerCommit is the real native-transaction commit Promise, set in
+						// DatabaseTransaction.save() on the immediateCommit path — the outer ImmediateTransaction
+						// commit resolves before it settles (fire-and-forget), so we must await it here to
+						// ensure the write is durable before save() resolves to the caller.
+						if (op?.saved) return op?.innerCommit;
 						return this.save();
 					});
 				}
@@ -2384,8 +2397,9 @@ export function makeTable(options) {
 		/**
 		 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
 		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
-		 * in process memory only — no durable writes — and serializes local writers to the record.
-		 * The generation expires after `lease` if it is never released.
+		 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
+		 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
+		 * gated or blocked. The generation expires after `lease` if it is never released.
 		 *
 		 * Transaction-scoped (default): write through the returned record (or the table's static verbs
 		 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
@@ -2410,16 +2424,27 @@ export function makeTable(options) {
 			}
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.released && !scoped.expired) {
-				if (resolved.hold) {
-					// Upgrade scoped → held: create a fresh hold handle with the requested lease timer and
-					// retire the scoped one (setting released=true prevents it from double-unlocking).
+				if (resolved.hold && !scoped.hold) {
+					// Upgrade scoped → hold: the native key stays locked (the scoped handle owns it);
+					// retire the scoped handle (released=true so the commit does not double-release the key)
+					// and create a fresh hold handle that inherits native-key ownership.
 					link.unregisterRecordLock(scoped);
-					scoped.released = true;
+					scoped.released = true; // prevent double-unlock on commit; key stays locked
 					const holdHandle = makeKeyLockHandle(primaryStore, scoped.key, scoped.keyId, resolved.lease, true);
 					link.registerRecordLock(holdHandle);
+					// Re-pin the transaction clock at the hold handle's acquiredAt so the hold write's
+					// lockStamp matches link.timestamp and the mixed-transaction guard does not fire.
+					link.timestamp = holdHandle.acquiredAt;
 					return Promise.resolve(this.#reloadLocked(id, holdHandle));
 				}
-				return Promise.resolve(this.#reloadLocked(id, null));
+				// Already held with the same type: re-entrant return.
+				return Promise.resolve(this.#reloadLocked(id, scoped.hold ? scoped : null));
+			}
+			// Guard: a scoped lock() must be acquired before the transaction writes.
+			// Acquiring after writes have been staged would not pin the clock at the lock time and
+			// breaks the invariant that the scoped record reflects the state at lock acquisition.
+			if (!resolved.hold && (link.writes.length > 0 || link.timestamp)) {
+				throw new ClientError('lock() must be called before the transaction writes', 400);
 			}
 			const key = lockAttemptKey(tableId, id);
 			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
@@ -2464,6 +2489,8 @@ export function makeTable(options) {
 		}
 		/**
 		 * Release the lock this instance holds. Resolves true when this call cleared the native key lock.
+		 * Works for both held (`{ hold: true }`) and transaction-scoped locks. After unlock() the
+		 * instance is no longer lock-writable; writes through it require a fresh lock.
 		 */
 		unlock(): Promise<boolean> {
 			const link = txnForContext(this.getContext());
@@ -2472,15 +2499,17 @@ export function makeTable(options) {
 			if (held) {
 				if (held.released) return Promise.resolve(false);
 				this.#lockHandle = undefined;
+				this.#lockWritable = false;
 				link.unregisterRecordLock(held);
 				return Promise.resolve(held.release());
 			}
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.released) {
-				throw new ClientError(
-					'A transaction-scoped lock is released when its transaction commits; only a held lock ({ hold: true }) is released with unlock()',
-					400
-				);
+				// Early-release a transaction-scoped lock: remove it from recordLocks so the commit
+				// does not try to release it again, then release the native key.
+				link.unregisterRecordLock(scoped);
+				this.#lockWritable = false;
+				return Promise.resolve(scoped.release());
 			}
 			return Promise.resolve(false);
 		}
@@ -2653,7 +2682,11 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				deferSave: true,
-				lockHandle: this.#lockHandle,
+				// Include the scoped lock handle (if any) so the expired-handle guard in
+				// DatabaseTransaction.save() can throw 409 when the lease has lapsed.
+				lockHandle:
+					this.#lockHandle ??
+					(this.#lockWritable ? transaction.recordLockFor(primaryStore, writeKeyId(id)) : undefined),
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
@@ -3421,6 +3454,9 @@ export function makeTable(options) {
 				entry,
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
+				lockHandle:
+					this.#lockHandle ??
+					(this.#lockWritable ? transaction.recordLockFor(primaryStore, writeKeyId(id)) : undefined),
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)

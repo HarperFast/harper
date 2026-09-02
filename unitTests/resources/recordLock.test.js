@@ -417,6 +417,185 @@ describe('Record locks (harper#483)', () => {
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
 		});
+
+		it('scoped lock with expired lease: write through the returned record throws 409', async function () {
+			// Item 2a: a scoped lock whose lease expires before save() should throw 409.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let caughtErr;
+			await transaction(async () => {
+				const locked = await LockTest.lock(recordId, { lease: MIN_LOCK_LEASE_MS });
+				await delay(MIN_LOCK_LEASE_MS + 50); // let the lease expire
+				locked.set('n', 99);
+				try {
+					await locked.save();
+				} catch (err) {
+					caughtErr = err;
+				}
+			}).catch(() => {}); // transaction may abort
+			assert.ok(caughtErr, 'save() threw after lease expired');
+			assert.strictEqual(caughtErr.statusCode, 409, '409 on expired lease');
+		});
+
+		it('hold lock: save() after expiry throws 409', async function () {
+			// Item 2b: a hold lock whose lease expires before save() should throw 409.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS });
+			await delay(MIN_LOCK_LEASE_MS + 50); // let the lease expire
+			holder.set('n', 99);
+			let caughtErr;
+			try {
+				await holder.save();
+			} catch (err) {
+				caughtErr = err;
+			}
+			assert.ok(caughtErr, 'save() threw after hold lease expired');
+			assert.strictEqual(caughtErr.statusCode, 409, '409 on expired hold lease');
+			assert.strictEqual((await LockTest.get(recordId)).n, 0, 'record unchanged');
+		});
+
+		it('holder delete: concurrent put survives (item 3 — _writeDelete carries lockHandle)', async function () {
+			// Phase 0: a concurrent put after the holder's delete has no obligation to be blocked.
+			// The holder delete is stamped at acquiredAt; the concurrent put at real (later) time wins under LWW.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			// concurrent put at real (later) time
+			await LockTest.put({ id: recordId, n: 99 });
+			// holder delete stamped at acquiredAt — older than the concurrent put
+			holder.delete();
+			await holder.unlock();
+			const after = await LockTest.get(recordId);
+			assert.strictEqual(after?.n, 99, 'concurrent put survives holder delete (LWW)');
+		});
+
+		it('scoped lock() after transaction writes throws 400 (item 4a)', async function () {
+			// lock() must be called before the transaction has any staged writes.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let caughtErr;
+			await transaction(async () => {
+				await LockTest.put({ id: recordId, n: 1 }); // write first
+				try {
+					await LockTest.lock(recordId); // then lock — should throw
+				} catch (err) {
+					caughtErr = err;
+				}
+			}).catch(() => {});
+			assert.ok(caughtErr, 'lock() after writes threw');
+			assert.strictEqual(caughtErr.statusCode, 400, '400 on lock-after-write');
+		});
+
+		it('hold write in mixed transaction with prior write throws 400 (item 4b)', async function () {
+			// Mixing a hold write into a transaction that already fixed its timestamp violates LWW.
+			// The hold lock must be acquired inside the transaction() scope so both writes share the
+			// same link.  A hold lock acquired outside never joins the inner transaction's link.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			const otherId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let caughtErr;
+			let holdHandle;
+			await transaction(async () => {
+				// Acquire the hold lock inside the transaction so it shares this link.
+				holdHandle = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				// This put fixes link.timestamp to a real (later) clock value, after lock acquiredAt.
+				await LockTest.put({ id: otherId, n: 1 });
+				// Now the hold write — link.timestamp (from put) != lockStamp (from acquiredAt) → 400.
+				holdHandle.set('n', 99);
+				try {
+					await holdHandle.save();
+				} catch (err) {
+					caughtErr = err;
+				}
+			}).catch(() => {});
+			assert.ok(caughtErr, 'hold write in mixed transaction threw');
+			assert.strictEqual(caughtErr.statusCode, 400, '400 on hold write in mixed transaction');
+			if (holdHandle && !holdHandle.released) await holdHandle.unlock();
+		});
+
+		it('scoped→hold upgrade: second lock({hold:true}) upgrades cleanly (item 5)', async function () {
+			// Acquiring with {hold:true} on a key already scoped-locked in this transaction
+			// should upgrade (not double-release the native key or mark the handle released early).
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdHandle;
+			await transaction(async () => {
+				const scoped = await LockTest.lock(recordId); // scoped
+				scoped.set('n', 1);
+				// Upgrade to hold within the same transaction
+				holdHandle = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				holdHandle.set('n', 2);
+				await holdHandle.save();
+			});
+			// hold survives transaction commit
+			assert.ok(holdHandle && !holdHandle.released, 'hold handle alive after txn commit');
+			// A concurrent lock attempt should block (hold is still held)
+			const lockAttempt = LockTest.lock(recordId, { timeout: 100 });
+			await assert.rejects(lockAttempt, { statusCode: 423 }, 'concurrent lock correctly blocked');
+			await holdHandle.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'hold write landed');
+		});
+
+		it('scoped→hold re-entrant: second lock({hold:true}) on already-hold returns live handle (item 5 re-entrant)', async function () {
+			// If the same instance already holds a hold handle (via #lockHandle), re-calling lock()
+			// must return the existing handle, not create a new one or corrupt state.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const first = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			// Re-enter lock() on the same instance; should return immediately without error.
+			const second = await first.lock({ hold: true, lease: 5000 });
+			assert.strictEqual(second, first, 're-entrant hold returns same instance');
+			first.set('n', 7);
+			await first.save();
+			await first.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 7, 'write landed');
+		});
+
+		it('unlock() clears #lockWritable so writes after unlock are rejected (item 6)', async function () {
+			// After unlock() the instance must no longer be lock-writable.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			holder.set('n', 1);
+			await holder.save();
+			await holder.unlock();
+			// After unlock, writes through the instance should not commit (no #lockWritable).
+			holder.set('n', 99);
+			await holder.save(); // should be a no-op (no lockWritable, no savingOperation)
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write after unlock did not land');
+		});
+
+		it('unlock() on a scoped lock releases early and is safe (item 6 scoped)', async function () {
+			// unlock() on a scoped lock should release the native key and not throw 400.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				const scoped = await LockTest.lock(recordId);
+				scoped.set('n', 1);
+				await scoped.save();
+				const released = await scoped.unlock(); // should not throw
+				assert.strictEqual(released, true, 'unlock() returned true for scoped');
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write still landed (committed before unlock)');
+		});
 	});
 
 	describe('recreate-after-delete race (issue-(f))', function () {

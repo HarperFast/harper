@@ -1,7 +1,7 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { ServerError } from '../utility/errors/hdbError.ts';
+import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
 import { type RecordLockHandle } from './recordLock.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
@@ -331,6 +331,11 @@ export type TransactionWrite = {
 	// ImmediateTransaction's sequential immediateCommit saves don't collide: each write carries its
 	// own stamp independently of this.timestamp, which may not reset to 0 between saves.
 	lockStamp?: number;
+	// Set by DatabaseTransaction.save() on the immediateCommit path: the Promise returned by the
+	// inner this.commit({ transaction }) call. The ImmediateTransaction outer commit resolves before
+	// this settles (fire-and-forget from the if-branch), so Table.save()'s lock-writable path awaits
+	// it to ensure the write is durable before resolving to the caller.
+	innerCommit?: MaybePromise<CommitResolution>;
 };
 
 /**
@@ -886,11 +891,30 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
+		// Guard: a write staged through an expired or released lock handle must not land.
+		// The handle's lease timer already unlocked the native key; another holder may have taken it.
+		if (operation.lockHandle && (operation.lockHandle.expired || operation.lockHandle.released)) {
+			throw new ClientError('Record lock lease expired', 409);
+		}
 		// Hold write: stamp the transaction clock once — only when no timestamp is fixed yet.
 		// A mixed transaction that already has a timestamp (set by an earlier write) uses it as-is.
 		if (operation.lockHandle?.hold) {
 			if (!operation.lockStamp) operation.lockStamp = operation.lockHandle.nextHolderVersion();
-			if (!this.timestamp) this.timestamp = operation.lockStamp;
+			if (this.open === TRANSACTION_STATE.CLOSED) {
+				// ImmediateTransaction: each save() is an independent commit; always stamp with lockStamp
+				// so sequential hold saves each get their own acquisition-time version stamp.
+				this.timestamp = operation.lockStamp;
+			} else if (!this.timestamp) {
+				this.timestamp = operation.lockStamp;
+			} else if (this.timestamp !== operation.lockStamp) {
+				// The OPEN transaction already carries a timestamp from a prior write; the hold write's
+				// LWW guarantee (stamp at acquiredAt so concurrent writers at real time win) no longer
+				// holds for the held record. Throw rather than silently violating the ordering contract.
+				throw new ClientError(
+					'A hold-lock write mixed into a transaction with earlier writes cannot guarantee LWW ordering; write held records in their own transaction or through the record returned by lock()',
+					400
+				);
+			}
 		}
 		let txnTime = this.timestamp;
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
@@ -964,7 +988,13 @@ export class DatabaseTransaction implements Transaction {
 			operation.appendedAuditEntry = true;
 		}
 		if (immediateCommit) {
-			return this.commit({ ...options, transaction }); // immediately commit if the harper transaction is closed
+			// immediately commit if the harper transaction is closed
+			const innerCommit = this.commit({ ...options, transaction });
+			// Expose on the operation so the lock-writable Table.save() path can await the real
+			// native commit — without this the ImmediateTransaction outer commit resolves before
+			// the native transaction.commit() settles (fire-and-forget from the if-branch).
+			operation.innerCommit = innerCommit;
+			return innerCommit;
 		}
 	}
 
@@ -1578,25 +1608,15 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		super();
 		this.db = db;
 	}
-	_pendingInnerCommit: Promise<any> | undefined;
 	save(...args: any[]): any {
 		const transaction = args[0];
 		if (this.isCommitting) {
-			// if we are in the commit, do the save and force a reload so we get a read within the transaction.
-			// When the transaction is already CLOSED (a subsequent sequential save after the first committed),
-			// DatabaseTransaction.save() creates a fresh native transaction and commits it immediately
-			// (immediateCommit = true), returning an async Promise. Stash that Promise so the outer save
-			// (isCommitting = false) can return it to addWrite — without this the caller's await save()
-			// resolves before the write is durable (fire-and-forget).
-			const innerResult: any = super.save(transaction, null as any, true);
-			if (innerResult?.then) this._pendingInnerCommit = innerResult;
+			// if we are in the commit, do the save and force a reload so we get a read within the transaction
+			super.save(transaction, null as any, true);
 		} else {
 			this.isCommitting = true;
 			return when(this.commit(), () => {
 				this.isCommitting = false;
-				const pending = this._pendingInnerCommit;
-				this._pendingInnerCommit = undefined;
-				return pending;
 			});
 		}
 	}

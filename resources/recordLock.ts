@@ -189,7 +189,7 @@ export async function acquireRecordKey(
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
 		await new Promise<void>((resolve) => {
-			const t = setTimeout(resolve, remaining);
+			const t = setTimeout(resolve, remaining).unref();
 			wakeResolve = () => {
 				clearTimeout(t);
 				resolve();
