@@ -33,10 +33,10 @@
  * `createCheckpoint()` flushes the memtable — which the oracle needs anyway, since Harper opens
  * table/index column families with `disableWAL` defaulting to true (resources/databases.ts
  * openRocksDatabase) and a committed write can otherwise sit only in the writer's memtable. One
- * checkpoint covers every column family at a single point in time, so no arm can read two families
- * from two different instants. `refreshOracle()` takes a fresh one and reopens every handle before
- * each raw read, and the 'oracle proof' tests below demonstrate — rather than assert — that the
- * oracle really reads that snapshot, and that it detects a phantom the join cannot, on both tables.
+ * checkpoint operation covers every column family, rather than opening each one separately at
+ * unrelated instants. `refreshOracle()` takes a fresh one and reopens every handle before each raw
+ * read, and the 'oracle proof' tests below demonstrate — rather than assert — that the oracle
+ * really reads that snapshot, and that it detects a phantom the join cannot, on both tables.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/delete-index-atomicity-rocksdb.test.ts"
@@ -215,12 +215,13 @@ suite(
 			const body = await res.text();
 			strictEqual(res.status, 200, `snapshot control should succeed; got ${res.status} ${body.slice(0, 300)}`);
 			const published = JSON.parse(body).path;
+			const expected = resolve(ctx.harper.dataRootDir, SNAPSHOT_DIR, String(snapshotSeq));
+			if (published === expected) snapshotPath = published;
 			strictEqual(
 				published,
-				join(ctx.harper.dataRootDir, SNAPSHOT_DIR, String(snapshotSeq)),
+				expected,
 				'the oracle must only ever open a checkpoint at the path the fixture derives for this sequence'
 			);
-			snapshotPath = published;
 		}
 		function openDbi(name: string): RocksDatabase {
 			// Reading the live directory instead would reintroduce the compaction race the checkpoint
@@ -291,8 +292,8 @@ suite(
 				'the checkpoint must contain the write that preceded it'
 			);
 
-			// Flushed, so snapshot-2 is durably in the live directory's own SSTs: the only thing that
-			// can keep the oracle from seeing it now is that the oracle is not reading that directory.
+			// A held checkpoint stays frozen after the live database advances; the next refresh below
+			// must replace it with a checkpoint that includes the new write.
 			await seed('ItemF', [{ id: 'snapshot-2', category: 'SNAPSHOT' }]);
 			const flushed = await postJSON('/Flush/', {});
 			strictEqual(flushed.status, 200, 'flush control should succeed');

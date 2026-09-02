@@ -41,9 +41,9 @@ export class TableInfo extends Resource {
 	}
 }
 
-// Moves the live database forward without touching the oracle's checkpoint, which is how the test
-// proves the oracle reads the checkpoint: a write that is durably in the live directory's SSTs and
-// still invisible to the oracle can only mean the oracle is not reading that directory.
+// Moves the live database forward without touching the held checkpoint, so the test can prove that
+// the next refresh replaces it with one containing the new write. The handle-path assertion proves
+// that the oracle reads the checkpoint rather than the live directory.
 // `flushDatabases()` is not reachable from component code (security/jsLoader.ts exposes a curated
 // allowlist), so this calls `.flush()` on a table's primaryStore; RocksDB's flush is atomic across
 // every column family sharing the directory, so one call covers both tables and all indices.
