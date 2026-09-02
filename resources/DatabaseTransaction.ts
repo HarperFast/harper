@@ -15,6 +15,7 @@ const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
+import { describeHolderCandidates, getReportThresholdMs, reportLongLivedHolder } from './longLivedTransactions.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
 // Read options for a rotated generation's native transactions; shared because they never vary.
@@ -431,6 +432,10 @@ export class DatabaseTransaction implements Transaction {
 	// keep a write-holding head immortal.
 	declare writeTimeout: number;
 	timeoutBudget = 0;
+	// When this instance's native handle was opened (0 = none). Declared with a numeric initializer so
+	// the class shape stays monomorphic on the write path; the single clock read per handle is what lets
+	// the monitor age a handle without calling into the registry every tick.
+	handleOpenedAt = 0;
 	// save() only stages here; ImmediateTransaction overrides it to commit, which addWrite must not defer
 	saveCommits = false;
 	// True where save() puts the write into this transaction's native handle, which is what lets a scope
@@ -564,6 +569,7 @@ export class DatabaseTransaction implements Transaction {
 		this.transaction = transaction;
 		this.readTxnsUsed = 1;
 		this.baseReadRefConsumed = false;
+		this.handleOpenedAt = performance.now();
 	}
 
 	/**
@@ -604,6 +610,7 @@ export class DatabaseTransaction implements Transaction {
 		this.transaction = null;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
+		this.handleOpenedAt = 0;
 		return transaction;
 	}
 
@@ -862,7 +869,14 @@ export class DatabaseTransaction implements Transaction {
 							oldestOutstandingCommit.startedFrom,
 							oldestOutstandingCommit.nativeTransaction
 						) +
-						`. Further record updates and publishes from new application requests on this thread ` +
+						`.` +
+						// The holder this commit is parked on (harper#2471). Contained inside describeHolderCandidates,
+						// which returns '' on any failure: a registry error here must not replace the 503 below with a 500.
+						describeHolderCandidates(
+							oldestOutstandingCommit.store?.rootStore?.path,
+							oldestOutstandingCommit.nativeTransaction?.id
+						) +
+						` Further record updates and publishes from new application requests on this thread ` +
 						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
@@ -1908,17 +1922,61 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 	return false;
 }
 
+/**
+ * Name a transaction still holding its native handle past the reporting threshold, and why the
+ * branches below are not reaping it (harper#2471). Attribution only: it reads state, calls nothing
+ * with a side effect — `chainStillActive` decays `writeTimeout`, so the chain case is inferred from
+ * this link's own re-armed `timeout` rather than by asking — and runs before the branches so it
+ * cannot reorder them.
+ */
+function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void {
+	if (thresholdMs === 0 || !txn.transaction || txn.handleOpenedAt === 0) return;
+	const ageMs = performance.now() - txn.handleOpenedAt;
+	if (ageMs < thresholdMs) return;
+	const states: string[] = [];
+	if (txn.sourceApply) states.push('source-apply');
+	if (txn.isReplay) states.push('replay');
+	if (txn.committing) states.push('commit-phase');
+	if (txn.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
+	// A transaction that keeps writing (or a chain link whose sibling does) re-arms its own idle
+	// limit indefinitely and so never reaches the over-limit branches at all.
+	if (txn.timeout > 0) states.push('active');
+	if (states.length === 0) states.push('over-limit');
+	let pendingWrites = 0;
+	for (let link: DatabaseTransaction = txn; link; link = link.next)
+		for (const write of link.writes) if (write) pendingWrites++;
+	reportLongLivedHolder({
+		databasePath: (txn.db as any)?.rootStore?.path,
+		nativeId: txn.transaction.id,
+		ageMs,
+		databaseName: (txn.db as any)?.rootStore?.databaseName ?? (txn.db as any)?.name,
+		tableName: (txn.db as any)?.name,
+		pendingWrites,
+		states,
+		timeoutBudget: txn.timeoutBudget,
+		startedFrom: txn.startedFrom,
+	});
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
+		// Once per tick, not per transaction: the value is config-backed and every transaction on this
+		// tick is measured against the same threshold.
+		const reportThresholdMs = getReportThresholdMs();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
-		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains);
+		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs);
 		for (const txn of supervisedWriteRoots)
-			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains);
+			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs);
 	}, txnExpiration).unref();
 
-	function monitorTransaction(txn: DatabaseTransaction, checkedCommitPhaseChains: Set<DatabaseTransaction>) {
+	function monitorTransaction(
+		txn: DatabaseTransaction,
+		checkedCommitPhaseChains: Set<DatabaseTransaction>,
+		reportThresholdMs: number
+	) {
+		reportIfLongLived(txn, reportThresholdMs);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
