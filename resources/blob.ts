@@ -36,7 +36,9 @@ import {
 	unlink,
 	readdirSync,
 	existsSync,
+	fstat,
 	fstatSync,
+	stat,
 	watch,
 	write,
 	statSync,
@@ -712,11 +714,18 @@ class FileBackedBlob extends (Blob as unknown as { new (): Blob }) implements Bl
 			// still catches an in-place PENDING/ERROR stamp (harper-pro#481).
 			let fileSwapped = false;
 			try {
-				fileSwapped = fstatSync(fd).ino !== statSync(filePath).ino;
+				const currentFd = fd;
+				const [openStat, pathStat] = await Promise.all([
+					new Promise<{ ino: number }>((res, rej) => fstat(currentFd, (error, s) => (error ? rej(error) : res(s)))),
+					new Promise<{ ino: number }>((res, rej) => stat(filePath, (error, s) => (error ? rej(error) : res(s)))),
+				]);
+				fileSwapped = openStat.ino !== pathStat.ino;
 			} catch {
-				// the path is momentarily unstatable; fall through to the header re-read, which reports the
-				// outcome. The blob hold makes a vanished path unlikely here.
+				// the path is momentarily unstatable, or the descriptor was closed by a concurrent cancel;
+				// fall through — the cancellation recheck below returns, and otherwise the header re-read
+				// reports the outcome. The blob hold makes a vanished path unlikely here.
 			}
+			if (cancelled || fd == null) return; // the identity stat awaited; a cancel may have landed
 			if (fileSwapped) {
 				// Null `fd` before closing it: a closed descriptor number left in `fd` across the await
 				// below would be closed a second time by a concurrent cancel()/closeFd() — after the OS may
