@@ -317,7 +317,17 @@ describe('queryWindowsProcessTable', function () {
 			spawned.created !== null && spawned.created >= before - 5_000 && spawned.created <= Date.now() + 50,
 			`creation time ${spawned.created} should sit between ${before} and now`
 		);
-		assert.deepEqual(pids(selectWindowsProcessTree(table, identity)), [child.pid]);
+		// Windows gives a console process its own conhost.exe child, so the tree is the spawned
+		// child plus whatever it parents — every member must chain back to it.
+		const members = selectWindowsProcessTree(table, identity);
+		const memberPids = new Set(pids(members));
+		assert.ok(memberPids.has(child.pid), `the spawned child should be a member: ${JSON.stringify(members)}`);
+		for (const member of members) {
+			assert.ok(
+				member.pid === child.pid || memberPids.has(member.ppid),
+				`member ${member.pid} (${member.name}) does not descend from the spawned child: ${JSON.stringify(members)}`
+			);
+		}
 		await confirmWindowsProcessTreeGone(identity, { label: 'unit test child' });
 		assert.ok(child.exitCode !== null || child.signalCode !== null, 'the child should have been terminated');
 	});
