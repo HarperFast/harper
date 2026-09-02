@@ -65,6 +65,11 @@ export function unregisterLogSink(logPath: string) {
 	sinksByPath.delete(logPath);
 }
 
+/** Whether this path is a log some isolate is writing, rather than something left in the directory. */
+export function isRegisteredLogPath(logPath: string) {
+	return sinksByPath.has(logPath);
+}
+
 export function nextGenerationId() {
 	return `${process.pid}-${transport?.threadId ?? 0}-${requestCounter++}`;
 }

@@ -8,7 +8,7 @@ import hdbLogger from './harper_logger.ts';
 import { CONFIG_PARAMS } from '../hdbTerms.ts';
 import { convertToMS } from '../common_utils.ts';
 import { onStorageReclamation } from '../../server/storageReclamation.ts';
-import { requestStaleDescriptorRelease } from './logGenerationCoordinator.ts';
+import { isRegisteredLogPath, requestStaleDescriptorRelease } from './logGenerationCoordinator.ts';
 import {
 	compressPendingArchives,
 	INVALID_MAX_SIZE_MSG,
@@ -127,21 +127,25 @@ function logRotator({
 					}
 				}
 			}
-			if (retention || reclamationPriority) {
-				// Retention deletes archives regardless of which thread rotated them, and a worker's own
-				// unproven-archive bookkeeping is invisible here, so prove the whole set in one round
-				// trip: every peer releases any descriptor that is not on the live generation.
+			// Both the compression sweep and retention touch archives this thread did not rotate, so both
+			// need the same proof: every peer releases any descriptor that is not on the live
+			// generation. One round trip per tick serves both. Not gated on retention being configured —
+			// retention is unset by default, and a worker's uncompressed archive still needs finishing.
+			let released;
+			if (compressArchives || retention || reclamationPriority) {
 				let activeStats;
 				try {
 					activeStats = statSync(logger.path);
 				} catch (err) {
 					if (err.code !== 'ENOENT') throw err;
 				}
-				const released = await requestStaleDescriptorRelease(logger.path, activeStats);
-				// Once the whole directory is proven quiescent, anything still plain there is an archive
-				// some isolate could not finish — including a worker's, which this thread cannot see.
+				released = await requestStaleDescriptorRelease(logger.path, activeStats);
+				// Anything still plain in the directory is an archive some isolate could not finish —
+				// including a worker's, which this thread's own bookkeeping cannot see.
 				if (released && compressArchives) await compressPendingArchives(rotatedLogDir);
+			}
 
+			if (retention || reclamationPriority) {
 				// remove old logs after retention time
 				// adjust retention time if there is a reclamation priority in place
 				const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
@@ -157,6 +161,12 @@ function logRotator({
 				for (const file of files) {
 					try {
 						const archivePath = path.join(rotatedLogDir, file);
+						// The rotated directory defaults to the log directory itself
+						// (`logging.rotation.path` defaults to `log`, as does `logging.root`), so it also
+						// holds the logs currently being written — this one and every component or external
+						// log sharing the directory. Deleting those by age was already possible before this
+						// change; a live log is never a retention candidate.
+						if (archivePath === logger.path || isRegisteredLogPath(archivePath)) continue;
 						// Unlinking an inode a stalled writer still holds loses whatever it writes next
 						// just as surely as compressing over it would, so retention waits for the same proof.
 						if (!released || isArchivePendingQuiescence(archivePath)) continue;

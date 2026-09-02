@@ -62,6 +62,17 @@ export function resolveRotatedLogDir(logPath: string, configuredPath?: string) {
 // rotate: worker threads share the process's pid, and this counter is per-isolate module state.
 let rotationSequence = 0;
 
+// The archive directory defaults to the log's own directory (`logging.rotation.path` defaults to
+// `log`, as does `logging.root`), so it holds live logs — hdb.log, and every component or external
+// log sharing the directory — alongside archives. Anything that compresses or deletes by scanning
+// that directory has to be able to tell the two apart, and the name this module writes is the only
+// thing that distinguishes them.
+const ARCHIVE_NAME = /-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-\d+-\d+-\d+\.log(\.gz)?$/;
+
+export function isArchiveName(file: string) {
+	return ARCHIVE_NAME.test(file);
+}
+
 export function archivePathFor(logPath: string, rotatedLogDir: string) {
 	// Name the archive after its source log (hdb, external, a component name, ...), not a fixed
 	// "HDB" literal — external/component loggers inherit rotation from the main logger (#1877) and
@@ -148,7 +159,7 @@ export async function compressPendingArchives(rotatedLogDir: string) {
 	}
 	let compressed = 0;
 	for (const file of files) {
-		if (!file.endsWith('.log') || files.includes(`${file}.gz`)) continue;
+		if (!file.endsWith('.log') || !isArchiveName(file) || files.includes(`${file}.gz`)) continue;
 		if (compressed++ >= MAX_RETRIES_PER_PASS) return;
 		const archivePath = join(rotatedLogDir, file);
 		if (unprovenArchives.has(archivePath)) continue;
