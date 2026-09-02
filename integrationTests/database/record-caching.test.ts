@@ -2,6 +2,12 @@
  * PrimaryRocksDatabase record-caching integration tests.
  * Exercises cache invalidation correctness, write-then-read under load, and
  * rapid write-read-write cycles at the HTTP/REST layer with multi-worker Harper.
+ *
+ * S1 reads through CacheRecordOnWorker (record-caching/resources.js) until every configured worker
+ * has answered (utils/connectionPerRequest.ts): each worker holds its own cache, and a plain REST
+ * GET on a keep-alive connection cannot say which one served it. S2's 200-wide fan-out already
+ * spreads across the pool, so its transport is unchanged.
+ *
  * Skipped on LMDB (PrimaryRocksDatabase is RocksDB-only).
  */
 import { suite, test, before, after } from 'node:test';
@@ -11,10 +17,45 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { WORKER_COUNT, assertMultiWorker } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+interface Rec {
+	id: string;
+	name: string;
+	counter: number;
+}
+
+interface WorkerCacheView {
+	threadId: number;
+	exists: boolean;
+	/** The per-worker cache entry a point-GET consults. */
+	cached: Rec | null;
+	/** The same id through Table's read semantics on that worker. */
+	read: Rec | null;
+}
+
+async function readCacheOnWorker(httpURL: string, authHeader: string, id: string): Promise<WorkerCacheView> {
+	const r = await fetchOnNewConnection(`${httpURL}/CacheRecordOnWorker/?id=${encodeURIComponent(id)}`, {
+		headers: { Authorization: authHeader },
+	});
+	if (r.status !== 200) throw new Error(`CacheRecordOnWorker ${id} returned ${r.status}`);
+	return r.json() as Promise<WorkerCacheView>;
+}
+
+/** Reads until all `WORKER_COUNT` workers have answered, so the caller can assert about every one. */
+function readCacheOnEveryWorker(httpURL: string, authHeader: string, id: string): Promise<WorkerCacheView[]> {
+	return observeEveryWorker(
+		() => readCacheOnWorker(httpURL, authHeader, id),
+		(view) => view.threadId,
+		{
+			workerCount: WORKER_COUNT,
+		}
+	);
+}
 
 async function putRecord(
 	httpURL: string,
@@ -62,7 +103,7 @@ async function waitForTable(httpURL: string, authHeader: string): Promise<void> 
 
 // ── Scenario 1 & 2: 4-worker cache invalidation + load ──────────────────────
 
-suite('record-caching [rocksdb] 4-worker', { skip: SKIP || process.platform === 'win32' }, (ctx: ContextWithHarper) => {
+suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_MULTI_WORKER_HTTP }, (ctx: ContextWithHarper) => {
 	let httpURL: string;
 	let authHeader: string;
 
@@ -81,16 +122,27 @@ suite('record-caching [rocksdb] 4-worker', { skip: SKIP || process.platform === 
 		await teardownHarper(ctx);
 	});
 
-	test('S1 cache invalidation: write→GET(warm)→PUT→GET must return updated value', async () => {
+	test('S1 cache invalidation: a PUT must not leave a stale cached value on ANY worker', async () => {
 		const id = 's1-record';
 		await putRecord(httpURL, authHeader, id, 'original', 1);
-		const first = await getRecord(httpURL, authHeader, id);
-		strictEqual(first?.name, 'original', 'first GET should return original value');
+
+		// Warm every worker's cache, so the update below has a stale entry to invalidate everywhere.
+		for (const view of await readCacheOnEveryWorker(httpURL, authHeader, id)) {
+			strictEqual(view.cached?.name, 'original', `worker ${view.threadId} did not warm with the original value`);
+		}
 
 		await putRecord(httpURL, authHeader, id, 'updated', 2);
-		const second = await getRecord(httpURL, authHeader, id);
-		strictEqual(second?.name, 'updated', 'GET after PUT must not return stale cached value');
-		strictEqual(second?.counter, 2, 'counter must reflect the update');
+
+		const first = await getRecord(httpURL, authHeader, id);
+		strictEqual(first?.name, 'updated', 'GET after PUT must not return stale cached value');
+		strictEqual(first?.counter, 2, 'counter must reflect the update');
+
+		for (const view of await readCacheOnEveryWorker(httpURL, authHeader, id)) {
+			strictEqual(view.cached?.name, 'updated', `worker ${view.threadId} still caches a stale name`);
+			strictEqual(view.cached?.counter, 2, `worker ${view.threadId} still caches a stale counter`);
+			strictEqual(view.read?.name, 'updated', `worker ${view.threadId} still reads a stale name through Table`);
+			strictEqual(view.read?.counter, 2, `worker ${view.threadId} still reads a stale counter through Table`);
+		}
 	});
 
 	test(

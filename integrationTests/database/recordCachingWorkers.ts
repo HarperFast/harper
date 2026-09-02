@@ -16,6 +16,12 @@ const parsedWorkerCount = Number(process.env.HARPER_WORKER_COUNT);
 export const WORKER_COUNT = Number.isInteger(parsedWorkerCount) && parsedWorkerCount > 0 ? parsedWorkerCount : 4;
 
 /**
+ * Harper disables reusePort off Linux (`server/http.ts`), so one worker owns the HTTP port there and
+ * no client can reach the others — a cross-worker suite must skip rather than pass single-worker.
+ */
+export const NO_MULTI_WORKER_HTTP = process.platform === 'win32' || process.platform === 'darwin';
+
+/**
  * Run `fn` over `items` with at most `limit` in flight at once. These suites issue fresh-
  * connection requests (no keep-alive) to spray across the worker pool; firing hundreds at
  * once via an unbounded Promise.all risks ephemeral-port/socket exhaustion on constrained CI

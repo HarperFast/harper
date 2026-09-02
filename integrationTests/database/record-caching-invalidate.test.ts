@@ -17,9 +17,12 @@
  *      raw == null -> cache.delete(id) -> undefined), plus a never-written-key absence check.
  *
  * Reads go through primaryStore.getEntry() directly (resources.js) so we observe the cache
- * layer's literal truth per worker, not Table's higher-level read semantics.
+ * layer's literal truth per worker, not Table's higher-level read semantics, and every read phase
+ * runs until EVERY configured worker has answered (utils/connectionPerRequest.ts) rather than
+ * trusting a fixed-width fan-out to have covered them.
  *
- * Skipped on LMDB (PrimaryRocksDatabase is RocksDB-specific).
+ * Skipped on LMDB (PrimaryRocksDatabase is RocksDB-specific) and where Harper cannot spread HTTP
+ * across workers (NO_MULTI_WORKER_HTTP).
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -28,7 +31,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-import { WORKER_COUNT, assertMultiWorker } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-invalidate');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -44,7 +48,7 @@ type GetResult = {
 
 suite(
 	'record-caching value-shape edge: object <-> invalidated-null [rocksdb] multi-worker',
-	{ skip: SKIP || process.platform === 'win32' },
+	{ skip: SKIP || NO_MULTI_WORKER_HTTP },
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
 		let httpURL: string;
@@ -60,7 +64,9 @@ suite(
 			const deadline = Date.now() + 60_000;
 			while (Date.now() < deadline) {
 				try {
-					const probe = await fetch(`${httpURL}/WidgetGet/?id=probe`, { headers: { Authorization: authHeader } });
+					const probe = await fetchOnNewConnection(`${httpURL}/WidgetGet/?id=probe`, {
+						headers: { Authorization: authHeader },
+					});
 					if (probe.status === 200) break;
 				} catch {
 					/* not ready */
@@ -76,7 +82,7 @@ suite(
 		});
 
 		async function putWidget(id: string, name: string, tag: string): Promise<void> {
-			const res = await fetch(`${httpURL}/Widget/${encodeURIComponent(id)}`, {
+			const res = await fetchOnNewConnection(`${httpURL}/Widget/${encodeURIComponent(id)}`, {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
 				body: JSON.stringify({ id, name, tag }),
@@ -85,7 +91,7 @@ suite(
 		}
 
 		async function putMinimal(id: string): Promise<void> {
-			const res = await fetch(`${httpURL}/Widget/${encodeURIComponent(id)}`, {
+			const res = await fetchOnNewConnection(`${httpURL}/Widget/${encodeURIComponent(id)}`, {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
 				body: JSON.stringify({ id }),
@@ -94,7 +100,7 @@ suite(
 		}
 
 		async function deleteWidget(id: string): Promise<void> {
-			const res = await fetch(`${httpURL}/Widget/${encodeURIComponent(id)}`, {
+			const res = await fetchOnNewConnection(`${httpURL}/Widget/${encodeURIComponent(id)}`, {
 				method: 'DELETE',
 				headers: { Authorization: authHeader },
 			});
@@ -102,7 +108,7 @@ suite(
 		}
 
 		async function invalidateWidget(id: string): Promise<void> {
-			const res = await fetch(`${httpURL}/Invalidate/`, {
+			const res = await fetchOnNewConnection(`${httpURL}/Invalidate/`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
 				body: JSON.stringify({ id }),
@@ -111,7 +117,7 @@ suite(
 		}
 
 		async function getOnce(id: string): Promise<GetResult> {
-			const res = await fetch(`${httpURL}/WidgetGet/?id=${encodeURIComponent(id)}`, {
+			const res = await fetchOnNewConnection(`${httpURL}/WidgetGet/?id=${encodeURIComponent(id)}`, {
 				headers: { Authorization: authHeader },
 			});
 			strictEqual(res.status, 200, `GET ${id} returned ${res.status}`);
@@ -119,9 +125,13 @@ suite(
 			return body;
 		}
 
-		/** Fan out N concurrent point-GETs (maximizes odds of hitting multiple distinct workers). */
-		async function getMulti(id: string, n = 10): Promise<GetResult[]> {
-			return Promise.all(Array.from({ length: n }, () => getOnce(id)));
+		/** Point-GETs until every configured worker has answered, so the assertions below cover all. */
+		function getOnEveryWorker(id: string): Promise<GetResult[]> {
+			return observeEveryWorker(
+				() => getOnce(id),
+				(r) => r.threadId,
+				{ workerCount: WORKER_COUNT }
+			);
 		}
 
 		function assertAllObject(label: string, results: GetResult[], expected: { name: string; tag: string }) {
@@ -173,18 +183,18 @@ suite(
 		test('S1 object -> invalidate(null) -> object transition, cross-worker', async () => {
 			const id = 's1-obj2null';
 			await putWidget(id, 'original', 'x');
-			let results = await getMulti(id, 12);
+			let results = await getOnEveryWorker(id);
 			assertAllObject('S1 warm object', results, { name: 'original', tag: 'x' });
 
 			// Invalidate: real versioned null write. Every worker whose cache is warm with the
 			// stale object must NOT keep serving it.
 			await invalidateWidget(id);
-			results = await getMulti(id, 16);
+			results = await getOnEveryWorker(id);
 			assertAllNull('S1 after invalidate', results);
 
 			// And back to a (different) object once more (round-trip both directions).
 			await putWidget(id, 'restored', 'y');
-			results = await getMulti(id, 12);
+			results = await getOnEveryWorker(id);
 			assertAllObject('S1 after re-create', results, { name: 'restored', tag: 'y' });
 
 			strictEqual(failures.length, 0, `S1 failures:\n${failures.join('\n')}`);
@@ -200,11 +210,11 @@ suite(
 				for (let round = 0; round < ROUNDS; round++) {
 					if (round % 2 === 0) {
 						await putWidget(id, `r${round}`, 'obj');
-						const results = await getMulti(id, 6);
+						const results = await getOnEveryWorker(id);
 						assertAllObject(`S2 round ${round} (object)`, results, { name: `r${round}`, tag: 'obj' });
 					} else {
 						await invalidateWidget(id);
-						const results = await getMulti(id, 6);
+						const results = await getOnEveryWorker(id);
 						assertAllNull(`S2 round ${round} (invalidated)`, results);
 					}
 					if (failures.length > 0) break; // stop early once we have concrete evidence
@@ -217,13 +227,13 @@ suite(
 			// Genuine key absence sanity: a never-written id must read as absent on every worker
 			// (the OTHER getEntry short-circuit: raw == null -> cache.delete(id) -> undefined).
 			const neverWritten = 's3-never-written';
-			let results = await getMulti(neverWritten, 10);
+			let results = await getOnEveryWorker(neverWritten);
 			assertAllAbsent('S3 never-written key', results);
 
 			// Near-empty object: only the primary key attribute set.
 			const idMin = 's3-minimal';
 			await putMinimal(idMin);
-			results = await getMulti(idMin, 8);
+			results = await getOnEveryWorker(idMin);
 			for (const r of results) {
 				if (!r.exists || r.valueType !== 'object') {
 					failures.push(
@@ -242,17 +252,17 @@ suite(
 			// cache-coherence contract.
 			const id = 's3-delete-recreate';
 			await putWidget(id, 'warm', 'before-delete');
-			results = await getMulti(id, 10);
+			results = await getOnEveryWorker(id);
 			assertAllObject('S3 warm object before delete', results, { name: 'warm', tag: 'before-delete' });
 
 			await deleteWidget(id);
-			results = await getMulti(id, 14);
+			results = await getOnEveryWorker(id);
 			assertAllNull('S3 after delete (tombstone, not yet physically reclaimed)', results);
 
 			// Recreate with a DIFFERENT value -- must not resurrect the deleted object nor serve
 			// a stale tombstone/ghost from any worker's cache.
 			await putWidget(id, 'resurrected', 'after-recreate');
-			results = await getMulti(id, 14);
+			results = await getOnEveryWorker(id);
 			assertAllObject('S3 after recreate', results, { name: 'resurrected', tag: 'after-recreate' });
 
 			strictEqual(failures.length, 0, `S3 failures:\n${failures.join('\n')}`);
