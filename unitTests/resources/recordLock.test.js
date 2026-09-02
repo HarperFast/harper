@@ -239,7 +239,7 @@ describe('Record locks (harper#483)', () => {
 			const holder = await LockTest.lock(recordId, { hold: true });
 			const published = LockTest.publish(recordId, { hello: 'world' });
 			assert.strictEqual(await settlement(published), 'pending', 'a message rewrites the version, so it waits');
-			// holder invalidate is not gated (no gateOnLock for invalidate)
+			// holder's own invalidate is re-entrant via recordLocks and proceeds without waiting
 			await holder.invalidate();
 			await holder.unlock();
 			await published;
@@ -305,29 +305,28 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1);
 		});
 
-		it('a 423 from a locked write releases gate locks on other keys in the same transaction', async function () {
-			// BLOCKER: verify that gate handles on other keys are not stranded when a 423 escapes commit().
+		it('a 423 from a locked write releases gate locks and aborts the transaction', async function () {
 			if (isLMDB) return this.skip();
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
 			await LockTest.put({ id: idB, n: 0 });
-			// External holder keeps B locked for the duration of the test
 			const bHolder = await LockTest.lock(idB, { hold: true, lease: 5000 });
 			setLockedWriteWaitMs(100);
+			let failedErr;
 			try {
-				// Transaction writes A (gates it) and B (blocked → 423 after 100ms)
-				await assert.rejects(
-					() =>
-						transaction(() => {
-							LockTest.put({ id: idA, n: 1 });
-							LockTest.put({ id: idB, n: 1 });
-						}),
-					(error) => error.statusCode === 423
-				);
+				await transaction(async () => {
+					await LockTest.put({ id: idA, n: 1 });
+					await LockTest.put({ id: idB, n: 1 });
+				});
+			} catch (err) {
+				failedErr = err;
 			} finally {
 				setLockedWriteWaitMs(LOCKED_WRITE_WAIT_MS);
 			}
+			assert.ok(failedErr?.statusCode === 423, `expected 423, got ${failedErr?.statusCode}`);
+			// Pre-423 write to A must not have landed (transaction was aborted)
+			assert.strictEqual((await LockTest.get(idA)).n, 0, 'A write was rolled back with the transaction');
 			// A's gate lock must have been released; a fresh write should proceed without blocking
 			await LockTest.put({ id: idA, n: 2 });
 			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A is writable after the failed transaction');

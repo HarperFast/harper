@@ -120,3 +120,13 @@ export function getNextMonotonicTime(this: any) {
 	lastTime += 0.000488;
 	return lastTime;
 }
+/**
+ * Advance the monotonic generator to a value strictly greater than `floor` in O(1).
+ * Used by restageAfter to mint a restage timestamp past a released holder's version without
+ * busy-spinning — a replicated peer version far ahead of wall clock would otherwise loop ~10M times.
+ * Uses the same `lastTime` state as getNextMonotonicTime so the two generators never interleave.
+ */
+export function advanceMonotonicTime(floor: number): number {
+	lastTime = Math.max(lastTime, floor) + 0.000488;
+	return lastTime;
+}

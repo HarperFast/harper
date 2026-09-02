@@ -1,6 +1,6 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
+import { advanceMonotonicTime, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { ClientError, ServerError } from '../utility/errors/hdbError.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getLockedWriteWaitMs, acquireRecordKey, makeKeyLockHandle, type RecordLockHandle } from './recordLock.ts';
@@ -284,7 +284,7 @@ export type TransactionWrite = {
 	commit?: (txnTime: number, existingEntry: Partial<Entry>, retry: boolean, transaction: any) => MaybePromise<void>;
 	// Once a write has been taken over, the transaction committing it is not the one that staged it, and
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
-	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
+	validate?: (txnTime: number, committedBy: DatabaseTransaction, operation?: TransactionWrite) => void;
 	fullUpdate?: boolean;
 	saved?: boolean;
 	deferSave?: boolean;
@@ -324,16 +324,13 @@ export type TransactionWrite = {
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
-	// a local record mutation (set by Table.ts): subject to the record-lock gate (harper#483)
 	gateOnLock?: boolean;
-	// precomputed lockAttemptKey for the gated write (set by Table.ts alongside gateOnLock: true)
 	lockKey?: any[];
 	gated?: boolean;
 	pendingWake?: Promise<void>;
 	restage?: boolean;
 	lockHandle?: RecordLockHandle;
 	validated?: boolean;
-	// validate() found nothing to write; a later save() on a lock-returned record re-stages
 	dropped?: boolean;
 };
 
@@ -462,9 +459,7 @@ export class DatabaseTransaction implements Transaction {
 	// or abort of this link.
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
 	declare lockWaitDeadline?: number;
-	// Set true the first time any write is gated; clears the need to filter writes on every commit().
 	declare hasGatedWrites?: boolean;
-	// Reject function for the current pendingWake await; abort() calls it to cancel a parked wait.
 	declare pendingWakeReject?: (error: any) => void;
 
 	registerRecordLock(handle: RecordLockHandle): void {
@@ -489,9 +484,16 @@ export class DatabaseTransaction implements Transaction {
 	releaseRecordLocks(): void {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
-		this.recordLocks = undefined;
-		for (const locksForStore of recordLocks.values())
-			for (const handle of locksForStore.values()) if (!handle.hold) handle.release();
+		for (const [store, locksForStore] of recordLocks) {
+			for (const [keyId, handle] of locksForStore) {
+				if (!handle.hold) {
+					handle.release();
+					locksForStore.delete(keyId);
+				}
+			}
+			if (locksForStore.size === 0) recordLocks.delete(store);
+		}
+		if (recordLocks.size === 0) this.recordLocks = undefined;
 	}
 
 	/**
@@ -513,7 +515,6 @@ export class DatabaseTransaction implements Transaction {
 				: this.recordLocks && this.recordLockFor(operation.store, keyId);
 
 		if (handle?.keyId === keyId && handle.expired) {
-			this.releaseRecordLocks();
 			throw new ClientError(
 				`Record lock was lost: the lease on ${String(operation.key)} expired and another party holds it now`,
 				409
@@ -543,7 +544,6 @@ export class DatabaseTransaction implements Transaction {
 			const gateHandle = makeKeyLockHandle(operation.store, lockKey, keyId);
 			this.registerRecordLock(gateHandle);
 			operation.lockHandle = gateHandle;
-			this.hasGatedWrites = true;
 			return false;
 		}
 
@@ -581,9 +581,7 @@ export class DatabaseTransaction implements Transaction {
 
 	private restageAfter(version: number, replayNeeded: boolean, options: CommitOptions): MaybePromise<CommitResolution> {
 		this.retries++;
-		let ts = (this.db as any).getMonotonicTimestamp?.() ?? getNextMonotonicTime();
-		while (ts <= version) ts = getNextMonotonicTime();
-		this.timestamp = ts;
+		this.timestamp = advanceMonotonicTime(version);
 		if (replayNeeded) {
 			const replay = new RocksTransaction(this.db.store as RocksStore, { coordinatedRetry: true });
 			replay.setTimestamp(this.timestamp);
@@ -604,10 +602,8 @@ export class DatabaseTransaction implements Transaction {
 	private waitForPendingKeys(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
 		const now = Date.now();
 		this.lockWaitDeadline ??= now + getLockedWriteWaitMs();
-		if (now >= this.lockWaitDeadline) {
-			this.releaseRecordLocks();
+		if (now >= this.lockWaitDeadline)
 			throw new ClientError(`Record ${String(gated[0].key)} is locked and was not released in time`, 423);
-		}
 
 		const replayNeeded = this.discardStagedRound();
 
@@ -626,8 +622,6 @@ export class DatabaseTransaction implements Transaction {
 
 				const keyId = writeKeyId(write.key);
 				if (write.pendingWake) {
-					// Race the wake against the remaining deadline so a long-lease holder cannot park the
-					// waiter past LOCKED_WRITE_WAIT_MS, and abort() can cancel this wait immediately.
 					await new Promise<void>((resolve, reject) => {
 						this.pendingWakeReject = reject;
 						const timer = setTimeout(
@@ -641,6 +635,10 @@ export class DatabaseTransaction implements Transaction {
 						}, reject);
 					});
 					write.pendingWake = undefined;
+					// Re-check after the wake await: an abort during the park must not proceed to acquire.
+					if (this.timedOut) throw transactionOpenTooLongError();
+					if (this.open === TRANSACTION_STATE.CLOSED)
+						throw new ServerError('Transaction was aborted while waiting for a record lock', 500);
 				}
 
 				const handle = await acquireRecordKey(
@@ -651,6 +649,14 @@ export class DatabaseTransaction implements Transaction {
 					deadline - Date.now(),
 					undefined
 				);
+				// Re-check after the acquire await: an abort during the lock acquisition must not
+				// register the handle on a closed transaction (key stranded) or commit an empty write set.
+				if (this.timedOut || this.open === TRANSACTION_STATE.CLOSED) {
+					handle.release();
+					throw this.timedOut
+						? transactionOpenTooLongError()
+						: new ServerError('Transaction was aborted while waiting for a record lock', 500);
+				}
 				this.registerRecordLock(handle);
 				write.lockHandle = handle;
 				write.gated = false;
@@ -668,24 +674,26 @@ export class DatabaseTransaction implements Transaction {
 			},
 			(err) => {
 				this.setCommitPhase(false);
-				this.releaseRecordLocks();
+				this.abort();
 				throw err;
 			}
 		);
 	}
 
 	private restageHolderWrites(restage: TransactionWrite[], options: CommitOptions): MaybePromise<CommitResolution> {
-		// bounded like the park: a record that keeps moving under its holder must not spin the commit
-		this.lockWaitDeadline ??= Date.now() + getLockedWriteWaitMs();
-		if (Date.now() >= this.lockWaitDeadline)
+		this.lockWaitDeadline ??= Date.now() + getLockedWriteWaitMs(); // same deadline as waitForPendingKeys
+		if (Date.now() >= this.lockWaitDeadline) {
+			this.abort();
 			throw new ServerError(
 				`Record ${String(restage[0].key)} kept being rewritten past this transaction, so the holder's write could not commit`,
 				503
 			);
+		}
 		const replayNeeded = this.discardStagedRound();
 		let version = 0;
 		for (const write of restage) {
 			write.restage = false;
+			write.validated = false;
 			if (write.entry?.version > version) version = write.entry.version;
 		}
 		return this.restageAfter(version, replayNeeded, options);
@@ -1132,7 +1140,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (!operation.saved && !operation.validated) {
 			operation.validated = true;
-			if ((operation.validate?.(txnTime, this) as any) === false) {
+			if ((operation.validate?.(txnTime, this, operation) as any) === false) {
 				operation.commit = () => {}; // noop if we try again
 				operation.saved = true;
 				return;
@@ -1186,7 +1194,6 @@ export class DatabaseTransaction implements Transaction {
 		if (completions.length > 0) {
 			this.setCommitPhase(true);
 		}
-		// The tail shared by a commit that submits nothing natively: no writes, or only record-lock releases.
 		const finishWithoutNativeCommit = () => {
 			const txnResolution: CommitResolution = {
 				txnTime: this.timestamp,
@@ -1420,6 +1427,9 @@ export class DatabaseTransaction implements Transaction {
 							} catch (error) {
 								harperLogger.warn?.('onCommit handler failed after commit', error);
 							}
+							// Gate handles are released as soon as this store's write is durable, before anything
+							// that can throw synchronously (chain commit, blob cleanup) so no throw skips it.
+							this.releaseRecordLocks();
 							if (this.next) {
 								// never forward options.transaction (a retry/replay round's HEAD-store handle) to
 								// the next store — it must commit its own writes through its own transaction
@@ -1457,7 +1467,6 @@ export class DatabaseTransaction implements Transaction {
 							this.releaseContext(!!options.doneWriting);
 							let txnTime = this.timestamp;
 							this.timestamp = 0; // reset the timestamp as well
-							this.releaseRecordLocks();
 							return Promise.all(completions).then(
 								() => {
 									// Only once the chained store's commit has settled, as on the synchronous path: a
@@ -1562,6 +1571,7 @@ export class DatabaseTransaction implements Transaction {
 						}
 					);
 				}
+				this.releaseRecordLocks();
 				for (const write of this.writes) {
 					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
@@ -1569,7 +1579,6 @@ export class DatabaseTransaction implements Transaction {
 				this.clearWrites();
 				if (options.doneWriting) this.endScopeOwnership();
 				this.releaseContext(!!options.doneWriting);
-				this.releaseRecordLocks();
 				return finishWithoutNativeCommit();
 			},
 			(error) => {

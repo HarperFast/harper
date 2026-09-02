@@ -2412,10 +2412,8 @@ export function makeTable(options) {
 			);
 		}
 		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null) {
-			if (holdHandle !== undefined) this.#lockHandle = holdHandle ?? undefined;
 			if (writeKeyId(id) !== writeKeyId(this.getId())) {
-				// lock(target) where target differs from this record: return a separate instance so
-				// this instance's entry and id are not mutated by another record's data.
+				// lock(target) where target differs from this record: return a separate instance.
 				const fresh = new (this.constructor as any)(id, this.getContext());
 				TableResource._updateResource(fresh, primaryStore.getEntry(id));
 				if (holdHandle) {
@@ -2425,6 +2423,8 @@ export function makeTable(options) {
 				fresh.#lockWritable = true;
 				return fresh;
 			}
+			// Only store the new hold handle; null (scoped lock) must not clear a prior hold handle.
+			if (holdHandle) this.#lockHandle = holdHandle;
 			TableResource._updateResource(this, primaryStore.getEntry(id));
 			this.#changes = undefined;
 			this.#lockWritable = true;
@@ -2438,10 +2438,13 @@ export function makeTable(options) {
 			const keyId = writeKeyId(this.getId());
 			const held = this.#lockHandle;
 			if (held) {
+				if (held.released) return Promise.resolve(false);
 				this.#lockHandle = undefined;
+				link.unregisterRecordLock(held);
 				return Promise.resolve(held.release());
 			}
-			if (link.recordLockFor(primaryStore, keyId)) {
+			const scoped = link.recordLockFor(primaryStore, keyId);
+			if (scoped && !scoped.released) {
 				throw new ClientError(
 					'A transaction-scoped lock is released when its transaction commits; only a held lock ({ hold: true }) is released with unlock()',
 					400
@@ -2623,7 +2626,7 @@ export function makeTable(options) {
 				gateOnLock: gateLocalWrite(options),
 				lockKey: lockAttemptKey(tableId, id),
 				lockHandle: this.#lockHandle,
-				validate: (txnTime, committedBy = transaction) => {
+				validate: (txnTime, committedBy = transaction, operation?) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
@@ -2675,13 +2678,12 @@ export function makeTable(options) {
 											: txnTime;
 							}
 							if (createdTimeProperty) {
-								if (entry?.value) {
+								const currentEntry = operation?.entry ?? entry;
+								if (currentEntry?.value) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
-										// make sure to retain original created time
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+										recordUpdate[createdTimeProperty.name] = currentEntry.value[createdTimeProperty.name];
 									}
 								} else {
-									// new entry, set created time
 									recordUpdate[createdTimeProperty.name] =
 										createdTimeProperty.type === 'Date'
 											? new Date(txnTime)
