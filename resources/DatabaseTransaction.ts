@@ -544,11 +544,19 @@ export class DatabaseTransaction implements Transaction {
 
 		if (handle?.keyId === keyId && !handle.released) {
 			operation.lockHandle = handle;
-			const entry = (operation.entry = operation.store.getEntry(operation.key));
-			if (entry && entry.version >= txnTime) {
-				operation.restage = true;
-				this.hasGatedWrites = true;
-				return true;
+			// Only explicit lock() holders (hold=true) need the snapshot-free version check.
+			// Gate handles (hold=false) already own the native lock — re-enter tryLock below would
+			// conflict with ourselves, and the native lock prevents concurrent commits anyway, so
+			// no restage is needed. Skipping the version check for gate handles also prevents the
+			// synchronous recursion: commit → restageHolderWrites → restageAfter → commit → ...
+			// that fires when a concurrent ungated writer keeps the entry version ahead of txnTime.
+			if (handle.hold) {
+				const entry = (operation.entry = operation.store.getEntry(operation.key));
+				if (entry && entry.version >= txnTime) {
+					operation.restage = true;
+					this.hasGatedWrites = true;
+					return true;
+				}
 			}
 			return false;
 		}
@@ -749,7 +757,7 @@ export class DatabaseTransaction implements Transaction {
 		);
 	}
 
-	private restageHolderWrites(restage: TransactionWrite[], options: CommitOptions): MaybePromise<CommitResolution> {
+	private restageHolderWrites(restage: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
 		this.lockWaitDeadline ??= Date.now() + getLockedWriteWaitMs(); // same deadline as waitForPendingKeys
 		if (Date.now() >= this.lockWaitDeadline) {
 			this.abort();
@@ -764,7 +772,10 @@ export class DatabaseTransaction implements Transaction {
 		for (const write of restage) {
 			if (write.entry?.version > version) version = write.entry.version;
 		}
-		return this.restageAfter(version, replayNeeded, options);
+		// Yield before each restage round so the stack unwinds and the deadline is observable even
+		// under rapid concurrent ungated writes.  Without this, commit→restageHolderWrites→restageAfter
+		// →commit→… recurses synchronously until Node's call-stack limit (stack overflow on CI).
+		return Promise.resolve().then(() => this.restageAfter(version, replayNeeded, options));
 	}
 
 	setCommitPhase(committing: boolean): void {

@@ -432,6 +432,33 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A writable after 423 entry-check');
 		});
 
+		it('a gated write converges after the holder commits and does not trigger restageHolderWrites', async function () {
+			// Root cause: gateLockedWrite re-entry path (line 545) fired for gate handles (hold=false),
+			// setting operation.restage=true regardless.  In multi-threaded CI an ungated concurrent write
+			// keeps entry.version > txnTime on every round, causing commit→restageHolderWrites→
+			// restageAfter→commit→… to recurse until stack overflow.
+			// Fix: the re-entry restage path only runs for hold=true handles; gate handles return false.
+			if (isLMDB) return this.skip();
+			this.timeout(1000); // loop would exhaust this before completing
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			// Stage a gated write — parks because the hold handle owns the key.
+			const gatedPut = LockTest.put({ id: recordId, n: 99 });
+			assert.strictEqual(await settlement(gatedPut, 100), 'pending', 'put is parked on holder');
+			// An ungated sourceApply commits to K while the gated write parks.
+			// Without fix 1 the gate handle re-entry restage path fires after waitForPendingKeys acquires
+			// the lock, potentially looping as ungated writers keep the entry version ahead of txnTime.
+			await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 1 }));
+			const versionAfterUngated = LockTest.primaryStore.getEntry(recordId).version;
+			await holder.unlock();
+			// Must converge without stack overflow; gated write wins (last-writer semantics).
+			await gatedPut;
+			const entry = LockTest.primaryStore.getEntry(recordId);
+			assert.strictEqual(entry.value.n, 99, 'gated write landed past the ungated write');
+			assert.ok(entry.version > versionAfterUngated, 'version is newer than the ungated write');
+		});
+
 		it('a holder write restaged past an ungated rewrite carries the restaged timestamp as updatedTime', async function () {
 			// A sourceApply write bypasses the gate; it moves the record forward while the lock is held.
 			// The holder's subsequent write must restage and re-run validate() so __updatedtime__ reflects
