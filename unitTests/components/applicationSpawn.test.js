@@ -23,7 +23,6 @@ const {
 	nonInteractiveSpawn,
 	terminateProcessTree,
 	waitForConfirmedTermination,
-	waitForWindowsTreeTermination,
 } = require('#src/components/Application');
 const {
 	isProcessGroupAlive,
@@ -173,7 +172,9 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 			process.exit(0);`
 		);
 		const childProcess = spawn(process.execPath, [parent], { stdio: 'ignore', detached: true });
+		const treeIdentity = { rootPid: childProcess.pid, rootKnownAt: Date.now() };
 		await once(childProcess, 'exit');
+		treeIdentity.rootExitedAt = Date.now();
 		// The direct child has already exited (exitCode is set) before termination is ever attempted —
 		// exactly the state that let the old exitCode/signalCode check skip probing the process group.
 		assert.notStrictEqual(childProcess.exitCode, null);
@@ -189,7 +190,7 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 			{ message: 'descendant writer should have started before termination' }
 		);
 
-		await terminateProcessTree(childProcess, Promise.resolve());
+		await terminateProcessTree(childProcess, Promise.resolve(), treeIdentity);
 
 		const sizeAfterTermination = (await require('node:fs/promises').stat(writesPath)).size;
 		await delay(150); // asserting the non-event: the orphaned descendant must be gone, not still writing
@@ -426,19 +427,6 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		childState = 'Z';
 		assert.strictEqual(isProcessGroupAlive(567, options), false);
 		assert.strictEqual(scanCount, 6);
-	});
-
-	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {
-		let attempts = 0;
-		await waitForWindowsTreeTermination(
-			() => {
-				attempts++;
-				return false;
-			},
-			() => false,
-			5
-		);
-		assert.equal(attempts, 1);
 	});
 
 	it('terminates a detached process tree when its owning worker is force-terminated', async () => {
