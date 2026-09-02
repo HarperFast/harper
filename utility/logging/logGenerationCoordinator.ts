@@ -65,10 +65,6 @@ export function unregisterLogSink(logPath: string) {
 }
 
 export function nextGenerationId() {
-	return nextRequestId();
-}
-
-function nextRequestId() {
 	return `${process.pid}-${transport?.threadId ?? 0}-${requestCounter++}`;
 }
 
@@ -115,29 +111,11 @@ export function requestGenerationClose(generation: any): Promise<boolean> {
 export function requestStaleDescriptorRelease(logPath: string, active: any): Promise<boolean> {
 	return requestRelease({
 		type: LOG_GENERATION_ROTATED,
-		request: nextRequestId(),
+		request: nextGenerationId(),
 		logPath,
+		stale: true,
 		keepIno: active?.ino,
 		keepDev: active?.dev,
-	});
-}
-
-/** Tell every writer about an archived generation without waiting for the answer. */
-export function announceGeneration(generation: any) {
-	releaseLocally({
-		type: LOG_GENERATION_ROTATED,
-		request: generation.generation,
-		logPath: generation.logPath,
-		ino: generation.ino,
-		dev: generation.dev,
-	});
-	transport?.broadcast({
-		type: LOG_GENERATION_ROTATED,
-		request: generation.generation,
-		logPath: generation.logPath,
-		ino: generation.ino,
-		dev: generation.dev,
-		originator: transport.threadId,
 	});
 }
 
@@ -152,12 +130,12 @@ function releaseLocally(message: any) {
 	const sink = sinksByPath.get(message.logPath);
 	if (!sink) return;
 	const identity = sink.identity();
-	if (message.keepIno === undefined) {
-		// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
-		// closing is the only answer that can still be called a release.
-		if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
+	// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
+	// closing is the only answer that can still be called a release. `stale` inverts the test: keep
+	// only the live generation, and when there is no live generation to name, keep nothing.
+	if (message.stale) {
+		if (!identity || identity.ino !== message.keepIno || identity.dev !== message.keepDev) sink.close();
 		return;
 	}
-	if (identity && identity.ino === message.keepIno && identity.dev === message.keepDev) return;
-	sink.close();
+	if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
 }
