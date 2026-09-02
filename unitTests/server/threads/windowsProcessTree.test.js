@@ -66,7 +66,13 @@ describe('selectWindowsProcessTree', () => {
 		];
 		const spawnLocal = { rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootStartedWithinMs: 1_000, rootExitedAt: EXITED_AT };
 		assert.deepEqual(selectWindowsProcessTree(orphans, spawnLocal), []);
-		// a registration hop allows more slack before rootKnownAt, and admits the youngest orphan
+		// the interval measured around the spawn call is the exact allowance: an orphan from half a
+		// second before the spawn returned is the previous owner's, not ours
+		const measured = { ...spawnLocal, rootStartedWithinMs: 3 };
+		const recent = row(6300, ROOT, SPAWNED_AT - 500, 'orphan.exe');
+		assert.deepEqual(selectWindowsProcessTree([recent, ...orphans], measured), []);
+		assert.deepEqual(pids(selectWindowsProcessTree([recent, ...orphans], spawnLocal)), [6300]);
+		// a wider allowance admits the youngest orphan
 		const registered = { ...spawnLocal, rootStartedWithinMs: 5_000 };
 		assert.deepEqual(pids(selectWindowsProcessTree(orphans, registered)), [6000]);
 		// unless the root's own creation time is known, which is the exact bound
