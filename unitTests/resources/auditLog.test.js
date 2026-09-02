@@ -414,7 +414,7 @@ describe('Audit log', () => {
 		} finally {
 			harperLogger.error = originalError;
 		}
-		assert.equal(
+		assert.strictEqual(
 			errors.some((args) => args[0] === 'Reading audit entry error'),
 			false,
 			`deleteHistory must not attempt to decode the last-removed marker as an audit entry: ${JSON.stringify(errors)}`
