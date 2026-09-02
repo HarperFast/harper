@@ -196,7 +196,7 @@ suite('connection-per-request load helpers', () => {
 		const responses = await observeEveryWorker(
 			async () => {
 				const worker = ++issued;
-				if (worker === 2) await new Promise(() => {}); // never settles
+				if (worker === 2) await new Promise(() => {});
 				return { worker };
 			},
 			(r) => r.worker,
