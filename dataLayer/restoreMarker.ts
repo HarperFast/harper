@@ -4,21 +4,26 @@ import {
 	closeSync,
 	existsSync,
 	fsyncSync,
+	lstatSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readFileSync,
+	rmSync,
 	unlinkSync,
 	writeSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
 
 /**
- * Restore lock + marker protocol for RocksDB database restores (online operation and offline CLI),
- * and the shared per-database exclusion used by `dropDatabase` so a drop and a restore can never
- * mutate the same directory concurrently.
+ * Lifecycle lock + marker protocol for the two operations that destroy a RocksDB database directory:
+ * restore (online operation and offline CLI) and drop. Both take the same per-database lock and
+ * write the same marker file, typed by its second line, so a drop and a restore can never mutate
+ * the same directory concurrently, every thread's rescan skips a database while either is in
+ * flight, and a crash leaves a marker that says which recovery applies: rerun the restore, or finish
+ * deleting the database (`recoverInterruptedDrop`).
  *
  * Restore metadata lives in an isolated `` `restore` `` directory *beside* the database directory
  * (never inside it, since a restore purges the destination). Each database's two files are keyed by
@@ -82,6 +87,28 @@ export function restoringMarkerPath(dbPath: string): string {
 }
 
 export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
+export type LifecycleKind = 'restore' | 'drop';
+
+function markerContent(dbPath: string, kind: LifecycleKind): string {
+	// first line is the database directory name so the startup scan can map this marker back to
+	// the database it blocks without reversing the hashed key; the second names the operation
+	return `${basename(dbPath)}\n${kind} started ${new Date().toISOString()}\n`;
+}
+
+/** Markers written before drops were typed carry only a restore line, and read as restores. */
+function markerKindFromContent(content: string): LifecycleKind {
+	return content.split('\n', 2)[1]?.startsWith('drop ') ? 'drop' : 'restore';
+}
+
+/** The kind of the lifecycle marker on `dbPath`, or null when there is none. */
+export function lifecycleMarkerKind(dbPath: string): LifecycleKind | null {
+	try {
+		return markerKindFromContent(readFileSync(restoringMarkerPath(dbPath), 'utf8'));
+	} catch (error: any) {
+		if (error.code === 'ENOENT') return null;
+		throw error;
+	}
+}
 
 /**
  * Whether a `.restoring` marker exists for a database. Cheaper than `checkRestoreState` and, unlike
@@ -151,6 +178,10 @@ function fsyncDir(dir: string): void {
 	}
 	try {
 		fsyncSync(dirFd);
+	} catch (error: any) {
+		// Windows opens the directory but refuses to flush it (EPERM); same no-op as an unopenable one
+		if (error.code !== 'EPERM' && error.code !== 'EISDIR' && error.code !== 'ENOTSUP' && error.code !== 'EINVAL')
+			throw error;
 	} finally {
 		closeSync(dirFd);
 	}
@@ -186,15 +217,26 @@ export function releaseRestoreLock(lock: RestoreLock): void {
  * already holds the lock.
  */
 export function beginRestore(dbPath: string): RestoreLock {
+	return beginLifecycle(dbPath, 'restore');
+}
+
+/**
+ * Acquire the per-database lock and write a drop marker. From here until `completeDrop`, every
+ * thread's rescan skips the database and an on-demand open of it is refused; a crash leaves the
+ * marker for `recoverInterruptedDrop` to finish the deletion.
+ */
+export function beginDrop(dbPath: string): RestoreLock {
+	return beginLifecycle(dbPath, 'drop');
+}
+
+function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const preexisting = existsSync(markerPath);
 	const lock = acquireRestoreLock(dbPath);
 	try {
 		const fd = openSync(markerPath, 'w');
 		try {
-			// first line is the database directory name so the startup scan can map this marker back to
-			// the database it blocks without reversing the hashed key
-			writeSync(fd, `${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n`);
+			writeSync(fd, markerContent(dbPath, kind));
 			fsyncSync(fd);
 		} finally {
 			closeSync(fd);
@@ -233,6 +275,84 @@ export function abandonRestore(lock: RestoreLock): void {
 	fileLockRelease(lock.token);
 }
 
+/** Mark the drop complete: the marker goes only after the database and its blob roots are gone. */
+export const completeDrop = completeRestore;
+/** Release the lock after a failed drop; the marker stays so the next scan finishes the deletion. */
+export const abandonDrop = abandonRestore;
+
+export type DropRecoveryOutcome = 'recovered' | 'in-progress' | 'not-a-drop';
+
+const LEGAL_DIRECTORY_NAME = /^(?!\.\.?$)[^\\/\0]+$/;
+
+function isSymbolicLink(path: string): boolean {
+	try {
+		return lstatSync(path).isSymbolicLink();
+	} catch (error: any) {
+		if (error.code === 'ENOENT') return false;
+		throw error;
+	}
+}
+
+/**
+ * Finish a drop that was interrupted after its marker was written: delete the database directory
+ * and its blob roots, then the marker, all while holding the database's lock — so two threads (or
+ * processes) scanning the same root cannot both delete, and a restore or create cannot start on the
+ * directory mid-deletion. The marker is untrusted input for a deletion: the name it carries must be
+ * a single legal directory name whose marker key matches, and neither the database directory nor a
+ * blob root may be a symbolic link. Any failure leaves the marker in place for the next scan.
+ *
+ * `blobRoots` come from configuration (`getBlobPathsForDatabaseName`); `remove` is injectable for
+ * tests.
+ */
+export function recoverInterruptedDrop(
+	databasesRoot: string,
+	dbName: string,
+	options: { blobRoots: string[]; remove?: (path: string) => void }
+): DropRecoveryOutcome {
+	if (!LEGAL_DIRECTORY_NAME.test(dbName)) throw new Error(`Refusing to recover a drop marker naming '${dbName}'`);
+	const root = resolve(databasesRoot);
+	const dbPath = resolve(root, dbName);
+	if (dirname(dbPath) !== root || !dbPath.startsWith(root + sep)) {
+		throw new Error(`Refusing to recover a drop of '${dbName}': it does not resolve to a database directory`);
+	}
+	const remove = options.remove ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
+	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+	const token = tryFileLock(restoreLockPath(dbPath));
+	if (token === 0) return 'in-progress';
+	try {
+		const markerPath = restoringMarkerPath(dbPath);
+		let content: string;
+		try {
+			content = readFileSync(markerPath, 'utf8');
+		} catch (error: any) {
+			if (error.code === 'ENOENT') return 'recovered'; // finished by whoever held the lock before us
+			throw error;
+		}
+		if (markerKindFromContent(content) !== 'drop') return 'not-a-drop';
+		if (content.split('\n', 1)[0] !== dbName) {
+			throw new Error(`Refusing to recover a drop of '${dbName}': its marker names a different database`);
+		}
+		if (isSymbolicLink(dbPath)) throw new Error(`Refusing to delete '${dbPath}': it is a symbolic link`);
+		for (const blobRoot of options.blobRoots) {
+			if (isSymbolicLink(blobRoot))
+				throw new Error(`Refusing to delete blob root '${blobRoot}': it is a symbolic link`);
+		}
+		remove(dbPath);
+		for (const blobRoot of options.blobRoots) remove(blobRoot);
+		// the directory removals must be durable before the marker's removal is, or a power loss can
+		// bring the database entry back with no marker to finish it
+		fsyncDir(root);
+		for (const blobRoot of options.blobRoots) {
+			if (existsSync(dirname(blobRoot))) fsyncDir(dirname(blobRoot));
+		}
+		unlinkSync(markerPath);
+		fsyncDir(restoreMetaDir(dbPath));
+		return 'recovered';
+	} finally {
+		fileLockRelease(token);
+	}
+}
+
 /**
  * Remove a database's restore marker if one is present, then release the lock. Used by
  * `dropDatabase`: a dropped database that carried an incomplete-restore marker should not leave the
@@ -250,27 +370,41 @@ export function clearRestoreMarker(lock: RestoreLock): void {
 	}
 }
 
+export interface LifecycleMarkerEntry {
+	dbName: string;
+	state: 'in-progress' | 'incomplete';
+	kind: LifecycleKind;
+}
+
 /**
  * Scan a databases root's reserved `` `restore` `` metadata directory and report every database currently blocked from
  * loading, mapping each surviving marker back to its database name via the marker's first line.
- * Returns `[dbName, state]` pairs for markers whose state is `in-progress` or `incomplete`
- * (a `clear` result means the marker was removed concurrently and the database is loadable).
+ * A marker whose key does not match the name it carries is ignored: the name is what a recovery
+ * would delete, so it is only trusted when the file was written for that database. Markers whose
+ * state is `clear` were removed concurrently and their databases are loadable.
  */
-export function scanBlockedRestores(databasesRoot: string): Array<[string, RestoreState]> {
+export function scanLifecycleMarkers(databasesRoot: string): LifecycleMarkerEntry[] {
 	const metaDir = join(databasesRoot, RESTORE_META_DIR);
 	if (!existsSync(metaDir)) return [];
-	const blocked: Array<[string, RestoreState]> = [];
+	const blocked: LifecycleMarkerEntry[] = [];
 	for (const entry of readdirSync(metaDir, { withFileTypes: true })) {
 		if (!entry.isFile() || !entry.name.endsWith(RESTORING_MARKER_SUFFIX)) continue;
-		let dbName: string;
+		let content: string;
 		try {
-			dbName = readFileSync(join(metaDir, entry.name), 'utf8').split('\n', 1)[0];
+			content = readFileSync(join(metaDir, entry.name), 'utf8');
 		} catch {
 			continue; // marker removed concurrently
 		}
+		const dbName = content.split('\n', 1)[0];
 		if (!dbName) continue;
-		const state = checkRestoreState(join(databasesRoot, dbName));
-		if (state !== 'clear') blocked.push([dbName, state]);
+		const dbPath = join(databasesRoot, dbName);
+		if (entry.name !== restoreMetaKey(dbPath) + RESTORING_MARKER_SUFFIX) continue;
+		const state = checkRestoreState(dbPath);
+		if (state !== 'clear') blocked.push({ dbName, state, kind: markerKindFromContent(content) });
 	}
 	return blocked;
+}
+
+export function scanBlockedRestores(databasesRoot: string): Array<[string, RestoreState]> {
+	return scanLifecycleMarkers(databasesRoot).map(({ dbName, state }) => [dbName, state]);
 }

@@ -20,18 +20,23 @@ describe('create table catalog write order', () => {
 			schemaDefined: true,
 			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
 		});
-		// table() opens a fresh catalog handle for every new table, so intercept the class, not the instance
-		const catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
+		// a thread keeps one catalog handle per database, which every table() call shares; its `put` is
+		// an own property bound to putSync at open, so intercept that on the instance and putSync on the class
+		const catalog = Seed.dbisDB;
+		const catalogPrototype = Object.getPrototypeOf(catalog);
 		const writes = [];
 		const patched = [];
-		for (const method of ['put', 'putSync']) {
-			const original = catalogPrototype[method];
+		for (const [target, method] of [
+			[catalog, 'put'],
+			[catalogPrototype, 'putSync'],
+		]) {
+			const original = target[method];
 			if (typeof original !== 'function') continue;
-			catalogPrototype[method] = function (key, ...rest) {
+			target[method] = function (key, ...rest) {
 				if (typeof key === 'string' && key.startsWith('CatalogOrderTest/')) writes.push(key);
 				return original.call(this, key, ...rest);
 			};
-			patched.push([method, original]);
+			patched.push([target, method, original]);
 		}
 		try {
 			table({
@@ -45,7 +50,7 @@ describe('create table catalog write order', () => {
 				],
 			});
 		} finally {
-			for (const [method, original] of patched) catalogPrototype[method] = original;
+			for (const [target, method, original] of patched) target[method] = original;
 		}
 		assert(writes.includes('CatalogOrderTest/name'), `attribute row for 'name' was not written: ${writes}`);
 		assert(writes.includes('CatalogOrderTest/tag'), `attribute row for 'tag' was not written: ${writes}`);
@@ -68,19 +73,23 @@ describe('create table catalog write order', () => {
 			schemaDefined: true,
 			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
 		});
-		const catalogPrototype = Object.getPrototypeOf(Target.dbisDB);
+		const catalog = Target.dbisDB;
+		const catalogPrototype = Object.getPrototypeOf(catalog);
 		const writes = [];
 		const patched = [];
-		for (const method of ['put', 'putSync']) {
-			const original = catalogPrototype[method];
+		for (const [target, method] of [
+			[catalog, 'put'],
+			[catalogPrototype, 'putSync'],
+		]) {
+			const original = target[method];
 			if (typeof original !== 'function') continue;
-			catalogPrototype[method] = function (key, value, ...rest) {
+			target[method] = function (key, value, ...rest) {
 				// the row is a live object the create keeps annotating, so record what this write persisted
 				if (typeof key === 'string' && key.startsWith('CatalogRelationHost/'))
 					writes.push({ key, relationships: value?.relationships && structuredClone(value.relationships) });
 				return original.call(this, key, value, ...rest);
 			};
-			patched.push([method, original]);
+			patched.push([target, method, original]);
 		}
 		try {
 			table({
@@ -101,7 +110,7 @@ describe('create table catalog write order', () => {
 				],
 			});
 		} finally {
-			for (const [method, original] of patched) catalogPrototype[method] = original;
+			for (const [target, method, original] of patched) target[method] = original;
 		}
 		const keys = writes.map((write) => write.key);
 		assert.strictEqual(
@@ -147,7 +156,8 @@ describe('create table catalog write order', () => {
 				{ name: 'tag', type: 'String', indexed: true },
 			],
 		});
-		const catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
+		const catalog = Seed.dbisDB;
+		const catalogPrototype = Object.getPrototypeOf(catalog);
 		const writes = [];
 		const patched = [];
 		let failNextTableIdWrite = true;
@@ -159,10 +169,13 @@ describe('create table catalog write order', () => {
 			releasedReclamationHandlers.push(path);
 			return originalRemoveHandler.call(this, path, handler);
 		};
-		for (const method of ['put', 'putSync']) {
-			const original = catalogPrototype[method];
+		for (const [target, method] of [
+			[catalog, 'put'],
+			[catalogPrototype, 'putSync'],
+		]) {
+			const original = target[method];
 			if (typeof original !== 'function') continue;
-			catalogPrototype[method] = function (key, ...rest) {
+			target[method] = function (key, ...rest) {
 				if (key === Symbol.for('next-table-id') && failNextTableIdWrite) {
 					failNextTableIdWrite = false;
 					throw new Error('injected table id write failure');
@@ -175,7 +188,7 @@ describe('create table catalog write order', () => {
 				if (typeof key === 'string' && key.startsWith(`${tableName}/`)) writes.push(key);
 				return original.call(this, key, ...rest);
 			};
-			patched.push([method, original]);
+			patched.push([target, method, original]);
 		}
 		let Retried;
 		try {
@@ -210,7 +223,7 @@ describe('create table catalog write order', () => {
 			Retried = table(definition());
 		} finally {
 			storageReclamation.removeStorageReclamationHandler = originalRemoveHandler;
-			for (const [method, original] of patched) catalogPrototype[method] = original;
+			for (const [target, method, original] of patched) target[method] = original;
 		}
 		assert.strictEqual(databases.test[tableName], Retried, 'the retry must register the class');
 		assert.deepStrictEqual(
@@ -295,12 +308,16 @@ describe('create table catalog write order', () => {
 				'the other thread must hold the first generation'
 			);
 			await FirstGeneration.dropTable();
-			catalogPrototype = Object.getPrototypeOf(Seed.dbisDB);
+			const catalog = Seed.dbisDB;
+			catalogPrototype = Object.getPrototypeOf(catalog);
 			let pausedStatus;
-			for (const method of ['put', 'putSync']) {
-				const original = catalogPrototype[method];
+			for (const [target, method] of [
+				[catalog, 'put'],
+				[catalogPrototype, 'putSync'],
+			]) {
+				const original = target[method];
 				if (typeof original !== 'function') continue;
-				catalogPrototype[method] = function (key, ...rest) {
+				target[method] = function (key, ...rest) {
 					const result = original.call(this, key, ...rest);
 					// the first attribute row is on disk: hand the catalog to the other thread and block this one
 					if (key === `${tableName}/name` && pausedStatus === undefined) {
@@ -310,7 +327,7 @@ describe('create table catalog write order', () => {
 					}
 					return result;
 				};
-				patched.push([method, original]);
+				patched.push([target, method, original]);
 			}
 			table({
 				table: tableName,
@@ -322,7 +339,7 @@ describe('create table catalog write order', () => {
 					{ name: 'tag', type: 'String', indexed: true },
 				],
 			});
-			for (const [method, original] of patched) catalogPrototype[method] = original;
+			for (const [target, method, original] of patched) target[method] = original;
 			assert.strictEqual(pausedStatus, 'ok', `the other thread never finished its mid-create scan (${pausedStatus})`);
 			Atomics.store(phase, 0, 3);
 			Atomics.notify(phase, 0);
@@ -344,7 +361,7 @@ describe('create table catalog write order', () => {
 			assert.ok(afterCreate.updateTableEvents >= 1, 'the scan after the create must announce the complete table');
 			assert.strictEqual(afterCreate.primaryRowVisible, true, 'the primary row must exist after the create');
 		} finally {
-			for (const [method, original] of patched) catalogPrototype[method] = original;
+			for (const [target, method, original] of patched) target[method] = original;
 			await worker.terminate();
 		}
 	});

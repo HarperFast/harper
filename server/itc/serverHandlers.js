@@ -52,9 +52,11 @@ async function schemaHandler(event) {
 	// drop_database: the dropping thread destroyed the database process-wide, so this thread's
 	// handles are already dead; releasing them here is what lets a same-name create_database open
 	// the directory afresh instead of every later rescan on this thread failing on the closed store.
+	// close_database: a drop is about to destroy the directory and needs the same release first.
 	if (
 		event.message?.schema &&
 		(event.message.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP ||
+			event.message.operation === hdbTerms.ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE ||
 			event.message.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA ||
 			event.message.operation === hdbTerms.OPERATIONS_ENUM.DROP_DATABASE)
 	) {

@@ -215,7 +215,7 @@ describe('dropTable ghost regression', () => {
 			for (let i = 0; i < 5; i++) reload();
 		} finally {
 			storageLogger.error = originalLogError;
-			dbisDb.removeSync = originalRemoveSync;
+			delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
 		}
 
 		assert.ok(attemptsWhenExhausted > 0, 'the interrupted drop must be attempted at least once');
@@ -284,7 +284,7 @@ describe('dropTable ghost regression', () => {
 				return originalRemoveSync.call(this, key, ...rest);
 			};
 			return () => {
-				dbisDb.removeSync = originalRemoveSync;
+				delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
 			};
 		};
 		const storageLogger = harperLogger.forComponent('storage');
@@ -404,7 +404,7 @@ describe('dropTable ghost regression', () => {
 				`a later interrupted drop must be retried again, not skipped on the previous drop's spent budget (attempts stuck at ${attempts})`
 			);
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -469,7 +469,7 @@ describe('dropTable ghost regression', () => {
 				`generation B must get its own budget instead of inheriting A's spent count (attempts stuck at ${attempts})`
 			);
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
 		}
 
 		for (const key of [...dbisDb.getKeys({ start: `${TABLE}/`, end: `${TABLE}0` })]) {
@@ -572,7 +572,7 @@ describe('dropTable ghost regression', () => {
 			resetDatabases();
 			getDatabases();
 		} finally {
-			dbisDb.removeSync = originalRemoveSync;
+			delete dbisDb.removeSync; // an own property would shadow the prototype for every later suite sharing this handle
 		}
 
 		assert.ok(
