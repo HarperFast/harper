@@ -1432,12 +1432,16 @@ export function assertBranchIdentityAvailable(storeName: string): void {
 	for (const name of branchIdentityPair(storeName)) {
 		// The directory as well as the maps. `getDatabases` skips a database blocked by restore, so an
 		// in-memory check alone reports its name as free while its blob root is very much real -- and
-		// materialization would then remove and replace it.
+		// materialization would then remove and replace it. The `.staging` half also asks whether a
+		// BRANCH owns it: `<storeName>.staging` is a legal identity for a branch of a database named
+		// `<base>.staging`, whose live blob root is the path this clone renames over. The primary half
+		// cannot ask, because the branch being opened owns that directory itself.
 		if (
 			databases[name] ||
 			definedDatabases?.has(name) ||
 			openBranchIdentities.has(name) ||
-			existsSync(resolveDatabasePath(name))
+			existsSync(resolveDatabasePath(name)) ||
+			(name !== storeName && branchDirectoryExistsFor(name))
 		) {
 			throw new Error(`Cannot use '${storeName}' as a branch store identity: '${name}' is already in use`);
 		}

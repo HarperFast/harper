@@ -6,7 +6,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { copyTree } from '../dataLayer/blobBackup.ts';
-import { getBlobPathsForDatabaseName } from './blob.ts';
+import { getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
 import type { RocksDatabase } from '@harperfast/rocksdb-js';
 import {
 	type BranchDatabase,
@@ -118,28 +118,36 @@ export function claimDeadlineFor(state: BigInt64Array, budget: number): () => nu
  * inode. The marker makes that blob fail loudly in the branch instead.
  */
 async function cloneBlobRoots(baseName: string, branchRoots: string[], progress: () => void): Promise<void> {
-	const baseRoots = getBlobPathsForDatabaseName(baseName);
+	// What the base's own rows resolve through, which is not the configured list if `storage.blobPaths`
+	// changed while its store was open -- reading the configured volumes would clone an empty tree.
+	const baseRoots = getRootBlobPathsForDB(database({ database: baseName, table: undefined }) as never);
 	let substituted = 0;
 	let copied = 0;
-	for (let index = 0; index < baseRoots.length; index++) {
+	// Over the BRANCH's roots, not the base's: a row's `storageIndex` is a position in the branch's own
+	// list, and its marker records every entry, so each one has to exist even where the base has no
+	// counterpart to clone from.
+	for (let index = 0; index < branchRoots.length; index++) {
 		const staging = `${branchRoots[index]}.staging`;
 		await rm(staging, { recursive: true, force: true });
 		// Created up front rather than left to the walk: a base with no blobs at all copies nothing, and
 		// the branch still needs its own (empty) root to exist so its allocator starts where the base's
 		// would have.
 		await mkdir(staging, { recursive: true });
-		const counts = await copyTree(
-			baseRoots[index],
-			staging,
-			true,
-			{
-				gone: 'blob was already reclaimed from the base when this branch was created',
-				pending: 'blob was still being written to the base when this branch was created',
-			},
-			progress
-		);
-		substituted += counts.substituted;
-		copied += counts.copied;
+		const source = baseRoots[index];
+		if (source) {
+			const counts = await copyTree(
+				source,
+				staging,
+				true,
+				{
+					gone: 'blob was already reclaimed from the base when this branch was created',
+					pending: 'blob was still being written to the base when this branch was created',
+				},
+				progress
+			);
+			substituted += counts.substituted;
+			copied += counts.copied;
+		}
 		await rm(branchRoots[index], { recursive: true, force: true });
 		await mkdir(dirname(branchRoots[index]), { recursive: true });
 		await rename(staging, branchRoots[index]);
@@ -349,7 +357,9 @@ async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: ()
 	for (;;) {
 		const current = Atomics.load(state, CLAIM_STATE);
 		if (current !== CREATING) return current;
-		if (!announced && Date.now() > patience) {
+		// Both conditions: past the original budget, and still going only because the deadline moved. The
+		// clock alone would print this on the very turn a winner that reported nothing times out.
+		if (!announced && Date.now() > patience && deadline() > patience) {
 			announced = true;
 			logger.warn?.(
 				`Still waiting for another thread to create the branch at ${branchPath}; it is reporting ` +
@@ -423,10 +433,10 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 				let branch: BranchDatabase | undefined;
 				let blobRoots: string[] = [];
 				try {
-					// Adopt rather than recreate. The branch outlives the process that first made it, so on
-					// every restart after the first the directory is already here — and `materializeBranch`
-					// only ever publishes by renaming a finished checkpoint into place, so a directory that
-					// exists is always a complete one, never a half-copy to be distrusted.
+					// Adopt rather than recreate: the branch outlives the process that first made it, so on
+					// every restart after the first the directory is already here. What it is, though, is a
+					// question -- the blob roots are published separately from the directory, so existence
+					// alone proves nothing and the marker is what has to be read.
 					const existing = readBranchState(branchPath, storeName);
 					if (existing.state === 'damaged' || existing.state === 'unmarked') {
 						const problem = existing.state === 'damaged' ? existing.problem : existing.why;
@@ -600,8 +610,10 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 			if (!(await removeBlobRoots(blobRoots))) {
 				blobRootsStranded = true;
 				logger.warn?.(
-					`Refusing '${storeName}' to new databases for the life of this process: the branch at ` +
-						`${branchPath} left blob files behind and a database under that name would resolve onto them`
+					`Refusing '${storeName}' to new databases on this worker for the life of the process: the ` +
+						`branch at ${branchPath} left blob files behind and a database under that name would ` +
+						`resolve onto them. Other workers no longer see the branch directory, so remove those ` +
+						`files by hand to make the name safe again`
 				);
 			}
 		}
@@ -620,11 +632,14 @@ async function removeBranchAt(branchPath: string): Promise<void> {
  */
 function recordedBlobRootsAt(branchPath: string, storeName: string): string[] {
 	const published = readBranchState(branchPath, storeName);
+	const configured = getBlobPathsForDatabaseName(storeName);
 	// A marker that reads as damaged still names what this branch published, and that is what may be
 	// deleted; only a branch with no usable marker at all leaves configuration as the best answer.
+	// Either way, nothing outside this node's configured volumes is deleted: a branch directory carried
+	// over from a host with different `storage.blobPaths` names paths this node never wrote.
 	return published.state === 'complete' || published.state === 'damaged'
-		? published.blobRoots
-		: getBlobPathsForDatabaseName(storeName);
+		? published.blobRoots.filter((root) => configured.includes(root))
+		: configured;
 }
 
 /** `<storage>/`branches`/<app>/<db>` — the same identity `branchStoreName` composed on the way in. */

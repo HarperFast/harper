@@ -1085,6 +1085,24 @@ describeUnlessLmdb('branch identity is unavailable across restarts and restores 
 		assert.strictEqual(isBranchIdentity(`${identity}.staging`), true, 'the sibling is spoken for as well');
 	});
 
+	it('refuses to materialize over the live blob root of a branch of a database named .staging', async function () {
+		this.timeout(30000);
+		// `<identity>.staging` is the path the clone removes and renames over, and it is also the legal
+		// identity of a branch of a database called `identbase.staging`. That branch's root is live data.
+		const { assertBranchIdentityAvailable } = require('#src/resources/databases');
+		const planted = resolveBranchPath('identbase.staging', 'identApp');
+		mkdirSync(planted, { recursive: true });
+		try {
+			assert.throws(
+				() => assertBranchIdentityAvailable(`${'identApp'.length}_identApp__identbase`),
+				/already in use/,
+				"the sibling path is another branch's blob root, not scratch space"
+			);
+		} finally {
+			rmSync(planted, { recursive: true, force: true });
+		}
+	});
+
 	it('recognises a branch of a database whose own name ends in .staging', function () {
 		// `schemaRegex` permits `.`, so this name has two readings: the staging sibling of a branch of
 		// `stage`, and a branch of a database actually called `stage.staging`. Both own a blob path, so
@@ -1099,6 +1117,22 @@ describeUnlessLmdb('branch identity is unavailable across restarts and restores 
 		} finally {
 			rmSync(planted, { recursive: true, force: true });
 		}
+	});
+
+	it('refuses create_database under a live branch identity, not only schema authoring', async function () {
+		this.timeout(30000);
+		// `create_database` reaches `database()` through its own bridge, so the guard on the `table()`
+		// authoring path never sees it: the database would share the branch's blob root, and dropping it
+		// deletes the branch's blobs.
+		const { createSchemaStructure } = require('#src/dataLayer/schema');
+		const identity = `${'identApp'.length}_identApp__identbase`;
+		await getOrCreateBranch('identbase', 'identApp');
+
+		await assert.rejects(
+			() => createSchemaStructure({ schema: identity }),
+			/in use as a branch store identity/,
+			'create_database must refuse the name for the same reason schema authoring does'
+		);
 	});
 
 	it('refuses an identity whose database exists on disk but is not loaded', async function () {
