@@ -48,8 +48,8 @@ export interface ResolvedRecordLockOptions {
  */
 export interface RecordLockHandle {
 	store: any;
-	key: any[];      // lockAttemptKey, passed to store.tryLock / store.unlock
-	keyId: unknown;  // writeKeyId(id), Map key in the per-transaction recordLocks sub-map
+	key: any[]; // lockAttemptKey, passed to store.tryLock / store.unlock
+	keyId: unknown; // writeKeyId(id), Map key in the per-transaction recordLocks sub-map
 	expiresAt: number;
 	hold: boolean;
 	released: boolean;
@@ -154,8 +154,7 @@ export async function acquireRecordKey(
 		});
 		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold);
 		const remaining = deadline - Date.now();
-		if (remaining <= 0)
-			throw new ClientError(`Record is locked and was not released in time`, 423);
+		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
 		await new Promise<void>((resolve) => {
 			const t = setTimeout(resolve, remaining);
 			wakeResolve = () => {
