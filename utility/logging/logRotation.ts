@@ -19,12 +19,7 @@ import { pipeline } from 'node:stream/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
-import {
-	announceGeneration,
-	nextGenerationId,
-	registerLogSink,
-	requestGenerationClose,
-} from './logGenerationCoordinator.ts';
+import { nextGenerationId, requestGenerationClose } from './logGenerationCoordinator.ts';
 
 // Each writer re-checks the file after this many bytes of its own output. Fixed, not "the remaining
 // budget": a remaining budget assumes one thread's stat accounts for the other threads' future
@@ -101,21 +96,15 @@ export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeL
  * still appending to loses those records outright, and no size comparison can rule that out.
  */
 export async function publishArchivedGeneration(generation: any, compress?: boolean) {
-	// Nothing is destroyed without compression, so the release is worth announcing but not worth
-	// waiting on — a wait per rotation would put a live timer behind every rotation on a busy log.
-	if (!compress) {
-		announceGeneration(generation);
-		return generation.archivePath;
-	}
 	if (!(await requestGenerationClose(generation))) {
-		unprovenArchives.set(generation.archivePath, generation);
+		unprovenArchives.set(generation.archivePath, { generation, compress });
 		return generation.archivePath;
 	}
-	return compressArchive(generation.archivePath);
+	return compress ? compressArchive(generation.archivePath) : generation.archivePath;
 }
 
-// Generations this process archived but could not prove released. Compression is not the only
-// destructive path: retention unlinks archives too, and unlinking an inode a stalled writer still
+// Generations this process archived but could not prove released. Tracked whether or not they are
+// to be compressed: retention unlinks archives too, and unlinking an inode a stalled writer still
 // holds loses whatever it writes next just as surely as gzip would.
 const unprovenArchives = new Map<string, any>();
 
@@ -124,14 +113,14 @@ export function isArchivePendingQuiescence(archivePath: string) {
 }
 
 export async function retryPendingGenerations() {
-	for (const [archivePath, generation] of [...unprovenArchives]) {
+	for (const [archivePath, pending] of [...unprovenArchives]) {
 		if (!existsSync(archivePath)) {
 			unprovenArchives.delete(archivePath);
 			continue;
 		}
-		if (!(await requestGenerationClose(generation))) continue;
+		if (!(await requestGenerationClose(pending.generation))) continue;
 		unprovenArchives.delete(archivePath);
-		await compressArchive(archivePath);
+		if (pending.compress) await compressArchive(archivePath);
 	}
 }
 
@@ -192,7 +181,6 @@ export function createRotationGuard(options: any) {
 	} catch {
 		// No log file yet; a full quantum is the right first window.
 	}
-	registerLogSink(logPath, closeDescriptorOnGeneration);
 	return { beforeAppend, recordWrite, checkQuantum };
 
 	/**
@@ -265,12 +253,5 @@ export function createRotationGuard(options: any) {
 		// generations; there this defers to the size check rather than closing a descriptor at random.
 		if (identity.ino === 0 || active.ino === 0) return true;
 		return identity.ino === active.ino && identity.dev === active.dev;
-	}
-
-	function closeDescriptorOnGeneration(ino: number, dev: number) {
-		const identity = getLogIdentity();
-		// No identity to compare (no descriptor, or a filesystem that cannot report one) means closing
-		// is the only answer that can still be called a proof: an open descriptor is what must go.
-		if (!identity || (identity.ino === ino && identity.dev === dev)) closeLogFile();
 	}
 }

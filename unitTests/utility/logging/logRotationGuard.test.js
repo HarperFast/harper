@@ -6,6 +6,7 @@ const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const hdbLogger = require('#src/utility/logging/harper_logger');
 const { parseMaxSize } = require('#src/utility/logging/logRotation');
+const { announceGeneration } = require('#src/utility/logging/logGenerationCoordinator');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
 
@@ -193,6 +194,33 @@ describe('Test log rotation on the write path (#1877)', () => {
 			{ timeout: 20000, interval: 250, message: 'rotation never recovered after the target was repaired' }
 		);
 		assert.ok(activeSize(logPath) < strandedSize + 4 * 4000, 'expected the log to stay bounded through recovery');
+	});
+
+	it('releases a descriptor on an announced generation even with no size guard of its own', () => {
+		// A thread rotating only on `interval` builds no size guard, but it still holds a descriptor,
+		// and answering an announcement has to mean released rather than only "handler ran".
+		const dir = path.join(TEST_ROOT, `noGuard${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const logPath = path.join(dir, 'hdb.log');
+		const logger = hdbLogger.createLogger({
+			stdStreams: false,
+			path: logPath,
+			level: 'error',
+			rotation: { enabled: true, interval: '1D', auditInterval: NEVER_TICKS },
+		});
+		logger.error('opens the descriptor');
+		const held = fs.statSync(logPath);
+
+		// Another thread rotates: the file moves out from under this descriptor.
+		const archivePath = path.join(dir, 'moved.log');
+		fs.renameSync(logPath, archivePath);
+		announceGeneration({ logPath, generation: 'g', ino: held.ino, dev: held.dev });
+
+		logger.error('after the announced rotation');
+		logger.closeLogFile();
+		assert.ok(fs.pathExistsSync(logPath), 'expected a fresh log file, not an append to the archive');
+		assert.match(fs.readFileSync(logPath, 'utf8'), /after the announced rotation/);
+		assert.doesNotMatch(fs.readFileSync(archivePath, 'utf8'), /after the announced rotation/);
 	});
 
 	it('stops growing the log and reports to stdio when the rotation target cannot be written', () => {

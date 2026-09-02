@@ -98,12 +98,14 @@ describe('Test log generation coordinator (#1877)', () => {
 		assert.ok((await published).endsWith('.gz'), 'expected worker exit to count as a release');
 	});
 
-	it('does not wait for peers when nothing is being compressed', async () => {
+	it('holds an uncompressed archive back from retention too, not just a compressed one', async () => {
 		fakeTransport({ autoRespond: false });
 		const { generation } = newGeneration();
 		const published = await publishArchivedGeneration(generation, false);
 		assert.strictEqual(published, generation.archivePath);
 		assert.ok(fs.pathExistsSync(generation.archivePath));
+		// Compression is not the only destructive path — retention unlinks archives as well.
+		assert.ok(isArchivePendingQuiescence(generation.archivePath));
 	});
 
 	it('closes a descriptor that still points at the announced generation', () => {
