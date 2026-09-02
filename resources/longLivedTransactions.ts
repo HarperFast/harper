@@ -230,11 +230,16 @@ export function describeHolderCandidates(
 	if (!databasePath || !registryStatusFn) return '';
 	try {
 		const target = resolve(databasePath);
-		const details = registryStatusFn().find((database) => resolve(database.path) === target)?.transactionDetails;
+		const entry = registryStatusFn().find((database) => resolve(database.path) === target);
+		const details = entry?.transactionDetails;
 		if (!details) {
-			// No entry at all is different from a database with no other handles, and only the former means
-			// the join between a store's path and the registry's path has drifted.
-			logger.debug?.(`No registry entry for ${target}; cannot offer holder candidates for its stuck commit`);
+			// A database with no other handles is normal; no entry at all means the join between a store's
+			// path and the registry's path has drifted, which is the one worth telling an operator apart.
+			logger.debug?.(
+				entry
+					? `Registry entry for ${target} exposes no transactionDetails; cannot offer holder candidates for its stuck commit`
+					: `No registry entry for ${target}; cannot offer holder candidates for its stuck commit`
+			);
 			return '';
 		}
 		const candidates = details.filter((handle) => handle.id !== excludeNativeId).sort((a, b) => b.ageMs - a.ageMs);
