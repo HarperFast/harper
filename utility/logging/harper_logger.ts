@@ -890,17 +890,14 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	// this is called on a timer, and will write the log buffer to the file
 	function logQueuedData(entry?: any) {
 		const payload = logBuffer ? logBuffer.join('') : entry;
-		// Released before anything can re-enter this sink. The rotation notice is written from inside
-		// the append below, and a re-entrant flush that still saw this batch would either write every
-		// line of it a second time into the new generation, or be swallowed when this call clears the
-		// buffer on its way out.
+		// Released before anything can re-enter: the rotation notice is written from inside the append
+		// below, and a re-entrant flush still holding this batch would write every line of it twice.
 		logBuffer = null;
 		if (payload === undefined) return;
 		// A file that just refused a write will refuse the next one too, and every attempt costs a
 		// failed syscall plus a thrown error on whatever path is logging - which, on a full volume,
 		// is the request path at full rate. Go straight to stdio until the cooldown expires.
-		// The file is opened after the guard, not before: a guard that recovers by rotating closes this
-		// descriptor, and the write that triggered the recovery belongs in the new generation.
+		// Opened after the guard: a guard recovering by rotation closes this descriptor first.
 		const mayAppend = !(retryAppendAfter > performance.now()) && (rotationGuard?.beforeAppend() ?? true);
 		openLogFile(undefined);
 		if (logFD && mayAppend) {
@@ -910,8 +907,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 				// Both cleared, so a volume that fills again months later reports itself again
 				retryAppendAfter = undefined;
 				loggedAppendError = false;
-				// byteLength, not a Buffer: appendFileSync writes a string through Node's own encoder
-				// without allocating, and rotation is on by default so this runs on every flush.
+				// byteLength, not a Buffer: appendFileSync encodes the string without allocating one.
 				rotationGuard?.recordWrite(Buffer.byteLength(payload));
 			} catch (error) {
 				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;

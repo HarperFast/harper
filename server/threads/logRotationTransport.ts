@@ -27,9 +27,9 @@ setRotationTransport({
 	},
 	onThreadExit,
 	peerThreadIds() {
-		// Job workers included: they write to the log whether or not they take part in ITC gossip. The
-		// deadlock that excludes them from the schema broadcast cannot happen here — the handler only
-		// closes a descriptor, and no caller blocks its event loop on the answer.
+		// Job workers included: they hold log descriptors whether or not they take part in ITC gossip,
+		// and the deadlock that excludes them from the schema broadcast cannot happen here — the
+		// handler only closes a descriptor, and no caller blocks its event loop on the answer.
 		const ids = new Set<number>();
 		for (let i = 0; i < threads.length; i++) {
 			const peer = threads[i].threadId;

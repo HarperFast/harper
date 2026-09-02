@@ -1594,6 +1594,6 @@ if (isMainThread) {
 	});
 }
 
-// From here, not from logging, which must never import this module. Last in the file: it calls
-// onThreadExit, declared above.
+// Required here, not from logging, which must never import this module; last in the file because it
+// calls onThreadExit.
 require('./logRotationTransport.ts');

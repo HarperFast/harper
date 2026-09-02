@@ -21,12 +21,9 @@ import { createHash } from 'node:crypto';
 import { threadId } from 'node:worker_threads';
 import { nextGenerationId, requestGenerationClose } from './logGenerationCoordinator.ts';
 
-// Each writer re-checks the file after this many bytes of its own output. Fixed, not "the remaining
-// budget": a remaining budget assumes one thread's stat accounts for the other threads' future
-// bytes, so T writers each seeing ~maxBytes left can add ~T * maxBytes before any of them looks
-// again. A fixed quantum caps every writer's blind window at quantum + the flush that crosses it,
-// independently of scheduler delay. That flush is one batch, and the sink batches under load, so the
-// bound is maxBytes + T * (quantum + batch) rather than a function of elapsed time.
+// Bounds each writer's blind window at one quantum plus the flush that crosses it, so the file is
+// bounded by maxBytes + T * (quantum + batch) rather than by elapsed time. Fixed, not a remaining
+// budget: a budget assumes one thread's stat accounts for the other threads' future bytes.
 const CHECK_QUANTUM_DIVISOR = 16;
 const ROTATION_RETRY_COOLDOWN = 5000;
 const SIZE_UNIT_MULTIPLIERS = { K: 1e3, M: 1e6, G: 1e9 };
@@ -42,8 +39,7 @@ export function parseMaxSize(maxSize: any) {
 	const multiplier = SIZE_UNIT_MULTIPLIERS[maxSize.slice(-1)];
 	if (!multiplier) return undefined;
 	const size = maxSize.slice(0, -1);
-	// Number(), not a stricter grammar, so every mantissa that produces a usable cap today keeps
-	// working — exponent notation included. `parseInt` also accepted '0K', '-1K' and '1xK'.
+	// Number(), not a stricter grammar, so every mantissa that yields a usable cap today keeps working.
 	if (size.trim() === '') return undefined;
 	const bytes = Number(size) * multiplier;
 	return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
@@ -57,11 +53,8 @@ export function resolveRotatedLogDir(logPath: string, configuredPath?: string) {
 // counter is per-isolate, so pid+seq alone cannot keep two threads' archives apart.
 let rotationSequence = 0;
 
-// The archive directory defaults to the log's own directory (`logging.rotation.path` defaults to
-// `log`, as does `logging.root`), so it holds live logs — hdb.log, and every component or external
-// log sharing the directory — alongside archives. Anything that compresses or deletes by scanning
-// that directory has to be able to tell the two apart, and the name this module writes is the only
-// thing that distinguishes them.
+// The archive directory defaults to the log's own directory, so it holds live logs alongside
+// archives and anything scanning it to destroy files has to tell the two apart.
 const ARCHIVE_NAME = /-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-\d+-\d+-\d+\.log(\.gz)?$/;
 
 export function isArchiveName(file: string) {
@@ -109,11 +102,9 @@ export async function publishArchivedGeneration(generation: any, compress?: bool
 	return compress ? compressArchive(generation.archivePath) : generation.archivePath;
 }
 
-// Generations this isolate archived but could not prove released, as a retry queue for compression —
-// not as the safety mechanism. Safety is the release the audit tick proves for the whole directory
-// before anything is deleted, and the archives themselves are found on disk, so a bounded queue that
-// forgets its oldest entries loses nothing. Bounded because write-path rotation happens mostly in
-// the HTTP workers, and only the main thread runs a tick to drain it.
+// A compression retry queue, not the safety mechanism — safety is the release the tick proves before
+// anything is destroyed. Bounded because rotation happens mostly in workers, which run no tick to
+// drain it, and because the archives are found on disk anyway.
 const MAX_UNPROVEN_ARCHIVES = 64;
 const unprovenArchives = new Map<string, any>();
 
@@ -148,26 +139,19 @@ export async function retryPendingGenerations() {
 }
 
 /**
- * Compress archives left plain by any isolate, found on disk rather than in this isolate's memory.
+ * Compress archives left plain by any isolate, from a listing taken before quiescence was proven.
  * Write-path rotations happen mostly in the HTTP workers, whose unproven-archive bookkeeping the
  * main thread cannot see, so without this a worker's archive would silently stay uncompressed for
  * the life of the process however the operator configured `compress`.
- * Only safe to call once quiescence has been proven for the whole directory.
+ * Only safe to call once quiescence has been proven for exactly this listing.
  */
-export async function compressPendingArchives(rotatedLogDir: string) {
-	let files;
-	try {
-		files = await fsProm.readdir(rotatedLogDir);
-	} catch (error) {
-		if (error.code !== 'ENOENT') throw error;
-		return;
-	}
+export async function compressPendingArchives(rotatedLogDir: string, files: string[], liveLogPaths: Set<string>) {
 	let compressed = 0;
 	for (const file of files) {
 		if (!file.endsWith('.log') || !isArchiveName(file) || files.includes(`${file}.gz`)) continue;
 		if (compressed++ >= MAX_RETRIES_PER_PASS) return;
 		const archivePath = join(rotatedLogDir, file);
-		if (unprovenArchives.has(archivePath)) continue;
+		if (liveLogPaths.has(archivePath) || unprovenArchives.has(archivePath)) continue;
 		await compressArchive(archivePath).catch(() => {});
 	}
 }
