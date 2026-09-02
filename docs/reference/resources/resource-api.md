@@ -238,14 +238,47 @@ Called for MQTT subscribe commands. Returns a `Subscription` — an `AsyncIterab
 
 All properties are optional:
 
-| Property             | Description                                                                                    |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| `includeDescendants` | Include all updates with an id prefixed by the subscribed id (e.g. `sub/*`)                    |
-| `startTime`          | Start from a past time (catch-up of historical messages). Cannot be used with `previousCount`. |
-| `previousCount`      | Return the last N updates/messages. Cannot be used with `startTime`.                           |
-| `omitCurrent`        | Do not send the current/retained record as the first update.                                   |
-| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                          |
-| `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.           |
+| Property             | Description                                                                                                                                                                                                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `includeDescendants` | Include all updates with an id prefixed by the subscribed id (e.g. `sub/*`)                                                                                                                                                                                                         |
+| `startTime`          | Start from a past time (catch-up of historical messages). Cannot be used with `previousCount`. Catch-up reads the audit log, so a `startTime` older than the retained history replays only what is left — see [`oldestRetainedAuditTime()`](#oldestretainedaudittime-number) below. |
+| `previousCount`      | Return the last N updates/messages. Cannot be used with `startTime`.                                                                                                                                                                                                                |
+| `omitCurrent`        | Do not send the current/retained record as the first update.                                                                                                                                                                                                                        |
+| `rowFilter`          | Synchronous JavaScript predicate applied to authoritative row values.                                                                                                                                                                                                               |
+| `eventFilter`        | Synchronous JavaScript predicate for events that may not carry an authoritative row.                                                                                                                                                                                                |
+
+---
+
+### `oldestRetainedAuditTime(): number`
+
+<VersionBadge version="v5.3.0" />
+
+The oldest point in the audit log from which an incremental catch-up is still complete — the retention floor.
+
+Subscription catch-up (`startTime`) reads the audit log, and the audit log is pruned on a retention window (`logging.auditRetention`). A consumer that saves a cursor, disconnects, and resumes past that window would otherwise receive a replay that quietly begins after the messages it missed. This method is how a consumer detects that instead:
+
+```javascript
+const floor = tables.Product.oldestRetainedAuditTime();
+if (cursor >= floor) {
+	// every change after `cursor` is still in the log; resume incrementally
+	subscription = await tables.Product.subscribe({ startTime: cursor });
+} else {
+	// history this consumer needs has been pruned; re-read the table instead
+	await fullResync();
+}
+```
+
+The cursor is a _last-processed_ position, so a cursor exactly at the floor is safe — everything below it has already been handled.
+
+Details worth knowing before relying on it:
+
+- **The time domain is the same one `startTime` uses**, so cursors compare directly with no conversion. Subscription events carry it as `localTime`.
+- **Only a subscription event's `localTime` is a valid cursor here.** `getHistory()` also yields a `localTime`, but that one is the entry's origin version, which a backdated or replicated write makes differ from the audit-log position this floor describes. Do not persist `getHistory().localTime` and compare it against the floor: it can pass `cursor >= floor` while the messages between them have already been pruned, which is the silent gap this method exists to expose.
+- **The floor is database-scoped, not per-table.** All tables in a database share one audit log, so `cursor >= floor` means no entry of _any_ table in that database was pruned below the cursor. `deleteHistory()` on one table raises the floor for its siblings too.
+- **`Infinity` means the floor is unknown.** Treat no cursor as safe. This is what a database reports when its retention history cannot be accounted for — most commonly the first time it is opened by a version that records a floor, or after a migration between storage engines, which does not carry the audit log across. Consumers resync once and then get real values.
+- **It errs in one direction only.** The floor can ask for a resync that was not strictly necessary. It does not report a cursor as safe when history it needed is gone.
+- **It is a reading at a moment in time.** Retention can advance between this call and the `subscribe()` that follows it. The window is milliseconds against a retention window normally measured in days, and losing that race leaves you with the truncated replay you would have had anyway — but it is not a lock.
+- Throws if the database has no audit log at all.
 
 ---
 
