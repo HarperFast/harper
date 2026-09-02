@@ -1432,20 +1432,31 @@ export function assertBranchIdentityAvailable(storeName: string): void {
 	for (const name of branchIdentityPair(storeName)) {
 		// The directory as well as the maps. `getDatabases` skips a database blocked by restore, so an
 		// in-memory check alone reports its name as free while its blob root is very much real -- and
-		// materialization would then remove and replace it. The `.staging` half also asks whether a
-		// BRANCH owns it: `<storeName>.staging` is a legal identity for a branch of a database named
-		// `<base>.staging`, whose live blob root is the path this clone renames over. The primary half
-		// cannot ask, because the branch being opened owns that directory itself.
+		// materialization would then remove and replace it.
 		if (
 			databases[name] ||
 			definedDatabases?.has(name) ||
 			openBranchIdentities.has(name) ||
 			existsSync(resolveDatabasePath(name)) ||
-			(name !== storeName && branchDirectoryExistsFor(name))
+			anotherBranchOwns(name, storeName)
 		) {
 			throw new Error(`Cannot use '${storeName}' as a branch store identity: '${name}' is already in use`);
 		}
 	}
+}
+
+/**
+ * Does a branch OTHER than the one being opened already answer to this name on disk? `.staging` is
+ * what makes the question two-sided: `<identity>.staging` is both the path a clone renames over and
+ * a legal identity for a branch of a database literally named `<base>.staging`, so each of the pair
+ * can belong to somebody else. Only the primary name read as itself is excluded -- that directory is
+ * the very branch this call is opening.
+ */
+function anotherBranchOwns(name: string, storeName: string): boolean {
+	if (name !== storeName) return branchDirectoryExistsFor(name);
+	return name.endsWith(BRANCH_STAGING_SUFFIX)
+		? branchDirectoryExistsFor(name.slice(0, -BRANCH_STAGING_SUFFIX.length))
+		: false;
 }
 
 /**

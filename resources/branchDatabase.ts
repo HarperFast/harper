@@ -123,9 +123,16 @@ async function cloneBlobRoots(baseName: string, branchRoots: string[], progress:
 	const baseRoots = getRootBlobPathsForDB(database({ database: baseName, table: undefined }) as never);
 	let substituted = 0;
 	let copied = 0;
-	// Over the BRANCH's roots, not the base's: a row's `storageIndex` is a position in the branch's own
-	// list, and its marker records every entry, so each one has to exist even where the base has no
-	// counterpart to clone from.
+	if (baseRoots.length > branchRoots.length) {
+		// Every root the branch will have is cloned below, but the base has more than that, and a
+		// checkpointed row whose `storageIndex` lands past the branch's list resolves through nothing.
+		logger.warn?.(
+			`Branch of '${baseName}' has ${branchRoots.length} blob root(s) where the base resolves through ` +
+				`${baseRoots.length}; rows referencing the base's higher-numbered volumes will not be readable ` +
+				`in it. storage.blobPaths shrank while the base was open`
+		);
+	}
+	// A row's `storageIndex` is a position in the branch's own list, and its marker records every entry.
 	for (let index = 0; index < branchRoots.length; index++) {
 		const staging = `${branchRoots[index]}.staging`;
 		await rm(staging, { recursive: true, force: true });
@@ -351,14 +358,16 @@ function wakeWaiters(state: BigInt64Array): void {
 /** Wait until the claim leaves CREATING, and report the state it settled on. */
 async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: () => number): Promise<bigint> {
 	// A progress-extended deadline has no ceiling, so a wait past the original budget must say why it is
-	// still waiting rather than looking like a hang with no thread to point at.
+	// still waiting rather than reading as a hang with no thread to point at.
 	const patience = deadline();
 	let announced = false;
 	for (;;) {
 		const current = Atomics.load(state, CLAIM_STATE);
 		if (current !== CREATING) return current;
-		// Both conditions: past the original budget, and still going only because the deadline moved. The
-		// clock alone would print this on the very turn a winner that reported nothing times out.
+		const remaining = deadline() - Date.now();
+		if (remaining <= 0) throw new Error(`Timed out waiting for another thread to create the branch at ${branchPath}`);
+		// After the timeout check, and only once the deadline itself has moved: on the clock alone this
+		// would claim the winner is alive on the very turn the wait gives up on it.
 		if (!announced && Date.now() > patience && deadline() > patience) {
 			announced = true;
 			logger.warn?.(
@@ -366,8 +375,6 @@ async function awaitClaim(state: BigInt64Array, branchPath: string, deadline: ()
 					`progress, so this wait is extended for as long as it keeps doing so`
 			);
 		}
-		const remaining = deadline() - Date.now();
-		if (remaining <= 0) throw new Error(`Timed out waiting for another thread to create the branch at ${branchPath}`);
 		const slice = Math.min(remaining, 1000);
 		if (isShared(state)) {
 			const wait = (Atomics as any).waitAsync(state, CLAIM_STATE, CREATING, slice);
@@ -633,10 +640,10 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 function recordedBlobRootsAt(branchPath: string, storeName: string): string[] {
 	const published = readBranchState(branchPath, storeName);
 	const configured = getBlobPathsForDatabaseName(storeName);
-	// A marker that reads as damaged still names what this branch published, and that is what may be
-	// deleted; only a branch with no usable marker at all leaves configuration as the best answer.
-	// Either way, nothing outside this node's configured volumes is deleted: a branch directory carried
-	// over from a host with different `storage.blobPaths` names paths this node never wrote.
+	// A marker that reads as damaged still names what this branch published, and only a branch with no
+	// usable marker at all leaves configuration as the best answer. Nothing outside this node's
+	// configured volumes is deleted either way: a branch directory carried over from a host configured
+	// differently names paths this node never wrote.
 	return published.state === 'complete' || published.state === 'damaged'
 		? published.blobRoots.filter((root) => configured.includes(root))
 		: configured;

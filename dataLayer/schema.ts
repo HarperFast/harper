@@ -79,16 +79,18 @@ export async function createSchemaStructure(schemaCreateObject: any) {
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
-	// The same refusal schema authoring makes in `table()`: a branch resolves its blob root from its
-	// store identity, so a database under that name shares the root -- two allocators minting the same
-	// file paths, and `drop_database` deleting the branch's blobs (harper#644).
+
+	transformReq(schemaCreateObject);
+	// After the normalization, because that is what settles which of `database`/`schema` names the
+	// database being created. The same refusal schema authoring makes in `table()`: a branch resolves
+	// its blob root from its store identity, so a database under that name shares the root -- two
+	// allocators minting the same file paths, and `drop_database` deleting the branch's blobs
+	// (harper#644).
 	if (isBranchIdentity(schemaCreateObject.schema)) {
 		throw new ClientError(
 			`'${schemaCreateObject.schema}' is in use as a branch store identity and cannot be a database name`
 		);
 	}
-
-	transformReq(schemaCreateObject);
 
 	if (!(await schemaMetadataValidator.checkSchemaExists(schemaCreateObject.schema))) {
 		throw handleHDBError(

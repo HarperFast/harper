@@ -1085,21 +1085,28 @@ describeUnlessLmdb('branch identity is unavailable across restarts and restores 
 		assert.strictEqual(isBranchIdentity(`${identity}.staging`), true, 'the sibling is spoken for as well');
 	});
 
-	it('refuses to materialize over the live blob root of a branch of a database named .staging', async function () {
+	it("refuses either branch whose staging path is the other branch's live blob root", async function () {
 		this.timeout(30000);
-		// `<identity>.staging` is the path the clone removes and renames over, and it is also the legal
-		// identity of a branch of a database called `identbase.staging`. That branch's root is live data.
+		// `<identity>.staging` is the path a clone removes and renames over, and it is also the legal
+		// identity of a branch of a database named `<base>.staging`. Whichever of the two is created
+		// second must be refused, or materializing it destroys the other's live blob root.
 		const { assertBranchIdentityAvailable } = require('#src/resources/databases');
-		const planted = resolveBranchPath('identbase.staging', 'identApp');
-		mkdirSync(planted, { recursive: true });
-		try {
-			assert.throws(
-				() => assertBranchIdentityAvailable(`${'identApp'.length}_identApp__identbase`),
-				/already in use/,
-				"the sibling path is another branch's blob root, not scratch space"
-			);
-		} finally {
-			rmSync(planted, { recursive: true, force: true });
+		const plain = `${'identApp'.length}_identApp__identbase`;
+		for (const [existing, refused] of [
+			['identbase.staging', plain],
+			['identbase', `${plain}.staging`],
+		]) {
+			const planted = resolveBranchPath(existing, 'identApp');
+			mkdirSync(planted, { recursive: true });
+			try {
+				assert.throws(
+					() => assertBranchIdentityAvailable(refused),
+					/already in use/,
+					`a branch of '${existing}' already answers to what '${refused}' would take`
+				);
+			} finally {
+				rmSync(planted, { recursive: true, force: true });
+			}
 		}
 	});
 
