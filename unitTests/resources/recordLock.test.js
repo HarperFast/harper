@@ -356,6 +356,22 @@ describe('Record locks (harper#483)', () => {
 			workers = [];
 		});
 
+		it('a terminated worker thread releases its held lock', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await ThreadTable.put({ id: recordId, n: 1 });
+			// Start a fresh worker (outside the reusable pool) so we can terminate it cleanly
+			const dying = new Worker(__dirname + '/recordLock-thread.js', { workerData: { addPorts: [] } });
+			await request(dying, { type: 'hold', id: recordId, lease: 30_000 }, 'held');
+			// Verify the lock is actually held before we terminate
+			const put = ThreadTable.put({ id: recordId, n: 2 });
+			assert.strictEqual(await settlement(put), 'pending', 'put is blocked by the dying worker');
+			await dying.terminate();
+			// rocksdb-js ~DBHandle() calls lockReleaseByOwner; the put should now proceed
+			await put;
+			assert.strictEqual((await ThreadTable.get(recordId)).n, 2, 'put landed after the worker died');
+		});
+
 		it('a lock held on another thread gates this thread until it is released', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();

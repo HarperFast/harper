@@ -472,7 +472,6 @@ export class DatabaseTransaction implements Transaction {
 	// or abort of this link.
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
 	declare lockWaitDeadline?: number;
-	declare lockWait?: { cancel: () => void };
 
 	registerRecordLock(handle: RecordLockHandle): void {
 		let locksForStore = (this.recordLocks ??= new Map()).get(handle.store);
@@ -497,9 +496,7 @@ export class DatabaseTransaction implements Transaction {
 		const recordLocks = this.recordLocks;
 		if (!recordLocks) return;
 		this.recordLocks = undefined;
-		for (const locksForStore of recordLocks.values())
-			for (const handle of locksForStore.values())
-				handle.release();
+		for (const locksForStore of recordLocks.values()) for (const handle of locksForStore.values()) handle.release();
 	}
 
 	/**
@@ -515,8 +512,7 @@ export class DatabaseTransaction implements Transaction {
 	protected gateLockedWrite(operation: TransactionWrite, txnTime: number): boolean {
 		if (operation.gateOnLock !== true || this.sourceApply || this.isReplay) return false;
 		const keyId = writeKeyId(operation.key);
-		const handle =
-			operation.lockHandle ?? (this.recordLocks && this.recordLockFor(operation.store, keyId));
+		const handle = operation.lockHandle ?? (this.recordLocks && this.recordLockFor(operation.store, keyId));
 
 		// Stale holder: the transaction's lock handle for this key expired
 		if (handle?.expired)
@@ -599,13 +595,13 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	/**
-	 * Acquire the native key locks for the pending writes (writes that could not be staged because
-	 * another party held their key at staging time). After all keys are acquired, bump the transaction
-	 * timestamp past the released version and stage the pending writes into the existing native
-	 * transaction via a recursive commit() — sibling writes already staged are not discarded.
+	 * Acquire the native key locks for writes that could not be staged because another party held
+	 * their key. Discards the current staged round first so no stale version references survive
+	 * while we wait and no verification-table intents are held during the park. After all keys are
+	 * acquired, re-stages the whole write set with a fresh timestamp via restageAfter — identical
+	 * to the restageHolderWrites path.
 	 *
-	 * Lock ordering: two transactions each holding one key and waiting for the other both time out
-	 * at 30 s (423). Avoid interleaved lock() calls across transactions.
+	 * Lock ordering: two transactions each waiting for the other's key both time out at 30 s (423).
 	 */
 	private waitForPendingKeys(gated: TransactionWrite[], options: CommitOptions): Promise<CommitResolution> {
 		const now = Date.now();
@@ -613,11 +609,16 @@ export class DatabaseTransaction implements Transaction {
 		if (now >= this.lockWaitDeadline)
 			throw new ClientError(`Record ${String(gated[0].key)} is locked and was not released in time`, 423);
 
+		// Discard staged writes before parking: a timestamp bump after staging would leave already-encoded
+		// record versions inconsistent with the new transaction timestamp and audit-log key. This also
+		// drops any verification-table intents held by the current round before we start waiting.
+		const replayNeeded = this.discardStagedRound();
+
 		this.setCommitPhase(true);
 		const deadline = this.lockWaitDeadline;
 
+		let maxReleasedVersion = 0;
 		const acquire = async () => {
-			let maxReleasedVersion = 0;
 			for (const write of gated) {
 				const remaining = deadline - Date.now();
 				if (remaining <= 0)
@@ -631,10 +632,7 @@ export class DatabaseTransaction implements Transaction {
 				// Await it before acquiring so we don't spin; another thread may grab the key first,
 				// in which case acquireRecordKey loops until we get it or the deadline passes.
 				if (write.pendingWake) {
-					await Promise.race([
-						write.pendingWake,
-						new Promise<void>((r) => setTimeout(r, remaining)),
-					]);
+					await write.pendingWake;
 					write.pendingWake = undefined;
 				}
 
@@ -653,30 +651,15 @@ export class DatabaseTransaction implements Transaction {
 				const entryVersion = write.store.getEntry(write.key)?.version ?? 0;
 				if (entryVersion > maxReleasedVersion) maxReleasedVersion = entryVersion;
 			}
-
-			// Bump the transaction timestamp past the holder's committed version so the pending
-			// writes land strictly after it in the version history.
-			if (maxReleasedVersion > 0) {
-				this.timestamp = Math.max(
-					(this.db as any).getMonotonicTimestamp?.() ?? getNextMonotonicTime(),
-					maxReleasedVersion + LOCK_VERSION_STEP
-				);
-				if (this.transaction) this.transaction.setTimestamp(this.timestamp);
-			}
-
-			// Un-mark so the recursive commit stages them with the fresh timestamp.
-			for (const write of gated) write.saved = false;
 		};
 
 		return acquire().then(
 			() => {
 				this.setCommitPhase(false);
-				this.lockWait = undefined;
-				return this.commit(options);
+				return this.restageAfter(maxReleasedVersion, replayNeeded, options);
 			},
 			(err) => {
 				this.setCommitPhase(false);
-				this.lockWait = undefined;
 				throw err;
 			}
 		);
@@ -1629,7 +1612,6 @@ export class DatabaseTransaction implements Transaction {
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
-		this.lockWait?.cancel();
 		this.releaseRecordLocks();
 		this.drainCompletions();
 		try {

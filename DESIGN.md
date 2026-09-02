@@ -132,23 +132,28 @@ Two consequences of that scoping are worth knowing, both pre-existing and neithe
 write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
 map keyed by `[Symbol.for('record-lock'), tableId, id]`. No write goes to the store or audit log for
 `lock()` or `unlock()`. The record's version and stored bytes are unchanged when a lock is acquired or
-released; only the native key is locked in memory. This eliminates the Phase 0 blocker that required a
-version-conditional LOCK write before every update under a held lock, and removes all durable lock state
-from the on-disk format.
+released; only the native key is locked in memory. This design resolves the Phase 0 blockers: durable
+LOCK/UNLOCK control writes set a `LOCAL_ONLY` flag that the replication send path must strip, and they
+produced a version bump that could cause a peer who received the replication write to see the next
+non-lock write as an out-of-order duplicate and discard it. Staying in memory removes that version
+skew entirely and eliminates all durable lock state from the on-disk format.
 
 Consequences that shape the code:
 
 - **`store.tryLock(lockKey, onUnlocked)` is the acquisition primitive.** It returns `true` immediately if
   the key is free, or queues `onUnlocked` and returns `false`. `store.unlock(lockKey)` is ownerless —
   any caller can release — and fires all queued callbacks. `store.hasLock(lockKey)` tests without modifying.
-  The key is `lockAttemptKey(tableId, id)` = `[LOCK_KEY_PREFIX, tableId, ...id]`, distinct from
-  `getFromSource`'s bare-id single-flight lock.
+  Because `unlock` is ownerless, the handle's `released` flag (set atomically with `store.unlock` in the
+  same thread as the lease timer) is what prevents a stale holder from clearing a new holder's lock: once
+  `released` is set, `release()` is a no-op. The key is `lockAttemptKey(tableId, id)` =
+  `[LOCK_KEY_PREFIX, tableId, ...id]`, distinct from `getFromSource`'s bare-id single-flight lock.
 - **`RecordLockHandle`** (`recordLock.ts`) carries `store`, `key`, `keyId`, `expiresAt`, `hold`, `released`,
   and `expired`. `release()` is synchronous: it sets `released`, clears the lease timer, and calls
-  `store.unlock(key)`. A lease timer in the holder thread sets `expired = true` then calls
-  `store.unlock()` on fire; the stale holder's next `gateLockedWrite` check then throws 409 if another
-  party holds the key. `acquireRecordKey` (shared by `lock()` and the async write-gate path) loops
-  `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423).
+  `store.unlock(key)`. A lease timer in the holder thread sets `expired = true` then calls `store.unlock()`
+  on fire; the stale holder's next `gateLockedWrite` check then throws 409 if another party holds the key.
+  `acquireRecordKey` (shared by `lock()` and the async write-gate path) loops `tryLock` → await wake →
+  retry until acquired or `waitMs` elapsed (then 423). Converting a gate handle (no lease) to `{ hold:
+true }` neutralizes the gate handle and creates a fresh handle with the requested lease timer.
 - **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a `Map<store, Map<keyId, handle>>`.
   `registerRecordLock`, `recordLockFor`, and `unregisterRecordLock` manage it. Both `lock()` and the write
   gate check the map before calling `tryLock`; a re-entrant call returns the existing handle.
@@ -156,31 +161,33 @@ Consequences that shape the code:
   every write marked `gateOnLock` (local mutations: update, delete, invalidate, relocate, publish; never a
   replicated, source-notified, or copy-applied write, nor replay). It calls `tryLock` synchronously. On
   success, a gate handle is registered on the transaction and the write proceeds. On failure, the write is
-  marked `gated` with a `pendingWake` promise (resolved by the `onUnlocked` callback). Sibling writes in
-  the same transaction are NOT discarded — only the pending write is held back. `commit()` collects all
-  `gated` writes, awaits each `pendingWake`, acquires via `acquireRecordKey`, bumps the transaction
-  timestamp past the holder's committed version (so the pending writes land strictly after), and
-  recursively commits. Bounded by `LOCKED_WRITE_WAIT_MS`, then 423.
+  marked `gated` with a `pendingWake` promise (resolved by the `onUnlocked` callback). `commit()` collects
+  all `gated` writes, discards the current staged round (to drop stale version references and release any
+  verification-table intents held during the wait), acquires all keys via `acquireRecordKey`, and restages
+  the whole write set via `restageAfter` with a timestamp past the holder's released version. Bounded by
+  `LOCKED_WRITE_WAIT_MS`, then 423.
 - **Holder writes are re-entrant.** When the transaction's `recordLocks` map already has a handle for the
   write's `keyId`, `gateLockedWrite` re-uses it. It re-reads the entry: if an ungated rewrite (source fill,
   replicated apply) moved the record past the transaction's timestamp, `operation.restage = true` is set
   and `commit()` re-stages the transaction with `restageHolderWrites` (bounded by `LOCKED_WRITE_WAIT_MS`).
 - **Release.** A transaction-scoped handle (the default) is in the `recordLocks` map; every commit or abort
   of the link calls `releaseRecordLocks()` which iterates and calls `handle.release()` on each. `{ hold:
-  true }` attaches the handle to the returned instance as `#lockHandle` instead; `unlock()` calls
+true }` attaches the handle to the returned instance as `#lockHandle` instead; `unlock()` calls
   `handle.release()` directly (synchronous, returns false if already released). The read snapshot is dropped
   after acquiring so the scope reads what it locked.
-- **Crash / thread death.** The key lock is process-wide in memory. A process crash releases everything.
-  A worker thread death does not automatically call `store.unlock()`, so the lease timer is the bound for
-  that case: it fires in the holder thread if the thread is alive, and is set `.unref()` so it does not
-  prevent clean shutdown.
+- **Crash / thread death.** A process crash releases all key locks (process-wide in-memory). A worker
+  thread termination releases its locks too: rocksdb-js's `~DBHandle()` destructor calls
+  `lockReleaseByOwner(this)` on env teardown, releasing every key the terminated thread's handle held.
+  The lease timer is additionally a soft bound in case a holder's event loop is blocked (the timer fires
+  in the holder's thread, so a blocked-but-alive thread delays it). Phase 1 follow-up: add a native
+  lease/deadline to rocksdb-js `LockHandle` so waiters can evict a timed-out holder without waiting.
 - **Not supported on LMDB.** `lock()` throws 501; `gateLockedWrite` guards on `typeof store.tryLock !==
-  'function'` and returns false to avoid crashing if a gated write somehow reaches that path on LMDB.
+'function'` and returns false to avoid crashing if a gated write somehow reaches that path on LMDB.
 
-Not in Phase 0, by design: replication of lock transitions, gating of replicated writes, fencing
-enforcement against a stale holder's token (the `keyId` / generation), lease renewal, subscription events
-for lock/unlock, and lock() on LMDB. Phase 1 will add per-table distributed fencing via a token from the
-holder's `keyId`.
+Not in Phase 0, by design: replication of lock transitions, gating of replicated writes, lease renewal,
+subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: replicate lock request/grant/
+release as control transaction-log entries with Ricart–Agrawala-style (timestamp, nodeId) tiebreaking; once
+every node gates its local writers on a distributed grant, no record version bump is needed.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

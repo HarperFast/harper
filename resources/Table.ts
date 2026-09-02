@@ -18,14 +18,12 @@ import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
 import {
-	LOCK_VERSION_STEP,
 	acquireRecordKey,
 	lockAttemptKey,
 	makeKeyLockHandle,
 	resolveLockOptions,
 	type RecordLockHandle,
 	type RecordLockOptions,
-	type ResolvedRecordLockOptions,
 } from './recordLock.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
@@ -82,7 +80,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -2376,28 +2374,33 @@ export function makeTable(options) {
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.released && !scoped.expired) {
 				if (resolved.hold) {
+					// The gate handle has no lease (expiresAt = Infinity). Neutralize it without releasing the
+					// native key lock, then create a new hold handle that carries the requested lease timer.
 					link.unregisterRecordLock(scoped);
-					scoped.hold = true;
-					this.#lockHandle = scoped;
+					scoped.released = true; // prevent double-unlock when the gate handle is later collected
+					const holdHandle = makeKeyLockHandle(primaryStore, scoped.key, scoped.keyId, resolved.lease, true);
+					this.#lockHandle = holdHandle;
 				}
 				return Promise.resolve(this.#reloadLocked(id));
 			}
 			const key = lockAttemptKey(tableId, id);
-			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then((handle) => {
-				if (resolved.hold) this.#lockHandle = handle;
-				else {
-					link.registerRecordLock(handle);
-					if (link.transaction) {
-						// The scope's read snapshot predates the lock; drop it so the rest of the scope reads
-						// what it locked (and its own commit does not conflict with staged writes).
-						if (link.readTxnsUsed <= 1) {
-							link.releaseReadTxn();
-							link.snapshotFree = true;
-						} else link.transaction.setTimestamp(link.timestamp);
+			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
+				(handle) => {
+					if (resolved.hold) this.#lockHandle = handle;
+					else {
+						link.registerRecordLock(handle);
+						if (link.transaction) {
+							// The scope's read snapshot predates the lock; drop it so the rest of the scope reads
+							// what it locked (and its own commit does not conflict with staged writes).
+							if (link.readTxnsUsed <= 1) {
+								link.releaseReadTxn();
+								link.snapshotFree = true;
+							} else link.transaction.setTimestamp(link.timestamp);
+						}
 					}
+					return this.#reloadLocked(id);
 				}
-				return this.#reloadLocked(id);
-			});
+			);
 		}
 		#reloadLocked(id: Id) {
 			TableResource._updateResource(this, primaryStore.getEntry(id));
@@ -6712,7 +6715,6 @@ export function makeTable(options) {
 							logger.trace?.(
 								`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
-							// a locked record leaves a tombstone that keeps its generation, never an outright removal
 							if (audit || trackDeletes) {
 								updateRecord(
 									id,
