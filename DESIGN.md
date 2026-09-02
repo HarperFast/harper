@@ -173,8 +173,11 @@ true }` neutralizes the gate handle and creates a fresh handle with the requeste
 - **Release.** A transaction-scoped handle (the default) is in the `recordLocks` map; every commit or abort
   of the link calls `releaseRecordLocks()` which iterates and calls `handle.release()` on each. `{ hold:
 true }` attaches the handle to the returned instance as `#lockHandle` instead; `unlock()` calls
-  `handle.release()` directly (synchronous, returns false if already released). The read snapshot is dropped
-  after acquiring so the scope reads what it locked.
+  `handle.release()` directly (synchronous, returns false if already released). When no iterators are open
+  (`readTxnsUsed <= 1`) the read snapshot is released and `snapshotFree` is set so subsequent reads see
+  current state; when iterators are open `setTimestamp` re-pins the same handle, and plain reads in that
+  scope keep the pre-lock snapshot — only the holder's own writes bypass it through the gate re-entrancy
+  path.
 - **Crash / thread death.** A process crash releases all key locks (process-wide in-memory). A worker
   thread termination releases its locks too: rocksdb-js's `~DBHandle()` destructor calls
   `lockReleaseByOwner(this)` on env teardown, releasing every key the terminated thread's handle held.

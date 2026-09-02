@@ -1,3 +1,4 @@
+import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 
 /**
@@ -16,11 +17,17 @@ export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 export const MAX_LOCK_TIMEOUT_MS = 300_000;
 /** How long a write to a record another party holds waits for the release before failing (423). */
 export const LOCKED_WRITE_WAIT_MS = 30_000;
-/**
- * Minimum version step used to guarantee a holder write lands strictly after any ungated rewrite
- * that moved the record during the critical section.
- */
-export const LOCK_VERSION_STEP = 0.001;
+
+let lockedWriteWaitMs = LOCKED_WRITE_WAIT_MS;
+
+/** Override for tests; must not lower the production default in production code. */
+export function setLockedWriteWaitMs(ms: number): void {
+	lockedWriteWaitMs = ms;
+}
+
+export function getLockedWriteWaitMs(): number {
+	return lockedWriteWaitMs;
+}
 
 const LOCK_KEY_PREFIX = Symbol.for('record-lock');
 
@@ -84,6 +91,8 @@ export function lockAttemptKey(tableId: number, id: any): any[] {
 	return Array.isArray(id) ? [LOCK_KEY_PREFIX, tableId, ...id] : [LOCK_KEY_PREFIX, tableId, id];
 }
 
+const warnedLeaseTimerStores = new WeakSet();
+
 /**
  * Create a key-lock handle. Gate handles (lease = undefined) have no expiry timer and are released
  * when the transaction commits or aborts via releaseRecordLocks. Lock() handles have a lease timer
@@ -109,18 +118,30 @@ export function makeKeyLockHandle(
 			if (handle.released) return false;
 			handle.released = true;
 			clearTimeout(timer);
-			store.unlock(key);
+			try {
+				store.unlock(key);
+			} catch (err) {
+				if (!warnedLeaseTimerStores.has(store)) {
+					warnedLeaseTimerStores.add(store);
+					harperLogger.warn?.('record lock release failed (store may have been dropped)', err);
+				}
+			}
 			return true;
 		},
 	};
 	if (lease != null) {
-		// The lease timer runs in the holder thread. On fire: release is set first so a racing
-		// explicit release() sees `released` and returns false rather than double-unlocking.
 		timer = setTimeout(() => {
 			if (!handle.released) {
 				handle.released = true;
 				handle.expired = true;
-				store.unlock(key);
+				try {
+					store.unlock(key);
+				} catch (err) {
+					if (!warnedLeaseTimerStores.has(store)) {
+						warnedLeaseTimerStores.add(store);
+						harperLogger.warn?.('record lock lease timer failed (store may have been dropped)', err);
+					}
+				}
 			}
 		}, lease).unref();
 	}

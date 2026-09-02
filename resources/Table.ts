@@ -483,6 +483,11 @@ function chainKeyForId(id: any): string {
 	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
 }
 
+/** True for local-origin writes that must wait behind a record lock; false for replication, notifications, copy-apply. */
+function gateLocalWrite(options: any, id: unknown = true): boolean {
+	return options?.nodeId == null && !options?.isNotification && !options?.isCopyApply && id !== null;
+}
+
 export function makeTable(options) {
 	const {
 		primaryKey,
@@ -2132,7 +2137,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				gateOnLock: options?.nodeId == null,
+				gateOnLock: gateLocalWrite(options),
 				lockKey: lockAttemptKey(tableId, id),
 				lockHandle: this.#lockHandle,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
@@ -2182,7 +2187,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				gateOnLock: options?.nodeId == null,
+				gateOnLock: gateLocalWrite(options),
 				lockKey: lockAttemptKey(tableId, id),
 				lockHandle: this.#lockHandle,
 				before:
@@ -2374,35 +2379,52 @@ export function makeTable(options) {
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.released && !scoped.expired) {
 				if (resolved.hold) {
-					// The gate handle has no lease (expiresAt = Infinity). Neutralize it without releasing the
-					// native key lock, then create a new hold handle that carries the requested lease timer.
+					// Neutralize the gate handle (no lease) and create a fresh hold handle with the requested
+					// lease timer; setting released=true prevents the gate handle from double-unlocking.
 					link.unregisterRecordLock(scoped);
-					scoped.released = true; // prevent double-unlock when the gate handle is later collected
+					scoped.released = true;
 					const holdHandle = makeKeyLockHandle(primaryStore, scoped.key, scoped.keyId, resolved.lease, true);
-					this.#lockHandle = holdHandle;
+					link.registerRecordLock(holdHandle);
+					return Promise.resolve(this.#reloadLocked(id, holdHandle));
 				}
-				return Promise.resolve(this.#reloadLocked(id));
+				return Promise.resolve(this.#reloadLocked(id, null));
 			}
 			const key = lockAttemptKey(tableId, id);
 			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
 				(handle) => {
-					if (resolved.hold) this.#lockHandle = handle;
-					else {
+					if (resolved.hold) {
+						link.registerRecordLock(handle);
+					} else {
 						link.registerRecordLock(handle);
 						if (link.transaction) {
-							// The scope's read snapshot predates the lock; drop it so the rest of the scope reads
-							// what it locked (and its own commit does not conflict with staged writes).
+							// The read snapshot predates the lock; drop it so the scope reads what it locked.
+							// With iterators open (readTxnsUsed > 1) setTimestamp re-pins the same handle;
+							// plain reads in that scope keep the pre-lock snapshot (the holder's writes still
+							// see current state through the gate re-entrancy path).
 							if (link.readTxnsUsed <= 1) {
 								link.releaseReadTxn();
 								link.snapshotFree = true;
 							} else link.transaction.setTimestamp(link.timestamp);
 						}
 					}
-					return this.#reloadLocked(id);
+					return this.#reloadLocked(id, resolved.hold ? handle : null);
 				}
 			);
 		}
-		#reloadLocked(id: Id) {
+		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null) {
+			if (holdHandle !== undefined) this.#lockHandle = holdHandle ?? undefined;
+			if (writeKeyId(id) !== writeKeyId(this.getId())) {
+				// lock(target) where target differs from this record: return a separate instance so
+				// this instance's entry and id are not mutated by another record's data.
+				const fresh = new (this.constructor as any)(id, this.getContext());
+				TableResource._updateResource(fresh, primaryStore.getEntry(id));
+				if (holdHandle) {
+					fresh.#lockHandle = holdHandle;
+					this.#lockHandle = undefined;
+				}
+				fresh.#lockWritable = true;
+				return fresh;
+			}
 			TableResource._updateResource(this, primaryStore.getEntry(id));
 			this.#changes = undefined;
 			this.#lockWritable = true;
@@ -2598,7 +2620,7 @@ export function makeTable(options) {
 				deferSave: true,
 				// a canonical-source apply carries the record's true state and preserves a lock; only local
 				// writers wait for one
-				gateOnLock: options?.nodeId == null && !options?.isNotification && !options?.isCopyApply,
+				gateOnLock: gateLocalWrite(options),
 				lockKey: lockAttemptKey(tableId, id),
 				lockHandle: this.#lockHandle,
 				validate: (txnTime, committedBy = transaction) => {
@@ -3369,7 +3391,7 @@ export function makeTable(options) {
 				entry,
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
-				gateOnLock: options?.nodeId == null,
+				gateOnLock: gateLocalWrite(options),
 				lockKey: lockAttemptKey(tableId, id),
 				lockHandle: this.#lockHandle,
 				before:
@@ -4932,7 +4954,7 @@ export function makeTable(options) {
 				entry: this.#entry,
 				nodeName: (context as any)?.nodeName,
 				// a message rewrites the record's version, which would reorder a holder's later write below it
-				gateOnLock: options?.nodeId == null && id !== null,
+				gateOnLock: gateLocalWrite(options, id),
 				lockKey: id !== null ? lockAttemptKey(tableId, id) : undefined,
 				lockHandle: this.#lockHandle,
 				validate: () => {

@@ -6,6 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
+const { setLockedWriteWaitMs, LOCKED_WRITE_WAIT_MS } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -304,21 +305,33 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1);
 		});
 
-		it('an overrun holder write fails with 409 after the lease fires', async function () {
+		it('a 423 from a locked write releases gate locks on other keys in the same transaction', async function () {
+			// BLOCKER: verify that gate handles on other keys are not stranded when a 423 escapes commit().
 			if (isLMDB) return this.skip();
-			const recordId = id();
-			await LockTest.put({ id: recordId, n: 1 });
-			// The lease fires and marks the handle expired before the holder tries to write
-			const stale = await LockTest.lock(recordId, { hold: true, lease: 200 });
-			await delay(250); // let the lease fire
-			const current = await LockTest.lock(recordId, { hold: true });
-			stale.set('n', 99);
-			await assert.rejects(
-				async () => stale.save(),
-				(error) => error.statusCode === 409
-			);
-			await current.unlock();
-			assert.strictEqual((await LockTest.get(recordId)).n, 1);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			// External holder keeps B locked for the duration of the test
+			const bHolder = await LockTest.lock(idB, { hold: true, lease: 5000 });
+			setLockedWriteWaitMs(100);
+			try {
+				// Transaction writes A (gates it) and B (blocked → 423 after 100ms)
+				await assert.rejects(
+					() =>
+						transaction(() => {
+							LockTest.put({ id: idA, n: 1 });
+							LockTest.put({ id: idB, n: 1 });
+						}),
+					(error) => error.statusCode === 423
+				);
+			} finally {
+				setLockedWriteWaitMs(LOCKED_WRITE_WAIT_MS);
+			}
+			// A's gate lock must have been released; a fresh write should proceed without blocking
+			await LockTest.put({ id: idA, n: 2 });
+			assert.strictEqual((await LockTest.get(idA)).n, 2, 'A is writable after the failed transaction');
+			await bHolder.unlock();
 		});
 	});
 
