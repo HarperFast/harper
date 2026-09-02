@@ -330,31 +330,43 @@ suite(
 			// inline path's behavior.
 			let filesAfterCleanup = filesAfterDelete;
 			let cleanupTrajectory: number[] = [filesAfterDelete];
+			// A dry run must report the orphan condition without acting on it (harper#1832 ask #2).
+			// Unconditional on purpose: when the inline path converges, `filesAfterDelete === 1` and a
+			// dryRun nested inside the leak branch below would never execute on a green run — the whole
+			// operation would be uncovered exactly when everything else works.
+			const dryRunResp = await client.req().send({
+				operation: 'cleanup_orphan_blobs',
+				database: dbName,
+				dryRun: true,
+			});
+			findings.push(
+				`cleanup_orphan_blobs dryRun invoked: status=${dryRunResp.status} body=${JSON.stringify(dryRunResp.body)}`
+			);
+			ok(dryRunResp.status === 200, `dryRun cleanup_orphan_blobs failed: ${dryRunResp.status}`);
+			// The sweep is async (the op returns immediately), so give it room to finish, then confirm
+			// it left every file in place.
+			await sleep(5_000);
+			const filesAfterDryRun = await countFiles(mainBlobDir);
+			findings.push(
+				`disk files after cleanup_orphan_blobs dryRun: ${filesAfterDryRun} (expected unchanged at ${filesAfterDelete})`
+			);
+			ok(
+				filesAfterDryRun === filesAfterDelete,
+				`DRY RUN DEFECT: cleanup_orphan_blobs with dryRun deleted files — expected the count to stay at ${filesAfterDelete}, found ${filesAfterDryRun}`
+			);
+			// A non-boolean dryRun must be rejected outright rather than guessed: read as raw truthiness,
+			// `"false"` selects the dry run and the operator's reclaim silently does nothing.
+			const badDryRunResp = await client.req().send({
+				operation: 'cleanup_orphan_blobs',
+				database: dbName,
+				dryRun: 'not-a-boolean',
+			});
+			findings.push(`cleanup_orphan_blobs dryRun='not-a-boolean': status=${badDryRunResp.status}`);
+			ok(
+				badDryRunResp.status >= 400 && badDryRunResp.status < 500,
+				`expected an uninterpretable dryRun to be rejected, got ${badDryRunResp.status}`
+			);
 			if (filesAfterDelete !== 1) {
-				// A dry run must report the orphan condition without acting on it: this is the only way to
-				// measure stranded bytes without also reclaiming them (harper#1832 ask #2). Asserted here,
-				// where orphans are known to exist, and before the destructive sweep below.
-				const dryRunResp = await client.req().send({
-					operation: 'cleanup_orphan_blobs',
-					database: dbName,
-					dryRun: true,
-				});
-				findings.push(
-					`cleanup_orphan_blobs dryRun invoked: status=${dryRunResp.status} body=${JSON.stringify(dryRunResp.body)}`
-				);
-				ok(dryRunResp.status === 200, `dryRun cleanup_orphan_blobs failed: ${dryRunResp.status}`);
-				// The sweep is async (the op returns immediately), so give it room to finish, then confirm
-				// it left every file in place.
-				await sleep(5_000);
-				const filesAfterDryRun = await countFiles(mainBlobDir);
-				findings.push(
-					`disk files after cleanup_orphan_blobs dryRun: ${filesAfterDryRun} (expected unchanged at ${filesAfterDelete})`
-				);
-				ok(
-					filesAfterDryRun === filesAfterDelete,
-					`DRY RUN DEFECT: cleanup_orphan_blobs with dryRun deleted files — expected the count to stay at ${filesAfterDelete}, found ${filesAfterDryRun}`
-				);
-
 				const cleanupResp = await client.req().send({ operation: 'cleanup_orphan_blobs', database: dbName });
 				findings.push(
 					`cleanup_orphan_blobs invoked (database=${dbName}): status=${cleanupResp.status} body=${JSON.stringify(cleanupResp.body)}`

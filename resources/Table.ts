@@ -136,7 +136,13 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
+import {
+	Blob,
+	deleteBlobsInObject,
+	findBlobsInObject,
+	registerBlobOwnerTable,
+	startPreCommitBlobsForRecord,
+} from './blob.ts';
 import {
 	onStorageReclamation,
 	removeStorageReclamation,
@@ -600,7 +606,11 @@ export function makeTable(options) {
 		options;
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
-	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
+<<<<<<< HEAD
+	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, tableName);
+	// The blob unlink drain resolves the owner recorded in a blob reference through this registry; a
+	// row staged by another process names a table id, and nothing else can turn that back into a store.
+	registerBlobOwnerTable(primaryStore.rootStore, tableName, primaryStore);
 	// Created on first cluster-scoped lock() or first arriving control entry, and only while a
 	// transport is registered for this database.
 	let lockCoordinator: LockCoordinator | undefined;
@@ -1895,7 +1905,9 @@ export function makeTable(options) {
 			}
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					deleteBlobsInObject(entry.value);
+					// A supersession like any other: the drop makes these records unreachable, and staging the
+					// intents durably is what keeps them from being lost if the process dies mid-drop.
+					deleteBlobsInObject(entry.value, undefined, { priorVersion: entry.version });
 				}
 			}
 			if (databaseName === databasePath) {
