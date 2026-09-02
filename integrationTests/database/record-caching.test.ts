@@ -126,7 +126,6 @@ suite('record-caching [rocksdb] 4-worker', { skip: SKIP || NO_MULTI_WORKER_HTTP 
 		await teardownHarper(ctx);
 	});
 
-	// Only S1 needs every worker; S2 is a load test and keeps running where coverage is unreachable.
 	test(
 		'S1 cache invalidation: a PUT must not leave a stale cached value on ANY worker',
 		{ skip: NO_FULL_WORKER_COVERAGE },
