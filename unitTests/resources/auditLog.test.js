@@ -1527,6 +1527,57 @@ describe('Audit log', () => {
 				assert.deepStrictEqual(versions, [1, 3, 4]);
 			});
 
+			it('defers a re-poll report until its rebuilt buffer is stable for a re-entering hook', () => {
+				const error = new CorruptFrameError('Corrupt transaction log entry at position 3e8 of log 1', 1, 1000, 2048);
+				let corruptOnPoll = false;
+				const pendingEntries = [entry(1)];
+				const corrupt = {
+					name: 'corrupt',
+					query: () => ({
+						next() {
+							if (corruptOnPoll) throw error;
+							return { done: true, value: undefined };
+						},
+						[Symbol.iterator]() {
+							return this;
+						},
+					}),
+					addEntry: () => null,
+					on: () => null,
+				};
+				const healthy = {
+					name: 'healthy',
+					query: () => ({
+						next() {
+							const next = pendingEntries.shift();
+							return next ? { done: false, value: next } : { done: true, value: undefined };
+						},
+						[Symbol.iterator]() {
+							return this;
+						},
+					}),
+					addEntry: () => null,
+					on: () => null,
+				};
+				const store = storeWith(corrupt, healthy);
+				const nestedVersions = [];
+				let iterable;
+				iterable = store.getRange({
+					onCorruptFrame: () => {
+						const nested = iterable[Symbol.iterator]().next();
+						if (!nested.done) nestedVersions.push(nested.value.version);
+					},
+				});
+				const iterator = iterable[Symbol.iterator]();
+				assert.strictEqual(iterator.next().value.version, 1);
+				pendingEntries.push(entry(2), entry(3), entry(4));
+				corruptOnPoll = true;
+				const versions = [];
+				for (let result = iterator.next(); !result.done; result = iterator.next()) versions.push(result.value.version);
+				assert.deepStrictEqual(nestedVersions, [3]);
+				assert.deepStrictEqual(versions, [2, 4]);
+			});
+
 			it('a rejecting async hook is contained and logged with the log name', async () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2)]));
@@ -1553,6 +1604,27 @@ describe('Audit log', () => {
 				} finally {
 					harperLogger.error = originalError;
 					process.off('unhandledRejection', onUnhandled);
+				}
+			});
+
+			it('contains a hook failure when the logger also fails', () => {
+				const store = storeWith(corruptLogNamed('corrupt', [entry(1)], 2048), healthyLogNamed('healthy', [entry(2)]));
+				const originalError = harperLogger.error;
+				harperLogger.error = () => {
+					throw new Error('logger failure');
+				};
+				try {
+					const versions = [];
+					for (const record of store.getRange({
+						onCorruptFrame: () => {
+							throw new Error('hook failure');
+						},
+					})) {
+						versions.push(record.version);
+					}
+					assert.deepStrictEqual(versions, [1, 2]);
+				} finally {
+					harperLogger.error = originalError;
 				}
 			});
 
@@ -1593,7 +1665,6 @@ describe('Audit log', () => {
 					});
 				};
 				for (const recordId of tornIds) await appendAuditEntry(log, recordId);
-				// A healthy peer log with one entry newer than everything in the torn log.
 				await appendAuditEntry(store.rootStore.useLog('torn-frame-peer'), peerId);
 				const logDirectory = statSync(log.path).isDirectory() ? log.path : dirname(log.path);
 				const logFile = join(logDirectory, '1.txnlog');
