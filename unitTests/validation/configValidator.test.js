@@ -209,6 +209,27 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error).to.be.undefined;
 		});
 
+		it('accepts the blob-gap escalation bounds as non-negative integers, 0 meaning disabled', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = { blobGapEscalationCycles: 0, blobGapEscalationMs: 0 };
+			expect(configValidator(config).error).to.be.undefined;
+			config.replication = { blobGapEscalationCycles: 10, blobGapEscalationMs: 1800000 };
+			expect(configValidator(config).error).to.be.undefined;
+
+			config.replication = { blobGapEscalationCycles: -1 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationCycles' must be greater than or equal to 0"
+			);
+			config.replication = { blobGapEscalationCycles: 2.5 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationCycles' must be an integer"
+			);
+			config.replication = { blobGapEscalationMs: -1 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationMs' must be greater than or equal to 0"
+			);
+		});
+
 		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			for (const [bad, reason] of [

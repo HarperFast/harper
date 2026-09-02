@@ -297,6 +297,16 @@
 					"minimum": 1000,
 					"description": "Time (ms) a replication blob gap may remain connected before reconnecting. Default: blobTimeout"
 				},
+				"blobGapEscalationCycles": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Reconnect cycles a source blob may keep failing transiently (503) before the receiver skips it and advances its resume cursor. 0 disables this bound. Default: 10"
+				},
+				"blobGapEscalationMs": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Time (ms) since a source blob first failed transiently (503) before the receiver skips it and advances its resume cursor. 0 disables this bound. Default: 1800000"
+				},
 				"copyCursorFlushBytes": {
 					"type": "number",
 					"minimum": 1,
