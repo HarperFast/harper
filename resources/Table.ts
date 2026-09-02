@@ -105,7 +105,11 @@ import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
+import {
+	onStorageReclamation,
+	getStorageSpaceStats,
+	removeStorageReclamationHandler,
+} from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
@@ -549,6 +553,10 @@ export function makeTable(options) {
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
 	let cleanupTimer: NodeJS.Timeout;
+	let recordExpirationInterval: NodeJS.Timeout;
+	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
+	const pendingCleanupResolvers = new Set<() => void>();
+	let disposed = false;
 	// true once a table-level expiration/eviction/scanInterval has armed the periodic cleanup scan at setup
 	let expirationScanScheduled = false;
 	// set on the first expiring write so the unscheduled-expiration warning is evaluated at most once per table
@@ -597,9 +605,10 @@ export function makeTable(options) {
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
-	onStorageReclamation(primaryStore.path, (priority: number) => {
+	const reclamationHandler = (priority: number) => {
 		if (hasSourceGet) return scheduleCleanup(priority);
-	});
+	};
+	onStorageReclamation(primaryStore.path, reclamationHandler);
 
 	class Updatable extends GenericTrackedObject implements RecordObject {
 		declare set: (property: string, value: any) => void;
@@ -5826,8 +5835,14 @@ export function makeTable(options) {
 			}
 			return Promise.all(promises);
 		}
+		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
+			disposed = true;
+			clearTimeout(cleanupTimer);
+			settlePendingCleanup();
+			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
+			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();
@@ -5849,9 +5864,14 @@ export function makeTable(options) {
 		}
 	);
 
-	TableResource.updatedAttributes(); // on creation, update accessors as well
-	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
-	if (expiresAtProperty) runRecordExpirationEviction();
+	try {
+		TableResource.updatedAttributes(); // on creation, update accessors as well
+		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
+		if (expiresAtProperty) runRecordExpirationEviction();
+	} catch (error) {
+		TableResource.cleanup();
+		throw error;
+	}
 	return TableResource;
 	function updateIndices(id: any, existingRecord: any, record: any, options?: any) {
 		let hasChanges;
@@ -7104,7 +7124,13 @@ export function makeTable(options) {
 			},
 		};
 	}
+	function settlePendingCleanup() {
+		for (const resolve of pendingCleanupResolvers) resolve();
+		pendingCleanupResolvers.clear();
+	}
 	function scheduleCleanup(priority?: number): Promise<void> | void {
+		// a reclamation run may still hold this class's handler after cleanup(); a promise here would never settle
+		if (disposed) return;
 		let runImmediately = false;
 		if (priority) {
 			// run immediately if there is a big increase in priority
@@ -7117,8 +7143,18 @@ export function makeTable(options) {
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
-			if (!cleanupInterval) return;
-			return new Promise((resolve) => {
+			if (!cleanupInterval) {
+				// no replacement pass is being scheduled, so nothing is left to settle a superseded one
+				settlePendingCleanup();
+				return;
+			}
+			// This pass adopts the awaiters of the pass whose timer it just cleared: they settle when
+			// this pass's scan completes, so a reclamation run is never told the storage was reclaimed
+			// before any scan ran. It has to run now, though — that run blocks its whole path on the
+			// promise, and the replacement's own slot can be a full interval out.
+			if (pendingCleanupResolvers.size > 0) runImmediately = true;
+			return new Promise<void>((resolve) => {
+				pendingCleanupResolvers.add(resolve);
 				const startOfYear = new Date();
 				startOfYear.setMonth(0);
 				startOfYear.setDate(1);
@@ -7131,6 +7167,7 @@ export function makeTable(options) {
 					? Date.now()
 					: Math.ceil((Date.now() - startOfYear.getTime()) / nextInterval) * nextInterval + startOfYear.getTime();
 				const startNextTimer = (nextScheduled) => {
+					if (disposed) return;
 					logger.trace?.(`Scheduled next cleanup scan at ${new Date(nextScheduled)}`);
 					// noinspection JSVoidFunctionReturnValueUsed
 					cleanupTimer = setTimeout(
@@ -7141,8 +7178,11 @@ export function makeTable(options) {
 								const rootStore = primaryStore.rootStore;
 								if (rootStore.status !== 'open') {
 									clearTimeout(cleanupTimer);
+									settlePendingCleanup();
 									return;
 								}
+								// snapshot: an awaiter that arrives during this scan belongs to the pass that supersedes it
+								const settling = [...pendingCleanupResolvers];
 								const MAX_CLEANUP_CONCURRENCY = 50;
 								const outstandingCleanupOperations = new Array(MAX_CLEANUP_CONCURRENCY);
 								let cleanupIndex = 0;
@@ -7234,7 +7274,10 @@ export function makeTable(options) {
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}
-								resolve(undefined);
+								for (const settle of settling) {
+									pendingCleanupResolvers.delete(settle);
+									settle();
+								}
 								cleanupPriority = 0; // reset the priority
 							})),
 						Math.min(nextScheduled - Date.now(), MAX_SET_TIMEOUT_MS) // make sure it can fit in 32-bit signed number
@@ -7253,10 +7296,10 @@ export function makeTable(options) {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (getWorkerIndex() === 0) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
-			setInterval(async () => {
+			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (runningRecordExpiration) return;
+				if (disposed || runningRecordExpiration) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;

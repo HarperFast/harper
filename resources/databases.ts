@@ -120,6 +120,8 @@ type RelationshipHydration = {
 
 let relationshipsToHydrate: RelationshipHydration[] = [];
 const reportedRelationshipErrors = new Set<string>();
+// an interrupted create is reported once per table and thread, not on every rescan
+const reportedIncompleteCatalogs = new Set<string>();
 
 function normalizeRelationships(attributes: any[]): PersistedRelationship[] {
 	const relationships: PersistedRelationship[] = [];
@@ -662,10 +664,13 @@ export function getDatabases(): Databases {
 			for (const tableName in tables) {
 				if (!definedTables.has(tableName)) {
 					logger.trace(`delete table class ${tableName}`);
+					tables[tableName]?.cleanup?.();
 					delete tables[tableName];
 				}
 			}
 		} else {
+			const removedTables = databases[dbName];
+			for (const tableName in removedTables) removedTables[tableName]?.cleanup?.();
 			delete databases[dbName];
 			if (dbName === 'data') {
 				for (const tableName in tables) {
@@ -1112,12 +1117,21 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
-				logger.warn(
-					`Unable to find a primary key attribute on table ${tableName}, with attributes: ${JSON.stringify(attributes)}`
-				);
+				const tableKey = `${databaseName}/${tableName}`;
+				if (reportedIncompleteCatalogs.has(tableKey))
+					logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
+				else {
+					reportedIncompleteCatalogs.add(tableKey);
+					logger.warn(
+						`Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
+					);
+				}
+				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
+				definedTables?.delete(tableName);
 				continue;
 			}
 		}
+		if (reportedIncompleteCatalogs.size) reportedIncompleteCatalogs.delete(`${databaseName}/${tableName}`);
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
@@ -1987,23 +2001,34 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 			cache: isCustomObjectIndex,
 		} as any) as any;
 		(dbi as any).rootStore = rootStore;
-		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
-		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
-		// Verification-Table cache can't track them. A versioned index initialises its encoder as a
-		// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
-		// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
-		// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
-		// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
-		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
-			armVersionedIndexEncoder(dbi, rootStore);
+		try {
+			// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
+			// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
+			// Verification-Table cache can't track them. A versioned index initialises its encoder as a
+			// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
+			// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
+			// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
+			// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
+			if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
+				armVersionedIndexEncoder(dbi, rootStore);
+			}
+			installCustomIndex(dbi);
+		} catch (error) {
+			// the handle is not yet owned by any table, so nobody else can close it
+			try {
+				dbi.close();
+			} catch {}
+			throw error;
 		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
+		installCustomIndex(dbi);
 	}
-	if (attribute.indexed.type) {
+	function installCustomIndex(indexStore: any) {
+		if (!attribute.indexed.type) return;
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
 		if (CustomIndex) {
-			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
+			indexStore.customIndex = new CustomIndex(indexStore, attribute.indexed);
 		} else {
 			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
@@ -2086,6 +2111,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
+	let deferredPrimaryRow: any;
+	let unpublishedPrimaryStore: any;
+	let published = false;
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
@@ -2261,6 +2289,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
+			unpublishedPrimaryStore = primaryStore;
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 			rootStore.databaseName = databaseName;
 			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
@@ -2269,38 +2298,33 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
-			Table = setTable(
-				tables,
+			Table = makeTable({
+				primaryStore,
+				auditStore,
+				audit,
+				sealed,
+				splitSegments,
+				replicate,
+				trackDeletes,
+				expirationMS: expiration && expiration * 1000,
+				evictionMS: eviction && eviction * 1000,
+				primaryKey,
 				tableName,
-				makeTable({
-					primaryStore,
-					auditStore,
-					audit,
-					sealed,
-					splitSegments,
-					replicate,
-					trackDeletes,
-					expirationMS: expiration && expiration * 1000,
-					evictionMS: eviction && eviction * 1000,
-					primaryKey,
-					tableName,
-					tableId: primaryStore.tableId,
-					databasePath: databaseName,
-					databaseName,
-					indices: {},
-					attributes,
-					schemaDefined,
-					dbisDB: attributesDbi,
-					description,
-					properties,
-					hidden,
-					cacheControl,
-				})
-			);
+				tableId: primaryStore.tableId,
+				databasePath: databaseName,
+				databaseName,
+				indices: {},
+				attributes,
+				schemaDefined,
+				dbisDB: attributesDbi,
+				description,
+				properties,
+				hidden,
+				cacheControl,
+			});
 			Table.schemaVersion = 1;
 			hasChanges = true;
-
-			attributesDbi.put(dbiName, primaryKeyAttribute);
+			deferredPrimaryRow = primaryKeyAttribute;
 		}
 		const indices = Table.indices;
 		if (!attributesDbi) {
@@ -2317,9 +2341,11 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 		Table.dbisDB = attributesDbi;
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
-		// reconciliation is reserved for local schema authoring.
-		const reconcileRemovals = origin !== 'cluster';
-		for (const { key, value } of reconcileRemovals ? attributesDbi.getRange({ start: true }) : []) {
+		// reconciliation is reserved for local schema authoring; on a create the rows can only be aborted state.
+		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
+		for (const { key, value } of reconcileRemovals
+			? attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })
+			: []) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
@@ -2331,10 +2357,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-			if (!attribute || removeIndex) {
+			// rows already present under a create are aborted state
+			const staleRow = !attribute || Boolean(deferredPrimaryRow);
+			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
-				if (!attribute) attributesDbi.remove(key);
+				if (staleRow) attributesDbi.remove(key);
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);
@@ -2353,6 +2381,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
+				if (deferredPrimaryRow) continue;
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
 				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
@@ -2477,6 +2506,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
 				// disk; persist the resolved value now — even when nothing else changed — so the format is
@@ -2593,6 +2623,20 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
+		// runs mid-create skips the table instead of building (and announcing) a partial one. It already
+		// carries this table's relationships (set on primaryKeyAttribute above), so the persistence block
+		// below is a no-op for a create — a table is never published with an incomplete relationship list.
+		if (deferredPrimaryRow) {
+			attributesDbi.put(tableName + '/', deferredPrimaryRow);
+			// That write, not the registration below, is the publish point: it is durable from here
+			// (on LMDB releaseLock()'s finally commits this create's write transaction even while an
+			// error unwinds), so any later throw must leave the catalog alone. Rolling back past it
+			// would delete the attribute rows out from under a live primary row and leave every
+			// thread loading the primary-only schema this change exists to prevent.
+			published = true;
+			setTable(tables, tableName, Table);
+		}
 		// a table with no declared primary key has no attribute row to carry relationships, and the
 		// loop above never visits its descriptor
 		if (relationshipDefinitions) {
@@ -2611,6 +2655,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				}
 			}
 		}
+	} catch (error) {
+		if (unpublishedPrimaryStore && !published) discardUnpublishedTable();
+		else if (published && tables[tableName] !== Table) discardUnregisteredClass();
+		throw error;
 	} finally {
 		releaseLock();
 	}
@@ -2654,6 +2702,42 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			if (attributesDbi.getSync(attributeKey)) return attributeKey;
 		}
 		return tableName + '/';
+	}
+	// The catalog of a published table stays, but a class the registration never accepted is
+	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers
+	// and reclamation handler live for the process. The stores stay open: the table is durable, and
+	// whichever scan reloads it opens its own handles.
+	function discardUnregisteredClass() {
+		try {
+			Table.cleanup();
+		} catch (discardError) {
+			logger.warn(`Error releasing the unregistered class of ${databaseName}.${tableName}`, discardError);
+		}
+	}
+	function discardUnpublishedTable() {
+		const discard = (description: string, action: () => unknown) => {
+			try {
+				action();
+			} catch (discardError) {
+				logger.warn(
+					`Error discarding ${description} of the failed create of ${databaseName}.${tableName}`,
+					discardError
+				);
+			}
+		};
+		discard('catalog rows', () => {
+			for (const attribute of attributes) {
+				if (!attribute.isPrimaryKey && !attribute.relationship) attributesDbi.remove(tableName + '/' + attribute.name);
+			}
+		});
+		if (Table) discard('callbacks', () => Table.cleanup());
+		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
+		// create's write transaction; only RocksDB column-family handles hold native state to release
+		if (rootStore instanceof RocksDatabase) {
+			for (const indexName in Table?.indices ?? {})
+				discard(`index ${indexName}`, () => Table.indices[indexName].close());
+			discard('primary store', () => unpublishedPrimaryStore.close());
+		}
 	}
 	// Acquire an exclusive lock for attribute updates
 	function exclusiveLock() {
