@@ -127,10 +127,13 @@ describe('Test log generation coordinator (#1877)', () => {
 		assert.strictEqual(closed, 1, 'expected a foreign generation to leave the descriptor alone');
 
 		// The batched form retention uses is the inverse: release everything but the live generation.
-		transport.deliverRotation({ logPath, request: 'r1', keepIno: held.ino, keepDev: held.dev, originator: 0 });
+		transport.deliverRotation({ logPath, request: 'r1', stale: true, keepIno: held.ino, keepDev: held.dev });
 		assert.strictEqual(closed, 1, 'expected the live generation to be kept');
-		transport.deliverRotation({ logPath, request: 'r2', keepIno: held.ino + 1, keepDev: held.dev, originator: 0 });
+		transport.deliverRotation({ logPath, request: 'r2', stale: true, keepIno: held.ino + 1, keepDev: held.dev });
 		assert.strictEqual(closed, 2, 'expected a stale descriptor to be released');
+		// No live generation to name (the active log is gone) means every descriptor is stale.
+		transport.deliverRotation({ logPath, request: 'r3', stale: true });
+		assert.strictEqual(closed, 3, 'expected every descriptor to be released when there is no live log');
 		coordinator.unregisterLogSink(logPath);
 	});
 

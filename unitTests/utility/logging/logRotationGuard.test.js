@@ -6,7 +6,7 @@ const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const hdbLogger = require('#src/utility/logging/harper_logger');
 const { parseMaxSize } = require('#src/utility/logging/logRotation');
-const { announceGeneration } = require('#src/utility/logging/logGenerationCoordinator');
+const { requestGenerationClose } = require('#src/utility/logging/logGenerationCoordinator');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
 
@@ -196,7 +196,7 @@ describe('Test log rotation on the write path (#1877)', () => {
 		assert.ok(activeSize(logPath) < strandedSize + 4 * 4000, 'expected the log to stay bounded through recovery');
 	});
 
-	it('releases a descriptor on an announced generation even with no size guard of its own', () => {
+	it('releases a descriptor on an announced generation even with no size guard of its own', async () => {
 		// A thread rotating only on `interval` builds no size guard, but it still holds a descriptor,
 		// and answering an announcement has to mean released rather than only "handler ran".
 		const dir = path.join(TEST_ROOT, `noGuard${caseNumber++}`);
@@ -214,7 +214,7 @@ describe('Test log rotation on the write path (#1877)', () => {
 		// Another thread rotates: the file moves out from under this descriptor.
 		const archivePath = path.join(dir, 'moved.log');
 		fs.renameSync(logPath, archivePath);
-		announceGeneration({ logPath, generation: 'g', ino: held.ino, dev: held.dev });
+		await requestGenerationClose({ logPath, generation: 'g', ino: held.ino, dev: held.dev });
 
 		logger.error('after the announced rotation');
 		logger.closeLogFile();
