@@ -40,23 +40,34 @@ export async function observeEveryWorker<T>(
 	const responses: T[] = [];
 	const seen = new Set<number>();
 	const deadline = Date.now() + timeoutMs;
-	while (seen.size < workerCount && responses.length < maxRequests) {
+	let issued = 0;
+	while (seen.size < workerCount && issued < maxRequests) {
 		const remainingMs = deadline - Date.now();
 		if (remainingMs <= 0) break;
-		const round = Math.min(concurrency, maxRequests - responses.length);
-		const gathered = await Promise.all(Array.from({ length: round }, () => settleWithin(request(), remainingMs)));
-		for (const response of gathered) {
-			const workerId = workerIdOf(response);
+		const round = Math.min(concurrency, maxRequests - issued);
+		issued += round;
+		const gathered = await Promise.allSettled(
+			Array.from({ length: round }, () => settleWithin(request(), remainingMs))
+		);
+		for (const result of gathered) {
+			if (result.status !== 'fulfilled') continue;
+			const workerId = workerIdOf(result.value);
 			if (!Number.isInteger(workerId)) {
 				throw new Error(`observeEveryWorker: response carried no worker id (got ${JSON.stringify(workerId)})`);
 			}
 			seen.add(workerId);
-			responses.push(response);
+			responses.push(result.value);
+		}
+		for (const result of gathered) {
+			// A stalled sibling is only noise once its round has completed coverage; anything the
+			// caller's own request threw (a 5xx, a connection error) still fails the suite.
+			if (result.status !== 'rejected') continue;
+			if (!(result.reason instanceof RequestStalled) || seen.size < workerCount) throw result.reason;
 		}
 	}
 	if (seen.size < workerCount) {
 		throw new Error(
-			`observeEveryWorker: reached ${seen.size} of ${workerCount} workers in ${responses.length} requests ` +
+			`observeEveryWorker: reached ${seen.size} of ${workerCount} workers in ${issued} requests ` +
 				`(saw [${[...seen].sort((a, b) => a - b).join(',')}]) — the suite's cross-worker claim cannot be ` +
 				`checked on the workers it never reached`
 		);
@@ -64,11 +75,16 @@ export async function observeEveryWorker<T>(
 	return responses;
 }
 
+class RequestStalled extends Error {}
+
 /** Without this a request that never settles hangs the shard, since the budget only counts requests. */
 function settleWithin<T>(pending: Promise<T>, ms: number): Promise<T> {
 	let timer: ReturnType<typeof setTimeout>;
 	const expiry = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`observeEveryWorker: a request did not settle within ${ms}ms`)), ms);
+		timer = setTimeout(
+			() => reject(new RequestStalled(`observeEveryWorker: a request did not settle within ${ms}ms`)),
+			ms
+		);
 		timer.unref?.();
 	});
 	return Promise.race([pending, expiry]).finally(() => clearTimeout(timer));

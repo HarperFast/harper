@@ -191,6 +191,41 @@ suite('connection-per-request load helpers', () => {
 		);
 	});
 
+	test('a stalled sibling does not discard a round that completed coverage', async () => {
+		let issued = 0;
+		const responses = await observeEveryWorker(
+			async () => {
+				const worker = ++issued;
+				if (worker === 2) await new Promise(() => {}); // never settles
+				return { worker };
+			},
+			(r) => r.worker,
+			{ workerCount: 3, concurrency: 4, timeoutMs: 150 }
+		);
+		deepStrictEqual(
+			responses.map((r) => r.worker).sort(),
+			[1, 3, 4],
+			'the three workers that answered are the coverage; only the stall is dropped'
+		);
+	});
+
+	test('a failing request still fails the caller even once coverage is complete', async () => {
+		let issued = 0;
+		await rejects(
+			() =>
+				observeEveryWorker(
+					async () => {
+						const worker = ++issued;
+						if (worker === 2) throw new Error('GET returned 500');
+						return { worker };
+					},
+					(r) => r.worker,
+					{ workerCount: 3, concurrency: 4 }
+				),
+			/GET returned 500/
+		);
+	});
+
 	test('observeEveryWorker rejects a response with no worker id rather than looping on it', async () => {
 		await rejects(
 			() =>
