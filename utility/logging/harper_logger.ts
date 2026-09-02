@@ -545,10 +545,17 @@ export function initLogSettings(forceInit = false) {
 
 			logLevel = logLevel === undefined ? defaultLevel : logLevel;
 
-			mainLogger = createLogger({ level: logLevel });
+			// createLogger shadows the module-level `logToStdstreams` with this option, so omitting it
+			// drops every log written before a config exists rather than routing it to the streams.
+			mainLogger = createLogger({ level: logLevel, stdStreams: logToStdstreams });
 			// setup the external logger
 			externalLogger = mainLogger.forComponent('external');
 			externalLogger.tag = null; // don't tag by default
+			// The streams are this branch's only sink, so it needs the same EPIPE/EIO listeners the
+			// configured path installs below: `harper install | head -1` closes the reader, and the
+			// async error would otherwise land on a stream with none and take the install down. The
+			// guard's write override is inert here, because `log_to_file` is false.
+			stdioLogging();
 			return;
 		}
 

@@ -1,7 +1,8 @@
 'use strict';
 
 const assert = require('node:assert');
-const { EventEmitter } = require('node:events');
+const { EventEmitter, once } = require('node:events');
+const { spawn } = require('node:child_process');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -190,6 +191,40 @@ describe('Test harper_logger module', () => {
 			expect(log_root).to.eql(TEST_LOG_DIR);
 			expect(log_name).to.eql('hdb.log');
 			expect(log_file_path).to.eql(path.join(TEST_LOG_DIR, 'hdb.log'));
+		});
+
+		// The install window, and any host with no harperdb-config.yaml. `log_to_file` is false
+		// there, so the streams are the only sink left; createLogger() shadows the module-level
+		// `logToStdstreams` with its own option, and a call that omits it drops the line entirely
+		// rather than writing it anywhere (harper#2364, where the Windows gate caught it as a
+		// warning-cadence test counting 0 of 2).
+		it('writes to the std streams, guarded, when there is no config to read', async function () {
+			this.timeout(30000);
+			const noConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-no-config-'));
+			afterThisTest.push(() => {
+				try {
+					fs.removeSync(noConfigRoot);
+				} catch {}
+			});
+
+			// A ROOTPATH naming a directory with no config reaches the fallback either way: with boot
+			// properties present the config read throws ENOENT, and without them initLogSettings()
+			// only swallows that failure when ROOTPATH *does* hold a config. LOGGING_LEVEL is pinned
+			// for the same reason — that branch reads it from the environment, and the fixture logs
+			// at the default threshold.
+			const child = spawn(process.execPath, [require.resolve('./fixtures/noConfigLogging.cjs')], {
+				stdio: ['ignore', 'pipe', 'pipe'],
+				env: { ...process.env, ROOTPATH: noConfigRoot, LOGGING_LEVEL: 'warn' },
+			});
+			let stdout = '';
+			let stderr = '';
+			child.stdout.on('data', (chunk) => (stdout += chunk));
+			child.stderr.on('data', (chunk) => (stderr += chunk));
+			const [code] = await once(child, 'close');
+
+			assert.equal(code, 0, `fixture exited ${code}: ${stderr}`);
+			assert.match(stderr, /no-config stream check/);
+			assert.match(stdout, /stdout-guard=true stderr-guard=true/);
 		});
 
 		it('Test that if error code is not ENOENT error is handled correctly', () => {
