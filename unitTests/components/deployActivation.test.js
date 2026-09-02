@@ -40,7 +40,10 @@ async function stageState(root, component, id, state) {
 	const deploymentDir = path.join(root, DEPLOY_STAGING_DIR, id);
 	await fs.mkdir(deploymentDir, { recursive: true });
 	if (state.candidate) await writeTree(path.join(deploymentDir, component), state.candidate);
-	if (state.complete) await fs.writeFile(path.join(deploymentDir, '.complete'), '');
+	// The marker's CONTENT is the authority now: an empty one predates certification and was minted after a
+	// validation that did nothing on the main thread, so recovery treats it as uncertified.
+	if (state.complete) await fs.writeFile(path.join(deploymentDir, '.complete'), 'certified:1');
+	if (state.legacyComplete) await fs.writeFile(path.join(deploymentDir, '.complete'), '');
 	if (state.componentFile !== false) await fs.writeFile(path.join(deploymentDir, '.component'), component);
 	if (state.journal !== undefined) {
 		await fs.writeFile(
@@ -454,7 +457,7 @@ describe('activation transaction', () => {
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
-		await activateCandidateApplication(app, 'd1', { certified: false });
+		await activateCandidateApplication(app, 'd1');
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd1')), false, 'staging is cleaned up');
@@ -484,7 +487,7 @@ describe('activation transaction', () => {
 
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
-		await activateCandidateApplication(app, 'd1', { certified: false });
+		await activateCandidateApplication(app, 'd1');
 
 		const linkPath = path.join(live, 'node_modules', 'probe');
 		const target = await fs.readlink(linkPath);
@@ -518,7 +521,7 @@ describe('activation transaction', () => {
 
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
-		await activateCandidateApplication(app, 'd1', { certified: false });
+		await activateCandidateApplication(app, 'd1');
 
 		assert.strictEqual(
 			await fs.readlink(path.join(live, 'node_modules', 'shared')),
@@ -548,7 +551,7 @@ describe('activation transaction', () => {
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
-		await activateCandidateApplication(app, 'd1', { certified: false });
+		await activateCandidateApplication(app, 'd1');
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(app.isNewComponent, true, 'and it is recognized as a new component');
@@ -868,5 +871,17 @@ describe('activation transaction', () => {
 		assert.ok(!existsSync(path.join(settled, '.unsettled')), 'and nothing was written into it');
 		assert.strictEqual(await readLive(root, 'web'), 'CURRENT\n', 'the live component is untouched');
 		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('rolls back a candidate whose completion marker predates certification', async () => {
+		// An empty `.complete` is what an older build wrote, after a validation that was a no-op on the main
+		// thread. Found after an upgrade it must NOT be roll-forward authority: nothing certified that tree.
+		const root = await newRoot('legacy-marker');
+		await stageState(root, 'web', 'd1', { candidate: 'NEW\n', legacyComplete: true, journal: true, aside: 'OLD\n' });
+
+		const failures = await recoverInterruptedActivations(root);
+
+		assert.strictEqual(failures.size, 0, 'it settles rather than failing closed');
+		assert.strictEqual(await readLive(root, 'web'), 'OLD\n', 'the committed tree comes back, not the candidate');
 	});
 });

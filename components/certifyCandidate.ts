@@ -6,7 +6,14 @@ import { MessageChannel, Worker } from 'node:worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { buildWorkerExecArgv } from '../server/threads/manageThreads.js';
 
-/** How long a certification load may take before the candidate is rejected, when nothing else says. */
+/**
+ * How long a certification load may take before the candidate is rejected.
+ *
+ * Its OWN budget, measured from validator spawn — deliberately not the operations-API timeout. A component
+ * may legally declare a longer load timeout than that, so borrowing it would reject a candidate the
+ * serving workers would happily load; and a clock started at the request would already be overdue after a
+ * long `npm install`. Callers with no request budget at all (boot, `addComponent`) get this default.
+ */
 const DEFAULT_CERTIFICATION_TIMEOUT_MS = 120_000;
 
 /**
@@ -142,11 +149,27 @@ export async function certifyCandidate(
 	} finally {
 		// Terminated and AWAITED before the caller may delete the candidate tree, so a still-running
 		// candidate cannot race the sweep.
+		//
+		// `terminate()` triggers a NAPI segfault under Bun — `manageThreads` avoids it the same way — so
+		// there the worker is asked to exit itself and its exit awaited. A termination that FAILS is
+		// reported rather than treated as cleanup done: the caller is about to remove a tree this thread
+		// may still be reading.
 		if (worker) {
+			const exited = new Promise<void>((resolve) => worker!.once('exit', () => resolve()));
 			try {
-				await worker.terminate();
+				if (typeof (globalThis as any).Bun !== 'undefined') {
+					worker.postMessage({ type: 'force-exit' });
+					const grace = new Promise<void>((resolve) => setTimeout(resolve, 5000).unref?.());
+					await Promise.race([exited, grace]);
+				} else {
+					await worker.terminate();
+					await exited;
+				}
 			} catch (error) {
-				harperLogger.warn(`Could not terminate the validator for ${appName}:`, error);
+				harperLogger.warn(
+					`Could not terminate the validator for ${appName}; its candidate tree may still be open:`,
+					error
+				);
 			}
 		}
 		if (timer) clearTimeout(timer);

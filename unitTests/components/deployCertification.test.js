@@ -184,6 +184,36 @@ describe('deploy certification', () => {
 			assert.strictEqual(forCertification.branchConfigured, true, 'and the caller is told to skip certifying');
 		});
 
+		it('still deploys a branch-configured component, it just earns no authority', async function () {
+			// The half of this decision that is observable end to end: nothing is refused. That certification
+			// is skipped is covered by the option test above, and that an unminted candidate rolls back
+			// rather than forward is covered by the recovery suite — the composition of the two (activate,
+			// mint nothing, then crash) is not covered here, and needs a crash the unit harness cannot stage.
+			this.timeout(30000);
+			const rootDir = await mkdtemp(join(tmpdir(), 'certify-branch-deploy-'));
+			const componentDirPath = join(rootDir, appName);
+			await mkdir(componentDirPath, { recursive: true });
+			await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: appName, version: '1.0.0' }));
+			getConfigObj()[appName] = { branchedDatabases: ['data'] };
+
+			const application = new Application({
+				name: appName,
+				payload: await payloadThatRunsOnLoad(rootDir, appName, '2.0.0', 'module.exports = { fine: true };\n'),
+			});
+			application.dirPath = componentDirPath;
+
+			try {
+				await prepareApplication(application);
+				assert.strictEqual(
+					JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version,
+					'2.0.0',
+					'a branch-configured component still deploys — no capability is removed'
+				);
+			} finally {
+				await rm(rootDir, { recursive: true, force: true });
+			}
+		});
+
 		it('reports an ordinary component as not branch-configured', () => {
 			getConfigObj()[appName] = { package: 'npm:whatever@1.0.0' };
 

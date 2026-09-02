@@ -1022,6 +1022,17 @@ export async function extractApplication(
 const CANDIDATE_COMPLETE_MARKER = '.complete';
 
 /**
+ * What a `.complete` marker must contain to count as roll-forward authority.
+ *
+ * The marker used to be written empty, after a validation that was a no-op on the main thread — so an
+ * empty marker is one minted without any verdict at all. Recovery now requires this payload, which means
+ * a candidate staged by an older build and found after an upgrade rolls BACK to the committed tree rather
+ * than forward onto something nothing certified. That is the conservative direction and it costs only an
+ * in-flight deploy across an upgrade.
+ */
+const CANDIDATE_CERTIFIED_MARKER_BODY = 'certified:1';
+
+/**
  * Candidates a validator has certified, by `<componentDirPath>\0<deploymentId>`.
  *
  * `.complete` is what recovery treats as authority for a "build AND validation complete" candidate — it
@@ -1037,6 +1048,33 @@ const certifiedCandidates = new Set<string>();
 
 function certificationKey(componentDirPath: string, deploymentId: string): string {
 	return `${componentDirPath}\0${deploymentId}`;
+}
+
+/**
+ * Whether the on-disk marker says a validator certified this candidate.
+ *
+ * Content, not mere existence: an empty marker predates certification and was minted after a validation
+ * that did nothing on the main thread. An unreadable marker is not authority either — the same
+ * fail-closed reading the rest of this protocol uses.
+ */
+async function candidateIsCertifiedOnDisk(deploymentDirPath: string): Promise<boolean> {
+	try {
+		const body = await readFile(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER), 'utf8');
+		return body.trim() === CANDIDATE_CERTIFIED_MARKER_BODY;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+			logger.warn(
+				`Treating the completion marker in ${deploymentDirPath} as absent because it could not be read: ` +
+					errorMessage(error)
+			);
+		}
+		return false;
+	}
+}
+
+/** Whether a validator returned a passing verdict for exactly this candidate. */
+function isCandidateCertified(componentDirPath: string, deploymentId: string): boolean {
+	return certifiedCandidates.has(certificationKey(componentDirPath, deploymentId));
 }
 
 /** Record that a validator returned a passing verdict for exactly this candidate. */
@@ -1840,7 +1878,7 @@ async function settleInterruptedActivation(
 		);
 	const liveExists = await exists(liveDirPath);
 	const candidateExists = await exists(candidateDirPath);
-	const candidateComplete = await exists(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER));
+	const candidateComplete = await candidateIsCertifiedOnDisk(deploymentDirPath);
 	const asideRecords = await inProgressAsideRecords(asideStagingDir);
 
 	const rollForward = async () => {
@@ -2080,7 +2118,7 @@ export async function markCandidateComplete(
 	// The gate. Everything below writes the marker recovery trusts, so an uncertified candidate must not
 	// get here — and the check lives at the mint rather than at the caller for the reason `certifiedCandidates`
 	// documents.
-	if (!certifiedCandidates.has(certificationKey(componentDirPath, deploymentId))) {
+	if (!isCandidateCertified(componentDirPath, deploymentId)) {
 		throw new Error(
 			`Refusing to mark the ${componentName} candidate ${deploymentId} complete: no validator has ` +
 				`certified it, and \`${CANDIDATE_COMPLETE_MARKER}\` is what recovery treats as proof that one did`
@@ -2093,7 +2131,10 @@ export async function markCandidateComplete(
 		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 	}
 	try {
-		await writeControlFileDurably(candidateCompleteMarkerPath(componentDirPath, deploymentId), '');
+		await writeControlFileDurably(
+			candidateCompleteMarkerPath(componentDirPath, deploymentId),
+			CANDIDATE_CERTIFIED_MARKER_BODY
+		);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 	}
@@ -2159,11 +2200,7 @@ async function certifyPreparedCandidate(
 	return { certified: true };
 }
 
-export async function activateCandidateApplication(
-	application: Application,
-	deploymentId: string,
-	{ certified = true }: { certified?: boolean } = {}
-): Promise<void> {
+export async function activateCandidateApplication(application: Application, deploymentId: string): Promise<void> {
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
@@ -2179,12 +2216,21 @@ export async function activateCandidateApplication(
 		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
 	}
 
-	// `certified: false` is the DELIBERATE uncertified path — a branch-configured component, which cannot be
-	// certified safely yet. It activates without ever minting `.complete`, so a crash mid-swap rolls back to
-	// the committed tree instead of forward onto something no validator vouched for. The gate inside
-	// `markCandidateComplete` still guards the accidental case: a caller that reaches the mint without a
-	// verdict is a bug, not a policy.
-	if (certified) await markCandidateComplete(liveDirPath, deploymentId, application.name);
+	// The RECORD decides, never the caller. An argument saying "this one is certified" would be the forgeable
+	// proof the internal record exists to avoid — and an exported function with such a flag lets any caller
+	// mint authority for an uncertified tree, which is the invariant this step is for.
+	//
+	// So: certified candidates get `.complete`; the deliberately uncertified ones (a branch-configured
+	// component) simply do not, and a crash mid-swap rolls them back to the committed tree rather than
+	// forward onto something no validator vouched for.
+	if (isCandidateCertified(liveDirPath, deploymentId)) {
+		await markCandidateComplete(liveDirPath, deploymentId, application.name);
+	} else {
+		application.logger.warn(
+			`Activating ${application.name} without a certification marker: nothing certified this candidate, so ` +
+				`recovery will roll it back rather than forward`
+		);
+	}
 	const journalPath = activationJournalPath(liveDirPath, deploymentId);
 	try {
 		await writeControlFileDurably(
@@ -3552,9 +3598,7 @@ export async function prepareApplication(application: Application, options: Prep
 								application.installationIsOpaque
 							);
 						}
-						await activateCandidateApplication(application, deploymentId, {
-							certified: certification.certified,
-						});
+						await activateCandidateApplication(application, deploymentId);
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed

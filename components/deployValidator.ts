@@ -11,6 +11,7 @@ import { HDB_ROOT_DIR_NAME } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { Resources } from '../resources/Resources.ts';
 import { loadComponent, rootApplicationLoadOptions, setErrorReporter } from './componentLoader.ts';
+import type { Scope } from './Scope.ts';
 
 /**
  * Entry point for an ephemeral deploy-certification worker.
@@ -25,7 +26,13 @@ import { loadComponent, rootApplicationLoadOptions, setErrorReporter } from './c
  * without a verdict, a malformed message — is failure at the parent, which is what makes "inability to
  * obtain a verdict is failure" true rather than aspirational.
  */
-const { candidateDirPath, appName, verdictPort } = workerData ?? {};
+// Captured and then REMOVED from `workerData`, before any candidate code runs. `workerData` is reachable
+// from the candidate — `require('node:worker_threads').workerData` — so leaving the port there would let a
+// candidate post its own passing verdict and certify itself. Taking it out of the bag is the difference
+// between a capability this module holds and one the whole thread holds.
+const { candidateDirPath, appName } = workerData ?? {};
+const verdictPort = workerData?.verdictPort;
+if (workerData) delete workerData.verdictPort;
 
 async function certify(): Promise<void> {
 	const componentName = appName || basename(candidateDirPath);
@@ -41,8 +48,28 @@ async function certify(): Promise<void> {
 	// A certification load has to run the code a WORKER runs — the `start`/`handleApplication` extension
 	// path — or it proves only that the module parsed.
 	resources.isWorker = true;
-	await loadComponent(candidateDirPath, resources, HDB_ROOT_DIR_NAME, loadOptions.options);
-	if (reportedError) throw reportedError;
+	// Collected so teardown happens BEFORE the verdict, not after. The in-process check this replaces
+	// established that a Scope which fails to close is a REJECTED validation, not a warning: `close()` stops
+	// at the throwing listener, so the scope stays partially live. Posting a pass and then failing teardown
+	// would certify a candidate whose own cleanup is broken — and the thread exits either way, so nothing
+	// downstream would ever learn.
+	const scopes = new Set<Scope>();
+	try {
+		await loadComponent(candidateDirPath, resources, HDB_ROOT_DIR_NAME, {
+			...loadOptions.options,
+			collectScopes: scopes,
+		});
+		if (reportedError) throw reportedError;
+	} finally {
+		const closes = await Promise.allSettled(Array.from(scopes, (scope) => scope.close()));
+		const failed = closes.filter((result) => result.status === 'rejected');
+		if (failed.length && !reportedError) {
+			throw new AggregateError(
+				failed.map((result) => (result as PromiseRejectedResult).reason),
+				`${componentName} loaded but ${failed.length} scope(s) failed to tear down`
+			);
+		}
+	}
 }
 
 function report(verdict: { ok: true } | { ok: false; message: string; stack?: string }): void {
