@@ -1582,6 +1582,10 @@ function blobOwnerMatches(a: BlobOwner, b: BlobOwner): boolean {
  */
 function assertBlobOwner(storageInfo: StorageInfo | undefined): void {
 	const owner = storageInfo?.owner;
+	// An encode with no table to name cannot make an ownership claim, so it cannot contradict one
+	// either: the v4→v5 migration copies each record's reference through verbatim, owner included,
+	// and comparing that owner against a table-less `[null, key]` would fail every migrated blob.
+	if (encodeForStorageOwner?.[0] == null) return;
 	if (!owner || !encodeForStorageOwner || blobOwnerMatches(owner, encodeForStorageOwner)) return;
 	throw new Error(
 		'Cannot use the same blob in two different records; read the blob through the record that owns it, or supply the bytes again'
