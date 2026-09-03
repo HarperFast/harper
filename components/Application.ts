@@ -2195,7 +2195,11 @@ async function certifyPreparedCandidate(
 
 	const { rootApplicationLoadOptions } = await import('./componentLoader.ts');
 	const loadOptions = rootApplicationLoadOptions(application.name, { forCertification: true });
-	if (loadOptions.ok && loadOptions.branchConfigured) {
+	// Answered here rather than by spawning a thread that will fail on the same thing a moment later.
+	if (!loadOptions.ok) {
+		throw new Error(`Cannot certify ${application.name}: its root-config mount could not be resolved`);
+	}
+	if (loadOptions.branchConfigured) {
 		application.logger.warn(
 			`Deploying ${application.name} without certification: a certification load would open the same ` +
 				`database branch the live version is serving from, so it is skipped until validation-scoped ` +

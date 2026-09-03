@@ -65,16 +65,21 @@ async function certify(): Promise<void> {
 	// would certify a candidate whose own cleanup is broken — and the thread exits either way, so nothing
 	// downstream would ever learn.
 	const scopes = new Set<Scope>();
+	let loaded = false;
 	try {
 		await loadComponent(candidateDirPath, resources, HDB_ROOT_DIR_NAME, {
 			...loadOptions.options,
 			collectScopes: scopes,
 		});
 		if (reportedError) throw reportedError;
+		loaded = true;
 	} finally {
 		const closes = await Promise.allSettled(Array.from(scopes, (scope) => scope.close()));
 		const failed = closes.filter((result) => result.status === 'rejected');
-		if (failed.length && !reportedError) {
+		// Only when the load itself succeeded. A throw from `loadComponent` — a syntax error, an unreadable
+		// file — reaches this block too, and a teardown failure there would replace the candidate's real
+		// error with a note about its scopes: the operator would get the symptom instead of the cause.
+		if (failed.length && loaded) {
 			throw new AggregateError(
 				failed.map((result) => (result as PromiseRejectedResult).reason),
 				`${componentName} loaded but ${failed.length} scope(s) failed to tear down`

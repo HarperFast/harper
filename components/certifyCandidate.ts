@@ -196,15 +196,20 @@ export async function certifyCandidate(
 			// as the missed-exit race above, arrived at from the other side.
 			const grace = () => new Promise<void>((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS).unref?.());
 			try {
-				if (typeof (globalThis as any).Bun !== 'undefined') {
-					// `terminate()` triggers a NAPI segfault under Bun; `manageThreads` asks the worker to exit
-					// itself for the same reason.
-					worker.postMessage({ type: 'force-exit' });
-				} else {
-					await Promise.race([worker.terminate(), grace()]);
-				}
+				// ONE grace for the whole thing, not one per step: racing terminate and then racing the exit
+				// could wait 2x before calling a hung validator hung, and this runs inside a deploy holding
+				// the preparation lock.
+				const asked =
+					typeof (globalThis as any).Bun !== 'undefined'
+						? // `terminate()` triggers a NAPI segfault under Bun; `manageThreads` asks the worker to
+							// exit itself for the same reason.
+							(worker.postMessage({ type: 'force-exit' }), Promise.resolve())
+						: worker.terminate().then(
+								() => {},
+								() => {}
+							);
 				const outcome = await Promise.race([
-					(exited ?? Promise.resolve()).then(() => 'exited' as const),
+					Promise.all([asked, exited ?? Promise.resolve()]).then(() => 'exited' as const),
 					grace().then(() => 'still-running' as const),
 				]);
 				// A validator that would not die keeps its slot. Releasing it would let the node start another
