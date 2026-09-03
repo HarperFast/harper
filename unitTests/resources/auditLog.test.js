@@ -387,6 +387,39 @@ describe('Audit log', () => {
 			await AuditedTable.deleteHistory(cutoff());
 		}
 	});
+	it('deleteHistory does not misdecode the last-removed marker as a corrupt audit entry', async function () {
+		// A fresh table/audit store, not the shared AuditedTable: lmdb-js caches a key's decoded
+		// value once readAuditEntry() has been run on it (by any earlier test's getRange/get over
+		// the same store), so re-scanning the marker on the shared fixture would silently hit that
+		// cache instead of re-triggering the decode this test exists to catch.
+		const MarkerTable = table({
+			table: 'DeleteHistoryMarkerTable',
+			database: 'deleteHistoryMarkerTestDB',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		if (MarkerTable.auditStore.reusableIterable) return this.skip();
+		// the last-removed marker is written fire-and-forget when the audit store opens; wait for its
+		// key (not its decoded value, which would itself trigger and cache away the bug) to land
+		await waitFor(() => [...MarkerTable.auditStore.getRange({ start: 0, end: 1, values: false })].length > 0, {
+			timeout: 5000,
+			message: 'expected the audit store to have a last-removed marker key',
+		});
+		await MarkerTable.put(1, { name: 'has-history' });
+
+		const originalError = harperLogger.error;
+		const errors = [];
+		harperLogger.error = (...args) => errors.push(args);
+		try {
+			await MarkerTable.deleteHistory(Date.now() + 60_000);
+		} finally {
+			harperLogger.error = originalError;
+		}
+		assert.strictEqual(
+			errors.some((args) => args[0] === 'Reading audit entry error'),
+			false,
+			`deleteHistory must not attempt to decode the last-removed marker as an audit entry: ${JSON.stringify(errors)}`
+		);
+	});
 	it('deleteHistory limits concurrent removals without serializing them', async function () {
 		if (AuditedTable.auditStore.reusableIterable) return this.skip();
 		await AuditedTable.deleteHistory(Date.now() + 60_000);

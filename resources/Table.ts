@@ -5558,7 +5558,9 @@ export function makeTable(options) {
 			if (!isRocksDB) raiseAuditFloor(auditStore, endTime);
 			try {
 				for (const auditRecord of auditStore.getRange({
-					start: 1, // as in getHistory: 0 encodes to all zero bytes and overlaps the symbol keys
+					// must not be zero: 0 encodes to all zero bytes and so overlaps the symbol keys, as in
+					// getHistory below
+					start: 1,
 					end: endTime,
 				})) {
 					await rest(); // yield to other async operations

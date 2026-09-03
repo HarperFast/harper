@@ -14,7 +14,7 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { getDatabases, dropTableMeta } from '../resources/databases.ts';
+import { getDatabases, dropTableMeta, isBranchIdentity } from '../resources/databases.ts';
 import { transformReq } from '../utility/common_utils.ts';
 import { server } from '../server/Server.ts';
 import { cleanupOrphans } from '../resources/blob.ts';
@@ -81,6 +81,16 @@ export async function createSchemaStructure(schemaCreateObject: any) {
 	if (validation) throw new ClientError(validation.message);
 
 	transformReq(schemaCreateObject);
+	// After the normalization, because that is what settles which of `database`/`schema` names the
+	// database being created. The same refusal schema authoring makes in `table()`: a branch resolves
+	// its blob root from its store identity, so a database under that name shares the root -- two
+	// allocators minting the same file paths, and `drop_database` deleting the branch's blobs
+	// (harper#644).
+	if (isBranchIdentity(schemaCreateObject.schema)) {
+		throw new ClientError(
+			`'${schemaCreateObject.schema}' is in use as a branch store identity and cannot be a database name`
+		);
+	}
 
 	if (!(await schemaMetadataValidator.checkSchemaExists(schemaCreateObject.schema))) {
 		throw handleHDBError(
