@@ -394,7 +394,14 @@ OWN observation of the request plus `max(leaseMs, waitMs) + LOCK_LEASE_SKEW_MS` 
 that passes, the peer can neither be holding nor newly acquire, so its grant is implied and a waiter
 proceeds past a holder that crashed without releasing. Every expiry decision is made on a monotonic
 clock and no remote timestamp is ever compared against a local one, so the guarantee rests on the skew
-allowance rather than on clock offset, and a wall-clock jump cannot extend a lease. A deliberate
+allowance rather than on clock offset, and a wall-clock jump cannot extend a lease. That is a claim
+about the EXPIRY decisions specifically. One comparison necessarily does cross clocks: the
+stale-replay filter drops an arriving `LOCK_REQUEST` older than
+`now − (MAX_LOCK_LEASE_MS + waitMs + skew)`, and a remote `ts_R` has no local equivalent to measure
+against. It is a replay heuristic rather than a bound — its margin is minutes, and dropping a live
+request only costs the requester its own grant, never exclusion — so it fails in the safe direction
+under a clock offset large enough to reach it, which is far past the point where LWW itself stops
+working. A deliberate
 `unlock()` does not make a lapsed lease valid again either: by then every peer has passed its own
 bound, so a write staged before the lapse is still fenced at commit.
 
