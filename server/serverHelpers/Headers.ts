@@ -194,8 +194,12 @@ export function mergeChainHeadersIntoFallback<
 		if (lowerName === 'vary' || lowerName === 'cache-control') continue;
 		if (finalHeaders.has(name)) {
 			if (lowerName === 'set-cookie') {
+				const existing = (finalHeaders as any).getSetCookie?.() ?? finalHeaders.get(name);
+				const existingValues = new Set((Array.isArray(existing) ? existing : [existing]).map(String));
 				const values = Array.isArray(value) ? value : [value];
-				for (const single of values) appendHeader(finalHeaders, name, single, false);
+				for (const single of values) {
+					if (!existingValues.has(String(single))) appendHeader(finalHeaders, name, single, false);
+				}
 			}
 			continue;
 		}

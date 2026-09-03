@@ -183,6 +183,24 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 			assert.strictEqual(response.headers.get('cache-control'), 'max-age=600');
 			assert.strictEqual(response.headers.get('vary'), null);
 		});
+
+		it('keeps Fastify Set-Cookie fields separate', async () => {
+			const nodeServer = { bunFallback: 'multiple Fastify cookies' };
+			registerFallbackServer(BUN_PORT + 3, nodeServer);
+			registerFastifyInstance(
+				BUN_PORT + 3,
+				fastifyReplying(200, {
+					'set-cookie': ['session=app; Path=/', 'expires=soon; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/'],
+				})
+			);
+
+			const response = await bunDelegateToNodeServer(nodeServer, bunWebRequest(), { user: undefined }, new Headers());
+
+			assert.deepStrictEqual(response.headers.getSetCookie(), [
+				'session=app; Path=/',
+				'expires=soon; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/',
+			]);
+		});
 	});
 
 	describe('Node adapter', () => {
@@ -312,6 +330,16 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 			} finally {
 				server.close();
 			}
+		});
+
+		it('does not duplicate a chain Set-Cookie field during writeHead reconciliation', async () => {
+			const chainHeaders = new Headers();
+			chainHeaders.set('Set-Cookie', 'hdb-session=harper; Path=/; HttpOnly');
+			const response = await requestThroughFastify(chainHeaders, (fastify) => {
+				fastify.get('/wp-json/wc/v3/products', (_request, reply) => reply.send('{}'));
+			});
+
+			assert.deepStrictEqual(response.headers['set-cookie'], ['hdb-session=harper; Path=/; HttpOnly']);
 		});
 
 		it('leaves a response alone when the chain produced no headers', async () => {

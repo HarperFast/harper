@@ -1470,7 +1470,12 @@ export async function bunDelegateToNodeServer(
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
-				if (v != null) webHeaders.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+				if (v == null) continue;
+				if (Array.isArray(v)) {
+					if (k.toLowerCase() === 'set-cookie') {
+						for (const single of v) webHeaders.append(k, String(single));
+					} else webHeaders.set(k, v.join(', '));
+				} else webHeaders.set(k, String(v));
 			}
 			// Propagate Connection: close so Bun closes the TCP connection after this response,
 			// preventing stale keep-alive sockets from causing silent hangs on subsequent requests.
