@@ -2805,18 +2805,15 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// keeps a database open long after every table released it — unless the index changed kind,
 				// when the store must be reopened as the other wrapper (the structural change below rebuilds it)
 				let dbi = indices[attribute.name];
+				// closed only once `indices[attribute.name] = dbi` below has actually run: every other
+				// caller of table() for this table (including a concurrent one) reads that map, and a
+				// throw anywhere between opening the replacement and that assignment — the reindex
+				// trigger below reads the primary store and writes the attribute descriptor, either of
+				// which can throw — must leave the map pointing at a handle this thread has not closed
+				let previousIndexToRelease: any;
 				if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
-					// open the new wrapper before closing the old one: `indices[attribute.name]` (read by
-					// every other caller of table() for this table, including a concurrent one) still
-					// points at the old handle until the assignment below, and a throw here must leave it
-					// serving reads rather than pointing at a handle this thread already closed
-					const previous = dbi;
+					previousIndexToRelease = dbi;
 					dbi = openIndex(dbiKey, rootStore, attribute);
-					try {
-						previous.close?.();
-					} catch (error) {
-						logger.warn(`Error closing the ${attribute.name} index of ${tableName} after reopening it:`, error);
-					}
 				} else {
 					dbi = dbi ? prepareIndexStore(dbi, dbiKey, rootStore, attribute) : openIndex(dbiKey, rootStore, attribute);
 				}
@@ -2931,6 +2928,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 				dbi.indexNulls = attribute.indexNulls;
 				indices[attribute.name] = dbi;
+				if (previousIndexToRelease) {
+					try {
+						previousIndexToRelease.close?.();
+					} catch (error) {
+						logger.warn(`Error closing the ${attribute.name} index of ${tableName} after reopening it:`, error);
+					}
+				}
 			} else if (changed) {
 				hasChanges = true;
 				exclusiveLock();
