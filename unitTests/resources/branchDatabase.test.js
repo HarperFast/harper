@@ -172,12 +172,52 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 			},
 			auditStore: {
 				getRange() {
-					return [{ type: 'put', tableId: 7, version: 1, extendedType: 17, getValue: () => ({ id: 1 }) }];
+					return Object.assign(
+						[{ type: 'put', tableId: 7, version: 1, extendedType: 17, getValue: () => ({ id: 1 }) }],
+						{ corruptFrameStop: { breaks: 0, truncatedVersions: new Set() } }
+					);
 				},
 			},
 		};
 		await assert.rejects(() => replayLogs(stubStore, { Poisoned: poisonedTable }, true), /poisoned resource/);
 		assert.strictEqual(unlocked, true, 'a failed strict replay must release the lock for the retry');
+	});
+
+	it('an elected replay rejects on a mid-log break even when every readable entry replayed cleanly', async function () {
+		// A mid-log break can strand entries this range never attributes to any yielded version (a
+		// log that breaks before yielding anything truncates no transaction), so the branch claim
+		// must not go READY just because truncatedVersions came back empty and every entry it could
+		// read committed cleanly. It rejects on midLogBreak itself.
+		let unlocked = false;
+		const queued = [];
+		const healthyTable = {
+			tableId: 7,
+			getResource() {
+				return { _writeUpdate() {}, save() {} };
+			},
+		};
+		const stubStore = {
+			databaseName: 'stub-midlog',
+			tryLock(key, onUnlocked) {
+				queued.push(onUnlocked);
+				return true;
+			},
+			unlock() {
+				unlocked = true;
+				for (const onUnlocked of queued) onUnlocked();
+				return true;
+			},
+			auditStore: {
+				getRange() {
+					return Object.assign(
+						[{ type: 'put', tableId: 7, version: 1, extendedType: 17, getValue: () => ({ id: 1 }) }],
+						{ corruptFrameStop: { breaks: 1, truncatedVersions: new Set(), midLogBreak: true } }
+					);
+				},
+			},
+		};
+		await assert.rejects(() => replayLogs(stubStore, { Healthy: healthyTable }, true), /mid-log corrupt/);
+		assert.strictEqual(unlocked, true, 'a rejected elected replay must still release the lock for a retry');
 	});
 
 	it('fails the load when the adopted branch cannot replay, then adopts cleanly once it can', async function () {
