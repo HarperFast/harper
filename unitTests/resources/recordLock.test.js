@@ -95,10 +95,9 @@ describe('Record locks (harper#483)', () => {
 				{ lease: 10e6 },
 				{ hold: 'yes' },
 			]) {
-				await assert.rejects(
-					async () => LockTest.lock(recordId, options),
-					(error) => error.statusCode === 400
-				);
+				// Called without an async wrapper on purpose: lock() is declared to return a Promise, so
+				// bad options must reject, not throw past a caller's `.catch()`.
+				await assert.rejects(LockTest.lock(recordId, options), (error) => error.statusCode === 400);
 			}
 		});
 
@@ -248,6 +247,28 @@ describe('Record locks (harper#483)', () => {
 				(error) => error.statusCode === 409 && /already released/.test(error.message),
 				'the commit released it; a lease-expiry message would send the caller after the wrong cause'
 			);
+		});
+
+		it('one hold save in an ImmediateTransaction runs the write once', async function () {
+			// The deferred write's save is the fallthrough in Table.save() (`op.saved` is false because
+			// addWrite deferred it), not a second run of one already saved — a review leg read it as a
+			// double `super.save()`. One audit entry and one version bump is what one run looks like.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			const auditCount = () =>
+				[...LockTest.auditStore.getRange({ start: 1 })].filter(
+					(entry) => entry.tableId === LockTest.tableId && entry.recordId === recordId
+				).length;
+			const auditBefore = auditCount();
+			const versionBefore = entryOf(recordId).version;
+			const record = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			record.set('n', 2);
+			await record.save();
+			assert.strictEqual(auditCount() - auditBefore, 1, 'one audit entry for one save');
+			assert.ok(entryOf(recordId).version > versionBefore, 'one version bump');
+			assert.strictEqual((await LockTest.get(recordId)).n, 2);
+			await record.unlock();
 		});
 
 		it('a lock that expires before commit aborts the whole transaction with 409', async function () {
@@ -549,7 +570,11 @@ describe('Record locks (harper#483)', () => {
 				} catch (err) {
 					caughtErr = err;
 				}
-			}).catch(() => {}); // transaction may abort
+			}).catch((error) => {
+				// The scope may abort with the same 409; anything else — a throw out of the abort path —
+				// must fail this test rather than be swallowed.
+				if (error?.statusCode !== 409) throw error;
+			});
 			assert.ok(caughtErr, 'save() threw after lease expired');
 			assert.strictEqual(caughtErr.statusCode, 409, '409 on expired lease');
 		});

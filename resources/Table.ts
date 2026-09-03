@@ -2422,7 +2422,7 @@ export function makeTable(options) {
 		 * Dropping the trailing `context` leaks the key: the bare `{}` fallback is an
 		 * ImmediateTransaction, which releases no record locks.
 		 */
-		static lock(
+		static async lock(
 			target?: RequestTargetOrId | RecordLockOptions,
 			options?: RecordLockOptions,
 			context?: any
@@ -2449,7 +2449,10 @@ export function makeTable(options) {
 		 * outlives the transaction; write through the returned record and release with `unlock()`, or
 		 * let the lease expire.
 		 */
-		lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
+		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
+		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
+		// on one key coalescing instead of racing to tryLock.
+		async lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
 			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
 			if (options === undefined && isPlainOptions(target)) {
 				options = target as RecordLockOptions;
