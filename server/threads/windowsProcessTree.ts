@@ -101,6 +101,9 @@ export function queryWindowsProcessTable(): Promise<WindowsProcessRecord[] | nul
 			}
 		);
 		let output = '';
+		// utf8 so the decoder buffers a multi-byte character split across a chunk boundary — a
+		// process name has arbitrary Unicode — instead of coercing each half's raw bytes separately
+		query.stdout.setEncoding('utf8');
 		query.stdout.on('data', (chunk) => {
 			output += chunk;
 		});
