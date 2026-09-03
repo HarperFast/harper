@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788426924226,
+  "lastUpdate": 1788426930249,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18354,6 +18354,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 425.7,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0db6cabe6bd04a6e6af8e774227d5a879848d561",
+          "message": "Guard the condition estimates that a zero entry-count estimate breaks (#2479)\n\n#2163 switched RocksDB plan sizing from an exact getKeysCount() scan to\nthe O(1) rocksdb.estimate-num-keys read. That property reports 0 for a\n*populated* table once its accumulated tombstones reach its non-deletions,\nwhich the exact count never did -- a 0 there meant a genuinely empty\nstore. Measured on the shipped binding: a store holding 200 live records\nreports an estimate of 0 after 5000 tombstones for keys that were never\nwritten, while getKeysCount() still returns 200.\n\nTwo arithmetic sites in estimateConditionForTable cannot take a 0 there:\nthe AND-group branch divides by it, yielding estimated_count === Infinity,\nand the `ne null` branch subtracts the index's null count from it,\nyielding a negative estimate -- the exact count could not underrun\ngetValuesCount(null), a 0 estimate can.\n\nThe divisor breaks planning: the adaptive filter/index switch derives\nthresholdRemainingMisses as `estimated_count >> 4`, and Infinity >> 4 is 0\nrather than NaN, so the isNaN check passes it through and the first\nnon-matching record flips the request onto searchByIndex plus a full Set\nbuild, memoized for the next 10 seconds -- the inverse of the plan #2163\nexists to protect. Guarded, the same group estimates 200 and the threshold\nis a usable 12. It takes the `|| 1` idiom already applied to the sibling\nrelationship divisor two branches below.\n\nThe subtraction does not affect planning: -32 and 0 both trip the switch on\nthe first miss. It matters because Table.ts reports estimated_count\nverbatim as the estimated pagination total, so an empty page could answer\nContent-Range */-500. Math.max at 0 rather than 1, because `|| 1` does not\ncatch a negative and a table whose rows are all null has a true `ne null`\ncount of zero -- flooring at 1 would trade a negative total for a phantom\nrow.\n\nestimatedEntryCount itself keeps returning 0 for the same reason: it is not\nplanner-private, so flooring it in the helper would make an empty table\nreport a record count of 1.\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-03T03:33:30Z",
+          "url": "https://github.com/HarperFast/harper/commit/0db6cabe6bd04a6e6af8e774227d5a879848d561"
+        },
+        "date": 1788426929006,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3914.34,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3914.34,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 171.3,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 724.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 2102.3,
             "unit": "ms"
           }
         ]
