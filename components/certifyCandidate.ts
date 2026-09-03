@@ -43,6 +43,49 @@ export const VERDICT_NO_ANSWER = 0;
 export const VERDICT_CERTIFIED = 1;
 export const VERDICT_REJECTED = 2;
 
+/**
+ * Slots in the shared buffer. Slot 0 carries the verdict; slot 1 carries how far the validator got.
+ *
+ * The progress slot exists because Windows CI reports `exited with code 0 without reporting a verdict` and
+ * nothing else. The first attempt at diagnosing it logged a stack from the validator's `exit` handler, which
+ * produced nothing — a worker's `console.error` is piped to the parent ASYNCHRONOUSLY, so output written on
+ * the way out is lost exactly as the verdict message is. Shared memory is the only channel here proven to
+ * survive that exit, so progress travels through it: the parent can then say which phase the thread was in,
+ * and whether its own exit handler ever ran, without depending on a message or a pipe.
+ */
+export const SLOT_VERDICT = 0;
+export const SLOT_PROGRESS = 1;
+export const VERDICT_SLOTS = 2;
+
+/** Phases the validator records in `SLOT_PROGRESS`, each strictly later than the last. */
+export const PROGRESS_NOTHING = 0;
+export const PROGRESS_MODULE_SCOPE = 1;
+export const PROGRESS_CERTIFY_ENTERED = 2;
+export const PROGRESS_ROOT_PLUGINS_LOADED = 3;
+export const PROGRESS_CANDIDATE_LOADED = 4;
+export const PROGRESS_TEARDOWN_DONE = 5;
+/** Added to the phase when the validator's own `exit` handler runs, distinguishing a self-exit from a teardown. */
+export const PROGRESS_EXIT_OBSERVED = 100;
+
+const PROGRESS_NAMES: Record<number, string> = {
+	[PROGRESS_NOTHING]: 'never ran its module body',
+	[PROGRESS_MODULE_SCOPE]: 'reached module scope but not the certification body',
+	[PROGRESS_CERTIFY_ENTERED]: 'entered certification but did not finish loading root plugins',
+	[PROGRESS_ROOT_PLUGINS_LOADED]: 'loaded root plugins but did not finish loading the candidate',
+	[PROGRESS_CANDIDATE_LOADED]: 'loaded the candidate but did not finish tearing it down',
+	[PROGRESS_TEARDOWN_DONE]: 'finished teardown but reported no verdict',
+};
+
+/** Render `SLOT_PROGRESS` for an operator: which phase, and whether the thread ended itself. */
+export function describeProgress(progress: number): string {
+	const selfExited = progress >= PROGRESS_EXIT_OBSERVED;
+	const phase = selfExited ? progress - PROGRESS_EXIT_OBSERVED : progress;
+	const described = PROGRESS_NAMES[phase] ?? `reached an unknown phase (${phase})`;
+	// A thread torn down from outside — `terminate()`, a native abort, the process going away — never runs
+	// its own exit handler, so the absence of that mark is the interesting half.
+	return selfExited ? `it ${described} and then exited itself` : `it ${described} and was ended from outside`;
+}
+
 /** How long to wait for a validator to actually go away before giving up and saying so. */
 const TERMINATION_GRACE_MS = 5000;
 
@@ -127,14 +170,12 @@ let active = 0;
 const waiting: (() => void)[] = [];
 
 async function acquireSlot(timeoutMs: number): Promise<() => void> {
-	// Claimed BEFORE yielding to a waiter, not after. Decrementing and then resolving a waiter whose
-	// `active++` runs a microtask later left a window any other caller could admit itself through, so the
-	// documented bound did not hold. The slot is handed straight from releaser to waiter instead.
+	// The slot passes straight from releaser to waiter: decrementing and then resolving a waiter that
+	// increments a microtask later leaves a window another caller can admit itself through.
 	//
-	// And BOUNDED, like every other wait in this module. A validator that will not die keeps its slot
-	// deliberately (see the termination path), so an unbounded queue behind it turns one stuck thread into
-	// every later deploy hanging inside the preparation lock with nothing to report. A deadline turns that
-	// into one failed deploy per attempt, with a reason.
+	// The wait is bounded because a validator that will not die keeps its slot deliberately (see the
+	// termination path), and an unbounded queue behind it would hold every later deploy inside the
+	// preparation lock with nothing to report.
 	const deadline = Date.now() + timeoutMs;
 	while (active >= MAX_CONCURRENT_CERTIFICATIONS) {
 		const remaining = deadline - Date.now();
@@ -147,11 +188,16 @@ async function acquireSlot(timeoutMs: number): Promise<() => void> {
 			throw error;
 		}
 		let wake!: () => void;
+		let timer: NodeJS.Timeout | undefined;
 		const handedOver = await new Promise<boolean>((resolve) => {
 			wake = () => resolve(true);
 			waiting.push(wake);
-			setTimeout(() => resolve(false), remaining).unref?.();
+			timer = setTimeout(() => resolve(false), remaining);
+			timer.unref?.();
 		});
+		// Cleared on the way out either way, so a waiter admitted early does not keep its closure registered
+		// until a deadline that no longer applies to it.
+		if (timer) clearTimeout(timer);
 		// Timed out while still queued: leave the queue, or a later release hands a slot to a caller that
 		// is gone and the count drifts DOWN — admitting more concurrent validators than the cap, not fewer.
 		// Already dequeued: a release woke us in the same turn the timer fired, so keep that handoff and let
@@ -212,21 +258,18 @@ export async function certifyCandidate(
 	// build output, and `__dirname` resolves there without assuming where the package root is.
 	const entry = join(__dirname, './deployValidator.js');
 	let worker: Worker | undefined;
-	// Installed the moment the worker exists, NOT in the `finally`. Attaching it later races the exit it is
-	// meant to observe: the validator `realExit`s immediately after posting, so on any turn where the parent
-	// sees the exit before the queued verdict, a listener attached afterwards never fires — `certifyCandidate`
-	// never returns, its slot is never released, and `prepareApplication` waits inside the preparation lock
-	// forever. Two of those and the node stops deploying until it restarts.
+	// Must be installed the moment the worker exists, never in the `finally`: the validator `realExit`s
+	// immediately after posting, so a listener attached after the exit has already fired never runs, and
+	// `certifyCandidate` then never returns while holding the preparation lock.
 	let exited: Promise<void> | undefined;
 	// Set when a validator outlives its termination grace, so its slot is deliberately not returned.
 	let slotHeld = false;
 	let settled = false;
 	let timer: NodeJS.Timeout | undefined;
-	// A channel of its own, NOT `parentPort`: Harper's worker machinery uses that for its own ITC traffic,
-	// so a verdict read from it would compete with unrelated messages — the first one to arrive was being
-	// rejected as a malformed verdict. On a dedicated channel, anything that does not conform really is one.
+	// A channel of its own, never `parentPort`: that carries Harper's ITC traffic, so an unrelated message
+	// arriving first reads as a malformed verdict. On a dedicated channel, anything non-conforming really is.
 	const { port1: verdicts, port2: verdictPort } = new MessageChannel();
-	const verdictFlag = new Int32Array(new SharedArrayBuffer(4));
+	const verdictFlag = new Int32Array(new SharedArrayBuffer(VERDICT_SLOTS * 4));
 	// Before the load, so the cleanup in the `finally` can tell what it created from what was already there.
 	const installRoot = await realpath(PACKAGE_ROOT).catch(() => undefined);
 	const linksBefore = installRoot ? await snapshotHarperModuleLinks(candidateDirPath, installRoot) : undefined;
@@ -310,9 +353,12 @@ export async function certifyCandidate(
 				// Only reached when no verdict MESSAGE arrived first. The shared flag is written before the
 				// validator exits, so it is still authoritative here — this is the ordinary path on Windows,
 				// where the exit consistently beats the queued message.
-				const flag = Atomics.load(verdictFlag, 0);
+				const flag = Atomics.load(verdictFlag, SLOT_VERDICT);
 				if (flag === VERDICT_NO_ANSWER) {
-					fail(`Certification of ${appName} exited with code ${code} without reporting a verdict`);
+					fail(
+						`Certification of ${appName} exited with code ${code} without reporting a verdict: ` +
+							describeProgress(Atomics.load(verdictFlag, SLOT_PROGRESS))
+					);
 					return;
 				}
 				if (flag === VERDICT_CERTIFIED) {
@@ -331,17 +377,12 @@ export async function certifyCandidate(
 		// reported rather than treated as cleanup done: the caller is about to remove a tree this thread
 		// may still be reading.
 		if (worker) {
-			// Every wait here is bounded. This runs in a `finally` that the caller's deploy is blocked on, so a
-			// termination that never settles would hold the preparation lock indefinitely — the same failure
-			// as the missed-exit race above, arrived at from the other side.
+			// Every wait here is bounded: this `finally` blocks the caller's deploy, so a termination that never
+			// settles would hold the preparation lock indefinitely.
 			const grace = () => new Promise<void>((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS).unref?.());
 			try {
-				// Asking is what can fail; WAITING for the exit must happen either way. A synchronous throw
-				// from the ask — `postMessage` on a channel already in an invalid state — used to jump
-				// straight to the `catch`, skipping the wait, so the caller swept a tree whose thread was
-				// still terminating. The ask is therefore fallible and the wait below is not conditional on
-				// it: a validator that is already gone satisfies the wait immediately, and one that is not
-				// still gets its grace.
+				// Asking is what can fail; waiting for the exit must happen either way. A synchronous throw from
+				// the ask must not skip the wait, or the caller sweeps a tree whose thread is still terminating.
 				let asked: Promise<unknown> = Promise.resolve();
 				try {
 					asked =
@@ -356,22 +397,17 @@ export async function certifyCandidate(
 				} catch (error) {
 					harperLogger.warn(`Could not ask the validator for ${appName} to exit; waiting for it anyway:`, error);
 				}
-				// ONE grace for the whole thing, not one per step: racing terminate and then racing the exit
-				// could wait 2x before calling a hung validator hung, and this runs inside a deploy holding
-				// the preparation lock.
+				// ONE grace for the whole thing: racing terminate and then the exit separately could wait twice
+				// over before calling a hung validator hung, inside a deploy holding the preparation lock.
 				const outcome = await Promise.race([
 					Promise.all([asked, exited ?? Promise.resolve()]).then(() => 'exited' as const),
 					grace().then(() => 'still-running' as const),
 				]);
-				// A validator that would not die keeps its slot. Releasing it would let the node start another
-				// thread while a runaway one is still holding the candidate tree open and consuming the heap
-				// this cap exists to bound — and the caller is about to sweep that tree. Bounded by
-				// MAX_CONCURRENT_CERTIFICATIONS either way, so the worst case is that certification stops on
-				// this thread and says so, rather than quietly overcommitting.
+				// A validator that would not die keeps its slot: releasing it would admit another thread while a
+				// runaway one still holds the candidate tree open, and the caller is about to sweep that tree.
 				if (outcome === 'still-running') {
-					// Held UNTIL it actually goes away, not forever. Holding it permanently would mean each
-					// runaway validator shrinks the cap for the life of the process, and a few would stop the
-					// node deploying — trading a bounded overcommit for an unbounded outage.
+					// Held until it actually goes away, not forever: permanently held slots would shrink the cap
+					// for the life of the process, trading a bounded overcommit for an unbounded outage.
 					slotHeld = true;
 					harperLogger.error(
 						`The validator certifying ${appName} did not exit within ${TERMINATION_GRACE_MS}ms; holding its ` +
@@ -390,9 +426,9 @@ export async function certifyCandidate(
 			}
 		}
 		if (timer) clearTimeout(timer);
-		// Best-effort, and AFTER the termination above: the validator is gone (or reported as still running),
-		// so this is not racing a thread that could relink. Runs for every outcome, because a rejected
-		// candidate is swept and a certified one is renamed live, and neither should carry the link.
+		// After the termination above, so this is not racing a thread that could relink. Runs for every
+		// outcome: a rejected candidate is swept and a certified one is renamed live, and neither should
+		// carry the link.
 		if (installRoot && linksBefore) await removeCertificationLinks(candidateDirPath, appName, installRoot, linksBefore);
 		// Both ends, or the channel keeps this thread's event loop referenced.
 		verdicts.close();

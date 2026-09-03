@@ -83,6 +83,43 @@ describe('deploy certification', () => {
 		}
 	});
 
+	it('publishes a static-only component, which legitimately loads no module', async function () {
+		// The "loaded nothing is not a pass" guard is a net for a platform-specific no-op reading as a clean
+		// verdict, and its trigger is whether the candidate declares loadable content — for which a
+		// `package.json` is weak evidence, since nearly every component ships one for versioning. A component
+		// of nothing but static files opens no scope and loads no module by design, so if that guard fires on
+		// it, certification rejects a deploy that works today. This is the third false-rejection shape this
+		// feature has produced, so it is asserted rather than assumed.
+		this.timeout(30000);
+		const rootDir = await mkdtemp(join(tmpdir(), 'certify-static-'));
+		const componentDirPath = join(rootDir, 'brochure');
+		await mkdir(componentDirPath, { recursive: true });
+		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'brochure', version: '1.0.0' }));
+
+		const sourceDir = await mkdtemp(join(rootDir, 'brochure-2.0.0-'));
+		await writeFile(join(sourceDir, 'package.json'), JSON.stringify({ name: 'brochure', version: '2.0.0' }));
+		await writeFile(join(sourceDir, 'config.yaml'), "static:\n  files: 'web/**'\n");
+		await mkdir(join(sourceDir, 'web'), { recursive: true });
+		await writeFile(join(sourceDir, 'web', 'index.html'), '<!doctype html><title>hi</title>\n');
+
+		const application = new Application({
+			name: 'brochure',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		application.dirPath = componentDirPath;
+
+		try {
+			await prepareApplication(application);
+			assert.strictEqual(
+				JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version,
+				'2.0.0',
+				'a static-only component is published rather than rejected for loading nothing'
+			);
+		} finally {
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
+
 	it('rejects a candidate whose load never finishes, rather than waiting on it', async function () {
 		this.timeout(30000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'certify-timeout-'));

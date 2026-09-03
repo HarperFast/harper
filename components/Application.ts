@@ -2115,9 +2115,8 @@ export async function markCandidateComplete(
 	deploymentId: string,
 	componentName: string
 ): Promise<void> {
-	// The gate. Everything below writes the marker recovery trusts, so an uncertified candidate must not
-	// get here — and the check lives at the mint rather than at the caller for the reason `certifiedCandidates`
-	// documents.
+	// Everything below writes the marker recovery trusts, so an uncertified candidate must not get here. The
+	// check lives at the mint rather than at the caller for the reason `certifiedCandidates` documents.
 	if (!isCandidateCertified(componentDirPath, deploymentId)) {
 		throw new Error(
 			`Refusing to mark the ${componentName} candidate ${deploymentId} complete: no validator has ` +
@@ -2235,17 +2234,14 @@ export async function activateCandidateApplication(application: Application, dep
 		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
 	}
 
-	// Durability first, and for EVERY activation — certified or not. This used to live inside
-	// `markCandidateComplete`, so skipping the mint skipped the fsync too: an uncertified swap (a
-	// branch-configured component, or safe mode) committed a tree whose contents were never flushed, and
-	// `syncRenameParents` only syncs directory entries. A power loss shortly after such a deploy returned
-	// success would leave the live path holding zero-length files, with the aside already retired.
-	// Certification decides what the tree MEANS; it was never what makes it durable.
+	// Durability first, and for EVERY activation, certified or not: `syncRenameParents` syncs only directory
+	// entries, so an unflushed swap can leave the live path holding zero-length files after a power loss,
+	// with the aside already retired. Certification decides what the tree MEANS, not whether it is durable,
+	// so this must not sit behind the mint.
 	await syncCandidateTree(liveDirPath, deploymentId);
 
-	// The RECORD decides, never the caller. An argument saying "this one is certified" would be the forgeable
-	// proof the internal record exists to avoid — and an exported function with such a flag lets any caller
-	// mint authority for an uncertified tree, which is the invariant this step is for.
+	// The RECORD decides, never the caller: a `certified` argument on an exported function is proof any
+	// caller can forge, which is the invariant this step exists for.
 	//
 	// So: certified candidates get `.complete`; the deliberately uncertified ones (a branch-configured
 	// component) simply do not, and a crash mid-swap rolls them back to the committed tree rather than

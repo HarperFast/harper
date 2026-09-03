@@ -664,8 +664,7 @@ async function deployComponent(req) {
 		emit('phase', { phase: 'prepare', status: 'start' });
 		let prepareDoneEmitted = false;
 		await prepareApplication(application, {
-			// The same phases in the same order as before certification moved into the preparation: the
-			// `prepare` phase closes when the candidate is built, then `load` brackets certification.
+			// `prepare` closes when the candidate is built, then `load` brackets certification.
 			emitPhase: (phase, status) => {
 				if (phase === 'load' && status === 'start' && !prepareDoneEmitted) {
 					prepareDoneEmitted = true;
