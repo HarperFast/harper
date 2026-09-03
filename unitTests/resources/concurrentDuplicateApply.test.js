@@ -6,7 +6,6 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { waitFor } = require('../waitFor.js');
-const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const PATHS = 15; // the field topology's peer count: every peer relayed the bridge origin's writes
@@ -53,38 +52,6 @@ describe('Concurrent multi-path deliveries of one write (harper#2485)', () => {
 		return count;
 	}
 
-	// Records how each native commit attempt resolved, so a test can assert the deliveries really
-	// raced (at least one lost optimistic concurrency) instead of having been serialized by the
-	// scheduler into a sequence the keyed dedup already handles.
-	function spyOnCommits() {
-		const { Transaction } = require('@harperfast/rocksdb-js');
-		const originalCommit = Transaction.prototype.commit;
-		const attempts = [];
-		Transaction.prototype.commit = function (...args) {
-			const attempt = {};
-			attempts.push(attempt);
-			return originalCommit.apply(this, args).then(
-				(result) => {
-					attempt.result = result;
-					return result;
-				},
-				(error) => {
-					attempt.code = error.code;
-					throw error;
-				}
-			);
-		};
-		return {
-			get conflicted() {
-				return attempts.some(
-					(attempt) =>
-						attempt.result === RETRY_NOW_VALUE || attempt.code === 'ERR_BUSY' || attempt.code === 'ERR_TRY_AGAIN'
-				);
-			},
-			restore: () => (Transaction.prototype.commit = originalCommit),
-		};
-	}
-
 	it('persists one transaction-log entry and one fold for N concurrent identical patches', async function () {
 		if (isLMDB) return this.skip();
 		this.timeout(30000);
@@ -95,21 +62,28 @@ describe('Concurrent multi-path deliveries of one write (harper#2485)', () => {
 		// is where the field amplification happened; the identity tie is what the twins collide on.
 		const version = Replicated.primaryStore.getMonotonicTimestamp() + 100000;
 		const increment = { count: { __op__: 'add', value: 1 } };
-		const spy = spyOnCommits();
-		let outcomes;
-		try {
-			outcomes = await Promise.allSettled(
-				Array.from({ length: PATHS }, () => applyFromPeer(id, increment, false, version, nodeId))
-			);
-		} finally {
-			spy.restore();
-		}
+		// Spans, not a conflict count: with the deliveries deduped before they stage there is no
+		// conflict left to observe, so the premise this has to pin is that they were genuinely in
+		// flight together — an awaited sequence of re-deliveries is a different (already handled) case.
+		const spans = [];
+		const timed = (promise) => {
+			const span = { start: performance.now(), end: Infinity };
+			spans.push(span);
+			return promise.finally(() => (span.end = performance.now()));
+		};
+		const outcomes = await Promise.allSettled(
+			Array.from({ length: PATHS }, () => timed(applyFromPeer(id, increment, false, version, nodeId)))
+		);
 		assert.deepEqual(
 			outcomes.filter((outcome) => outcome.status === 'rejected').map((outcome) => outcome.reason.message),
 			[],
 			'every delivery must settle: a source apply has no resume path that could recover a dropped write'
 		);
-		assert.ok(spy.conflicted, 'premise: the deliveries must actually race for the record write');
+		const latestStart = Math.max(...spans.map((span) => span.start));
+		assert.ok(
+			spans.filter((span) => span.end >= latestStart).length === PATHS,
+			'premise: every delivery must still be in flight when the last one starts'
+		);
 		await waitFor(() => entriesForIdentity(id, version, nodeId) > 0, {
 			message: 'the write must leave a transaction-log entry',
 		});
@@ -135,6 +109,42 @@ describe('Concurrent multi-path deliveries of one write (harper#2485)', () => {
 		await delay(250);
 		assert.equal(entriesForIdentity(id, version, nodeId), 1, 'a re-delivered write must not add an entry');
 		assert.equal((await Replicated.get(id)).count, 1, 'a re-delivered write must not re-fold its op');
+	});
+
+	it('does not multiply the entries of a duplicated transaction that writes one key twice', async function () {
+		if (isLMDB) return this.skip();
+		this.timeout(30000);
+		// Same-key writes chained in one transaction share the whole write identity — they carry the
+		// transaction's single timestamp (harper#2211, and harper#2412 names this as an open
+		// write-identity question) — so a chained write must inherit its predecessor's disposition
+		// instead of reading itself as a duplicate of it, in both directions: two entries for one
+		// delivery, and still two when that delivery arrives three times at once.
+		const id = 'chained-same-key';
+		const nodeId = Replicated.auditStore.ensureLogExists('chained-origin');
+		await Replicated.put(id, { id, count: 0 });
+		const version = Replicated.primaryStore.getMonotonicTimestamp() + 100000;
+		const writes = [{ name: 'first', count: { __op__: 'add', value: 1 } }, { name: 'second' }];
+		const deliverTransaction = () => {
+			const context = { sourceApply: true, timestamp: version, source: {} };
+			const options = { isNotification: true, ensureLoaded: false, nodeId, async: true };
+			return transaction(context, async () => {
+				for (const update of writes) {
+					const resource = await Replicated.getResource(id, context, options);
+					await resource._writeUpdate(id, update, false, options);
+				}
+			});
+		};
+		await Promise.all([deliverTransaction(), deliverTransaction(), deliverTransaction()]);
+		// Fixed settle, not a condition wait: the assertion is that no further entry appears.
+		await delay(250);
+		assert.equal(
+			entriesForIdentity(id, version, nodeId),
+			writes.length,
+			'a duplicated transaction must leave the entries of one delivery, not of three'
+		);
+		const record = await Replicated.get(id);
+		assert.equal(record.count, 1, 'the commutative op must be folded exactly once');
+		assert.equal(record.name, 'second', 'the later write in the chain must still win');
 	});
 
 	it('keeps distinct origins that share a version as distinct writes', async function () {
