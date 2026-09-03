@@ -124,12 +124,14 @@ function runSql(sql) {
 
 describe('sqlEngine phase 4: mutations', () => {
 	let originalEngine;
+	let originalAllowFullScan;
 	let widgets;
 	let txnCalls;
 
 	beforeEach(() => {
 		originalEngine = process.env.HARPER_SQL_ENGINE;
 		process.env.HARPER_SQL_ENGINE = 'new';
+		originalAllowFullScan = configUtils.getConfigValue(CONFIG_PARAMS.SQL_ALLOWFULLSCAN);
 		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 
 		widgets = makeWritableTable({
@@ -161,7 +163,7 @@ describe('sqlEngine phase 4: mutations', () => {
 	afterEach(() => {
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, undefined);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, originalAllowFullScan);
 		binder._setDatabasesLoader(null);
 		mutation._setTransactionRunner(null);
 	});

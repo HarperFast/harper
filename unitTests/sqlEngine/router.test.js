@@ -128,14 +128,23 @@ describe('sqlEngine router', () => {
 });
 
 describe('sqlEngine config: harper config integration', () => {
+	// configUtils' in-memory config is process-wide (module singleton), shared by every unit
+	// test file mocha loads in this run — snapshot/restore rather than blindly clearing, so a
+	// prior value (from another suite, or a future one) isn't clobbered.
+	const SQL_KEYS = [
+		CONFIG_PARAMS.SQL_ENGINE,
+		CONFIG_PARAMS.SQL_ALLOWFULLSCAN,
+		CONFIG_PARAMS.SQL_MAXSORTROWS,
+		CONFIG_PARAMS.SQL_MAXHASHROWS,
+	];
+	let originalValues;
+
+	beforeEach(() => {
+		originalValues = SQL_KEYS.map((key) => configUtils.getConfigValue(key));
+	});
+
 	afterEach(() => {
-		// Reset every key back to "unset" so it doesn't leak into other test files —
-		// configUtils' in-memory config is process-wide (module singleton), shared by
-		// every unit test file mocha loads in this run.
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, undefined);
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, undefined);
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXSORTROWS, undefined);
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXHASHROWS, undefined);
+		SQL_KEYS.forEach((key, i) => configUtils.updateConfigObject(key, originalValues[i]));
 	});
 
 	it('reads sql.engine from Harper config when no env var is set', () => {
@@ -171,5 +180,27 @@ describe('sqlEngine config: harper config integration', () => {
 		assert.strictEqual(config.getSqlEngineConfig().maxHashRows, 1_000_000);
 		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXHASHROWS, 7);
 		assert.strictEqual(config.getSqlEngineConfig().maxHashRows, 7);
+	});
+
+	// validation/configValidator.ts's `sql` schema is what actually keeps a malformed value
+	// (e.g. a quoted `allowFullScan: "true"`) out of flatConfigObj on a real boot or
+	// set_configuration — these guard the accessor's own defense-in-depth for a wrong-typed
+	// value that reaches it some other way (e.g. programmatic config injection in a test).
+	it('ignores an unknown sql.engine value and falls back to the default', () => {
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, 'gibberish');
+		assert.strictEqual(config.getSqlEngineConfig().engine, 'auto');
+	});
+
+	it('ignores a wrong-typed sql.allowFullScan value and falls back to the default', () => {
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, 'true');
+		assert.strictEqual(config.getSqlEngineConfig().allowFullScan, false);
+	});
+
+	it('ignores wrong-typed sql.maxSortRows/maxHashRows values and falls back to the defaults', () => {
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXSORTROWS, 'unlimited');
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXHASHROWS, 'unlimited');
+		const cfg = config.getSqlEngineConfig();
+		assert.strictEqual(cfg.maxSortRows, 1_000_000);
+		assert.strictEqual(cfg.maxHashRows, 1_000_000);
 	});
 });

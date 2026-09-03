@@ -271,6 +271,42 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
 
+		it('accepts a well-formed sql config section', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { engine: 'new', allowFullScan: true, maxSortRows: 500, maxHashRows: 500 };
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('rejects an unknown sql.engine value rather than silently keeping the default', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { engine: 'gibberish' };
+			expect(configValidator(config).error.message).to.include("'sql.engine' must be one of [legacy, new, auto]");
+		});
+
+		it('rejects a non-boolean-coercible sql.allowFullScan value', () => {
+			// Joi's default `convert: true` accepts the literal strings 'true'/'false' as
+			// boolean input (and validateConfig() never writes the coerced value back into
+			// configDoc — see sqlEngine/config.ts's own typeof guard for why the accessor
+			// still defends against a non-boolean reaching it some other way); a value outside
+			// that set is a genuine type error.
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allowFullScan: 'not-a-boolean' };
+			expect(configValidator(config).error.message).to.include("'sql.allowFullScan' must be a boolean");
+		});
+
+		it('rejects non-positive/non-integer sql.maxSortRows and sql.maxHashRows', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { maxSortRows: 0, maxHashRows: 2.5 };
+			expect(configValidator(config).error.message).to.include("'sql.maxSortRows' must be greater than or equal to 1");
+			expect(configValidator(config).error.message).to.include("'sql.maxHashRows' must be an integer");
+		});
+
+		it('rejects an unknown key inside sql (typos fail loudly instead of being silently ignored)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allowFullScan: true, allwoFullScan: true };
+			expect(configValidator(config).error.message).to.include("'sql.allwoFullScan' is not allowed");
+		});
+
 		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			for (const [bad, reason] of [

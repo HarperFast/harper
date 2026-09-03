@@ -233,6 +233,17 @@ export function configValidator(configJson, skipFsValidation = false) {
 		generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
 	});
 
+	// `sql:` gates the SQL engine's mode and safety/memory caps — reaching a typo or
+	// wrong-typed value here (e.g. a quoted `allowFullScan: "true"`) must fail loudly rather
+	// than silently keep the default, since the default for `allowFullScan` is the more
+	// restrictive value. `.unknown(false)` matches the other scoped schemas above.
+	const sqlSchema = Joi.object({
+		engine: string.valid('legacy', 'new', 'auto').optional(),
+		allowFullScan: boolean.optional(),
+		maxSortRows: number.integer().min(1).optional(),
+		maxHashRows: number.integer().min(1).optional(),
+	}).unknown(false);
+
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
 			Joi.object({
@@ -411,6 +422,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 		}).required(),
 		mcp: mcpSchema.optional(),
 		models: modelsSchema.optional(),
+		sql: sqlSchema.optional(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});

@@ -95,6 +95,7 @@ function sortByJson(rows) {
 
 describe('sqlEngine phase 3: joins', () => {
 	let originalEngine;
+	let originalAllowFullScan;
 	let users;
 	let orders;
 	let products;
@@ -102,6 +103,7 @@ describe('sqlEngine phase 3: joins', () => {
 	beforeEach(() => {
 		originalEngine = process.env.HARPER_SQL_ENGINE;
 		process.env.HARPER_SQL_ENGINE = 'new';
+		originalAllowFullScan = configUtils.getConfigValue(CONFIG_PARAMS.SQL_ALLOWFULLSCAN);
 		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 
 		users = makeMockTable({
@@ -150,7 +152,7 @@ describe('sqlEngine phase 3: joins', () => {
 	afterEach(() => {
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, undefined);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, originalAllowFullScan);
 		binder._setDatabasesLoader(null);
 	});
 
