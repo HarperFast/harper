@@ -153,15 +153,15 @@ export async function loadSession(id: string): Promise<McpSessionRecord | null> 
 	return record;
 }
 
-/**
- * Persist changed session fields without overwriting concurrent updates.
- */
 export async function saveSession(id: string, changes: McpSessionUpdate): Promise<void> {
 	await patchIfExists(getTable(), id, changes);
 }
 
 export async function deleteSession(id: string): Promise<void> {
-	await (getTable() as any).delete(id);
+	const SessionTable = getTable() as any;
+	do {
+		await SessionTable.delete(id);
+	} while (await SessionTable.get(id));
 	// Tear down ancillary per-session in-memory state — the `tools/list`
 	// pagination cache and the per-session rate-limit buckets. Without
 	// these, every session that ever paged or called a tool leaves orphan
