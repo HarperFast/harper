@@ -1575,9 +1575,10 @@ function blobOwnerMatches(a: BlobOwner, b: BlobOwner): boolean {
 }
 
 /**
- * Refuse to store a blob whose file already belongs to another record. Ownerless references (written
- * before this check could be enforced) adopt the current owner instead of failing: nothing can prove
- * they are unaliased, and failing them would break rows that were written legally.
+ * Refuse to store a blob whose file already belongs to another record. An ownerless reference (one
+ * written before this check could be enforced) passes instead of failing, and stays ownerless: it
+ * may already be aliased by a record written legally, so neither rejecting it nor adopting the
+ * current record as its owner is answerable from here.
  */
 function assertBlobOwner(storageInfo: StorageInfo | undefined): void {
 	const owner = storageInfo?.owner;
@@ -1587,8 +1588,8 @@ function assertBlobOwner(storageInfo: StorageInfo | undefined): void {
 	);
 }
 
-// Resolves the `tableId` half of an owner back to a store this thread can read. Weak on both sides:
-// a dropped database must not be pinned by unlink bookkeeping.
+// Resolves the table-name half of an owner back to a store this thread can read. Weak on both
+// sides: a dropped database must not be pinned by unlink bookkeeping.
 const ownerTablesByRoot = new WeakMap<any, Map<string, WeakRef<any>>>();
 
 /** Registered by {@link makeTable} so the drain can resolve an owner recorded by another process. */
@@ -1619,37 +1620,41 @@ function readOwner(
 	const cacheKey = pack(owner).toString('latin1');
 	if (reads.has(cacheKey)) return reads.get(cacheKey);
 	let result: { fileIds: Set<string>; version: number } | null = null;
-	const store = ownerTablesByRoot.get(rootStore)?.get(owner[0])?.deref();
-	try {
-		if (store) {
-			const entry = decodeFromDatabase(() => store.getEntry(owner[1]), rootStore);
-			const fileIds = new Set<string>();
-			if (entry?.value) {
-				findBlobsInObject(entry.value, (blob) => {
-					const fileId = storageInfoForBlob.get(blob)?.fileId;
-					if (fileId) fileIds.add(fileId);
-				});
+	// The catalog first, and not merely as a fallback for a read that failed. A dropped table's
+	// records are dead, but the store handle a thread already holds can go on answering from the
+	// dropped column family — so a record read alone reports the table's own rows as live, at their
+	// unchanged version, which is exactly the drain's "the superseding write has not landed yet"
+	// case. It would then defer every one of that table's files to the retention age cap, and the
+	// orphan sweep skips them while their intents are queued: dropping a table would stop reclaiming
+	// its blob files at all. The catalog is the authority on whether a table exists; a handle is not.
+	if (ownerTableIsGone(rootStore, owner[0])) result = { fileIds: new Set(), version: undefined };
+	else {
+		const store = ownerTablesByRoot.get(rootStore)?.get(owner[0])?.deref();
+		try {
+			if (store) {
+				const entry = decodeFromDatabase(() => store.getEntry(owner[1]), rootStore);
+				const fileIds = new Set<string>();
+				if (entry?.value) {
+					findBlobsInObject(entry.value, (blob) => {
+						const fileId = storageInfoForBlob.get(blob)?.fileId;
+						if (fileId) fileIds.add(fileId);
+					});
+				}
+				result = { fileIds, version: entry?.version };
 			}
-			result = { fileIds, version: entry?.version };
+		} catch (error) {
+			logger.debug?.('Could not read the owning record of a queued blob unlink', owner[0], error);
 		}
-	} catch (error) {
-		// A store still registered here but whose column family the drop already removed reads as a
-		// failure, not as an absence, so the catalog below is consulted either way.
-		logger.debug?.('Could not read the owning record of a queued blob unlink', owner[0], error);
 	}
-	// The table is not merely closed in this thread — the catalog says it no longer exists, so neither
-	// does the record, and nothing can be referencing the file. Without this a dropped table's blobs
-	// would defer to the retention age cap and then need a manual sweep, which is a plain regression:
-	// dropping a table reclaims its blob files today.
-	if (!result && ownerTableIsGone(rootStore, owner[0])) result = { fileIds: new Set(), version: undefined };
 	reads.set(cacheKey, result);
 	return result;
 }
 
 /**
- * Whether the table catalog has no live entry for this name, i.e. the table was dropped. An
- * unreadable catalog answers "not gone": this runs outside the drain's claim-releasing paths, so a
- * throw here would strand the reclaim claim it was called under.
+ * Whether the table catalog has no live entry for this name, i.e. the table was dropped or is being
+ * dropped. An unreadable catalog answers "not gone", which both leaves the file on disk and keeps
+ * this off the drain's claim-releasing paths, where a throw would strand the reclaim claim it was
+ * called under.
  */
 function ownerTableIsGone(rootStore: any, tableName: string): boolean {
 	const catalog = unlinkQueueDb(rootStore); // the internal dbi is also the table catalog

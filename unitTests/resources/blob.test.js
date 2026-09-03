@@ -2914,6 +2914,45 @@ describe('durable blob-unlink queue (#1832)', () => {
 		await waitFor(() => queueRow(fileId) === undefined, { timeout: 5000, message: 'the row must be removed' });
 	});
 
+	it('executes an intent whose table is gone from the catalog but still readable through a handle', async () => {
+		// What a real drop_table looks like from the drain: dropping the column families does not stop
+		// a store handle a thread already holds from answering out of them, so the owning record reads
+		// back live, at the same version the intent was staged against. Read alone that is the drain's
+		// "the superseding write has not landed yet" case and it defers every one of the table's files
+		// to the age cap — while the orphan sweep skips them for having queued intents, so nothing
+		// reclaims them at all. The catalog, not a handle, is what says whether a table exists.
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('dropped-yet-readable');
+		const entry = QueueTest.primaryStore.getEntry('dropped-yet-readable');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			due: Date.now() - 1,
+			storageIndex: 0,
+			owner: ['BlobQueueTest', 'dropped-yet-readable'],
+			supersededAt: Date.now() - 5000,
+			priorVersion: entry.version,
+		});
+		const catalogKey = 'BlobQueueTest/';
+		const catalogRow = queueDb().getSync(catalogKey);
+		assert.ok(catalogRow, 'the live table must have a catalog row to remove');
+		queueDb().removeSync(catalogKey);
+		try {
+			assert.ok(
+				QueueTest.primaryStore.getEntry('dropped-yet-readable')?.value,
+				'the record must still read back through the handle, as it does after a real drop'
+			);
+
+			drainBlobUnlinkQueue(rootStore());
+
+			await waitFor(() => !existsSync(filePath), {
+				timeout: 5000,
+				message: "a dropped table's blob files must be reclaimed even while its records still read",
+			});
+			await waitFor(() => queueRow(fileId) === undefined, { timeout: 5000, message: 'the row must be removed' });
+		} finally {
+			queueDb().putSync(catalogKey, catalogRow);
+		}
+	});
+
 	it('withdraws the intent when the record references the file again', async () => {
 		setDeletionDelay(600000);
 		const { fileId, filePath } = await fileBackedBlob('re-referenced');
