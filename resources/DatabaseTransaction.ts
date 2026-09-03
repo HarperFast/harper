@@ -1382,9 +1382,10 @@ export class DatabaseTransaction implements Transaction {
 							readTransactionOwners.delete(transaction);
 							// Re-fence before submitting: the loop above skips operations already marked saved, so
 							// save()'s own check cannot see a holder that stalled between staging and commit. The
-							// retry/replay path re-saves every operation and is fenced there instead.
+							// retry/replay path re-saves every operation and is fenced there instead. Lease expiry
+							// only — a deliberate unlock() after staging leaves the staged write valid.
 							for (let i = 0; i < this.writes.length; i++) {
-								if (!this.writes[i].lockHandle?.isExpired()) continue;
+								if (!this.writes[i].lockHandle?.isLeaseExpired()) continue;
 								try {
 									transaction.abort();
 								} catch {}
