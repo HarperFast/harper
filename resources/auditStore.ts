@@ -548,27 +548,6 @@ function updateAuditFloor(
 }
 
 /**
- * Raise the floor to `cutoff`, the exclusive lower bound of the history a prune is about to make
- * unreachable.
- *
- * **Call this before removing anything.** A floor written after the removal is lost if the process
- * dies in between, and the surviving lower floor then certifies a cursor whose history is gone.
- * Ordering it first also means it covers a prune that removes less than `cutoff` spans — a RocksDB
- * purge that finds no whole droppable file, a retention pass that stops at MAX_DELETES_PER_CLEANUP
- * with a large backlog still eligible. Over-reporting costs a consumer one unnecessary resync;
- * under-reporting loses its data silently. For the three retention paths the over-report is bounded
- * by the thing that already bounds the promise — they pass `Date.now() - auditRetention`, so the
- * floor cannot climb above the horizon `logging.auditRetention` already declines to retain past. The
- * two operator-supplied bounds (`deleteHistory`, and the bridge's whole-database purge) have no such
- * ceiling of their own and must be run through `boundedAuditPruneEnd` first; a bound above everything
- * reachable would otherwise be recorded verbatim and never come down.
- *
- * Throws if the floor cannot be persisted, which is why it is called first — the throw is what stops
- * the prune from proceeding unrecorded. Never lowers the floor, so a narrower prune cannot undo a
- * wider one, and a store whose floor is unknown stays unknown rather than being talked down to a
- * cutoff that says nothing about the history it has already lost.
- */
-/**
  * The bound a prune should use — and record — in place of an unbounded cutoff.
  *
  * `Infinity` is a legitimate thing for a caller to *mean* ("remove all of it") and a ruinous thing to
@@ -607,6 +586,27 @@ export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
 	return cutoff > bound ? bound : cutoff;
 }
 
+/**
+ * Raise the floor to `cutoff`, the exclusive lower bound of the history a prune is about to make
+ * unreachable.
+ *
+ * **Call this before removing anything.** A floor written after the removal is lost if the process
+ * dies in between, and the surviving lower floor then certifies a cursor whose history is gone.
+ * Ordering it first also means it covers a prune that removes less than `cutoff` spans — a RocksDB
+ * purge that finds no whole droppable file, a retention pass that stops at MAX_DELETES_PER_CLEANUP
+ * with a large backlog still eligible. Over-reporting costs a consumer one unnecessary resync;
+ * under-reporting loses its data silently. For the three retention paths the over-report is bounded
+ * by the thing that already bounds the promise — they pass `Date.now() - auditRetention`, so the
+ * floor cannot climb above the horizon `logging.auditRetention` already declines to retain past. The
+ * two operator-supplied bounds (`deleteHistory`, and the bridge's whole-database purge) have no such
+ * ceiling of their own and must be run through `boundedAuditPruneEnd` first; a bound above everything
+ * reachable would otherwise be recorded verbatim and never come down.
+ *
+ * Throws if the floor cannot be persisted, which is why it is called first — the throw is what stops
+ * the prune from proceeding unrecorded. Never lowers the floor, so a narrower prune cannot undo a
+ * wider one, and a store whose floor is unknown stays unknown rather than being talked down to a
+ * cutoff that says nothing about the history it has already lost.
+ */
 export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// Throw rather than no-op on a bound we will not store. A NaN or negative cutoff is NOT harmless
 	// here: transactionKeyEncoder writes keys as raw float64, so NaN (0x7FF8…) and negatives (sign bit
