@@ -131,6 +131,11 @@ export function runLongLivedTransactionSweep(): void {
 				continue;
 			}
 			for (const handle of details) {
+				// Nothing below the threshold is worth remembering: `nextReportAgeMs` is seeded at the
+				// threshold and only grows, so such a handle can never be due, and the state built for it
+				// would be pruned on this same pass. Skipping it keeps a healthy node's pass allocation-free
+				// rather than paying a key, a state, a Set entry and a Map entry per live handle per minute.
+				if (handle.ageMs < thresholdMs) continue;
 				const key = reportKey(database.path, handle.id);
 				seen.add(key);
 				const state = observeHandle(sweepReports, key, handle.ageMs, thresholdMs);

@@ -136,6 +136,14 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 0);
 		});
 
+		it('reports a handle that crosses the threshold after an earlier pass ignored it', function () {
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 1000])));
+			runLongLivedTransactionSweep();
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 90000])));
+			runLongLivedTransactionSweep();
+			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 1);
+		});
+
 		it('backs off rather than repeating every pass, and reports again once the age doubles', function () {
 			setRegistryStatusForTests(status(database('/db/alpha', [7, 3600000])));
 			runLongLivedTransactionSweep();
@@ -559,12 +567,25 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					trackedTxns.delete(links[1]);
 					resetLongLivedTransactionReportsForTests();
 					warnings.length = 0;
-					await waitFor(
-						() =>
-							warningsMatching('Harper transaction has held').some(([message]) =>
-								message.includes(`transaction ${childId}`)
-							),
-						10000
+					// Matched on the child's own table, not on the id alone: ids are allocated per database
+					// descriptor, so the root in `test` and this link in its own database both hold id 4 here
+					// and an id-only match silently asserts against the root's line.
+					const childLine = () =>
+						warningsMatching('Harper transaction has held').find(([message]) =>
+							message.includes('ChainSecondaryTable')
+						)?.[0];
+					await waitFor(() => childLine() !== undefined, 10000);
+					assert.match(
+						childLine(),
+						new RegExp(`transaction ${childId}\\b`),
+						'the link must be named under its own native id, which is what the sweep line joins to'
+					);
+					// `timeout` is armed by addWrite and only decayed for the link the tick entered on, so an
+					// undecayed chain link would claim `active` for hours while sitting idle — the inverse of
+					// the diagnosis, on the shape this walk exists for.
+					assert.ok(
+						!/state: [^,]*active/.test(childLine()),
+						'a link the monitor never decays must not be reported as actively writing'
 					);
 				});
 			} finally {

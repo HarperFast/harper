@@ -726,8 +726,6 @@ export class DatabaseTransaction implements Transaction {
 							oldestOutstandingCommit.nativeTransaction
 						) +
 						`.` +
-						// The holder this commit is parked on (harper#2471). Contained inside describeHolderCandidates,
-						// which returns '' on any failure: a registry error here must not replace the 503 below with a 500.
 						describeHolderCandidates(
 							oldestOutstandingCommit.store?.rootStore?.path,
 							oldestOutstandingCommit.nativeTransaction?.id
@@ -1403,8 +1401,6 @@ export class DatabaseTransaction implements Transaction {
 					`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
 					describeCommitIdentity(this.writes[0]?.store, this.startedFrom, headTransaction) +
 					`.` +
-					// The same holder line checkOverloaded() gets: this is the other place a commit parked on
-					// someone else's write intent is reported, and the holder is what an operator needs named.
 					describeHolderCandidates(this.writes[0]?.store?.rootStore?.path, headTransaction?.id) +
 					` Another transaction holds a conflicting write intent and has not completed; the request is ` +
 					`failed with a 503${retryable ? '' : ' (not retryable — an earlier store in this transaction already committed)'} ` +
@@ -1663,7 +1659,7 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
  * this link's own re-armed `timeout` rather than by asking — and runs before the branches so it
  * cannot reorder them.
  */
-function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number): void {
+function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, monitored: boolean): void {
 	if (!link.transaction || link.handleOpenedAt === 0) return;
 	const ageMs = performance.now() - link.handleOpenedAt;
 	if (ageMs < thresholdMs) return;
@@ -1672,9 +1668,10 @@ function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number): vo
 	if (link.isReplay) states.push('replay');
 	if (link.committing) states.push('commit-phase');
 	if (link.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
-	// A transaction that keeps writing (or a chain link whose sibling does) re-arms its own idle
-	// limit indefinitely and so never reaches the over-limit branches at all.
-	if (link.timeout > 0) states.push('active');
+	// Only for a link this tick entered on. `timeout` is re-armed by addWrite and decremented once per
+	// tick for that link alone; a link reached through the chain is never decremented, so its armed
+	// `timeout` would read `active` for hours and say the application is still writing when it is idle.
+	if (monitored && link.timeout > 0) states.push('active');
 	if (states.length === 0) states.push('over-limit');
 	reportLongLivedHolder({
 		databasePath: (link.db as any)?.rootStore?.path,
@@ -1704,7 +1701,7 @@ function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number): vo
 function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void {
 	if (thresholdMs === 0) return;
 	for (let link: DatabaseTransaction = txn; link; link = link.next)
-		if (link === txn || !trackedTxns.has(link)) reportLongLivedLink(link, thresholdMs);
+		if (link === txn || !trackedTxns.has(link)) reportLongLivedLink(link, thresholdMs, link === txn);
 }
 
 function startMonitoringTxns() {
