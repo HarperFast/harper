@@ -33,9 +33,8 @@ import { isReadOnlyMode } from './databases.ts';
 initSync();
 
 export type AuditRecord = {
-	version: number;
-	recordVersion?: number; // the record's own version; on RocksDB reads `version` becomes the log key, so record identity uses this
-	localTime: number; // log position: LMDB audit-store key; RocksDB transaction-log timestamp
+	version: number; // the record's own version: LWW ordering, @updatedTime, ETag
+	localTime: number; // log position: LMDB audit-store key; RocksDB transaction-log key
 	type: string;
 	encodedRecord?: Buffer;
 	extendedType?: number;
@@ -375,18 +374,39 @@ export function openAuditStore(rootStore) {
 	return auditStore;
 }
 
+/**
+ * Whether `entry` is the very write `auditRecord` describes. Write identity is (origin node, log key),
+ * never the record version: a version is legitimately non-unique, so a version match can name a
+ * different write and authorize destroying live state (a tombstone, a still-referenced blob).
+ *
+ * On LMDB this is exact — the audit-store key IS the record's `localTime`. On RocksDB a record stores
+ * one word, its version, which equals its log key for every write except a source fill (harper#2065);
+ * a fill therefore answers false here, as the pre-normalization version-versus-log-key compare
+ * already did. Absent identity answers false too. The direction is deliberate: uncertainty retains.
+ */
+export function isAuditEntryWrite(entry: any, auditRecord: AuditRecord): boolean {
+	return (
+		entry != null &&
+		auditRecord.localTime != null &&
+		entry.localTime === auditRecord.localTime &&
+		(entry.nodeId ?? 0) === (auditRecord.nodeId ?? 0)
+	);
+}
+
 export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
 	let tombstoneRemoval: Promise<void> | undefined;
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
-		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
+		// at the same time so the audit table the primary table are in sync, assuming the entry is still
+		// the record state this audit record wrote
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
+		const tombstone = primaryStore?.getEntry(auditRecord.recordId);
+		if (isAuditEntryWrite(tombstone, auditRecord))
 			// a failed tombstone removal doesn't mean the audit entry removal failed — only
 			// auditStore.remove() below decides this function's outcome
 			tombstoneRemoval = new Promise<void>((resolve) => {
-				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version));
+				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, tombstone.version));
 			}).catch((error) => {
 				harperLogger.warn('Error removing deleted record while removing its audit entry', error);
 			});
@@ -729,7 +749,6 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				return buffer.subarray(recordIdStart, recordIdEnd);
 			},
 			version,
-			recordVersion: version,
 			previousVersion,
 			get user() {
 				try {

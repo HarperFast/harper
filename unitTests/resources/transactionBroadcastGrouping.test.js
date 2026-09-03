@@ -39,16 +39,9 @@ describe('transactionBroadcast transaction grouping', () => {
 		try {
 			const logKey = Date.now();
 			table.auditStore.emit('aftercommit', [
-				{ type: 'put', tableId: 1, recordId: 'a', version: logKey, recordVersion: logKey, localTime: logKey },
+				{ type: 'put', tableId: 1, recordId: 'a', version: logKey, localTime: logKey },
 				// a source fill in the same commit: backdated record version, same log key
-				{
-					type: 'put',
-					tableId: 1,
-					recordId: 'b',
-					version: logKey - 5000,
-					recordVersion: logKey - 5000,
-					localTime: logKey,
-				},
+				{ type: 'put', tableId: 1, recordId: 'b', version: logKey - 5000, localTime: logKey },
 			]);
 			await waitFor(() => events.length === 3, { message: 'both entries and the end_txn should be delivered' });
 			assert.deepEqual(events, [

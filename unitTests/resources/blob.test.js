@@ -1218,6 +1218,44 @@ describe('Blob test', () => {
 		assert.equal(orphansDeleted, 0);
 	});
 
+	// harper#2412: the orphan sweep skips scanning an audit entry's value only when the primary record
+	// IS that entry's write, because the table pass already scanned it. Identifying that write by record
+	// version instead of log position deletes blobs a retained audit entry still references, since a
+	// version is legitimately non-unique.
+	it('scans an audit value whose record version matches a different write', async () => {
+		// A file on disk that only an audit entry references, and a live record for the same id whose
+		// version happens to equal that entry's. Identifying the entry's write by version would treat
+		// the live record as its output, skip scanning the entry, and unlink a referenced blob.
+		const { blob, filePath } = await makeDiskBackedBlob(4096);
+		const id = 'orphan-identity';
+		await BlobTest.put(id, { id, other: 'no blob here' });
+		const entry = BlobTest.primaryStore.getEntry(id);
+		const auditStore = BlobTest.primaryStore.rootStore.auditStore;
+		const originalGetRange = auditStore.getRange.bind(auditStore);
+		auditStore.getRange = function (options) {
+			if (options?.start !== 1) return originalGetRange(options);
+			return [
+				{
+					tableId: BlobTest.tableId,
+					recordId: id,
+					type: 'put',
+					version: entry.version,
+					localTime: entry.localTime + 1,
+					nodeId: entry.nodeId ?? 0,
+					getValue: () => ({ blob }),
+				},
+			];
+		};
+		try {
+			await cleanupOrphans(getDatabases().test);
+			assert(existsSync(filePath), 'a blob referenced by a retained audit entry must survive the sweep');
+		} finally {
+			auditStore.getRange = originalGetRange;
+			if (existsSync(filePath)) unlinkSync(filePath);
+			await BlobTest.delete(id).catch(() => {});
+		}
+	});
+
 	// Helper: produce a blob backed ONLY by its on-disk file (no in-memory contentBuffer), the way a
 	// node reads a blob it didn't write itself — a fresh full-copy replica or a read after the record
 	// fell out of the in-memory cache. We save a blob to disk, encode it to its storage reference, then

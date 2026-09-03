@@ -203,7 +203,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
-			const completion = write.commit(txnTime, write.entry, retries);
+			// see DatabaseTransaction.save(): an applied write carries the origin's record version
+			const completion = write.commit(
+				this.sourceApply || this.isReplay ? (write.recordVersion ?? txnTime) : txnTime,
+				write.entry,
+				retries
+			);
 			if (typeof completion?.then === 'function') {
 				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
 				// or the exclusive transaction resolves), so handle rejection here to keep the gap from

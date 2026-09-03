@@ -128,10 +128,12 @@ describe('Audit entry record flags match the body (#2153)', () => {
 
 			let loser;
 			for (const entry of T.auditStore.getRange({ start: 1 })) {
-				if (entry.version === loserVersion) loser = entry;
+				// keyed by log position: an audit-only commit records the surviving (newer) record version
+				// in its body, so only the log key identifies the superseded write's entry
+				if (entry.localTime === loserVersion) loser = entry;
 				// every minted entry must be internally consistent: record flags imply a body
 				if (entry.extendedType & (HAS_RECORD | HAS_PARTIAL_RECORD)) {
-					assert(entry.getBinaryValue().length > 0, `entry ${entry.version} advertises a record but has no body`);
+					assert(entry.getBinaryValue().length > 0, `entry ${entry.localTime} advertises a record but has no body`);
 				}
 			}
 			assert(loser, 'audit entry for the superseded write should exist');
