@@ -156,7 +156,11 @@ parentPort?.on('message', (message: any) => {
 	if (message?.type === 'force-exit') realExit(0);
 });
 
+/** Whether `report` ran, so an exit can say whether it took the verdict path or bypassed it. */
+let reported = false;
+
 function report(verdict: { ok: true } | { ok: false; message: string; stack?: string }): void {
+	reported = true;
 	// The flag FIRST, and synchronously: this thread exits immediately after, and a posted message can lose
 	// that race — it consistently does on Windows. Shared memory needs no event-loop turn, so the parent
 	// sees the verdict even when the message never arrives.
@@ -170,6 +174,23 @@ function report(verdict: { ok: true } | { ok: false; message: string; stack?: st
 		harperLogger.warn('Deploy certification could not post its verdict:', error);
 	}
 }
+
+// Provenance for an exit that reported nothing.
+//
+// Windows CI has produced `exited with code 0 without reporting a verdict` repeatedly, and each diagnosis
+// so far has been a guess, because an exit code carries no evidence about who ended the thread. The ref'd
+// interval below rules out an event-loop drain, so a silent code-0 exit means something CALLED exit — and
+// the only thing that can name it is a stack captured at the exit itself. `process.exit` runs `exit`
+// listeners, so this fires for `realExit` too; `console.error` rather than the logger because a logger
+// write queued here may never flush.
+process.on('exit', (code) => {
+	if (reported) return;
+	console.error(
+		`[deploy-validator] thread for ${appName ?? candidateDirPath} is exiting with code ${code} without having ` +
+			`reported a verdict (flag=${verdictFlag ? Atomics.load(verdictFlag, 0) : 'absent'}). Exit called from:\n` +
+			new Error('validator exit').stack
+	);
+});
 
 // A REF'd handle for the whole certification, so this thread cannot exit while it is still deciding.
 //
