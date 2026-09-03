@@ -1465,9 +1465,28 @@ describe('mcp/transport', () => {
 		it('terminates the session and returns 204 when allowClientDelete is true', async () => {
 			envOverrides.mcp_session_allowClientDelete = true;
 			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			registerSession(session.id, 'application', {
+				username: 'alice',
+				role: { permission: { super_user: true } },
+			});
+			_setSubscribeImplForTest(async () => ({
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}), return: () => Promise.resolve({ done: true }) };
+				},
+			}));
+			await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(89, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(_liveSubscriptionCount(session.id), 1);
+
 			const res = await handleMcpRequest(makeReq({ method: 'DELETE', headers: { 'mcp-session-id': session.id } }));
 			assert.equal(res.status, 204);
 			assert.equal(await loadSession(session.id), null);
+			assert.equal(_liveSubscriptionCount(session.id), 0);
 		});
 
 		it('keeps live subscriptions when storage deletion fails', async () => {
