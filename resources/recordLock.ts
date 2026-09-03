@@ -58,11 +58,10 @@ export interface RecordLockHandle {
 	nextHolderVersion(): number;
 	release(): boolean;
 	/**
-	 * Mark this handle as released and clear its lease timer WITHOUT calling store.unlock().
-	 * Use during scoped→hold upgrades where the native key ownership transfers to the new hold
-	 * handle; store.unlock() must NOT fire so the key stays locked under the new holder.
+	 * Flip this handle to hold mode and reset its lease timer. Used during scoped→hold upgrades
+	 * so all instances that reference this handle object remain valid (no retire + replace).
 	 */
-	retire(): void;
+	upgradeToHold(lease: number): void;
 }
 
 function requireDuration(name: string, value: unknown, fallback: number, min: number, max: number): number {
@@ -156,12 +155,11 @@ class KeyLockHandle implements RecordLockHandle {
 		return true;
 	}
 
-	retire(): void {
-		if (this.released) return;
-		this.released = true;
+	upgradeToHold(lease: number): void {
+		this.hold = true;
 		clearTimeout(this.#timer);
-		// Intentionally does NOT call store.unlock(): the native key stays locked under the
-		// new hold handle that takes ownership during a scoped→hold upgrade.
+		this.expiresAt = Date.now() + lease;
+		this.#timer = setTimeout(() => this.#onLeaseExpire(), lease).unref();
 	}
 }
 

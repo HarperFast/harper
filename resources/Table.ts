@@ -45,7 +45,6 @@ import {
 import {
 	acquireRecordKey,
 	lockAttemptKey,
-	makeKeyLockHandle,
 	resolveLockOptions,
 	type RecordLockHandle,
 	type RecordLockOptions,
@@ -2197,10 +2196,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				lockHandle: (() => {
-					const h = this.#lockHandle;
-					return h && h.keyId === writeKeyId(id) ? h : undefined;
-				})(),
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
@@ -2249,10 +2245,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				lockHandle: (() => {
-					const h = this.#lockHandle;
-					return h && h.keyId === writeKeyId(id) ? h : undefined;
-				})(),
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2412,8 +2405,11 @@ export function makeTable(options) {
 			}
 		}
 		/**
-		 * Static entry point: `Table.lock(id, options?)` — creates an instance in the ambient or a fresh
-		 * context and delegates to the instance `lock()`.
+		 * Static entry point: `Table.lock(id, options?)` — creates an instance in the ambient or a
+		 * fresh context and delegates to the instance lock(). This shadows Resource.static lock so
+		 * that both callers share the same transaction link (required for cross-instance upgrade
+		 * detection).  Authorization is enforced by allowUpdate via the instance lock guard instead
+		 * of the generic transactional wrapper, which would create an isolated context per call.
 		 */
 		static lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
 			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
@@ -2452,29 +2448,19 @@ export function makeTable(options) {
 			const keyId = writeKeyId(id);
 			const held = this.#lockHandle;
 			if (held && !held.released && !held.expired && held.keyId === keyId) {
-				// Re-entrant: preserve any changes already staged on this instance.
+				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
+				if (resolved.hold && !held.hold) held.upgradeToHold(resolved.lease);
 				return Promise.resolve(this.#reloadLocked(id, undefined, true));
 			}
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.released && !scoped.expired) {
 				if (resolved.hold && !scoped.hold) {
-					// Upgrade scoped → hold: the native key stays locked (the scoped handle owns it);
-					// retire the scoped handle (released=true so the commit does not double-release the key)
-					// and create a fresh hold handle that inherits native-key ownership.
-					link.unregisterRecordLock(scoped);
-					scoped.retire(); // mark released + clear lease timer; native key stays locked (no store.unlock)
-					const holdHandle = makeKeyLockHandle(
-						primaryStore,
-						scoped.key,
-						scoped.keyId,
-						resolved.lease,
-						true,
-						scoped.acquiredAt
-					);
-					link.registerRecordLock(holdHandle);
-					// Preserve #changes staged under the scoped lock; DatabaseTransaction.save() will
-					// pin the clock to holdHandle.acquiredAt on the first hold write automatically.
-					return Promise.resolve(this.#reloadLocked(id, holdHandle, true));
+					// Upgrade scoped → hold: flip the existing handle object to hold mode so every
+					// instance that already references this handle stays valid.  Retiring and creating a
+					// new handle would invalidate those other references (their save() would then throw
+					// 409 against a released handle).  The native key stays locked throughout.
+					scoped.upgradeToHold(resolved.lease);
+					return Promise.resolve(this.#reloadLocked(id, scoped, true));
 				}
 				// Already held with the same type: re-entrant return. Preserve any staged changes.
 				return Promise.resolve(this.#reloadLocked(id, scoped, true));
@@ -2490,7 +2476,7 @@ export function makeTable(options) {
 						// in their own transaction for the guarantee).  ImmediateTransaction is
 						// excluded (saveCommits=true) — its clock is never pinned in lock();
 						// each save() stamps with nextHolderVersion() instead.
-						if (link.writes.length === 0) {
+						if (link.writes.length === 0 && !link.timestamp) {
 							link.timestamp = handle.acquiredAt;
 							if (resolved.hold) {
 								// Prime the nextHolderVersion counter so a later CLOSED-path save
@@ -2769,10 +2755,7 @@ export function makeTable(options) {
 				// DatabaseTransaction.save() can throw 409 when the lease has lapsed.
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
-				lockHandle: (() => {
-					const h = this.#lockHandle;
-					return h && h.keyId === writeKeyId(id) ? h : undefined;
-				})(),
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
@@ -3541,10 +3524,7 @@ export function makeTable(options) {
 				entry,
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
-				lockHandle: (() => {
-					const h = this.#lockHandle;
-					return h && h.keyId === writeKeyId(id) ? h : undefined;
-				})(),
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)

@@ -843,6 +843,85 @@ describe('Record locks (harper#483)', () => {
 			await s2.unlock();
 			assert.strictEqual((await LockTest.get(recordId)).n, 42, 's2 write landed (exclusive holder)');
 		});
+
+		it('major: cross-instance scoped→hold upgrade shares handle; s.save() does not throw 409', async function () {
+			// When two separate instances (from two T.lock() calls) reference the same key inside
+			// a transaction and the second upgrades to {hold:true}, the FIRST instance's handle
+			// must not be retired.  Before the fix: retire+replace created a new handle that s had
+			// no reference to, so s.save() threw 409 against the old retired handle.
+			// Fix: flip the existing handle to hold=true so all instances sharing the handle object
+			// remain writable.  Both calls must be in the same explicit transaction() so they share
+			// one link and acquireRecordKey can find the already-locked handle.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdRef;
+			await transaction(async () => {
+				const s = await LockTest.lock(recordId); // scoped — s holds handle H
+				s.set('n', 1);
+				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 }); // flips H to hold
+				// Before fix: s.#lockHandle was retired → s.save() threw 409.
+				// After fix: H is hold=true; s still references H; no throw.
+				await assert.doesNotReject(async () => s.save(), 's.save() must not throw 409');
+			}); // commit; hold persists via holdRef
+			assert.ok(holdRef && !holdRef.released, 'hold handle alive after commit');
+			// Concurrent lock attempt must be blocked while the hold is active.
+			await assert.rejects(LockTest.lock(recordId, { timeout: 100 }), { statusCode: 423 });
+			await holdRef.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write from s.save() landed');
+		});
+
+		it('major: same-instance scoped→hold re-entrant upgrade: hold persists after transaction commit', async function () {
+			// r.lock({hold:true}) on a scoped-locked instance must flip the handle to hold mode
+			// so the native key lock survives past the transaction's commit.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdRef;
+			await transaction(async () => {
+				const r = await LockTest.lock(recordId); // scoped inside transaction
+				holdRef = await r.lock({ hold: true }); // same-instance re-entrant upgrade
+				assert.strictEqual(holdRef, r, 're-entrant returns same instance');
+				r.set('n', 1);
+				await r.save(); // write committed within transaction
+			}); // transaction ends; hold must persist (native key still locked)
+			assert.ok(holdRef && !holdRef.released, 'hold handle alive after transaction commit');
+			// Concurrent lock attempt must still be blocked.
+			await assert.rejects(LockTest.lock(recordId, { timeout: 100 }), { statusCode: 423 });
+			await holdRef.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'in-transaction write landed');
+		});
+
+		it('minor-3: second lock in same transaction does not shift the pinned clock', async function () {
+			// The first lock pins link.timestamp to A.acquiredAt.  A second lock on a different
+			// key B must NOT re-pin the clock to B.acquiredAt (which is later).  We verify by
+			// checking that A's write version is stamped near A.acquiredAt — well before the
+			// 20 ms delay that separates A.acquiredAt from B.acquiredAt.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 0 });
+			await LockTest.put({ id: idB, n: 0 });
+			const beforeLockA = Date.now();
+			await transaction(async () => {
+				const rA = await LockTest.lock(idA); // clock pinned to rA.acquiredAt (≈ beforeLockA)
+				await delay(20); // ensure T_B is clearly later than T_A
+				await LockTest.lock(idB); // must NOT re-pin clock to T_B (≈ beforeLockA + 20 ms)
+				rA.set('n', 1);
+				await rA.save();
+			});
+			const writeVersion = entryOf(idA).version;
+			// With fix: stamped at T_A (≈ beforeLockA); without fix: stamped at T_B (≈ beforeLockA + 20 ms).
+			// Allow 15 ms above beforeLockA for lock-acquisition overhead — well under the 20 ms delay.
+			assert.ok(
+				writeVersion <= beforeLockA + 15,
+				`write version ${writeVersion.toFixed(3)} should be near rA.acquiredAt (~${beforeLockA}), not rB.acquiredAt (~${beforeLockA + 20})`
+			);
+			assert.strictEqual((await LockTest.get(idA)).n, 1, 'write landed');
+		});
 	});
 
 	describe('recreate-after-delete race (issue-(f))', function () {
