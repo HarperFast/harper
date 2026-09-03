@@ -138,13 +138,27 @@ function attemptConnect(
 	});
 }
 
-function endQuiet(client: MqttClient | undefined): Promise<void> {
+/** Bounded: a client on a genuinely wedged socket may never invoke end()'s own callback, which
+ * would otherwise hang every caller (including the whole suite, via the baseline probe) on
+ * exactly the defect class this file exists to catch instead of reporting it. */
+function endQuiet(client: MqttClient | undefined, timeoutMs = 2000): Promise<void> {
 	return new Promise((resolveEnd) => {
 		if (!client) return resolveEnd();
-		try {
-			client.end(true, {}, () => resolveEnd());
-		} catch {
+		let done = false;
+		const finish = () => {
+			if (done) return;
+			done = true;
 			resolveEnd();
+		};
+		const timer = setTimeout(finish, timeoutMs);
+		try {
+			client.end(true, {}, () => {
+				clearTimeout(timer);
+				finish();
+			});
+		} catch {
+			clearTimeout(timer);
+			finish();
 		}
 	});
 }
@@ -303,7 +317,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 							setTimeout(() => {
 								r.client.removeListener('connect', onLateConnect);
 								void endQuiet(r.client);
-							}, LATE_GRACE_MS);
+							}, LATE_GRACE_MS).unref();
 						} else {
 							void endQuiet(r.client);
 						}
