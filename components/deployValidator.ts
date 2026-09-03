@@ -9,6 +9,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 import { HDB_ROOT_DIR_NAME } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { VERDICT_CERTIFIED, VERDICT_REJECTED } from './certifyCandidate.ts';
 import { loadComponent, rootApplicationLoadOptions, setErrorReporter } from './componentLoader.ts';
 import type { Scope } from './Scope.ts';
 
@@ -31,7 +32,11 @@ import type { Scope } from './Scope.ts';
 // between a capability this module holds and one the whole thread holds.
 const { candidateDirPath, appName } = workerData ?? {};
 const verdictPort = workerData?.verdictPort;
-if (workerData) delete workerData.verdictPort;
+const verdictFlag: Int32Array | undefined = workerData?.verdictFlag;
+if (workerData) {
+	delete workerData.verdictPort;
+	delete workerData.verdictFlag;
+}
 
 async function certify(): Promise<void> {
 	const componentName = appName || basename(candidateDirPath);
@@ -97,6 +102,10 @@ parentPort?.on('message', (message: any) => {
 });
 
 function report(verdict: { ok: true } | { ok: false; message: string; stack?: string }): void {
+	// The flag FIRST, and synchronously: this thread exits immediately after, and a posted message can lose
+	// that race — it consistently does on Windows. Shared memory needs no event-loop turn, so the parent
+	// sees the verdict even when the message never arrives.
+	if (verdictFlag) Atomics.store(verdictFlag, 0, verdict.ok ? VERDICT_CERTIFIED : VERDICT_REJECTED);
 	// Its own channel rather than `parentPort`, which carries Harper's ITC traffic. A closed or absent
 	// channel is the parent's problem to detect (it treats a missing verdict as failure), so this must not
 	// throw its way out of the exit path.

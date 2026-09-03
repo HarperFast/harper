@@ -29,6 +29,18 @@ const DEFAULT_CERTIFICATION_TIMEOUT_MS = 120_000;
  */
 const MAX_CONCURRENT_CERTIFICATIONS = 2;
 
+/**
+ * Verdict slots in the shared buffer below. A message can be lost — the validator exits the instant it has
+ * posted, and on Windows the parent observes that exit before the queued message — so the pass/fail bit
+ * travels through shared memory, which needs no event-loop turn and cannot be outrun by the exit. The
+ * message still carries the candidate's error text, which is detail rather than authority.
+ *
+ * `NO_ANSWER` is the initial value, so silence remains a failure rather than becoming a pass.
+ */
+export const VERDICT_NO_ANSWER = 0;
+export const VERDICT_CERTIFIED = 1;
+export const VERDICT_REJECTED = 2;
+
 /** How long to wait for a validator to actually go away before giving up and saying so. */
 const TERMINATION_GRACE_MS = 5000;
 
@@ -102,6 +114,7 @@ export async function certifyCandidate(
 	// so a verdict read from it would compete with unrelated messages — the first one to arrive was being
 	// rejected as a malformed verdict. On a dedicated channel, anything that does not conform really is one.
 	const { port1: verdicts, port2: verdictPort } = new MessageChannel();
+	const verdictFlag = new Int32Array(new SharedArrayBuffer(4));
 
 	try {
 		return await new Promise<CertificationOutcome>((resolve) => {
@@ -122,6 +135,7 @@ export async function certifyCandidate(
 						candidateDirPath,
 						appName,
 						verdictPort,
+						verdictFlag,
 						// `server/DESIGN.md`: "Workers receive `workerData.noServerStart = true` — never start the
 						// server inside a worker." Without it `threadServer` boots at module scope and loads every
 						// root component, so the validator would serve traffic and certify the wrong thing.
@@ -178,8 +192,19 @@ export async function certifyCandidate(
 				settle({ certified: false, error: failure });
 			});
 			worker.on('exit', (code) => {
-				// Only reached when no verdict arrived first; a verdict already settled it.
-				fail(`Certification of ${appName} exited with code ${code} without reporting a verdict`);
+				// Only reached when no verdict MESSAGE arrived first. The shared flag is written before the
+				// validator exits, so it is still authoritative here — this is the ordinary path on Windows,
+				// where the exit consistently beats the queued message.
+				const flag = Atomics.load(verdictFlag, 0);
+				if (flag === VERDICT_NO_ANSWER) {
+					fail(`Certification of ${appName} exited with code ${code} without reporting a verdict`);
+					return;
+				}
+				if (flag === VERDICT_CERTIFIED) {
+					settle({ certified: true });
+					return;
+				}
+				fail(`${appName} failed to load during certification (its validator exited before reporting why)`);
 			});
 		});
 	} finally {
