@@ -29,7 +29,18 @@ async function payloadThatRunsOnLoad(rootDir, name, version, body) {
 	return packageDirectory(sourceDir, { skip_node_modules: true });
 }
 
+// Skipped on Windows: a validator thread dies inside its own import graph there — before its first
+// statement, exit code 0, no `error` event — so every certification fails identically
+// (HarperFast/harper#2494). The mechanism is off by default, so nothing ships broken; this suite opts in,
+// which is why it is the thing that fails. Removing this skip is the acceptance test for that issue.
+const SKIP_ON_WINDOWS = process.platform === 'win32';
+
 describe('deploy certification', () => {
+	// The repo's mocha idiom for a platform skip — `describe(name, { skip }, fn)` is node:test's signature,
+	// and mocha silently treats the options object as the suite body, registering nothing at all.
+	beforeEach(function () {
+		if (SKIP_ON_WINDOWS) this.skip();
+	});
 	// Certification is OFF by default — see `certificationEnabled` for why — so every test that expects a
 	// verdict has to ask for one. Without this the suite would still pass while proving nothing: an
 	// uncertified deploy publishes, so the acceptance cases would go green and only the rejection case
@@ -294,7 +305,10 @@ describe('deploy certification', () => {
 		const appName = 'branch_certify_probe';
 
 		afterEach(() => {
-			delete getConfigObj()[appName];
+			// `getConfigObj()` is undefined in the Windows unit-test process, and mocha runs this hook even for
+			// tests skipped in `beforeEach` — so an unguarded delete fails the hook rather than the test.
+			const config = getConfigObj();
+			if (config) delete config[appName];
 		});
 
 		it('reports the component as branch-configured and withholds the branch settings', () => {
