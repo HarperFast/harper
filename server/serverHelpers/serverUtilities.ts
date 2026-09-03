@@ -235,6 +235,17 @@ server.setMcpQuotaHandler = (handler) => {
 	setMcpQuotaHandler(handler);
 };
 
+// The nested `search_operation` operations dataLayer/export.ts's getRecords can actually run (its
+// VALID_SEARCH_OPERATIONS). Validated at dispatch so an unsupported or missing nested operation is a
+// request-time 400 rather than an async job failure, and so the nested authorization below always
+// resolves a real handler.
+const EXPORT_SEARCH_OPERATIONS = new Set<string>([
+	terms.OPERATIONS_ENUM.SEARCH_BY_VALUE,
+	terms.OPERATIONS_ENUM.SEARCH_BY_HASH,
+	terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS,
+	terms.OPERATIONS_ENUM.SQL,
+]);
+
 export function chooseOperation(json: OperationRequestBody, bypassAuth = false) {
 	let getOpResult: OperationFunctionObject;
 	try {
@@ -255,32 +266,102 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 
 	const { operation_function, job_operation_function } = getOpResult;
 
-	// Here there is a SQL statement in either the operation or the searchOperation (from jobs like export_local).  Need to check the perms
-	// on all affected tables/attributes.
+	const isSqlOperation = json.operation === terms.OPERATIONS_ENUM.SQL;
+	// `verifyPerms` derives the tables it checks from the object it is handed, so the caller-supplied
+	// `search_operation` may only stand in as the permission subject for the operations that actually
+	// run it (dataLayer/export.ts is its only consumer). For anything else it would check the nested
+	// tables while the handler runs against the top-level ones.
+	const nestedSearch =
+		json.operation === terms.OPERATIONS_ENUM.EXPORT_LOCAL || json.operation === terms.OPERATIONS_ENUM.EXPORT_TO_S3
+			? json.search_operation
+			: undefined;
+	if (nestedSearch !== undefined) {
+		// It becomes the permission subject below, and a primitive would throw on the principal
+		// assignment — a 400 rather than a wrapped 500.
+		if (nestedSearch === null || typeof nestedSearch !== 'object' || Array.isArray(nestedSearch)) {
+			throw handleHDBError(
+				new Error(),
+				`'search_operation' must be an object`,
+				hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+		// The object check alone lets `{}` and unsupported operations through — they would then fail
+		// asynchronously in the export worker (or dereference `search_operation.operation`). Require a
+		// supported operation at request time; the nested authorization below relies on it resolving.
+		if (typeof nestedSearch.operation !== 'string' || !EXPORT_SEARCH_OPERATIONS.has(nestedSearch.operation)) {
+			throw handleHDBError(
+				new Error(),
+				`'search_operation.operation' must be one of: ${[...EXPORT_SEARCH_OPERATIONS].join(', ')}`,
+				hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+		// Dispatch state, never client input: the export worker re-reads `parsed_sql_object` off this
+		// same object (evaluateSQL), and it carries `permissions_checked`, so a body-supplied one would
+		// execute an AST no check ever saw. Deleting it rather than replacing it with the authorized
+		// parse is deliberate — the worker then re-parses and re-runs the check itself.
+		delete nestedSearch.parsed_sql_object;
+	}
+	// The AST check below covers only the statement's tables, never the caller's right to invoke the
+	// job operation, so it is additive to verifyPerms rather than an alternative to it.
+	const hasNestedSqlSearch = nestedSearch?.operation === terms.OPERATIONS_ENUM.SQL;
+
 	try {
-		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
+		if (isSqlOperation || hasNestedSqlSearch) {
 			const sql = require('../../sqlTranslator/index');
-			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
+			const sqlStatement = isSqlOperation ? json.sql : nestedSearch.sql;
 			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
 			stripSuppliedParsedSqlObject(json);
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
-			json.parsed_sql_object = parsedSqlObject;
+			// Only the direct-SQL path consumes `json.parsed_sql_object` (evaluateSQL). A nested export
+			// re-parses off `search_operation` — whose `parsed_sql_object` was deleted above — so setting
+			// it here for a job would be inert.
+			if (isSqlOperation) {
+				json.parsed_sql_object = parsedSqlObject;
+			}
 			if (!bypassAuth) {
-				// The SQL path never reaches verifyPerms, so the role `operations` allowlist must be
-				// enforced here — otherwise an allowlisted role reaches unlisted operations via `sql`.
-				// json.operation is already the API name ('sql', or the outer job op like 'export_local').
-				const allowlistDenial = opAuth.verifyOperationsAllowlist(json, json.operation);
-				if (allowlistDenial) {
-					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-					operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
-					throw handleHDBError(
-						new Error(),
-						allowlistDenial,
-						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
-						undefined,
-						undefined,
-						true
-					);
+				if (hasNestedSqlSearch) {
+					// A nested-SQL export's outer op (export_local/export_to_s3) is `requires_su`, which the
+					// AST table check below does not enforce. Authorize invoking it through verifyPerms
+					// exactly as the non-SQL job path does — otherwise SQL is a way around the requires_su
+					// gate that path enforces. The nested table reads are then covered additively by the AST
+					// check. verifyPerms also runs the allowlist (gate 1) and the export token scope.
+					const functionToCheck = job_operation_function === undefined ? operation_function : job_operation_function;
+					const outerDenial = opAuth.verifyPerms(json, functionToCheck, { apiOperation: json.operation });
+					if (outerDenial) {
+						operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+						operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
+						throw handleHDBError(
+							new Error(),
+							outerDenial,
+							hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+							undefined,
+							false,
+							true
+						);
+					}
+				} else {
+					// Direct SQL: the invoked operation IS `sql`, so the role `operations` allowlist is the
+					// operation-invocation check — otherwise an allowlisted role reaches unlisted operations
+					// via `sql`. json.operation is already the API name.
+					const allowlistDenial = opAuth.verifyOperationsAllowlist(json, json.operation);
+					if (allowlistDenial) {
+						operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+						operationLog.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
+						throw handleHDBError(
+							new Error(),
+							allowlistDenial,
+							hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+							undefined,
+							undefined,
+							true
+						);
+					}
 				}
 				// `json.operation` explicitly — the operation this dispatch already resolved, not a
 				// field read back off the request body.
@@ -309,10 +390,9 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			json.operation !== terms.OPERATIONS_ENUM.EXCHANGE_OIDC_TOKEN
 		) {
 			const functionToCheck = job_operation_function === undefined ? operation_function : job_operation_function;
-			const operation_json = json.search_operation ? json.search_operation : json;
-			if (!operation_json.hdb_user) {
-				operation_json.hdb_user = json.hdb_user;
-			}
+			const operation_json = nestedSearch ?? json;
+			// Authentication is the only source of the principal; a nested one is overwritten, not honored.
+			operation_json.hdb_user = json.hdb_user;
 
 			// Pass the top-level operation for the token-scope check: for an export job, operation_json
 			// is the nested search_operation, so json.operation (export_local/export_to_s3) is the op the
@@ -334,6 +414,35 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 					false,
 					true
 				);
+			}
+
+			// The check above authorizes invoking the operation, but for a non-SQL export it returns
+			// before any table check — a requires_su export is granted the moment its `operations`
+			// allowlist lists it (verifyPerms gate 2) — and the job worker then runs `search_operation`
+			// through searchByValue/Hash/Conditions, none of which check permissions. So the nested read
+			// is only enforceable here: authorize it additively against its real search handler and the
+			// authenticated principal (assigned above via operation_json), so a role that may invoke the
+			// export but lacks read on the table is denied. A nested SQL search is covered by the AST
+			// branch above instead.
+			if (nestedSearch) {
+				const nestedFunction = getOperationFunction(nestedSearch).operation_function;
+				const nestedPermsResult = opAuth.verifyPerms(nestedSearch, nestedFunction, {
+					apiOperation: json.operation,
+				});
+				if (nestedPermsResult) {
+					operationLog.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+					operationLog.warn(
+						`User '${operation_json.hdb_user?.username}' is not permitted to ${nestedSearch.operation} within ${json.operation}`
+					);
+					throw handleHDBError(
+						new Error(),
+						nestedPermsResult,
+						hdbErrors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						false,
+						true
+					);
+				}
 			}
 		}
 	} catch (err) {
