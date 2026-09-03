@@ -16,7 +16,7 @@ import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { getThisNodeId, exportIdMapping } from './nodeIdMapping.ts';
+import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
 import lodash from 'lodash';
 import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
 import type {
@@ -866,18 +866,22 @@ export function makeTable(options) {
 			(async () => {
 				let userRoleUpdate = false;
 				let lastSequenceId;
-				/**
-				 * Cluster lock coordination entries (harper#483 Phase 1) describe no record: they never
-				 * reach _writeUpdate, and their payload is validated before it can touch coordinator state.
-				 */
+				/** Cluster lock coordination entries (harper#483 Phase 1) describe no record. */
 				const applyLockControlEvent = (event) => {
 					const entry = decodeLockControlPayload(event.type, event.value);
 					if (!entry) {
 						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
 						return;
 					}
+					// The audit header's nodeId is the origin, translated on receive and preserved across
+					// relays. The payload's own names are peer-supplied and prove nothing.
+					const author = getNodeNameForId(auditStore, event.nodeId);
+					if (!author) {
+						logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
+						return;
+					}
 					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
-					target?.lockCoordinator?.applyEntry(entry);
+					target?.lockCoordinator?.applyEntry(entry, author);
 				};
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
@@ -2655,8 +2659,13 @@ export function makeTable(options) {
 							const remaining = resolved.timeout - (Date.now() - clusterStart);
 							if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
 							const tsR = await coordinator.acquire(id, resolved.lease, remaining);
-							if (!handle.joinClusterRound(tsR, resolved.lease, () => coordinator.release(id)))
+							if (!handle.joinClusterRound(tsR, resolved.lease, () => coordinator.release(id))) {
+								// The round completed inside its lease but the lease elapsed before the handle
+								// could take it. The coordinator still holds it, and only this call knows the
+								// hold was never handed out.
+								Promise.resolve(coordinator.release(id)).catch(noop);
 								throw new ClientError('Record lock was granted after its lease had elapsed', 423);
+							}
 						} catch (error) {
 							handle.release();
 							throw error;
@@ -5377,22 +5386,26 @@ export function makeTable(options) {
 			});
 		}
 		/**
-		 * Write one cluster record-lock control entry (harper#483 Phase 1) into this table's own
-		 * transaction log, in its own transaction, and NOT local-only — replicating it IS the send.
+		 * Write one cluster record-lock control entry (harper#483 Phase 1). Not local-only: replicating
+		 * it IS the send.
 		 *
-		 * `recordId` is null and the locked key rides in the payload. A control entry carrying the key
-		 * would share `(version, tableId, recordId, nodeId)` with the holder's own first write, which is
-		 * stamped at exactly `ts_R`; `RocksTransactionLogStore.getSync` returns the FIRST entry matching
-		 * a timestamp and key, so `_writeUpdate`'s keyed dedup would find this one and drop the holder's
-		 * write. The payload is packed by the coordinator's own structure-free packer and handed over as
-		 * bytes rather than through `recordUpdater`, so it never meets schema projection or the table's
-		 * shared structure dictionary.
+		 * `recordId` must stay null. An entry carrying the locked key would share
+		 * `(version, tableId, recordId, nodeId)` with the holder's own first write, which is stamped at
+		 * exactly `ts_R`, and `RocksTransactionLogStore.getSync` answers with the FIRST entry at a
+		 * timestamp and key — so `_writeUpdate`'s keyed dedup would find this one and drop that write.
+		 * The payload goes in as bytes rather than through `recordUpdater`, which would run it through
+		 * schema projection and the table's shared structure dictionary.
 		 */
 		static writeLockControlEntry(entry: LockControlEntry): Promise<void> {
 			const encodedRecord = encodeLockControlPayload(entry);
 			const nodeId = getThisNodeId(auditStore) ?? 0;
+			// Only the request pins its clock, because ts_R is defined as that entry's own log key. A
+			// grant or release written seconds later must take a fresh commit time: an entry stamped with
+			// the round's original ts_R lands behind a peer's catch-up cursor, and a forward
+			// resume scan would never deliver it.
+			const context = entry.type === 'lockRequest' ? { timestamp: entry.tsR } : {};
 			return Promise.resolve(
-				transaction({ timestamp: entry.tsR } as any, (txn: any) => {
+				transaction(context as any, (txn: any) => {
 					const tableTxn = txnForContext({ transaction: txn } as any);
 					tableTxn.addWrite({
 						key: null,

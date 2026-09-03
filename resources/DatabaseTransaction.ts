@@ -939,11 +939,10 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
-		// Guard: a write staged through an expired or released lock handle must not land.
-		// The handle's lease timer already unlocked the native key; another holder may have taken it.
-		// isExpired() re-evaluates the deadline here rather than trusting the timer to have run: a
-		// holder whose event loop stalled past its lease would otherwise commit in the window between
-		// the deadline and its own timer callback, after peers had already granted the key onward.
+		// A write staged through an expired lock handle must not land: another holder may already have
+		// the key. isExpired() re-evaluates the deadline rather than trusting the lease timer to have
+		// run, since a holder whose event loop stalled would otherwise write inside the window between
+		// its deadline and its own timer callback.
 		if (operation.lockHandle?.isExpired()) {
 			// Remove the operation from the staged set so subsequent writes on this context do not
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
@@ -1183,13 +1182,11 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
-							// Re-fence immediately before submitting. save() checks the lease when a write is
-							// staged, but the loop above skips operations already marked saved, so a holder that
-							// stalled between staging and commit would otherwise submit a batch whose lock every
-							// participant has already written off. The retry/replay path re-saves every operation,
-							// so it is fenced by save() itself.
-							const expired = this.writes.find((write) => write.lockHandle?.isExpired());
-							if (expired) {
+							// Re-fence before submitting: the loop above skips operations already marked saved, so
+							// save()'s own check cannot see a holder that stalled between staging and commit. The
+							// retry/replay path re-saves every operation and is fenced there instead.
+							for (let i = 0; i < this.writes.length; i++) {
+								if (!this.writes[i].lockHandle?.isExpired()) continue;
 								try {
 									transaction.abort();
 								} catch {}

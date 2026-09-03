@@ -337,11 +337,18 @@ Two encoding decisions carry facts the code cannot state:
   `ts_R`, so a control entry carrying the locked key would answer that lookup instead, and the dedup
   would discard the holder's write as an already-applied duplicate. The same collision misleads
   `getRecordAtTime`'s reverse walk.
-- **The payload is packed by a module-local structure-free `Packr`, not by `recordUpdater`.** An audit
-  value object passes through `storedFieldsOnly()`, which tests `Object.hasOwn(value, resolvedName)` —
-  an array owns `"0"`, so a table with a resolved attribute of that name would have the field stripped
-  — and is encoded with the table's own encoder, which mints a shared structure per shape and raises
-  `HAS_STRUCTURE_UPDATE` for replication. Writing the bytes directly removes both.
+- **The payload is packed by a module-local `Packr` with its own structure dictionary, not by
+  `recordUpdater`.** An audit value object passes through `storedFieldsOnly()`, which tests
+  `Object.hasOwn(value, resolvedName)` — an array owns `"0"`, so a table with a resolved attribute of
+  that name would have the field stripped — and is encoded with the table's own encoder, which mints a
+  shared structure per shape and raises `HAS_STRUCTURE_UPDATE` for replication. Writing the bytes
+  directly removes both. Record mode stays ON in that packer even though the payload is an array: the
+  reader is the receiving table's decoder (`auditRecord.getValue`), which repurposes a range of
+  positive fixints as structure ids, so a payload packed without record mode writes an integer record
+  key of 64–127 as a bare fixint that the decoder then reads as a structure header — and the entry
+  fails to decode. The private dictionary can never be written to (a record key is an ordered-binary
+  value, never a plain object) and the encoder throws if that ever stops holding, because the receiver
+  has no way to resolve an id minted here.
 
 The entry identity is `(requesterName, tsR)`. **Node identity is the node NAME, never the audit
 `nodeId`**: `nodeIdMapping.ts` hands out per-node short ids (0 is always local), so the same node has
@@ -350,9 +357,12 @@ different ids on different nodes, a number inside a payload is not translated by
 nodes — and both would grant. Registration refuses a loopback/bare-host identity for the same reason.
 
 **`ts_R` is chosen before the write.** The writer takes `primaryStore.getMonotonicTimestamp()`, pins
-the control transaction's clock to it (the mechanism `lock()` already uses to pin
-`link.timestamp = handle.acquiredAt`) and puts it in the payload, so the entry's log key and its
-payload identity are the same number by construction.
+the REQUEST transaction's clock to it (the mechanism `lock()` already uses to pin
+`link.timestamp = handle.acquiredAt`) and puts it in the payload, so that entry's log key and its
+payload identity are the same number by construction. A grant or release takes a fresh commit time
+instead, and carries `ts_R` only in its payload: an entry written seconds later but stamped with the
+round's original `ts_R` lands behind a peer's catch-up cursor, and a forward resume scan would never
+deliver it.
 
 **Ricart–Agrawala with total order `(tsR, nodeName)`.** The requester holds the local rocksdb key
 first — that is what bounds a node to one outstanding request per key — then writes `LOCK_REQUEST` and
@@ -360,6 +370,21 @@ waits for a `LOCK_GRANT` from every participant. On applying `LOCK_REQUEST(Q, ts
 defers if it holds the key cluster-granted, or if its own pending request is earlier; otherwise it
 grants. Deferred grants are written in `(tsR, nodeName)` order on release or withdraw. A wait that
 times out writes `LOCK_RELEASE` as its withdraw and hands out what it was deferring.
+
+**A missing grant is synthesized only for a crash.** When a peer's observed round passes its bound,
+the waiter treats that peer's grant as given. That is sound only as evidence the peer died while
+owing it, so two cases are excluded: a peer that wrote a clean `LOCK_RELEASE` is alive and will answer
+normally, and a peer with another round still live may be holding the key right now. Either one,
+treated as a grant, admits a second holder. A peer we never observed a request from is never
+synthesized at all — the waiter simply times out, which is the intended outcome for a peer that is
+merely down.
+
+**An entry's identity is bound to the node that wrote it.** `applyEntry` takes the author from the
+audit header's `nodeId` (translated on receive, preserved across relays), not from the payload, and
+drops any entry whose payload names a different requester or grantor. Without that, one participant
+could write a grant naming every other node and complete a requester's round while the real holder
+still held. Core cannot authenticate the header itself; binding it to the connection's authenticated
+origin is the transport's job.
 
 **Leases: the holder always expires first.** On success `handle.acquiredAt` becomes `ts_R` and the
 lease timer is re-armed to `ts_R + leaseMs` with no margin. A participant bounds the same hold at its
