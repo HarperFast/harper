@@ -916,14 +916,13 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
 		// A base that feeds stored state must come from this transaction's snapshot, never the
-		// cross-worker cache vouch (stale when a resequenced write reused a version); a write landing
-		// between this snapshot and commit still surfaces as a conflict and retries. Replays keep
-		// their pre-read base — their convergence contract is the replay pass itself.
+		// cross-worker cache vouch (stale when a resequenced write reused a version). That closes the
+		// lost-update window only when this transaction holds a snapshot to validate the later Put
+		// against; a snapshot-free transaction (this.snapshotFree, after a mid-scope-commit rotation)
+		// still narrows it to the read-to-put span, but does not close it — see PR discussion. Replays
+		// keep their pre-read base — their convergence contract is the replay pass itself.
 		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
 		if (reloadEntry || operation.entry === undefined || reloadsCommitBase) {
-			// a cold read for a kind that keeps its own conflict semantics is the one case that can
-			// still take the vouch fast path; a state-deriving base or a conflict reload cannot —
-			// except during replay, whose cold reads keep the vouch fast path like any other read
 			const uncachedRead = (!!operation.reloadCommitBase && !this.isReplay) || reloadEntry;
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}

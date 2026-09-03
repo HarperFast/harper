@@ -904,10 +904,10 @@ export function recordUpdater(store, tableId, auditStore) {
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
-		// A write whose version does not advance past the record it replaces stores a second value
-		// under that version; every record write reaches this one place, so it is derived here.
+		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
+		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
 		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
-			metadataInNextEncoding |= VERSION_REUSED;
+			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
