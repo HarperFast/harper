@@ -509,10 +509,14 @@ function contextArgument(context: unknown): any {
  * same handle: the cluster round never ran, so no peer ever deferred to it. Refuse rather than hand
  * back the weaker guarantee under the stronger name.
  */
-function assertScopeSatisfied(handle: RecordLockHandle, resolved: ResolvedRecordLockOptions, databaseName: string) {
-	if (resolved.scope !== 'cluster' || handle.clusterTsR !== undefined) return;
-	if (!getClusterLockTransport(databaseName)) return;
-	throw new ClientError(
+function scopeViolation(
+	handle: RecordLockHandle,
+	resolved: ResolvedRecordLockOptions,
+	databaseName: string
+): ClientError | undefined {
+	if (resolved.scope !== 'cluster' || handle.clusterTsR !== undefined) return undefined;
+	if (!getClusterLockTransport(databaseName)) return undefined;
+	return new ClientError(
 		'This transaction already holds a node-scoped lock on this record, so a cluster-scoped lock cannot be taken on top of it',
 		409
 	);
@@ -2539,7 +2543,8 @@ export function makeTable(options) {
 			const held = this.#lockHandle;
 			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
-				assertScopeSatisfied(held, resolved, databaseName);
+				const violation = scopeViolation(held, resolved, databaseName);
+				if (violation) return Promise.reject(violation);
 				if (resolved.hold && !held.hold) {
 					held.upgradeToHold(resolved.lease);
 					// The scoped phase eagerly staged a TransactionWrite (see #reloadLocked); hold
@@ -2554,7 +2559,8 @@ export function makeTable(options) {
 			}
 			const scoped = link.recordLockFor(primaryStore, keyId);
 			if (scoped && !scoped.isExpired()) {
-				assertScopeSatisfied(scoped, resolved, databaseName);
+				const violation = scopeViolation(scoped, resolved, databaseName);
+				if (violation) return Promise.reject(violation);
 				if (resolved.hold && !scoped.hold) {
 					// Upgrade scoped → hold: flip the existing handle object to hold mode so every
 					// instance that already references this handle stays valid.  Retiring and creating a
@@ -2571,14 +2577,18 @@ export function makeTable(options) {
 			// a caller asking for a guarantee this node cannot make, so it fails closed rather than
 			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
 			// a build with no replication has anyway.
+			// lock() answers with a promise, so a runtime condition like this rejects rather than throwing
+			// synchronously; only argument validation throws.
 			const coordinator = resolved.scope === 'node' ? undefined : TableResource.lockCoordinator;
 			if (
 				!coordinator &&
 				resolved.scope === 'cluster' &&
 				(resolved.scopeRequested || isClusterLockRequired(databaseName))
 			)
-				throw new LockUnavailableError(
-					`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+				return Promise.reject(
+					new LockUnavailableError(
+						`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+					)
 				);
 			const key = lockAttemptKey(tableId, id);
 			// Coalesce concurrent lock() calls for the same key inside one link so they don't
@@ -2606,7 +2616,15 @@ export function makeTable(options) {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					const remaining = resolved.timeout - (Date.now() - followerStart);
 					if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
-					return this.lock(target, { ...resolved, timeout: remaining }) as Promise<any>;
+					// Carry the scope only if the caller named it: spreading the resolved options would turn
+					// a defaulted 'cluster' into an explicit one, which is fail-closed when no transport is
+					// registered.
+					return this.lock(target, {
+						lease: resolved.lease,
+						timeout: remaining,
+						hold: resolved.hold,
+						scope: resolved.scopeRequested ? resolved.scope : undefined,
+					}) as Promise<any>;
 				};
 				return Promise.race([pending, followerDeadline]).then(
 					() => {
@@ -2615,7 +2633,8 @@ export function makeTable(options) {
 						if (acquired && !acquired.isExpired()) {
 							// A coalesced follower inherits the leader's handle, so it must not inherit a
 							// weaker scope than it asked for.
-							assertScopeSatisfied(acquired, resolved, databaseName);
+							const violation = scopeViolation(acquired, resolved, databaseName);
+							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
 								detachScopedUpgradeWrite(link, keyId, acquired);
 								acquired.upgradeToHold(resolved.lease);

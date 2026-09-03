@@ -74,6 +74,12 @@ export interface RecordLockHandle {
 	 */
 	isExpired(): boolean;
 	/**
+	 * Whether the LEASE elapsed, as opposed to the handle having been released deliberately. A
+	 * deliberate `unlock()` does not invalidate a write that was already staged while the lock was
+	 * held; a lease that ran out does, because the key may already belong to someone else.
+	 */
+	isLeaseExpired(): boolean;
+	/**
 	 * Re-anchor a granted cluster round: the hold now runs from `tsR` (no margin, so this node
 	 * always expires before any participant does) and `onRelease` emits the durable LOCK_RELEASE.
 	 * Returns false when the round completed after the lease had already elapsed.
@@ -176,13 +182,21 @@ class KeyLockHandle implements RecordLockHandle {
 
 	isExpired(): boolean {
 		if (this.released || this.expired) return true;
-		if (this.#deadlineMono !== undefined && performance.now() >= this.#deadlineMono) {
-			// Run the expiry rather than only reporting it: the native key must actually go back so a
-			// stalled holder does not keep a key every participant has already written off.
-			this.#onLeaseExpire();
-			return true;
-		}
-		return false;
+		return this.#deadlinePassed();
+	}
+
+	isLeaseExpired(): boolean {
+		if (this.expired) return true;
+		if (this.released) return false;
+		return this.#deadlinePassed();
+	}
+
+	#deadlinePassed(): boolean {
+		if (this.#deadlineMono === undefined || performance.now() < this.#deadlineMono) return false;
+		// Run the expiry rather than only reporting it: the native key must actually go back so a
+		// stalled holder does not keep a key every participant has already written off.
+		this.#onLeaseExpire();
+		return true;
 	}
 
 	joinClusterRound(tsR: number, leaseMs: number, onRelease: () => void): boolean {
