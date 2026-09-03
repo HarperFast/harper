@@ -2658,7 +2658,7 @@ export function makeTable(options) {
 				resolved.lease,
 				resolved.hold
 			);
-			const clusterStart = Date.now();
+			const clusterStart = performance.now();
 			// What a follower waits on must span the cluster round and registration, not just the native
 			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
 			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
@@ -2675,10 +2675,10 @@ export function makeTable(options) {
 				// this caller does not know it owns.
 				if (coordinator) {
 					try {
-						const remaining = resolved.timeout - (Date.now() - clusterStart);
+						const remaining = resolved.timeout - (performance.now() - clusterStart);
 						if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
-						const tsR = await coordinator.acquire(id, resolved.lease, remaining);
-						if (!handle.joinClusterRound(tsR, resolved.lease, () => coordinator.release(id))) {
+						const round = await coordinator.acquire(id, resolved.lease, remaining);
+						if (!handle.joinClusterRound(round.tsR, resolved.lease, round.mintedMono, () => coordinator.release(id))) {
 							// The round completed inside its lease but the lease elapsed before the handle
 							// could take it. The coordinator still holds it, and only this call knows the
 							// hold was never handed out.

@@ -83,8 +83,13 @@ export interface RecordLockHandle {
 	 * Re-anchor a granted cluster round: the hold now runs from `tsR` (no margin, so this node
 	 * always expires before any participant does) and `onRelease` emits the durable LOCK_RELEASE.
 	 * Returns false when the round completed after the lease had already elapsed.
+	 *
+	 * `mintedMono` is `performance.now()` at the instant `tsR` was minted. The remaining lease is
+	 * measured from it rather than from `tsR - Date.now()`: `tsR` comes from a never-decreasing
+	 * monotonic source, so after a backward wall-clock step that subtraction would hand back MORE
+	 * lease than the round was granted, past what every peer bounded from its own observation.
 	 */
-	joinClusterRound(tsR: number, leaseMs: number, onRelease: () => void): boolean;
+	joinClusterRound(tsR: number, leaseMs: number, mintedMono: number, onRelease: () => void): boolean;
 	/**
 	 * Return the next version to stamp a holder write with. Starts at acquiredAt; increments by
 	 * the minimum monotonic step for every subsequent call so sequential saves on the same hold do
@@ -181,26 +186,26 @@ class KeyLockHandle implements RecordLockHandle {
 	}
 
 	isExpired(): boolean {
-		if (this.released || this.expired) return true;
-		return this.#deadlinePassed();
+		return this.released || this.expired || this.#leaseLapsed();
 	}
 
 	isLeaseExpired(): boolean {
-		if (this.expired) return true;
-		if (this.released) return false;
-		return this.#deadlinePassed();
+		return this.expired || this.#leaseLapsed();
 	}
 
-	#deadlinePassed(): boolean {
+	// The single place the deadline is evaluated, so the two predicates cannot disagree about it. A
+	// deliberate release does not make a lapsed lease valid again: by then peers have passed their own
+	// bound and the key may belong to someone else.
+	#leaseLapsed(): boolean {
 		if (this.#deadlineMono === undefined || performance.now() < this.#deadlineMono) return false;
-		// Run the expiry rather than only reporting it: the native key must actually go back so a
+		// Finish the expiry rather than only reporting it: the native key must actually go back so a
 		// stalled holder does not keep a key every participant has already written off.
-		this.#onLeaseExpire();
+		if (!this.released) this.#onLeaseExpire();
 		return true;
 	}
 
-	joinClusterRound(tsR: number, leaseMs: number, onRelease: () => void): boolean {
-		const remaining = tsR + leaseMs - Date.now();
+	joinClusterRound(tsR: number, leaseMs: number, mintedMono: number, onRelease: () => void): boolean {
+		const remaining = leaseMs - (performance.now() - mintedMono);
 		if (remaining <= 0) return false;
 		this.clusterTsR = tsR;
 		this.acquiredAt = tsR;

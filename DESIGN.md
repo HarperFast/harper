@@ -387,12 +387,16 @@ still held. Core cannot authenticate the header itself; binding it to the connec
 origin is the transport's job.
 
 **Leases: the holder always expires first.** On success `handle.acquiredAt` becomes `ts_R` and the
-lease timer is re-armed to `ts_R + leaseMs` with no margin. A participant bounds the same hold at its
+hold is re-armed to run for `leaseMs` measured from the monotonic instant `ts_R` was minted — never
+from `ts_R + leaseMs - Date.now()`, because `ts_R` comes from a never-decreasing source and after a
+backward wall-clock step that subtraction hands back more lease than the round was granted. A participant bounds the same hold at its
 OWN observation of the request plus `max(leaseMs, waitMs) + LOCK_LEASE_SKEW_MS` (default 5 s); once
 that passes, the peer can neither be holding nor newly acquire, so its grant is implied and a waiter
 proceeds past a holder that crashed without releasing. Every expiry decision is made on a monotonic
 clock and no remote timestamp is ever compared against a local one, so the guarantee rests on the skew
-allowance rather than on clock offset, and a wall-clock jump cannot extend a lease.
+allowance rather than on clock offset, and a wall-clock jump cannot extend a lease. A deliberate
+`unlock()` does not make a lapsed lease valid again either: by then every peer has passed its own
+bound, so a write staged before the lapse is still fenced at commit.
 
 Three consequences that are load-bearing rather than tidy:
 
