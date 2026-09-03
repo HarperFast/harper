@@ -192,6 +192,13 @@ Consequences that shape the code:
   is created that inherits ownership. Any changes staged under the scoped lock are preserved on the
   instance. The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call
   is re-entrant and returns the existing handle.
+- **Timed-out waiter callback residue (rocksdb-js follow-up).** When `acquireRecordKey` times out and
+  throws 423, the `onUnlocked` callback registered via `tryLock(key, onUnlocked)` stays live in the
+  native map until the current holder eventually releases the key. rocksdb-js has no `deregisterCallback`
+  API, so there is no way to cancel it today. The leaked callback is harmless — it fires once, calls
+  `wakeResolve?.()` on an already-settled promise (no-op), and is then freed — but it is a small
+  unnecessary allocation per timed-out waiter. Track as a follow-up: rocksdb-js should expose a
+  cancelable wait-registration API so `acquireRecordKey` can deregister on timeout.
 - **Crash / thread death.** A process crash releases all key locks (process-wide in-memory). A worker
   thread termination releases its locks: rocksdb-js's `~DBHandle()` destructor calls
   `lockReleaseByOwner(this)` on env teardown, releasing every key the terminated thread's handle held.

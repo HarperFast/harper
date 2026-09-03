@@ -533,11 +533,9 @@ describe('Record locks (harper#483)', () => {
 			this.timeout(2000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
-			let lockedR;
 			await transaction(async () => {
 				await LockTest.put({ id: recordId, n: 1 });
 				const r = await LockTest.lock(recordId);
-				lockedR = r;
 				assert.strictEqual(r.getProperty('n'), 1, 'lock() sees staged put value (n===1)');
 				// getUpdatedTime() reads from entryMap which #reloadLocked populates for a merged entry.
 				assert.ok(typeof r.getUpdatedTime() === 'number', 'locked instance has a full entry (getUpdatedTime defined)');
@@ -816,6 +814,34 @@ describe('Record locks (harper#483)', () => {
 				assert.strictEqual(released, true, 'unlock() returned true for scoped');
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write still landed (committed before unlock)');
+		});
+
+		it('major-1: expired scoped handle not superseded by new holder — s1.save() throws 409', async function () {
+			// MAJOR 1 fix: every locked instance carries ITS OWN handle in #lockHandle.
+			// s1 acquires a scoped lock (short lease), lets it expire, then s2 acquires the key.
+			// Before the fix, #assertLiveHandle for s1 checked "is there ANY live handle for this key"
+			// and s2's live handle satisfied that check — allowing s1 to commit under s2's token.
+			// After the fix, s1 checks only its own (expired) handle and gets 409.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const s1 = await LockTest.lock(recordId, { lease: 200 });
+			await delay(300); // s1's lease expires
+			// A new holder acquires the lock
+			const s2 = await LockTest.lock(recordId, { lease: 5000 });
+			// s1 must 409 — it is expired even though s2 holds a live lock for the same key
+			s1.set('n', 99);
+			await assert.rejects(
+				async () => s1.save(),
+				{ statusCode: 409 },
+				's1.save() after expiry → 409 (not bypassed by s2 being alive)'
+			);
+			// s2 is still the exclusive holder and its write lands
+			s2.set('n', 42);
+			await s2.save();
+			await s2.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 42, 's2 write landed (exclusive holder)');
 		});
 	});
 

@@ -710,31 +710,23 @@ export function makeTable(options) {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
-		#lockHandle?: RecordLockHandle; // a held ({ hold: true }) record lock
+		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		declare getProperty: (name: string) => any;
 
 		/**
 		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
-		 * released), throw 409 before staging any write. Covers invalidate/relocate/delete in
-		 * addition to the save() path which already has its own inline check.
+		 * released), throw 409 before staging any write. Covers update/invalidate/relocate/delete
+		 * in addition to the save() path. Every lock-writable instance carries its own handle in
+		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
 		#assertLiveHandle(id: Id): void {
 			if (!this.#lockWritable) return;
-			const keyId = writeKeyId(id);
-			if (this.#lockHandle) {
-				// Only guard the exact key the hold was acquired for; off-key writes via the
-				// same resource instance are ordinary and must not be blocked by an unrelated hold.
-				if (this.#lockHandle.keyId !== keyId) return;
-				if (this.#lockHandle.expired || this.#lockHandle.released) {
-					throw new ClientError('Record lock lease expired', 409);
-				}
-				return;
-			}
-			// Scoped lock: only guard the key this instance was locked for.
-			if (keyId !== writeKeyId(this.getId())) return;
-			const link = txnForContext(this.getContext());
-			if (!link.recordLockFor(primaryStore, keyId)) {
+			const handle = this.#lockHandle!;
+			// Off-key writes through the same resource instance are ordinary; only guard the
+			// exact key the lock was acquired for.
+			if (handle.keyId !== writeKeyId(id)) return;
+			if (handle.expired || handle.released) {
 				throw new ClientError('Record lock lease expired', 409);
 			}
 		}
@@ -2078,11 +2070,10 @@ export function makeTable(options) {
 				// For a scoped lock: verify the lock is still alive. If #lockWritable is set but neither a
 				// hold handle nor a live scoped handle exists in recordLocks, the lease expired between lock
 				// acquisition and this save() — throw 409 so the caller doesn't silently commit stale data.
-				if (!this.#lockHandle) {
-					const link = txnForContext(this.getContext());
-					if (!link.recordLockFor(primaryStore, writeKeyId(this.getId()))) {
-						throw new ClientError('Record lock lease expired', 409);
-					}
+				// Every lock-writable instance carries its own handle; check it directly.
+				const saveHandle = this.#lockHandle!;
+				if (saveHandle.expired || saveHandle.released) {
+					throw new ClientError('Record lock lease expired', 409);
 				}
 				const changes = this.#changes;
 				if (changes && Object.keys(changes).length > 0) {
@@ -2206,9 +2197,10 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				lockHandle:
-					(this.#lockHandle?.keyId === writeKeyId(id) ? this.#lockHandle : undefined) ??
-					(this.#lockWritable ? transaction.recordLockFor(primaryStore, writeKeyId(id)) : undefined),
+				lockHandle: (() => {
+					const h = this.#lockHandle;
+					return h && h.keyId === writeKeyId(id) ? h : undefined;
+				})(),
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
@@ -2257,9 +2249,10 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
-				lockHandle:
-					(this.#lockHandle?.keyId === writeKeyId(id) ? this.#lockHandle : undefined) ??
-					(this.#lockWritable ? transaction.recordLockFor(primaryStore, writeKeyId(id)) : undefined),
+				lockHandle: (() => {
+					const h = this.#lockHandle;
+					return h && h.keyId === writeKeyId(id) ? h : undefined;
+				})(),
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2469,7 +2462,7 @@ export function makeTable(options) {
 					// retire the scoped handle (released=true so the commit does not double-release the key)
 					// and create a fresh hold handle that inherits native-key ownership.
 					link.unregisterRecordLock(scoped);
-					scoped.released = true; // prevent double-unlock on commit; native key stays locked
+					scoped.retire(); // mark released + clear lease timer; native key stays locked (no store.unlock)
 					const holdHandle = makeKeyLockHandle(
 						primaryStore,
 						scoped.key,
@@ -2484,7 +2477,7 @@ export function makeTable(options) {
 					return Promise.resolve(this.#reloadLocked(id, holdHandle, true));
 				}
 				// Already held with the same type: re-entrant return. Preserve any staged changes.
-				return Promise.resolve(this.#reloadLocked(id, scoped.hold ? scoped : null, true));
+				return Promise.resolve(this.#reloadLocked(id, scoped, true));
 			}
 			const key = lockAttemptKey(tableId, id);
 			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
@@ -2519,7 +2512,7 @@ export function makeTable(options) {
 					}
 					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
 					// with nextHolderVersion() for both scoped and hold handles.
-					return this.#reloadLocked(id, resolved.hold ? handle : null);
+					return this.#reloadLocked(id, handle);
 				}
 			);
 		}
@@ -2567,16 +2560,17 @@ export function makeTable(options) {
 				// lock(target) where target differs from this record: return a separate instance.
 				const fresh = new (this.constructor as any)(id, this.getContext());
 				TableResource._updateResource(fresh, entryForReload);
-				if (holdHandle) {
+				if (holdHandle != null) {
 					fresh.#lockHandle = holdHandle;
-					// Do not clear this.#lockHandle: the original instance keeps its own hold on its
-					// own id; the fresh instance owns the hold on the target id independently.
+					// Do not clear this.#lockHandle: the original instance keeps its own lock on its
+					// own id; the fresh instance owns the lock on the target id independently.
 				}
 				fresh.#lockWritable = true;
 				return fresh;
 			}
-			// Only store the new hold handle; null (scoped lock) must not clear a prior hold handle.
-			if (holdHandle) this.#lockHandle = holdHandle;
+			// Store the handle for both scoped and hold locks; undefined (re-entrant hold fast-path)
+			// must not clear a handle already set.
+			if (holdHandle != null) this.#lockHandle = holdHandle;
 			TableResource._updateResource(this, entryForReload);
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload.
@@ -2590,25 +2584,16 @@ export function makeTable(options) {
 		 * instance is no longer lock-writable; writes through it require a fresh lock.
 		 */
 		unlock(): Promise<boolean> {
+			// Always clear the local lock-writable state so subsequent writes on this instance are
+			// ungated, regardless of whether the handle was already released.
+			const handle = this.#lockHandle;
+			this.#lockHandle = undefined;
+			this.#lockWritable = false;
+			if (!handle || handle.released) return Promise.resolve(false);
+			// Remove from the transaction registry so commit/abort does not double-release.
 			const link = txnForContext(this.getContext());
-			const keyId = writeKeyId(this.getId());
-			const held = this.#lockHandle;
-			if (held) {
-				if (held.released) return Promise.resolve(false);
-				this.#lockHandle = undefined;
-				this.#lockWritable = false;
-				link.unregisterRecordLock(held);
-				return Promise.resolve(held.release());
-			}
-			const scoped = link.recordLockFor(primaryStore, keyId);
-			if (scoped && !scoped.released) {
-				// Early-release a transaction-scoped lock: remove it from recordLocks so the commit
-				// does not try to release it again, then release the native key.
-				link.unregisterRecordLock(scoped);
-				this.#lockWritable = false;
-				return Promise.resolve(scoped.release());
-			}
-			return Promise.resolve(false);
+			link.unregisterRecordLock(handle);
+			return Promise.resolve(handle.release());
 		}
 		static operation(operation, context) {
 			operation.table ||= tableName;
@@ -2784,9 +2769,10 @@ export function makeTable(options) {
 				// DatabaseTransaction.save() can throw 409 when the lease has lapsed.
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
-				lockHandle:
-					(this.#lockHandle?.keyId === writeKeyId(id) ? this.#lockHandle : undefined) ??
-					(this.#lockWritable ? transaction.recordLockFor(primaryStore, writeKeyId(id)) : undefined),
+				lockHandle: (() => {
+					const h = this.#lockHandle;
+					return h && h.keyId === writeKeyId(id) ? h : undefined;
+				})(),
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
@@ -3555,9 +3541,10 @@ export function makeTable(options) {
 				entry,
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
-				lockHandle:
-					(this.#lockHandle?.keyId === writeKeyId(id) ? this.#lockHandle : undefined) ??
-					(this.#lockWritable ? transaction.recordLockFor(primaryStore, writeKeyId(id)) : undefined),
+				lockHandle: (() => {
+					const h = this.#lockHandle;
+					return h && h.keyId === writeKeyId(id) ? h : undefined;
+				})(),
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)

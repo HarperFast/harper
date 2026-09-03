@@ -1412,9 +1412,10 @@ export class DatabaseTransaction implements Transaction {
 				const txnResolution: CommitResolution = {
 					txnTime: this.timestamp,
 				};
+				this.timestamp = 0; // reset like the async path (~1279) so stale lock stamps don't persist
 				if (this.next) {
 					// now run any other transactions
-					options.timestamp = this.timestamp;
+					options.timestamp = txnResolution.txnTime;
 					// as above: the next store must not inherit this store's explicit native transaction
 					let nextResolution;
 					try {
@@ -1433,7 +1434,7 @@ export class DatabaseTransaction implements Transaction {
 								// scope resumable after a partially failed mid-scope commit.
 								this.completeMidScopeCommit(options);
 								return {
-									txnTime: this.timestamp,
+									txnTime: txnResolution.txnTime,
 									next: nextResolution,
 								};
 							},
