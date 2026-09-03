@@ -11,7 +11,6 @@ const {
 } = require('#src/security/deferredAuthentication');
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 
-/** A request shaped enough for content negotiation (`findBestSerializer` reads `headers.asObject`). */
 function requestAccepting(accept, extraHeaders = {}) {
 	const asObject = { ...extraHeaders };
 	if (accept) asObject.accept = accept;
@@ -31,10 +30,6 @@ describe('deferredAuthentication', () => {
 		});
 
 		it('never infers rejection from the 4xx range', () => {
-			// The regression this guards: `findAndValidateUser()` lazily loads the user cache, whose
-			// fixed system-table searches raise a default-status-400 ClientError when `system.hdb_role`
-			// or `system.hdb_user` is unavailable. Deferring that would hand a storage outage to an
-			// application's own authorization.
 			assert.strictEqual(isCredentialRejection(new ClientError('Table system.hdb_role not found')), false);
 			assert.strictEqual(isCredentialRejection(new ClientError('Login failed', 401)), false);
 			assert.strictEqual(isCredentialRejection(new ClientError('token expired', 403)), false);
@@ -52,7 +47,6 @@ describe('deferredAuthentication', () => {
 		});
 
 		it('cannot be forged from outside the module', () => {
-			// The tag is a module-private symbol, so neither a string key nor a registered symbol works.
 			const forged = {
 				'credentialRejection': true,
 				'harper.credentialRejection': true,
@@ -82,13 +76,26 @@ describe('deferredAuthentication', () => {
 			assert.ok(stateSymbol, 'the deferred state should be recorded under its own symbol');
 			const descriptor = Object.getOwnPropertyDescriptor(request, stateSymbol);
 			assert.strictEqual(descriptor.enumerable, false);
-			assert.strictEqual(descriptor.configurable, true);
+		});
+
+		it('cannot be cleared or changed by downstream middleware using reflection', () => {
+			const request = requestAccepting('application/json');
+			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+			const stateSymbol = Object.getOwnPropertySymbols(request).find(
+				(symbol) => symbol.description === 'harper.deferredCredentialRejection'
+			);
+
+			Reflect.deleteProperty(request, stateSymbol);
+			Reflect.set(request, stateSymbol, undefined);
+			const state = request[stateSymbol];
+			if (state) Reflect.set(state, 'status', 200);
+
+			const settled = settleDeferredCredentialRejection(request);
+			assert.strictEqual(settled.status, 401);
+			assert.deepStrictEqual(JSON.parse(settled.body.toString()), { error: 'Login failed' });
 		});
 
 		it('does not survive object spread into a downstream application copy', () => {
-			// Object spread copies enumerable symbol-keyed properties, so an enumerable descriptor here
-			// would put internal authentication state into whatever an application catch-all builds
-			// from the request.
 			const request = { headers: { authorization: 'Basic d3A6c2VjcmV0' } };
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
 
@@ -115,8 +122,6 @@ describe('deferredAuthentication', () => {
 		});
 
 		it('pins the deferred status to 401 even when the underlying rejection was a 403', () => {
-			// The authentication middleware has always answered a rejected credential with 401
-			// regardless of the error's own status, so a deferred rejection has to match that.
 			const request = {};
 			deferCredentialRejection(request, credentialRejectionError('token expired', 403), 'Bearer');
 
@@ -132,6 +137,18 @@ describe('deferredAuthentication', () => {
 			deferCredentialRejection(request, {}, 'Bearer');
 
 			assert.strictEqual(getDeferredCredentialRejection(request).message, 'Unauthorized');
+		});
+
+		it('preserves the first rejection when multiple route chains authenticate the request', () => {
+			const request = {};
+			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+			deferCredentialRejection(request, credentialRejectionError('invalid token', 401), 'Bearer');
+
+			assert.deepStrictEqual(getDeferredCredentialRejection(request), {
+				status: 401,
+				message: 'Login failed',
+				strategy: 'Basic',
+			});
 		});
 
 		it('is readable through a proxy of the request, as the urlPath-mount chain produces', () => {
@@ -166,8 +183,6 @@ describe('deferredAuthentication', () => {
 		});
 
 		it('returns a real Headers, which the middleware 401 post-processing writes into', () => {
-			// `security/auth.ts` calls `response.headers.set()` on whatever an owning layer returns —
-			// WWW-Authenticate, or a Location when a login page is configured. A plain object 500s there.
 			const request = requestAccepting('application/json');
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
 
@@ -179,9 +194,6 @@ describe('deferredAuthentication', () => {
 		});
 
 		it('reproduces the authentication middleware response: 401 with an {error} body', () => {
-			// This is the wire contract callers have always seen for a rejected credential. An owning
-			// layer's own error mapping (REST's RFC 9457 Problem Details, GraphQL's {errors:[…]}) must
-			// not replace it.
 			const request = requestAccepting('application/json');
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
 

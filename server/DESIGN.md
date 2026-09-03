@@ -221,9 +221,9 @@ So a rejection is recorded rather than answered:
 - **No credentials** continue anonymously. Unchanged.
 - **A syntactically valid credential Harper does not recognize** leaves `request.user` unset, leaves
   the inbound `Authorization` header byte-for-byte intact, and records request-local state through
-  `security/deferredAuthentication.ts`. The state lives behind a module-private `Symbol`: it is not
-  a header, not a `Request` field, not enumerable, and cannot be forged or read from outside that
-  module.
+  `security/deferredAuthentication.ts`. The state lives behind a module-private `Symbol`. Its
+  descriptor and value are immutable and non-enumerable, so downstream middleware cannot clear it
+  and it does not leak through request copies or serialization.
 - **An internal authentication fault** — unreadable or malformed JWT key material, a storage failure,
   an unexpected error type — is never deferred, and fails closed with the in-line 401.
 - **The operations API** never defers: `request.isOperationsServer` short-circuits to the in-line

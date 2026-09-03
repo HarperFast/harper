@@ -312,8 +312,6 @@ export function handleApplication(scope: Scope) {
 	});
 
 	scope.server.http(
-		// Every response this handler originates claims the URL, so settle before redirects, files, or
-		// non-fallthrough not-found handling. Only `next(req)` leaves ownership and rejection unsettled.
 		(req, next) => {
 			// TODO: Not sure if the isWebSocket check is still necessary
 			if (req.method !== 'GET' || req.isWebSocket) return next(req);
@@ -340,19 +338,7 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
-					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
-					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
-					// redirect the no-slash form so relative links on the index page resolve under
-					// the mount (#1583). Gated on the EXTERNAL base path, not the plugin-local one: a
-					// root-level static plugin (baseURLPath === '/') still needs this redirect when the
-					// application itself carries a host/urlPath mount, since the client-visible mount root
-					// is then externalBaseURLPath, not '/' (review finding).
-					// The other form is the `null` index entry — a registered directory redirecting to its
-					// trailing-slash form; req.pathname arrives with the mount prefix stripped, so the
-					// external path is rebuilt for the Location header (#1583). The two are mutually
-					// exclusive, since a `null` entry is never the mount-root serve. They share one branch
-					// so both settle a deferred credential rejection before redirecting; the query string
-					// is built inside it, keeping the common (non-redirect) index serve allocation-free.
+					// Prefix stripping makes `originalPathname` necessary to distinguish mounted roots (#1583).
 					const originalPathname: string | undefined = (req as any).originalPathname;
 					const redirectsMountRoot = !!(
 						staticFile &&
@@ -412,7 +398,6 @@ export function handleApplication(scope: Scope) {
 				return next(req);
 			}
 
-			// This handler owns both not-found forms, so settle before resolving the configured body.
 			const settledCredentialRejection = settleDeferredCredentialRejection(req);
 			if (settledCredentialRejection) return settledCredentialRejection;
 

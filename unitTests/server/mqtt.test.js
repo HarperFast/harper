@@ -67,16 +67,10 @@ describe('mqtt.ts handleApplication raw-socket registration', () => {
 	});
 });
 
-// The WebSocket entry points in server/http.ts call `httpChain[port](request)` and hand this
-// listener the still-pending completion, so authentication has not resolved the credential yet when
-// the listener runs. Reading the deferred-rejection state synchronously therefore always saw
-// `undefined`, and an invalid Authorization header connected anonymously wherever MQTT allows
-// anonymous connections (#2418).
 describe('mqtt.ts WebSocket listener settles authentication before the session starts', () => {
 	const { credentialRejectionError, deferCredentialRejection } = require('#src/security/deferredAuthentication');
 	const { generate } = require('mqtt-packet');
 
-	/** Captures the listener `handleApplication` registers through `server.ws()`. */
 	function webSocketListener() {
 		let listener;
 		const server = {
@@ -109,15 +103,12 @@ describe('mqtt.ts WebSocket listener settles authentication before the session s
 		return { headers: { asObject, get: (name) => asObject[name.toLowerCase()] } };
 	}
 
-	/** Lets every already-queued microtask and the `.catch` continuation run. */
 	const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 	it('closes the socket once an asynchronously-recorded credential rejection settles', async () => {
 		const listener = webSocketListener();
 		const ws = fakeWebSocket();
 		const request = mqttUpgradeRequest({ authorization: 'Basic d29yZHByZXNzOnNlY3JldA==' });
-		// The real shape: `authentication` yields on the user lookup before it can classify the
-		// credential, so the rejection is recorded a turn after this listener is invoked.
 		const chainCompletion = (async () => {
 			await Promise.resolve();
 			deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
@@ -128,7 +119,6 @@ describe('mqtt.ts WebSocket listener settles authentication before the session s
 			throw new Error('a mqtt-subprotocol upgrade must not fall through to the next listener');
 		});
 
-		// Nothing is knowable yet — that is exactly why a synchronous check could not work.
 		assert.deepStrictEqual(ws.closes, []);
 		await chainCompletion;
 		await settle();
@@ -137,9 +127,6 @@ describe('mqtt.ts WebSocket listener settles authentication before the session s
 	});
 
 	it('does not accept the subsequent CONNECT anonymously', async () => {
-		// The consequence the synchronous check was supposed to prevent: this scope allows anonymous
-		// connections, so a CONNECT that follows an invalid Authorization header was answered with a
-		// CONNACK and given an anonymous session.
 		const listener = webSocketListener();
 		const ws = fakeWebSocket();
 		const request = mqttUpgradeRequest({ authorization: 'Basic d29yZHByZXNzOnNlY3JldA==' });
@@ -175,8 +162,6 @@ describe('mqtt.ts WebSocket listener settles authentication before the session s
 
 		listener(ws, request, chainCompletion, () => {});
 
-		// Handlers must be in place before the chain settles, or frames that arrive in that window
-		// would be dropped.
 		assert.strictEqual(typeof ws.handlers.message, 'function');
 		assert.strictEqual(typeof ws.handlers.close, 'function');
 		await chainCompletion;

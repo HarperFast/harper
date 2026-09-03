@@ -255,8 +255,6 @@ export async function authentication(request, nextHandler) {
 							}
 							break;
 						default:
-							// Unsupported schemes are credential rejections so a Harper-owned route cannot
-							// interpret their lack of a Harper principal as anonymous access.
 							throw credentialRejectionError(
 								AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
 								HTTP_STATUS_CODES.UNAUTHORIZED
@@ -271,11 +269,8 @@ export async function authentication(request, nextHandler) {
 						}
 					}
 
-					// Only tagged credential rejections on the application port may defer. Operations
-					// routes are always Harper-owned, and internal faults must fail closed.
 					const internalFault = !isCredentialRejection(err);
 					if (request.isOperationsServer || internalFault) {
-						// Internal fault details belong in server logs, not authentication responses.
 						if (internalFault) authLogger.error('Authentication failed internally', errorForLog(err));
 						return applyResponseHeaders({
 							status: 401,
@@ -289,12 +284,9 @@ export async function authentication(request, nextHandler) {
 				}
 
 				if (credentialRejection) {
-					// Preserve the header and leave the principal unset until a route owner settles it.
 					deferCredentialRejection(request, credentialRejection, strategy);
 				} else {
 					authorizationCache.set(authorization, newUser);
-					// `newUser` is null on the legacy blank-Basic-credentials path, which means "no auth"
-					// and stays anonymous; reading `.username` off it would crash the request.
 					if (LOG_AUTH_SUCCESSFUL && newUser != null)
 						authAuditLog(newUser.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 					// Shallow-clone so verifyPerms's `role.permission = fullRolePerms` reassignment
@@ -389,10 +381,7 @@ export async function authentication(request, nextHandler) {
 		if (!response) return response;
 		if (response.status === 401) {
 			wasUnauthorized = true;
-			// A deferred rejection means this 401 came from downstream, not from the in-line rejection
-			// this middleware used to answer with. Harper's settled rejection has to stay wire-identical
-			// to that in-line 401 (which returned before any of this ran), and a 401 an application
-			// catch-all raised is that application's own challenge for its own scheme.
+			// Downstream owns the challenge or redirect after Harper deferred the credential decision.
 			if (!getDeferredCredentialRejection(request)) {
 				if (
 					headers['user-agent']?.startsWith('Mozilla') &&
@@ -416,9 +405,7 @@ export async function authentication(request, nextHandler) {
 		// if we are rejecting the credentials (401, possibly rewritten to a login redirect); such a
 		// response must never be stored by a shared cache and served to a different principal (#1565)
 		const rejectedAuth = response?.status === 401 || wasUnauthorized;
-		// A deferred credential is still a credential this response was produced under — whoever
-		// owned the route saw the untouched Authorization header — so #1565's identity floor applies
-		// even though no Harper principal was resolved and the status may be a plain 200.
+		// A downstream response produced under the untouched credential remains identity-dependent (#1565).
 		const identityDependent = !!request.user || rejectedAuth || !!getDeferredCredentialRejection(request);
 		// with CORS enabled the response is origin-dependent — ACAO reflects the request Origin, and
 		// its absence when no Origin was sent is origin-dependent too — so a shared cache must

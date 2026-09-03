@@ -226,8 +226,6 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				}
 			}
 		}
-		// A matched resource or OpenAPI document settles ownership. Return authentication's response
-		// descriptor directly so REST's Problem Details mapping cannot change its wire contract.
 		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
 		if ((resource as any)?.isCaching) {
@@ -561,7 +559,6 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
 					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
 				} else {
-					// A matched resource owns this socket; do not carry rejection into it as anonymous.
 					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
 					recordAction(

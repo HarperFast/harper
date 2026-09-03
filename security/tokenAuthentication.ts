@@ -459,47 +459,23 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 		if (err?.name === 'TokenExpiredError') {
 			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
 		}
-		// Only a client-side rejection may be reported as one. Everything else here — unreadable or
-		// malformed JWT key material, a storage failure inside findAndValidateUser, a bug — propagates
-		// unmasked, because callers distinguish a rejected credential from an internal authentication
-		// fault and only the former is deferred past route matching. Masking a fault as
-		// `invalid token` would let a key or storage outage read as an unknown credential.
+		// Only positively classified token failures may cross the route-ownership boundary as rejections.
 		if (!isTokenRejection(err)) throw err;
 
 		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 }
 
-/**
- * `jsonwebtoken` error names that describe the *token*: syntax, signature, subject/audience claims,
- * and the not-before/expiry windows. Anything else it raises is about Harper's own configuration.
- */
 const JWT_REJECTION_ERROR_NAMES = new Set(['JsonWebTokenError', 'NotBeforeError', 'TokenExpiredError']);
-/**
- * `jsonwebtoken` reports an unusable verification key through the same `JsonWebTokenError` type it
- * uses for a bad token, distinguished only by message — either its own `secretOrPublicKey…` guards
- * or a passed-through OpenSSL failure. Those are Harper-side faults and must never be reported to a
- * client as a rejected credential.
- */
+// jsonwebtoken reports unusable verification keys and bad tokens through the same error type.
 const KEY_MATERIAL_FAULT = /secretOrPublicKey|asymmetric key|PEM routines|^error:/i;
 
-/**
- * True only when `err` says the presented token is not acceptable, rather than that Harper failed to
- * evaluate it. Never inferred from the 4xx range: `findAndValidateUser()` lazily loads the user cache
- * and can surface a default-status-400 `ClientError` from a missing system table, which is a storage
- * fault wearing a client-error status.
- */
 function isTokenRejection(err: any): boolean {
 	if (isCredentialRejection(err)) return true;
 	if (!JWT_REJECTION_ERROR_NAMES.has(err?.name)) return false;
 	return !KEY_MATERIAL_FAULT.test(String(err?.message ?? ''));
 }
 
-/**
- * Fails closed before `jwt.verify()` when the configured public key cannot be verification key
- * material at all. Without this, `jsonwebtoken` folds the failure into a `JsonWebTokenError`, which
- * is otherwise indistinguishable from a forged signature.
- */
 function assertUsableVerificationKey(publicKey: unknown): void {
 	if (typeof publicKey !== 'string' || !publicKey.includes('-----BEGIN')) {
 		throw new ServerError(AUTHENTICATION_ERROR_MSGS.NO_ENCRYPTION_KEYS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);

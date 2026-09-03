@@ -1,17 +1,5 @@
 'use strict';
 
-/**
- * All three adapters hand a request the middleware chain declined (`status: -1`) to legacy Fastify.
- * Bun and uWS build their response headers from Fastify's reply; Node hands Fastify the same
- * `ServerResponse` the chain's headers were copied onto, so a Fastify route that sets `Cache-Control`
- * or `Vary` replaces them outright. The identity floor authentication stamps on a credential-dependent
- * response (`Cache-Control: private, no-cache`, `Vary: Authorization, Cookie` — #1565) has to survive
- * all three.
- *
- * These drive the real adapters (`makeUwsHandler`, `bunDelegateToNodeServer`,
- * `bridgeChainHeadersToNodeResponse`) against a stub Fastify instance for the first two and a real
- * Fastify app over a real `http.Server` for Node, not a re-implementation of their header assembly.
- */
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -36,12 +24,10 @@ const Fastify = require('fastify');
 const UWS_PORT = 19430;
 const BUN_PORT = 19431;
 
-/** The headers `security/auth.ts` stamps on a response produced under a (deferred) credential. */
 function identityFloorHeaders() {
 	return new Headers({ 'Cache-Control': 'private, no-cache', 'Vary': 'Authorization, Cookie' });
 }
 
-/** A stub Fastify whose `inject()` answers with the given status/headers/body. */
 function fastifyReplying(statusCode, headers, body = 'ok') {
 	return {
 		inject: async () => ({
@@ -72,7 +58,6 @@ function bunWebRequest() {
 
 describe('legacy Fastify fallback preserves the chain cache floor', () => {
 	describe('uWS adapter', () => {
-		/** Registers a chain on UWS_PORT that declines with `chainHeaders`, and returns the handler. */
 		function handlerDecliningWith(chainHeaders, fastify) {
 			httpServer(() => ({ status: -1, headers: chainHeaders, body: 'Not found' }), {
 				port: UWS_PORT,
@@ -93,7 +78,6 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 			assert.strictEqual(response.status, 200);
 			assert.strictEqual(response.headers.get('Cache-Control'), 'private, no-cache');
 			assert.strictEqual(response.headers.get('Vary'), 'Authorization, Cookie');
-			// Fastify's own headers are untouched.
 			assert.strictEqual(response.headers.get('content-type'), 'application/json');
 		});
 
@@ -202,10 +186,6 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 	});
 
 	describe('Node adapter', () => {
-		/**
-		 * The production shape of `server/http.ts`'s `status === -1` branch: the chain's headers go onto
-		 * the `ServerResponse`, then legacy Fastify writes the response through that same object.
-		 */
 		async function requestThroughFastify(chainHeaders, defineRoutes) {
 			const fastify = Fastify();
 			defineRoutes(fastify);
@@ -286,8 +266,6 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 		});
 
 		it('reconciles a response written without an explicit writeHead', async () => {
-			// Node generates headers implicitly through `writeHead` on `end()`, so a fallback that never
-			// calls it explicitly still has to pass through the same policy.
 			const chainHeaders = identityFloorHeaders();
 			const server = http.createServer((nodeRequest, nodeResponse) => {
 				bridgeChainHeadersToNodeResponse(chainHeaders, nodeResponse);
@@ -307,6 +285,30 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 				});
 
 				assert.strictEqual(response.headers['cache-control'], 'max-age=600, private');
+			} finally {
+				server.close();
+			}
+		});
+
+		it('preserves repeated Set-Cookie fields passed through writeHead', async () => {
+			const server = http.createServer((_nodeRequest, nodeResponse) => {
+				bridgeChainHeadersToNodeResponse(identityFloorHeaders(), nodeResponse);
+				nodeResponse.writeHead(200, ['Set-Cookie', 'a=1; Path=/', 'Set-Cookie', 'b=2; Path=/']);
+				nodeResponse.end('{}');
+			});
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			try {
+				const { port } = server.address();
+				const response = await new Promise((resolve, reject) => {
+					http
+						.get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+							res.resume();
+							res.on('end', () => resolve(res));
+						})
+						.on('error', reject);
+				});
+
+				assert.deepStrictEqual(response.headers['set-cookie'], ['a=1; Path=/', 'b=2; Path=/']);
 			} finally {
 				server.close();
 			}

@@ -194,7 +194,6 @@ export function mergeChainHeadersIntoFallback<
 		if (lowerName === 'vary' || lowerName === 'cache-control') continue;
 		if (finalHeaders.has(name)) continue;
 		if (Array.isArray(value)) {
-			// Set-Cookie is the multi-valued case that must never be comma-joined.
 			for (const single of value) appendHeader(finalHeaders, name, single, lowerName !== 'set-cookie');
 		} else finalHeaders.set(name, value);
 	}
@@ -215,10 +214,6 @@ export function mergeChainHeadersIntoFallback<
 	return finalHeaders;
 }
 
-/**
- * Presents a Node `ServerResponse`'s live header set through the Headers-like surface
- * `mergeChainHeadersIntoFallback` and `addVaryHeader` expect.
- */
 function nodeResponseHeaders(nodeResponse: any) {
 	return {
 		get: (name: string) => nodeResponse.getHeader(name),
@@ -234,20 +229,31 @@ function nodeResponseHeaders(nodeResponse: any) {
 	};
 }
 
-/** `writeHead` accepts a flat `[name, value, …]` array, a `[name, value][]` array, or an object. */
 function applyWriteHeadHeaders(nodeResponse: any, headers: any): void {
+	const suppliedHeaders = new Map<string, { name: string; value: any }>();
+	const addHeader = (name: string, value: any) => {
+		const key = String(name).toLowerCase();
+		const supplied = suppliedHeaders.get(key);
+		if (!supplied) {
+			suppliedHeaders.set(key, { name, value });
+			return;
+		}
+		const values = Array.isArray(supplied.value) ? supplied.value : [supplied.value];
+		supplied.value = Array.isArray(value) ? values.concat(value) : values.concat([value]);
+	};
 	if (Array.isArray(headers)) {
 		if (Array.isArray(headers[0])) {
-			for (const [name, value] of headers) nodeResponse.setHeader(name, value);
+			for (const [name, value] of headers) addHeader(name, value);
 		} else {
-			for (let i = 0; i + 1 < headers.length; i += 2) nodeResponse.setHeader(headers[i], headers[i + 1]);
+			for (let i = 0; i + 1 < headers.length; i += 2) addHeader(headers[i], headers[i + 1]);
 		}
-		return;
+	} else {
+		for (const name of Object.keys(headers)) {
+			const value = headers[name];
+			if (value != null) addHeader(name, value);
+		}
 	}
-	for (const name of Object.keys(headers)) {
-		const value = headers[name];
-		if (value != null) nodeResponse.setHeader(name, value);
-	}
+	for (const { name, value } of suppliedHeaders.values()) nodeResponse.setHeader(name, value);
 }
 
 /**

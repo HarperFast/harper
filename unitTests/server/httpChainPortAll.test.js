@@ -34,8 +34,6 @@ describe('http middleware chains and the "all" pseudo-port', () => {
 
 		assert.deepStrictEqual(orderFor('http', PORT), ['chainSyncAuthentication', 'chainSyncRest']);
 
-		// The shape an application catch-all uses: registered on every port, ordered after Harper's
-		// own route ownership, and arriving after the concrete port's chain already exists (#2418).
 		httpServer(passThrough, { port: 'all', name: 'chainSyncCatchAll', after: 'chainSyncRest' });
 
 		assert.deepStrictEqual(orderFor('http', PORT), ['chainSyncAuthentication', 'chainSyncRest', 'chainSyncCatchAll']);
@@ -46,8 +44,6 @@ describe('http middleware chains and the "all" pseudo-port', () => {
 		httpServer(passThrough, { port: 'all', name: 'chainSyncSecondCatchAll', after: 'chainSyncOtherPortRest' });
 
 		assert.ok(orderFor('http', PORT).includes('chainSyncSecondCatchAll'));
-		// `chainSyncCatchAll` is on 'all' too, so it belongs to this port's chain as well; its
-		// `after: 'chainSyncRest'` names nothing registered here, leaving it in registration order.
 		assert.deepStrictEqual(orderFor('http', OTHER_PORT), [
 			'chainSyncCatchAll',
 			'chainSyncOtherPortRest',

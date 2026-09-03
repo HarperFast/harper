@@ -373,10 +373,6 @@ describe('static plugin ordering live reload', () => {
 });
 
 describe('static plugin mount-root redirect', () => {
-	// A root-level static plugin (no urlPath of its own) has baseURLPath === '/', so gating the
-	// redirect on baseURLPath alone never fires — even though the application mount makes the
-	// client-visible root something other than '/'. Review finding: the mount root then serves
-	// without ever redirecting to its trailing-slash form.
 	it('redirects the application mount root to its trailing-slash form even when static has no urlPath of its own', () => {
 		const { scope, state } = fakeScope({}, { urlPath: '/v1' });
 		handleApplication(scope);
@@ -393,8 +389,6 @@ describe('static plugin mount-root redirect', () => {
 	it('does not redirect when the application has no mount (root stays root)', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
-		// A real, existing path — with no mount, the redirect guard is false and this falls through
-		// to actually serving the file (realpathSync must succeed).
 		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: __filename });
 
 		const result = state.listener({ method: 'GET', pathname: '/', url: '/', originalPathname: '/' }, () => ({
@@ -405,8 +399,6 @@ describe('static plugin mount-root redirect', () => {
 	});
 });
 
-// A request shaped enough for both the static handler and the settled-rejection serializer
-// (`findBestSerializer` reads `headers.asObject`).
 function staticRequest(pathname, { url = pathname, originalPathname, authorization } = {}) {
 	const asObject = { accept: 'application/json' };
 	if (authorization) asObject.authorization = authorization;
@@ -427,14 +419,9 @@ function assertSettledUnauthorized(result, request, authorization) {
 	assert.equal(result.status, 401, 'a static-owned response must settle the deferred rejection');
 	assert.equal(result.headers.get('Content-Type'), 'application/json');
 	assert.deepStrictEqual(JSON.parse(result.body.toString()), { error: 'Login failed' });
-	// The header the deferral exists to protect must survive byte-for-byte.
 	assert.equal(request.headers.get('authorization'), authorization);
 }
 
-// A static handler ordered `after: 'rest'` runs downstream of authentication, so it is one of the
-// Harper-owned layers that must settle a deferred credential rejection (#2418). Settlement covered
-// only the ordinary file response, leaving redirects and both `fallthrough: false` not-found forms
-// answering a rejected credential as if it were anonymous.
 describe('static plugin deferred credential rejection', () => {
 	const BASIC = 'Basic d29yZHByZXNzOmFwcC1wYXNzd29yZA==';
 	const BEARER = 'Bearer downstream-owned-token';
@@ -515,8 +502,6 @@ describe('static plugin deferred credential rejection', () => {
 	});
 
 	it('leaves the rejection deferred on the actual fallthrough so a downstream owner still decides', () => {
-		// The whole point of deferral: Harper does not own this URL, so an application catch-all
-		// registered after this handler applies its own authentication scheme to the untouched header.
 		const { scope, state } = fakeScope({ after: 'rest' });
 		handleApplication(scope);
 
@@ -541,8 +526,6 @@ describe('static plugin deferred credential rejection', () => {
 	});
 });
 
-// The settlement points sit immediately before each response is built, so the responses themselves
-// must be unchanged for every request that carries no deferred rejection.
 describe('static plugin responses without a deferred rejection', () => {
 	it('still redirects the mount root, preserving the query string', () => {
 		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });

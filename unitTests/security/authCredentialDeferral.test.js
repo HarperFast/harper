@@ -1,10 +1,3 @@
-/**
- * Drives the real `authentication` middleware through a real `authentication -> rest -> application
- * catch-all` chain built by `server/middlewareChain.ts`.
- *
- * On the pre-fix revision every "reaches the application catch-all" case here fails: `security/auth.ts`
- * answered 401 during credential parsing, so the chain terminated before route ownership was known.
- */
 const assert = require('node:assert');
 
 const testUtils = require('../testUtils.js');
@@ -20,12 +13,9 @@ const tokenAuthentication = require('#src/security/tokenAuthentication');
 const { authentication } = require('#src/security/auth');
 
 const HARPER_OWNED = '/Ledger/1';
-// A Harper-owned route that serves anonymous callers — the case where 'continued as anonymous'
-// and 'rejected the credential' produce visibly different responses.
 const HARPER_OWNED_PUBLIC = '/PublicNotice/1';
 const APP_OWNED = '/wp-json/wc/v3/products';
 
-// A WordPress Application Password, base64'd exactly as WordPress sends it — spaces and all.
 const WORDPRESS_BASIC = `Basic ${Buffer.from('wordpress:abcd efgh ijkl mnop qrst uvwx').toString('base64')}`;
 const HARPER_BASIC = `Basic ${Buffer.from('harper_admin:harper-pw').toString('base64')}`;
 const DOWNSTREAM_BEARER = 'Bearer eyJhbGciOiJIUzI1NiJ9.d29vLXNlc3Npb24.not-a-harper-token';
@@ -50,24 +40,14 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	let originalGetUser;
 	let originalValidateOperationToken;
 	let originalValidateRefreshToken;
-	/** Records what each layer saw, so "which layer answered" is observable rather than inferred. */
 	let trace;
-	/** Pathnames Harper claims ownership of, standing in for `resources.getMatch`. */
 	let ownedPaths;
-	/** Users the Harper credential store recognizes, keyed by `username:password`. */
 	let knownUsers;
-	/** When set, `getUser` raises this instead of resolving — an internal authentication fault. */
 	let getUserFault;
 
-	/**
-	 * Mirrors `server/REST.ts`'s ownership branch: unowned URLs pass to the next layer untouched,
-	 * owned ones settle any deferred credential through the same production assertion REST calls.
-	 */
 	function restLayer(request, nextHandler) {
 		if (!ownedPaths.has(request.pathname)) return nextHandler(request);
 		trace.push('rest');
-		// The production settlement helper, not a local re-implementation: it is what decides the
-		// status, body, and content type an owning Harper layer returns.
 		const settled = settleDeferredCredentialRejection(request);
 		if (settled) return settled;
 		if (!request.user && request.pathname !== HARPER_OWNED_PUBLIC)
@@ -79,10 +59,8 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		};
 	}
 
-	/** When set, the catch-all answers with this instead of its default 200. */
 	let catchAllResponse;
 
-	/** The application's own middleware, mounted after `rest`, applying its own auth scheme. */
 	function applicationCatchAll(request) {
 		trace.push('catch-all');
 		if (catchAllResponse) return catchAllResponse();
@@ -118,8 +96,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		originalValidateOperationToken = tokenAuthentication.validateOperationToken;
 		originalValidateRefreshToken = tokenAuthentication.validateRefreshToken;
 
-		// The stubs raise what production raises: `findAndValidateUser()` and `validateToken()` tag a
-		// rejected credential explicitly, and an untagged error is by construction an internal fault.
 		serverModule.server.getUser = async (username, password) => {
 			if (getUserFault) throw getUserFault;
 			const user = knownUsers.get(`${username}:${password}`);
@@ -140,8 +116,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		tokenAuthentication.validateRefreshToken = originalValidateRefreshToken;
 	});
 
-	// `resources.loginPath` is read by authentication's 401 rewriting; the registry is a live binding
-	// that only exists once something has built it.
 	before(() => {
 		if (!resourcesModule.resources) resourcesModule.resetResources();
 	});
@@ -160,8 +134,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('resolves the chain as authentication -> rest -> application catch-all', async () => {
-		// The order is what makes the rest of this suite meaningful: `rest` must get first refusal on
-		// every URL, and the application middleware must only see what `rest` declined.
 		const { body } = await send(APP_OWNED, undefined);
 
 		assert.deepStrictEqual(trace, ['catch-all']);
@@ -186,11 +158,8 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 		assert.strictEqual(response.status, 200);
 		assert.strictEqual(body.servedBy, 'catch-all');
-		// The header the application receives must be the header the client sent — no rename, no
-		// carrier header, no stripping.
 		assert.strictEqual(body.authorization, WORDPRESS_BASIC);
 		assert.strictEqual(request.headers.asObject.authorization, WORDPRESS_BASIC);
-		// And no Harper principal was invented along the way.
 		assert.strictEqual(body.harperUser, null);
 		assert.strictEqual(request.user, undefined);
 	});
@@ -204,8 +173,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('lets a Harper refresh token keep its declined (-1) handling instead of deferring', async () => {
-		// A refresh token is Harper's own credential: `authentication` declines the request so the
-		// operations API can handle it, and that must not turn into a deferral to the application.
 		tokenAuthentication.validateRefreshToken = async () => ({ username: 'harper_admin' });
 		try {
 			const { response } = await send(APP_OWNED, 'Bearer harper-refresh-token');
@@ -254,8 +221,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('does not downgrade a Harper-owned route to public just because the credential was unknown', async () => {
-		// This route serves anonymous callers, so an unknown credential that merely became
-		// "anonymous" would be handed the content. The deferred rejection wins instead.
 		const anonymous = await send(HARPER_OWNED_PUBLIC, undefined);
 		assert.strictEqual(anonymous.response.status, 200);
 
@@ -265,8 +230,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('defers a scheme Harper does not implement rather than continuing anonymously', async () => {
-		// Reported by review on this PR: `Digest` matches no case in the strategy switch and throws
-		// nothing, so before this it fell through as an anonymous request.
 		const digest = 'Digest username="wp", realm="site", response="0123456789abcdef"';
 		const { request, response, body } = await send(APP_OWNED, digest);
 
@@ -277,8 +240,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('rejects a scheme Harper does not implement at an anonymously-readable Harper route', async () => {
-		// The decisive case: this route serves anonymous callers, so continuing as anonymous would
-		// return 200. Only an actual deferred rejection produces the 401.
 		const anonymous = await send(HARPER_OWNED_PUBLIC, undefined);
 		assert.strictEqual(anonymous.response.status, 200);
 
@@ -303,15 +264,12 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('keeps the legacy blank Basic credential anonymous instead of deferring it', async () => {
-		// `Basic ` + base64(':') is the documented "no auth" form: it must stay anonymous, so the
-		// unrecognized-scheme rejection above is gated on a strictly `undefined` user, not a nullish one.
 		const blank = `Basic ${Buffer.from(':').toString('base64')}`;
 		const { request, response, body } = await send(APP_OWNED, blank);
 
 		assert.strictEqual(response.status, 200);
 		assert.strictEqual(body.servedBy, 'catch-all');
 		assert.strictEqual(request.user, null);
-		// Anonymous, not deferred — so an anonymously-readable Harper route still serves it.
 		const owned = await send(HARPER_OWNED_PUBLIC, blank);
 		assert.strictEqual(owned.response.status, 200);
 	});
@@ -331,7 +289,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		const { response } = await send(APP_OWNED, WORDPRESS_BASIC);
 
 		assert.strictEqual(response.status, 401);
-		// The whole point: an outage must not hand the request to the application's own authorization.
 		assert.deepStrictEqual(trace, []);
 	});
 
@@ -345,11 +302,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('fails closed on an internal fault that happens to carry a 4xx status', async () => {
-		// The exact production shape: `findAndValidateUser()` lazily loads the user cache, whose
-		// system-table searches reach `ResourceBridge.searchByValue()` and raise a `ClientError` with
-		// the default 400 status when `system.hdb_role`/`system.hdb_user` is unavailable. Classifying
-		// by status range read that as an ordinary unknown credential and deferred it, so an unowned
-		// URL reached the application catch-all during a storage outage.
 		getUserFault = new ClientError('Table system.hdb_role not found');
 		assert.strictEqual(getUserFault.statusCode, 400, 'the fault must actually be in the 4xx range');
 
@@ -370,9 +322,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('propagates a refresh-validation fault instead of restoring the deferrable outer rejection', async () => {
-		// The operation-token path falls back to refresh-token validation on `invalid token`. Discarding
-		// whatever that raises and rethrowing the outer ordinary rejection let a refresh-side storage or
-		// runtime fault be classified as a deferrable unknown credential.
 		tokenAuthentication.validateRefreshToken = async () => {
 			throw new ServerError('refresh token store unavailable');
 		};
@@ -406,8 +355,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('restores the operation-token rejection after an ordinary refresh rejection, and defers it', async () => {
-		// The other half of the same branch: an ordinary tagged refresh rejection still yields the
-		// original `invalid token`, which is deferrable.
 		const { response, body } = await send(APP_OWNED, DOWNSTREAM_BEARER);
 
 		assert.strictEqual(response.status, 200);
@@ -416,8 +363,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it("answers a Harper-owned route with the authentication error envelope, not the owner's", async () => {
-		// `{error: message}` in the request's negotiated serialization is what authentication returned
-		// in line before deferral existed; REST's RFC 9457 Problem Details mapping must not replace it.
 		const { response, body } = await send(HARPER_OWNED, WORDPRESS_BASIC);
 
 		assert.strictEqual(response.status, 401);
@@ -433,8 +378,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 	});
 
 	it('marks a deferred-credential response as identity-dependent for shared caches', async () => {
-		// The application answered using the Authorization header Harper passed through, so the
-		// response is credential-dependent even though no Harper principal was resolved (#1565).
 		const { response } = await send(APP_OWNED, WORDPRESS_BASIC);
 
 		assert.strictEqual(response.headers.get('Vary').includes('Authorization'), true);
@@ -447,12 +390,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		assert.strictEqual(response.headers?.get?.('Cache-Control') ?? null, null);
 	});
 	describe('401 post-processing ownership', () => {
-		// `security/auth.ts` rewrites any 401 that comes back up the chain: it overwrites
-		// `WWW-Authenticate` with `Basic`, or turns the 401 into a 302 to Harper's login page for a
-		// browser. Before deferral existed a rejected credential returned in line and never reached
-		// that code, and a rejected credential never reached an application catch-all at all.
-
-		/** A browser request: the exact shape that triggers the login-page rewrite. */
 		const BROWSER = {
 			'user-agent': 'Mozilla/5.0 (Macintosh)',
 			'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -473,8 +410,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		}
 
 		it("leaves an application catch-all's own 401 challenge untouched", async () => {
-			// The Woo/WordPress case the issue is about: the application owns the route, applies its own
-			// scheme, and answers with its own challenge. Harper must not rewrite it to `Basic`.
 			catchAllResponse = () => ({
 				status: 401,
 				headers: new Headers({ 'WWW-Authenticate': 'Basic realm="WooCommerce", charset="UTF-8"' }),
@@ -504,8 +439,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		});
 
 		it('still applies the identity floor to an application-owned 401', async () => {
-			// Suppressing the rewrite must not also suppress #1565: the response was produced under the
-			// credential Harper passed through.
 			catchAllResponse = () => ({ status: 401, headers: new Headers(), body: '{}' });
 
 			const { response } = await send(APP_OWNED, WORDPRESS_BASIC);
@@ -519,8 +452,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 
 			const { response } = await sendBrowser(HARPER_OWNED, WORDPRESS_BASIC);
 
-			// The pre-deferral middleware returned this directly from its own catch: status 401, the
-			// `{error}` envelope, and no challenge or login redirect bolted on afterwards.
 			assert.strictEqual(response.status, 401);
 			assert.strictEqual(response.headers.get('Location') ?? null, null);
 			assert.strictEqual(response.headers.get('WWW-Authenticate') ?? null, null);
@@ -528,7 +459,6 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		});
 
 		it('still redirects a browser with no credentials at all to the login page', async () => {
-			// The control: nothing was deferred, so Harper's own 401 handling is unchanged.
 			resourcesModule.resources.loginPath = () => '/login';
 
 			const { response } = await sendBrowser(HARPER_OWNED, undefined);

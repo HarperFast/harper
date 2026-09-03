@@ -100,12 +100,6 @@ describe('mcp/adapters/harperHttp', () => {
 	});
 
 	describe('deferred credential rejection (#2418)', () => {
-		/**
-		 * `mcp.application` mounts this handler `after: 'authentication'`, and REST declines an
-		 * unmatched `/mcp`, so this handler is where route ownership is finally known. Authentication
-		 * leaves `request.user` unset — the same shape as an anonymous request. Settlement prevents the
-		 * credential from opening an anonymous MCP session.
-		 */
 		function deferredRequest(overrides = {}) {
 			const request = {
 				method: 'POST',
@@ -146,7 +140,6 @@ describe('mcp/adapters/harperHttp', () => {
 		});
 
 		it('still serves a request with no deferred rejection', async () => {
-			// The contrast case: identical request minus the deferral produces a real session.
 			const handler = createHarperHttpHandler('application');
 			const request = {
 				method: 'POST',
@@ -164,8 +157,6 @@ describe('mcp/adapters/harperHttp', () => {
 		});
 
 		it('still lets a WebSocket upgrade through to the next handler', async () => {
-			// Upgrades are not this handler's route, so ownership is not settled here and the deferred
-			// rejection is left for whichever layer does own the socket.
 			const handler = createHarperHttpHandler('application');
 
 			const out = await handler(deferredRequest({ method: 'GET', isWebSocket: true }), () => 'next-handler-result');

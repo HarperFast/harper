@@ -43,8 +43,6 @@ interface HarperHttpRequest {
 	ip?: string;
 }
 
-type SettledCredentialRejection = { status: number; headers: unknown; body: string | Buffer };
-
 interface HarperHttpResponse {
 	status: number;
 	headers: Record<string, string>;
@@ -59,10 +57,7 @@ export function createHarperHttpHandler(profile: McpProfile) {
 		// WebSocket upgrades aren't ours — let the next handler take it.
 		if (request.isWebSocket) return nextHandler(request);
 
-		// This endpoint owns every non-WebSocket request; settle before body or session handling so a
-		// rejected credential cannot be mapped from an unset `request.user` to an anonymous MCP user.
-		const settledCredentialRejection = settleDeferredCredentialRejection(request) as
-			SettledCredentialRejection | undefined;
+		const settledCredentialRejection = settleDeferredCredentialRejection(request);
 		if (settledCredentialRejection) return settledCredentialRejection;
 
 		const norm: NormRequest = {

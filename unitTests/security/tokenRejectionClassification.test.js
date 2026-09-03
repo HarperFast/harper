@@ -1,11 +1,5 @@
 'use strict';
 
-/**
- * `validateToken()` decides whether a Bearer failure is "this token is not acceptable" or "Harper
- * could not evaluate it". Only the first may be deferred past route matching, so this suite
- * drives the real `validateOperationToken`/`validateRefreshToken` against real RSA key material and
- * asserts the classification the authentication middleware then acts on.
- */
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
@@ -27,7 +21,6 @@ const { setUsersWithRolesCache } = require('#src/security/user');
 
 const KNOWN_USER = new Map([['known_user', { username: 'known_user', active: true, role: { permission: {} } }]]);
 
-/** Captures the error `fn()` raises, so a resolving call fails loudly instead of silently passing. */
 async function raisedBy(fn) {
 	try {
 		await fn();
@@ -54,7 +47,6 @@ describe('token rejection versus internal authentication fault', () => {
 		const keysDir = path.join(env.getHdbBasePath(), LICENSE_KEY_DIR_NAME);
 		publicKeyPath = path.join(keysDir, JWT_ENUM.JWT_PUBLIC_KEY_NAME);
 		installedPublicKey = fs.readFileSync(publicKeyPath, 'utf8');
-		// Sign with the exact keys validateOperationToken will verify against.
 		signingKey = {
 			key: fs.readFileSync(path.join(keysDir, JWT_ENUM.JWT_PRIVATE_KEY_NAME), 'utf8'),
 			passphrase: fs.readFileSync(path.join(keysDir, JWT_ENUM.JWT_PASSPHRASE_NAME), 'utf8'),
@@ -109,7 +101,6 @@ describe('token rejection versus internal authentication fault', () => {
 		});
 
 		it('classifies a wrong-subject token as a rejection', async () => {
-			// A refresh token replayed on the operation-token path.
 			const refreshToken = sign({ username: 'known_user' }, { subject: 'refresh' });
 
 			const error = await raisedBy(() => validateOperationToken(refreshToken));
@@ -138,8 +129,6 @@ describe('token rejection versus internal authentication fault', () => {
 		});
 
 		it('classifies a deactivated user as a credential-state rejection', async () => {
-			// The credential itself is unacceptable — the signature is genuine but the account is not
-			// usable — so this is a rejection, not a fault, even though it arises inside the user store.
 			await setUsersWithRolesCache(new Map([['retired_user', { username: 'retired_user', active: false }]]));
 			try {
 				const token = sign({ username: 'retired_user' }, { subject: 'operation' });
@@ -183,8 +172,6 @@ describe('token rejection versus internal authentication fault', () => {
 		});
 
 		it('fails a PEM-shaped but corrupt public key closed', async () => {
-			// The decisive case: `jsonwebtoken` reports unusable key material through the very same
-			// `JsonWebTokenError` type it uses for a forged token, so the name alone cannot classify it.
 			const valid = sign({ username: 'known_user' }, { subject: 'operation' });
 			replacePublicKey('-----BEGIN PUBLIC KEY-----\nbm90LWEtcmVhbC1rZXk=\n-----END PUBLIC KEY-----\n');
 
@@ -195,8 +182,6 @@ describe('token rejection versus internal authentication fault', () => {
 		});
 
 		it('propagates a user-store fault raised while resolving a validly signed token', async () => {
-			// `findAndValidateUser()` reaches storage through the user cache; a failure there is a
-			// Harper-side fault even when it arrives with a 4xx status.
 			const failingCache = {
 				get() {
 					const error = new Error('Table system.hdb_user not found');

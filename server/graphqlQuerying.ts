@@ -581,8 +581,6 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 				return nextLayer(request);
 			}
 
-			// GraphQL owns this route. Settle before its error mapping can change authentication's
-			// negotiated `{error: message}` response or expose the request to resolvers as anonymous.
 			const settledCredentialRejection = settleDeferredCredentialRejection(request);
 			if (settledCredentialRejection) return settledCredentialRejection;
 

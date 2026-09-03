@@ -1024,8 +1024,6 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
 					else respHeaders.set(k, String(v));
 				}
-				// Preserve the chain's identity/cache floor while allowing Fastify-set headers to win,
-				// matching the Node fallback's header precedence.
 				mergeChainHeadersIntoFallback(headers, respHeaders);
 				if (universalHeaders.length > 0) applyUniversalHeaders(respHeaders);
 				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
@@ -1050,8 +1048,6 @@ export function makeUwsHandler(port: number | string, isOperationsServer: boolea
 			}
 			logHttpRequest(request, 404, requestId, performance.now() - startTime);
 			const notFoundHeaders = new Headers({ 'content-type': 'text/plain' });
-			// A 404 produced under a credential is credential-dependent too, so it keeps the same floor
-			// the fallback branch above preserves.
 			mergeChainHeadersIntoFallback(headers, notFoundHeaders);
 			if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
 			return { status: 404, headers: notFoundHeaders, body: 'Not found\n' };
@@ -1416,11 +1412,6 @@ export function registerFastifyInstance(port: string | number, instance: any) {
 	fastifyInstances[port] = instance;
 }
 
-/**
- * Records the legacy Fastify `http.Server` the Bun and uWS adapters delegate an unhandled request to.
- * Both runtimes divert a non-function `server.http()` listener here instead of binding it, because
- * neither backs its port with a Node http server.
- */
 export function registerFallbackServer(port: string | number, listener: any) {
 	fallbackServers[port] = listener;
 }
@@ -1486,7 +1477,6 @@ export async function bunDelegateToNodeServer(
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
-			// Preserve the chain's identity/cache floor while allowing Fastify-set headers to win.
 			mergeChainHeadersIntoFallback(chainHeaders, webHeaders);
 			if (universalHeaders.length > 0) applyUniversalHeaders(webHeaders);
 			const responseStream = injectResult.stream();
@@ -1539,24 +1529,14 @@ const resolvedChainDescriptions: Record<string, Record<string, SerializedRoute[]
 	websocket: {},
 };
 
-// Every port that has a built chain, per kind, mapping its stringified form to the port value as
-// registered. The chain maps are plain objects, so their own keys are strings, but chain building
-// selects responders with `port === portNum` — rebuilding port 9926 under the key '9926' would
-// match no responder at all.
+// Preserve the original port type because route selection uses strict equality.
 const builtChainPorts: Record<string, Map<string, number | string>> = {
 	http: new Map(),
 	upgrade: new Map(),
 	websocket: new Map(),
 };
 
-/**
- * Builds `chains[port]` from the current `listeners` and, when `port` is the 'all' pseudo-port,
- * rebuilds every other already-built chain of the same kind too.
- *
- * A late registration on 'all' must rebuild every concrete port; rebuilding only `chains.all`
- * leaves bound ports with stale listener order. Chain construction is a pure function of the
- * listener list and port, so rebuilding cannot alter earlier ordering decisions.
- */
+// A late registration on 'all' must rebuild every already-bound concrete port (#2418).
 function buildChains(
 	chains: Record<string, Function>,
 	listeners: HttpEntry[],
