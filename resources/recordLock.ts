@@ -180,12 +180,23 @@ export async function acquireRecordKey(
 	if (existing && !existing.released && !existing.expired) return existing;
 
 	const deadline = Date.now() + waitMs;
+	// One persistent wake slot: at most one onUnlocked callback is registered per waiter at any
+	// time.  After the callback fires (holder released), hasCallback is cleared so the next
+	// tryLock can register a fresh callback for the new holder.  When the timeout fires instead
+	// (the holder has not released yet), hasCallback stays true and subsequent retries skip the
+	// callback registration, preventing unbounded accumulation on a hot key.
+	let wakeResolve: (() => void) | undefined;
+	let hasCallback = false;
 	while (true) {
-		let wakeResolve: (() => void) | undefined;
-		const acquired = store.tryLock(key, () => {
-			wakeResolve?.();
-		});
+		const onUnlocked = hasCallback
+			? undefined
+			: () => {
+					hasCallback = false;
+					wakeResolve?.();
+				};
+		const acquired = store.tryLock(key, onUnlocked);
 		if (acquired) return makeKeyLockHandle(store, key, keyId, lease, hold, store.getMonotonicTimestamp());
+		if (onUnlocked) hasCallback = true; // callback now registered; do not register another until it fires
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
 		await new Promise<void>((resolve) => {
@@ -195,5 +206,6 @@ export async function acquireRecordKey(
 				resolve();
 			};
 		});
+		wakeResolve = undefined;
 	}
 }

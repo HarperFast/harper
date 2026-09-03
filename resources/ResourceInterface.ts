@@ -268,8 +268,10 @@ export type { RecordLockOptions } from './recordLock.ts';
 
 /**
  * What `lock()` resolves with: the locked record, loaded after the lock committed and tracking
- * changes for `save()`. A transaction-scoped lock is released when its transaction commits or
- * aborts; a held lock (`{ hold: true }`) by `unlock()` or its lease.
+ * changes for `save()`. Inside an explicit `transaction()` scope a scoped lock is released when
+ * that transaction commits or aborts. Outside any explicit scope (ImmediateTransaction context),
+ * a scoped lock persists until `unlock()` is called or the lease expires. A held lock
+ * (`{ hold: true }`) is always released by `unlock()` or its lease, regardless of scope.
  */
 export type WritableRecord<Record extends object = any> = UpdatableRecord<Record> & {
 	save(): void | Promise<void>;

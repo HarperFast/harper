@@ -178,12 +178,14 @@ Consequences that shape the code:
   not release it again. After any `unlock()` call `#lockWritable` is cleared so writes through the
   instance are no longer accepted. When no iterators are open (`readTxnsUsed <= 1`) the read snapshot
   is released and `snapshotFree` is set so subsequent reads see current state.
-- **Scoped lock in an explicit `transaction()` scope (Rule B).** After acquisition the transaction
-  clock is set to `min(existing clock, acquiredAt)`. If prior writes in the same transaction had fixed
-  the clock earlier than `acquiredAt` and the record was modified since then, `lock()` throws 409
-  (`"Record changed before it was locked"`). In an `ImmediateTransaction` context (no explicit scope),
-  each write through a scoped lock is stamped with `nextHolderVersion()` exactly like a hold write, so
-  sequential saves each land independently without pinning the context clock.
+- **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
+  staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
+  holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
+  ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
+  scope), each write through a scoped lock is stamped with `nextHolderVersion()` exactly like a hold
+  write, so sequential saves each land independently without pinning the context clock. A scoped lock
+  acquired outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
+  (ImmediateTransaction's `releaseRecordLocks()` is a no-op for record locks).
 - **Scoped → hold upgrade.** Calling `lock(id, { hold: true })` while the same transaction already
   holds a scoped lock on the same key upgrades it: the scoped handle is unregistered and its `released`
   flag is set directly (not via `release()`) so the native key remains locked, and a fresh hold handle
@@ -206,15 +208,13 @@ subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: repl
 grant/release as control transaction-log entries with Ricart–Agrawala-style (timestamp, nodeId)
 tiebreaking; once every node participates in the grant protocol, lock() becomes a cluster-wide verb.
 
-**Acquisition timestamp and mixed transactions (Rules C & D).** In an `ImmediateTransaction` context
-(no explicit `transaction()` scope) every save — hold or scoped — is stamped by
-`handle.nextHolderVersion()` so sequential saves each get a distinct, monotonically-increasing version
-while remaining ≤ any concurrent write at real time. In an explicit OPEN transaction a hold write
-pins the transaction clock to `handle.acquiredAt` on its first save; subsequent saves in the same
-transaction reuse that pinned clock. If the transaction clock was already set later than `acquiredAt`
-(non-hold writes ran after the hold was acquired) and the record has been modified by another writer
-since `acquiredAt`, `DatabaseTransaction.save()` throws 409 (`"Record changed during the hold"`).
-When no concurrent modification occurred the writes proceed safely.
+**Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
+`transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
+sequential saves each get a distinct, monotonically-increasing version while remaining ≤ any
+concurrent write at real time. In an explicit OPEN transaction, when the hold is the first write
+(no prior staged writes), the transaction clock is pinned to `handle.acquiredAt`; subsequent saves
+reuse that pinned clock. When non-hold writes were staged before the hold was acquired the clock is
+left alone (best-effort ordering; no 409 is thrown for the mixed-write case).
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after

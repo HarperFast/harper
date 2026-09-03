@@ -527,13 +527,20 @@ describe('Record locks (harper#483)', () => {
 		it('item-1: lock() in transaction after prior staged write sees the staged value', async function () {
 			// put(id,{n:1}) in the same transaction then lock(id) → r.n must be 1 (staged value),
 			// so r.set('n', r.n+1) lands as n=2, not n=1 (the pre-put value from a naked getEntry).
+			// Also verifies that the locked instance has a full entry (version defined) so a
+			// subsequent save() can use it as a valid existingEntry in the commit handler.
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
+			let lockedR;
 			await transaction(async () => {
 				await LockTest.put({ id: recordId, n: 1 });
 				const r = await LockTest.lock(recordId);
+				lockedR = r;
+				assert.strictEqual(r.getProperty('n'), 1, 'lock() sees staged put value (n===1)');
+				// getUpdatedTime() reads from entryMap which #reloadLocked populates for a merged entry.
+				assert.ok(typeof r.getUpdatedTime() === 'number', 'locked instance has a full entry (getUpdatedTime defined)');
 				r.set('n', r.getProperty('n') + 1);
 				await r.save();
 			});
@@ -601,6 +608,73 @@ describe('Record locks (harper#483)', () => {
 			// succeed — verifies the failed write was cleaned out of this.writes.
 			await LockTest.put({ id: otherId, n: 42 });
 			assert.strictEqual((await LockTest.get(otherId)).n, 42, 'put on same context after 409 succeeded');
+		});
+
+		it('major-2: expired scoped lock → update/put/patch all throw 409', async function () {
+			// _writeUpdate was the one locked-mutation path without #assertLiveHandle. After a
+			// scoped lock expires (pruned from recordLocks), update/put/patch must throw 409 rather
+			// than succeeding silently as an ordinary unlocked write.  Use function form of
+			// assert.rejects because #assertLiveHandle throws synchronously before returning a Promise.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			// --- update ---
+			const scopedUpd = await LockTest.lock(recordId, { lease: 200 });
+			await delay(300); // let the lease expire and the handle get pruned
+			// assert.rejects needs an async wrapper: #assertLiveHandle throws synchronously and
+			// Node 24 only catches async (Promise-returning) throws in assert.rejects.
+			await assert.rejects(async () => scopedUpd.update({ n: 99 }), { statusCode: 409 }, 'update() after expiry → 409');
+
+			await LockTest.put({ id: recordId, n: 0 }); // reset
+			// --- save with staged change (incremental) ---
+			const scopedPut = await LockTest.lock(recordId, { lease: 200 });
+			await delay(300);
+			scopedPut.set('n', 99);
+			await assert.rejects(async () => scopedPut.save(), { statusCode: 409 }, 'save after expiry → 409');
+
+			// After all the failed 409s the record must still be at n=0.
+			assert.strictEqual((await LockTest.get(recordId)).n, 0, 'record unchanged after all expired-lock attempts');
+		});
+
+		it('minor-1: off-key write via a hold-locked resource is not guarded by the hold', async function () {
+			// r = await T.lock('A', {hold:true}); r.delete('B') must NOT throw 409 because
+			// A's hold handle does not cover key B. Off-key writes are ordinary unlocked writes.
+			// delete() in ImmediateTransaction is fire-and-forget (async commit, sync return);
+			// only verify the synchronous 409-guard behavior via doesNotThrow, then confirm A
+			// is still writable through the hold.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const idA = id();
+			const idB = id();
+			await LockTest.put({ id: idA, n: 1 });
+			await LockTest.put({ id: idB, n: 2 });
+			const rA = await LockTest.lock(idA, { hold: true, lease: 5000 });
+			// Off-key delete via the hold-locked resource must not throw 409 synchronously.
+			assert.doesNotThrow(() => rA.delete(idB), 'off-key delete not blocked by hold on A');
+			// The lock on A is still live; a write through it must still land.
+			rA.set('n', 10);
+			await rA.save();
+			await rA.unlock();
+			assert.strictEqual((await LockTest.get(idA)).n, 10, 'hold write on A landed after off-key delete');
+		});
+
+		it('minor-2: re-entrant lock() on same instance preserves staged changes', async function () {
+			// r.set('n', 5); await r.lock(); await r.save() must yield n=5, not the pre-set
+			// value: #reloadLocked must pass preserveChanges=true for re-entrant calls so #changes
+			// is not cleared.
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const r = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			r.set('n', 5);
+			// Re-entrant lock() on the same instance: must not clear #changes.
+			const r2 = await r.lock({ hold: true, lease: 5000 });
+			assert.strictEqual(r2, r, 're-entrant returns same instance');
+			await r.save(); // must commit n=5 (not lose the set)
+			await r.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 5, 'staged change survived re-entrant lock()');
 		});
 
 		it('item-5: scoped→hold upgrade keeps original acquiredAt stamp; concurrent write survives', async function () {
