@@ -565,14 +565,45 @@ function updateAuditFloor(
  * wider one, and a store whose floor is unknown stays unknown rather than being talked down to a
  * cutoff that says nothing about the history it has already lost.
  */
+/**
+ * The bound a prune should use — and record — in place of an unbounded cutoff.
+ *
+ * `Infinity` is a legitimate thing for a caller to *mean* ("remove all of it") and a ruinous thing to
+ * store: it is the unknown sentinel, and the sentinel is absorbing. `raiseAuditFloor`'s lock-free
+ * pre-check skips any present record no cutoff exceeds, and `establishAuditFloor` skips any store that
+ * has one, so a floor at `Infinity` never comes back down — for the whole database, including sibling
+ * tables whose own history was never touched. One `deleteHistory(Infinity)` would otherwise retire the
+ * accessor for that database permanently (#2458).
+ *
+ * So bound it by what exists: strictly above the newest key currently in the log, and never below the
+ * clock. Nothing already written can escape that bound, and a caller that passes it as the prune's
+ * range end as well as its floor cannot remove anything the floor does not cover — which is what makes
+ * the write-ahead ordering hold without an infinite bound. An entry written *after* this returns is
+ * simply not history the call asked to remove.
+ *
+ * Only `Infinity` is clamped. NaN, negatives and `-0` fall through to `raiseAuditFloor`, which rejects
+ * them: they are ordered keys the prune range would honor, not bounds anyone meant.
+ */
+export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
+	if (cutoff !== Infinity) return cutoff;
+	let bound = Date.now();
+	for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
+		if (typeof newest === 'number' && newest >= bound) bound = newest + 1;
+	}
+	return bound;
+}
+
 export function raiseAuditFloor(auditStore: any, cutoff: number): void {
 	// Throw rather than no-op on a bound we will not store. A NaN or negative cutoff is NOT harmless
 	// here: transactionKeyEncoder writes keys as raw float64, so NaN (0x7FF8…) and negatives (sign bit
 	// set) sort ABOVE every real timestamp, and `getRange({ start: 1, end: NaN })` therefore spans the
 	// whole log. `delete_transaction_logs_before` reaches that via Number.parseInt on a non-numeric
 	// timestamp, so silently declining the floor update would leave the prune deleting everything.
-	// Infinity is different and IS stored: `deleteHistory(Infinity)` legitimately removes all history,
-	// and Infinity decodes back to "unknown", leaving no cursor reading as safe.
+	// Infinity is accepted and IS stored, decoding back to "unknown" — but no production caller passes
+	// it any more, because storing it retires the accessor for the whole database (see
+	// `boundedAuditPruneEnd`, which `deleteHistory` uses to bound an unbounded request, and the 400 the
+	// bridge returns for one). Kept accepted rather than rejected so the sentinel stays reachable for a
+	// caller that genuinely cannot bound its prune; there is currently no such caller.
 	// `-0` and a non-number slip past a naive `< 0` check but are still ordered keys the range honors:
 	// -0 sets the float64 sign bit and a non-number takes the ordered-binary branch of the key encoder,
 	// so both sort outside the timestamp space the prune means to bound.

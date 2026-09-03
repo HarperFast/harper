@@ -548,6 +548,35 @@ describe('audit staleness floor', () => {
 			);
 		});
 
+		it('deleteHistory(Infinity) leaves the database a usable floor, not the absorbing sentinel', async function () {
+			// Infinity is the unknown sentinel AND absorbing: the lock-free pre-check skips any record no
+			// cutoff exceeds and establishAuditFloor skips any store that has one, so recording it would
+			// retire `oldestRetainedAuditTime` for this database forever. The floor is database-scoped, so
+			// clearing ONE table's history would take every sibling's consumers down with it, permanently
+			// (#2458). A finite bound above everything in the log is honest about what was removed and
+			// still lets later cursors resume.
+			if (Audited.auditStore.reusableIterable) return this.skip(); // deleteHistory only raises on LMDB
+			const shared = 'auditFloorDB_infinite';
+			const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];
+			const wiped = table({ table: 'WipedTable', database: shared, attributes });
+			const spared = table({ table: 'SparedTable', database: shared, attributes });
+			await wiped.put('w-1', { name: 'one' });
+			await spared.put('s-1', { name: 'one' });
+
+			await wiped.deleteHistory(Infinity);
+
+			const floor = wiped.oldestRetainedAuditTime();
+			assert.ok(Number.isFinite(floor), `the floor must stay finite, got ${floor}`);
+			assert.strictEqual(spared.oldestRetainedAuditTime(), floor, 'precondition: one floor per database');
+			// the sibling was never touched, so a cursor taken after the wipe must still resume
+			await spared.put('s-2', { name: 'two' });
+			const later = auditEntries(spared.auditStore)
+				.map((entry) => entry.localTime)
+				.filter((t) => t >= floor);
+			assert.ok(later.length > 0, 'a sibling write after the wipe must sit at or above the floor');
+			assert.strictEqual(canResumeFrom(later[later.length - 1], floor), true, 'and must read as resumable');
+		});
+
 		it('deleteHistory with an unbounded endTime leaves no cursor readable as safe', async function () {
 			if (Audited.auditStore.reusableIterable) return this.skip(); // RocksTransactionLogStore.remove() is a no-op
 			const cleared = tableInOwnDatabase('Cleared');

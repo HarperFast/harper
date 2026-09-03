@@ -72,7 +72,14 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry, raiseAuditFloor, getAuditFloor } from './auditStore.ts';
+import {
+	HAS_BLOBS,
+	auditRetention,
+	removeAuditEntry,
+	raiseAuditFloor,
+	boundedAuditPruneEnd,
+	getAuditFloor,
+} from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -5555,13 +5562,22 @@ export function makeTable(options) {
 			let entriesDeleted = 0;
 			// LMDB only: RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory removes
 			// nothing and must not claim it did.
-			if (!isRocksDB) raiseAuditFloor(auditStore, endTime);
+			// An unbounded request must not become an unbounded FLOOR: Infinity is the absorbing unknown
+			// sentinel, so recording it would retire `oldestRetainedAuditTime` for this whole database —
+			// every sibling table included, permanently (#2458). `boundedAuditPruneEnd` substitutes a
+			// finite bound above everything currently in the log, and the scan below uses that same value
+			// as its range end, so the prune provably cannot remove an entry the floor does not cover.
+			let pruneEnd = endTime;
+			if (!isRocksDB) {
+				pruneEnd = boundedAuditPruneEnd(auditStore, endTime);
+				raiseAuditFloor(auditStore, pruneEnd);
+			}
 			try {
 				for (const auditRecord of auditStore.getRange({
 					// must not be zero: 0 encodes to all zero bytes and so overlaps the symbol keys, as in
 					// getHistory below
 					start: 1,
-					end: endTime,
+					end: pruneEnd,
 				})) {
 					await rest(); // yield to other async operations
 					if (auditRecord.tableId !== tableId) continue;
