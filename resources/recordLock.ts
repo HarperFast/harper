@@ -160,6 +160,11 @@ class KeyLockHandle implements RecordLockHandle {
 		clearTimeout(this.#timer);
 		this.expiresAt = Date.now() + lease;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), lease).unref();
+		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
+		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
+		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
+		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
+		this.nextHolderVersion();
 	}
 }
 

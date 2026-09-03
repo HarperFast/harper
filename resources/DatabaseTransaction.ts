@@ -494,6 +494,9 @@ export class DatabaseTransaction implements Transaction {
 	declare commitChainHead?: DatabaseTransaction;
 	// O(1) lookup in recordLockFor; only lock() handles are registered here (no gate handles).
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
+	// Tracks in-flight acquireRecordKey calls so concurrent lock() calls for the same key in one
+	// link (e.g. Promise.all([T.lock(id), T.lock(id)])) can coalesce rather than self-block.
+	declare pendingLocks?: Map<any, Map<unknown, Promise<RecordLockHandle>>>;
 
 	setCommitPhase(committing: boolean): void {
 		// A commit phase covers the sealed write set across the whole multi-store chain.
@@ -735,6 +738,21 @@ export class DatabaseTransaction implements Transaction {
 	unregisterRecordLock(handle: RecordLockHandle): void {
 		const storeMap = this.recordLocks?.get(handle.store);
 		if (storeMap?.get(handle.keyId) === handle) storeMap.delete(handle.keyId);
+	}
+
+	registerPendingLock(store: any, keyId: unknown, pending: Promise<RecordLockHandle>): void {
+		if (!this.pendingLocks) this.pendingLocks = new Map();
+		let storeMap = this.pendingLocks.get(store);
+		if (!storeMap) this.pendingLocks.set(store, (storeMap = new Map()));
+		storeMap.set(keyId, pending);
+	}
+
+	pendingLockFor(store: any, keyId: unknown): Promise<RecordLockHandle> | undefined {
+		return this.pendingLocks?.get(store)?.get(keyId);
+	}
+
+	unregisterPendingLock(store: any, keyId: unknown): void {
+		this.pendingLocks?.get(store)?.delete(keyId);
 	}
 
 	/** Release every transaction-scoped lock() handle this link owns. */

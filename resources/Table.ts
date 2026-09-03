@@ -2408,8 +2408,8 @@ export function makeTable(options) {
 		 * Static entry point: `Table.lock(id, options?)` — creates an instance in the ambient or a
 		 * fresh context and delegates to the instance lock(). This shadows Resource.static lock so
 		 * that both callers share the same transaction link (required for cross-instance upgrade
-		 * detection).  Authorization is enforced by allowUpdate via the instance lock guard instead
-		 * of the generic transactional wrapper, which would create an isolated context per call.
+		 * detection).  lock() is an in-process API with no authorization hook of its own; it is not
+		 * protocol-dispatched, so no allowUpdate/allowCreate check runs on acquisition.
 		 */
 		static lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
 			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
@@ -2466,8 +2466,39 @@ export function makeTable(options) {
 				return Promise.resolve(this.#reloadLocked(id, scoped, true));
 			}
 			const key = lockAttemptKey(tableId, id);
-			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
+			// Coalesce concurrent lock() calls for the same key inside one link so they don't
+			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls
+			// reach tryLock before either registers, making the second park against the first.
+			const pending = link.pendingLockFor(primaryStore, keyId);
+			if (pending) {
+				// Wait for the in-flight acquisition, then take the re-entrant path as if
+				// recordLockFor had found it.  If the first attempt timed out, re-enter so
+				// the second caller gets its own timeout.
+				return pending.then(
+					() => {
+						const acquired = link.recordLockFor(primaryStore, keyId);
+						if (acquired && !acquired.released && !acquired.expired) {
+							if (resolved.hold && !acquired.hold) acquired.upgradeToHold(resolved.lease);
+							return this.#reloadLocked(id, acquired, true);
+						}
+						return this.lock(target, options) as Promise<any>;
+					},
+					() => this.lock(target, options) as Promise<any>
+				);
+			}
+			const pendingPromise = acquireRecordKey(
+				link,
+				primaryStore,
+				key,
+				keyId,
+				resolved.timeout,
+				resolved.lease,
+				resolved.hold
+			);
+			link.registerPendingLock(primaryStore, keyId, pendingPromise);
+			return pendingPromise.then(
 				(handle) => {
+					link.unregisterPendingLock(primaryStore, keyId);
 					link.registerRecordLock(handle);
 					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
 						// Explicit transaction() (not ImmediateTransaction): pin the clock to
@@ -2499,6 +2530,10 @@ export function makeTable(options) {
 					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
 					// with nextHolderVersion() for both scoped and hold handles.
 					return this.#reloadLocked(id, handle);
+				},
+				(err) => {
+					link.unregisterPendingLock(primaryStore, keyId);
+					throw err;
 				}
 			);
 		}

@@ -207,6 +207,8 @@ Consequences that shape the code:
 - **`lock()` is an in-process verb only.** `Resource.lock` is a static verb registered through
   `transactional()` but no protocol reaches it: REST answers 501, `KNOWN_METHODS` does not include it,
   and neither OpenAPI nor MCP enumerate it. Exposing lock/unlock over a protocol is a Phase 1 decision.
+  Acquisition itself has no authorization hook — lock() is not protocol-dispatched, so no
+  allowUpdate/allowCreate check runs when a caller acquires a lock.
 - **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table `allowUpdate`/`allowWrite`
   hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence.
 

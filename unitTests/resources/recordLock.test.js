@@ -4,7 +4,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { transaction } = require('#src/resources/transaction');
+const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
 const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
@@ -896,31 +896,72 @@ describe('Record locks (harper#483)', () => {
 
 		it('minor-3: second lock in same transaction does not shift the pinned clock', async function () {
 			// The first lock pins link.timestamp to A.acquiredAt.  A second lock on a different
-			// key B must NOT re-pin the clock to B.acquiredAt (which is later).  We verify by
-			// checking that A's write version is stamped near A.acquiredAt — well before the
-			// 20 ms delay that separates A.acquiredAt from B.acquiredAt.
+			// key B must NOT re-pin the clock to B.acquiredAt (which is later).  We verify the
+			// invariant directly: capture link.timestamp after locking A and assert it is
+			// unchanged after locking B — no wall-clock margins required.
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const idA = id();
 			const idB = id();
 			await LockTest.put({ id: idA, n: 0 });
 			await LockTest.put({ id: idB, n: 0 });
-			const beforeLockA = Date.now();
+			let timestampAfterLockA;
 			await transaction(async () => {
-				const rA = await LockTest.lock(idA); // clock pinned to rA.acquiredAt (≈ beforeLockA)
-				await delay(20); // ensure T_B is clearly later than T_A
-				await LockTest.lock(idB); // must NOT re-pin clock to T_B (≈ beforeLockA + 20 ms)
+				const rA = await LockTest.lock(idA); // clock pinned to rA.acquiredAt
+				timestampAfterLockA = contextStorage.getStore().transaction.timestamp;
+				assert.ok(timestampAfterLockA > 0, 'clock pinned after locking A');
+				await delay(20); // ensure T_B is well after T_A
+				await LockTest.lock(idB); // must NOT re-pin the clock
+				const timestampAfterLockB = contextStorage.getStore().transaction.timestamp;
+				assert.strictEqual(timestampAfterLockB, timestampAfterLockA, 'clock unchanged after locking B');
 				rA.set('n', 1);
 				await rA.save();
 			});
-			const writeVersion = entryOf(idA).version;
-			// With fix: stamped at T_A (≈ beforeLockA); without fix: stamped at T_B (≈ beforeLockA + 20 ms).
-			// Allow 15 ms above beforeLockA for lock-acquisition overhead — well under the 20 ms delay.
-			assert.ok(
-				writeVersion <= beforeLockA + 15,
-				`write version ${writeVersion.toFixed(3)} should be near rA.acquiredAt (~${beforeLockA}), not rB.acquiredAt (~${beforeLockA + 20})`
-			);
 			assert.strictEqual((await LockTest.get(idA)).n, 1, 'write landed');
+		});
+
+		it('major: post-commit save after scoped→hold upgrade lands (nextHolderVersion counter primed)', async function () {
+			// upgradeToHold() now primes the nextHolderVersion counter so that a CLOSED-path save
+			// (e.g. after the enclosing transaction commits) gets acquiredAt+MIN_STEP, not acquiredAt
+			// again.  Without the prime, the in-transaction save and the post-commit save both stamp
+			// at acquiredAt (LWW tie on same node) and the post-commit write is silently dropped.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdRef;
+			await transaction(async () => {
+				const s = await LockTest.lock(recordId); // scoped; pins clock to T_A
+				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 }); // upgradeToHold → primes counter
+				s.set('n', 1);
+				await s.save(); // stamped at T_A (link.timestamp)
+			}); // commit; hold survives
+			// Without prime: nextHolderVersion() = T_A (tie with in-transaction write) → dropped.
+			// With prime: nextHolderVersion() = T_A + MIN_STEP → lands.
+			holdRef.set('n', 2);
+			await holdRef.save();
+			await holdRef.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'post-commit hold write landed (not dropped by LWW tie)');
+		});
+
+		it('minor-2: concurrent lock() calls for same key in one transaction coalesce, not self-block', async function () {
+			// Promise.all([T.lock(id), T.lock(id)]) inside one transaction() scope: both calls
+			// reach the lock() path before either has registered its handle.  Without coalescing,
+			// the second tryLock parks against the first's own handle and blocks until timeout.
+			// With pendingLocks: the second call awaits the first's acquisition and takes the
+			// re-entrant path.  Test must complete well under the default lease timeout.
+			if (isLMDB) return this.skip();
+			this.timeout(1000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await transaction(async () => {
+				const [a, b] = await Promise.all([LockTest.lock(recordId), LockTest.lock(recordId)]);
+				assert.ok(a, 'first lock() resolved');
+				assert.ok(b, 'second lock() resolved (coalesced, not timed-out)');
+				a.set('n', 1);
+				await a.save();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write landed');
 		});
 	});
 
