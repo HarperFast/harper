@@ -250,6 +250,31 @@ describe('Record locks (harper#483)', () => {
 			);
 		});
 
+		it('a lock that expires before commit aborts the whole transaction with 409', async function () {
+			// A write staged through the lock but not yet saved is saved by commit(), so its 409 comes
+			// from inside commit(). Retries are keyed to the native conflict codes (RETRY_NOW/ERR_BUSY/
+			// ERR_TRY_AGAIN), not to a ClientError, so the throw leaves commit() rather than dropping
+			// the write and committing the rest — the scope's other writes roll back with it.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const lockedId = id();
+			const plainId = id();
+			await LockTest.put({ id: lockedId, n: 1 });
+			await LockTest.put({ id: plainId, n: 1 });
+			await assert.rejects(
+				transaction(async () => {
+					await LockTest.put({ id: plainId, n: 99 });
+					const record = await LockTest.lock(lockedId, { lease: MIN_LOCK_LEASE_MS });
+					record.update({ n: 5 }); // staged through the lock, saved at commit
+					await delay(MIN_LOCK_LEASE_MS + 60);
+				}),
+				(error) => error.statusCode === 409,
+				'the caller is told, rather than getting a partial commit'
+			);
+			assert.strictEqual((await LockTest.get(lockedId)).n, 1, 'the locked write did not land');
+			assert.strictEqual((await LockTest.get(plainId)).n, 1, "and neither did the scope's other write");
+		});
+
 		it('static lock() accepts a transaction in the context position', async function () {
 			// `transactional()` takes a bare DatabaseTransaction where a context goes; lock() matches.
 			if (isLMDB) return this.skip();
