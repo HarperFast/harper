@@ -638,10 +638,21 @@ export function establishAuditFloor(auditStore: any): void {
 		// Not bare Date.now(): a clock that has rolled back would bootstrap a floor BELOW history this
 		// database may already have pruned, certifying a stale cursor. The newest retained entry is a
 		// lower bound the clock cannot argue with — everything at or above it is demonstrably still here —
-		// so take whichever is later. Bounded by what survives, and RocksTransactionLogStore.getKeys() is
-		// unimplemented, so there this reduces to Date.now(); an accepted limitation of stamping rather
-		// than leaving a floorless store permanently unknown, which would make every upgraded deployment
-		// fail closed forever.
+		// so take whichever is later.
+		//
+		// It narrows that hole; it does not close it, because the bound covers what SURVIVES rather than
+		// what existed. A legacy `deleteHistory` removes one table's entries below its endTime out of the
+		// shared log, so a table whose entries were the newest and all fell below that bound leaves the
+		// log's newest survivor being a sibling's OLDER entry — removed history above every surviving key.
+		// A clock rolled back to between the two then stamps an epoch below entries that are gone, and a
+		// cursor in that window resumes over the gap. Nothing in surviving state distinguishes that case,
+		// which is why the alternative is `AUDIT_FLOOR_UNKNOWN` for every unmarked store rather than a
+		// smarter bound (cb1kenobi on #2458). Also unclosed: RocksTransactionLogStore.getKeys() is
+		// unimplemented, so on that engine this reduces to Date.now() outright.
+		//
+		// Both are accepted costs of stamping rather than leaving a floorless store permanently unknown,
+		// which would make every upgraded deployment fail closed forever — a recorded ruling in #2458's
+		// decision log, not an oversight.
 		let epoch = Date.now();
 		for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
 			if (typeof newest === 'number' && newest > epoch) epoch = newest;
