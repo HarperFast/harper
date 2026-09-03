@@ -1752,18 +1752,9 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		}
 	}
 
-	// Scoped locks in an ImmediateTransaction context persist across individual saves;
-	// they are released only by unlock() or their lease, not by each commit.
-	releaseRecordLocks(): void {
-		const recordLocks = this.recordLocks;
-		if (!recordLocks) return;
-		for (const [store, storeMap] of recordLocks) {
-			for (const [keyId, handle] of storeMap) {
-				// hold handles: released by unlock(); scoped in immediate context: ditto.
-				// Nothing to release here — both categories must survive this commit.
-			}
-		}
-	}
+	// Without an explicit transaction() a lock is released only by unlock() or its lease, never by
+	// the per-write commit.
+	releaseRecordLocks(): void {}
 
 	declare _timestamp: number;
 	// @ts-expect-error accessor overriding property
