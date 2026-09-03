@@ -556,9 +556,12 @@ function updateAuditFloor(
  * Ordering it first also means it covers a prune that removes less than `cutoff` spans — a RocksDB
  * purge that finds no whole droppable file, a retention pass that stops at MAX_DELETES_PER_CLEANUP
  * with a large backlog still eligible. Over-reporting costs a consumer one unnecessary resync;
- * under-reporting loses its data silently. The over-report is also bounded by the thing that already
- * bounds the promise: the retention paths pass `Date.now() - auditRetention`, so the floor never
- * climbs above the horizon `logging.auditRetention` already declines to retain past.
+ * under-reporting loses its data silently. For the three retention paths the over-report is bounded
+ * by the thing that already bounds the promise — they pass `Date.now() - auditRetention`, so the
+ * floor cannot climb above the horizon `logging.auditRetention` already declines to retain past. The
+ * two operator-supplied bounds (`deleteHistory`, and the bridge's whole-database purge) have no such
+ * ceiling of their own and must be run through `boundedAuditPruneEnd` first; a bound above everything
+ * reachable would otherwise be recorded verbatim and never come down.
  *
  * Throws if the floor cannot be persisted, which is why it is called first — the throw is what stops
  * the prune from proceeding unrecorded. Never lowers the floor, so a narrower prune cannot undo a
@@ -581,16 +584,27 @@ function updateAuditFloor(
  * the write-ahead ordering hold without an infinite bound. An entry written *after* this returns is
  * simply not history the call asked to remove.
  *
- * Only `Infinity` is clamped. NaN, negatives and `-0` fall through to `raiseAuditFloor`, which rejects
- * them: they are ordered keys the prune range would honor, not bounds anyone meant.
+ * `Infinity` is only the extreme case. Any cutoff above this bound is the same defect by degree: a
+ * finite year-2286 bound (`Date.now() * 1000`, or a bare `'9999999999999'`) is equally unreachable
+ * and equally permanent, and entries written after the prune then land *below* the recorded floor,
+ * so the floor's promise — nothing after it was pruned — is false about history that is still there.
+ * Every cutoff is therefore clamped, not just the unbounded one.
+ *
+ * NaN, negatives and `-0` fall through unchanged to `raiseAuditFloor`, which rejects them: they are
+ * ordered keys the prune range would honor, not bounds anyone meant. `cutoff > bound` rather than
+ * `Math.min` keeps that so — NaN fails the comparison and is returned as-is to be rejected.
+ *
+ * On RocksDB `getKeys` is unimplemented and returns `[]`, so the bound reduces to `Date.now()`. A
+ * key above the clock therefore survives a purge that asked for it on that engine. That is the safe
+ * direction: the entry is kept and the floor stays honest, where the alternative removes history the
+ * floor does not cover.
  */
 export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
-	if (cutoff !== Infinity) return cutoff;
 	let bound = Date.now();
 	for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
 		if (typeof newest === 'number' && newest >= bound) bound = newest + 1;
 	}
-	return bound;
+	return cutoff > bound ? bound : cutoff;
 }
 
 export function raiseAuditFloor(auditStore: any, cutoff: number): void {

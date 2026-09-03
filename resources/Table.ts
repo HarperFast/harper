@@ -5562,11 +5562,14 @@ export function makeTable(options) {
 			let entriesDeleted = 0;
 			// LMDB only: RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory removes
 			// nothing and must not claim it did.
-			// An unbounded request must not become an unbounded FLOOR: Infinity is the absorbing unknown
-			// sentinel, so recording it would retire `oldestRetainedAuditTime` for this whole database —
-			// every sibling table included, permanently (#2458). `boundedAuditPruneEnd` substitutes a
-			// finite bound above everything currently in the log, and the scan below uses that same value
-			// as its range end, so the prune provably cannot remove an entry the floor does not cover.
+			// A request unbounded ABOVE must not become a floor unbounded above: `raiseAuditFloor` only
+			// raises and `establishAuditFloor` skips a store that has a record, so a floor above anything
+			// reachable never comes down — for this whole database, every sibling table included,
+			// permanently (#2458). Infinity is the absorbing unknown sentinel and the worst case, but a
+			// finite year-2286 bound is the same defect by degree, and entries written after this call
+			// would land below such a floor. `boundedAuditPruneEnd` clamps any cutoff to just above the
+			// newest key in the log, and the scan below uses that same value as its range end, so the
+			// prune provably cannot remove an entry the floor does not cover.
 			let pruneEnd = endTime;
 			if (!isRocksDB) {
 				pruneEnd = boundedAuditPruneEnd(auditStore, endTime);

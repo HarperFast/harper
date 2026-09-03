@@ -136,10 +136,30 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 		}
 	});
 
-	it('raises the audit staleness floor to the purge cutoff (harper#2447)', async () => {
-		const timestamp = Date.now() + 2000;
-		await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp });
-		assert.strictEqual(TableA.oldestRetainedAuditTime(), timestamp);
-		assert.strictEqual(TableB.oldestRetainedAuditTime(), timestamp, 'the floor is database-scoped');
+	it('raises the audit staleness floor, clamped to what the log can reach (harper#2447)', async () => {
+		// `Date.now() + 2000` is the legitimate "purge everything" idiom, so it must be accepted — but
+		// recorded as the bound the prune could actually have covered, not the future instant asked for.
+		const requested = Date.now() + 2000;
+		await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp: requested });
+		const floor = TableA.oldestRetainedAuditTime();
+		assert.ok(Number.isFinite(floor) && floor > 0, `a floor must be recorded, got ${floor}`);
+		assert.ok(floor < requested, `the floor must not be recorded above the log's reach, got ${floor}`);
+		assert.strictEqual(TableB.oldestRetainedAuditTime(), floor, 'the floor is database-scoped');
+	});
+
+	it('a far-future prune bound does not pin the whole database floor (harper#2458)', async () => {
+		// Both of these are FINITE, so both cleared the guard above and were recorded verbatim. A floor
+		// only ever rises — `raiseAuditFloor` skips any record no cutoff exceeds and `establishAuditFloor`
+		// skips a store that has one — so a year-2286 or year-55000 floor retires
+		// `oldestRetainedAuditTime` for every table in this database permanently, including for cursors
+		// saved after the call. Same outcome as the Infinity sentinel, differing only in degree.
+		for (const timestamp of [Date.now() * 1000, '9999999999999']) {
+			const results = await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp });
+			assert.strictEqual(typeof results.log_files_deleted, 'number', `${timestamp} should be accepted`);
+			const floor = TableA.oldestRetainedAuditTime();
+			// at or below the present is exactly the property that keeps every later cursor resumable
+			assert.ok(floor <= Date.now() + 1, `${timestamp} left the floor at ${floor}, in the future`);
+			assert.strictEqual(TableB.oldestRetainedAuditTime(), floor, 'and it is the whole database that pays');
+		}
 	});
 });

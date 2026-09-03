@@ -25,7 +25,7 @@ import type {
 import { collapseData } from '../../resources/tracked.ts';
 import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
-import { raiseAuditFloor } from '../../resources/auditStore.ts';
+import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
@@ -567,8 +567,16 @@ export class ResourceBridge extends BridgeMethods {
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
-						raiseAuditFloor(table.auditStore, before);
-						const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
+						// Clamp before recording: an operator-supplied bound has no ceiling of its own, and a
+						// floor above everything reachable never comes down — `raiseAuditFloor` only raises and
+						// `establishAuditFloor` skips a store that has a record. `Date.now() * 1000`, or a bare
+						// '9999999999999', would otherwise pin this whole database's floor in the year 2286+,
+						// retiring `oldestRetainedAuditTime` for every table in it including cursors saved after
+						// this call (#2458). The purge takes the same clamped bound, so it cannot remove an entry
+						// the floor does not cover.
+						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
+						raiseAuditFloor(table.auditStore, pruneEnd);
+						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
 						break;

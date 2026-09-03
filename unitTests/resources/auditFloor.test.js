@@ -577,6 +577,36 @@ describe('audit staleness floor', () => {
 			assert.strictEqual(canResumeFrom(later[later.length - 1], floor), true, 'and must read as resumable');
 		});
 
+		it('deleteHistory with a far-future finite bound stays reachable too', async function () {
+			// The same defect as Infinity by degree, and the case Infinity's clamp used to miss: a bare
+			// '9999999999999' or a Date.now()*1000 ms/µs slip is FINITE, so it cleared both the bridge's
+			// finiteness guard and `boundedAuditPruneEnd`'s old `cutoff !== Infinity` early return, and was
+			// recorded verbatim. A floor only ever rises, so every entry written afterwards lands BELOW it
+			// and the accessor is retired for the whole database just as permanently (#2458).
+			if (Audited.auditStore.reusableIterable) return this.skip(); // deleteHistory only raises on LMDB
+			const shared = 'auditFloorDB_farFuture';
+			const attributes = [{ name: 'id', isPrimaryKey: true }, { name: 'name' }];
+			const wiped = table({ table: 'FutureWiped', database: shared, attributes });
+			const spared = table({ table: 'FutureSpared', database: shared, attributes });
+			await wiped.put('w-1', { name: 'one' });
+			await spared.put('s-1', { name: 'one' });
+
+			const absurd = Date.now() * 1000; // a ms value read as µs — about the year 55000
+			await wiped.deleteHistory(absurd);
+
+			const floor = wiped.oldestRetainedAuditTime();
+			assert.ok(floor < absurd, `the floor must be clamped below the requested bound, got ${floor}`);
+			assert.ok(floor <= Date.now() + 1, `and must not be left sitting in the future, got ${floor}`);
+			// The property the verbatim floor destroyed: a write after the prune is still resumable. The
+			// sibling was never pruned, so this must hold for it regardless of what `wiped` asked for.
+			await spared.put('s-2', { name: 'two' });
+			const later = auditEntries(spared.auditStore)
+				.map((entry) => entry.localTime)
+				.filter((t) => t >= floor);
+			assert.ok(later.length > 0, 'a write after the prune must sit at or above the floor');
+			assert.strictEqual(canResumeFrom(later[later.length - 1], floor), true, 'and must read as resumable');
+		});
+
 		it('deleteHistory with an unbounded endTime leaves no cursor readable as safe', async function () {
 			if (Audited.auditStore.reusableIterable) return this.skip(); // RocksTransactionLogStore.remove() is a no-op
 			const cleared = tableInOwnDatabase('Cleared');
