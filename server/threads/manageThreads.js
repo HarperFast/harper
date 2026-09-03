@@ -347,6 +347,12 @@ listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
  * Exported because a worker that must NOT join the serving topology still needs exactly these: a bare
  * `new Worker()` cannot even load a module that imports JSON. Shared rather than copied so the two spawn
  * paths cannot drift on something this load-bearing.
+ *
+ * `preloads: false` omits the configured APM agents. Two reasons, and the second is the load-bearing one:
+ * a throwaway certification thread is not something an APM should see one of per deploy; and
+ * `getImportModules()`/`getRequireModules()` MEMOIZE on first call, so resolving them from a spawn that
+ * happens earlier than a serving worker would freeze the list against whatever config was live then. Before
+ * certification existed, nothing resolved them until the first real worker started.
  */
 /** Whether the process is tearing down, so no new worker of any kind should be started. */
 function isProcessShuttingDown() {
@@ -370,7 +376,7 @@ function buildWorkerResourceLimits(threadCount) {
 	};
 }
 
-function buildWorkerExecArgv() {
+function buildWorkerExecArgv({ preloads = true } = {}) {
 	const isBun = typeof globalThis.Bun !== 'undefined';
 	const execArgv = isBun
 		? []
@@ -393,7 +399,7 @@ function buildWorkerExecArgv() {
 	// which safe mode must not resolve or execute.
 	const isSafeMode =
 		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
-	if (!isBun && !isSafeMode) {
+	if (!isBun && !isSafeMode && preloads) {
 		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}

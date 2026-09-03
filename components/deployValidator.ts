@@ -9,7 +9,6 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 import { HDB_ROOT_DIR_NAME } from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { Resources } from '../resources/Resources.ts';
 import { loadComponent, rootApplicationLoadOptions, setErrorReporter } from './componentLoader.ts';
 import type { Scope } from './Scope.ts';
 
@@ -40,14 +39,26 @@ async function certify(): Promise<void> {
 	if (!loadOptions.ok) {
 		throw new Error(`Cannot certify ${componentName}: its root-config mount could not be resolved`);
 	}
-	// The candidate's own load-time error, not just whether the promise rejected: the loader reports some
-	// failures through the error reporter while resolving successfully.
+	// The global plugins FIRST. They are what create the surfaces applications extend — a fixture doing
+	// `server.mqtt.authorizeClient = …` needs the mqtt plugin to have loaded, or the assignment throws on
+	// `undefined` and certification rejects a component that works fine on a serving worker. This stops
+	// before the other applications, which is the whole reason it is a separate entry point.
+	//
+	// A certification load also has to run the code a WORKER runs — the `start`/`handleApplication`
+	// extension path — or it proves only that the module parsed.
+	const { loadRootPlugins } = await import('../server/loadRootComponents.js');
+	const resources = await loadRootPlugins(true);
+
+	// The reporter goes on AFTER the bootstrap, so it only ever sees the candidate. Installed earlier it
+	// captured the first error from anything the root config happens to name — and since `deploy_component`
+	// writes a component's config entry before building it, that includes the candidate's own live path,
+	// which does not exist yet on a first deploy. Certification then rejected the candidate for the absence
+	// of the thing it was about to create.
+	//
+	// The candidate's own load-time error matters, not just whether the promise rejected: the loader reports
+	// some failures through the reporter while resolving successfully.
 	let reportedError: Error | undefined;
 	setErrorReporter((error: Error) => (reportedError ??= error));
-	const resources = new Resources();
-	// A certification load has to run the code a WORKER runs — the `start`/`handleApplication` extension
-	// path — or it proves only that the module parsed.
-	resources.isWorker = true;
 	// Collected so teardown happens BEFORE the verdict, not after. The in-process check this replaces
 	// established that a Scope which fails to close is a REJECTED validation, not a warning: `close()` stops
 	// at the throwing listener, so the scope stays partially live. Posting a pass and then failing teardown

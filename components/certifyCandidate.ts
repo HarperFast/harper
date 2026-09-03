@@ -131,7 +131,10 @@ export async function certifyCandidate(
 					// The same interpreter setup every Harper worker gets. Without it this thread cannot load
 					// Harper's own module graph at all — a module that imports JSON fails outright — so this is
 					// shared with `startWorker` rather than reconstructed.
-					execArgv: buildWorkerExecArgv(),
+					// Without the configured APM preloads: a validator is a throwaway thread, and resolving the
+					// preload list from here would memoize it earlier than the first serving worker — see
+					// `buildWorkerExecArgv`.
+					execArgv: buildWorkerExecArgv({ preloads: false }),
 					// Bounded like every other Harper worker. Without limits a candidate whose top-level load
 					// builds a large in-memory index balloons a thread nothing constrains, and the OOM killer
 					// takes the whole process down mid-deploy — while the previous release was healthy.
