@@ -5610,9 +5610,11 @@ export function makeTable(options) {
 		 * no cursor reads as safe — reachable when the floor could not be recorded (a read-only
 		 * database, or a failed metadata write).
 		 *
-		 * **Diagnostic, and it answers exactly one question: did a prune remove audit history below
-		 * this cursor?** Across the paths that prune, it errs in one direction only — it can ask for a
-		 * resync that was not strictly necessary, never certify a cursor a prune truncated. But it is
+		 * **Diagnostic, and it answers exactly one question: did a prune remove audit history the cursor
+		 * still needs — that is, anything *after* it?** Never anything below the cursor: that history is
+		 * older than the floor and is exactly what a prune takes. Across the paths that prune it errs in
+		 * one direction only — it can ask for a resync that was not strictly necessary, never certify a
+		 * cursor a prune truncated. But it is
 		 * not a database-generation check, so `cursor >= floor` is not by itself a guarantee that
 		 * resuming is safe: replacing a database's state with a copy of an earlier state
 		 * (`restore_backup`, a RocksDB checkpoint) reinstalls that state's floor, and a cursor from
