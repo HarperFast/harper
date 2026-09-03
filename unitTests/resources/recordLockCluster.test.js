@@ -220,9 +220,6 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const recordId = id();
 			await ClusterLockTest.put({ id: recordId, n: 0 });
 			const before = controlEntries().length;
-			// The follower waits on the leader's acquisition. If what it waits on ends at the native
-			// hand-off rather than after the cluster round registers the handle, it wakes to find nothing
-			// registered and parks on the leader's own key until its timeout.
 			await transaction(async () => {
 				const both = await Promise.all([
 					ClusterLockTest.lock(recordId, { lease: 5000, timeout: 2000 }),

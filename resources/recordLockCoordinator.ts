@@ -96,8 +96,8 @@ export interface ClusterLockTransport {
 // `auditRecord.getValue`), which repurposes a range of positive fixints as structure ids. A payload
 // packed without record mode writes an integer record key of 64..127 as a bare fixint, which that
 // decoder then reads as a structure header and the whole entry fails to decode.
-const controlStructures: unknown[] = [];
-const controlPackr = new Packr({ structures: controlStructures });
+let controlStructures: unknown[] = [];
+let controlPackr = new Packr({ structures: controlStructures });
 
 export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
 	const packed =
@@ -109,9 +109,13 @@ export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
 	// A record key is an ordered-binary value, never a plain object, so nothing here can mint a
 	// structure. If that ever stops holding, the receiver's decoder has no way to resolve the id.
 	if (controlStructures.length > 0) {
-		// Clear before throwing: a dirty dictionary would make every later encode throw, and every
-		// grant write is swallowed by a latched warning, so this node would silently stop granting.
-		controlStructures.length = 0;
+		// Replace the packer, don't just truncate its array: msgpackr keeps its own shape-to-id state,
+		// and a reused id with an empty dictionary would ship a payload referencing a structure no
+		// receiver can resolve — silently dropped everywhere instead of throwing here. Recovering at
+		// all matters because a dirty dictionary would otherwise make every later grant write throw
+		// into a latched warning, and this node would stop granting to the whole cluster.
+		controlStructures = [];
+		controlPackr = new Packr({ structures: controlStructures });
 		throw new ClientError('Record lock control payload minted a structure');
 	}
 	return packed;
@@ -282,10 +286,11 @@ export class LockCoordinator {
 	#skewMs: number;
 	#autoTick: boolean;
 	#states = new Map<unknown, KeyState>();
-	// Counted, not just logged: a permanently misrouted deployment drops every entry, and a latched
-	// warning would make that indistinguishable from a quiet cluster.
+	// A latched warning would make a permanently misrouted deployment look like a quiet cluster.
 	#droppedOffOwner = 0;
 	#lastOffOwnerWarn = 0;
+	#knownParticipants: Set<string> | undefined;
+	#knownParticipantsAt = 0;
 
 	constructor(options: LockCoordinatorOptions) {
 		if (!isNodeName(options.nodeId) || NON_DISTINCTIVE_NODE_NAMES.has(options.nodeId))
@@ -507,13 +512,23 @@ export class LockCoordinator {
 		if (state.idle) this.#states.delete(keyId);
 	}
 
+	// Membership for arriving entries is re-read at most once per tick window. The grant set an
+	// acquire depends on is never cached — that one is the safety decision and is taken fresh.
 	#isKnownParticipant(nodeId: string): boolean {
-		try {
-			const participants = this.transport.participants(this.database);
-			return Array.isArray(participants) && participants.some((participant) => participant?.nodeId === nodeId);
-		} catch {
-			return false;
+		const now = this.#monotonic();
+		if (!this.#knownParticipants || now - this.#knownParticipantsAt >= TICK_INTERVAL_MS) {
+			const names = new Set<string>();
+			try {
+				const participants = this.transport.participants(this.database);
+				if (Array.isArray(participants))
+					for (const participant of participants) if (isNodeName(participant?.nodeId)) names.add(participant.nodeId);
+			} catch {
+				// An unavailable participant set means nothing is known to be a participant.
+			}
+			this.#knownParticipants = names;
+			this.#knownParticipantsAt = now;
 		}
+		return this.#knownParticipants.has(nodeId);
 	}
 
 	#grantSet(): string[] {
