@@ -158,6 +158,19 @@ export function selectWindowsProcessTree(
 	const root = findWindowsTreeRoot(table, identity);
 	if (root) members.push(root);
 	const rootCreatedAt = root?.created ?? identity.rootCreatedAt;
+	// A remembered descendant's own row (matched by PID AND its known creation time) proves it is
+	// still alive; a *different* row now holding its PID, created after that known time, is a
+	// replacement and proves the descendant exited before the replacement was created — a tighter
+	// bound than the scan that first noticed the descendant missing, which (after the poll backs
+	// off) can be seconds late. The root's own exit is already detected without that lag (stamped
+	// on the very scan that first fails to find it, in `confirmWindowsProcessTreeGone` below), so
+	// only descendants need this.
+	const exitedBefore = (pid: number, exitedAt: number | undefined, createdAfter: number): number => {
+		const replacement = table.find(
+			(process) => process.pid === pid && process.created !== null && process.created > createdAfter
+		);
+		return Math.min(exitedAt ?? now, replacement?.created ?? Infinity);
+	};
 	let frontier = [
 		{
 			pid: identity.rootPid,
@@ -182,7 +195,7 @@ export function selectWindowsProcessTree(
 			frontier.push({
 				pid,
 				notBefore: known.created - CLOCK_SKEW_MS,
-				notAfter: (known.exitedAt ?? now) + CLOCK_SKEW_MS,
+				notAfter: exitedBefore(pid, known.exitedAt, known.created) + CLOCK_SKEW_MS,
 			});
 		}
 	}
