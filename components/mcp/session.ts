@@ -31,6 +31,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
  * to absorb clock skew before the expired row is physically removed.
  */
 const EVICTION_WINDOW_SECONDS = 60;
+const MAX_DELETE_ATTEMPTS = 3;
 export interface McpSessionRecord {
 	id: string;
 	protocolVersion: string;
@@ -159,9 +160,15 @@ export async function saveSession(id: string, changes: McpSessionUpdate): Promis
 
 export async function deleteSession(id: string): Promise<void> {
 	const SessionTable = getTable() as any;
-	do {
-		await SessionTable.delete(id);
-	} while (await SessionTable.get(id));
+	let deleted = false;
+	for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
+		await SessionTable.delete(id, {});
+		if (!(await SessionTable.get(id, {}))) {
+			deleted = true;
+			break;
+		}
+	}
+	if (!deleted) throw new Error('Unable to delete MCP session after concurrent updates');
 	// Tear down ancillary per-session in-memory state — the `tools/list`
 	// pagination cache and the per-session rate-limit buckets. Without
 	// these, every session that ever paged or called a tool leaves orphan

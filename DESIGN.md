@@ -661,13 +661,14 @@ A handful of design points are non-obvious and easy to break:
   **both**, because it may arrive with no open GET stream.
 
 - **Client session deletion is a durable terminal state.** An authenticated POST can load a session on one
-  worker while a client DELETE commits on another. `deleteSession` retries if a newer concurrent save makes the
-  first last-write-wins delete a no-op. Every post-creation write goes through `saveSession`, whose commit-time
-  existence condition prevents a late patch from recreating the row after a delete succeeds. The condition is
-  preserved in transaction-log replay, while `loadSession` rejects structurally incomplete rows. The table is
-  explicitly non-replicated because the condition is local to the committing node. New save sites must go through
-  `saveSession` and persist only their changed fields; a whole-record patch can revert concurrent logging or
-  subscription state.
+  worker while a client DELETE commits on another. `deleteSession` makes each delete in a fresh transaction and
+  retries if a newer concurrent save makes the first last-write-wins delete a no-op. Retries are bounded; sustained
+  contention fails the request rather than returning 204 while the row remains or holding the handler forever.
+  Every post-creation write goes through `saveSession`, whose commit-time existence condition prevents a late patch
+  from recreating the row after a delete succeeds. The condition is preserved in transaction-log replay, while
+  `loadSession` rejects structurally incomplete rows. The table is explicitly non-replicated because the condition
+  is local to the committing node. New save sites must go through `saveSession` and persist only their changed
+  fields; a whole-record patch can revert concurrent logging or subscription state.
 
 - **SSE resumability (`Last-Event-ID`).** Every GET-channel frame goes through `pushSessionFrame`, which
   assigns a monotonic event id and appends to a bounded per-session `replayBuffer`. On reconnect with a

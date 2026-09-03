@@ -124,4 +124,33 @@ describe('mcp/session with a real table', () => {
 		assert.equal(deleteCalls, 2);
 		assert.equal(await SessionTable.get(id), undefined);
 	});
+
+	it('fails after bounded retries under sustained concurrent saves', async () => {
+		const SessionTable = SessionTables[0];
+		const id = 'real-mcp-session-delete-contention';
+		await SessionTable.put(id, { id, protocolVersion: '2025-06-18', createdAt: 1, lastActivity: 1 });
+		let deleteCalls = 0;
+		const contendedTable = {
+			get: (...args) => SessionTable.get(...args),
+			replicate: false,
+			databaseName: SessionTable.databaseName,
+			tableName: SessionTable.tableName,
+			[PATCH_IF_EXISTS]: (...args) => SessionTable[PATCH_IF_EXISTS](...args),
+			delete: async (recordId) => {
+				deleteCalls++;
+				const context = { timestamp: SessionTable.primaryStore.getEntry(recordId).version };
+				return transaction(context, async () => {
+					await SessionTable.get(recordId, context);
+					await patchIfExists(SessionTable, recordId, { lastActivity: deleteCalls + 1 });
+					await SessionTable.delete(recordId, context);
+				});
+			},
+		};
+		_setSessionTableForTest(contendedTable);
+
+		await assert.rejects(() => deleteSession(id), /Unable to delete MCP session after concurrent updates/);
+
+		assert.equal(deleteCalls, 3);
+		assert.equal((await SessionTable.get(id)).lastActivity, 4);
+	});
 });
