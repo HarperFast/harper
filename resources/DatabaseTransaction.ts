@@ -1185,7 +1185,8 @@ export class DatabaseTransaction implements Transaction {
 							// Re-fence before submitting: the loop above skips operations already marked saved, so
 							// save()'s own check cannot see a holder that stalled between staging and commit. The
 							// retry/replay path re-saves every operation and is fenced there instead. Lease expiry
-							// only — a deliberate unlock() after staging leaves the staged write valid.
+							// only: an unlock() inside the lease leaves the staged write valid, an elapsed lease
+							// does not, whether or not the caller also unlocked.
 							for (let i = 0; i < this.writes.length; i++) {
 								if (!this.writes[i].lockHandle?.isLeaseExpired()) continue;
 								try {

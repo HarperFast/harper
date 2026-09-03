@@ -504,11 +504,7 @@ function contextArgument(context: unknown): any {
 }
 
 /** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
-/**
- * A transaction that already holds this key node-scoped cannot serve a cluster-scoped lock from the
- * same handle: the cluster round never ran, so no peer ever deferred to it. Refuse rather than hand
- * back the weaker guarantee under the stronger name.
- */
+/** The cluster round never ran for a node-scoped handle, so no peer ever deferred to it. */
 function scopeViolation(
 	handle: RecordLockHandle,
 	resolved: ResolvedRecordLockOptions,
@@ -2576,8 +2572,6 @@ export function makeTable(options) {
 			// a caller asking for a guarantee this node cannot make, so it fails closed rather than
 			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
 			// a build with no replication has anyway.
-			// lock() answers with a promise, so a runtime condition like this rejects rather than throwing
-			// synchronously; only argument validation throws.
 			const coordinator = resolved.scope === 'node' ? undefined : TableResource.lockCoordinator;
 			if (
 				!coordinator &&
@@ -2630,8 +2624,6 @@ export function makeTable(options) {
 						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.isExpired()) {
-							// A coalesced follower inherits the leader's handle, so it must not inherit a
-							// weaker scope than it asked for.
 							const violation = scopeViolation(acquired, resolved, databaseName);
 							if (violation) throw violation;
 							if (resolved.hold && !acquired.hold) {
@@ -2670,9 +2662,8 @@ export function makeTable(options) {
 					handle.release();
 					throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 				}
-				// The native key is held, so this node has exactly one round in flight for this key.
-				// Anything that goes wrong from here must give the key back rather than leave a lock
-				// this caller does not know it owns.
+				// Anything that fails from here must give the native key back, or it becomes a lock this
+				// caller does not know it owns.
 				if (coordinator) {
 					try {
 						const remaining = resolved.timeout - (performance.now() - clusterStart);

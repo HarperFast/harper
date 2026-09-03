@@ -74,9 +74,10 @@ export interface RecordLockHandle {
 	 */
 	isExpired(): boolean;
 	/**
-	 * Whether the LEASE elapsed, as opposed to the handle having been released deliberately. A
-	 * deliberate `unlock()` does not invalidate a write that was already staged while the lock was
-	 * held; a lease that ran out does, because the key may already belong to someone else.
+	 * Whether the LEASE elapsed. Distinct from `isExpired()` in that a deliberate release does NOT
+	 * make it true on its own: a write staged while the lock was held stays valid at commit if the
+	 * caller merely unlocked. Once the deadline passes it is true either way, because by then peers
+	 * have passed their own bound and the key may already belong to someone else.
 	 */
 	isLeaseExpired(): boolean;
 	/**
@@ -212,7 +213,8 @@ class KeyLockHandle implements RecordLockHandle {
 		this.#lastHolderVersion = undefined;
 		this.#onRelease = onRelease;
 		this.expiresAt = tsR + leaseMs;
-		this.#deadlineMono = performance.now() + remaining;
+		// From the mint origin, not a second clock read: the design says this bound has no margin.
+		this.#deadlineMono = mintedMono + leaseMs;
 		clearTimeout(this.#timer);
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
 		return true;
