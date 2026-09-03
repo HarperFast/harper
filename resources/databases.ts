@@ -2805,128 +2805,147 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// keeps a database open long after every table released it — unless the index changed kind,
 				// when the store must be reopened as the other wrapper (the structural change below rebuilds it)
 				let dbi = indices[attribute.name];
-				// closed only once `indices[attribute.name] = dbi` below has actually run: every other
-				// caller of table() for this table (including a concurrent one) reads that map, and a
-				// throw anywhere between opening the replacement and that assignment — the reindex
-				// trigger below reads the primary store and writes the attribute descriptor, either of
-				// which can throw — must leave the map pointing at a handle this thread has not closed
+				// The old handle is closed only once `indices[attribute.name] = dbi` below has actually
+				// run: every other caller of table() for this table (including a concurrent one) reads
+				// that map, and a throw anywhere between opening the replacement and that assignment —
+				// the reindex trigger below reads the primary store and writes the attribute descriptor,
+				// either of which can throw — must leave the map pointing at a handle this thread has not
+				// closed. Symmetrically, a throw in that same window must not leak the *new*, freshly
+				// opened but never-published replacement: nothing else references it to close it later,
+				// and an open native handle nothing owns still counts against a later drop_database.
 				let previousIndexToRelease: any;
-				if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
-					previousIndexToRelease = dbi;
-					dbi = openIndex(dbiKey, rootStore, attribute);
-				} else {
-					dbi = dbi ? prepareIndexStore(dbi, dbiKey, rootStore, attribute) : openIndex(dbiKey, rootStore, attribute);
-				}
-				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
-				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
-				// custom-object) index. An index created before this field existed has no indexFormat on
-				// disk; persist the resolved value now — even when nothing else changed — so the format is
-				// durable BEFORE any node is written. Otherwise an empty pre-existing index would resolve
-				// 'versioned', write versioned nodes, and on the next load re-derive 'legacy' from the
-				// now-non-empty store, opening versioned data with the legacy decoder (silent corruption).
-				// (Scoped by attribute.indexFormat != null: only RocksDB custom-object indexes set it.)
-				const indexFormatNeedsPersist =
-					attribute.indexFormat != null && attributeDescriptor?.indexFormat !== attribute.indexFormat;
-				if (
-					changed ||
-					indexFormatNeedsPersist ||
-					attributeDescriptor?.indexingFailed ||
-					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-					attributeDescriptor?.restartNumber < currentRestartGeneration
-				) {
-					hasChanges = true;
-					exclusiveLock();
-					attributeDescriptor = attributesDbi.getSync(dbiKey);
+				let replacementToReleaseOnFailure: any;
+				try {
+					if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
+						previousIndexToRelease = dbi;
+						dbi = replacementToReleaseOnFailure = openIndex(dbiKey, rootStore, attribute);
+					} else {
+						dbi = dbi ? prepareIndexStore(dbi, dbiKey, rootStore, attribute) : openIndex(dbiKey, rootStore, attribute);
+					}
+					if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
+					// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
+					// custom-object) index. An index created before this field existed has no indexFormat on
+					// disk; persist the resolved value now — even when nothing else changed — so the format is
+					// durable BEFORE any node is written. Otherwise an empty pre-existing index would resolve
+					// 'versioned', write versioned nodes, and on the next load re-derive 'legacy' from the
+					// now-non-empty store, opening versioned data with the legacy decoder (silent corruption).
+					// (Scoped by attribute.indexFormat != null: only RocksDB custom-object indexes set it.)
+					const indexFormatNeedsPersist =
+						attribute.indexFormat != null && attributeDescriptor?.indexFormat !== attribute.indexFormat;
 					if (
-						structurallyChanged ||
+						changed ||
+						indexFormatNeedsPersist ||
 						attributeDescriptor?.indexingFailed ||
 						(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
 						attributeDescriptor?.restartNumber < currentRestartGeneration
 					) {
 						hasChanges = true;
-						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
-						let hasExistingData = false;
-						for (let _entry of Table.primaryStore.getRange({ start: true })) {
-							hasExistingData = true;
-							break;
-						}
-						if (hasExistingData) {
-							// When the index definition itself has structurally changed (different distance
-							// metric, M, quantization, etc.), any
-							// previous lastIndexedKey checkpoint is for a graph built under the old options —
-							// resuming from it would mix two incompatible graphs. Reset to undefined so
-							// runIndexing clears the dbi and starts from scratch.
-							// For pure crash-recovery (same options, different PID/restartNumber) — including a
-							// representation-only option difference — preserve the checkpoint so the backfill
-							// resumes rather than restarts. Canonicalized to match structurallyChanged above.
-							const indexOptionsChanged =
-								canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
-							attribute.lastIndexedKey = indexOptionsChanged
-								? undefined
-								: (attributeDescriptor?.lastIndexedKey ?? undefined);
-							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
-							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
-							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
-							// new nodes can carry versions: flip the persisted format and re-arm the dbi encoder
-							// (openIndex armed it from the pre-rebuild format, which for a legacy index was
-							// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
-							// existing format — its partial graph was already written under it.
-							if (
-								rootStore instanceof RocksDatabase &&
-								indexType &&
-								CUSTOM_INDEXES[indexType]?.useObjectStore &&
-								!hnswAutoVersionDisabled() &&
-								attribute.lastIndexedKey === undefined
-							) {
-								attribute.indexFormat = 'versioned';
-								armVersionedIndexEncoder(dbi, rootStore);
+						exclusiveLock();
+						attributeDescriptor = attributesDbi.getSync(dbiKey);
+						if (
+							structurallyChanged ||
+							attributeDescriptor?.indexingFailed ||
+							(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
+							attributeDescriptor?.restartNumber < currentRestartGeneration
+						) {
+							hasChanges = true;
+							if (attribute.indexNulls === undefined) attribute.indexNulls = true;
+							let hasExistingData = false;
+							for (let _entry of Table.primaryStore.getRange({ start: true })) {
+								hasExistingData = true;
+								break;
 							}
-							attribute.indexingPID = process.pid;
-							// Persist the owning restart generation (see currentRestartGeneration above) so
-							// the trigger can re-detect an incomplete index after a worker restart even when
-							// the new process reuses the old PID. Cleared on clean completion; left in place
-							// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
-							attribute.restartNumber = currentRestartGeneration;
-							delete attribute.indexingFailed; // clear failure flag for the new run
-							dbi.isIndexing = true;
-							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
-							// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
-							const reindexReasons: string[] = [];
-							if (commonChanged)
-								reindexReasons.push(attributeDescriptor ? 'attribute-definition-changed' : 'new-index');
-							if (attributeDescriptor && indexOptionsStructurallyChanged)
-								reindexReasons.push('structural-options-changed');
-							if (attributeDescriptor?.indexingFailed) reindexReasons.push('indexing-failed-retry');
-							if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
-								reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
-							if (attributeDescriptor?.restartNumber < currentRestartGeneration) reindexReasons.push('restart-number');
-							logger.info(
-								`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
-							);
-							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
-							attributesToIndex.push(attribute);
+							if (hasExistingData) {
+								// When the index definition itself has structurally changed (different distance
+								// metric, M, quantization, etc.), any
+								// previous lastIndexedKey checkpoint is for a graph built under the old options —
+								// resuming from it would mix two incompatible graphs. Reset to undefined so
+								// runIndexing clears the dbi and starts from scratch.
+								// For pure crash-recovery (same options, different PID/restartNumber) — including a
+								// representation-only option difference — preserve the checkpoint so the backfill
+								// resumes rather than restarts. Canonicalized to match structurallyChanged above.
+								const indexOptionsChanged =
+									canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
+								attribute.lastIndexedKey = indexOptionsChanged
+									? undefined
+									: (attributeDescriptor?.lastIndexedKey ?? undefined);
+								// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
+								// object store to the versioned, VT-cacheable format. A full rebuild from scratch
+								// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
+								// new nodes can carry versions: flip the persisted format and re-arm the dbi encoder
+								// (openIndex armed it from the pre-rebuild format, which for a legacy index was
+								// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
+								// existing format — its partial graph was already written under it.
+								if (
+									rootStore instanceof RocksDatabase &&
+									indexType &&
+									CUSTOM_INDEXES[indexType]?.useObjectStore &&
+									!hnswAutoVersionDisabled() &&
+									attribute.lastIndexedKey === undefined
+								) {
+									attribute.indexFormat = 'versioned';
+									armVersionedIndexEncoder(dbi, rootStore);
+								}
+								attribute.indexingPID = process.pid;
+								// Persist the owning restart generation (see currentRestartGeneration above) so
+								// the trigger can re-detect an incomplete index after a worker restart even when
+								// the new process reuses the old PID. Cleared on clean completion; left in place
+								// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
+								attribute.restartNumber = currentRestartGeneration;
+								delete attribute.indexingFailed; // clear failure flag for the new run
+								dbi.isIndexing = true;
+								Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
+								// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
+								const reindexReasons: string[] = [];
+								if (commonChanged)
+									reindexReasons.push(attributeDescriptor ? 'attribute-definition-changed' : 'new-index');
+								if (attributeDescriptor && indexOptionsStructurallyChanged)
+									reindexReasons.push('structural-options-changed');
+								if (attributeDescriptor?.indexingFailed) reindexReasons.push('indexing-failed-retry');
+								if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
+									reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
+								if (attributeDescriptor?.restartNumber < currentRestartGeneration)
+									reindexReasons.push('restart-number');
+								logger.info(
+									`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
+								);
+								// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
+								attributesToIndex.push(attribute);
+							}
+						} else if (attributeDescriptor.indexingPID) {
+							// Metadata-only change (e.g. a search-only option like efConstructionSearch) while a
+							// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
+							// indexing state instead of persisting a descriptor that looks complete — otherwise other
+							// workers / a reload would treat the still-partial index as ready and return incomplete results.
+							attribute.indexingPID = attributeDescriptor.indexingPID;
+							attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+							// Carry the in-progress restart generation too, so persisting this metadata-only
+							// change doesn't drop it and break the crash-recovery trigger for the running backfill.
+							attribute.restartNumber = attributeDescriptor.restartNumber;
+							if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 						}
-					} else if (attributeDescriptor.indexingPID) {
-						// Metadata-only change (e.g. a search-only option like efConstructionSearch) while a
-						// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
-						// indexing state instead of persisting a descriptor that looks complete — otherwise other
-						// workers / a reload would treat the still-partial index as ready and return incomplete results.
-						attribute.indexingPID = attributeDescriptor.indexingPID;
-						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
-						// Carry the in-progress restart generation too, so persisting this metadata-only
-						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
-						attribute.restartNumber = attributeDescriptor.restartNumber;
-						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
+						attributesDbi.put(dbiKey, attribute);
 					}
-					attributesDbi.put(dbiKey, attribute);
+					// If a migration is in progress (indexingPID set), any newly opened dbi must also
+					// reflect isIndexing = true. A resetDatabases() during an active runIndexing creates
+					// a new dbi object; without this, queries could use the new dbi (isIndexing = false)
+					// and return incomplete results while the backfill is still running.
+					if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
+					if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
+					dbi.indexNulls = attribute.indexNulls;
+				} catch (error) {
+					if (replacementToReleaseOnFailure) {
+						try {
+							replacementToReleaseOnFailure.close?.();
+						} catch (closeError) {
+							logger.warn(
+								`Error closing the ${attribute.name} index of ${tableName} after a failed reopen:`,
+								closeError
+							);
+						}
+					}
+					throw error;
 				}
-				// If a migration is in progress (indexingPID set), any newly opened dbi must also
-				// reflect isIndexing = true. A resetDatabases() during an active runIndexing creates
-				// a new dbi object; without this, queries could use the new dbi (isIndexing = false)
-				// and return incomplete results while the backfill is still running.
-				if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
-				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
-				dbi.indexNulls = attribute.indexNulls;
 				indices[attribute.name] = dbi;
 				if (previousIndexToRelease) {
 					try {

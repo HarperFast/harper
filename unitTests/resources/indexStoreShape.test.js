@@ -82,4 +82,37 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		assert.strictEqual(Tbl.indices.vector, ordinary);
 		assert.notEqual(ordinary.status, 'closed');
 	});
+
+	it('closes the new handle, not just the old one, when a later step throws before either is published', async function () {
+		this.timeout(30_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		let Tbl = define(true);
+		let last;
+		for (let i = 0; i < 8; i++) last = Tbl.put({ id: i, vector: [i % 2, i % 3, i % 4] });
+		await last;
+		const ordinary = Tbl.indices.vector;
+
+		// the new wrapper opens successfully; the reindex trigger's own existing-data scan (on this
+		// table's primary store, not the shared catalog) is where this injects the failure — after the
+		// open, before `indices.vector` is reassigned
+		const originalGetRange = Tbl.primaryStore.getRange.bind(Tbl.primaryStore);
+		Tbl.primaryStore.getRange = () => {
+			throw new Error('injected failure: scanning for existing data');
+		};
+		let reopened;
+		try {
+			assert.throws(() => {
+				reopened = define({ type: 'HNSW', M: 16 });
+			}, /injected failure/);
+		} finally {
+			Tbl.primaryStore.getRange = originalGetRange;
+		}
+
+		// neither handle leaked: the old one is still what the live table serves, and the new one —
+		// opened but never published — was closed rather than left dangling and unowned
+		assert.strictEqual(Tbl.indices.vector, ordinary);
+		assert.notEqual(ordinary.status, 'closed');
+		assert.equal(reopened, undefined);
+	});
 });
