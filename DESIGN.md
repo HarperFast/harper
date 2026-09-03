@@ -516,12 +516,18 @@ for the switch, and it is a real constraint rather than an unfinished implementa
 
 Two things that are easy to get wrong about the thread host, learned the expensive way:
 
-- **Use `startWorker`, not a bare `new Worker`.** An earlier draft avoided `startWorker` to stay out of the
-  ITC mesh, and that reasoning was half wrong: `isEligibleBroadcastRecipient` already excludes a job-type
-  worker (`name: THREAD_TYPES.JOB`) from broadcasts, and the per-peer `MessageChannel` construction is
-  O(workers) for one slow-path deploy. What the bespoke path actually cost was Windows: the thread died
-  _inside its import graph_, before its first statement, with exit code 0 and no `error` event. A thread
-  created by the standard path does not.
+- **What ships today is a bare `new Worker`, and it does not load on Windows.** The thread dies _inside its
+  import graph_ — before its first statement, exit code 0, no `error` event — so every certification there
+  fails identically (HarperFast/harper#2494). The certification unit tests skip the validator-dependent
+  cases on Windows for that reason, and removing that skip is #2494's acceptance test, not a cleanup.
+- **Moving to `startWorker` is the intended fix, and is not done.** The original reason for avoiding it was
+  half wrong: `isEligibleBroadcastRecipient` already excludes a job-type worker (`name: THREAD_TYPES.JOB`)
+  from broadcasts, and the per-peer `MessageChannel` construction is O(workers) for one slow-path deploy —
+  cheap for something a human triggers. The bootstrap plumbing that migration needs (`extraWorkerData`,
+  `extraTransferList`, `noServerStart`) landed with this work and is currently unused by certification.
+  What is **not** established is that the standard path repairs Windows: the evidence proves the bespoke
+  import graph fails, not that mesh membership or the standard bootstrap is what fixes it. #2494 names the
+  narrow experiment that would isolate the two.
 - **`startWorker` cannot take `workerData`.** `...options` is spread into the `Worker` constructor after the
   bootstrap `workerData`, so passing it replaces `addPorts`/`addThreadIds` and the thread comes up with no
   ITC wiring at all. Use `extraWorkerData` + `extraTransferList` (merged, reserved keys refused), and

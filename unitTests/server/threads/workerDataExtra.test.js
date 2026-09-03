@@ -100,6 +100,38 @@ describe('startWorker per-call workerData', () => {
 		port1.close();
 	});
 
+	it('never restarts or copies a one-shot worker, whose transferred ports are spent', async function () {
+		// The crash this guards: `restartWorkers` replaces workers through `worker.startCopy()`, which
+		// re-spawns from the SAME options object — so a worker carrying transferred ports would hit
+		// `DataCloneError` synchronously, inside the restart loop, taking the rest of the restart with it.
+		this.timeout(30000);
+		const { port1, port2 } = new MessageChannel();
+		const worker = startWorker(FIXTURE, {
+			autoRestart: false,
+			name: WORKER_NAME,
+			execArgvOptions: { preloads: false },
+			extraWorkerData: { certification: { candidateDirPath: '/tmp/c', nonce: 'n', verdictPort: port2 } },
+			extraTransferList: [port2],
+		});
+
+		try {
+			assert.strictEqual(worker.isOneShot, true, 'a port-carrying spawn is marked one-shot');
+			// The backstop for a direct caller: a named refusal rather than a DataCloneError from inside
+			// `new Worker`.
+			assert.throws(() => worker.startCopy(), /Cannot restart a one-shot/);
+
+			// The restart loop's own filter is NOT driven here. `restartWorkers` runs a real node restart —
+			// it reinstalls applications, which shells out to `npm pack` — so calling it from a unit test
+			// exercises far more than the one-line `isOneShot` filter and would be slow and fragile for it.
+			// What is asserted above is the mechanism that filter depends on: the flag is set, and the copy
+			// refuses by name. The filter itself is covered by reading, and the crash it prevents is
+			// described in the commit that added it.
+		} finally {
+			port1.close();
+			await worker.terminate().catch(() => {});
+		}
+	});
+
 	it('leaves noServerStart absent unless asked for', async function () {
 		this.timeout(30000);
 		const report = await spawnAndReport({});

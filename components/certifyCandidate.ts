@@ -223,12 +223,13 @@ export interface CertificationOutcome {
 /**
  * Load a candidate in an ephemeral worker and report whether it loaded.
  *
- * NOT `startWorker()`. That function constructs a `MessageChannel` for every connected port, announces the
- * new port to every peer, and registers the worker for monitoring and restart — so a certification worker
- * would join the ITC mesh, meaning a candidate's top-level `server.registerOperation()` could announce
- * itself to main and traffic could route at a thread that is about to exit. It would also cost
- * O(deploys × workers) channels on a large node. Only the *option construction* is worth sharing, and that
- * is deliberately kept small here rather than reaching into the serving-worker path.
+ * Spawned with a bare `new Worker` rather than `startWorker()`, which is a known problem rather than a
+ * settled choice: this thread does not load at all on Windows (HarperFast/harper#2494), and `startWorker`
+ * is the intended fix. The original argument for avoiding it — that a certification worker would join the
+ * ITC mesh, letting a candidate's top-level `server.registerOperation()` announce itself to main, at
+ * O(deploys × workers) channels — is only half right: `isEligibleBroadcastRecipient` already excludes a
+ * job-type worker from broadcasts, and the channel cost is O(workers) for one slow-path deploy. See
+ * DESIGN.md's certification section for what is and is not established about the Windows failure.
  *
  * Every outcome other than an explicit passing verdict is a failure, because `.complete` — which this
  * gates — is what crash recovery treats as proof that a validation happened.
