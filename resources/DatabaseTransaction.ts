@@ -1380,13 +1380,11 @@ export class DatabaseTransaction implements Transaction {
 						if (this.writes.length > 0) {
 							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
 							readTransactionOwners.delete(transaction);
-							// Re-fence immediately before submitting. save() checks the lease when a write is
-							// staged, but the loop above skips operations already marked saved, so a holder that
-							// stalled between staging and commit would otherwise submit a batch whose lock every
-							// participant has already written off. The retry/replay path re-saves every operation,
-							// so it is fenced by save() itself.
-							const expired = this.writes.find((write) => write.lockHandle?.isExpired());
-							if (expired) {
+							// Re-fence before submitting: the loop above skips operations already marked saved, so
+							// save()'s own check cannot see a holder that stalled between staging and commit. The
+							// retry/replay path re-saves every operation and is fenced there instead.
+							for (let i = 0; i < this.writes.length; i++) {
+								if (!this.writes[i].lockHandle?.isExpired()) continue;
 								try {
 									transaction.abort();
 								} catch {}
