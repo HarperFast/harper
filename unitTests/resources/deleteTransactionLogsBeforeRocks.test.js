@@ -94,7 +94,27 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 	it('rejects a prune bound the audit range would honor as a whole-log delete (harper#2447)', async () => {
 		// Audit keys are raw float64, so NaN and negatives sort above every real timestamp and the prune
 		// range spans the whole log. A non-numeric timestamp reaches that via Number.parseInt.
-		for (const timestamp of ['yesterday', -1, -0, Number.NaN, new Date('nonsense'), undefined]) {
+		// Stated asymmetry: this file is gated to RocksDB, but the timestamp guard runs before any engine
+		// branch in `deleteTransactionLogsBefore`, so one engine's coverage is the whole of it here.
+		for (const timestamp of [
+			'yesterday',
+			-1,
+			-0,
+			Number.NaN,
+			new Date('nonsense'),
+			undefined,
+			// Number.parseInt took a numeric PREFIX, so this parsed to a year-2286 bound that passed the
+			// guard and purged every log; '12abc' did the same on a smaller scale (cb1kenobi on #2458).
+			'9999999999999oops',
+			'  12abc',
+			// non-finite bounds purge everything, and Infinity additionally records the unknown sentinel,
+			// which raiseAuditFloor can never lift — so the guard has to be finiteness, not `>= 0`
+			Infinity,
+			-Infinity,
+			// Number('') and Number('   ') are 0, so the strict parse has to reject these explicitly
+			'',
+			'   ',
+		]) {
 			await assert.rejects(
 				harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp }),
 				(error) => {
@@ -108,7 +128,9 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 	});
 
 	it('accepts every legitimate timestamp shape', async () => {
-		for (const timestamp of [Date.now(), String(Date.now()), new Date(), 0, '0']) {
+		// '1e3' and a fractional string are legitimate numeric literals that parseInt mangled to 1 and a
+		// truncated integer; Number takes them exactly.
+		for (const timestamp of [Date.now(), String(Date.now()), new Date(), 0, '0', '1e3', '1234.5']) {
 			const results = await harperBridge.deleteTransactionLogsBefore({ database: DB, timestamp });
 			assert.strictEqual(typeof results.log_files_deleted, 'number', `${String(timestamp)} should be accepted`);
 		}

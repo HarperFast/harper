@@ -521,13 +521,22 @@ export class ResourceBridge extends BridgeMethods {
 			deleteObj.timestamp instanceof Date
 				? deleteObj.timestamp.getTime()
 				: typeof deleteObj.timestamp === 'string'
-					? Number.parseInt(deleteObj.timestamp)
+					? // Number, not Number.parseInt: parseInt takes a numeric PREFIX, so '9999999999999oops'
+						// parsed to a year-2286 bound that satisfied every check below and purged the whole log,
+						// and '1e3' silently became 1 (cb1kenobi on #2458). Number rejects both as NaN. The
+						// empty/whitespace case is explicit because Number('') and Number('   ') are 0, which
+						// parseInt correctly refused.
+						deleteObj.timestamp.trim() === ''
+						? Number.NaN
+						: Number(deleteObj.timestamp)
 					: deleteObj.timestamp;
-		// A non-numeric timestamp reaches here as NaN from Number.parseInt, and NaN and negatives are
-		// not harmless bounds: audit keys are raw float64, so they sort above every real timestamp and
-		// the prune range spans the whole log. Reject it as the operator input error it is, rather than
-		// letting raiseAuditFloor stop it with a bare Error that reports as a server fault.
-		if (typeof before !== 'number' || !(before >= 0) || Object.is(before, -0))
+		// Neither NaN nor a non-finite bound is harmless: audit keys are raw float64, so NaN and negatives
+		// sort above every real timestamp and the prune range spans the whole log, while Infinity purges
+		// everything AND records the unknown sentinel — which `raiseAuditFloor` will never lift again. So
+		// require a finite, non-negative number and reject anything else as the operator input error it is,
+		// rather than letting raiseAuditFloor stop it with a bare Error that reports as a server fault.
+		// `Number.isFinite` does the type check too: it never coerces, so a non-number is false.
+		if (!Number.isFinite(before) || before < 0 || Object.is(before, -0))
 			throw handleHDBError(
 				new Error(),
 				`'timestamp' must be a non-negative epoch time or Date, received: ${String(deleteObj.timestamp)}`,
