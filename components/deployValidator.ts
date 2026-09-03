@@ -4,7 +4,8 @@
 // which must not be able to terminate the thread out from under the verdict protocol.
 import { realExit } from '../server/threads/workerProcessGuard.ts';
 
-import { basename } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 
 import { HDB_ROOT_DIR_NAME } from '../utility/hdbTerms.ts';
@@ -36,6 +37,19 @@ const verdictFlag: Int32Array | undefined = workerData?.verdictFlag;
 if (workerData) {
 	delete workerData.verdictPort;
 	delete workerData.verdictFlag;
+}
+
+/** Whether a candidate declares anything a load should act on, so "loaded nothing" can be judged. */
+async function declaresLoadableContent(dirPath: string): Promise<boolean> {
+	for (const name of ['config.yaml', 'config.yml', 'package.json']) {
+		try {
+			await stat(join(dirPath, name));
+			return true;
+		} catch {
+			// Absent is the only answer that matters here; an unreadable candidate fails the load itself.
+		}
+	}
+	return false;
 }
 
 async function certify(): Promise<void> {
@@ -70,13 +84,28 @@ async function certify(): Promise<void> {
 	// would certify a candidate whose own cleanup is broken — and the thread exits either way, so nothing
 	// downstream would ever learn.
 	const scopes = new Set<Scope>();
+	const modules = new Set<any>();
 	let loaded = false;
 	try {
 		await loadComponent(candidateDirPath, resources, HDB_ROOT_DIR_NAME, {
 			...loadOptions.options,
 			collectScopes: scopes,
+			collectLoadedModules: modules,
 		});
 		if (reportedError) throw reportedError;
+		// A load that did NOTHING is not a pass. Certification exists to execute the candidate, so a run
+		// that neither opened a scope nor loaded a module has not exercised it — and reporting success
+		// there is a false pass, the one outcome this whole step is meant to make impossible. It is how a
+		// platform-specific no-op would otherwise read as a clean verdict.
+		//
+		// Only asserted for a candidate that declares something loadable: a component of nothing but static
+		// files legitimately loads nothing, and cannot fail at load either.
+		if (!scopes.size && !modules.size && (await declaresLoadableContent(candidateDirPath))) {
+			throw new Error(
+				`Certification of ${componentName} loaded nothing: it declares component configuration, so a run ` +
+					`that opened no scope and loaded no module has not exercised it`
+			);
+		}
 		loaded = true;
 	} finally {
 		const closes = await Promise.allSettled(Array.from(scopes, (scope) => scope.close()));
