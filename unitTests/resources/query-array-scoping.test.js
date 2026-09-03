@@ -392,6 +392,11 @@ describe('Array-valued property scoping', () => {
 			await KeyedWidgets.put({ id: ['t', 9], tagsIdx: ['c', 'y'] });
 			await KeyedWidgets.put({ id: collidingId, tagsIdx: ['d'] });
 			await KeyedWidgets.put({ id: ['t', 8], tagsIdx: ['m'] });
+			// an all-string array key joins its elements with a bare NUL while a scalar string
+			// escapes one, so these are two records to the store and one to any canonicalization
+			// that tracks scalar and array keys in a single space
+			await KeyedWidgets.put({ id: ['acme', 'west'], tagsIdx: ['e', 'x'] });
+			await KeyedWidgets.put({ id: 'acme\u0000west', tagsIdx: ['f'] });
 		});
 
 		// index entries: a→['t',7], b→'t\u00007', c→['t',9], d→collidingId, m→['t',8],
@@ -409,7 +414,15 @@ describe('Array-valued property scoping', () => {
 			// the repeated entries for ['t', 7] and ['t', 9] decode to equal but distinct array
 			// objects, so object identity cannot tell them apart, and flattenKey would fold
 			// ['t', 7] into the record keyed 't\u00007'
-			assert.deepStrictEqual(await collectKeys(scanFromA()), [['t', 7], 't\u00007', ['t', 9], collidingId, ['t', 8]]);
+			assert.deepStrictEqual(await collectKeys(scanFromA()), [
+				['t', 7],
+				't\u00007',
+				['t', 9],
+				collidingId,
+				['acme', 'west'],
+				'acme\u0000west',
+				['t', 8],
+			]);
 		});
 
 		it('two scans interleaved a step at a time do not share dedup state', async function () {
@@ -425,7 +438,7 @@ describe('Array-valued property scoping', () => {
 				if (!b.done) secondKeys.push(b.value.id);
 			}
 			assert.deepStrictEqual(firstKeys, secondKeys);
-			assert.strictEqual(firstKeys.length, 5);
+			assert.strictEqual(firstKeys.length, 7);
 		});
 
 		it('an encoded array key does not collide with a scalar id carrying the same bytes', async function () {
@@ -435,6 +448,11 @@ describe('Array-valued property scoping', () => {
 				`the array key is missing from ${JSON.stringify(ids)}`
 			);
 			assert.ok(ids.includes(collidingId), `the scalar key is missing from ${JSON.stringify(ids)}`);
+			assert.ok(
+				ids.some((id) => Array.isArray(id) && id[0] === 'acme'),
+				`the all-string array key is missing from ${JSON.stringify(ids)}`
+			);
+			assert.ok(ids.includes('acme\u0000west'), `the NUL-bearing scalar key is missing from ${JSON.stringify(ids)}`);
 		});
 	});
 

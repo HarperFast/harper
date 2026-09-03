@@ -234,26 +234,26 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 }
 
 /**
- * Collapse an index scan to one result per record (#2434). A record's entries are not adjacent —
- * the composite `[indexedValue, primaryKey]` key sorts on the indexed value first — so the scan has
- * to remember what it has already yielded rather than compare neighbours.
+ * A record's index entries are not adjacent — the composite `[indexedValue, primaryKey]` key sorts
+ * on the indexed value first — so comparing neighbours cannot collapse them and the scan has to
+ * remember what it already yielded (#2434).
  *
- * The set holds one primary key per distinct record the range matches, and no page window bounds
- * it: sibling-condition and row filters run downstream of here, so a selective filter keeps the
- * scan going, and the set growing, while the page fills. Accepted deliberately (#2434).
- *
- * State is per iteration, so a re-iterated scan starts empty.
+ * Heap cost is one key per distinct record in the scanned range, held for the life of the scan, and
+ * a page window does not cap it: sibling-condition and row filters run downstream, so a selective
+ * filter keeps the scan running and the set growing while the page fills. On a multi-million-row
+ * range that is hundreds of MB where main streamed at O(1). Accepted for #2434 over the bounded
+ * alternative, which costs a primary read per index entry.
  */
 function distinctRecords(entries: any): AsyncIterable<Id> {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
-		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it and
-		// `writeKeyId` gives the store's own key equality. Its bytes live in their own set: a scalar
-		// string id may legitimately carry exactly those bytes, and one set would fold the two.
+		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it;
+		// `writeKeyId` is the store's own key equality. Its bytes get their own set because a scalar
+		// string id can legitimately carry exactly those bytes, and one set would fold the two —
+		// the collision `flattenKey` has, and the reason Table.ts prefixes its key ids.
 		const yieldedKeys = new Set();
 		const yieldedEncodedKeys = new Set();
-		// map, not filter: filter clears `continueOnRecoverableError`, which would break the
-		// recoverable-error continuation the response path installs with mapError()
+		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
 		return entries
 			.map((primaryKey) => {
 				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
