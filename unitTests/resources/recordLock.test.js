@@ -234,6 +234,22 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(updatedId)).n, 20, 'the staged update landed');
 		});
 
+		it('a write through a commit-released scoped lock reports release, not lease expiry', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			let scoped;
+			await transaction(async () => {
+				scoped = await LockTest.lock(recordId);
+			});
+			scoped.set('n', 5);
+			await assert.rejects(
+				async () => scoped.save(),
+				(error) => error.statusCode === 409 && /already released/.test(error.message),
+				'the commit released it; a lease-expiry message would send the caller after the wrong cause'
+			);
+		});
+
 		it('static lock() accepts a transaction in the context position', async function () {
 			// `transactional()` takes a bare DatabaseTransaction where a context goes; lock() matches.
 			if (isLMDB) return this.skip();

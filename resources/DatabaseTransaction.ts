@@ -1,8 +1,8 @@
 import { cleanupUnusedBlobs, collectRetainedFileIds } from './blob.ts';
 import { Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
-import { ServerError, ClientError, TransactionCommitConflictTimeoutError } from '../utility/errors/hdbError.ts';
-import { type RecordLockHandle } from './recordLock.ts';
+import { ServerError, TransactionCommitConflictTimeoutError } from '../utility/errors/hdbError.ts';
+import { lockNotHeldError, type RecordLockHandle } from './recordLock.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import type { Context, Id } from './ResourceInterface.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
@@ -946,7 +946,7 @@ export class DatabaseTransaction implements Transaction {
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
 			if (failedIdx > -1) this.writes[failedIdx] = null;
-			throw new ClientError('Record lock lease expired', 409);
+			throw lockNotHeldError(operation.lockHandle);
 		}
 		// Lock-write timestamp rules.
 		if (operation.lockHandle) {

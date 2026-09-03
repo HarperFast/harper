@@ -86,6 +86,15 @@ export function resolveLockOptions(options?: RecordLockOptions | null): Resolved
 	};
 }
 
+/**
+ * The 409 for a write staged through a handle that is no longer live. A lease that ran out and a
+ * lock that was handed back are different causes, and a caller told the wrong one debugs the wrong
+ * thing — a commit-released scoped handle is not a timeout.
+ */
+export function lockNotHeldError(handle: Pick<RecordLockHandle, 'expired'>): ClientError {
+	return new ClientError(handle.expired ? 'Record lock lease expired' : 'Record lock already released', 409);
+}
+
 /** The advisory key for this (table, record) pair, distinct from getFromSource's bare-id single-flight lock. */
 export function lockAttemptKey(tableId: number, id: any): any[] {
 	return Array.isArray(id) ? [LOCK_KEY_PREFIX, tableId, ...id] : [LOCK_KEY_PREFIX, tableId, id];

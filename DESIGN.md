@@ -162,7 +162,9 @@ Consequences that shape the code:
   `hold`, `released`, and `expired`. `release()` is synchronous: it sets `released`, clears the lease
   timer, and calls `store.unlock(key)`. A lease timer sets `expired = true` then calls `store.unlock()`
   on fire; any write staged through an expired or released handle throws 409 in
-  `DatabaseTransaction.save()` before the write reaches the store. `acquireRecordKey` loops
+  `DatabaseTransaction.save()` before the write reaches the store — from `lockNotHeldError()`, which
+  names the actual cause, since an expired lease and a handle already released (by `unlock()` or by
+  the commit) send a caller after different bugs. `acquireRecordKey` loops
   `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423). The contender wait
   timer uses `.unref()` so it does not prevent process exit.
 - **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a lazily allocated

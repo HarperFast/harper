@@ -45,6 +45,7 @@ import {
 import {
 	acquireRecordKey,
 	lockAttemptKey,
+	lockNotHeldError,
 	resolveLockOptions,
 	type RecordLockHandle,
 	type RecordLockOptions,
@@ -733,7 +734,7 @@ export function makeTable(options) {
 			// exact key the lock was acquired for.
 			if (handle.keyId !== writeKeyId(id)) return;
 			if (handle.expired || handle.released) {
-				throw new ClientError('Record lock lease expired', 409);
+				throw lockNotHeldError(handle);
 			}
 		}
 		// #section: static-config
@@ -2079,7 +2080,7 @@ export function makeTable(options) {
 				// Every lock-writable instance carries its own handle; check it directly.
 				const saveHandle = this.#lockHandle!;
 				if (saveHandle.expired || saveHandle.released) {
-					throw new ClientError('Record lock lease expired', 409);
+					throw lockNotHeldError(saveHandle);
 				}
 				const changes = this.#changes;
 				if (changes && Object.keys(changes).length > 0) {
