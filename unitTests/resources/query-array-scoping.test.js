@@ -5,6 +5,7 @@ const { parseQuery } = require('#src/resources/search');
 const { RequestTarget } = require('#src/resources/RequestTarget');
 const { table } = require('#src/resources/databases');
 const { loadGQLSchema } = require('#src/resources/graphql');
+const { writeKey } = require('ordered-binary');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // Contract under test: resources/DESIGN.md → "What do chained conditions mean over array
@@ -359,6 +360,10 @@ describe('Array-valued property scoping', () => {
 
 	describe('record identity across repeated index entries', () => {
 		let KeyedWidgets;
+		// a scalar string id holding exactly the bytes the dedup encodes ['t', 9] into: tracking
+		// encoded and scalar keys in one set would fold the two records together
+		const encodedKeyBuffer = Buffer.allocUnsafe(64);
+		const collidingId = encodedKeyBuffer.toString('latin1', 0, writeKey(['t', 9], encodedKeyBuffer, 0));
 
 		before(async function () {
 			KeyedWidgets = table({
@@ -369,13 +374,20 @@ describe('Array-valued property scoping', () => {
 					{ name: 'tagsIdx', elements: { type: 'String' }, indexed: true },
 				],
 			});
-			// 't\u00007' is what ['t', 7] collapses to under flattenKey (`key.join('\u0000')`),
-			// so these two records are one key to that helper and two keys to the store.
+			// 't\u00007' is what ['t', 7] collapses to under flattenKey (`key.join('\u0000')`), so
+			// those two records are one key to that helper and two keys to the store.
 			await KeyedWidgets.put({ id: ['t', 7], tagsIdx: ['a', 'z'] });
 			await KeyedWidgets.put({ id: 't\u00007', tagsIdx: ['b'] });
+			await KeyedWidgets.put({ id: ['t', 9], tagsIdx: ['c', 'y'] });
+			await KeyedWidgets.put({ id: collidingId, tagsIdx: ['d'] });
 			await KeyedWidgets.put({ id: ['t', 8], tagsIdx: ['m'] });
 		});
 
+		// index entries: a→['t',7], b→'t\u00007', c→['t',9], d→collidingId, m→['t',8],
+		// y→['t',9], z→['t',7]. Two records own two entries each, and neither pair is adjacent.
+		function scanFromA() {
+			return KeyedWidgets.search({ conditions: [{ attribute: 'tagsIdx', comparator: 'ge', value: 'a' }] });
+		}
 		async function collectKeys(iter) {
 			const keys = [];
 			for await (const record of iter) keys.push(record.id);
@@ -383,15 +395,19 @@ describe('Array-valued property scoping', () => {
 		}
 
 		it('an array primary key is one record, not one per decoded array instance', async function () {
-			// index entries: a→['t',7], b→'t\u00007', m→['t',8], z→['t',7]. The two entries for
-			// ['t', 7] decode to equal but distinct array objects, so object identity cannot tell
-			// them apart, and flattenKey would fold the second record into the first.
-			assert.deepStrictEqual(
-				await collectKeys(
-					KeyedWidgets.search({ conditions: [{ attribute: 'tagsIdx', comparator: 'ge', value: 'a' }] })
-				),
-				[['t', 7], 't\u00007', ['t', 8]]
+			// the repeated entries for ['t', 7] and ['t', 9] decode to equal but distinct array
+			// objects, so object identity cannot tell them apart, and flattenKey would fold
+			// ['t', 7] into the record keyed 't\u00007'
+			assert.deepStrictEqual(await collectKeys(scanFromA()), [['t', 7], 't\u00007', ['t', 9], collidingId, ['t', 8]]);
+		});
+
+		it('an encoded array key does not collide with a scalar id carrying the same bytes', async function () {
+			const ids = await collectKeys(scanFromA());
+			assert.ok(
+				ids.some((id) => Array.isArray(id) && id[0] === 't' && id[1] === 9),
+				`the array key is missing from ${JSON.stringify(ids)}`
 			);
+			assert.ok(ids.includes(collidingId), `the scalar key is missing from ${JSON.stringify(ids)}`);
 		});
 	});
 

@@ -235,13 +235,12 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 const CANONICAL_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 
 /**
- * A set key that means what the store means by key equality. An array primary key decodes to a
- * fresh instance for every index entry, so identity never matches it, and `flattenKey` is not a
- * substitute here: it joins with \u0000, folding `['t', 7]` and the scalar `'t\u00007'` into one
- * key and dropping a record.
+ * The store's own notion of key equality, for a primary key that is not a scalar. An array primary
+ * key decodes to a fresh instance for every index entry, so identity never matches it, and
+ * `flattenKey` is not a substitute: it joins with a NUL byte, folding `['t', 7]` and a scalar
+ * string carrying those same bytes into one key and dropping a record.
  */
-function canonicalPrimaryKey(primaryKey: Id) {
-	if (typeof primaryKey !== 'object' || primaryKey === null) return primaryKey;
+function encodedKeyIdentity(primaryKey: Id) {
 	return CANONICAL_KEY_BUFFER.toString('latin1', 0, writeKey(primaryKey, CANONICAL_KEY_BUFFER, 0));
 }
 
@@ -260,10 +259,15 @@ function canonicalPrimaryKey(primaryKey: Id) {
 function distinctRecords(entries: any): AsyncIterable<Id> {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
-		const yielded = new Set();
+		// Scalar and encoded keys are tracked apart so an encoded array key can never collide with
+		// a scalar string id that happens to carry the same bytes.
+		const yieldedKeys = new Set();
+		const yieldedEncodedKeys = new Set();
 		return entries
 			.filter((primaryKey) => {
-				const identity = canonicalPrimaryKey(primaryKey);
+				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
+				const yielded = isEncoded ? yieldedEncodedKeys : yieldedKeys;
+				const identity = isEncoded ? encodedKeyIdentity(primaryKey) : primaryKey;
 				if (yielded.has(identity)) return false;
 				yielded.add(identity);
 				return true;
