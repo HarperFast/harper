@@ -169,6 +169,21 @@ describe('selectWindowsProcessTree', () => {
 		);
 	});
 
+	it("bounds the root's own children by a visibly recycled root PID, on the very scan that first misses it", () => {
+		// this is the scan `confirmWindowsProcessTreeGone` uses to decide whether to stamp rootExitedAt
+		// afterward — rootExitedAt is not yet set, so notAfter cannot fall back to it here
+		const identity = { rootPid: ROOT, rootKnownAt: SPAWNED_AT };
+		// created well outside CLOCK_SKEW_MS of rootKnownAt: findWindowsTreeRoot rejects it as ours
+		const impostor = row(ROOT, 900, SPAWNED_AT + 5_000, 'WmiPrvSE.exe');
+		const impostorsChild = row(5100, ROOT, SPAWNED_AT + 6_000);
+		assert.deepEqual(selectWindowsProcessTree([impostor, impostorsChild], identity, SPAWNED_AT + 6_500), []);
+		// a row within CLOCK_SKEW_MS of rootKnownAt is ambiguous (it satisfies findWindowsTreeRoot's own
+		// acceptance test), so it is never treated as evidence the root already exited
+		const ambiguous = row(ROOT, 1, SPAWNED_AT + 5, 'cmd.exe');
+		const itsChild = row(4100, ROOT, SPAWNED_AT + 200);
+		assert.deepEqual(pids(selectWindowsProcessTree([ambiguous, itsChild], identity, SPAWNED_AT + 300)), [ROOT, 4100]);
+	});
+
 	it('never attributes a process without a creation time to the tree', () => {
 		const table = [row(4100, ROOT, null)];
 		const members = selectWindowsProcessTree(table, {

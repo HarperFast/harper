@@ -158,18 +158,20 @@ export function selectWindowsProcessTree(
 	const root = findWindowsTreeRoot(table, identity);
 	if (root) members.push(root);
 	const rootCreatedAt = root?.created ?? identity.rootCreatedAt;
-	// A remembered descendant's own row (matched by PID AND its known creation time) proves it is
-	// still alive; a *different* row now holding its PID, created after that known time, is a
-	// replacement and proves the descendant exited before the replacement was created — a tighter
-	// bound than the scan that first noticed the descendant missing, which (after the poll backs
-	// off) can be seconds late. The root's own exit is already detected without that lag (stamped
-	// on the very scan that first fails to find it, in `confirmWindowsProcessTreeGone` below), so
-	// only descendants need this.
-	const exitedBefore = (pid: number, exitedAt: number | undefined, createdAfter: number): number => {
-		const replacement = table.find(
-			(process) => process.pid === pid && process.created !== null && process.created > createdAfter
+	// A row now holding `pid` that could not possibly be the member we are bounding — created after
+	// the latest moment a genuine one could have been — proves the PID was already recycled by then,
+	// tighter than a "gone" conclusion that only arrives once a scan stops observing the member at
+	// all (for a remembered descendant that can be a whole backed-off poll late; for the root, the
+	// scan that first fails to find it still uses this frontier before its exit is stamped —
+	// `confirmWindowsProcessTreeGone` below only latches `rootExitedAt` after this call returns).
+	// `oursNoLaterThan` for a descendant is its exact known creation time; for the root it is the
+	// latest creation `findWindowsTreeRoot` would still have accepted as ours, so a row this cannot
+	// exonerate is never treated as a false impostor of a root we simply haven't re-confirmed yet.
+	const impostorCreatedAt = (pid: number, oursNoLaterThan: number): number | undefined => {
+		const impostor = table.find(
+			(process) => process.pid === pid && process.created !== null && process.created > oursNoLaterThan
 		);
-		return Math.min(exitedAt ?? now, replacement?.created ?? Infinity);
+		return impostor?.created;
 	};
 	let frontier = [
 		{
@@ -178,7 +180,11 @@ export function selectWindowsProcessTree(
 				(rootCreatedAt === undefined || rootCreatedAt === null
 					? identity.rootKnownAt - (identity.rootStartedWithinMs ?? 0)
 					: rootCreatedAt) - CLOCK_SKEW_MS,
-			notAfter: (identity.rootExitedAt ?? now) + CLOCK_SKEW_MS,
+			notAfter:
+				Math.min(
+					identity.rootExitedAt ?? now,
+					impostorCreatedAt(identity.rootPid, rootCreatedAt ?? identity.rootKnownAt + CLOCK_SKEW_MS) ?? Infinity
+				) + CLOCK_SKEW_MS,
 		},
 	];
 	// A member an earlier scan found is still one — by PID and creation time — after the parent
@@ -195,7 +201,7 @@ export function selectWindowsProcessTree(
 			frontier.push({
 				pid,
 				notBefore: known.created - CLOCK_SKEW_MS,
-				notAfter: exitedBefore(pid, known.exitedAt, known.created) + CLOCK_SKEW_MS,
+				notAfter: Math.min(known.exitedAt ?? now, impostorCreatedAt(pid, known.created) ?? Infinity) + CLOCK_SKEW_MS,
 			});
 		}
 	}
