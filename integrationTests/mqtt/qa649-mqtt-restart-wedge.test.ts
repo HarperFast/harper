@@ -34,12 +34,15 @@
  *     `Received WebSocket connection for MQTT from` / `Received TCP connection for MQTT from` /
  *     `Received SSL connection for MQTT from` at the moment the TRANSPORT (WS upgrade / raw
  *     socket) is accepted, BEFORE the MQTT CONNECT packet is even parsed. If the whole-run count
- *     of these "accepted" log lines exceeds the whole-run count of client-side 'completed'
- *     outcomes for the same surface (beyond the +1 the baseline usability probe below
- *     deliberately contributes and excludes from `completed`), that is server-side proof some
- *     connection was accepted at the transport level but never finished the MQTT handshake — the
- *     wedge shape described in the scenario, not a client-side illusion (a past QA finding was
- *     retracted for exactly this kind of one-sided evidence). This is asserted, not just logged.
+ *     of these "accepted" log lines exceeds the whole-run count of client-accounted-for
+ *     (completed + refused) outcomes for the same surface (beyond the +1 the baseline usability
+ *     probe below deliberately contributes and excludes), that is server-side proof of an accept
+ *     the client never accounted for at all — evidence independent of, and complementary to, the
+ *     client-side wedge count `assertNoWedge` pins to zero (a past QA finding was retracted for
+ *     exactly this kind of one-sided evidence). `refused` counts on the client side because the
+ *     server logs "accepted" several ms before CONNACK — a worker torn down inside that gap
+ *     during the rolling restart is a legitimate accept-then-reset, not a wedge. This is asserted,
+ *     not just logged.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
@@ -224,6 +227,21 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 		}
 	}
 
+	/** Waits minWaitMs, then polls until the log stops growing for one quiet interval (bounded) --
+	 * a condition-wait on the file transport actually flushing, not a fixed guess at how long. */
+	async function readServerLogStable(minWaitMs: number, quietMs = 250, maxExtraMs = 3000): Promise<string> {
+		await sleep(minWaitMs);
+		let text = readServerLog();
+		const deadline = Date.now() + maxExtraMs;
+		while (Date.now() < deadline) {
+			await sleep(quietMs);
+			const next = readServerLog();
+			if (next.length === text.length) return next;
+			text = next;
+		}
+		return text;
+	}
+
 	function countMatches(text: string, re: RegExp): number {
 		return (text.match(re) || []).length;
 	}
@@ -306,7 +324,6 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			let tJobComplete: number | undefined;
 			let finalJob: any;
 			try {
-				// --- Warm-up: confirm live traffic before touching anything ---
 				await sleep(WARMUP_MS);
 				ok(results.length > 0, 'connect storm produced no attempts during warm-up -- harness problem');
 
@@ -355,11 +372,12 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 
 			// Promise.all(stormPromises) above already waited for every launched attempt to be
 			// CLASSIFIED (up to WALL_CLOCK_MS after launch); only the LATE_GRACE_MS late-connect
-			// watch that starts once a 'wedged' result lands is still outstanding.
-			await sleep(LATE_GRACE_MS + 500);
+			// watch that starts once a 'wedged' result lands is still outstanding. Then poll the
+			// log file until it stops growing, rather than guess a fixed extra wait for the file
+			// transport to flush.
+			const serverLog = await readServerLogStable(LATE_GRACE_MS + 500);
 
 			// ================= ANALYSIS =================
-			const serverLog = readServerLog();
 
 			function analyzeSurface(surface: 'ws' | 'tcp' | 'tls') {
 				const rs = results.filter((r) => r.surface === surface);
@@ -415,27 +433,28 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			);
 
 			// Two-sided oracle, enforced: the server must never have accepted more transports than
-			// the client saw complete. +1 per surface allows for the baseline usability probe fired
-			// above, which triggers an "accepted" log line but is deliberately excluded from
-			// `results`/`completed` (Stage-2 gate measured this delta at exactly 1, both cold runs).
-			// A larger delta is server-side proof of a transport accepted but never handshaken --
-			// the wedge shape this spec exists to catch, not a client-side illusion (F-164's mistake).
-			ok(
-				wsAcceptedLines <= wsA!.completed.length + 1,
-				`SERVER-SIDE WEDGE PROOF (WS): server log recorded ${wsAcceptedLines} accepted transports vs only ${wsA!.completed.length} client-side completions`
-			);
-			if (tcpA) {
+			// the client accounted for as completed OR cleanly refused. +1 per surface allows for
+			// the baseline usability probe fired above, which triggers an "accepted" log line but
+			// is deliberately excluded from `results`. `refused` counts here deliberately: the
+			// server logs "accepted" the instant the transport upgrade lands, several ms before
+			// CONNACK, so a worker torn down inside that gap during the rolling restart produces a
+			// legitimate accepted-then-reset that the client correctly classifies `refused`, not a
+			// wedge -- comparing only against `completed` would fail that benign interleaving.
+			// `assertNoWedge` above already independently pins the client-observed wedge count to
+			// zero; this oracle instead catches accepts the client never accounted for at all.
+			function assertServerAccepts(
+				surface: string,
+				acceptedLines: number,
+				a: NonNullable<ReturnType<typeof analyzeSurface>>
+			) {
 				ok(
-					tcpAcceptedLines <= tcpA.completed.length + 1,
-					`SERVER-SIDE WEDGE PROOF (TCP): server log recorded ${tcpAcceptedLines} accepted transports vs only ${tcpA.completed.length} client-side completions`
+					acceptedLines <= a.completed.length + a.refused.length + 1,
+					`SERVER-SIDE ACCEPT MISMATCH (${surface}): server log recorded ${acceptedLines} accepted transports vs only ${a.completed.length + a.refused.length} client-accounted-for (completed+refused) attempts`
 				);
 			}
-			if (tlsA) {
-				ok(
-					sslAcceptedLines <= tlsA.completed.length + 1,
-					`SERVER-SIDE WEDGE PROOF (TLS): server log recorded ${sslAcceptedLines} accepted transports vs only ${tlsA.completed.length} client-side completions`
-				);
-			}
+			assertServerAccepts('WS', wsAcceptedLines, wsA!);
+			if (tcpA) assertServerAccepts('TCP', tcpAcceptedLines, tcpA);
+			if (tlsA) assertServerAccepts('TLS', sslAcceptedLines, tlsA);
 
 			console.log(
 				`\n[QA-649] SELF-HEAL: ${lateSelfHeals.length} of the ${Object.values(lateWatchCount).reduce((a, b) => a + b, 0)} tracked wedged client(s) ` +
@@ -467,6 +486,20 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 						? '-- window appears CLOSED by the time get_job reports COMPLETE.'
 						: '-- DEFECT-ADJACENT: the window OUTLIVES the documented completion signal.')
 			);
+
+			// A zero client-side wedge count is not by itself proof MQTT survived the restart -- a
+			// listener that never re-registers after the rotation would refuse every post-restart
+			// attempt (ECONNRESET, classified 'refused') and still show wedged=0. Require at least
+			// one real post-restart completion per usable surface.
+			function assertUsableAfterRestart(surface: string, a: NonNullable<ReturnType<typeof analyzeSurface>>) {
+				ok(
+					a.postComplete.some((r) => r.kind === 'completed'),
+					`MQTT (${surface}) never completed a single connect after get_job COMPLETE -- listener may not have survived the restart`
+				);
+			}
+			assertUsableAfterRestart('WS', wsA!);
+			if (tcpA) assertUsableAfterRestart('TCP', tcpA);
+			if (tlsA) assertUsableAfterRestart('TLS', tlsA);
 
 			// Primary hypothesis: an MQTT connect on any usable transport must never wedge (neither
 			// complete nor cleanly refuse) within our bounded observation window.
