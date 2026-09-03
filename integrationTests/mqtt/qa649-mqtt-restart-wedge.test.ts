@@ -72,6 +72,15 @@ const WALL_CLOCK_MS = 10_000;
 const LATE_GRACE_MS = 5000; // extra observation window on a capped subset of wedged clients, to see if they self-heal
 const LATE_WATCH_CAP = 6; // per surface
 
+// server/mqtt.ts logs these the moment the TRANSPORT is accepted, before the MQTT CONNECT packet
+// is parsed. Shared by the settle-wait and by the assertions, so the condition we wait on is
+// exactly the quantity we then assert on.
+const ACCEPT_PATTERNS: Record<'ws' | 'tcp' | 'tls', RegExp> = {
+	ws: /Received WebSocket connection for MQTT from/g,
+	tcp: /Received TCP connection for MQTT from/g,
+	tls: /Received SSL connection for MQTT from/g,
+};
+
 const WARMUP_MS = 1000;
 const TAIL_MS = 2000;
 // Ceiling on the post-COMPLETE condition-wait for every surface to serve a fresh connect again.
@@ -172,7 +181,9 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
 				threads: { count: WORKERS },
-				logging: { level: 'trace' },
+				// Rotation is on by default at maxSize 64M; a trace-level storm can cross it and
+				// take the accept lines this suite's oracle counts with it.
+				logging: { level: 'trace', rotation: { enabled: false } },
 			},
 			env: {},
 		});
@@ -186,6 +197,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				const res = await fetch(`${ctx.harper.httpURL}/Probe/`, {
 					headers: {
 						Authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+						Connection: 'close',
 					},
 					signal: AbortSignal.timeout(2000),
 				});
@@ -265,23 +277,36 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 		return '';
 	}
 
-	/** Waits minWaitMs, then polls until the log stops growing for one quiet interval (bounded) --
-	 * a condition-wait on the file transport actually flushing, not a fixed guess at how long. */
+	/** Waits minWaitMs, then polls until the accept counts THIS ORACLE READS stop changing for one
+	 * quiet interval (bounded). Whole-file length was the wrong condition in both directions:
+	 * unrelated trace chatter keeps hdb.log growing regardless, and neither growth nor stillness
+	 * says anything about whether the accept lines specifically are all on disk. */
 	async function readServerLogStable(minWaitMs: number, quietMs = 250, maxExtraMs = 10_000): Promise<string> {
 		await sleep(minWaitMs);
 		let text = readServerLog();
+		let counts = JSON.stringify(acceptCounts(text));
 		const deadline = Date.now() + maxExtraMs;
 		while (Date.now() < deadline) {
 			await sleep(quietMs);
 			const next = readServerLog();
-			if (next.length === text.length) return next;
+			const nextCounts = JSON.stringify(acceptCounts(next));
 			text = next;
+			if (nextCounts === counts) return next;
+			counts = nextCounts;
 		}
 		return text;
 	}
 
 	function countMatches(text: string, re: RegExp): number {
 		return (text.match(re) || []).length;
+	}
+
+	function acceptCounts(text: string): Record<'ws' | 'tcp' | 'tls', number> {
+		return {
+			ws: countMatches(text, ACCEPT_PATTERNS.ws),
+			tcp: countMatches(text, ACCEPT_PATTERNS.tcp),
+			tls: countMatches(text, ACCEPT_PATTERNS.tls),
+		};
 	}
 
 	test(
@@ -301,7 +326,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			// back", and that regression presents at the probe -- as a skip, not a failure. Only
 			// whole-runtime limitations get to skip, and those are `skipSuite` above. Retried to a
 			// deadline so a listener that is merely slow to bind is waited out instead. ---
-			const PROBE_DEADLINE_MS = 30_000;
+			const PROBE_DEADLINE_MS = 15_000;
 			const probeAttempts: Record<string, number> = { ws: 0, tcp: 0, tls: 0 };
 			const usable = new Map<string, boolean>();
 			const probeFailure = new Map<string, string>();
@@ -445,7 +470,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 						finalJob = job;
 						break;
 					}
-					await sleep(20);
+					await sleep(100);
 				}
 				ok(
 					tJobComplete,
@@ -574,16 +599,14 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			ok(wsA && tcpA && tlsA, 'a required surface produced no attempts at all -- harness problem, not an MQTT result');
 
 			// Server-side cross-check: count of transport-accepted lines vs client-completed count.
-			const wsAcceptedLines = countMatches(serverLog, /Received WebSocket connection for MQTT from/g);
-			const tcpAcceptedLines = countMatches(serverLog, /Received TCP connection for MQTT from/g);
-			const sslAcceptedLines = countMatches(serverLog, /Received SSL connection for MQTT from/g);
+			const accepted = acceptCounts(serverLog);
 			const closedLines = countMatches(serverLog, /MQTT connection was closed/g);
 			console.log(
-				`\n[QA-649] SERVER LOG cross-check: WS-accepted-lines=${wsAcceptedLines} (vs ${wsA!.completed.length} client-completed), ` +
-					`TCP-accepted-lines=${tcpAcceptedLines}, SSL-accepted-lines=${sslAcceptedLines}, "MQTT connection was closed"-lines=${closedLines}`
+				`\n[QA-649] SERVER LOG cross-check: WS-accepted-lines=${accepted.ws} (vs ${wsA!.completed.length} client-completed), ` +
+					`TCP-accepted-lines=${accepted.tcp}, SSL-accepted-lines=${accepted.tls}, "MQTT connection was closed"-lines=${closedLines}`
 			);
 			ok(
-				wsAcceptedLines > 0,
+				accepted.ws > 0,
 				'server log never recorded a single "Received WebSocket connection for MQTT from" line -- logging/harness problem, cannot evaluate the transport-accepted-but-never-completed hypothesis'
 			);
 
@@ -599,6 +622,26 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				wsA!.preRestart.some((r) => r.kind === 'completed'),
 				'no successful WS connects observed before the restart -- stream was not live, test invalid'
 			);
+
+			// The `refused` bucket absorbs the most likely regression shape: a listener that accepts
+			// the transport and never sends CONNACK is closed by mqtt.js's own connectTimeout,
+			// arrives here as `refused`, and every other oracle treats refused as accounted-for
+			// (the accept bound counts it; assertUsableAfterRestart is satisfied by any one later
+			// success). Bounding it BEFORE the restart is what keeps the bucket carrying signal --
+			// an in-window refusal is legitimate (a worker torn down between accept and CONNACK),
+			// a baseline one never is.
+			for (const [surface, a] of [
+				['WS', wsA!],
+				['TCP', tcpA!],
+				['TLS', tlsA!],
+			] as const) {
+				const baselineRefusals = a.preRestart.filter((r) => r.kind === 'refused');
+				strictEqual(
+					baselineRefusals.length,
+					0,
+					`${surface} refused ${baselineRefusals.length} of ${a.preRestart.length} connect(s) BEFORE the restart was triggered -- the transport was not healthy at baseline: ${JSON.stringify(baselineRefusals.slice(0, 5).map((r) => ({ seq: r.seq, detail: r.detail })))}`
+				);
+			}
 
 			// Precondition proof, per surface: attempts must actually have landed strictly inside
 			// the restart window, not just before/after it -- otherwise a degenerate window (e.g.
@@ -686,9 +729,9 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					`SERVER-SIDE ACCEPT MISMATCH (${surface}): server log recorded ${acceptedLines} accepted transports vs at most ${a.completed.length + a.refused.length + probes} client-accounted-for (completed ${a.completed.length} + refused ${a.refused.length} + ${probes} baseline probe attempt(s))`
 				);
 			}
-			assertServerAccepts('WS', wsAcceptedLines, probeAttempts.ws, wsA!);
-			assertServerAccepts('TCP', tcpAcceptedLines, probeAttempts.tcp, tcpA!);
-			assertServerAccepts('TLS', sslAcceptedLines, probeAttempts.tls, tlsA!);
+			assertServerAccepts('WS', accepted.ws, probeAttempts.ws, wsA!);
+			assertServerAccepts('TCP', accepted.tcp, probeAttempts.tcp, tcpA!);
+			assertServerAccepts('TLS', accepted.tls, probeAttempts.tls, tlsA!);
 		}
 	);
 });
