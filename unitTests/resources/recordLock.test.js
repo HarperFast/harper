@@ -973,15 +973,16 @@ describe('Record locks (harper#483)', () => {
 			await LockTest.put({ id: recordId, n: 0 });
 			const outside = await LockTest.lock(recordId, { hold: true, lease: 5000 });
 			await transaction(async () => {
-				const started = Date.now();
-				const leader = LockTest.lock(recordId, { timeout: 3000 }).then(
-					() => 'acquired',
-					(err) => err
+				// Ordering, not elapsed time: a stalled runner delays both deadlines together, so
+				// "the leader had not settled yet" is the claim that survives one.
+				let leaderSettled = false;
+				const leader = LockTest.lock(recordId, { timeout: 1000 }).then(
+					(record) => ((leaderSettled = true), record),
+					(err) => ((leaderSettled = true), err)
 				);
-				const follower = LockTest.lock(recordId, { timeout: 200 });
+				const follower = LockTest.lock(recordId, { timeout: 150 });
 				await assert.rejects(follower, { statusCode: 423 }, 'follower failed with 423');
-				const elapsed = Date.now() - started;
-				assert.ok(elapsed < 2000, `follower failed at its own deadline (${elapsed}ms), not the leader's 3000ms`);
+				assert.strictEqual(leaderSettled, false, 'follower failed at its own deadline, with the leader still waiting');
 				const leaderResult = await leader;
 				assert.strictEqual(leaderResult.statusCode, 423, 'leader failed at its own (longer) deadline');
 			});
