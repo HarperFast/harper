@@ -76,6 +76,8 @@ const WARMUP_MS = 1000;
 const TAIL_MS = 2000;
 // Ceiling on the post-COMPLETE condition-wait for every surface to serve a fresh connect again.
 const POST_RESTART_RECOVERY_MS = 30_000;
+// Ceiling on re-sampling worker identity for the rotation proof after get_job reports COMPLETE.
+const ROTATION_PROOF_MS = 15_000;
 
 interface AttemptResult {
 	surface: 'ws' | 'tcp' | 'tls';
@@ -187,6 +189,9 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					},
 					signal: AbortSignal.timeout(2000),
 				});
+				// undici does not release the socket until the body is consumed, and this loop can
+				// run hundreds of times before the component mounts.
+				await res.text().catch(() => {});
 				if (res.status !== 404) {
 					ready = true;
 					break;
@@ -262,7 +267,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 
 	/** Waits minWaitMs, then polls until the log stops growing for one quiet interval (bounded) --
 	 * a condition-wait on the file transport actually flushing, not a fixed guess at how long. */
-	async function readServerLogStable(minWaitMs: number, quietMs = 250, maxExtraMs = 3000): Promise<string> {
+	async function readServerLogStable(minWaitMs: number, quietMs = 250, maxExtraMs = 10_000): Promise<string> {
 		await sleep(minWaitMs);
 		let text = readServerLog();
 		const deadline = Date.now() + maxExtraMs;
@@ -300,6 +305,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			const probeAttempts: Record<string, number> = { ws: 0, tcp: 0, tls: 0 };
 			const usable = new Map<string, boolean>();
 			const probeFailure = new Map<string, string>();
+			const probeWedges: Array<{ surface: string; attempt: number; detail: string }> = [];
 			for (const s of surfaces) {
 				const deadline = Date.now() + PROBE_DEADLINE_MS;
 				do {
@@ -307,6 +313,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					const r = await attemptConnect(s.url, authOpts(ctx, `qa649-probe-${s.surface}-${n}`));
 					usable.set(s.surface, r.kind === 'completed');
 					if (r.kind !== 'completed') probeFailure.set(s.surface, `${r.kind}: ${r.detail}`);
+					if (r.kind === 'wedged') probeWedges.push({ surface: s.surface, attempt: n, detail: r.detail });
 					await endQuiet(r.client);
 					if (usable.get(s.surface)) break;
 					await sleep(500);
@@ -318,6 +325,15 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 						`attempts=${probeAttempts[s.surface]} ${probeFailure.get(s.surface) ?? ''}`
 				);
 			}
+			// Checked before the usability assertion below, and before the storm: a wedged probe IS
+			// the defect this file exists to catch, arriving early. Retrying past it would discard
+			// the only evidence, because probe attempts are deliberately excluded from `results`
+			// and so are invisible to assertNoWedge.
+			strictEqual(
+				probeWedges.length,
+				0,
+				`baseline probe WEDGED before the restart was even triggered: ${JSON.stringify(probeWedges)}`
+			);
 			for (const s of surfaces) {
 				ok(
 					usable.get(s.surface),
@@ -376,7 +392,18 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				await Promise.all(pending);
 			}
 
-			const stormPromises = surfaces.map((s) => runStorm(s.surface, s.url, s.intervalMs));
+			// Each storm's rejection is handled AT CREATION, not by the `Promise.all` in `finally`
+			// seconds later: an unhandled rejection in between takes down the whole runner process
+			// and every sibling suite with it. Recorded rather than swallowed -- a storm that died
+			// early just leaves fewer attempts behind, and every oracle below is count-based, so
+			// swallowing it would read as a green run on a broken harness.
+			const stormFailures: unknown[] = [];
+			const stormPromises = surfaces.map((s) =>
+				runStorm(s.surface, s.url, s.intervalMs).catch((err) => {
+					stormFailures.push(err);
+					stormOver = true;
+				})
+			);
 
 			let tBeforeRestart = 0;
 			let tJobComplete: number | undefined;
@@ -438,19 +465,32 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				// wedged=0. Worker identity is the evidence. QA-642 established that COMPLETE
 				// correlates with the pool having FULLY rotated, so a survivor is a real finding
 				// about that signal, not a tolerance to widen.
-				const workersAfter = await httpWorkerThreadIds();
+				// Re-sampled to a deadline rather than once. system_information is served by the very
+				// pool being rotated, so a single snapshot taken immediately after COMPLETE can
+				// still describe the outgoing workers; polling makes "never rotated" mean it,
+				// instead of meaning we looked too early.
+				const rotationDeadline = Date.now() + ROTATION_PROOF_MS;
+				let workersAfter: number[] = [];
+				let survivors: number[] = [];
+				for (;;) {
+					workersAfter = await httpWorkerThreadIds();
+					survivors = workersAfter.filter((id) => workersBefore.includes(id));
+					if (survivors.length === 0 && workersAfter.length === workersBefore.length) break;
+					if (Date.now() >= rotationDeadline) break;
+					await sleep(100);
+				}
 				console.log(
 					`[QA-649] http worker threadIds ${JSON.stringify(workersBefore)} -> ${JSON.stringify(workersAfter)}`
 				);
-				ok(
-					workersAfter.length >= 2,
-					`expected >= 2 HTTP worker threads after the restart, observed ${workersAfter.length} [${workersAfter}]`
-				);
-				const survivors = workersAfter.filter((id) => workersBefore.includes(id));
 				strictEqual(
 					survivors.length,
 					0,
-					`restart_service http_workers reported COMPLETE but thread(s) [${survivors}] of [${workersBefore}] never rotated -- the restart window this test measures was not fully opened`
+					`restart_service http_workers reported COMPLETE but thread(s) [${survivors}] of [${workersBefore}] never rotated within ${ROTATION_PROOF_MS}ms -- the restart window this test measures was not fully opened`
+				);
+				strictEqual(
+					workersAfter.length,
+					workersBefore.length,
+					`HTTP worker pool came back at ${workersAfter.length} thread(s) [${workersAfter}], not the ${workersBefore.length} it started with [${workersBefore}]`
 				);
 
 				// --- Tail: keep storming past COMPLETE, to see whether the window truly closes.
@@ -474,8 +514,15 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				// every 50/100/200ms past teardownHarper and hang the whole integration shard
 				// instead of just failing this test.
 				stormOver = true;
-				await Promise.all(stormPromises).catch(() => {});
+				await Promise.all(stormPromises);
 			}
+
+			// After the `finally`, so a genuine assertion failure inside the try reports first and
+			// is never masked by this one.
+			ok(
+				stormFailures.length === 0,
+				`connect storm(s) threw: ${stormFailures.map((e: any) => e?.stack ?? String(e)).join(' | ')}`
+			);
 
 			// Promise.all(stormPromises) above already waited for every launched attempt to be
 			// CLASSIFIED (up to WALL_CLOCK_MS after launch); only the LATE_GRACE_MS late-connect
