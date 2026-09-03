@@ -428,9 +428,18 @@ function startWorker(path, options = {}) {
 		noServerStart: _noServerStart,
 		...workerOptions
 	} = options;
-	if (workerOptions.workerData) {
+	// `in`, not truthiness: `workerData: null` is present, replaces the bootstrap object, and would sail
+	// past a truthy check leaving the thread with no ITC wiring and no error.
+	if ('workerData' in workerOptions) {
 		throw new Error(
 			`startWorker does not accept 'workerData' — it would replace the thread's ITC bootstrap. Use 'extraWorkerData'`
+		);
+	}
+	// Same hazard, other half: a raw `transferList` is spread last and REPLACES the merged list, dropping
+	// `portsToSend` so the thread comes up with no ports to its peers.
+	if ('transferList' in workerOptions) {
+		throw new Error(
+			`startWorker does not accept 'transferList' — it would drop the thread's ITC ports. Use 'extraTransferList'`
 		);
 	}
 	if (extraWorkerData) {
@@ -439,6 +448,15 @@ function startWorker(path, options = {}) {
 				throw new Error(`extraWorkerData may not set '${key}': it is owned by the thread bootstrap`);
 			}
 		}
+	}
+	// A transferred port is single-use, and the unexpected-exit path below re-invokes `startWorker` with the
+	// SAME options object — so a restartable worker carrying transferred ports throws `DataCloneError` on
+	// its second spawn, synchronously, inside an `exit` listener with no handler around it. That does not
+	// fail one deploy; it takes the process down. A caller transferring ports must own the thread's lifetime.
+	if (extraTransferList?.length && options.autoRestart !== false) {
+		throw new Error(
+			`startWorker with 'extraTransferList' requires 'autoRestart: false': transferred ports cannot be reused by a restart`
+		);
 	}
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single

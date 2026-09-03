@@ -43,6 +43,29 @@ describe('startWorker per-call workerData', () => {
 			() => startWorker(FIXTURE, { name: WORKER_NAME, workerData: { mine: 1 } }),
 			/does not accept 'workerData'/
 		);
+		// `workerData: null` is present but falsy: it still replaces the bootstrap object, so a truthiness
+		// check would let it through and the thread would come up with no ITC wiring and no error.
+		assert.throws(() => startWorker(FIXTURE, { name: WORKER_NAME, workerData: null }), /does not accept 'workerData'/);
+		// The other half of the same hazard: a raw transferList is spread last and replaces the merged list,
+		// dropping the ports to this thread's peers.
+		assert.throws(
+			() => startWorker(FIXTURE, { name: WORKER_NAME, transferList: [] }),
+			/does not accept 'transferList'/
+		);
+		// A transferred port is single-use, and the unexpected-exit path re-invokes startWorker with the SAME
+		// options — so a restartable worker carrying one throws DataCloneError on its second spawn,
+		// synchronously, inside an `exit` listener with nothing to catch it. That is a process-wide crash,
+		// not a failed spawn, so the contract is refused up front.
+		const { port1, port2 } = new MessageChannel();
+		try {
+			assert.throws(
+				() => startWorker(FIXTURE, { name: WORKER_NAME, extraTransferList: [port2] }),
+				/requires 'autoRestart: false'/
+			);
+		} finally {
+			port1.close();
+			port2.close();
+		}
 		for (const key of ['addPorts', 'ticketKeys', 'workerCount', 'noServerStart', '__proto__']) {
 			assert.throws(
 				() => startWorker(FIXTURE, { name: WORKER_NAME, extraWorkerData: { [key]: 'x' } }),

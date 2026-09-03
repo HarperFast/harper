@@ -2,7 +2,7 @@
 
 import { readdir, lstat, realpath, rm, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { MessageChannel, Worker } from 'node:worker_threads';
+import { MessageChannel, Worker, type MessagePort } from 'node:worker_threads';
 
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
@@ -263,15 +263,24 @@ export async function certifyCandidate(
 	let slotHeld = false;
 	let settled = false;
 	let timer: NodeJS.Timeout | undefined;
-	// A channel of its own, never `parentPort`: that carries Harper's ITC traffic, so an unrelated message
-	// arriving first reads as a malformed verdict. On a dedicated channel, anything non-conforming really is.
-	const { port1: verdicts, port2: verdictPort } = new MessageChannel();
-	const verdictFlag = new Int32Array(new SharedArrayBuffer(VERDICT_SLOTS * 4));
-	// Before the load, so the cleanup in the `finally` can tell what it created from what was already there.
-	const installRoot = await realpath(PACKAGE_ROOT).catch(() => undefined);
-	const linksBefore = installRoot ? await snapshotHarperModuleLinks(candidateDirPath, installRoot) : undefined;
+	// Declared out here, ASSIGNED inside the `try`. The slot is already held by this point, so anything
+	// fallible between here and the `finally` — channel or buffer allocation under resource pressure, a
+	// `realpath` that throws — would leak it permanently, since nothing else decrements `active`.
+	let verdicts: MessagePort | undefined;
+	let installRoot: string | undefined;
+	let linksBefore: Awaited<ReturnType<typeof snapshotHarperModuleLinks>> | undefined;
 
 	try {
+		// A channel of its own, never `parentPort`: that carries Harper's ITC traffic, so an unrelated message
+		// arriving first reads as a malformed verdict. On a dedicated channel, anything non-conforming really is.
+		const channel = new MessageChannel();
+		verdicts = channel.port1;
+		const verdictPort = channel.port2;
+		const verdictFlag = new Int32Array(new SharedArrayBuffer(VERDICT_SLOTS * 4));
+		// Before the load, so the cleanup in the `finally` can tell what it created from what was already there.
+		installRoot = await realpath(PACKAGE_ROOT).catch(() => undefined);
+		linksBefore = installRoot ? await snapshotHarperModuleLinks(candidateDirPath, installRoot) : undefined;
+
 		return await new Promise<CertificationOutcome>((resolve) => {
 			// Exactly one settlement, whichever of the outcomes below happens first. A candidate with a
 			// syntax error emits `error` AND then `exit`; a candidate that posts a verdict and then throws
@@ -432,8 +441,9 @@ export async function certifyCandidate(
 		// outcome: a rejected candidate is swept and a certified one is renamed live, and neither should
 		// carry the link.
 		if (installRoot && linksBefore) await removeCertificationLinks(candidateDirPath, appName, installRoot, linksBefore);
-		// Both ends, or the channel keeps this thread's event loop referenced.
-		verdicts.close();
+		// Both ends, or the channel keeps this thread's event loop referenced. Optional because a throw
+		// before the assignment above means there is nothing to close.
+		verdicts?.close();
 		if (!slotHeld) releaseSlot();
 	}
 }
