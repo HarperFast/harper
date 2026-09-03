@@ -32,6 +32,7 @@ import { MAX_LOCK_LEASE_MS, MAX_LOCK_TIMEOUT_MS, MIN_LOCK_LEASE_MS } from './rec
 /** Margin every participant adds to a hold it did not take, so the holder always expires first. */
 export const LOCK_LEASE_SKEW_MS = 5_000;
 const TICK_INTERVAL_MS = 100;
+const OFF_OWNER_WARN_INTERVAL_MS = 60_000;
 /** Bounds the state one contended key, and one database, can accumulate from replicated entries. */
 const MAX_PEER_REQUESTS_PER_KEY = 64;
 const MAX_KEYS_IN_FLIGHT = 10_000;
@@ -168,6 +169,10 @@ interface OwnRound {
 	/** Participants whose grant is still outstanding. */
 	pending: Set<string>;
 	acquired: boolean;
+	/** The LOCK_REQUEST write has landed, so a withdraw on the wire can correlate to it. */
+	requestSettled: boolean;
+	/** The round ended before its request settled; the withdraw is owed once it does. */
+	withdrawOwed: boolean;
 	/** The acquire() promise has been settled. */
 	resolved: boolean;
 	/** The round is over: released, withdrawn or abandoned. */
@@ -264,6 +269,10 @@ export class LockCoordinator {
 	#skewMs: number;
 	#autoTick: boolean;
 	#states = new Map<unknown, KeyState>();
+	// Counted, not just logged: a permanently misrouted deployment drops every entry, and a latched
+	// warning would make that indistinguishable from a quiet cluster.
+	#droppedOffOwner = 0;
+	#lastOffOwnerWarn = 0;
 
 	constructor(options: LockCoordinatorOptions) {
 		if (!isNodeName(options.nodeId) || NON_DISTINCTIVE_NODE_NAMES.has(options.nodeId))
@@ -283,8 +292,8 @@ export class LockCoordinator {
 		this.#autoTick = options.autoTick !== false;
 	}
 
-	/** Held holds, outstanding requests and owed grants, for `cluster_status`. */
-	get stats(): { held: number; pending: number; deferred: number } {
+	/** Held holds, outstanding requests, owed grants and misrouted entries, for `cluster_status`. */
+	get stats(): { held: number; pending: number; deferred: number; droppedOffOwner: number } {
 		let held = 0;
 		let pending = 0;
 		let deferred = 0;
@@ -293,7 +302,7 @@ export class LockCoordinator {
 			else if (state.own) pending++;
 			deferred += state.deferredOrder.length;
 		}
-		return { held, pending, deferred };
+		return { held, pending, deferred, droppedOffOwner: this.#droppedOffOwner };
 	}
 
 	/**
@@ -335,6 +344,8 @@ export class LockCoordinator {
 			waitMs,
 			pending: new Set(grantSet),
 			acquired: false,
+			requestSettled: false,
+			withdrawOwed: false,
 			resolved: false,
 			done: false,
 			deadlineMono: this.#monotonic() + waitMs,
@@ -354,6 +365,15 @@ export class LockCoordinator {
 		}
 		Promise.resolve(written).then(
 			() => {
+				own.requestSettled = true;
+				// The wait deadline can fire while this write is still in flight. The withdraw could not
+				// be written then — peers would apply it before the request it withdraws and install a
+				// round nothing ever retracts — so it was deferred to here.
+				if (own.withdrawOwed) {
+					own.withdrawOwed = false;
+					this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, tsR });
+					return;
+				}
 				if (own.done || own.resolved) return;
 				if (own.pending.size === 0) this.#complete(state, keyId, own);
 			},
@@ -383,9 +403,14 @@ export class LockCoordinator {
 	 */
 	applyEntry(entry: LockControlEntry, author: string): void {
 		if (!this.transport.ownsCoordination()) {
-			warnOnce(
-				'a cluster record lock control entry arrived on a worker that does not own lock coordination; dropping it'
-			);
+			this.#droppedOffOwner++;
+			const now = this.#now();
+			if (now - this.#lastOffOwnerWarn > OFF_OWNER_WARN_INTERVAL_MS) {
+				this.#lastOffOwnerWarn = now;
+				harperLogger.warn?.(
+					`${this.#droppedOffOwner} cluster record lock control entries have been dropped on a worker that does not own lock coordination for ${this.database}; the transport must deliver them to the coordinating worker`
+				);
+			}
 			return;
 		}
 		const claimed = entry.type === 'lockGrant' ? entry.grantor : entry.requester;
@@ -544,12 +569,15 @@ export class LockCoordinator {
 	#finish(state: KeyState, keyId: unknown, own: OwnRound, rejection?: Error): Promise<void> | void {
 		own.done = true;
 		if (state.own === own) state.own = undefined;
-		const write = this.#writeControlSafely({
-			type: 'lockRelease',
-			key: state.key,
-			requester: this.nodeId,
-			tsR: own.tsR,
-		});
+		let write: Promise<void> | void;
+		if (own.requestSettled)
+			write = this.#writeControlSafely({
+				type: 'lockRelease',
+				key: state.key,
+				requester: this.nodeId,
+				tsR: own.tsR,
+			});
+		else own.withdrawOwed = true;
 		this.#flushDeferred(state);
 		if (!own.resolved) {
 			own.resolved = true;
