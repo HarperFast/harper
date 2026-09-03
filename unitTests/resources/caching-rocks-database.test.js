@@ -6,7 +6,6 @@ const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
@@ -120,11 +119,11 @@ describe('PrimaryRocksDatabase', function () {
 	it('marks a record whose version was reused by a resequenced write, preserving its expiresAt', async function () {
 		const now = Date.now();
 		const expiresAt = now + 60_000;
-		await TestTable.put(10, { name: 'base', count: 0 });
-		await TestTable.patch(10, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
-		const inOrder = TestTable.primaryStore.getEntry(10);
-		await TestTable.patch(10, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50, expiresAt });
-		const resequenced = TestTable.primaryStore.getEntry(10);
+		await TestTable.put(13, { name: 'base', count: 0 });
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		const inOrder = TestTable.primaryStore.getEntry(13);
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50, expiresAt });
+		const resequenced = TestTable.primaryStore.getEntry(13);
 		assert.equal(resequenced.version, inOrder.version);
 		assert.equal(resequenced.value.count, 2);
 		assert.equal(resequenced.expiresAt, expiresAt);

@@ -68,13 +68,16 @@ a version tie with the _executing_ node's name, and a fill from a shared source 
 identity of its own, so two replicas resolving the same tie could keep different values at the same
 version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A
 RocksDB replacement whose candidate cannot advance the current version stores at the current version
-and carries `VERSION_NOT_UNIQUE_FLAG`; rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
+and carries `VERSION_REUSED` (`resources/RecordEncoder.ts`, aliasing rocksdb-js's own
+`VERSION_NOT_UNIQUE_FLAG`); rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
 then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
 an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
 vouched as fresh.
 
-The flag is also applied to ordinary resequenced RocksDB writes. Those records remain ineligible for
-VerificationTable fast-path confirmation until a later write advances their version.
+The flag is applied generically to every RocksDB record write whose version does not advance past
+the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this source-fill path — an
+ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible
+for VerificationTable fast-path confirmation until a later write advances their version.
 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
