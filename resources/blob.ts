@@ -1910,9 +1910,12 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean {
 				deferTo(now + Math.max(getReclamationDelay(), HELD_RECHECK_INTERVAL));
 				continue;
 			}
-		} else if (!takeReclaimLock(storageInfo)) {
-			// An ownerless row was validated before it was written, so nothing is re-checked here — but a
-			// write referencing the file again still has to be able to stop the unlink.
+		} else if (!takeReclaimLock(storageInfo) || !intentStillQueued(queueDb, key, storageInfo)) {
+			// An ownerless row's conditions were validated before it was written, so they are not
+			// re-checked here — but the row can still have been withdrawn since, and a withdrawal is
+			// visible only in the row. A cancelling write removes it and then tests the lock, so a
+			// cancellation that took the lock first and handed it back would otherwise be followed by
+			// this drain unlinking the file that write is committing a reference to.
 			deferTo(now + Math.max(getReclamationDelay(), HELD_RECHECK_INTERVAL));
 			continue;
 		}
@@ -2038,22 +2041,29 @@ function readyToUnlink(
 	// Last: shut out a write that is referencing this file again right now. Taking the lock before
 	// re-reading the row is what makes the interlock exact — a canceling write removes the row and
 	// then tests this lock, so whichever of the two gets the lock first, the other sees its evidence.
-	if (!takeReclaimLock(storageInfo)) {
+	if (!takeReclaimLock(storageInfo) || !intentStillQueued(queueDb, key, storageInfo)) {
 		if (!expired) releaseReclaimClaim(storageInfo);
 		return false;
 	}
+	return true;
+}
+
+/**
+ * Confirm under the reclaim lock that the intent is still queued, releasing the lock when it is not.
+ * A cancelling write withdraws the row before it tests the lock, so a row still present here cannot
+ * belong to a write that was allowed to proceed. An unreadable row counts as withdrawn: the file
+ * stays, which is the recoverable answer.
+ */
+function intentStillQueued(queueDb: any, key: any, storageInfo: BlobFileInfo): boolean {
 	let current: any;
 	try {
 		current = queueDb.getSync(key);
 	} catch (error) {
 		logger.debug?.('Could not confirm a blob unlink intent before executing it', storageInfo.fileId, error);
 	}
-	if (!current) {
-		releaseReclaimLock(storageInfo);
-		if (!expired) releaseReclaimClaim(storageInfo);
-		return false;
-	}
-	return true;
+	if (current) return true;
+	releaseReclaimLock(storageInfo);
+	return false;
 }
 
 /** Returns false when a write is referencing this file again, which is never overridden. */

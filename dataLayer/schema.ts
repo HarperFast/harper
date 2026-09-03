@@ -382,9 +382,8 @@ export function cleanupOrphanBlobs(request: any) {
 	if (!request.database) throw new ClientError('Must provide "database" name for search for orphaned blobs');
 	const database: any = (databases as any)[request.database];
 	if (!database) throw new ClientError(`Unknown database '${request.database}'`);
-	// Coerced rather than read as raw truthiness: `"false"` is truthy in JS, so an operator who asked
-	// for a real reclaim would silently get a dry run (and vice versa for a form-encoded `"true"`).
-	// An uninterpretable value is rejected instead of guessed — this operation deletes files.
+	// Raw truthiness reads a form-encoded `"false"` as a dry run, so an operator who asked for a real
+	// reclaim would silently not get one. Rejected rather than guessed — this operation deletes files.
 	const dryRun = coerceDryRun(request.dryRun);
 	// don't await, it will probably take hours — but a rejection here must not take the process down
 	cleanupOrphans((databases as any)[request.database], request.database, dryRun).catch((error) =>

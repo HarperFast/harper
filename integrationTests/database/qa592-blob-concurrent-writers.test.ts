@@ -267,6 +267,12 @@ suite(
 			stormOver = true;
 			await Promise.all(readers);
 
+			// Recycle the workers that staged every intent this storm produced. Convergence below is
+			// then necessarily the work of rows recovered from the internal dbi by workers that never
+			// saw the supersessions - which is the whole of what #1832 asks for.
+			await restartHttpWorkers(client, '/Asset/', 120_000);
+			findings.push('http_workers recycled after the storm: what follows is the durable queue, not an in-memory timer');
+
 			findings.push(
 				`storm: ${WRITER_COUNT} writers x ${ITERS_PER_WRITER} iters = ${WRITER_COUNT * ITERS_PER_WRITER} REPLACEs on 'hot', ` +
 					`${totalReads} concurrent reads (${READER_COUNT} reader loops)`
@@ -411,9 +417,10 @@ suite(
 				`LWW DEFECT: final blob sha256 does not match ANY of the ${writtenShas.size} versions this test wrote — spliced/foreign content: ${JSON.stringify(final.body)}`
 			);
 			// Inline reclamation must reach the true floor WITHOUT cleanup_orphan_blobs (#1832): blob
-			// unlink intents are durable (queued in the internal dbi, drained at-least-once), so worker
-			// recycling mid-storm — this suite restarts http_workers right before the storm — no longer
-			// strands superseded files. The manual sweep below stays as a backstop/dryRun check only.
+			// unlink intents are durable (queued in the internal dbi, drained at-least-once), so the
+			// worker recycle this suite performs after the storm - discarding every in-memory schedule
+			// the storm built - no longer strands superseded files. The manual sweep below stays as a
+			// backstop/dryRun check only.
 			ok(
 				filesAfterSettle === 2,
 				`INLINE RECLAMATION DEFECT (#1832): expected the concurrent REPLACE storm to converge to 2 blob files ` +

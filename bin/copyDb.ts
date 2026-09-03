@@ -1056,11 +1056,10 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
 							}
 							written = encodeBlobsWithFilePath(
-								// The record's own key, not a running count: this is the identity a blob reference is
-								// checked against, and a synthetic one makes every migrated record claim a different
-								// owner for a file it may legitimately share with itself. No table id is available
-								// here, so migrated references stay ownerless — the migration cannot prove what it
-								// copied is unaliased, and an ownerless reference keeps the pre-existing behavior.
+								// The record's own key, not a running count: a synthetic identity makes every migrated
+								// record claim a different owner for a file it may legitimately share with itself.
+								// Migrated references stay ownerless regardless — the migration cannot prove what it
+								// copied is unaliased.
 								() => targetDbi.put(key, value, version),
 								key,
 								sourceRootStore
