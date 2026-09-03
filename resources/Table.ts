@@ -2477,6 +2477,7 @@ export function makeTable(options) {
 				// The follower waits on the leader's acquisition, but only for its own timeout.
 				let followerTimer: ReturnType<typeof setTimeout> | undefined;
 				const followerTimedOut = Symbol('follower timeout');
+				const followerStart = Date.now();
 				const followerDeadline = new Promise<never>((_, reject) => {
 					followerTimer = setTimeout(() => reject(followerTimedOut), resolved.timeout).unref();
 				});
@@ -2488,12 +2489,17 @@ export function makeTable(options) {
 							if (resolved.hold && !acquired.hold) acquired.upgradeToHold(resolved.lease);
 							return this.#reloadLocked(id, acquired, true);
 						}
-						return this.lock(target, options) as Promise<any>;
+						const remaining = resolved.timeout - (Date.now() - followerStart);
+						if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
+						return this.lock(target, { ...resolved, timeout: remaining }) as Promise<any>;
 					},
 					(error) => {
 						clearTimeout(followerTimer);
 						if (error === followerTimedOut) throw new ClientError(`Record is locked and was not released in time`, 423);
-						return this.lock(target, options) as Promise<any>; // the leader failed; try on this caller's own terms
+						// the leader failed; try on this caller's own terms with the budget it has left
+						const remaining = resolved.timeout - (Date.now() - followerStart);
+						if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
+						return this.lock(target, { ...resolved, timeout: remaining }) as Promise<any>;
 					}
 				);
 			}
