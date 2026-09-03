@@ -2602,6 +2602,30 @@ describe('durable blob-unlink queue (#1832)', () => {
 		});
 	});
 
+	it('stands down when an ownerless intent is withdrawn after the drain has read it', async () => {
+		// A cancelling write withdraws the row and then tests the reclaim lock, so a drain that has
+		// already read the row must re-read it under that lock. Without that, a cancellation that took
+		// the lock first and handed it back is followed by this drain unlinking the file the write is
+		// committing a reference to.
+		const { fileId, filePath } = await fileBackedBlob('withdrawn-ownerless');
+		stageUnlink(fileId);
+
+		const db = queueDb();
+		const realGetSync = db.getSync;
+		db.getSync = function (key) {
+			// The withdrawal lands between the range read and the confirm.
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) return undefined;
+			return realGetSync.apply(this, arguments);
+		};
+		try {
+			drainBlobUnlinkQueue(rootStore());
+			await delay(200);
+		} finally {
+			db.getSync = realGetSync;
+		}
+		assert.ok(existsSync(filePath), 'a withdrawn intent must never be executed');
+	});
+
 	it('commits the unlink to the queue before executing it', async () => {
 		// The durability guarantee itself: without it the deletion exists only as a timer, and a
 		// worker recycle loses it (the leak behind #1832).

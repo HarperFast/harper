@@ -1642,7 +1642,11 @@ export function makeTable(options) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
 					// A supersession like any other: the drop makes these records unreachable, and staging the
 					// intents durably is what keeps them from being lost if the process dies mid-drop.
-					deleteBlobsInObject(entry.value, undefined, { priorVersion: entry.version });
+					// Batched, unlike a record write's supersession: this runs once per record over the
+					// whole table, and a synchronous commit each would block the loop for the length of it.
+					// A death mid-drop can then lose intents the batch had not flushed, which leaves those
+					// files to the orphan sweep — a leak, against blocking the thread for minutes.
+					deleteBlobsInObject(entry.value, undefined, { priorVersion: entry.version, synchronous: false });
 				}
 			}
 			if (databaseName === databasePath) {
