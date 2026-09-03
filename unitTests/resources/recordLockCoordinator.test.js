@@ -84,7 +84,7 @@ class FakeCluster {
 	#broadcast(from, entry) {
 		for (const node of this.nodes.values()) {
 			if (node.name === from) continue;
-			this.inFlight.push({ to: node.name, entry, deliverAt: this.mono + this.deliveryDelay });
+			this.inFlight.push({ to: node.name, from, entry, deliverAt: this.mono + this.deliveryDelay });
 		}
 	}
 
@@ -95,15 +95,15 @@ class FakeCluster {
 		for (const message of ready) {
 			const node = this.nodes.get(message.to);
 			if (!node?.alive) continue;
-			node.applied.push(message.entry);
-			node.coordinator.applyEntry(message.entry);
+			node.applied.push(message);
+			node.coordinator.applyEntry(message.entry, message.from);
 		}
 	}
 
 	/** Re-apply everything a node has already seen; the protocol must be idempotent under replay. */
 	replayTo(name) {
 		const node = this.nodes.get(name);
-		for (const entry of [...node.applied]) node.coordinator.applyEntry(entry);
+		for (const message of [...node.applied]) node.coordinator.applyEntry(message.entry, message.from);
 	}
 
 	tick() {
@@ -200,13 +200,12 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 
 			// Supply exactly what a holder that did NOT defer would have written. Nothing else changes.
 			const request = cluster.writtenOfType('node-b', 'lockRequest')[0];
-			cluster.node('node-b').coordinator.applyEntry({
-				type: 'lockGrant',
-				key: KEY,
-				requester: 'node-b',
-				tsR: request.tsR,
-				grantor: 'node-a',
-			});
+			cluster
+				.node('node-b')
+				.coordinator.applyEntry(
+					{ type: 'lockGrant', key: KEY, requester: 'node-b', tsR: request.tsR, grantor: 'node-a' },
+					'node-a'
+				);
 			await cluster.flush();
 			assert.strictEqual(second.state, 'resolved', 'without the deferral both nodes hold the same key');
 		});
@@ -411,7 +410,7 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			// A node that comes up now knows the membership but never saw the holder's request, so it
 			// grants freely.
 			const joiner = new FakeCluster(['node-a', 'node-b', 'node-c']);
-			joiner.node('node-c').coordinator.applyEntry(cluster.writtenOfType('node-b', 'lockRequest')[0]);
+			joiner.node('node-c').coordinator.applyEntry(cluster.writtenOfType('node-b', 'lockRequest')[0], 'node-b');
 			assert.strictEqual(
 				joiner.writtenOfType('node-c', 'lockGrant').length,
 				1,
@@ -450,16 +449,61 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			assert.strictEqual(cluster.writtenOfType('node-a', 'lockGrant').length, 1, 'and one grant, not two');
 		});
 
+		it('does not treat a cleanly released peer round as a grant when it later expires', async () => {
+			const cluster = new FakeCluster(['node-a', 'node-b']);
+			// node-a takes and cleanly releases the key, leaving node-b holding a released peer record
+			// that lingers until its bound so a replayed request cannot resurrect it.
+			const firstHold = cluster.acquire('node-a', KEY, 1_000, 1_000);
+			await cluster.flush();
+			assert.strictEqual(firstHold.state, 'resolved');
+			await cluster.release('node-a');
+			await cluster.flush();
+
+			// node-b now wants the key and node-a stops answering. Only a crash may imply a grant, and
+			// node-a did not crash while holding — it released.
+			cluster.node('node-a').alive = false;
+			const waiter = cluster.acquire('node-b', KEY, 60_000, 120_000);
+			await cluster.flush();
+			assert.strictEqual(waiter.state, 'pending');
+
+			await cluster.advance(1_000 + LOCK_LEASE_SKEW_MS + 1_000);
+			assert.strictEqual(
+				waiter.state,
+				'pending',
+				'the lingering released record must not complete a round node-a never granted'
+			);
+		});
+
+		it('ignores a grant whose payload names a grantor other than the node that wrote it', async () => {
+			const cluster = new FakeCluster(['node-a', 'node-b', 'node-c']);
+			cluster.node('node-b').alive = false; // node-b never answers, so node-a stays pending
+			const pending = cluster.acquire('node-a');
+			await cluster.flush();
+			const request = cluster.writtenOfType('node-a', 'lockRequest')[0];
+			// node-c writes a grant claiming to be node-b.
+			cluster
+				.node('node-a')
+				.coordinator.applyEntry(
+					{ type: 'lockGrant', key: KEY, requester: 'node-a', tsR: request.tsR, grantor: 'node-b' },
+					'node-c'
+				);
+			await cluster.flush();
+			assert.strictEqual(pending.state, 'pending', 'a node cannot grant on another node’s behalf');
+		});
+
 		it('ignores a request replayed from beyond any live hold', async () => {
 			const cluster = new FakeCluster(['node-a', 'node-b']);
-			cluster.node('node-a').coordinator.applyEntry({
-				type: 'lockRequest',
-				key: KEY,
-				requester: 'node-b',
-				tsR: cluster.wall - (MAX_LOCK_LEASE_MS + WAIT + LOCK_LEASE_SKEW_MS + 1_000),
-				leaseMs: LEASE,
-				waitMs: WAIT,
-			});
+			cluster.node('node-a').coordinator.applyEntry(
+				{
+					type: 'lockRequest',
+					key: KEY,
+					requester: 'node-b',
+					tsR: cluster.wall - (MAX_LOCK_LEASE_MS + WAIT + LOCK_LEASE_SKEW_MS + 1_000),
+					leaseMs: LEASE,
+					waitMs: WAIT,
+				},
+				'node-b'
+			);
 			assert.strictEqual(cluster.node('node-a').written.length, 0, 'no grant for a request nothing can be waiting on');
 		});
 	});
@@ -528,14 +572,17 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 
 		it('ignores a control entry from a node that is not a participant', async () => {
 			const cluster = new FakeCluster(['node-a', 'node-b']);
-			cluster.node('node-a').coordinator.applyEntry({
-				type: 'lockRequest',
-				key: KEY,
-				requester: 'node-from-another-cluster',
-				tsR: cluster.wall,
-				leaseMs: LEASE,
-				waitMs: WAIT,
-			});
+			cluster.node('node-a').coordinator.applyEntry(
+				{
+					type: 'lockRequest',
+					key: KEY,
+					requester: 'node-from-another-cluster',
+					tsR: cluster.wall,
+					leaseMs: LEASE,
+					waitMs: WAIT,
+				},
+				'node-from-another-cluster'
+			);
 			assert.strictEqual(cluster.node('node-a').written.length, 0);
 			assert.strictEqual(cluster.node('node-a').coordinator.stats.deferred, 0);
 		});
@@ -554,6 +601,20 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 				const reader = new Unpackr({ structures: [] });
 				const decoded = decodeLockControlPayload(entry.type, reader.unpack(encodeLockControlPayload(entry)));
 				assert.deepStrictEqual(decoded, entry);
+			}
+		});
+
+		it('survives a decoder whose structure dictionary is populated, for every record key shape', () => {
+			const { Unpackr } = require('msgpackr');
+			// The receiving side decodes with the TABLE's decoder, which repurposes a range of positive
+			// fixints as structure ids. Integer record keys land in that range.
+			const structures = [];
+			for (let i = 0; i < 80; i++) structures.push([`a${i}`, `b${i}`]);
+			const tableDecoder = new Unpackr({ structures, useRecords: true });
+			for (const key of [0, 31, 32, 63, 64, 100, 127, 128, 4096, -5, 'k', [64, 'a'], 1.5]) {
+				const entry = { type: 'lockRequest', key, requester: 'node-a', tsR: 5, leaseMs: LEASE, waitMs: WAIT };
+				const decoded = decodeLockControlPayload(entry.type, tableDecoder.unpack(encodeLockControlPayload(entry)));
+				assert.deepStrictEqual(decoded, entry, `record key ${JSON.stringify(key)} round-trips`);
 			}
 		});
 
@@ -580,13 +641,12 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			const pending = cluster.acquire('node-a');
 			await cluster.flush();
 			const request = cluster.writtenOfType('node-a', 'lockRequest')[0];
-			cluster.node('node-a').coordinator.applyEntry({
-				type: 'lockGrant',
-				key: KEY,
-				requester: 'node-a',
-				tsR: request.tsR,
-				grantor: 'node-not-in-the-cluster',
-			});
+			cluster
+				.node('node-a')
+				.coordinator.applyEntry(
+					{ type: 'lockGrant', key: KEY, requester: 'node-a', tsR: request.tsR, grantor: 'node-not-in-the-cluster' },
+					'node-not-in-the-cluster'
+				);
 			await cluster.flush();
 			assert.strictEqual(pending.state, 'pending', 'an uncorrelated grant does not complete the round');
 			assert.strictEqual(cluster.node('node-a').coordinator.stats.held, 0);

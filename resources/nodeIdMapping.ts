@@ -123,3 +123,14 @@ export function lastTimeInAuditStore(auditStore: Database) {
 export function getThisNodeId(auditStore: any) {
 	return exportIdMapping(auditStore)?.[server.hostname];
 }
+
+/**
+ * The node name a local short id refers to. Callers that must attribute a replicated entry to its
+ * origin node need the globally stable name, not the id, which is assigned per node.
+ */
+export function getNodeNameForId(auditStore: any, nodeId: number | undefined): string | undefined {
+	if (typeof nodeId !== 'number') return undefined;
+	const nameToId = exportIdMapping(auditStore);
+	for (const name in nameToId) if (nameToId[name] === nodeId) return name;
+	return undefined;
+}

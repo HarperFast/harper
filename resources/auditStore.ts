@@ -575,15 +575,15 @@ function isDecodableAction(action: number) {
 	return (action & 0xf) !== 0 && !(action & ~knownActionFlags);
 }
 
-const LOCK_CONTROL_TYPES = new Set(['lockRequest', 'lockGrant', 'lockRelease']);
-
 /**
  * Cluster lock coordination entries. They ride the replicated audit stream but describe no record,
  * so every consumer that surfaces audit entries as record activity — subscriber fan-out, the
  * `startTime` replay, the `previousCount` backfill, the replicated-event sink — must exclude them.
+ * An equality chain rather than a Set: this runs once per audit entry on the replay and fan-out
+ * paths, where the common answer is false on the first comparison.
  */
 export function isLockControlType(type: unknown): boolean {
-	return typeof type === 'string' && LOCK_CONTROL_TYPES.has(type);
+	return type === 'lockRequest' || type === 'lockGrant' || type === 'lockRelease';
 }
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
