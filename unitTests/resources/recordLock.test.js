@@ -963,6 +963,113 @@ describe('Record locks (harper#483)', () => {
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write landed');
 		});
+
+		it('a coalesced follower fails at its own timeout, not the leader’s', async function () {
+			// The follower parks on the leader's acquisition but keeps its own deadline: with a
+			// leader waiting far longer, the follower must still fail at its own timeout.
+			if (isLMDB) return this.skip();
+			this.timeout(6000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const outside = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			await transaction(async () => {
+				const started = Date.now();
+				const leader = LockTest.lock(recordId, { timeout: 3000 }).then(
+					() => 'acquired',
+					(err) => err
+				);
+				const follower = LockTest.lock(recordId, { timeout: 200 });
+				await assert.rejects(follower, { statusCode: 423 }, 'follower failed with 423');
+				const elapsed = Date.now() - started;
+				assert.ok(elapsed < 2000, `follower failed at its own deadline (${elapsed}ms), not the leader's 3000ms`);
+				const leaderResult = await leader;
+				assert.strictEqual(leaderResult.statusCode, 423, 'leader failed at its own (longer) deadline');
+			});
+			await outside.unlock();
+		});
+
+		it('a coalesced follower retries on its own budget when the leader fails', async function () {
+			// The leader's acquireRecordKey rejects (its own short timeout).  The follower must
+			// re-enter lock() with the time it has left rather than inheriting the failure.
+			if (isLMDB) return this.skip();
+			this.timeout(6000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const outside = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			const release = delay(400).then(() => outside.unlock());
+			await transaction(async () => {
+				const leader = LockTest.lock(recordId, { timeout: 150 });
+				const follower = LockTest.lock(recordId, { timeout: 4000 });
+				await assert.rejects(leader, { statusCode: 423 }, 'leader failed at its own short timeout');
+				const acquired = await follower;
+				assert.ok(acquired, 'follower acquired the lock after retrying on its own budget');
+				acquired.set('n', 1);
+				await acquired.save();
+			});
+			await release;
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, "the follower's write landed");
+		});
+
+		it('a transaction aborted while lock() waiters are parked leaves the key unlocked', async function () {
+			// Both a leader (parked in acquireRecordKey) and a follower (parked in the coalescing
+			// race) resolve only after the transaction is gone; each must release the handle it
+			// lands on instead of leaking the native key lock.
+			if (isLMDB) return this.skip();
+			this.timeout(8000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const outside = await LockTest.lock(recordId, { hold: true, lease: 6000 });
+			const waiters = [];
+			await assert.rejects(
+				transaction(async () => {
+					// settled here so a post-abort rejection is never unhandled
+					const track = (promise) =>
+						waiters.push(
+							promise.then(
+								() => 'acquired',
+								(err) => err
+							)
+						);
+					track(LockTest.lock(recordId, { timeout: 4000 }));
+					track(LockTest.lock(recordId, { timeout: 4000 }));
+					await delay(100); // both parked
+					throw new Error('abort with lock waiters parked');
+				}),
+				/abort with lock waiters parked/
+			);
+			await outside.unlock();
+			const outcomes = await Promise.all(waiters);
+			for (const outcome of outcomes)
+				assert.notStrictEqual(outcome, 'acquired', 'a waiter that lands after the abort does not keep the lock');
+			const next = await LockTest.lock(recordId, { timeout: 1000, hold: true });
+			await next.unlock();
+		});
+
+		it('a lock write does not stamp an unrelated write staged on the same context', async function () {
+			// The holder version stays on the operation instead of pinning the link clock. Pinning it
+			// leaves every ungated write staged on the same ImmediateTransaction before the commit
+			// resets it — here an off-key delete issued while the lock write is still in flight —
+			// carrying the lock's acquisition time, so LWW silently drops it against the newer
+			// version the unrelated record already holds.
+			if (isLMDB) return this.skip();
+			this.timeout(4000);
+			const lockedId = id();
+			const otherId = id();
+			await LockTest.put({ id: lockedId, n: 0 });
+			await LockTest.put({ id: otherId, n: 1 });
+			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 });
+			await delay(20); // the unrelated record's version lands well after the lock's acquiredAt
+			await LockTest.put({ id: otherId, n: 2 });
+			holder.set('n', 1);
+			const holderSave = holder.save();
+			holder.delete(otherId); // off-key, ungated, staged while the lock write's commit is in flight
+			await holderSave;
+			await waitFor(() => LockTest.primaryStore.getEntry(otherId)?.value == null, {
+				message: 'the off-key delete was stamped at the lock version and dropped by LWW',
+			});
+			await holder.unlock();
+			assert.strictEqual((await LockTest.get(lockedId)).n, 1, 'the holder write landed');
+		});
 	});
 
 	describe('recreate-after-delete race (issue-(f))', function () {

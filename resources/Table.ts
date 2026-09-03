@@ -2481,6 +2481,18 @@ export function makeTable(options) {
 				const followerDeadline = new Promise<never>((_, reject) => {
 					followerTimer = setTimeout(() => reject(followerTimedOut), resolved.timeout).unref();
 				});
+				// Try again on this caller's own terms with the budget it has left.
+				const retryOnRemainingBudget = () => {
+					// The enclosing transaction ended while we were parked. A retry re-resolves the
+					// context, which no longer points at this link, so the handle it acquired would be
+					// registered on a fresh transaction that no commit or abort ever releases — the
+					// same abandonment the leader's own post-acquisition guard below rejects.
+					if (link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits)
+						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+					const remaining = resolved.timeout - (Date.now() - followerStart);
+					if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
+					return this.lock(target, { ...resolved, timeout: remaining }) as Promise<any>;
+				};
 				return Promise.race([pending, followerDeadline]).then(
 					() => {
 						clearTimeout(followerTimer);
@@ -2489,17 +2501,12 @@ export function makeTable(options) {
 							if (resolved.hold && !acquired.hold) acquired.upgradeToHold(resolved.lease);
 							return this.#reloadLocked(id, acquired, true);
 						}
-						const remaining = resolved.timeout - (Date.now() - followerStart);
-						if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
-						return this.lock(target, { ...resolved, timeout: remaining }) as Promise<any>;
+						return retryOnRemainingBudget();
 					},
 					(error) => {
 						clearTimeout(followerTimer);
 						if (error === followerTimedOut) throw new ClientError(`Record is locked and was not released in time`, 423);
-						// the leader failed; try on this caller's own terms with the budget it has left
-						const remaining = resolved.timeout - (Date.now() - followerStart);
-						if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
-						return this.lock(target, { ...resolved, timeout: remaining }) as Promise<any>;
+						return retryOnRemainingBudget();
 					}
 				);
 			}

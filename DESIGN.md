@@ -192,6 +192,15 @@ Consequences that shape the code:
   is created that inherits ownership. Any changes staged under the scoped lock are preserved on the
   instance. The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call
   is re-entrant and returns the existing handle.
+- **Concurrent `lock()` calls for one key on one link coalesce.** `Promise.all([T.lock(id), T.lock(id)])`
+  would otherwise have both calls reach `tryLock` before either registers, so the second parks against
+  the first. The first registers its in-flight acquisition (`registerPendingLock`); the second becomes a
+  follower that races that promise against its OWN timeout, then either takes the re-entrant path or
+  retries with whatever budget it has left. A follower that lands after its enclosing transaction has
+  closed must NOT retry: `lock()` re-resolves the context, which no longer points at that link, so the
+  handle it acquired would be registered on a fresh transaction that no commit or abort ever releases —
+  a leaked key lock until the lease expires. It throws 500 instead, matching the leader's own
+  post-acquisition guard.
 - **Timed-out waiter callback residue (rocksdb-js follow-up).** When `acquireRecordKey` times out and
   throws 423, the `onUnlocked` callback registered via `tryLock(key, onUnlocked)` stays live in the
   native map until the current holder eventually releases the key. rocksdb-js has no `deregisterCallback`
@@ -220,9 +229,13 @@ tiebreaking; once every node participates in the grant protocol, lock() becomes 
 **Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
 `transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
 sequential saves each get a distinct, monotonically-increasing version while remaining ≤ any
-concurrent write at real time. In an explicit OPEN transaction, when the hold is the first write
-(no prior staged writes), the transaction clock is pinned to `handle.acquiredAt`; subsequent saves
-reuse that pinned clock. When non-hold writes were staged before the hold was acquired the clock is
+concurrent write at real time. That stamp lives on the write (`TransactionWrite.lockStamp`) and is
+never assigned to the link clock: pinning `link.timestamp` would stamp every OTHER write staged on the
+same context before the commit resets it — a concurrent write in the caller's own `Promise.all`, an
+off-key write through the locked instance, the next operation in a retry or replay save loop — with
+the lock's acquisition time, which LWW then silently drops against a newer record version. In an
+explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
+clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes were staged before the hold was acquired the clock is
 left alone (best-effort ordering; no 409 is thrown for the mixed-write case).
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance

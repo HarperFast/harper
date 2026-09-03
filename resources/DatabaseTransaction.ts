@@ -956,8 +956,12 @@ export class DatabaseTransaction implements Transaction {
 				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
 				// signals the per-write-commit semantics):  stamp with nextHolderVersion() so that
 				// each sequential save() gets its own monotonically increasing stamp — scoped or hold.
+				// The stamp stays on the operation and is consumed below rather than assigned to
+				// this.timestamp: pinning the link's clock would stamp every OTHER write staged on
+				// the same context before the commit resets it — a concurrent write in the caller's
+				// own Promise.all, or the next operation in a retry/replay save loop — with the
+				// lock's version, which LWW then silently drops against a newer record version.
 				if (!operation.lockStamp) operation.lockStamp = handle.nextHolderVersion();
-				this.timestamp = operation.lockStamp;
 			} else if (handle.hold) {
 				// Explicit transaction() (saveCommits=false), OPEN, hold write:
 				// lock() already pinned link.timestamp to acquiredAt when no prior writes existed;
@@ -966,7 +970,7 @@ export class DatabaseTransaction implements Transaction {
 			// Scoped lock in explicit transaction(): lock() pinned link.timestamp to acquiredAt
 			// when no prior writes existed; no additional stamping here.
 		}
-		let txnTime = this.timestamp;
+		let txnTime = operation.lockStamp ?? this.timestamp;
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
 		// be retained for outstanding read iterators; staging into it would silently discard the write
 		// when doneReadTxn() aborts the handle, so such writes commit immediately on a fresh
