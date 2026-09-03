@@ -50,18 +50,3 @@ export function describeProgress(progress: number): string {
 	// its own exit handler, so the absence of that mark is the interesting half.
 	return selfExited ? `it ${described} and then exited itself` : `it ${described} and was ended from outside`;
 }
-
-/**
- * Process exit codes for the certification helper, which are the SUPERVISOR's authority.
- *
- * A `SharedArrayBuffer` cannot cross a process boundary, so the flag the candidate's thread writes is
- * readable only inside the helper. The helper reads it and encodes the answer here: an exit code survives a
- * lost IPC message the way the flag survives a lost worker message, and a candidate cannot set it — worker
- * threads have no `process.send`, and nothing in the candidate's thread chooses the helper's exit.
- *
- * Any other code — a signal, a crash, a bootstrap failure — is a rejection, because silence must never be a
- * pass.
- */
-export const HOST_EXIT_CERTIFIED = 0;
-export const HOST_EXIT_REJECTED = 20;
-export const HOST_EXIT_NO_VERDICT = 21;

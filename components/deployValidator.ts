@@ -87,6 +87,27 @@ async function withPhaseDeadline<T>(work: Promise<T>, ms: number, phase: string)
 	}
 }
 
+/**
+ * Release the RocksDB handles this thread opened, whatever happened.
+ *
+ * `loadRootPlugins` reaches `getTables()`, so the database graph is open before the candidate is touched —
+ * which means a bootstrap failure or its phase deadline must not skip this. `closeLoadedDatabases`
+ * documents that a thread exiting without it leaks handles PROCESS-wide, because rocksdb-js's registry is
+ * process-global, and that the leak blocks an online `restore_backup` from confirming a database is closed.
+ *
+ * A failure here is logged, not turned into a rejection: the candidate's own teardown failing is the
+ * candidate's fault and does reject (see the scope closes), but Harper's teardown failing is not, and
+ * rejecting a working component for it would fail a good deploy without un-leaking anything.
+ */
+async function releaseDatabases(componentName: string): Promise<void> {
+	try {
+		const { closeLoadedDatabases } = await import('../resources/databases.ts');
+		closeLoadedDatabases();
+	} catch (error) {
+		harperLogger.warn(`Could not release database handles after certifying ${componentName}:`, error);
+	}
+}
+
 async function certify(): Promise<void> {
 	markProgress(PROGRESS_CERTIFY_ENTERED);
 	const componentName = appName || basename(candidateDirPath);
@@ -99,72 +120,66 @@ async function certify(): Promise<void> {
 	// certification rejects something a serving worker loads fine. Loading stops before the other
 	// applications, which is why this is a separate entry point from `loadRootComponents`.
 	const { loadRootPlugins } = await import('../server/loadRootComponents.js');
-	// Bounded, and it says WHICH phase did not finish. This bootstrap loads Harper's global plugins, parts
-	// of which expect to be a member of the worker topology a validator deliberately is not — so it can
-	// wait on something that will never arrive here. Without a bound that is indistinguishable from a
-	// candidate that hangs, and on Windows it presented as a silent exit.
-	const resources = await withPhaseDeadline(
-		loadRootPlugins(true),
-		BOOTSTRAP_DEADLINE_MS,
-		`loading Harper's global plugins`
-	);
-	markProgress(PROGRESS_ROOT_PLUGINS_LOADED);
-
-	// Installed AFTER the bootstrap so it only ever sees the candidate. Earlier, it captures the first error
-	// from anything the root config names — including the candidate's own live path, which `deploy_component`
-	// writes before building and which does not exist yet on a first deploy.
-	//
-	// A reporter is needed at all because the loader reports some failures through it while still resolving.
-	let reportedError: Error | undefined;
-	setErrorReporter((error: Error) => (reportedError ??= error));
-	// Collected so teardown happens BEFORE the verdict. A scope that fails to close is a rejected
-	// validation, not a warning: `close()` stops at the throwing listener, leaving the scope partially live,
-	// and the thread exits either way so nothing downstream would learn of a failure reported after a pass.
-	const scopes = new Set<Scope>();
-	const modules = new Set<any>();
-	let loaded = false;
 	try {
-		await loadComponent(candidateDirPath, resources, HDB_ROOT_DIR_NAME, {
-			...loadOptions.options,
-			collectScopes: scopes,
-			collectLoadedModules: modules,
-		});
-		if (reportedError) throw reportedError;
-		// A load that did nothing is not a pass: a run that neither opened a scope nor loaded a module has
-		// not exercised the candidate, which is how a platform-specific no-op would read as a clean verdict.
-		// A static-only component stays clear of this because its load still opens a scope, which
-		// `deployCertification.test.js` pins.
-		if (!scopes.size && !modules.size && (await declaresLoadableContent(candidateDirPath))) {
-			throw new Error(
-				`Certification of ${componentName} loaded nothing: it declares component configuration, so a run ` +
-					`that opened no scope and loaded no module has not exercised it`
-			);
-		}
-		loaded = true;
-		markProgress(PROGRESS_CANDIDATE_LOADED);
-	} finally {
-		const closes = await Promise.allSettled(Array.from(scopes, (scope) => scope.close()));
-		const failed = closes.filter((result) => result.status === 'rejected');
-		// Independently of the scope closes above, and on every outcome. `loadRootPlugins` reaches
-		// `getTables()`, which opens the whole database graph; `closeLoadedDatabases` documents that a thread
-		// exiting without it leaks process-global RocksDB handles and blocks an online `restore_backup` from
-		// confirming a database is closed. A scope-close failure must not skip it, and it must not mask one.
+		// Bounded, and it says WHICH phase did not finish. This bootstrap loads Harper's global plugins, parts
+		// of which expect to be a member of the worker topology a validator deliberately is not — so it can
+		// wait on something that will never arrive here. Without a bound that is indistinguishable from a
+		// candidate that hangs, and on Windows it presented as a silent exit.
+		const resources = await withPhaseDeadline(
+			loadRootPlugins(true),
+			BOOTSTRAP_DEADLINE_MS,
+			`loading Harper's global plugins`
+		);
+		markProgress(PROGRESS_ROOT_PLUGINS_LOADED);
+
+		// Installed AFTER the bootstrap so it only ever sees the candidate. Earlier, it captures the first error
+		// from anything the root config names — including the candidate's own live path, which `deploy_component`
+		// writes before building and which does not exist yet on a first deploy.
+		//
+		// A reporter is needed at all because the loader reports some failures through it while still resolving.
+		let reportedError: Error | undefined;
+		setErrorReporter((error: Error) => (reportedError ??= error));
+		// Collected so teardown happens BEFORE the verdict. A scope that fails to close is a rejected
+		// validation, not a warning: `close()` stops at the throwing listener, leaving the scope partially live,
+		// and the thread exits either way so nothing downstream would learn of a failure reported after a pass.
+		const scopes = new Set<Scope>();
+		const modules = new Set<any>();
+		let loaded = false;
 		try {
-			const { closeLoadedDatabases } = await import('../resources/databases.ts');
-			closeLoadedDatabases();
-		} catch (error) {
-			harperLogger.warn(`Could not release database handles after certifying ${componentName}:`, error);
+			await loadComponent(candidateDirPath, resources, HDB_ROOT_DIR_NAME, {
+				...loadOptions.options,
+				collectScopes: scopes,
+				collectLoadedModules: modules,
+			});
+			if (reportedError) throw reportedError;
+			// A load that did nothing is not a pass: a run that neither opened a scope nor loaded a module has
+			// not exercised the candidate, which is how a platform-specific no-op would read as a clean verdict.
+			// A static-only component stays clear of this because its load still opens a scope, which
+			// `deployCertification.test.js` pins.
+			if (!scopes.size && !modules.size && (await declaresLoadableContent(candidateDirPath))) {
+				throw new Error(
+					`Certification of ${componentName} loaded nothing: it declares component configuration, so a run ` +
+						`that opened no scope and loaded no module has not exercised it`
+				);
+			}
+			loaded = true;
+			markProgress(PROGRESS_CANDIDATE_LOADED);
+		} finally {
+			const closes = await Promise.allSettled(Array.from(scopes, (scope) => scope.close()));
+			const failed = closes.filter((result) => result.status === 'rejected');
+			// Only when the load itself succeeded. A throw from `loadComponent` — a syntax error, an unreadable
+			// file — reaches this block too, and a teardown failure there would replace the candidate's real
+			// error with a note about its scopes: the operator would get the symptom instead of the cause.
+			if (failed.length && loaded) {
+				throw new AggregateError(
+					failed.map((result) => (result as PromiseRejectedResult).reason),
+					`${componentName} loaded but ${failed.length} scope(s) failed to tear down`
+				);
+			}
+			if (loaded) markProgress(PROGRESS_TEARDOWN_DONE);
 		}
-		// Only when the load itself succeeded. A throw from `loadComponent` — a syntax error, an unreadable
-		// file — reaches this block too, and a teardown failure there would replace the candidate's real
-		// error with a note about its scopes: the operator would get the symptom instead of the cause.
-		if (failed.length && loaded) {
-			throw new AggregateError(
-				failed.map((result) => (result as PromiseRejectedResult).reason),
-				`${componentName} loaded but ${failed.length} scope(s) failed to tear down`
-			);
-		}
-		if (loaded) markProgress(PROGRESS_TEARDOWN_DONE);
+	} finally {
+		await releaseDatabases(componentName);
 	}
 }
 
