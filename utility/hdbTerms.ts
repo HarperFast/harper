@@ -741,6 +741,10 @@ export const CONFIG_PARAMS = {
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',
 	NODE_URL: 'node_url',
+	SQL_ENGINE: 'sql_engine',
+	SQL_ALLOWFULLSCAN: 'sql_allowFullScan',
+	SQL_MAXSORTROWS: 'sql_maxSortRows',
+	SQL_MAXHASHROWS: 'sql_maxHashRows',
 } as const;
 
 /**

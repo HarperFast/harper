@@ -15,6 +15,8 @@ const sinon = require('sinon');
 
 const router = require('#src/sqlEngine/router');
 const config = require('#src/sqlEngine/config');
+const configUtils = require('#src/config/configUtils');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { EngineUnsupportedError } = require('#src/sqlEngine/errors');
 
 describe('sqlEngine router', () => {
@@ -122,5 +124,52 @@ describe('sqlEngine router', () => {
 				done();
 			}
 		);
+	});
+});
+
+describe('sqlEngine config: harper config integration', () => {
+	afterEach(() => {
+		// Reset every key back to "unset" so it doesn't leak into other test files —
+		// configUtils' in-memory config is process-wide (module singleton), shared by
+		// every unit test file mocha loads in this run.
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, undefined);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, undefined);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXSORTROWS, undefined);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXHASHROWS, undefined);
+	});
+
+	it('reads sql.engine from Harper config when no env var is set', () => {
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, 'legacy');
+		assert.strictEqual(config.getSqlEngineConfig().engine, 'legacy');
+	});
+
+	it('HARPER_SQL_ENGINE env var still takes precedence over sql.engine config', () => {
+		const originalEngine = process.env.HARPER_SQL_ENGINE;
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, 'legacy');
+		process.env.HARPER_SQL_ENGINE = 'new';
+		try {
+			assert.strictEqual(config.getSqlEngineConfig().engine, 'new');
+		} finally {
+			if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
+			else process.env.HARPER_SQL_ENGINE = originalEngine;
+		}
+	});
+
+	it('reads sql.allowFullScan from Harper config (default is false)', () => {
+		assert.strictEqual(config.getSqlEngineConfig().allowFullScan, false);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
+		assert.strictEqual(config.getSqlEngineConfig().allowFullScan, true);
+	});
+
+	it('reads sql.maxSortRows from Harper config (default is 1_000_000)', () => {
+		assert.strictEqual(config.getSqlEngineConfig().maxSortRows, 1_000_000);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXSORTROWS, 42);
+		assert.strictEqual(config.getSqlEngineConfig().maxSortRows, 42);
+	});
+
+	it('reads sql.maxHashRows from Harper config (default is 1_000_000)', () => {
+		assert.strictEqual(config.getSqlEngineConfig().maxHashRows, 1_000_000);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_MAXHASHROWS, 7);
+		assert.strictEqual(config.getSqlEngineConfig().maxHashRows, 7);
 	});
 });

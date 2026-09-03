@@ -16,6 +16,8 @@ const alasql = require('alasql');
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
 const { EngineUnsupportedError } = require('#src/sqlEngine/errors');
+const configUtils = require('#src/config/configUtils');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 function makeMockTable({ primaryKey = 'id', attributes = [], rows = [] } = {}) {
 	const table = {
@@ -100,7 +102,7 @@ describe('sqlEngine phase 3: joins', () => {
 	beforeEach(() => {
 		originalEngine = process.env.HARPER_SQL_ENGINE;
 		process.env.HARPER_SQL_ENGINE = 'new';
-		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 
 		users = makeMockTable({
 			primaryKey: 'id',
@@ -148,7 +150,7 @@ describe('sqlEngine phase 3: joins', () => {
 	afterEach(() => {
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
-		delete globalThis.harperConfig;
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, undefined);
 		binder._setDatabasesLoader(null);
 	});
 
@@ -319,7 +321,7 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('hash join does not match NaN keys (NaN never equals itself)', async () => {
-		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 		const left = makeMockTable({
 			primaryKey: 'id',
 			attributes: [
@@ -342,7 +344,7 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('hash join emits matched rows when both sides share a non-indexed equi key', async () => {
-		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 		const left = makeMockTable({
 			primaryKey: 'id',
 			attributes: [
@@ -382,7 +384,7 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('hash join LEFT null-fills a non-indexed-key row with no match', async () => {
-		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 		const left = makeMockTable({
 			primaryKey: 'id',
 			attributes: [
@@ -415,7 +417,7 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('indexNL join passes with allowFullScan off when the outer has an indexed filter', async () => {
-		globalThis.harperConfig = { sql: { allowFullScan: false } };
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, false);
 		const data = await runSql(
 			'SELECT u.name, o.amount FROM dev.user u JOIN dev.orders o ON u.id = o.user_id WHERE u.id = 1'
 		);
@@ -429,7 +431,7 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('rejects a join whose outer side requires a full scan when allowFullScan is off', async () => {
-		globalThis.harperConfig = { sql: { allowFullScan: false } };
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, false);
 		await assert.rejects(
 			runSql('SELECT u.name, o.amount FROM dev.user u JOIN dev.orders o ON u.id = o.user_id'),
 			EngineUnsupportedError
