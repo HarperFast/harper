@@ -5555,7 +5555,7 @@ export function makeTable(options) {
 			let entriesDeleted = 0;
 			try {
 				for (const auditRecord of auditStore.getRange({
-					start: 0,
+					start: 1, // must not be zero; see getHistory below for why
 					end: endTime,
 				})) {
 					await rest(); // yield to other async operations

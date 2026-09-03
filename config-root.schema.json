@@ -534,6 +534,31 @@
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],
 					"description": "Path or array of paths for blob storage. Default: <rootPath>/blobs"
 				},
+				"blobs": {
+					"type": "object",
+					"description": "File-backed blob storage settings.",
+					"properties": {
+						"compression": {
+							"type": "object",
+							"description": "Opt-in compression for newly written file-backed blobs, keyed by content type: an exact type ('application/json'), a wildcard ('text/*'), or 'default'. Absent means no compression. Each entry is false (never compress the type) or an object { codec, threshold }: codec currently only 'deflate' (the default); threshold is the minimum content size in bytes to compress (default 8192). Matching precedence is exact type, then 'type/*', then 'default'. Types that are already compressed (application/gzip, application/zip, application/zstd, image/*, video/*, audio/*) ship as false and stay uncompressed unless explicitly overridden. Blobs streamed without a known size are not compressed, and a threshold below 8192 only affects streamed writes — buffers under 8KB are stored inline in the record (covered by record-level compression) and never reach blob files. Applies to new writes only; existing blob files are never rewritten.",
+							"propertyNames": { "pattern": "^([\\w.+-]+/(\\*|[\\w.+-]+)|default)$" },
+							"additionalProperties": {
+								"oneOf": [
+									{ "const": false },
+									{
+										"type": "object",
+										"properties": {
+											"codec": { "const": "deflate" },
+											"threshold": { "type": "number", "minimum": 0 }
+										},
+										"additionalProperties": false
+									}
+								]
+							}
+						}
+					},
+					"additionalProperties": false
+				},
 				"blobReadTimeout": {
 					"type": "number",
 					"description": "Max time (ms) a blob read will wait for an in-progress write to finish before failing with a 503, rather than holding the connection. Default: 20000"
