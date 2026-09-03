@@ -1985,7 +1985,7 @@ function conflict(message: string): Error {
  * purged. A crashed drop is finished here instead: the caller is about to create the database
  * anew, and nothing from before the drop may survive into it.
  */
-function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
+function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt = 0): void {
 	const state = checkRestoreState(dbPath);
 	if (state === 'clear') return;
 	const kind = lifecycleMarkerKind(dbPath) ?? 'restore';
@@ -2002,6 +2002,16 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
 	});
 	if (outcome === 'in-progress')
 		throw conflict(`Database '${databaseName}' is being dropped; retry when that completes`);
+	if (outcome === 'not-a-drop') {
+		// the marker read above was a drop, but by the time recoverInterruptedDrop re-read it (its
+		// own barrier against a concurrent recovery) something else had replaced it — most plausibly
+		// a fresh restore taking the now-lock-free path after the drop's crash. 'not-a-drop' is only
+		// truly benign for a caller (like the startup scan) that leaves a restore marker alone; here
+		// it must not be read as "nothing more to check" — re-evaluate against whatever is there now.
+		if (attempt >= 5)
+			throw conflict(`Database '${databaseName}' has a lifecycle marker that will not settle; retry later`);
+		return throwIfBlockedByRestore(dbPath, databaseName, attempt + 1);
+	}
 }
 
 /**
@@ -3007,19 +3017,26 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// keeps a database open long after every table released it — unless the index changed kind,
 				// when the store must be reopened as the other wrapper (the structural change below rebuilds it)
 				let dbi = indices[attribute.name];
-				if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
-					try {
-						dbi.close?.();
-					} catch (error) {
-						logger.warn(`Error closing the ${attribute.name} index of ${tableName} before reopening it:`, error);
-					}
-					dbi = undefined;
-				}
-				const reusedIndexStore = dbi;
-				dbi = dbi ? prepareIndexStore(dbi, dbiKey, rootStore, attribute) : openIndex(dbiKey, rootStore, attribute);
 				// only a handle this call opened joins the branch's close list: a reused one was adopted
 				// when it was opened, and a second entry would close the same column family twice
-				if (!reusedIndexStore) target.adopt(dbi);
+				let indexStoreIsNewlyOpened = !dbi;
+				if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
+					// open the new wrapper before closing the old one: `indices[attribute.name]` (read by
+					// every other caller of table() for this table, including a concurrent one) still
+					// points at the old handle until the assignment below, and a throw here must leave it
+					// serving reads rather than pointing at a handle this thread already closed
+					const previous = dbi;
+					dbi = openIndex(dbiKey, rootStore, attribute);
+					indexStoreIsNewlyOpened = true;
+					try {
+						previous.close?.();
+					} catch (error) {
+						logger.warn(`Error closing the ${attribute.name} index of ${tableName} after reopening it:`, error);
+					}
+				} else {
+					dbi = dbi ? prepareIndexStore(dbi, dbiKey, rootStore, attribute) : openIndex(dbiKey, rootStore, attribute);
+				}
+				if (indexStoreIsNewlyOpened) target.adopt(dbi);
 				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on

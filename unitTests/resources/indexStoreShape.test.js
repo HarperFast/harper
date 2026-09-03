@@ -11,6 +11,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksIndexStore } = require('#src/resources/RocksIndexStore');
+const { CUSTOM_INDEXES } = require('#src/resources/indexes/customIndexes');
 
 describe('index store wrapper follows the index kind across a live attribute change', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // the HNSW custom index is RocksDB-only here
@@ -50,5 +51,35 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		await Tbl.indexingOperation;
 
 		assert.strictEqual(define(true).indices.vector, reverted, 'a same-kind redefinition keeps the handle');
+	});
+
+	it('keeps the old handle serving reads when reopening the new wrapper fails', async function () {
+		this.timeout(30_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		let Tbl = define(true);
+		let last;
+		for (let i = 0; i < 8; i++) last = Tbl.put({ id: i, vector: [i % 2, i % 3, i % 4] });
+		await last;
+		const ordinary = Tbl.indices.vector;
+
+		// a custom object-store index whose construction fails on the reopen this test triggers,
+		// mirroring a real HNSW initialization failure without depending on its internals
+		class FlakyObjectIndex {
+			static useObjectStore = true;
+			constructor() {
+				throw new Error('injected failure: index construction');
+			}
+		}
+		CUSTOM_INDEXES.FlakyTest = FlakyObjectIndex;
+		try {
+			assert.throws(() => define({ type: 'FlakyTest' }), /injected failure/);
+		} finally {
+			delete CUSTOM_INDEXES.FlakyTest;
+		}
+
+		// the failed reopen must not have left the live table pointing at a handle it already closed
+		assert.strictEqual(Tbl.indices.vector, ordinary);
+		assert.notEqual(ordinary.status, 'closed');
 	});
 });
