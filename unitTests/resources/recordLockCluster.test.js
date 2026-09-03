@@ -285,6 +285,35 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual((await ClusterLockTest.get(recordId)).n, 1, 'the expired write never landed');
 		});
 
+		it('exposes the coordinator on the entry the replication sink resolves', function () {
+			if (isLMDB) return this.skip();
+			const { databases } = require('#src/resources/databases');
+			// applyLockControlEvent and the transport resolver both reach the coordinator through
+			// databases[db][table], so that entry has to be the Table class the static getter lives on.
+			useSoloTransport();
+			const viaRegistry = databases.test?.ClusterLockTest;
+			assert.strictEqual(viaRegistry, ClusterLockTest, 'the registry holds the table class itself');
+			assert.ok(viaRegistry.lockCoordinator, 'and its coordinator resolves through that path');
+			unregisterClusterLockTransport('test', true);
+			assert.strictEqual(viaRegistry.lockCoordinator, undefined, 'and goes away with the transport');
+		});
+
+		it('picks up a node admitted after this worker cached the mapping', async function () {
+			if (isLMDB) return this.skip();
+			const { pack } = require('msgpackr');
+			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
+			// Ids are minted by whichever worker first talks to a peer, and invalidation only reaches
+			// that worker. Every other one holds a map that predates the new node, so a miss has to be
+			// able to re-read — trusting the cache for misses strands the new peer permanently.
+			let mapping = { [NODE_NAME]: 0, 'node-b': 1 };
+			const store = { getBinary: () => pack({ remoteNameToId: mapping }) };
+			assert.strictEqual(getNodeNameForId(store, 1), 'node-b');
+			assert.strictEqual(getNodeNameForId(store, 2), undefined, 'node-c is not in the cluster yet');
+			mapping = { ...mapping, 'node-c': 2 };
+			await delay(1100); // the miss-refresh window
+			assert.strictEqual(getNodeNameForId(store, 2), 'node-c', 'and is resolved once it joins');
+		});
+
 		it('resolves a node id to a name per database, not process-wide', function () {
 			if (isLMDB) return this.skip();
 			const { pack } = require('msgpackr');
