@@ -30,7 +30,7 @@ import {
 } from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { constants, RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
@@ -122,7 +122,26 @@ export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
-export const VERSION_NOT_UNIQUE_FLAG = 0x10000;
+// A resequenced write keeps the (newer) version it merged onto, so one version identifies two
+// different stored values and version equality proves nothing. The metadata word this is set in is
+// the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
+// byte its predicate requires — so the bit is what stops the native layer vouching for the version.
+export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
+// The bit is persisted in every resequenced record, so a rocksdb-js that moved it down onto one of
+// the flags above (or up into the tag byte) would silently change what records already on disk
+// mean: it must stay a single bit strictly between them.
+if (
+	typeof VERSION_REUSED !== 'number' ||
+	(VERSION_REUSED & (VERSION_REUSED - 1)) !== 0 ||
+	VERSION_REUSED < 0x10000 ||
+	VERSION_REUSED > 0x800000
+)
+	throw new Error(
+		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it — requires @harperfast/rocksdb-js >= 2.8.0`
+	);
+function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
+	return existingEntry?.version != null && newVersion <= existingEntry.version;
+}
 
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
@@ -883,11 +902,12 @@ export function recordUpdater(store, tableId, auditStore) {
 				: NO_TIMESTAMP;
 		const expiresAt = options?.expiresAt;
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
-		if (isRocksDB && record !== undefined && existingEntry?.version != null && newVersion <= existingEntry.version) {
-			assignMetadata = Math.max(assignMetadata, 0) | VERSION_NOT_UNIQUE_FLAG;
-		}
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
+		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
+		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
+		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
+			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;

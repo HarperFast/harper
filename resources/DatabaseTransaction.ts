@@ -349,6 +349,9 @@ export type TransactionWrite = {
 	// this write appended an audit entry, which references its saved blobs — they then belong to the
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
+	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
+	// save() must reload that base through the committing transaction's snapshot
+	reloadCommitBase?: boolean;
 };
 
 /**
@@ -912,8 +915,17 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
-		if (reloadEntry || operation.entry === undefined) {
-			operation.entry = operation.store.getEntry(operation.key, { transaction });
+		// A base that feeds stored state must come from this transaction's snapshot, never the
+		// cross-worker cache vouch (stale when a resequenced write reused a version). That closes the
+		// lost-update window only when this transaction holds a snapshot to validate the later Put
+		// against; a snapshot-free transaction (this.snapshotFree, after a mid-scope-commit rotation)
+		// has no snapshot for rocksdb-js to validate the Put against, so it only narrows the window to
+		// the read-to-put span rather than closing it (open follow-up, tracked in the PR description).
+		// Replays keep their pre-read base — their convergence contract is the replay pass itself.
+		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
+		if (reloadEntry || operation.entry === undefined || reloadsCommitBase) {
+			const uncachedRead = (!!operation.reloadCommitBase && !this.isReplay) || reloadEntry;
+			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {
 			operation.saved = true;

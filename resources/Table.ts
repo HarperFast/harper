@@ -2116,6 +2116,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
@@ -2163,6 +2164,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				reloadCommitBase: true,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2495,6 +2497,8 @@ export function makeTable(options) {
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
+				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
+				reloadCommitBase: options?.isCopyApply !== true,
 				deferSave: true,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
@@ -2548,10 +2552,13 @@ export function makeTable(options) {
 											: txnTime;
 							}
 							if (createdTimeProperty) {
-								if (entry?.value) {
+								// the reloaded commit base, not the pre-read one: a full PUT racing a create
+								// would otherwise stamp a fresh created time over the real one
+								const base = write.entry;
+								if (base?.value) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
 									}
 								} else {
 									// new entry, set created time
@@ -3025,8 +3032,8 @@ export function makeTable(options) {
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
 					if (residencyId == undefined) {
-						if (entry?.residencyId)
-							(context as any).previousResidency = TableResource.getResidencyRecord(entry.residencyId);
+						if (existingEntry?.residencyId)
+							(context as any).previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 						const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 						if (residency) {
 							if (!residency.includes(server.hostname)) {
@@ -3262,6 +3269,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry,
 				chainsStagedState: true,
+				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
