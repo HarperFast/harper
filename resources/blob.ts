@@ -180,7 +180,7 @@ export function isBlobReceiveInFlight(fileId: string | null | undefined, store: 
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: any = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
-let encodeForStorageOwner: BlobOwner | undefined; // the owner recorded on every blob this encode stores
+let encodeForStorageTableName: string | null | undefined; // the table half of the owner this encode stamps
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
@@ -1570,8 +1570,8 @@ function resetDrainedQueue(): void {
 // owning record before it deletes anything.
 
 /** Owners compare by value: a restored composite key is a fresh array, so `!==` would always fire. */
-function blobOwnerMatches(a: BlobOwner, b: BlobOwner): boolean {
-	return compareKeys(a[0], b[0]) === 0 && compareKeys(a[1], b[1]) === 0;
+function blobOwnerMatches(owner: BlobOwner, tableName: string, key: any): boolean {
+	return compareKeys(owner[0], tableName) === 0 && compareKeys(owner[1], key) === 0;
 }
 
 /**
@@ -1584,9 +1584,9 @@ function assertBlobOwner(storageInfo: StorageInfo | undefined): void {
 	const owner = storageInfo?.owner;
 	// An encode with no table to name cannot make an ownership claim, so it cannot contradict one
 	// either: the v4→v5 migration copies each record's reference through verbatim, owner included,
-	// and comparing that owner against a table-less `[null, key]` would fail every migrated blob.
-	if (encodeForStorageOwner?.[0] == null) return;
-	if (!owner || !encodeForStorageOwner || blobOwnerMatches(owner, encodeForStorageOwner)) return;
+	// and there is no owner to compare it against.
+	if (encodeForStorageTableName == null) return;
+	if (!owner || blobOwnerMatches(owner, encodeForStorageTableName, encodeForStorageForRecordId)) return;
 	throw new Error(
 		'Cannot use the same blob in two different records; read the blob through the record that owns it, or supply the bytes again'
 	);
@@ -3713,14 +3713,14 @@ export function encodeBlobsWithFilePath<T>(
 	tableName?: string
 ): T {
 	encodeForStorageForRecordId = encodingId;
-	encodeForStorageOwner = [tableName ?? null, encodingId];
+	encodeForStorageTableName = tableName ?? null;
 	currentStore = store;
 	blobsWereEncoded = false;
 	try {
 		return callback();
 	} finally {
 		encodeForStorageForRecordId = undefined;
-		encodeForStorageOwner = undefined;
+		encodeForStorageTableName = undefined;
 		currentStore = undefined;
 	}
 }
@@ -4100,7 +4100,10 @@ addExtension({
 			// storage without an owner keeps that state for good: two pre-upgrade records may already
 			// share the file, and stamping one of them as the owner would license deleting bytes the
 			// other still references — the exact corruption the owner is being introduced to prevent.
-			if (storageInfo.allocated) storageInfo.owner ??= encodeForStorageOwner;
+			// Built here rather than once per encode: every record write passes through
+			// encodeBlobsWithFilePath, and the overwhelming majority carry no newly allocated blob, so
+			// an owner tuple allocated up there would be garbage on the serialization hot path.
+			if (storageInfo.allocated) storageInfo.owner ??= [encodeForStorageTableName ?? null, encodeForStorageForRecordId];
 			// Per-node hint only — a replication sender uses it to skip the header sniff for the
 			// uncompressed majority, but always confirms against the local file header before sending
 			// raw: a relayed record (or an in-place repair) can outlive the storage form recorded here.
