@@ -323,7 +323,6 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('hash join does not match NaN keys (NaN never equals itself)', async () => {
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 		const left = makeMockTable({
 			primaryKey: 'id',
 			attributes: [
@@ -346,7 +345,6 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('hash join emits matched rows when both sides share a non-indexed equi key', async () => {
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 		const left = makeMockTable({
 			primaryKey: 'id',
 			attributes: [
@@ -386,7 +384,6 @@ describe('sqlEngine phase 3: joins', () => {
 	});
 
 	it('hash join LEFT null-fills a non-indexed-key row with no match', async () => {
-		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 		const left = makeMockTable({
 			primaryKey: 'id',
 			attributes: [

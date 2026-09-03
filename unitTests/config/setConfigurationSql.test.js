@@ -1,13 +1,9 @@
 'use strict';
 
 // `getConfigValue`/`set_configuration` resolve a name only if it is present in CONFIG_PARAM_MAP,
-// which is populated from CONFIG_PARAMS by lowercased name. An unregistered param therefore reads
-// as `undefined` forever: the configured value is silently ignored, its compiled-in default always
-// applies, and set_configuration rejects it as unrecognized. That is exactly how sql.engine/
-// allowFullScan/maxSortRows/maxHashRows shipped inert — nothing ever registered them, and the only
-// production reader was a globalThis.harperConfig branch that nothing ever assigned either. This
-// guards the registration; sqlEngine/config.ts's own tests guard that the accessor actually reads
-// the registered value.
+// populated from CONFIG_PARAMS. An unregistered param reads as `undefined` forever — the exact
+// way sql.engine/allowFullScan/maxSortRows/maxHashRows shipped inert. Guards the registration;
+// sqlEngine/config.ts's own tests guard that the accessor reads the registered value.
 
 const assert = require('node:assert/strict');
 const { CONFIG_PARAMS, CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');

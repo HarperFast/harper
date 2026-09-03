@@ -128,9 +128,8 @@ describe('sqlEngine router', () => {
 });
 
 describe('sqlEngine config: harper config integration', () => {
-	// configUtils' in-memory config is process-wide (module singleton), shared by every unit
-	// test file mocha loads in this run — snapshot/restore rather than blindly clearing, so a
-	// prior value (from another suite, or a future one) isn't clobbered.
+	// configUtils' in-memory config is process-wide, shared by every unit test file mocha loads
+	// in this run — clear to a known state per test, restore whatever was there afterward.
 	const SQL_KEYS = [
 		CONFIG_PARAMS.SQL_ENGINE,
 		CONFIG_PARAMS.SQL_ALLOWFULLSCAN,
@@ -141,6 +140,9 @@ describe('sqlEngine config: harper config integration', () => {
 
 	beforeEach(() => {
 		originalValues = SQL_KEYS.map((key) => configUtils.getConfigValue(key));
+		// Clear to a known-unset state so a default-value assertion below can't go red on a
+		// machine whose own harper-config.yaml happens to set one of these already.
+		SQL_KEYS.forEach((key) => configUtils.updateConfigObject(key, undefined));
 	});
 
 	afterEach(() => {
@@ -182,10 +184,6 @@ describe('sqlEngine config: harper config integration', () => {
 		assert.strictEqual(config.getSqlEngineConfig().maxHashRows, 7);
 	});
 
-	// validation/configValidator.ts's `sql` schema is what actually keeps a malformed value
-	// (e.g. a quoted `allowFullScan: "true"`) out of flatConfigObj on a real boot or
-	// set_configuration — these guard the accessor's own defense-in-depth for a wrong-typed
-	// value that reaches it some other way (e.g. programmatic config injection in a test).
 	it('ignores an unknown sql.engine value and falls back to the default', () => {
 		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, 'gibberish');
 		assert.strictEqual(config.getSqlEngineConfig().engine, 'auto');
@@ -202,5 +200,18 @@ describe('sqlEngine config: harper config integration', () => {
 		const cfg = config.getSqlEngineConfig();
 		assert.strictEqual(cfg.maxSortRows, 1_000_000);
 		assert.strictEqual(cfg.maxHashRows, 1_000_000);
+	});
+
+	// The tests above inject through updateConfigObject(), which writes flatConfigObj directly
+	// and never exercises flattenConfig()'s nested-to-flat key derivation a real boot goes
+	// through — cover that derivation here instead of needing a full config-file fixture.
+	it('flattenConfig() derives the four flat sql.* keys from a nested sql block', () => {
+		const flat = configUtils.flattenConfig({
+			sql: { engine: 'legacy', allowFullScan: true, maxSortRows: 5, maxHashRows: 7 },
+		});
+		assert.strictEqual(flat[CONFIG_PARAMS.SQL_ENGINE.toLowerCase()], 'legacy');
+		assert.strictEqual(flat[CONFIG_PARAMS.SQL_ALLOWFULLSCAN.toLowerCase()], true);
+		assert.strictEqual(flat[CONFIG_PARAMS.SQL_MAXSORTROWS.toLowerCase()], 5);
+		assert.strictEqual(flat[CONFIG_PARAMS.SQL_MAXHASHROWS.toLowerCase()], 7);
 	});
 });

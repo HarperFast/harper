@@ -233,16 +233,18 @@ export function configValidator(configJson, skipFsValidation = false) {
 		generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
 	});
 
-	// `sql:` gates the SQL engine's mode and safety/memory caps — reaching a typo or
-	// wrong-typed value here (e.g. a quoted `allowFullScan: "true"`) must fail loudly rather
-	// than silently keep the default, since the default for `allowFullScan` is the more
-	// restrictive value. `.unknown(false)` matches the other scoped schemas above.
+	// `convert: false` — validateConfig() only writes the coerced value back into configDoc for
+	// threads/componentsRoot/logging/storage/operationsApi, not sql, so leaving Joi's default
+	// convert:true on here would accept a quoted `allowFullScan: "true"` and then silently drop
+	// it (getSqlEngineConfig()'s typeof guard rejects the still-unconverted string).
 	const sqlSchema = Joi.object({
 		engine: string.valid('legacy', 'new', 'auto').optional(),
 		allowFullScan: boolean.optional(),
 		maxSortRows: number.integer().min(1).optional(),
 		maxHashRows: number.integer().min(1).optional(),
-	}).unknown(false);
+	})
+		.unknown(false)
+		.prefs({ convert: false });
 
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(

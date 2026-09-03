@@ -10,10 +10,9 @@
  *
  * The flag is read from the HARPER_SQL_ENGINE environment variable, then
  * sql.engine in Harper config, then defaults to 'auto'. Config is read via
- * configUtils.getConfigValue(), which is safe to call before Harper config has
- * booted (returns undefined rather than initializing from disk) — so this stays
- * lazy and lightweight enough to invoke without a fully booted Harper config
- * (e.g., in unit tests, which inject values via configUtils.updateConfigObject()).
+ * configUtils.getConfigValue(), which returns undefined rather than initializing
+ * from disk when Harper config hasn't booted yet — so this stays callable without
+ * a fully booted Harper config.
  *
  * Phase 5 cutover: the default is now 'auto' — the new engine handles every SQL
  * request it can plan and silently falls back to legacy on anything it can't, so
@@ -68,7 +67,11 @@ export function getSqlEngineConfig(): SqlEngineConfig {
 	return {
 		engine: fromEnv ?? fromConfig ?? DEFAULTS.engine,
 		allowFullScan: typeof allowFullScan === 'boolean' ? allowFullScan : DEFAULTS.allowFullScan,
-		maxSortRows: typeof maxSortRows === 'number' ? maxSortRows : DEFAULTS.maxSortRows,
-		maxHashRows: typeof maxHashRows === 'number' ? maxHashRows : DEFAULTS.maxHashRows,
+		maxSortRows: isPositiveInteger(maxSortRows) ? maxSortRows : DEFAULTS.maxSortRows,
+		maxHashRows: isPositiveInteger(maxHashRows) ? maxHashRows : DEFAULTS.maxHashRows,
 	};
+}
+
+function isPositiveInteger(value: unknown): value is number {
+	return typeof value === 'number' && Number.isInteger(value) && value >= 1;
 }

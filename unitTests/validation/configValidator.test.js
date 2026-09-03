@@ -283,14 +283,13 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include("'sql.engine' must be one of [legacy, new, auto]");
 		});
 
-		it('rejects a non-boolean-coercible sql.allowFullScan value', () => {
-			// Joi's default `convert: true` accepts the literal strings 'true'/'false' as
-			// boolean input (and validateConfig() never writes the coerced value back into
-			// configDoc — see sqlEngine/config.ts's own typeof guard for why the accessor
-			// still defends against a non-boolean reaching it some other way); a value outside
-			// that set is a genuine type error.
+		it('rejects a quoted-string sql.allowFullScan value (convert is off for this section)', () => {
+			// sqlSchema sets convert:false: validateConfig() never writes a coerced value back
+			// into configDoc for sql (unlike threads/logging/storage), so leaving Joi's default
+			// convert:true on here would accept "true"/"false" and then silently drop it —
+			// getSqlEngineConfig()'s typeof guard rejects the still-unconverted string.
 			const config = testUtils.deepClone(FAKE_CONFIG);
-			config.sql = { allowFullScan: 'not-a-boolean' };
+			config.sql = { allowFullScan: 'true' };
 			expect(configValidator(config).error.message).to.include("'sql.allowFullScan' must be a boolean");
 		});
 
@@ -299,6 +298,12 @@ describe('Test configValidator module', () => {
 			config.sql = { maxSortRows: 0, maxHashRows: 2.5 };
 			expect(configValidator(config).error.message).to.include("'sql.maxSortRows' must be greater than or equal to 1");
 			expect(configValidator(config).error.message).to.include("'sql.maxHashRows' must be an integer");
+		});
+
+		it('rejects a quoted-number sql.maxSortRows value (convert is off for this section)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { maxSortRows: '500' };
+			expect(configValidator(config).error.message).to.include("'sql.maxSortRows' must be a number");
 		});
 
 		it('rejects an unknown key inside sql (typos fail loudly instead of being silently ignored)', () => {
