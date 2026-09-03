@@ -21,7 +21,7 @@ import {
 	SLOT_VERDICT,
 	VERDICT_CERTIFIED,
 	VERDICT_REJECTED,
-} from './certifyCandidate.ts';
+} from './certificationProtocol.ts';
 import { loadComponent, rootApplicationLoadOptions, setErrorReporter } from './componentLoader.ts';
 import type { Scope } from './Scope.ts';
 
@@ -145,6 +145,16 @@ async function certify(): Promise<void> {
 	} finally {
 		const closes = await Promise.allSettled(Array.from(scopes, (scope) => scope.close()));
 		const failed = closes.filter((result) => result.status === 'rejected');
+		// Independently of the scope closes above, and on every outcome. `loadRootPlugins` reaches
+		// `getTables()`, which opens the whole database graph; `closeLoadedDatabases` documents that a thread
+		// exiting without it leaks process-global RocksDB handles and blocks an online `restore_backup` from
+		// confirming a database is closed. A scope-close failure must not skip it, and it must not mask one.
+		try {
+			const { closeLoadedDatabases } = await import('../resources/databases.ts');
+			closeLoadedDatabases();
+		} catch (error) {
+			harperLogger.warn(`Could not release database handles after certifying ${componentName}:`, error);
+		}
 		// Only when the load itself succeeded. A throw from `loadComponent` — a syntax error, an unreadable
 		// file — reaches this block too, and a teardown failure there would replace the candidate's real
 		// error with a note about its scopes: the operator would get the symptom instead of the cause.
