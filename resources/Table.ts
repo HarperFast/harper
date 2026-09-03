@@ -5635,8 +5635,9 @@ export function makeTable(options) {
 		 * database, or a failed metadata write).
 		 *
 		 * **Diagnostic, and it answers exactly one question: did a prune remove audit history the cursor
-		 * still needs — that is, anything *after* it?** Never anything below the cursor: that history is
-		 * older than the floor and is exactly what a prune takes. Across the paths that prune, and given a
+		 * still needs — that is, anything *after* it?** What it never covers is history below the FLOOR,
+		 * which is exactly what a prune takes — not everything below the cursor: for a cursor strictly
+		 * above the floor, `[floor, cursor)` is below the cursor and still covered. Across the paths that prune, and given a
 		 * cursor from the time domain above, it errs in one direction only — it can ask for a resync that
 		 * was not strictly necessary, never certify a cursor a prune truncated. A `getHistory` cursor is
 		 * outside that guarantee, not an exception to it: an origin version can overstate the consumer's

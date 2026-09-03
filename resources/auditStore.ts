@@ -767,8 +767,9 @@ export function establishAuditFloor(auditStore: any): void {
  * **Database-scoped**, and deliberately conservative: the audit store is per-database and its
  * entries carry a `tableId`, so a per-table floor would need a scan for the first entry matching
  * that table. For a valid cursor, `cursor >= floor` therefore means no entry of *any* table in the
- * database was removed *after* the cursor — not below it, which is the one thing the floor never promises, since entries
- * below the cursor sit below the floor and are exactly what a prune takes. `Table.deleteHistory`
+ * database was removed *after* the cursor. What it never promises is anything below the FLOOR — that
+ * history is exactly what a prune takes. Below the *cursor* is not the same set: for a cursor strictly
+ * above the floor, `[floor, cursor)` sits below the cursor and is still covered by the guarantee. `Table.deleteHistory`
  * prunes one table out of that shared log and raises the whole database's floor, which can overstate
  * the floor for its siblings.
  *
