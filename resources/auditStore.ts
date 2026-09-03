@@ -128,6 +128,10 @@ const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
  * questions.
  */
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
+// The epoch `establishAuditFloor` stamped, kept for the life of the store so a later release can tell
+// a floor that is still that unverified bootstrap value from one a real prune recorded. Never raised,
+// never removed: it is a comparison basis, not a floor. See `establishAuditFloor`.
+const AUDIT_FLOOR_BOOTSTRAP_KEY = Symbol.for('audit-floor-bootstrap');
 /**
  * The floor's own eight bytes, deliberately NOT the FLOAT_TARGET/FLOAT_BUFFER pair the `last-removed`
  * marker uses: decoding a floor writes into its buffer on every read, including the pre-check on each
@@ -482,13 +486,20 @@ function encodeAuditFloor(floor: number): Uint8Array {
 /**
  * Read-modify-write the floor under one store transaction. `resolve` receives the recorded floor
  * (AUDIT_FLOOR_UNKNOWN when there is none) and returns the value to store, or undefined to leave it
- * alone. The transaction is the point: pruning is not confined to one worker — the retention loop,
+ * alone. `key` selects the record: the floor itself, or the bootstrap-provenance record beside it,
+ * which wants the same verified commit rather than a second write path.
+ *
+ * The transaction is the point: pruning is not confined to one worker — the retention loop,
  * a boot purge, `deleteHistory` and `delete_transaction_logs_before` can all advance the floor — and
  * two unsynchronized read-then-writes can interleave so the lower cutoff lands last, leaving a floor
  * below history the higher one already removed. In read-only mode nothing is written, which is
  * consistent because nothing is pruned there either.
  */
-function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: boolean) => number | undefined): void {
+function updateAuditFloor(
+	auditStore: any,
+	resolve: (current: number, recorded: boolean) => number | undefined,
+	key: symbol = AUDIT_FLOOR_KEY
+): void {
 	// A legacy `auditPath` layout is opened as its own standalone LMDB root (databases.ts) and has no
 	// `.rootStore`, so it owns the transaction itself.
 	const transactionOwner = auditStore?.rootStore ?? auditStore;
@@ -510,18 +521,18 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 		auditStore instanceof RocksTransactionLogStore
 			? transactionOwner.transactionSync(
 					(txn) => {
-						const stored = txn.getBinarySync(AUDIT_FLOOR_KEY);
+						const stored = txn.getBinarySync(key);
 						const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
 						if (floor !== undefined) {
-							txn.putSync(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)));
-							if (!floorWriteLanded(txn.getBinarySync(AUDIT_FLOOR_KEY), floor)) return false;
+							txn.putSync(key, asBinary(encodeAuditFloor(floor)));
+							if (!floorWriteLanded(txn.getBinarySync(key), floor)) return false;
 						}
 						return true;
 					},
 					{ retryOnBusy: true }
 				)
 			: transactionOwner.transactionSync(() => {
-					const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
+					const stored = auditStore.getBinary(key);
 					const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
 					// `put` rather than `putSync`, and inside the transaction: lmdb's putSync is itself
 					// `put(...) === SYNC_PROMISE_SUCCESS`, so it drops whatever put returns — and a put that
@@ -533,9 +544,9 @@ function updateAuditFloor(auditStore: any, resolve: (current: number, recorded: 
 					// bytes would reach createAuditEntry and throw. This bypasses both encoders.
 					if (floor !== undefined) {
 						auditStore
-							.put(AUDIT_FLOOR_KEY, asBinary(encodeAuditFloor(floor)))
+							.put(key, asBinary(encodeAuditFloor(floor)))
 							?.catch?.((error) => warnContained('Error writing the audit retention floor', error));
-						if (!floorWriteLanded(auditStore.getBinary(AUDIT_FLOOR_KEY), floor)) return false;
+						if (!floorWriteLanded(auditStore.getBinary(key), floor)) return false;
 					}
 					return true;
 				});
@@ -620,6 +631,28 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
  *
  * In read-only mode nothing is written and the floor stays unknown — the fail-closed answer for a
  * process that cannot record what it does not know.
+ *
+ * **The epoch is also recorded under its own key, and that record is what makes this bootstrap
+ * repairable.** The epoch is a guess bounded by surviving state, and surviving state cannot see
+ * history a selective prune already removed (see the clock note below), so a later release needs to
+ * be able to find the stores whose floor is still that guess. Comparing the two records answers it:
+ *
+ * | Floor | Bootstrap record | Reading |
+ * | --- | --- | --- |
+ * | finite, `=== bootstrap` | present | still the unverified guess — treat as suspect and repair |
+ * | finite, `> bootstrap`   | present | a real prune raised it; the floor is earned, not guessed |
+ * | finite                  | absent  | the provenance write was lost — suspect, so this fails closed |
+ * | `AUDIT_FLOOR_UNKNOWN`   | either  | already the fail-closed answer; nothing to repair |
+ *
+ * Repairing means *raising* a suspect floor, which is always safe, so an over-broad reading costs one
+ * resync. That is why absent reads as suspect rather than as trustworthy.
+ *
+ * Ordering and idempotence follow from that. The provenance record is written **first**, so a crash
+ * between the two writes leaves a record with no floor — which the next open retries, since the early
+ * return above tests the floor. The epoch actually stamped is always read back from the record rather
+ * than taken from this call's own `Date.now()`, so a worker whose record lost the race adopts the
+ * winner's value and the two always agree. Re-adopting an older record is sound: nothing was pruned in the
+ * meantime, or a prune would have written the floor this function returns early on.
  */
 export function establishAuditFloor(auditStore: any): void {
 	if (isReadOnlyMode()) return;
@@ -645,18 +678,30 @@ export function establishAuditFloor(auditStore: any): void {
 		// shared log, so a table whose entries were the newest and all fell below that bound leaves the
 		// log's newest survivor being a sibling's OLDER entry — removed history above every surviving key.
 		// A clock rolled back to between the two then stamps an epoch below entries that are gone, and a
-		// cursor in that window resumes over the gap. Nothing in surviving state distinguishes that case,
-		// which is why the alternative is `AUDIT_FLOOR_UNKNOWN` for every unmarked store rather than a
-		// smarter bound (cb1kenobi on #2458). Also unclosed: RocksTransactionLogStore.getKeys() is
-		// unimplemented, so on that engine this reduces to Date.now() outright.
+		// cursor in that window resumes over the gap (cb1kenobi on #2458). Also unclosed:
+		// RocksTransactionLogStore.getKeys() is unimplemented, so on that engine this reduces to
+		// Date.now() outright.
 		//
-		// Both are accepted costs of stamping rather than leaving a floorless store permanently unknown,
-		// which would make every upgraded deployment fail closed forever — a recorded ruling in #2458's
-		// decision log, not an oversight.
-		let epoch = Date.now();
+		// Neither is a reason to refuse to stamp — the unknown sentinel is absorbing, so that would make
+		// every upgraded deployment fail closed forever (a recorded ruling in #2458). They are the reason
+		// the guess is RECORDED as a guess: written first, so it cannot be lost behind a floor that
+		// outlives it, and left in place afterwards so the repair reading stays available.
+		let fresh = Date.now();
 		for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
-			if (typeof newest === 'number' && newest > epoch) epoch = newest;
+			if (typeof newest === 'number' && newest > fresh) fresh = newest;
 		}
+		// `recorded ? undefined` never overwrites an existing record, and the epoch is then read back from
+		// the record rather than taken from `fresh` — which is the whole of how adoption works, including
+		// for the worker whose record lost the race. There is deliberately no separate "read it first and
+		// skip all this" fast path: two routes to one value is how this function's neighbours grew their
+		// fail-opens, and everything past the early return above runs once in a store's life, so the
+		// transaction it would save is not worth a second code path.
+		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : fresh), AUDIT_FLOOR_BOOTSTRAP_KEY);
+		const epoch = decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_BOOTSTRAP_KEY));
+		// Untrustworthy bytes under the record decode to unknown, and stamping a floor whose provenance
+		// cannot be read back would produce the one state the repair reading cannot act on. Recoverable:
+		// the floor stays absent, so a later open retries.
+		if (!Number.isFinite(epoch)) return;
 		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : epoch));
 	} catch (error) {
 		// An unrecorded floor already reads as unknown, which is the fail-closed answer; aborting startup

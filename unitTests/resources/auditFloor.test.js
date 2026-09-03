@@ -12,6 +12,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const {
 	getAuditFloor: oldestRetainedAuditTime,
+	establishAuditFloor,
 	raiseAuditFloor,
 	purgeAgedLogs,
 	setAuditRetention,
@@ -24,6 +25,7 @@ const { waitFor } = require('../waitFor');
 require('#src/server/serverHelpers/serverUtilities');
 
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
+const AUDIT_FLOOR_BOOTSTRAP_KEY = Symbol.for('audit-floor-bootstrap');
 const ORIGINAL_CLEANUP_DELAY = 10_000; // setAuditRetention's own default, which it does not expose
 
 // A cursor records the last position already processed, so a cursor AT the floor is safe.
@@ -35,6 +37,19 @@ function auditEntries(auditStore) {
 		entries.push({ tableId: record.tableId, localTime: record.localTime });
 	}
 	return entries;
+}
+
+/** The epoch `establishAuditFloor` recorded as a guess, or undefined when it recorded none. */
+function bootstrapEpoch(auditStore) {
+	const stored = auditStore.getBinary(AUDIT_FLOOR_BOOTSTRAP_KEY);
+	return stored === undefined ? undefined : new Float64Array(stored.slice().buffer)[0];
+}
+
+/** Clear a record on either engine: on RocksDB the floor lives in the root store, whose log store's own remove() is a no-op. */
+async function clearRecord(auditStore, key) {
+	const root = auditStore.rootStore;
+	if (typeof root?.removeSync === 'function') root.removeSync(key);
+	await auditStore.remove(key);
 }
 
 function encodeFloorBytes(value) {
@@ -160,8 +175,15 @@ describe('audit staleness floor', () => {
 			const rolled = tableInOwnDatabase('RolledBack');
 			const future = Date.now() + 3_600_000;
 			rolled.auditStore.putSync(future, new Uint8Array(0));
-			await rolled.auditStore.remove(AUDIT_FLOOR_KEY);
+			// A store that has NEVER bootstrapped, which is the only case this bound applies to: both
+			// records absent. Clearing the floor alone leaves the provenance record its open already wrote,
+			// and `establishAuditFloor` then adopts that epoch rather than deriving a fresh one — correct,
+			// and deliberately not bounded by the newest key, since `floor === record` is what tells a
+			// still-guessed floor from a prune-earned one.
+			await clearRecord(rolled.auditStore, AUDIT_FLOOR_BOOTSTRAP_KEY);
+			await clearRecord(rolled.auditStore, AUDIT_FLOOR_KEY);
 			assert.strictEqual(rolled.oldestRetainedAuditTime(), Infinity, 'precondition: no floor recorded');
+			assert.strictEqual(bootstrapEpoch(rolled.auditStore), undefined, 'precondition: never bootstrapped');
 			establishAuditFloor(rolled.auditStore);
 			assert.ok(
 				rolled.oldestRetainedAuditTime() >= future,
@@ -178,6 +200,71 @@ describe('audit staleness floor', () => {
 			assert.strictEqual(Metadata.oldestRetainedAuditTime(), Infinity);
 			establishAuditFloor(Metadata.auditStore);
 			assert.strictEqual(Metadata.oldestRetainedAuditTime(), Infinity, 'reopen must not lower it');
+		});
+
+		// The bootstrap epoch is a guess bounded by surviving state, and surviving state cannot see history
+		// a selective prune already removed (cb1kenobi on #2458). It is recorded AS a guess so a later
+		// release can find the stores still carrying one and repair them — raising a floor is always safe.
+		// These four pin the facts that reading makes rests on. Both engines: the record is written on both,
+		// and only the clock-rollback bound above is LMDB-only.
+		describe('bootstrap provenance', () => {
+			it('records the epoch it stamped, equal to the floor it stamped', () => {
+				const fresh = tableInOwnDatabase('Provenance');
+				const floor = fresh.oldestRetainedAuditTime();
+				assert.ok(Number.isFinite(floor), 'precondition: opening the database stamped a floor');
+				assert.strictEqual(bootstrapEpoch(fresh.auditStore), floor, 'the guess must be recorded as what it is');
+			});
+
+			it('leaves the record where it is when a real prune raises the floor', () => {
+				// This is the whole repair reading: floor === record means still a guess, floor > record means a
+				// prune earned it. A record that tracked the floor would collapse the two into one state.
+				const pruned = tableInOwnDatabase('ProvenancePruned');
+				const stamped = pruned.oldestRetainedAuditTime();
+				const cutoff = stamped + 60_000;
+				raiseAuditFloor(pruned.auditStore, cutoff);
+				assert.strictEqual(pruned.oldestRetainedAuditTime(), cutoff, 'precondition: the prune raised the floor');
+				assert.strictEqual(bootstrapEpoch(pruned.auditStore), stamped, 'the record must not follow it up');
+			});
+
+			it('adopts an orphaned record instead of stamping a fresh epoch', async () => {
+				// The record is written BEFORE the floor, so a crash in between leaves exactly this state. The
+				// next open has to stamp the floor the record already claims, or the two disagree and a store
+				// that is still carrying a guess reads as one that earned its floor.
+				const orphaned = tableInOwnDatabase('ProvenanceOrphan');
+				const older = Date.now() - 1_000_000;
+				orphaned.auditStore.putSync(AUDIT_FLOOR_BOOTSTRAP_KEY, encodeFloorBytes(older));
+				await clearRecord(orphaned.auditStore, AUDIT_FLOOR_KEY);
+				assert.strictEqual(orphaned.oldestRetainedAuditTime(), Infinity, 'precondition: no floor record');
+				establishAuditFloor(orphaned.auditStore);
+				assert.strictEqual(orphaned.oldestRetainedAuditTime(), older, 'the floor must carry the recorded epoch');
+				assert.strictEqual(bootstrapEpoch(orphaned.auditStore), older, 'and the record must be unchanged');
+			});
+
+			it('records nothing for a store that already has a floor', async () => {
+				// The early return is on the FLOOR's absence, so a store whose floor predates this record does
+				// not acquire a guess it never made — which would read as suspect and cost a needless resync.
+				const existing = tableInOwnDatabase('ProvenanceExisting');
+				assert.ok(Number.isFinite(existing.oldestRetainedAuditTime()), 'precondition: a floor is recorded');
+				await clearRecord(existing.auditStore, AUDIT_FLOOR_BOOTSTRAP_KEY);
+				establishAuditFloor(existing.auditStore);
+				assert.strictEqual(bootstrapEpoch(existing.auditStore), undefined, 'no record may appear');
+			});
+
+			it('refuses to stamp a floor whose provenance cannot be read back', async () => {
+				// Untrustworthy bytes under the record decode to unknown. Stamping anyway would produce the one
+				// state the repair reading cannot act on: a finite floor with no readable provenance. Fails
+				// closed instead, and recoverably — the floor stays ABSENT, so a later open retries.
+				const corrupt = tableInOwnDatabase('ProvenanceCorrupt');
+				corrupt.auditStore.putSync(AUDIT_FLOOR_BOOTSTRAP_KEY, new Uint8Array(4));
+				await clearRecord(corrupt.auditStore, AUDIT_FLOOR_KEY);
+				establishAuditFloor(corrupt.auditStore);
+				assert.strictEqual(corrupt.oldestRetainedAuditTime(), Infinity, 'the floor must stay unknown');
+				assert.strictEqual(
+					corrupt.auditStore.getBinary(AUDIT_FLOOR_KEY),
+					undefined,
+					'and absent rather than sentinel-stamped, so a later open can retry'
+				);
+			});
 		});
 
 		it('persists the unknown sentinel when a prune finds no floor record at all', async () => {

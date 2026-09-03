@@ -149,6 +149,28 @@ Seven things that are easy to get wrong here:
   without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a
   one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the
   DBI was absent, not that the database is new.
+- **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see
+  history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of
+  the shared log, so a table that held the newest entries can leave the newest _survivor_ older than
+  entries that are gone, and a clock rolled back between the two stamps a floor below them (cb1kenobi,
+  #2458). Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot
+  lift it, `establishAuditFloor` skips any existing record), so it would make every upgraded deployment
+  fail closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')`
+  first, then stamps the floor from what that record holds, and never touches the record again:
+
+  | Floor                   | Bootstrap record | Reading                                              |
+  | ----------------------- | ---------------- | ---------------------------------------------------- |
+  | finite, `=== bootstrap` | present          | still the guess — suspect, repair by raising it      |
+  | finite, `> bootstrap`   | present          | a real prune raised it; earned, not guessed          |
+  | finite                  | absent           | provenance write was lost — suspect, so fails closed |
+  | `AUDIT_FLOOR_UNKNOWN`   | either           | already fail-closed; nothing to repair               |
+
+  Repair means _raising_ a suspect floor, which is always safe, which is why absent reads as suspect.
+  Ordering is what makes it hold: a crash between the two writes leaves a record with no floor, and the
+  next open retries because the early return tests the _floor_. Adoption is deliberately not bounded by
+  the newest surviving key — `floor === bootstrap` is the entire signal, and re-deriving would destroy
+  it. #2451 is what consumes this.
+
 - **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what
   `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under
   that same name, and a backdated or replicated write makes the two differ. A cursor saved from
