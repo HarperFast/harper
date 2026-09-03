@@ -167,6 +167,20 @@ describe('Test harper_logger module', () => {
 		const test_error = new Error('no such file or directory test');
 		const afterThisTest = [];
 
+		// these tests exercise initLogSettings' boot-props resolution, which mocha.init.js's
+		// ROOTPATH export shadows (see its header comment) — clear it for this describe only:
+		// the stdio-capture tests below must keep it, or their fresh module copies bind the
+		// log file to the installed root
+		let savedRootPathEnv;
+		before(() => {
+			savedRootPathEnv = process.env.ROOTPATH;
+			delete process.env.ROOTPATH;
+		});
+
+		after(() => {
+			if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
+		});
+
 		afterEach(() => {
 			while (afterThisTest.length) afterThisTest.pop()();
 			sandbox.restore();
@@ -177,6 +191,13 @@ describe('Test harper_logger module', () => {
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('trace', TEST_LOG_DIR, false, true));
 			sandbox.stub(fs, 'readFileSync').returns('foo');
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			// The module-load-time auto-init (`if (hdbProperties === undefined) initLogSettings();`)
+			// already ran against PropertiesReader() reading whatever ~/.harperdb/hdb_boot_properties.file
+			// happens to exist on this machine — nothing on a clean checkout. Stub PropertiesReader and
+			// force a re-init, same as the ENOENT test below, so this doesn't depend on ambient state.
+			harper_logger.__set__('PropertiesReader', sandbox.stub().returns({ get: () => 'settings.test' }));
+			harper_logger.__set__('hdbProperties', undefined);
+			harper_logger.__get__('initLogSettings')();
 			const log_to_file = harper_logger.__get__('log_to_file');
 			const log_to_stdstreams = harper_logger.__get__('logToStdstreams');
 			const log_level = harper_logger.logLevel;
@@ -1923,8 +1944,10 @@ describe('Test harper_logger module', () => {
 				// below, capture it here rather than letting it interleave with mocha's output.
 				harper_logger.__set__('nativeStdWrite', sinon.stub().returns(true));
 				// logConsole above makes the guard tee to writeToLogFile, which is only assigned when
-				// the resolved config gives the logger a path. Stub it so the tee is exercised here on
-				// any machine rather than throwing 'writeToLogFile is not a function'.
+				// the resolved config gives the logger a path — and, in a full-suite run, only when an
+				// earlier test's tearDownMockDB() hasn't removed the per-PID config file initLogSettings
+				// reads. Stub it so the tee is exercised here on any machine and in any run order,
+				// rather than throwing 'writeToLogFile is not a function'.
 				harper_logger.__set__('writeToLogFile', sinon.stub());
 				const installStdioGuard = harper_logger.__get__('installStdioGuard');
 				const fakeStdout = makeFakeStream();
