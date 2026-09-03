@@ -46,12 +46,10 @@ export const VERDICT_REJECTED = 2;
 /**
  * Slots in the shared buffer. Slot 0 carries the verdict; slot 1 carries how far the validator got.
  *
- * The progress slot exists because Windows CI reports `exited with code 0 without reporting a verdict` and
- * nothing else. The first attempt at diagnosing it logged a stack from the validator's `exit` handler, which
- * produced nothing — a worker's `console.error` is piped to the parent ASYNCHRONOUSLY, so output written on
- * the way out is lost exactly as the verdict message is. Shared memory is the only channel here proven to
- * survive that exit, so progress travels through it: the parent can then say which phase the thread was in,
- * and whether its own exit handler ever ran, without depending on a message or a pipe.
+ * Progress travels through shared memory because that is the only channel that survives this thread's exit:
+ * a worker's `console.error` is piped to the parent asynchronously, so output written on the way out loses
+ * the same race the verdict message loses. An exit code alone cannot say which phase the thread was in, nor
+ * whether it ended itself.
  */
 export const SLOT_VERDICT = 0;
 export const SLOT_PROGRESS = 1;
@@ -88,6 +86,16 @@ export function describeProgress(progress: number): string {
 
 /** How long to wait for a validator to actually go away before giving up and saying so. */
 const TERMINATION_GRACE_MS = 5000;
+
+/**
+ * How long a rejection waits for the validator's queued message after its exit.
+ *
+ * The shared flag says a candidate was rejected; only the MESSAGE carries the candidate's own error text,
+ * and on Windows the exit consistently beats it. Settling on the flag alone reported every Windows rejection
+ * as "exited before reporting why" and then closed the channel, discarding the syntax error the operator
+ * needed. The flag is already the authority, so this waits only for the detail — and briefly.
+ */
+const REJECTION_DETAIL_GRACE_MS = 250;
 
 /** The module links `symlinkHarperModule` maintains inside a component's `node_modules`. */
 const HARPER_MODULE_LINKS = ['harper', 'harperdb'];
@@ -167,11 +175,14 @@ async function removeCertificationLinks(
 }
 
 let active = 0;
-const waiting: (() => void)[] = [];
+/** Queued waiters. Each returns whether it accepted the slot being offered; a lapsed one declines. */
+const waiting: (() => boolean)[] = [];
 
 async function acquireSlot(timeoutMs: number): Promise<() => void> {
-	// The slot passes straight from releaser to waiter: decrementing and then resolving a waiter that
-	// increments a microtask later leaves a window another caller can admit itself through.
+	// A released slot is HANDED to the next waiter without `active` ever dipping. Decrementing and then
+	// waking a waiter that increments a microtask later leaves a window a fresh caller can claim through
+	// synchronously, sending the woken waiter to the back of its own queue; and a release offered to a
+	// waiter that has already timed out would be swallowed, leaving a free slot nobody is woken for.
 	//
 	// The wait is bounded because a validator that will not die keeps its slot deliberately (see the
 	// termination path), and an unbounded queue behind it would hold every later deploy inside the
@@ -187,33 +198,46 @@ async function acquireSlot(timeoutMs: number): Promise<() => void> {
 			error.statusCode = 503;
 			throw error;
 		}
-		let wake!: () => void;
-		let timer: NodeJS.Timeout | undefined;
-		const handedOver = await new Promise<boolean>((resolve) => {
-			wake = () => resolve(true);
-			waiting.push(wake);
-			timer = setTimeout(() => resolve(false), remaining);
-			timer.unref?.();
-		});
-		// Cleared on the way out either way, so a waiter admitted early does not keep its closure registered
-		// until a deadline that no longer applies to it.
-		if (timer) clearTimeout(timer);
-		// Timed out while still queued: leave the queue, or a later release hands a slot to a caller that
-		// is gone and the count drifts DOWN — admitting more concurrent validators than the cap, not fewer.
-		// Already dequeued: a release woke us in the same turn the timer fired, so keep that handoff and let
-		// the loop condition decide.
-		if (!handedOver) {
-			const index = waiting.indexOf(wake);
+		let settled = false;
+		let resolveWait!: (inherited: boolean) => void;
+		const waited = new Promise<boolean>((resolve) => (resolveWait = resolve));
+		const waiter = () => {
+			if (settled) return false;
+			settled = true;
+			resolveWait(true);
+			return true;
+		};
+		waiting.push(waiter);
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			const index = waiting.indexOf(waiter);
 			if (index !== -1) waiting.splice(index, 1);
-		}
+			resolveWait(false);
+		}, remaining);
+		timer.unref?.();
+		const inherited = await waited;
+		// Cleared either way, so an admitted waiter does not keep its closure registered until a deadline
+		// that no longer applies to it.
+		clearTimeout(timer);
+		// The slot came from the releaser with `active` already accounting for it, so this caller holds it
+		// without incrementing — which is what makes the handoff a handoff.
+		if (inherited) return makeRelease();
 	}
 	active++;
+	return makeRelease();
+}
+
+function makeRelease(): () => void {
 	let released = false;
 	return () => {
 		if (released) return;
 		released = true;
+		// Offer the slot along the queue until someone takes it. Only if nobody does does the count fall.
+		while (waiting.length > 0) {
+			if (waiting.shift()!()) return;
+		}
 		active--;
-		waiting.shift()?.();
 	};
 }
 
@@ -365,7 +389,12 @@ export async function certifyCandidate(
 					settle({ certified: true });
 					return;
 				}
-				fail(`${appName} failed to load during certification (its validator exited before reporting why)`);
+				// Rejected for certain; what is still in flight is WHY. The message handler settles with the
+				// candidate's own error if it lands first, and `settle` takes the first answer either way, so
+				// this is the fallback rather than a race the detail can lose outright.
+				setTimeout(() => {
+					fail(`${appName} failed to load during certification (its validator exited before reporting why)`);
+				}, REJECTION_DETAIL_GRACE_MS).unref?.();
 			});
 		});
 	} finally {

@@ -132,8 +132,8 @@ async function certify(): Promise<void> {
 		if (reportedError) throw reportedError;
 		// A load that did nothing is not a pass: a run that neither opened a scope nor loaded a module has
 		// not exercised the candidate, which is how a platform-specific no-op would read as a clean verdict.
-		// Only asserted for a candidate declaring loadable content — see the static-only case in
-		// `deployCertification.test.js`, which opens a scope and so stays clear of this.
+		// A static-only component stays clear of this because its load still opens a scope, which
+		// `deployCertification.test.js` pins.
 		if (!scopes.size && !modules.size && (await declaresLoadableContent(candidateDirPath))) {
 			throw new Error(
 				`Certification of ${componentName} loaded nothing: it declares component configuration, so a run ` +

@@ -2173,15 +2173,11 @@ async function certifyPreparedCandidate(
 	candidateDirPath: string,
 	options: PrepareApplicationOptions
 ): Promise<{ certified: boolean }> {
-	// SAFE MODE ACTIVATES, uncertified. An earlier draft staged without activating, on the reasoning that
-	// safe mode is transient so the candidate could wait — but nothing resumes it: the staged tree carries
-	// no journal, so `recoverInterruptedActivations` removes it as build residue at the next start, while
-	// `deploy_component` had already returned success, replicated the operation and run its restart phase.
-	// An operator booting into safe mode to replace the component crashing the node would have got a 200,
-	// live peers, and a node that came back running the broken component with the fix deleted.
-	//
-	// So it takes the same shape as the branch-configured case below: the deploy happens, and it earns no
-	// authority. `.complete` is never written, so a crash mid-swap rolls back to the committed tree.
+	// Safe mode ACTIVATES, uncertified, rather than staging for later: a staged tree carries no journal, so
+	// `recoverInterruptedActivations` removes it as build residue at the next start — while the operation has
+	// already returned success, replicated, and run its restart phase. So it takes the same shape as the
+	// branch-configured case below: the deploy happens and earns no authority, and with no `.complete` a
+	// crash mid-swap rolls back to the committed tree.
 	const safeMode =
 		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
 	if (safeMode) {
@@ -2248,6 +2244,12 @@ export async function activateCandidateApplication(application: Application, dep
 	// forward onto something no validator vouched for.
 	if (isCandidateCertified(liveDirPath, deploymentId)) {
 		await markCandidateComplete(liveDirPath, deploymentId, application.name);
+	} else if (await candidateIsCertifiedOnDisk(candidateDeploymentDirPath(liveDirPath, deploymentId))) {
+		// A resumed activation after a restart. The in-memory record is empty then, but the marker a validator
+		// already earned is on disk, and recovery is rolling this candidate FORWARD on the strength of it —
+		// so the warning below would be the opposite of what is happening. The marker is not re-minted from
+		// its own presence; nothing is written here.
+		application.logger.info(`Resuming the interrupted activation of ${application.name}, already certified`);
 	} else {
 		application.logger.warn(
 			`Activating ${application.name} without a certification marker: nothing certified this candidate, so ` +

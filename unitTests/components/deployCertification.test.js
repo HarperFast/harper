@@ -84,12 +84,11 @@ describe('deploy certification', () => {
 	});
 
 	it('publishes a static-only component, which legitimately loads no module', async function () {
-		// The "loaded nothing is not a pass" guard is a net for a platform-specific no-op reading as a clean
-		// verdict, and its trigger is whether the candidate declares loadable content — for which a
-		// `package.json` is weak evidence, since nearly every component ships one for versioning. A component
-		// of nothing but static files opens no scope and loads no module by design, so if that guard fires on
-		// it, certification rejects a deploy that works today. This is the third false-rejection shape this
-		// feature has produced, so it is asserted rather than assumed.
+		// The "loaded nothing is not a pass" guard fires on a candidate that declares loadable content and
+		// then opens no scope and loads no module. A static-only component declares content (every component
+		// ships a `package.json`) and loads no JS module, so whether the guard rejects it comes down to
+		// whether a static load still opens a scope. It does — this test is what pins that, so a change to
+		// scope creation cannot silently turn valid static deploys into certification failures.
 		this.timeout(30000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'certify-static-'));
 		const componentDirPath = join(rootDir, 'brochure');
