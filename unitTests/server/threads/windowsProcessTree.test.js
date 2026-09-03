@@ -144,6 +144,31 @@ describe('selectWindowsProcessTree', () => {
 		assert.deepEqual(pids(selectWindowsProcessTree([stillRunning, grandchild], live)), [4100, 4200]);
 	});
 
+	it('bounds an exited member by the row that replaced its PID, not only by the scan that lost it', () => {
+		// the member exited at +1000, its PID was recycled at +2000 and the new owner spawned a child
+		// at +3000; the scan that first misses the member runs at +5000 after a backed-off poll
+		const replacement = row(4100, 1, SPAWNED_AT + 2_000, 'other.exe');
+		const strangersChild = row(4300, 4100, SPAWNED_AT + 3_000);
+		const ours = row(4200, 4100, SPAWNED_AT + 900);
+		const identity = {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+			descendants: new Map([[4100, { created: SPAWNED_AT + 200 }]]),
+		};
+		const table = [replacement, strangersChild, ours];
+		assert.deepEqual(pids(selectWindowsProcessTree(table, identity, SPAWNED_AT + 5_000)), [4200]);
+		assert.deepEqual(
+			pids(
+				selectWindowsProcessTree(table, {
+					...identity,
+					descendants: new Map([[4100, { created: SPAWNED_AT + 200, exitedAt: SPAWNED_AT + 5_000 }]]),
+				})
+			),
+			[4200]
+		);
+	});
+
 	it('never attributes a process without a creation time to the tree', () => {
 		const table = [row(4100, ROOT, null)];
 		const members = selectWindowsProcessTree(table, {
