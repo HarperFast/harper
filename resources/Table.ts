@@ -5605,14 +5605,24 @@ export function makeTable(options) {
 		 * The floor of retained audit history, in the same time domain as `subscribe`'s `startTime` and
 		 * the `localTime` its events carry — but NOT `getHistory`'s `localTime`, which is the origin
 		 * version under that name. Concretely:
-		 * a consumer whose last-processed cursor is `>=` the returned value can resume incrementally,
-		 * and one below it has lost history it needs and must resync from a full read. `Infinity` means
-		 * the floor is unknown and fails closed, so no cursor reads as safe — reachable when the floor
-		 * could not be recorded (a read-only database, or a failed metadata write).
+		 * a consumer whose last-processed cursor is below the returned value has lost history it needs
+		 * and must resync from a full read. `Infinity` means the floor is unknown and fails closed, so
+		 * no cursor reads as safe — reachable when the floor could not be recorded (a read-only
+		 * database, or a failed metadata write).
 		 *
-		 * Database-scoped, a moment-in-time observation, and conservative in one direction only: it can
-		 * ask for a resync that was not strictly necessary, never certify a cursor whose history is
-		 * gone. See `getAuditFloor` in auditStore.ts for the full contract.
+		 * **Diagnostic, and it answers exactly one question: did a prune remove audit history below
+		 * this cursor?** Across the paths that prune, it errs in one direction only — it can ask for a
+		 * resync that was not strictly necessary, never certify a cursor a prune truncated. But it is
+		 * not a database-generation check, so `cursor >= floor` is not by itself a guarantee that
+		 * resuming is safe: replacing a database's state with a copy of an earlier state
+		 * (`restore_backup`, a RocksDB checkpoint) reinstalls that state's floor, and a cursor from
+		 * after the copy point then compares as safe against it even though the database carries no
+		 * change stream describing the rollback (harper#2451).
+		 *
+		 * Database-scoped, and a moment-in-time observation: retention can advance between this call
+		 * and whatever the caller does with the answer. Closing that race and validating a generation
+		 * both belong inside the resume itself (harper#2448). See `getAuditFloor` in auditStore.ts for
+		 * the full contract.
 		 */
 		static oldestRetainedAuditTime(): number {
 			if (!auditStore)

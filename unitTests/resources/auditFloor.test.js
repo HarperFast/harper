@@ -3,7 +3,9 @@
  * from a saved cursor has to be able to tell a complete catch-up from a truncated one;
  * `oldestRetainedAuditTime` is the primitive that answers it, and the invariant these tests defend
  * is one-directional: the floor may ask for a resync that was not strictly necessary, but it must
- * never certify a cursor whose history has already been pruned.
+ * never certify a cursor a prune has already truncated. Pruning is the whole of what it covers — a
+ * state copy that rolls a database back (`restore_backup`, a RocksDB checkpoint) reinstalls an older
+ * floor along with everything else, and needs a database generation instead (harper#2451).
  */
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
