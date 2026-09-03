@@ -74,6 +74,8 @@ const LATE_WATCH_CAP = 6; // per surface
 
 const WARMUP_MS = 1000;
 const TAIL_MS = 2000;
+// Ceiling on the post-COMPLETE condition-wait for every surface to serve a fresh connect again.
+const POST_RESTART_RECOVERY_MS = 30_000;
 
 interface AttemptResult {
 	surface: 'ws' | 'tcp' | 'tls';
@@ -226,19 +228,36 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 		}
 	}
 
-	// setupHarperWithFixture always runs under harper-integration-test-run, which sets
-	// HARPER_INTEGRATION_TEST_LOG_DIR itself when the caller hasn't -- so logDir (and the
-	// config.logging.root it forces, overriding whatever `logging.root` this suite passes in) is
-	// always populated, not only when a caller opts in. That makes it the one reliable source:
-	// dataRootDir/log/hdb.log never gets created (root is redirected to logDir), and the child
-	// process's captured stdout does not carry the per-thread trace lines this oracle needs.
+	/** HTTP worker thread ids as the operations API reports them (the repo idiom for observing a
+	 * rotation -- server/rolling-restart.test.ts uses the same `threads` attribute). Job threads
+	 * are excluded: `restart_service` itself runs in one, and they never rotate with the pool. */
+	async function httpWorkerThreadIds(): Promise<number[]> {
+		const r = await opsCall({ operation: 'system_information', attributes: ['threads'] });
+		const threads = (r.body as any)?.threads;
+		if (!Array.isArray(threads)) return [];
+		return threads.filter((w: any) => w?.name !== 'job' && typeof w?.threadId === 'number').map((w: any) => w.threadId);
+	}
+
+	// Where `logging.root` actually points depends on how the file was launched, so try both in
+	// priority order rather than assume one. Under harper-integration-test-run (every documented
+	// command) the runner sets HARPER_INTEGRATION_TEST_LOG_DIR itself when the caller hasn't, and
+	// the harness then overrides logging.root with its per-suite logDir -- so only the first
+	// candidate exists. Under a bare `node --test` nothing sets it and only the second does.
+	// Neighbouring suites read the same union (database/blob-restart-ttl-unlink.test.ts). The
+	// child process's captured stdout is not a substitute: it does not carry the per-thread trace
+	// lines this oracle counts.
 	function readServerLog(): string {
-		if (!ctx.harper.logDir) return '';
-		try {
-			return readFileSync(join(ctx.harper.logDir, 'hdb.log'), 'utf8');
-		} catch {
-			return '';
+		const candidates = [join(ctx.harper.dataRootDir, 'log', 'hdb.log')];
+		if (ctx.harper.logDir) candidates.unshift(join(ctx.harper.logDir, 'hdb.log'));
+		for (const candidate of candidates) {
+			try {
+				const text = readFileSync(candidate, 'utf8');
+				if (text) return text;
+			} catch {
+				/* try the next candidate */
+			}
 		}
+		return '';
 	}
 
 	/** Waits minWaitMs, then polls until the log stops growing for one quiet interval (bounded) --
@@ -263,7 +282,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 	test(
 		'MQTT connect storm (WS /mqtt, raw TCP :1883, TLS :8883) across restart_service http_workers',
 		{ timeout: 240_000 },
-		async () => {
+		async (t) => {
 			const wsBase = ctx.harper.httpURL.replace(/^http/, 'ws');
 			const surfaces: Array<{ surface: 'ws' | 'tcp' | 'tls'; url: string; intervalMs: number }> = [
 				{ surface: 'ws', url: `${wsBase}/mqtt`, intervalMs: 50 },
@@ -271,30 +290,54 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				{ surface: 'tls', url: `mqtts://${ctx.harper.hostname}:8883`, intervalMs: 200 },
 			];
 
-			// --- Baseline usability probe per surface (bounded; skip a surface if unusable rather
-			// than treat harness/environment limitations as a Harper defect). ---
+			// --- Baseline usability probe per surface. Every surface is REQUIRED. Treating an
+			// unusable surface as "skip it" would make the anchor silently self-narrowing: the
+			// regression class this file falsifies includes "the TCP/TLS listener stops coming
+			// back", and that regression presents at the probe -- as a skip, not a failure. Only
+			// whole-runtime limitations get to skip, and those are `skipSuite` above. Retried to a
+			// deadline so a listener that is merely slow to bind is waited out instead. ---
+			const PROBE_DEADLINE_MS = 30_000;
+			const probeAttempts: Record<string, number> = { ws: 0, tcp: 0, tls: 0 };
 			const usable = new Map<string, boolean>();
-			const skipReason = new Map<string, string>();
+			const probeFailure = new Map<string, string>();
 			for (const s of surfaces) {
-				const r = await attemptConnect(s.url, authOpts(ctx, `qa649-probe-${s.surface}`));
-				usable.set(s.surface, r.kind === 'completed');
-				if (r.kind !== 'completed') skipReason.set(s.surface, `${r.kind}: ${r.detail}`);
-				await endQuiet(r.client);
+				const deadline = Date.now() + PROBE_DEADLINE_MS;
+				do {
+					const n = ++probeAttempts[s.surface];
+					const r = await attemptConnect(s.url, authOpts(ctx, `qa649-probe-${s.surface}-${n}`));
+					usable.set(s.surface, r.kind === 'completed');
+					if (r.kind !== 'completed') probeFailure.set(s.surface, `${r.kind}: ${r.detail}`);
+					await endQuiet(r.client);
+					if (usable.get(s.surface)) break;
+					await sleep(500);
+				} while (Date.now() < deadline);
 			}
 			for (const s of surfaces) {
 				console.log(
-					`[QA-649] baseline probe ${s.surface} (${s.url}): usable=${usable.get(s.surface)} ${skipReason.get(s.surface) ?? ''}`
+					`[QA-649] baseline probe ${s.surface} (${s.url}): usable=${usable.get(s.surface)} ` +
+						`attempts=${probeAttempts[s.surface]} ${probeFailure.get(s.surface) ?? ''}`
 				);
 			}
-			ok(
-				usable.get('ws'),
-				`WS /mqtt surface must be usable at baseline for this experiment to be meaningful: ${skipReason.get('ws')}`
-			);
+			for (const s of surfaces) {
+				ok(
+					usable.get(s.surface),
+					`${s.surface} surface (${s.url}) never became usable within ${PROBE_DEADLINE_MS}ms over ${probeAttempts[s.surface]} attempt(s) -- last: ${probeFailure.get(s.surface)}`
+				);
+			}
 
 			const results: AttemptResult[] = [];
 			const lateSelfHeals: Array<{ surface: string; seq: number; wedgedAt: number; lateConnectAt: number }> = [];
 			const lateWatchCount: Record<string, number> = { ws: 0, tcp: 0, tls: 0 };
 			let stormOver = false;
+			// Every await in the body below is deadline-bounded, so the `finally` that sets
+			// stormOver is always reached and the storms do terminate on their own. What they do
+			// NOT do is stop *promptly*: node:test cannot interrupt a running async function, so
+			// after a runner timeout it proceeds to `after`/teardownHarper while this body keeps
+			// firing connects for up to another WALL_CLOCK_MS at 50/100/200ms. t.signal aborts on
+			// timeout as well as on normal completion, which cuts that overlap.
+			t.signal.addEventListener('abort', () => {
+				stormOver = true;
+			});
 
 			async function runStorm(surface: 'ws' | 'tcp' | 'tls', url: string, intervalMs: number) {
 				let seq = 0;
@@ -333,11 +376,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				await Promise.all(pending);
 			}
 
-			const stormPromises: Array<Promise<void>> = [];
-			for (const s of surfaces) {
-				if (usable.get(s.surface)) stormPromises.push(runStorm(s.surface, s.url, s.intervalMs));
-				else console.log(`[QA-649] skipping storm for surface '${s.surface}': ${skipReason.get(s.surface)}`);
-			}
+			const stormPromises = surfaces.map((s) => runStorm(s.surface, s.url, s.intervalMs));
 
 			let tBeforeRestart = 0;
 			let tJobComplete: number | undefined;
@@ -345,6 +384,15 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			try {
 				await sleep(WARMUP_MS);
 				ok(results.length > 0, 'connect storm produced no attempts during warm-up -- harness problem');
+
+				// Rotation proof, half 1. `threads.count` not applying would leave a single worker,
+				// making "rotate them all" degenerate while every assertion below still passes --
+				// the same vacuity guard integrationTests/server/rolling-restart.test.ts makes.
+				const workersBefore = await httpWorkerThreadIds();
+				ok(
+					workersBefore.length >= 2,
+					`expected >= 2 HTTP worker threads before the restart (threads.count=${WORKERS}), observed ${workersBefore.length} [${workersBefore}] -- a single-worker rotation is vacuous`
+				);
 
 				tBeforeRestart = Date.now();
 				const restartResp = await opsCall({ operation: 'restart_service', service: 'http_workers' }, 30_000);
@@ -383,8 +431,43 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				);
 				console.log(`[QA-649] get_job(${jobId}) COMPLETE at t+${tJobComplete! - tBeforeRestart}ms`);
 
-				// --- Tail: keep storming a bit past COMPLETE, to see whether the window truly closes ---
+				// Rotation proof, half 2. get_job COMPLETE is a *documented* completion signal, not
+				// evidence that anything moved: a restart_service that regressed to a no-op would
+				// still report COMPLETE, and then every assertion below passes on a window that was
+				// never opened -- pre-restart connects complete, in-window connects complete,
+				// wedged=0. Worker identity is the evidence. QA-642 established that COMPLETE
+				// correlates with the pool having FULLY rotated, so a survivor is a real finding
+				// about that signal, not a tolerance to widen.
+				const workersAfter = await httpWorkerThreadIds();
+				console.log(
+					`[QA-649] http worker threadIds ${JSON.stringify(workersBefore)} -> ${JSON.stringify(workersAfter)}`
+				);
+				ok(
+					workersAfter.length >= 2,
+					`expected >= 2 HTTP worker threads after the restart, observed ${workersAfter.length} [${workersAfter}]`
+				);
+				const survivors = workersAfter.filter((id) => workersBefore.includes(id));
+				strictEqual(
+					survivors.length,
+					0,
+					`restart_service http_workers reported COMPLETE but thread(s) [${survivors}] of [${workersBefore}] never rotated -- the restart window this test measures was not fully opened`
+				);
+
+				// --- Tail: keep storming past COMPLETE, to see whether the window truly closes.
+				// TAIL_MS is a floor (so the post-COMPLETE sample is never degenerate), then a
+				// condition-wait for each surface to actually complete a fresh connect. A fixed
+				// sleep followed by asserting the side effect is the `await delay(N);
+				// assert(sideEffectHappened)` shape AGENTS.md names as flake class #1138: a
+				// listener that re-registers a second later than the tail would red the run.
+				// assertUsableAfterRestart below still asserts it -- reaching this deadline means
+				// the surface genuinely never came back. ---
 				await sleep(TAIL_MS);
+				const recoveredAfterRestart = (surface: string) =>
+					results.some((r) => r.surface === surface && r.kind === 'completed' && r.launchedAt >= tJobComplete!);
+				const tailDeadline = Date.now() + POST_RESTART_RECOVERY_MS;
+				while (Date.now() < tailDeadline && !surfaces.every((s) => recoveredAfterRestart(s.surface))) {
+					await sleep(100);
+				}
 			} finally {
 				// Stop the storm loops no matter what -- if an assertion above throws (e.g. a
 				// regressed restart_service), leaving them running would fire qa649-* connects
@@ -439,8 +522,9 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			}
 
 			const wsA = analyzeSurface('ws');
-			const tcpA = usable.get('tcp') ? analyzeSurface('tcp') : null;
-			const tlsA = usable.get('tls') ? analyzeSurface('tls') : null;
+			const tcpA = analyzeSurface('tcp');
+			const tlsA = analyzeSurface('tls');
+			ok(wsA && tcpA && tlsA, 'a required surface produced no attempts at all -- harness problem, not an MQTT result');
 
 			// Server-side cross-check: count of transport-accepted lines vs client-completed count.
 			const wsAcceptedLines = countMatches(serverLog, /Received WebSocket connection for MQTT from/g);
@@ -469,13 +553,20 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				'no successful WS connects observed before the restart -- stream was not live, test invalid'
 			);
 
-			// Precondition proof: attempts must actually have landed strictly inside the restart
-			// window, not just before/after it -- otherwise a degenerate window (e.g. get_job
-			// completing on its very first poll) would make the wedge check below vacuous.
-			ok(
-				wsA!.inWindow.length > 0,
-				`no WS connect attempts landed inside the restart window [trigger, COMPLETE) -- window was ${tJobComplete! - tBeforeRestart}ms, nothing to test`
-			);
+			// Precondition proof, per surface: attempts must actually have landed strictly inside
+			// the restart window, not just before/after it -- otherwise a degenerate window (e.g.
+			// get_job completing on its very first poll, or a cadence too coarse to fit inside it)
+			// would make that surface's wedge check below vacuous while it still reported green.
+			for (const [surface, a] of [
+				['WS', wsA!],
+				['TCP', tcpA!],
+				['TLS', tlsA!],
+			] as const) {
+				ok(
+					a.inWindow.length > 0,
+					`no ${surface} connect attempts landed inside the restart window [trigger, COMPLETE) -- window was ${tJobComplete! - tBeforeRestart}ms, nothing to test on this surface`
+				);
+			}
 
 			// Q3: does polling get_job to COMPLETE close the window entirely? Evidence: any wedged
 			// WS attempt LAUNCHED AT/AFTER tJobComplete would mean the window survives past the
@@ -498,8 +589,8 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				);
 			}
 			assertUsableAfterRestart('WS', wsA!);
-			if (tcpA) assertUsableAfterRestart('TCP', tcpA);
-			if (tlsA) assertUsableAfterRestart('TLS', tlsA);
+			assertUsableAfterRestart('TCP', tcpA!);
+			assertUsableAfterRestart('TLS', tlsA!);
 
 			// Primary hypothesis: an MQTT connect on any usable transport must never wedge (neither
 			// complete nor cleanly refuse) within our bounded observation window.
@@ -511,33 +602,46 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				);
 			}
 			assertNoWedge('WS', wsA!);
-			if (tcpA) assertNoWedge('TCP', tcpA);
-			if (tlsA) assertNoWedge('TLS', tlsA);
+			assertNoWedge('TCP', tcpA!);
+			assertNoWedge('TLS', tlsA!);
 
 			// Two-sided oracle, enforced last: `assertNoWedge` above already independently pins
 			// the client-observed wedge count to zero with the most specific diagnostic, so a real
 			// wedge fails there first rather than surfacing here as a less informative accept
-			// mismatch. This instead catches accepts the client never accounted for at all -- the
-			// server must never have accepted more transports than the client accounted for as
-			// completed OR cleanly refused. +1 per surface allows for the baseline usability probe
-			// above, which triggers an "accepted" log line but is deliberately excluded from
-			// `results`. `refused` counts here deliberately: the server logs "accepted" the instant
-			// the transport upgrade lands, several ms before CONNACK, so a worker torn down inside
-			// that gap during the rolling restart produces a legitimate accepted-then-reset the
-			// client correctly classifies `refused`, not a wedge.
+			// mismatch.
+			//
+			// The bound is closed at BOTH ends, because each end fails a different way:
+			//   upper -- the server accepted a transport the client never accounted for at all.
+			//     `refused` counts as accounted-for deliberately: the server logs "accepted" the
+			//     instant the transport upgrade lands, several ms before CONNACK, so a worker torn
+			//     down inside that gap during the rolling restart is a legitimate
+			//     accepted-then-reset the client correctly classifies `refused`, not a wedge.
+			//   lower -- the trace is not actually being read. Every completed connect necessarily
+			//     crossed the accept-log site, so `acceptedLines` below the completed count means
+			//     the server half of the oracle is silently disabled (a wording change in
+			//     server/mqtt.ts, a truncated log) and the upper bound alone would still pass, at
+			//     its most permissive, on zero evidence.
+			// Both ends allow for the baseline probe attempts, which trigger accept lines but are
+			// deliberately excluded from `results`: every attempt may have been accepted (upper),
+			// and exactly one of them completed (lower).
 			function assertServerAccepts(
 				surface: string,
 				acceptedLines: number,
+				probes: number,
 				a: NonNullable<ReturnType<typeof analyzeSurface>>
 			) {
 				ok(
-					acceptedLines <= a.completed.length + a.refused.length + 1,
-					`SERVER-SIDE ACCEPT MISMATCH (${surface}): server log recorded ${acceptedLines} accepted transports vs only ${a.completed.length + a.refused.length} client-accounted-for (completed+refused) attempts`
+					acceptedLines >= a.completed.length + 1,
+					`SERVER-SIDE TRACE MISSING (${surface}): only ${acceptedLines} accepted-transport log line(s) for ${a.completed.length} client-completed connect(s) + 1 completed baseline probe. Every completed connect crosses the accept-log site, so this oracle is not reading it -- the server/mqtt.ts log wording changed, or the log was truncated mid-run`
+				);
+				ok(
+					acceptedLines <= a.completed.length + a.refused.length + probes,
+					`SERVER-SIDE ACCEPT MISMATCH (${surface}): server log recorded ${acceptedLines} accepted transports vs at most ${a.completed.length + a.refused.length + probes} client-accounted-for (completed ${a.completed.length} + refused ${a.refused.length} + ${probes} baseline probe attempt(s))`
 				);
 			}
-			assertServerAccepts('WS', wsAcceptedLines, wsA!);
-			if (tcpA) assertServerAccepts('TCP', tcpAcceptedLines, tcpA);
-			if (tlsA) assertServerAccepts('TLS', sslAcceptedLines, tlsA);
+			assertServerAccepts('WS', wsAcceptedLines, probeAttempts.ws, wsA!);
+			assertServerAccepts('TCP', tcpAcceptedLines, probeAttempts.tcp, tcpA!);
+			assertServerAccepts('TLS', sslAcceptedLines, probeAttempts.tls, tlsA!);
 		}
 	);
 });
