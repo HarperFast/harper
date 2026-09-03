@@ -21,6 +21,7 @@ const {
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
 const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
+const { execFileSync } = require('node:child_process');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
@@ -1655,7 +1656,6 @@ describe('audit entry previousVersion presence', () => {
 			['2 ** 49 (0x43)', 2 ** 49],
 			['2.0, the lmdb-js substitution sentinel (0x40)', 2],
 			['1.5 (0x3f)', 1.5],
-			['1, the removed placeholder trigger (0x3f)', 1],
 			['Infinity (0x7f)', Infinity],
 			['NaN, which is falsy and would otherwise be dropped silently', NaN],
 			['a negative value', -1787198768741.378],
@@ -1678,6 +1678,19 @@ describe('audit entry previousVersion presence', () => {
 				assertTrailingFields(record, label);
 			});
 		}
+
+		it('records without a link, rather than throwing, when the previous version is still pending', () => {
+			// PENDING_LOCAL_TIME: the previous entry has no log position yet. The superseded code wrote
+			// an lmdb-js substitution placeholder here, which resolves to 2.0 when no previous time was
+			// recorded — the unreadable entry this guard exists to prevent. A pending previous is a
+			// legitimate producer state, so it must not abort the user's write.
+			let buffer;
+			assert.doesNotThrow(() => (buffer = mint(1)));
+			assert.notStrictEqual(buffer[0], 0x42);
+			const record = readAuditEntry(buffer);
+			assert.strictEqual(record.previousVersion, undefined);
+			assertTrailingFields(record, 'pending previous version');
+		});
 
 		it('keeps the action offset agreeing with the field it actually wrote', () => {
 			assert.strictEqual(mint(0)[0], 0x11, 'no field: the action leads the entry');
@@ -1726,13 +1739,13 @@ describe('audit entry previousVersion presence', () => {
 	// Fixture bytes, not a live write: these are the shapes already on disk and on the wire from
 	// writers that predate the guard, including harperdb 4.x, which still mints them today.
 	describe('entries written before the guard', () => {
-		function legacyEntry(prefix, { actionByte = 0x11 } = {}) {
+		function legacyEntry(prefix, { actionByte = 0x11, tableId = 7 } = {}) {
 			const recordId = Buffer.from('historical_orders-0');
 			const version = Buffer.alloc(8);
 			version.writeDoubleBE(VERSION);
 			return Buffer.concat([
 				prefix,
-				Buffer.from([actionByte, 0x03, 0x07, recordId.length]),
+				Buffer.from([actionByte, 0x03, tableId, recordId.length]),
 				recordId,
 				version,
 				Buffer.from([5]),
@@ -1760,13 +1773,15 @@ describe('audit entry previousVersion presence', () => {
 			['2 ** 33 - 1 (0x41)', 2 ** 33 - 1],
 			['2 ** 32 (0x41)', 2 ** 32],
 			['2 ** 49 (0x43)', 2 ** 49],
-			['1.5 (0x3f)', 1.5],
 			['Infinity (0x7f)', Infinity],
 		]) {
-			it(`recovers the field offsets and keeps the back-edge for ${label}`, () => {
+			it(`recovers the field offsets and preserves the value for ${label}`, () => {
 				const record = readAuditEntry(legacyEntry(asDouble(previousVersion)));
 				assertTrailingFields(record, label);
-				assert.strictEqual(record.previousVersion, previousVersion, 'a recovered link must not be discarded');
+				// Preserved rather than discarded so a real link is never dropped. It is not resolvable as
+				// an audit key: the key codec makes the same leading-byte test, so a position outside the
+				// representable band could not have been stored as a key either.
+				assert.strictEqual(record.previousVersion, previousVersion, 'a recovered value must not be discarded');
 			});
 		}
 
@@ -1794,6 +1809,32 @@ describe('audit entry previousVersion presence', () => {
 			});
 		}
 
+		// Reserved entry-type nibbles must keep decoding: a peer one version ahead mints them, and
+		// classifying one as a stray prefix would drop it at this hop instead of forwarding it.
+		for (const [label, actionByte] of [
+			['a reserved entry type (nibble 9)', 0x09],
+			['a reserved entry type with HAS_RECORD (nibble 12)', 0x1c],
+			['nibble 15 (0x3f)', 0x3f],
+		]) {
+			it(`treats ${label} as an action rather than a stray prefix`, () => {
+				const recordId = Buffer.from('historical_orders-0');
+				const version = Buffer.alloc(8);
+				version.writeDoubleBE(VERSION);
+				const entry = Buffer.concat([
+					Buffer.from([actionByte, 0x03, 0x07, recordId.length]),
+					recordId,
+					version,
+					Buffer.from([0]),
+				]);
+				const record = readAuditEntry(entry);
+				// the type is unknown to this build, but every positional field must still decode
+				assert.strictEqual(record.tableId, 7);
+				assert.strictEqual(record.nodeId, 3);
+				assert.strictEqual(record.recordId, 'historical_orders-0');
+				assert.strictEqual(record.version, VERSION);
+			});
+		}
+
 		it('refuses to recover a candidate the superseded writer could not have emitted', () => {
 			// The old guard was `previousVersion > 1`, so anything at or below 1 was never written here.
 			const record = readAuditEntry(legacyEntry(asDouble(0.5)));
@@ -1812,16 +1853,72 @@ describe('audit entry previousVersion presence', () => {
 		// turn a recoverable entry into a corrupt sentinel — or escape the decoder entirely.
 		it('still recovers when the logging sink throws', () => {
 			const originalWarn = harperLogger.warn;
+			let reached = false;
 			harperLogger.warn = () => {
+				reached = true;
 				throw new Error('simulated logging failure');
 			};
 			try {
 				let record;
-				assert.doesNotThrow(() => (record = readAuditEntry(legacyEntry(asDouble(2 ** 49)))));
-				assertTrailingFields(record, 'throwing sink');
+				// a table no earlier case has warned for, so the per-table latch cannot mask the sink
+				const entry = legacyEntry(asDouble(2 ** 49), { tableId: 61 });
+				assert.doesNotThrow(() => (record = readAuditEntry(entry)));
+				assert.ok(reached, 'the throwing sink must actually be reached, or this proves nothing');
+				assert.strictEqual(record.type, 'put');
+				assert.strictEqual(record.tableId, 61);
+				assert.strictEqual(record.recordId, 'historical_orders-0');
+				assert.strictEqual(record.version, VERSION);
 			} finally {
 				harperLogger.warn = originalWarn;
 			}
+		});
+
+		it('recovers an extended action carrying a flag defined in another module', () => {
+			// HAS_STRUCTURE_UPDATE (0x100) lives in RecordEncoder, across an import cycle with this
+			// module. Building the known-flag mask at module scope resolved that bit to undefined
+			// whenever RecordEncoder was the cycle's entry point, and the recovery below was then
+			// rejected as corrupt depending only on which module loaded first.
+			const action = Buffer.alloc(4);
+			action.writeUInt32BE((0xc0000000 | 0x100 | 0x11) >>> 0);
+			const recordId = Buffer.from('historical_orders-0');
+			const version = Buffer.alloc(8);
+			version.writeDoubleBE(VERSION);
+			const entry = Buffer.concat([
+				asDouble(2 ** 49),
+				action,
+				Buffer.from([0x03, 0x07, recordId.length]),
+				recordId,
+				version,
+				Buffer.from([0]),
+			]);
+			const record = readAuditEntry(entry);
+			assert.strictEqual(record.type, 'put');
+			assert.strictEqual(record.tableId, 7);
+			assert.strictEqual(record.recordId, 'historical_orders-0');
+		});
+
+		// The cycle only bites when RecordEncoder is the entry, which cannot be arranged in-process
+		// once mocha has loaded both modules.
+		it('recovers identically when RecordEncoder is the import-cycle entry point', () => {
+			const auditStorePath = require.resolve('#src/resources/auditStore');
+			const recordEncoderPath = require.resolve('#src/resources/RecordEncoder');
+			const script = `
+				require(${JSON.stringify(recordEncoderPath)});
+				const { readAuditEntry } = require(${JSON.stringify(auditStorePath)});
+				const recordId = Buffer.from('historical_orders-0');
+				const version = Buffer.alloc(8); version.writeDoubleBE(${VERSION});
+				const prefix = Buffer.alloc(8); prefix.writeDoubleBE(2 ** 49);
+				const action = Buffer.alloc(4); action.writeUInt32BE((0xc0000000 | 0x100 | 0x11) >>> 0);
+				const entry = Buffer.concat([prefix, action, Buffer.from([0x03, 0x07, recordId.length]), recordId, version, Buffer.from([0])]);
+				const record = readAuditEntry(entry);
+				process.stdout.write(JSON.stringify({ type: record.type, tableId: record.tableId }));
+			`;
+			const output = execFileSync(process.execPath, ['-e', script], {
+				cwd: process.cwd(),
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'ignore'],
+			});
+			assert.deepStrictEqual(JSON.parse(output), { type: 'put', tableId: 7 });
 		});
 	});
 

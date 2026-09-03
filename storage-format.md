@@ -57,6 +57,18 @@ The audit entry data follows the transaction log header and contains the actual 
 - **Present when:** The first byte is `0x42` (66 decimal, which is the first byte of an IEEE 754 double)
 - **Format:** 8-byte IEEE 754 double-precision float
 - **Purpose:** Stores the previous version timestamp for change tracking
+- **Representable range:** `[2^33, 2^49)`. A float64 leads with `0x42` only inside that band, and the
+  leading byte is the field's _only_ presence signal, so a value outside it would be written and then
+  skipped by every reader, shifting every following field by 8 bytes. The writer therefore rejects an
+  unrepresentable value rather than emitting one (harper#2247). Millisecond epoch timestamps sit at
+  roughly `2^40.7`, so the band covers every real log position through the year 19857.
+- **Cross-version contract:** the same leading-byte test decodes this field in harperdb 4.x and is how
+  both versions' replication senders strip it before framing an entry for the wire. It cannot be
+  replaced by a header flag without a coordinated change across all of them.
+- **Entries written before that rule was enforced** carry an unannounced field. The reader recognizes
+  them by a first byte that can begin neither an action nor this field, recovers the following
+  offsets, and exposes the entry without the stray prefix. An action's first byte is never `0x42`,
+  which is what keeps the two distinguishable.
 
 ### Action + Flags
 
@@ -86,15 +98,21 @@ Variable-length integer encoding the operation type and extended type flags.
 
 **Additional Flags (upper bits):**
 
-| Value         | Name                         | Description                         |
-| ------------- | ---------------------------- | ----------------------------------- |
-| 64 (0x40)     | HAS_PREVIOUS_VERSION         | Previous version timestamp included |
-| 128 (0x80)    | HAS_EXTENDED_TYPE            | Extended type information           |
-| 512 (0x200)   | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included       |
-| 1024 (0x400)  | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included      |
-| 2048 (0x800)  | HAS_ORIGINATING_OPERATION    | Originating operation type included |
-| 4096 (0x1000) | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included       |
-| 8192 (0x2000) | HAS_BLOBS                    | Binary blob data included           |
+The extended type must leave the low byte clear (`createAuditEntry` throws on
+`extendedType & 0xff`), so no flag below `0x100` exists here. In particular there is no
+`HAS_PREVIOUS_VERSION` flag in this word: the previous local time announces itself by its own leading
+byte, and it precedes this word, so a reader cannot consult a flag before deciding whether to skip it.
+
+| Value          | Name                         | Description                          |
+| -------------- | ---------------------------- | ------------------------------------ |
+| 256 (0x100)    | HAS_STRUCTURE_UPDATE         | Entry advances the structure set     |
+| 512 (0x200)    | HAS_CURRENT_RESIDENCY_ID     | Current residency ID included        |
+| 1024 (0x400)   | HAS_PREVIOUS_RESIDENCY_ID    | Previous residency ID included       |
+| 2048 (0x800)   | HAS_ORIGINATING_OPERATION    | Originating operation type included  |
+| 4096 (0x1000)  | HAS_EXPIRATION_EXTENDED_TYPE | Expiration timestamp included        |
+| 8192 (0x2000)  | HAS_BLOBS                    | Binary blob data included            |
+| 16384 (0x4000) | HAS_ADDITIONAL_AUDIT_REFS    | Additional audit references included |
+| 32768 (0x8000) | LOCAL_ONLY                   | Never forwarded to replication peers |
 
 ### Variable-Length Integer Encoding
 
@@ -149,8 +167,10 @@ Transaction log keys are timestamps encoded as IEEE 754 doubles:
 - **Format:** 8-byte IEEE 754 double-precision float
 - **Value:** Milliseconds since Unix epoch (Date.now())
 - **Special Values:**
-  - `LAST_TIMESTAMP_PLACEHOLDER`: Reserved placeholder value
-  - `PREVIOUS_TIMESTAMP_PLACEHOLDER`: Reserved placeholder value
+  - `LAST_TIMESTAMP_PLACEHOLDER`: instructed-write directive; lmdb-js substitutes the timestamp at commit
+
+Keys carry the same representability constraint as the previous local time, and for the same reason:
+a numeric key is written as a float64 but read back only when it leads with `0x42`.
 
 ## Size Constraints
 

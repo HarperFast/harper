@@ -4,7 +4,7 @@ import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { convertToMS } from '../utility/common_utils.ts';
-import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE } from './RecordEncoder.ts';
+import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
@@ -116,10 +116,13 @@ const MAX_CLEANUP_DELAY = 2 ** 31 - 1;
 // mint latch keyed per (table, type) so one entry type can't silence another's producer stack
 const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
-// legacy-format latches: one warn per process each, so a range scan over millions of pre-#2247
-// entries cannot turn a recovered read into a log flood
-let warnedRecoveredPrefix = false;
+// legacy-format latches, mirroring the bodyless ones above: a range scan over millions of pre-#2247
+// entries must not turn a recovered read into a log flood. Recovery latches per table (the table is
+// known by then); an undecodable header has no table, so it latches once per process.
+const warnedRecoveredTables = new Set<number>();
 let warnedUndecodableHeader = false;
+// keyed per (table, type) like warnedBodylessMints, so one entry type cannot silence another's stack
+const warnedPendingPreviousVersion = new Set<string>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 
@@ -495,37 +498,40 @@ const EVENT_TYPES = {
  */
 const PREVIOUS_VERSION_FIRST_BYTE = 66;
 /**
- * Which first bytes can begin an action, and so cannot be a previousVersion field. The single-byte
- * form is an EVENT_TYPES value, optionally with HAS_RECORD cleared for a bodyless mint; the extended
- * form is written with setUint32 as `action | extendedType | 0xc0000000`. 0xff is excluded because
- * Decoder.readInt reads it as a five-byte form this writer never emits.
+ * Which first bytes can begin an action, and so cannot be a previousVersion field. Derived from what
+ * the encoding can express, not from the types defined today: nibbles 9-15 are reserved for future
+ * entry types, and a peer one version ahead must keep decoding rather than look corrupt here.
  */
 const ACTION_FIRST_BYTE = new Uint8Array(256);
-for (const type in EVENT_TYPES) {
-	if (Number.isNaN(Number(type))) {
-		const action = EVENT_TYPES[type];
-		ACTION_FIRST_BYTE[action] = 1;
-		ACTION_FIRST_BYTE[action & ~HAS_RECORD] = 1;
-	}
+// single-byte form: the entry type in the low nibble (0 is not a type) plus the two record flags
+for (let firstByte = 1; firstByte <= (HAS_RECORD | HAS_PARTIAL_RECORD | 0xf); firstByte++) {
+	if (firstByte & 0xf) ACTION_FIRST_BYTE[firstByte] = 1;
 }
+// extended form, written as `action | extendedType | 0xc0000000`; 0xff is the five-byte readInt form
 for (let firstByte = 0xc0; firstByte < 0xff; firstByte++) ACTION_FIRST_BYTE[firstByte] = 1;
+let knownActionFlags: number | undefined;
 /**
- * Every bit this version can decode out of an action word. Used only to accept or reject a legacy
- * prefix recovery — never to validate a normally-framed entry, where an unknown future flag must
- * stay forwards-compatible rather than corrupt.
+ * Whether an action word decodes wholly into what this version understands. Consulted only to accept
+ * or reject a legacy prefix recovery — never to validate a normally-framed entry, where an unknown
+ * future flag must stay forwards-compatible rather than corrupt. The mask is built on first use
+ * because HAS_STRUCTURE_UPDATE crosses the RecordEncoder import cycle: read at module scope it
+ * resolves to undefined whenever RecordEncoder is the cycle's entry, silently dropping that bit.
  */
-const KNOWN_ACTION_FLAGS =
-	0xf |
-	HAS_RECORD |
-	HAS_PARTIAL_RECORD |
-	HAS_STRUCTURE_UPDATE |
-	HAS_CURRENT_RESIDENCY_ID |
-	HAS_PREVIOUS_RESIDENCY_ID |
-	HAS_ORIGINATING_OPERATION |
-	HAS_EXPIRATION_EXTENDED_TYPE |
-	HAS_BLOBS |
-	HAS_ADDITIONAL_AUDIT_REFS |
-	LOCAL_ONLY;
+function isDecodableAction(action: number) {
+	knownActionFlags ??=
+		0xf |
+		HAS_RECORD |
+		HAS_PARTIAL_RECORD |
+		HAS_STRUCTURE_UPDATE |
+		HAS_CURRENT_RESIDENCY_ID |
+		HAS_PREVIOUS_RESIDENCY_ID |
+		HAS_ORIGINATING_OPERATION |
+		HAS_EXPIRATION_EXTENDED_TYPE |
+		HAS_BLOBS |
+		HAS_ADDITIONAL_AUDIT_REFS |
+		LOCAL_ONLY;
+	return (action & 0xf) !== 0 && !(action & ~knownActionFlags);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
@@ -601,6 +607,21 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		// absence is stated, not inferred from truthiness: NaN is falsy and would otherwise be
 		// silently dropped rather than rejected below
 		hasPreviousVersion = false;
+	} else if (previousVersion === PENDING_LOCAL_TIME) {
+		// The previous entry's log position is not assigned yet. The superseded code deferred this to
+		// lmdb-js's instructed-write substitution, which resolves to 2.0 whenever no previous time was
+		// recorded — the unreadable entry this guard exists to prevent. A format whose presence signal
+		// is the value's own first byte cannot express "to be filled in at commit", so the back-edge is
+		// dropped rather than gambled on. Not a throw: a pending previous is a legitimate producer
+		// state, unlike a value the format simply cannot hold.
+		hasPreviousVersion = false;
+		if (!warnedPendingPreviousVersion.has(`${tableId}:${type}`)) {
+			warnedPendingPreviousVersion.add(`${tableId}:${type}`);
+			harperLogger.warn(
+				`Audit entry (${type}) for record ${recordId} in table ${tableId} has a pending previous version; recording it without a previous-version link`,
+				new Error('pending audit previousVersion')
+			);
+		}
 	} else {
 		ENTRY_DATAVIEW.setFloat64(start, previousVersion);
 		if (ENTRY_HEADER[start] !== PREVIOUS_VERSION_FIRST_BYTE) {
@@ -732,25 +753,23 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		}
 		const action = decoder.readInt();
 		if (entryStart !== start) {
-			if (EVENT_TYPES[action & 0xf] === undefined || action & ~KNOWN_ACTION_FLAGS) {
-				return corruptEntry(buffer, start, end, firstByte);
-			}
+			if (!isDecodableAction(action)) return corruptEntry(buffer, start, end, firstByte);
 			// 2.0 is what lmdb-js's instructed-write substitution leaves in the slot when no previous
 			// time was recorded, so it is a "no previous version" sentinel rather than a log position.
 			// Any other recovered value is kept: it may be a real back-edge, and dropping it would
 			// truncate the record's history chain.
 			if (previousVersion === 2) previousVersion = undefined;
-			if (!warnedRecoveredPrefix) {
-				warnedRecoveredPrefix = true;
-				warnContained('Audit entry carries an unannounced previousVersion field; recovering its field offsets', {
-					previousVersion,
-					firstByte,
-					entry: Buffer.from(buffer.subarray(start, start + 24)).toString('hex'),
-				});
-			}
 		}
 		const nodeId = decoder.readInt();
 		const tableId = decoder.readInt();
+		if (entryStart !== start && !warnedRecoveredTables.has(tableId)) {
+			warnedRecoveredTables.add(tableId);
+			warnContained('Audit entry carries an unannounced previousVersion field; recovering its field offsets', {
+				tableId,
+				firstByte,
+				previousVersion,
+			});
+		}
 		let length = decoder.readInt();
 		// A corrupt length field (e.g., a 0xff-prefixed uint32) would otherwise push
 		// decoder.position hundreds of megabytes past the buffer; the next readFloat64
@@ -902,7 +921,8 @@ function corruptEntry(buffer: Uint8Array, start: number, end: number | undefined
 		warnedUndecodableHeader = true;
 		warnContained('Audit entry header begins with neither an action nor a previousVersion; treating as corrupt', {
 			firstByte,
-			entry: Buffer.from(buffer.subarray(start, Math.min(start + 24, buffer.byteLength))).toString('hex'),
+			// the 8 prefix bytes plus the action byte: the classifying bytes, stopping before the recordId
+			header: Buffer.from(buffer.subarray(start, Math.min(start + 9, buffer.byteLength))).toString('hex'),
 		});
 	}
 	return createCorruptAuditSentinel(buffer, start, end);
