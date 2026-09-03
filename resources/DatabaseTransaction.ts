@@ -1654,10 +1654,9 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 
 /**
  * Name a chain link still holding its native handle past the reporting threshold, and why the
- * branches below are not reaping it (harper#2471). Attribution only: it reads state, calls nothing
- * with a side effect — `chainStillActive` decays `writeTimeout`, so the chain case is inferred from
- * this link's own re-armed `timeout` rather than by asking — and runs before the branches so it
- * cannot reorder them.
+ * branches below are not reaping it (harper#2471). Attribution only: it reads the recency clocks
+ * those branches maintain rather than calling `chainStillActive`, which would decay `writeTimeout`
+ * as a side effect, and it runs before them so it cannot reorder them.
  */
 function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, monitored: boolean): void {
 	if (!link.transaction || link.handleOpenedAt === 0) return;
