@@ -17,6 +17,9 @@ const MAX_HOLDER_CANDIDATES = 3;
 // enumeration, so its entries expire instead. Far longer than a sweep interval, so a still-live
 // holder keeps its backoff.
 const ATTRIBUTION_STATE_TTL_MS = 3600000;
+// The prune is O(map) and the monitor calls reportLongLivedHolder once per over-threshold transaction
+// per tick, so pruning per call is O(N^2) in exactly the leak this reporting exists to describe.
+const ATTRIBUTION_PRUNE_INTERVAL_MS = 60000;
 
 type RegistryStatusFn = typeof registryStatus;
 let registryStatusFn: RegistryStatusFn | undefined = typeof registryStatus === 'function' ? registryStatus : undefined;
@@ -29,6 +32,9 @@ const attributionReports = new Map<string, ReportState>();
 let sweepTimer: NodeJS.Timeout | undefined;
 let invalidThresholdWarned = false;
 let missingDetailsWarned = false;
+let lastAttributionPruneAt = 0;
+// No threshold observed yet; every real one is 0 or positive.
+let thresholdInEffectMs = -1;
 
 function reportKey(databasePath: string | undefined, nativeId: number): string {
 	return `${databasePath ?? '?'} ${nativeId}`;
@@ -53,6 +59,20 @@ function observeHandle(
 	state.lastAgeMs = ageMs;
 	state.touchedAt = Date.now();
 	return state;
+}
+
+/**
+ * Drop the accrued backoff when the configured threshold changes, so a handle already under
+ * observation is re-measured against the new one. Without this, `nextReportAgeMs` keeps whatever it
+ * was given at first observation: lowering the threshold during an incident would not bring a
+ * silent handle's first report forward, and raising it would not quiet one. Reporting each live
+ * holder once more at the new threshold is what an operator who just changed it is asking for.
+ */
+function rebaseIfThresholdChanged(thresholdMs: number): void {
+	if (thresholdMs === thresholdInEffectMs) return;
+	thresholdInEffectMs = thresholdMs;
+	sweepReports.clear();
+	attributionReports.clear();
 }
 
 /**
@@ -97,16 +117,12 @@ export function getReportThresholdMs(): number {
  */
 export function runLongLivedTransactionSweep(): void {
 	const thresholdMs = getReportThresholdMs();
-	if (thresholdMs === 0 || !registryStatusFn) {
-		// Disabling and re-enabling must not leave a still-live handle sitting behind a backoff ceiling
-		// it accrued before the pause, which would delay its first report after the operator asked for one.
-		if (thresholdMs === 0 && sweepReports.size > 0) sweepReports.clear();
-		return;
-	}
+	rebaseIfThresholdChanged(thresholdMs);
+	if (thresholdMs === 0 || !registryStatusFn) return;
 	try {
 		const status = registryStatusFn();
 		const seen = new Set<string>();
-		const due: { path: string; id: number; ageMs: number; state: ReportState }[] = [];
+		const due: { path: string | undefined; id: number; ageMs: number; state: ReportState }[] = [];
 		let missingDetails = false;
 		for (const database of status) {
 			const details = database.transactionDetails;
@@ -134,7 +150,7 @@ export function runLongLivedTransactionSweep(): void {
 		for (const handle of due.slice(0, MAX_REPORTED_PER_SWEEP)) {
 			markReported(handle.state, handle.ageMs);
 			logger.warn?.(
-				`Long-lived RocksDB transaction handle: id ${handle.id} has been open for ${prettyDuration(handle.ageMs)} on database ${handle.path}. ` +
+				`Long-lived RocksDB transaction handle: id ${handle.id} has been open for ${prettyDuration(handle.ageMs)} on database ${handle.path ?? '?'}. ` +
 					`A handle this old can hold write intents that park other writers' commits, and pins a read snapshot that blocks version reclamation.`
 			);
 		}
@@ -186,12 +202,15 @@ export type LongLivedHolder = {
 export function reportLongLivedHolder(holder: LongLivedHolder): void {
 	try {
 		const thresholdMs = getReportThresholdMs();
-		if (thresholdMs === 0) {
-			if (attributionReports.size > 0) attributionReports.clear();
-			return;
+		rebaseIfThresholdChanged(thresholdMs);
+		if (thresholdMs === 0) return;
+		const now = Date.now();
+		if (now - lastAttributionPruneAt >= ATTRIBUTION_PRUNE_INTERVAL_MS) {
+			lastAttributionPruneAt = now;
+			const expiredBefore = now - ATTRIBUTION_STATE_TTL_MS;
+			for (const [key, state] of attributionReports)
+				if (state.touchedAt < expiredBefore) attributionReports.delete(key);
 		}
-		const expiredBefore = Date.now() - ATTRIBUTION_STATE_TTL_MS;
-		for (const [key, state] of attributionReports) if (state.touchedAt < expiredBefore) attributionReports.delete(key);
 		const state = observeHandle(
 			attributionReports,
 			reportKey(holder.databasePath, holder.nativeId),
@@ -217,39 +236,63 @@ export function reportLongLivedHolder(holder: LongLivedHolder): void {
 }
 
 /**
- * The live handles on `databasePath` that could be holding the write intent a stuck commit is parked
- * on, oldest first, as a sentence to append to that commit's log. Age only ranks them: a coordinated
- * retry parks on whichever transaction holds the verification-table slot when the commit reaches it,
- * which can be younger than the commit itself, so filtering by age could drop the real holder.
+ * The live handles that could be holding the write intent a stuck commit is parked on, as a sentence
+ * to append to that commit's log. A handle on another database is offered too, labelled with its path:
+ * the verification table is one process-global slot array whose hash mixes in the database id, so a
+ * holder in `system` or `oauth` collides with — and parks — a `data` commit at the same rate two `data`
+ * keys do. Rank puts the stuck commit's own database first, then age. Age only ranks: a coordinated
+ * retry parks on whichever transaction holds the slot when the commit reaches it, which can be younger
+ * than the commit itself, so filtering by age could drop the real holder.
  * Returns '' rather than throwing — the caller's own 503 must survive a failure here.
  */
 export function describeHolderCandidates(
 	databasePath: string | undefined,
 	excludeNativeId: number | undefined
 ): string {
-	if (!databasePath || !registryStatusFn) return '';
+	// Honors the disable value for the same reason the other two surfaces do: an operator who set the
+	// threshold to 0 asked for no reporting, and this surface is reached from the write path.
+	if (!databasePath || !registryStatusFn || getReportThresholdMs() === 0) return '';
 	try {
 		const target = resolve(databasePath);
-		const entry = registryStatusFn().find((database) => resolve(database.path) === target);
-		const details = entry?.transactionDetails;
-		if (!details) {
+		const candidates: { id: number; ageMs: number; sameDatabase: boolean; path: string | undefined }[] = [];
+		let targetSeen = false;
+		let targetHasDetails = false;
+		for (const database of registryStatusFn()) {
+			// An entry with no path can never be the target, and resolve() would throw on it — which,
+			// inside this loop, would drop the candidate list for every database rather than just this one.
+			const sameDatabase = database.path != null && resolve(database.path) === target;
+			const details = database.transactionDetails;
+			if (sameDatabase) {
+				targetSeen = true;
+				if (details) targetHasDetails = true;
+			}
+			if (!details) continue;
+			for (const handle of details)
+				if (!sameDatabase || handle.id !== excludeNativeId)
+					candidates.push({ id: handle.id, ageMs: handle.ageMs, sameDatabase, path: database.path });
+		}
+		if (!targetHasDetails) {
 			// A database with no other handles is normal; no entry at all means the join between a store's
 			// path and the registry's path has drifted, which is the one worth telling an operator apart.
 			logger.debug?.(
-				entry
-					? `Registry entry for ${target} exposes no transactionDetails; cannot offer holder candidates for its stuck commit`
-					: `No registry entry for ${target}; cannot offer holder candidates for its stuck commit`
+				targetSeen
+					? `Registry entry for ${target} exposes no transactionDetails; only other databases' handles can be offered as holder candidates for its stuck commit`
+					: `No registry entry for ${target}; only other databases' handles can be offered as holder candidates for its stuck commit`
 			);
-			return '';
 		}
-		const candidates = details.filter((handle) => handle.id !== excludeNativeId).sort((a, b) => b.ageMs - a.ageMs);
 		if (candidates.length === 0) return '';
+		candidates.sort((a, b) => Number(b.sameDatabase) - Number(a.sameDatabase) || b.ageMs - a.ageMs);
 		const named = candidates
 			.slice(0, MAX_HOLDER_CANDIDATES)
-			.map((handle) => `${handle.id} (open ${prettyDuration(handle.ageMs)})`)
+			.map(
+				(candidate) =>
+					`${candidate.id} (open ${prettyDuration(candidate.ageMs)}${candidate.sameDatabase ? '' : ` on ${candidate.path ?? '?'}`})`
+			)
 			.join(', ');
 		return (
-			` Live transaction handles on this database, any of which could hold the write intent this commit is parked on, oldest first: ${named}` +
+			` Live transaction handles, any of which could hold the write intent this commit is parked on ` +
+			`(the verification table is one process-global slot array, so a handle on another database can hold it), ` +
+			`this database first, oldest first: ${named}` +
 			(candidates.length > MAX_HOLDER_CANDIDATES ? `, and ${candidates.length - MAX_HOLDER_CANDIDATES} more.` : '.')
 		);
 	} catch {
@@ -268,6 +311,8 @@ export function resetLongLivedTransactionReportsForTests(): void {
 	attributionReports.clear();
 	invalidThresholdWarned = false;
 	missingDetailsWarned = false;
+	lastAttributionPruneAt = 0;
+	thresholdInEffectMs = -1;
 	if (sweepTimer) {
 		clearInterval(sweepTimer);
 		sweepTimer = undefined;

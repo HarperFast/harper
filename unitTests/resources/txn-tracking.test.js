@@ -453,7 +453,7 @@ describe('Write txn timeout', () => {
 			assert.match(reported[0][0], /IndexedTxnTable/);
 			assert.match(reported[0][0], /transaction \d+/, 'the native id is the join key with the registry sweep');
 			// Attribution must not have changed the exemption it is reporting on.
-			assert.equal((await IndexedResource.get(402))?.t, 8, 'source-apply write should still be preserved');
+			assert.strictEqual((await IndexedResource.get(402))?.t, 8, 'source-apply write should still be preserved');
 		} finally {
 			logger.warn = originalWarn;
 			env.setProperty(CONFIG_PARAMS.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD, originalThreshold);

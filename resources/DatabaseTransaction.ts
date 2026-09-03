@@ -1631,7 +1631,11 @@ export class DatabaseTransaction implements Transaction {
 				`Abandoning a write transaction: its commit has been in write-intent conflict for ${elapsed}ms ` +
 					`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
 					describeCommitIdentity(this.writes[0]?.store, this.startedFrom, headTransaction) +
-					`. Another transaction holds a conflicting write intent and has not completed; the request is ` +
+					`.` +
+					// The same holder line checkOverloaded() gets: this is the other place a commit parked on
+					// someone else's write intent is reported, and the holder is what an operator needs named.
+					describeHolderCandidates(this.writes[0]?.store?.rootStore?.path, headTransaction?.id) +
+					` Another transaction holds a conflicting write intent and has not completed; the request is ` +
 					`failed with a 503${retryable ? '' : ' (not retryable — an earlier store in this transaction already committed)'} ` +
 					`rather than waiting further.`
 			);
@@ -1922,41 +1926,54 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 }
 
 /**
- * Name a transaction still holding its native handle past the reporting threshold, and why the
+ * Name a chain link still holding its native handle past the reporting threshold, and why the
  * branches below are not reaping it (harper#2471). Attribution only: it reads state, calls nothing
  * with a side effect — `chainStillActive` decays `writeTimeout`, so the chain case is inferred from
  * this link's own re-armed `timeout` rather than by asking — and runs before the branches so it
  * cannot reorder them.
  */
-function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void {
-	if (thresholdMs === 0 || !txn.transaction || txn.handleOpenedAt === 0) return;
-	const ageMs = performance.now() - txn.handleOpenedAt;
+function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number): void {
+	if (!link.transaction || link.handleOpenedAt === 0) return;
+	const ageMs = performance.now() - link.handleOpenedAt;
 	if (ageMs < thresholdMs) return;
 	const states: string[] = [];
-	if (txn.sourceApply) states.push('source-apply');
-	if (txn.isReplay) states.push('replay');
-	if (txn.committing) states.push('commit-phase');
-	if (txn.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
+	if (link.sourceApply) states.push('source-apply');
+	if (link.isReplay) states.push('replay');
+	if (link.committing) states.push('commit-phase');
+	if (link.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
 	// A transaction that keeps writing (or a chain link whose sibling does) re-arms its own idle
 	// limit indefinitely and so never reaches the over-limit branches at all.
-	if (txn.timeout > 0) states.push('active');
+	if (link.timeout > 0) states.push('active');
 	if (states.length === 0) states.push('over-limit');
 	reportLongLivedHolder({
-		databasePath: (txn.db as any)?.rootStore?.path,
-		nativeId: txn.transaction.id,
+		databasePath: (link.db as any)?.rootStore?.path,
+		nativeId: link.transaction.id,
 		ageMs,
-		databaseName: (txn.db as any)?.rootStore?.databaseName,
-		tableName: (txn.db as any)?.name,
+		databaseName: (link.db as any)?.rootStore?.databaseName,
+		tableName: (link.db as any)?.name,
+		// This link's own writes, not the chain's: the count is reported beside this link's native id,
+		// which is the id the registry sweep names and the only one it can be joined to.
 		countPendingWrites: () => {
 			let pendingWrites = 0;
-			for (let link: DatabaseTransaction = txn; link; link = link.next)
-				for (const write of link.writes) if (write) pendingWrites++;
+			for (const write of link.writes) if (write) pendingWrites++;
 			return pendingWrites;
 		},
 		states,
-		timeoutBudget: txn.timeoutBudget,
-		startedFrom: txn.startedFrom,
+		timeoutBudget: link.timeoutBudget,
+		startedFrom: link.startedFrom,
 	});
+}
+
+/**
+ * Report every link of this logical transaction that holds its own native handle. A blind write to a
+ * second database attaches a handle to a `.next` link while only the root is supervised, so reporting
+ * the entry alone names an id the sweep's line can never be joined to when the child is the holder.
+ * Links that read are in `trackedTxns` and get their own visit from the tick.
+ */
+function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void {
+	if (thresholdMs === 0) return;
+	for (let link: DatabaseTransaction = txn; link; link = link.next)
+		if (link === txn || !trackedTxns.has(link)) reportLongLivedLink(link, thresholdMs);
 }
 
 function startMonitoringTxns() {
