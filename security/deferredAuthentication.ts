@@ -60,7 +60,8 @@ export function getDeferredCredentialRejection(request: any): DeferredCredential
  *
  * Owner-specific error mapping must not run first. REST renders a thrown error as an RFC 9457
  * Problem Details document and GraphQL as `{errors:[…]}` rather than authentication's negotiated
- * `{error: message}` response.
+ * `{error: message}` response. `security/auth.ts` likewise leaves a settled rejection's status and
+ * challenge headers alone, so it stays byte-identical to the in-line 401 it replaced.
  *
  * Returns `undefined` when nothing was deferred, so a caller can `return settled ?? …` inline.
  */
@@ -73,9 +74,8 @@ export function settleDeferredCredentialRejection(
 	const contentType = (request?.headers ? findBestSerializer(request).type : undefined) ?? 'application/json';
 	return {
 		status: deferred.status,
-		// A real Headers, not a plain object: the authentication middleware's own 401 post-processing
-		// calls `response.headers.set()` (WWW-Authenticate, or a Location when a login page is
-		// configured) on whatever an owning layer returns, and a plain object has no `set`.
+		// A real Headers, not a plain object: authentication stamps the #1565 identity floor onto
+		// whatever an owning layer returns, and the HTTP bridges read it back through `get`.
 		headers: new Headers({ 'Content-Type': contentType }),
 		body: serializeMessage({ error: deferred.message }, request) as string | Buffer,
 	};

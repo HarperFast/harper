@@ -18,7 +18,13 @@ import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
-import { appendHeader, Headers, mergeChainHeadersIntoFallback, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
+import {
+	appendHeader,
+	bridgeChainHeadersToNodeResponse,
+	Headers,
+	mergeChainHeadersIntoFallback,
+	toWriteHeadHeaders,
+} from './serverHelpers/Headers.ts';
 import {
 	decodeProxyHeader,
 	applyProxyHeader,
@@ -679,9 +685,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
 					// to interact with a node HTTP server object.
-					for (const headerPair of response.headers || []) {
-						nodeResponse.setHeader(headerPair[0], headerPair[1]);
-					}
+					bridgeChainHeadersToNodeResponse(response.headers, nodeResponse);
 					nodeRequest.baseRequest = request;
 					nodeResponse.baseResponse = response;
 					return httpServers[port].emit('unhandled', nodeRequest, nodeResponse);

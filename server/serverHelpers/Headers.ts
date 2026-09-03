@@ -214,3 +214,63 @@ export function mergeChainHeadersIntoFallback<
 	}
 	return finalHeaders;
 }
+
+/**
+ * Presents a Node `ServerResponse`'s live header set through the Headers-like surface
+ * `mergeChainHeadersIntoFallback` and `addVaryHeader` expect.
+ */
+function nodeResponseHeaders(nodeResponse: any) {
+	return {
+		get: (name: string) => nodeResponse.getHeader(name),
+		set: (name: string, value: any) => nodeResponse.setHeader(name, value),
+		has: (name: string) => nodeResponse.hasHeader(name),
+		append: (name: string, value: any, commaDelimited?: boolean) => {
+			const existing = nodeResponse.getHeader(name);
+			if (existing == null) return nodeResponse.setHeader(name, value);
+			if (commaDelimited)
+				return nodeResponse.setHeader(name, (Array.isArray(existing) ? existing.join(', ') : existing) + ', ' + value);
+			return nodeResponse.setHeader(name, Array.isArray(existing) ? [...existing, value] : [existing, value]);
+		},
+	};
+}
+
+/** `writeHead` accepts a flat `[name, value, …]` array, a `[name, value][]` array, or an object. */
+function applyWriteHeadHeaders(nodeResponse: any, headers: any): void {
+	if (Array.isArray(headers)) {
+		if (Array.isArray(headers[0])) {
+			for (const [name, value] of headers) nodeResponse.setHeader(name, value);
+		} else {
+			for (let i = 0; i + 1 < headers.length; i += 2) nodeResponse.setHeader(headers[i], headers[i + 1]);
+		}
+		return;
+	}
+	for (const name of Object.keys(headers)) {
+		const value = headers[name];
+		if (value != null) nodeResponse.setHeader(name, value);
+	}
+}
+
+/**
+ * Node's counterpart to the Bun and uWS fallback bridges: the chain's headers go onto the
+ * `ServerResponse` before legacy Fastify runs, so a Fastify route that sets `Cache-Control` or `Vary`
+ * replaces them outright and can make a credential-dependent response shared-cacheable (#1565).
+ * Reconciliation therefore runs at `writeHead` — the last point the header set is still mutable, and
+ * the one Node also routes implicit headers through — using the same policy as the other two bridges.
+ */
+export function bridgeChainHeadersToNodeResponse(chainHeaders: any, nodeResponse: any): void {
+	if (!chainHeaders?.[Symbol.iterator]) return;
+	for (const [name, value] of chainHeaders) nodeResponse.setHeader(name, value);
+	const originalWriteHead = nodeResponse.writeHead;
+	nodeResponse.writeHead = function (statusCode: number, statusMessage?: any, headers?: any) {
+		if (this.headersSent) return originalWriteHead.apply(this, arguments as any);
+		if (statusMessage != null && typeof statusMessage !== 'string') {
+			headers = statusMessage;
+			statusMessage = undefined;
+		}
+		if (headers) applyWriteHeadHeaders(this, headers);
+		mergeChainHeadersIntoFallback(chainHeaders, nodeResponseHeaders(this));
+		return statusMessage === undefined
+			? originalWriteHead.call(this, statusCode)
+			: originalWriteHead.call(this, statusCode, statusMessage);
+	};
+}

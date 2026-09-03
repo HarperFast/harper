@@ -19,7 +19,10 @@ import { forComponent as loggerForComponent } from '../utility/logging/harper_lo
 import { EventEmitter } from 'events';
 import { verifyCertificate } from '../security/certificateVerification/index.ts';
 import { registerShutdownDrain } from '../components/shutdownDrain.ts';
-import { getDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
+import {
+	assertNoDeferredCredentialRejection,
+	getDeferredCredentialRejection,
+} from '../security/deferredAuthentication.ts';
 
 /** RFC 6455 private-use close code Harper already maps HTTP 401 to (see server/REST.ts). */
 const WEBSOCKET_UNAUTHORIZED_CLOSE_CODE = 3000;
@@ -70,21 +73,31 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					return next(ws, request, chainCompletion);
 				}
 
-				// Reject any credential rejection already recorded before MQTT session initialization.
-				const deferred = getDeferredCredentialRejection(request);
-				if (deferred) {
-					return ws.close(WEBSOCKET_UNAUTHORIZED_CLOSE_CODE, deferred.message);
-				}
-
 				emitEvent('connection', ws);
 				mqttLog.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
+				// Both WebSocket entry points invoke this listener synchronously with the HTTP chain still
+				// pending (server/http.ts), so authentication has not recorded a credential rejection yet.
+				// It settles on the same promise the session principal comes from, which onSocket awaits
+				// before it processes any packet — the handlers below still attach synchronously, so no
+				// frame that arrives in the meantime is dropped.
+				const authenticated = Promise.resolve(chainCompletion).then(() => {
+					assertNoDeferredCredentialRejection(request);
+					return request?.user;
+				});
+				authenticated.catch((error) => {
+					mqttLog.info?.('Closing MQTT WebSocket connection, authentication was rejected', error);
+					ws.close(
+						WEBSOCKET_UNAUTHORIZED_CLOSE_CODE,
+						getDeferredCredentialRejection(request)?.message ?? 'Unauthorized'
+					);
+				});
 				const { onMessage, onClose } = onSocket(
 					ws,
 					(message) => {
 						ws.send(message);
 					},
 					request,
-					Promise.resolve(chainCompletion).then(() => request?.user),
+					authenticated,
 					mqttSettings
 				);
 				ws.on('message', onMessage);

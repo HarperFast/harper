@@ -389,16 +389,22 @@ export async function authentication(request, nextHandler) {
 		if (!response) return response;
 		if (response.status === 401) {
 			wasUnauthorized = true;
-			if (
-				headers['user-agent']?.startsWith('Mozilla') &&
-				headers.accept?.startsWith('text/html') &&
-				resources.loginPath
-			) {
-				// on the web if we have a login page, default to redirecting to it
-				response.status = 302;
-				response.headers.set('Location', resources.loginPath(request));
-			} // the HTTP specified way of indicating HTTP authentication methods supported:
-			else response.headers.set('WWW-Authenticate', 'Basic');
+			// A deferred rejection means this 401 came from downstream, not from the in-line rejection
+			// this middleware used to answer with. Harper's settled rejection has to stay wire-identical
+			// to that in-line 401 (which returned before any of this ran), and a 401 an application
+			// catch-all raised is that application's own challenge for its own scheme.
+			if (!getDeferredCredentialRejection(request)) {
+				if (
+					headers['user-agent']?.startsWith('Mozilla') &&
+					headers.accept?.startsWith('text/html') &&
+					resources.loginPath
+				) {
+					// on the web if we have a login page, default to redirecting to it
+					response.status = 302;
+					response.headers.set('Location', resources.loginPath(request));
+				} // the HTTP specified way of indicating HTTP authentication methods supported:
+				else response.headers.set('WWW-Authenticate', 'Basic');
+			}
 		}
 		return applyResponseHeaders(response);
 	} catch (error) {

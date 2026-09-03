@@ -15,6 +15,7 @@ const { Headers } = require('#src/server/serverHelpers/Headers');
 const { credentialRejectionError, settleDeferredCredentialRejection } = require('#src/security/deferredAuthentication');
 const { ClientError, ServerError } = require('#src/utility/errors/hdbError');
 const serverModule = require('#src/server/Server');
+const resourcesModule = require('#src/resources/Resources');
 const tokenAuthentication = require('#src/security/tokenAuthentication');
 const { authentication } = require('#src/security/auth');
 
@@ -78,9 +79,13 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		};
 	}
 
+	/** When set, the catch-all answers with this instead of its default 200. */
+	let catchAllResponse;
+
 	/** The application's own middleware, mounted after `rest`, applying its own auth scheme. */
 	function applicationCatchAll(request) {
 		trace.push('catch-all');
+		if (catchAllResponse) return catchAllResponse();
 		return {
 			status: 200,
 			headers: new Headers(),
@@ -135,11 +140,23 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		tokenAuthentication.validateRefreshToken = originalValidateRefreshToken;
 	});
 
+	// `resources.loginPath` is read by authentication's 401 rewriting; the registry is a live binding
+	// that only exists once something has built it.
+	before(() => {
+		if (!resourcesModule.resources) resourcesModule.resetResources();
+	});
+
 	beforeEach(() => {
 		trace = [];
 		ownedPaths = new Set([HARPER_OWNED, HARPER_OWNED_PUBLIC]);
 		knownUsers = new Map([['harper_admin:harper-pw', { username: 'harper_admin', role: { permission: {} } }]]);
 		getUserFault = undefined;
+		catchAllResponse = undefined;
+		delete resourcesModule.resources.loginPath;
+	});
+
+	afterEach(() => {
+		delete resourcesModule.resources.loginPath;
 	});
 
 	it('resolves the chain as authentication -> rest -> application catch-all', async () => {
@@ -428,5 +445,103 @@ describe('deferred credential rejection through the app-port middleware chain', 
 		const { response } = await send(APP_OWNED, undefined);
 
 		assert.strictEqual(response.headers?.get?.('Cache-Control') ?? null, null);
+	});
+	describe('401 post-processing ownership', () => {
+		// `security/auth.ts` rewrites any 401 that comes back up the chain: it overwrites
+		// `WWW-Authenticate` with `Basic`, or turns the 401 into a 302 to Harper's login page for a
+		// browser. Before deferral existed a rejected credential returned in line and never reached
+		// that code, and a rejected credential never reached an application catch-all at all.
+
+		/** A browser request: the exact shape that triggers the login-page rewrite. */
+		const BROWSER = {
+			'user-agent': 'Mozilla/5.0 (Macintosh)',
+			'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+		};
+
+		function browserRequestExtra(authorization) {
+			const headerObject = { ...BROWSER };
+			if (authorization) headerObject.authorization = authorization;
+			return {
+				headers: { asObject: headerObject, get: (name) => headerObject[name.toLowerCase()] },
+			};
+		}
+
+		async function sendBrowser(pathname, authorization) {
+			const request = makeRequest(pathname, authorization, browserRequestExtra(authorization));
+			const response = await chain(request);
+			return { request, response };
+		}
+
+		it("leaves an application catch-all's own 401 challenge untouched", async () => {
+			// The Woo/WordPress case the issue is about: the application owns the route, applies its own
+			// scheme, and answers with its own challenge. Harper must not rewrite it to `Basic`.
+			catchAllResponse = () => ({
+				status: 401,
+				headers: new Headers({ 'WWW-Authenticate': 'Basic realm="WooCommerce", charset="UTF-8"' }),
+				body: JSON.stringify({ code: 'woocommerce_rest_authentication_error' }),
+			});
+
+			const { response } = await send(APP_OWNED, WORDPRESS_BASIC);
+
+			assert.deepStrictEqual(trace, ['catch-all']);
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic realm="WooCommerce", charset="UTF-8"');
+		});
+
+		it("does not redirect a browser to Harper's login page over an application-owned 401", async () => {
+			resourcesModule.resources.loginPath = () => '/login';
+			catchAllResponse = () => ({
+				status: 401,
+				headers: new Headers({ 'WWW-Authenticate': 'Bearer realm="woo"' }),
+				body: JSON.stringify({ code: 'woocommerce_rest_authentication_error' }),
+			});
+
+			const { response } = await sendBrowser(APP_OWNED, WORDPRESS_BASIC);
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(response.headers.get('Location') ?? null, null);
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Bearer realm="woo"');
+		});
+
+		it('still applies the identity floor to an application-owned 401', async () => {
+			// Suppressing the rewrite must not also suppress #1565: the response was produced under the
+			// credential Harper passed through.
+			catchAllResponse = () => ({ status: 401, headers: new Headers(), body: '{}' });
+
+			const { response } = await send(APP_OWNED, WORDPRESS_BASIC);
+
+			assert.strictEqual(response.headers.get('Cache-Control'), 'private, no-cache');
+			assert.ok(response.headers.get('Vary').includes('Authorization'));
+		});
+
+		it('keeps a settled Harper-owned rejection wire-identical to the in-line 401 it replaced', async () => {
+			resourcesModule.resources.loginPath = () => '/login';
+
+			const { response } = await sendBrowser(HARPER_OWNED, WORDPRESS_BASIC);
+
+			// The pre-deferral middleware returned this directly from its own catch: status 401, the
+			// `{error}` envelope, and no challenge or login redirect bolted on afterwards.
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(response.headers.get('Location') ?? null, null);
+			assert.strictEqual(response.headers.get('WWW-Authenticate') ?? null, null);
+			assert.deepStrictEqual(JSON.parse(response.body), { error: 'Login failed' });
+		});
+
+		it('still redirects a browser with no credentials at all to the login page', async () => {
+			// The control: nothing was deferred, so Harper's own 401 handling is unchanged.
+			resourcesModule.resources.loginPath = () => '/login';
+
+			const { response } = await sendBrowser(HARPER_OWNED, undefined);
+
+			assert.strictEqual(response.status, 302);
+			assert.strictEqual(response.headers.get('Location'), '/login');
+		});
+
+		it('still challenges an uncredentialed non-browser 401 with WWW-Authenticate', async () => {
+			const { response } = await send(HARPER_OWNED, undefined);
+
+			assert.strictEqual(response.status, 401);
+			assert.strictEqual(response.headers.get('WWW-Authenticate'), 'Basic');
+		});
 	});
 });

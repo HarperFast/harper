@@ -1,15 +1,16 @@
 'use strict';
 
 /**
- * The Bun and uWS adapters hand a request the middleware chain declined (`status: -1`) to legacy
- * Fastify and build their response headers from Fastify's reply. Node does not lose the chain's
- * headers on that path — it copies them onto the `ServerResponse` before emitting 'unhandled'. The
- * identity floor authentication stamps on a
- * credential-dependent response (`Cache-Control: private, no-cache`, `Vary: Authorization, Cookie`
- * — #1565) has to survive both fallbacks.
+ * All three adapters hand a request the middleware chain declined (`status: -1`) to legacy Fastify.
+ * Bun and uWS build their response headers from Fastify's reply; Node hands Fastify the same
+ * `ServerResponse` the chain's headers were copied onto, so a Fastify route that sets `Cache-Control`
+ * or `Vary` replaces them outright. The identity floor authentication stamps on a credential-dependent
+ * response (`Cache-Control: private, no-cache`, `Vary: Authorization, Cookie` — #1565) has to survive
+ * all three.
  *
- * These drive the real adapters (`makeUwsHandler`, `bunDelegateToNodeServer`) against a stub Fastify
- * instance, not a re-implementation of their header assembly.
+ * These drive the real adapters (`makeUwsHandler`, `bunDelegateToNodeServer`,
+ * `bridgeChainHeadersToNodeResponse`) against a stub Fastify instance for the first two and a real
+ * Fastify app over a real `http.Server` for Node, not a re-implementation of their header assembly.
  */
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -24,7 +25,13 @@ const {
 	registerFallbackServer,
 	registerFastifyInstance,
 } = require('#src/server/http');
-const { Headers, mergeChainHeadersIntoFallback } = require('#src/server/serverHelpers/Headers');
+const {
+	bridgeChainHeadersToNodeResponse,
+	Headers,
+	mergeChainHeadersIntoFallback,
+} = require('#src/server/serverHelpers/Headers');
+const http = require('node:http');
+const Fastify = require('fastify');
 
 const UWS_PORT = 19430;
 const BUN_PORT = 19431;
@@ -191,6 +198,129 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 
 			assert.strictEqual(response.headers.get('cache-control'), 'max-age=600');
 			assert.strictEqual(response.headers.get('vary'), null);
+		});
+	});
+
+	describe('Node adapter', () => {
+		/**
+		 * The production shape of `server/http.ts`'s `status === -1` branch: the chain's headers go onto
+		 * the `ServerResponse`, then legacy Fastify writes the response through that same object.
+		 */
+		async function requestThroughFastify(chainHeaders, defineRoutes) {
+			const fastify = Fastify();
+			defineRoutes(fastify);
+			await fastify.ready();
+			const server = http.createServer((nodeRequest, nodeResponse) => {
+				bridgeChainHeadersToNodeResponse(chainHeaders, nodeResponse);
+				fastify.routing(nodeRequest, nodeResponse);
+			});
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			try {
+				const { port } = server.address();
+				return await new Promise((resolve, reject) => {
+					const request = http.get({ host: '127.0.0.1', port, path: '/wp-json/wc/v3/products' }, (response) => {
+						response.resume();
+						response.on('end', () => resolve(response));
+					});
+					request.on('error', reject);
+				});
+			} finally {
+				server.close();
+				await fastify.close();
+			}
+		}
+
+		it('re-applies the private scope over a Fastify route that replaced Cache-Control', async () => {
+			const response = await requestThroughFastify(identityFloorHeaders(), (fastify) => {
+				fastify.get('/wp-json/wc/v3/products', (_request, reply) =>
+					reply.header('Cache-Control', 'max-age=600, must-revalidate').send('{}')
+				);
+			});
+
+			assert.strictEqual(response.headers['cache-control'], 'max-age=600, must-revalidate, private');
+		});
+
+		it('unions Vary with a Fastify route that replaced it', async () => {
+			const response = await requestThroughFastify(identityFloorHeaders(), (fastify) => {
+				fastify.get('/wp-json/wc/v3/products', (_request, reply) => reply.header('Vary', 'Accept-Encoding').send('{}'));
+			});
+
+			for (const token of ['Accept-Encoding', 'Authorization', 'Cookie']) {
+				assert.ok(
+					response.headers.vary.includes(token),
+					`Vary should include ${token}, got '${response.headers.vary}'`
+				);
+			}
+		});
+
+		it('keeps the floor intact when the Fastify route sets neither header', async () => {
+			const response = await requestThroughFastify(identityFloorHeaders(), (fastify) => {
+				fastify.get('/wp-json/wc/v3/products', (_request, reply) => reply.send('{}'));
+			});
+
+			assert.strictEqual(response.headers['cache-control'], 'private, no-cache');
+			assert.strictEqual(response.headers.vary, 'Authorization, Cookie');
+		});
+
+		it("honours a Fastify route's explicit shared-cache opt-in", async () => {
+			const response = await requestThroughFastify(identityFloorHeaders(), (fastify) => {
+				fastify.get('/wp-json/wc/v3/products', (_request, reply) =>
+					reply.header('Cache-Control', 'public, max-age=600').send('{}')
+				);
+			});
+
+			assert.strictEqual(response.headers['cache-control'], 'public, max-age=600');
+		});
+
+		it('carries the chain headers Fastify did not set, without overriding those it did', async () => {
+			const chainHeaders = identityFloorHeaders();
+			chainHeaders.set('Access-Control-Allow-Origin', 'https://shop.example');
+			const response = await requestThroughFastify(chainHeaders, (fastify) => {
+				fastify.get('/wp-json/wc/v3/products', (_request, reply) =>
+					reply.header('Content-Type', 'application/json').send('{}')
+				);
+			});
+
+			assert.strictEqual(response.headers['access-control-allow-origin'], 'https://shop.example');
+			assert.ok(response.headers['content-type'].startsWith('application/json'));
+		});
+
+		it('reconciles a response written without an explicit writeHead', async () => {
+			// Node generates headers implicitly through `writeHead` on `end()`, so a fallback that never
+			// calls it explicitly still has to pass through the same policy.
+			const chainHeaders = identityFloorHeaders();
+			const server = http.createServer((nodeRequest, nodeResponse) => {
+				bridgeChainHeadersToNodeResponse(chainHeaders, nodeResponse);
+				nodeResponse.setHeader('Cache-Control', 'max-age=600');
+				nodeResponse.end('{}');
+			});
+			await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+			try {
+				const { port } = server.address();
+				const response = await new Promise((resolve, reject) => {
+					http
+						.get({ host: '127.0.0.1', port, path: '/' }, (res) => {
+							res.resume();
+							res.on('end', () => resolve(res));
+						})
+						.on('error', reject);
+				});
+
+				assert.strictEqual(response.headers['cache-control'], 'max-age=600, private');
+			} finally {
+				server.close();
+			}
+		});
+
+		it('leaves a response alone when the chain produced no headers', async () => {
+			const response = await requestThroughFastify(new Headers(), (fastify) => {
+				fastify.get('/wp-json/wc/v3/products', (_request, reply) =>
+					reply.header('Cache-Control', 'max-age=600').send('{}')
+				);
+			});
+
+			assert.strictEqual(response.headers['cache-control'], 'max-age=600');
+			assert.strictEqual(response.headers.vary, undefined);
 		});
 	});
 

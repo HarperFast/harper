@@ -264,7 +264,7 @@ Any layer that establishes Harper owns the route then settles the deferred state
 | `REST.ts` WebSocket handler             | after `resources.getMatch(url, 'ws')` succeeds                     |
 | `graphqlQuerying.ts`                    | after the `/graphql` prefix match, ahead of its error mapping      |
 | `static.ts`                             | after a static file entry matches                                  |
-| `mqtt.ts` WebSocket handler             | after the `mqtt` subprotocol claims the socket                     |
+| `mqtt.ts` WebSocket handler             | once the pending HTTP chain settles, before the first packet       |
 | `components/mcp/adapters/harperHttp.ts` | after the WebSocket hand-off, before the body is read              |
 
 **Every Harper-owned handler registered `after: 'authentication'` owes this settlement**, because
@@ -278,7 +278,11 @@ in the request's negotiated content type. That matters because an owner's own er
 that contract — REST renders a thrown error as an RFC 9457 Problem Details document and GraphQL as
 `{errors:[{message}]}` — and a rejected credential never reached either before deferral existed.
 `assertNoDeferredCredentialRejection()` is the throwing form, for a WebSocket upgrade that has no
-descriptor to return. The deferred status is pinned to 401 regardless of the underlying error's own
+descriptor to return. A WebSocket owner cannot read the state synchronously: `server/http.ts` starts
+`httpChain[port](request)` and invokes the WebSocket chain with the still-pending completion, so
+authentication has not yet classified the credential. `mqtt.ts` therefore settles on that promise —
+the same one the session's principal resolves from — and closes the socket from its rejection, while
+its frame handlers still attach synchronously. The deferred status is pinned to 401 regardless of the underlying error's own
 status, so a 403 `token expired` reads exactly as it did before. A Harper-owned route therefore behaves identically to the pre-deferral
 build, protected or public: an unknown credential can never buy access an anonymous caller would
 have received, and can never reach an application catch-all. Only a URL that reached
@@ -287,15 +291,29 @@ have received, and can never reach an application catch-all. Only a URL that rea
 The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
 header, no credential rename, and no pre-auth stripping shim.
 
+**Authentication does not re-decorate a 401 it did not raise.** `security/auth.ts` post-processes any
+401 coming back up the chain — overwriting `WWW-Authenticate` with `Basic`, or rewriting the status to
+a 302 at `resources.loginPath` for a browser. The in-line rejection deferral replaced returned before
+that code, so a settled rejection must skip it to stay wire-identical; and a 401 an application
+catch-all raised for its own scheme (a WooCommerce or Bearer challenge) is that application's to make.
+Both cases are keyed on the deferred state, so a request that deferred nothing keeps the existing
+behavior exactly. The #1565 identity floor still applies either way — it is stamped in
+`applyResponseHeaders`, not in the challenge rewriting.
+
 **The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a
 deferred credential is credential-dependent (#1565), so `authentication` stamps
-`Cache-Control: private, no-cache` and `Vary: Authorization, Cookie` on it. When the chain declines
-a request (`status: -1`), Node carries those onto the `ServerResponse` before emitting `unhandled`,
-but the Bun and uWS adapters used to rebuild their headers solely from Fastify's reply and drop
-them. Before deferral an unrecognized credential could not reach a fallback at all, so this was
-unreachable; now both adapters merge through `Headers.ts → mergeChainHeadersIntoFallback()` —
-Fastify wins every header it set, `Vary` is unioned, and the private scope is re-applied unless the
-final response explicitly opts into shared caching (`public`/`s-maxage`).
+`Cache-Control: private, no-cache` and `Vary: Authorization, Cookie` on it. Before deferral an
+unrecognized credential could not reach a fallback at all, so this was unreachable. All three adapters
+now reconcile through one policy, `Headers.ts → mergeChainHeadersIntoFallback()`: Fastify wins every
+header it set, `Vary` is unioned, and the private scope is re-applied unless the final response
+explicitly opts into shared caching (`public`/`s-maxage`).
+
+Bun and uWS rebuild their headers from Fastify's reply and merge once. Node hands Fastify the same
+`ServerResponse` the chain's headers were copied onto, so copying is not enough — a route calling
+`reply.header('Cache-Control', …)` replaces the floor outright and can make a credential-dependent
+response shared-cacheable. `bridgeChainHeadersToNodeResponse()` therefore runs the same merge from a
+`writeHead` interception, the last point the header set is still mutable and the one Node also routes
+implicit headers through.
 
 ### Response Cache-Control / Vary policy (#1518, #1565)
 
