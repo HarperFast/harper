@@ -13,7 +13,7 @@ import {
 	unlinkSync,
 	writeSync,
 } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readdir, rmdir, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
@@ -373,12 +373,45 @@ export function fsyncDropRemovals(dbPath: string, blobRoots: string[]): void {
 export async function removeDroppedDatabaseFiles(
 	dbPath: string,
 	blobRoots: string[],
-	remove: (path: string) => Promise<void> = (path) => rm(path, { recursive: true, force: true })
+	remove: (path: string) => Promise<void> = removeSteadily
 ): Promise<void> {
 	assertDropTargetsRemovable(dbPath, blobRoots);
 	await remove(dbPath);
 	for (const blobRoot of blobRoots) await remove(blobRoot);
 	fsyncDropRemovals(dbPath, blobRoots);
+}
+
+/**
+ * Recursively remove a directory one entry at a time, unlike a single `rm(path, {recursive:true})`:
+ * that one call runs as a single task on Node's (four-thread-by-default) libuv threadpool, so a
+ * database or blob root with very many files stalls every other queued fs operation in the process
+ * for as long as it takes. Iterating hands the event loop back between entries. Unlike
+ * `resources/blob.ts`'s `rimrafSteadily` (which logs and continues past a failed file, appropriate
+ * for a best-effort sweep), this throws on the first failure — the caller (`removeDroppedDatabaseFiles`)
+ * depends on that to decide whether it may clear the drop marker.
+ */
+async function removeSteadily(path: string): Promise<void> {
+	let entries;
+	try {
+		entries = await readdir(path, { withFileTypes: true });
+	} catch (error: any) {
+		if (error.code === 'ENOENT') return;
+		throw error;
+	}
+	for (const entry of entries) {
+		const entryPath = join(path, entry.name);
+		try {
+			if (entry.isDirectory()) await removeSteadily(entryPath);
+			else await unlink(entryPath);
+		} catch (error: any) {
+			if (error.code !== 'ENOENT') throw error;
+		}
+	}
+	try {
+		await rmdir(path);
+	} catch (error: any) {
+		if (error.code !== 'ENOENT') throw error;
+	}
 }
 
 /**

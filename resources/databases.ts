@@ -2818,11 +2818,20 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				try {
 					if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
 						previousIndexToRelease = dbi;
-						dbi = replacementToReleaseOnFailure = openIndex(dbiKey, rootStore, attribute);
+						dbi = openIndex(dbiKey, rootStore, attribute);
+					} else if (dbi) {
+						dbi = prepareIndexStore(dbi, dbiKey, rootStore, attribute);
 					} else {
-						dbi = dbi ? prepareIndexStore(dbi, dbiKey, rootStore, attribute) : openIndex(dbiKey, rootStore, attribute);
+						dbi = openIndex(dbiKey, rootStore, attribute);
 					}
-					if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
+					if (deferredPrimaryRow) {
+						indices[attribute.name] = dbi; // private until published; lets the rollback close it
+					} else if (previousIndexToRelease || !indices[attribute.name]) {
+						// a freshly opened handle — a kind change, or the first time this index exists — not
+						// yet published: a throw before the assignment below must close it, or it leaks as a
+						// native handle nothing references and still counts against a later drop_database
+						replacementToReleaseOnFailure = dbi;
+					}
 					// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 					// custom-object) index. An index created before this field existed has no indexFormat on
 					// disk; persist the resolved value now — even when nothing else changed — so the format is

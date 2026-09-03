@@ -1074,16 +1074,18 @@ boot. Three non-obvious mechanics keep the restore half safe:
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
   exited job worker leaves no residual handle to be mistaken for a live holder.
-- **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
-  A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
-  a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
-  (`acquireRestoreLock`, marker-less) for each RocksDB root store and holds it across the whole drop,
-  releasing in a `finally`; a restore in progress makes the acquire fail with 409, and a leftover
-  incomplete-restore marker (lock free, detected via `restoreMarkerPresent`, which — unlike
-  `checkRestoreState` — is safe while this thread holds the lock) is refused rather than dropped over.
-  `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
-  `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
-  the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
+- **`dropDatabase` and `restore_backup` serialize on the same lock and the same typed marker, not a
+  check-then-act probe.** A drop's `destroy()` interleaving with a restore's purge-and-copy on the
+  same directory would gut a "successful" restore (or vice versa). `dropDatabase` takes the
+  per-database lifecycle lock (`beginDropOfDatabase`) and writes a `drop`-typed marker before
+  touching anything, holding both across the whole drop; a restore in progress (lock held, or a
+  leftover incomplete-restore marker) makes the acquire fail with 409, so the destructive path never
+  starts against a directory a restore owns. `database()`'s on-demand open now shares the same
+  guard: `throwIfBlockedByRestore` reads the current lifecycle marker rather than only refusing —
+  an interrupted `drop` it finds is finished under the lock (`recoverInterruptedDrop`) before the
+  open proceeds, and it re-derives the marker's state if a concurrent operation replaces it between
+  reads, so a `create_table`/`create_schema` never resurrects a half-purged directory as a fresh
+  empty one, and never opens through an incomplete restore either.
 - **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
   only when the CLI sees no server (a PID heuristic; the PID file is briefly absent mid-`harper
 restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so before purging,
