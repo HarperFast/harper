@@ -782,6 +782,7 @@ export class DatabaseTransaction implements Transaction {
 		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
 		this.writesByKey = undefined;
+		this.timestamp = 0; // a lock stamp pinned for a failed commit must not leak into the next write set
 	}
 
 	/**
