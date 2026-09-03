@@ -375,13 +375,15 @@ export interface Table {
 }
 
 export function patchIfExists(TableClass: any, target: RequestTargetOrId, updates: object) {
-	if (TableClass.source || TableClass.replicate !== false) {
-		harperLogger.fatal(
-			`Skipped conditional patch for ${TableClass.databaseName}.${TableClass.tableName}: the table must be local and source-free`
+	if (TableClass.source || TableClass.replicate !== false)
+		throw new Error(
+			`Conditional patches require a local, source-free table; ${TableClass.databaseName}.${TableClass.tableName} is ineligible`
 		);
-		return;
-	}
-	return TableClass[PATCH_IF_EXISTS](target, updates, {});
+	return TableClass[PATCH_IF_EXISTS](target, updates, newIsolatedWriteContext());
+}
+
+function newIsolatedWriteContext(): Context {
+	return {};
 }
 type ResidencyDefinition = number | string[] | void;
 

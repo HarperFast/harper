@@ -166,7 +166,7 @@ describe('Table patch conflict merging', () => {
 		});
 		assert.notEqual(replicated.replicate, false);
 		await replicated.put('replicated', { id: 'replicated', value: 1 });
-		await patchIfExists(replicated, 'replicated', { value: 2 });
+		assert.throws(() => patchIfExists(replicated, 'replicated', { value: 2 }), /local, source-free table/);
 		assert.equal((await replicated.get('replicated')).value, 1);
 
 		const { Table } = PatchMergeTables[0];
@@ -174,7 +174,7 @@ describe('Table patch conflict merging', () => {
 		const source = Table.source;
 		Table.source = class {};
 		try {
-			await patchIfExists(Table, 'source-backed', { lastActivity: 2 });
+			assert.throws(() => patchIfExists(Table, 'source-backed', { lastActivity: 2 }), /local, source-free table/);
 			assert.equal((await Table.get('source-backed')).lastActivity, 1);
 		} finally {
 			Table.source = source;

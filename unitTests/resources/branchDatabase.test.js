@@ -167,19 +167,15 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 	});
 
 	it('preserves conditional and local-only write flags during replay', async function () {
-		let replayOptions;
-		const replayTable = {
-			tableId: 8,
-			primaryStore: {},
-			getResource() {
-				return {
-					_writeUpdate(_id, _record, _fullUpdate, options) {
-						replayOptions = options;
-					},
-					save() {},
-				};
-			},
-		};
+		const replayTable = table({
+			table: 'ReplayFlags',
+			database: 'replayflags',
+			replicate: false,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		const id = 'local-only-replay';
+		await replayTable.put(id, { id, value: 1 });
+		const version = Date.now() + 10_000;
 		const stubStore = {
 			databaseName: 'replay-flags',
 			purgeLogs() {
@@ -193,8 +189,9 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 					return [
 						{
 							type: 'patch',
-							tableId: 8,
-							version: 1,
+							tableId: replayTable.tableId,
+							recordId: id,
+							version,
 							extendedType: 5 | 32 | CONDITIONAL_PATCH | LOCAL_ONLY,
 							getValue: () => ({ value: 1 }),
 						},
@@ -204,8 +201,9 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		};
 
 		await replayLogs(stubStore, { ReplayFlags: replayTable }, true);
-		assert.equal(replayOptions.ifExists, true);
-		assert.equal(replayOptions.localOnly, true);
+		const entry = replayTable.primaryStore.getEntry(id);
+		assert.equal(entry.version, version);
+		assert.equal(entry.metadataFlags & LOCAL_ONLY, LOCAL_ONLY);
 	});
 
 	it('fails the load when the adopted branch cannot replay, then adopts cleanly once it can', async function () {
