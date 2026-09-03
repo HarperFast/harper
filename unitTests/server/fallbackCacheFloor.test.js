@@ -347,6 +347,20 @@ describe('legacy Fastify fallback preserves the chain cache floor', () => {
 			assert.deepStrictEqual(final.get('Set-Cookie'), ['a=1; Path=/', 'b=2; Path=/']);
 		});
 
+		it('keeps both Fastify and chain Set-Cookie fields', () => {
+			const chain = new Headers();
+			chain.set('Set-Cookie', 'hdb-session=harper; Path=/; HttpOnly');
+			const final = new Headers();
+			final.set('Set-Cookie', 'app-session=wordpress; Path=/; HttpOnly');
+
+			mergeChainHeadersIntoFallback(chain, final);
+
+			assert.deepStrictEqual(final.get('Set-Cookie'), [
+				'app-session=wordpress; Path=/; HttpOnly',
+				'hdb-session=harper; Path=/; HttpOnly',
+			]);
+		});
+
 		it('does not duplicate a Vary token the final response already declares', () => {
 			const chain = new Headers({ Vary: 'Authorization, Cookie' });
 			const final = new Headers({ Vary: 'Authorization' });
