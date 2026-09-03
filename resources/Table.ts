@@ -2476,11 +2476,9 @@ export function makeTable(options) {
 				// the second caller gets its own timeout.
 				// The follower waits on the leader's acquisition, but only for its own timeout.
 				let followerTimer: ReturnType<typeof setTimeout> | undefined;
+				const followerTimedOut = Symbol('follower timeout');
 				const followerDeadline = new Promise<never>((_, reject) => {
-					followerTimer = setTimeout(
-						() => reject(new ClientError(`Record is locked and was not released in time`, 423)),
-						resolved.timeout
-					).unref();
+					followerTimer = setTimeout(() => reject(followerTimedOut), resolved.timeout).unref();
 				});
 				return Promise.race([pending, followerDeadline]).then(
 					() => {
@@ -2494,8 +2492,8 @@ export function makeTable(options) {
 					},
 					(error) => {
 						clearTimeout(followerTimer);
-						if (error?.statusCode === 423) throw error;
-						return this.lock(target, options) as Promise<any>;
+						if (error === followerTimedOut) throw new ClientError(`Record is locked and was not released in time`, 423);
+						return this.lock(target, options) as Promise<any>; // the leader failed; try on this caller's own terms
 					}
 				);
 			}

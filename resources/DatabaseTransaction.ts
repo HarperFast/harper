@@ -782,7 +782,6 @@ export class DatabaseTransaction implements Transaction {
 		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
 		this.writes = [];
 		this.writesByKey = undefined;
-		this.timestamp = 0; // a lock stamp pinned for a failed commit must not leak into the next write set
 	}
 
 	/**
@@ -1399,6 +1398,7 @@ export class DatabaseTransaction implements Transaction {
 								this.endScopeOwnership();
 								this.releaseContext(!!options.doneWriting);
 								this.releaseRecordLocks();
+								this.timestamp = 0;
 								throw error;
 							}
 						}
@@ -1521,6 +1521,7 @@ export class DatabaseTransaction implements Transaction {
 		// Defensively release any native handle whose reference bookkeeping was already consumed.
 		if (this.transaction) this.releaseReadTxn();
 		this.open = TRANSACTION_STATE.CLOSED;
+		this.timestamp = 0; // a lock stamp pinned for this write set must not leak into the next
 		this.drainCompletions();
 		try {
 			for (const write of this.writes) {
