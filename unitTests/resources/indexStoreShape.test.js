@@ -12,6 +12,15 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksIndexStore } = require('#src/resources/RocksIndexStore');
 const { CUSTOM_INDEXES } = require('#src/resources/indexes/customIndexes');
+const { registryStatus } = require('@harperfast/rocksdb-js');
+
+// registryStatus() refcounts every open column family under a database's directory as one entry
+// (rocksdb-js#…); a failed reopen that actually closed its unpublished replacement returns this to
+// its pre-attempt value, while a leaked handle would leave it one higher.
+function openRefCount(Tbl) {
+	const path = Tbl.primaryStore.rootStore.path;
+	return registryStatus().find((instance) => instance.path === path)?.refCount ?? 0;
+}
 
 describe('index store wrapper follows the index kind across a live attribute change', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // the HNSW custom index is RocksDB-only here
@@ -92,6 +101,7 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		for (let i = 0; i < 8; i++) last = Tbl.put({ id: i, vector: [i % 2, i % 3, i % 4] });
 		await last;
 		const ordinary = Tbl.indices.vector;
+		const baseline = openRefCount(Tbl);
 
 		// the new wrapper opens successfully; the reindex trigger's own existing-data scan (on this
 		// table's primary store, not the shared catalog) is where this injects the failure — after the
@@ -110,9 +120,53 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		}
 
 		// neither handle leaked: the old one is still what the live table serves, and the new one —
-		// opened but never published — was closed rather than left dangling and unowned
+		// opened but never published — was closed rather than left dangling and unowned. The refcount
+		// check is what actually proves the close happened, not just that the OLD handle is untouched.
 		assert.strictEqual(Tbl.indices.vector, ordinary);
 		assert.notEqual(ordinary.status, 'closed');
 		assert.equal(reopened, undefined);
+		assert.equal(openRefCount(Tbl), baseline, 'the reopen attempt must not leave a net-new open handle');
+	});
+
+	it('closes a first-time index handle too when a later step throws before it is published', async function () {
+		this.timeout(30_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		let Tbl = table({
+			table: 'IndexShapeFirstTime',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		let last;
+		for (let i = 0; i < 8; i++) last = Tbl.put({ id: i, vector: [i % 2, i % 3, i % 4] });
+		await last;
+		assert.equal(Tbl.indices.vector, undefined, 'no index on vector yet');
+		const baseline = openRefCount(Tbl);
+
+		// this attribute has never been indexed before, so its open (unlike the reopen tests above)
+		// goes through the "no existing handle" branch — the same rollback must cover it
+		const originalGetRange = Tbl.primaryStore.getRange.bind(Tbl.primaryStore);
+		Tbl.primaryStore.getRange = () => {
+			throw new Error('injected failure: scanning for existing data');
+		};
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'IndexShapeFirstTime',
+						database: 'test',
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{ name: 'vector', indexed: true, type: 'Array' },
+						],
+					}),
+				/injected failure/
+			);
+		} finally {
+			Tbl.primaryStore.getRange = originalGetRange;
+		}
+
+		assert.equal(Tbl.indices.vector, undefined, 'the failed first-time open must not have been published');
+		assert.equal(openRefCount(Tbl), baseline, 'the failed first-time open must not leave a net-new open handle');
 	});
 });
