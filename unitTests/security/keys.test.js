@@ -1521,7 +1521,7 @@ describe('Test keys module', () => {
 		const watchPollers = keys.__get__('certificateWatchPollers');
 		const localSandbox = sinon.createSandbox();
 		const chokidar = require('chokidar');
-		const realChokidarWatch = chokidar.watch;
+		const realChokidarWatch = chokidar.default.watch;
 		let watchPath;
 
 		// Never open a real watcher here: these tests exercise only the poll/reopen paths, and real
@@ -1538,13 +1538,13 @@ describe('Test keys module', () => {
 		};
 
 		beforeEach(() => {
-			chokidar.watch = () => fakeWatcher();
+			chokidar.default.watch = () => fakeWatcher();
 			watchPath = path.join(test_dir, `watch-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pem`);
 			fs.writeFileSync(watchPath, 'PEM-V1');
 		});
 
 		afterEach(() => {
-			chokidar.watch = realChokidarWatch;
+			chokidar.default.watch = realChokidarWatch;
 			localSandbox.restore();
 			// warnWatcherFallback's first-fallback gate is process-global; leaving it set would make a
 			// later suite's warning assertion silently observe nothing.
@@ -1578,7 +1578,7 @@ describe('Test keys module', () => {
 			// chokidar v4 defaults alwaysStat:false, so the 'change' handler is called with undefined
 			// stats; loadFile must stat the file itself rather than throw and silently skip the reload.
 			let changeHandler;
-			chokidar.watch = () =>
+			chokidar.default.watch = () =>
 				fakeWatcher((event, handler) => {
 					if (event === 'change') changeHandler = handler;
 				});
@@ -1603,7 +1603,7 @@ describe('Test keys module', () => {
 			const openedOptions = [];
 			const errorHandlers = [];
 			const exhausted = () => Object.assign(new Error('inotify watch limit reached'), { code: 'ENOSPC' });
-			chokidar.watch = (_watchedPath, options) => {
+			chokidar.default.watch = (_watchedPath, options) => {
 				openedOptions.push(options);
 				return fakeWatcher((event, handler) => {
 					if (event === 'error') errorHandlers.push(handler);
@@ -1633,7 +1633,7 @@ describe('Test keys module', () => {
 			// of reopening on polling.
 			const openedOptions = [];
 			const errorHandlers = [];
-			chokidar.watch = (_watchedPath, options) => {
+			chokidar.default.watch = (_watchedPath, options) => {
 				openedOptions.push(options);
 				const watcher = {
 					on: (event, handler) => {

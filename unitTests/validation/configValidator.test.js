@@ -154,6 +154,45 @@ describe('Test configValidator module', () => {
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
+		it('storage.blobs.compression accepts content-type entries and rejects malformed ones', () => {
+			const good_config_obj = testUtils.deepClone(FAKE_CONFIG);
+			good_config_obj.storage.blobs = {
+				compression: {
+					'default': { codec: 'deflate', threshold: 65536 },
+					'text/*': { codec: 'deflate' },
+					'application/json': { threshold: 8192 },
+					'image/*': false,
+				},
+			};
+			expect(configValidator(good_config_obj).error).to.eql(undefined);
+
+			const bad_codec_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_codec_obj.storage.blobs = { compression: { default: { codec: 'zstd' } } };
+			expect(configValidator(bad_codec_obj).error.message).to.include('codec');
+
+			const bad_threshold_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_threshold_obj.storage.blobs = { compression: { default: { threshold: -1 } } };
+			expect(configValidator(bad_threshold_obj).error.message).to.include('threshold');
+
+			// a key that is not a content type, a type/* wildcard, or 'default' must fail, not
+			// silently never match
+			const bad_key_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_key_obj.storage.blobs = { compression: { 'not a content type!': { codec: 'deflate' } } };
+			expect(bad_key_obj && configValidator(bad_key_obj).error).to.not.eql(undefined);
+
+			// a typo'd field inside an entry must fail rather than silently falling back to defaults —
+			// the top-level validate() runs with allowUnknown:true, so the entry object needs .unknown(false)
+			const bad_field_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_field_obj.storage.blobs = { compression: { default: { treshold: 1000000 } } };
+			expect(configValidator(bad_field_obj).error).to.not.eql(undefined);
+
+			// a misspelled property directly under storage.blobs (e.g. `compresion:`) must also fail, not
+			// validate clean and silently leave compression off
+			const bad_blobs_key_obj = testUtils.deepClone(FAKE_CONFIG);
+			bad_blobs_key_obj.storage.blobs = { compresion: { default: { codec: 'deflate' } } };
+			expect(configValidator(bad_blobs_key_obj).error).to.not.eql(undefined);
+		});
+
 		it('Test logging in config_schema with bad values', () => {
 			let bad_config_obj = testUtils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';
@@ -207,6 +246,29 @@ describe('Test configValidator module', () => {
 
 			config.replication.blobGapReconnectMs = 1000;
 			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts the blob-gap escalation bounds as non-negative integers, 0 meaning disabled', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.replication = { blobGapEscalationCycles: 0, blobGapEscalationMs: 0 };
+			expect(configValidator(config).error).to.be.undefined;
+			config.replication = { blobGapEscalationCycles: 10, blobGapEscalationMs: 1800000 };
+			expect(configValidator(config).error).to.be.undefined;
+
+			config.replication = { blobGapEscalationCycles: -1 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationCycles' must be greater than or equal to 0"
+			);
+			config.replication = { blobGapEscalationCycles: 2.5 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationCycles' must be an integer"
+			);
+			config.replication = { blobGapEscalationMs: -1 };
+			expect(configValidator(config).error.message).to.include(
+				"'replication.blobGapEscalationMs' must be greater than or equal to 0"
+			);
+			config.replication = { blobGapEscalationMs: 2.5 };
+			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
 
 		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {

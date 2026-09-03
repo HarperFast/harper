@@ -25,7 +25,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
-import { WORKER_COUNT, assertMultiWorker, mapBounded } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, mapBounded, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { fetchOnNewConnection } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-ttl-eviction');
 const TABLE = 'CacheGhost';
@@ -52,10 +53,8 @@ interface Rec {
 	seq: number;
 }
 
-// Force a fresh connection per request (no keep-alive) so concurrent requests spray across
-// the SO_REUSEPORT worker pool instead of pinning to one worker.
 function headers(auth: string): Record<string, string> {
-	return { 'Content-Type': 'application/json', 'Authorization': auth, 'Connection': 'close' };
+	return { 'Content-Type': 'application/json', 'Authorization': auth };
 }
 
 async function putRecord(
@@ -66,7 +65,7 @@ async function putRecord(
 	bucket: string,
 	seq: number
 ): Promise<number> {
-	const r = await fetch(`${base}/${TABLE}/${encodeURIComponent(id)}`, {
+	const r = await fetchOnNewConnection(`${base}/${TABLE}/${encodeURIComponent(id)}`, {
 		method: 'PUT',
 		headers: headers(auth),
 		body: JSON.stringify({ id, name, bucket, seq }),
@@ -79,7 +78,7 @@ async function putRecord(
 }
 
 async function getRecord(base: string, auth: string, id: string): Promise<{ status: number; body: Rec | null }> {
-	const r = await fetch(`${base}/${TABLE}/${encodeURIComponent(id)}`, { headers: headers(auth) });
+	const r = await fetchOnNewConnection(`${base}/${TABLE}/${encodeURIComponent(id)}`, { headers: headers(auth) });
 	if (r.status === 404) {
 		await r.text().catch(() => undefined);
 		return { status: 404, body: null };
@@ -89,7 +88,9 @@ async function getRecord(base: string, auth: string, id: string): Promise<{ stat
 }
 
 async function scanBucket(base: string, auth: string, bucket: string): Promise<Set<string>> {
-	const r = await fetch(`${base}/${TABLE}/?bucket=${encodeURIComponent(bucket)}`, { headers: headers(auth) });
+	const r = await fetchOnNewConnection(`${base}/${TABLE}/?bucket=${encodeURIComponent(bucket)}`, {
+		headers: headers(auth),
+	});
 	if (r.status !== 200) throw new Error(`scan bucket=${bucket} returned ${r.status}: ${await r.text()}`);
 	const rows = (await r.json()) as Rec[];
 	if (!Array.isArray(rows)) throw new Error(`scan bucket=${bucket} returned non-array body`);
@@ -100,7 +101,7 @@ async function waitForTable(base: string, auth: string): Promise<void> {
 	const deadline = Date.now() + 60_000;
 	while (Date.now() < deadline) {
 		try {
-			const r = await fetch(`${base}/${TABLE}/probe`, { headers: headers(auth) });
+			const r = await fetchOnNewConnection(`${base}/${TABLE}/probe`, { headers: headers(auth) });
 			if (r.status < 500) {
 				await r.text().catch(() => undefined);
 				return;
@@ -115,7 +116,7 @@ async function waitForTable(base: string, auth: string): Promise<void> {
 
 suite(
 	'record-caching TTL-eviction cross-worker ghost [rocksdb] multi-worker',
-	{ skip: SKIP || process.platform === 'win32' },
+	{ skip: SKIP || NO_MULTI_WORKER_HTTP },
 	(ctx: ContextWithHarper) => {
 		let base: string;
 		let auth: string;

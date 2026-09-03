@@ -463,33 +463,55 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 			targetEntryHandler: EntryHandler,
 			entryEventHandler: onEntryEventHandler
 		): onEntryEventHandler => {
-			const pendingOperations = new Set<Promise<void>>();
+			// Retained until the drain below reports them: an operation dropped as it settles is invisible
+			// to that drain, so a handler rejecting before `ready` would report nothing at all.
+			let initialOperations: Promise<void>[] | null = [];
 
 			const wrapped: onEntryEventHandler = (entry) => {
-				const result = entryEventHandler(entry);
+				let result;
+				try {
+					result = entryEventHandler(entry);
+				} catch (error) {
+					// A synchronous throw is the same failure as a rejection. Left to propagate, EntryHandler
+					// catches it for its own reporting and the initial load completes as if nothing failed.
+					result = Promise.reject(error);
+				}
 				if (result instanceof Promise) {
-					const tracked = result
-						.catch((error) => {
-							this.#logger.error?.('Error in async entry handler:', error);
+					const tracked = result.catch((error) => {
+						this.#logger.error?.('Error in async entry handler:', error);
+						try {
 							this.#handleError(error);
-							throw error;
-						})
-						.finally(() => pendingOperations.delete(tracked));
-					pendingOperations.add(tracked);
+						} catch (reportingError) {
+							// Reporting must not replace the failure it is reporting.
+							this.#logger.error?.('Error reporting an entry handler failure:', reportingError);
+						}
+						throw error;
+					});
+					// Nothing awaits `tracked` until the drain, which leaves an early rejection unhandled.
+					tracked.catch(() => {});
+					initialOperations?.push(tracked);
 				}
 			};
 
-			// When the entry handler's initial scan completes, wait for all pending async operations
+			// When the entry handler's initial scan completes, wait for all of its async operations
 			const initialLoadPromise = once(targetEntryHandler, 'ready').then(async () => {
-				if (pendingOperations.size > 0) {
-					await Promise.all(pendingOperations);
+				const operations = initialOperations ?? [];
+				initialOperations = null;
+				// Drained, not fail-fast: the loader holds the plugin-wide load lock until this settles, so a
+				// first failure reported while a sibling still runs would let the next application in.
+				for (const result of await Promise.allSettled(operations)) {
+					if (result.status === 'rejected') throw result.reason;
 				}
 				targetEntryHandler.emit('initialLoadComplete');
 			});
 
 			// Track this promise so the component loader can await it
 			this.#pendingInitialLoads.add(initialLoadPromise);
-			initialLoadPromise.finally(() => this.#pendingInitialLoads.delete(initialLoadPromise));
+			// Two-branch cleanup, not `.finally`: its derivative would reject with nobody left to handle it.
+			const forgetInitialLoad = () => {
+				this.#pendingInitialLoads.delete(initialLoadPromise);
+			};
+			initialLoadPromise.then(forgetInitialLoad, forgetInitialLoad);
 
 			return wrapped;
 		};
