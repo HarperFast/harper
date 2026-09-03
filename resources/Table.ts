@@ -5633,9 +5633,11 @@ export function makeTable(options) {
 		 *
 		 * **Diagnostic, and it answers exactly one question: did a prune remove audit history the cursor
 		 * still needs — that is, anything *after* it?** Never anything below the cursor: that history is
-		 * older than the floor and is exactly what a prune takes. Across the paths that prune it errs in
-		 * one direction only — it can ask for a resync that was not strictly necessary, never certify a
-		 * cursor a prune truncated. But it is
+		 * older than the floor and is exactly what a prune takes. Across the paths that prune, and given a
+		 * cursor from the time domain above, it errs in one direction only — it can ask for a resync that
+		 * was not strictly necessary, never certify a cursor a prune truncated. A `getHistory` cursor is
+		 * outside that guarantee, not an exception to it: an origin version can overstate the consumer's
+		 * real audit position and so pass while that position sits below the floor. But it is
 		 * not a database-generation check, so `cursor >= floor` is not by itself a guarantee that
 		 * resuming is safe: replacing a database's state with a copy of an earlier state
 		 * (`restore_backup`, a RocksDB checkpoint) reinstalls that state's floor, and a cursor from
