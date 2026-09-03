@@ -924,44 +924,29 @@ export class DatabaseTransaction implements Transaction {
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
 		if (operation.lockHandle && (operation.lockHandle.expired || operation.lockHandle.released)) {
+			// Remove the operation from the staged set so subsequent writes on this context do not
+			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
+			const failedIdx = this.writes.indexOf(operation);
+			if (failedIdx > -1) this.writes[failedIdx] = null;
 			throw new ClientError('Record lock lease expired', 409);
 		}
 		// Lock-write timestamp rules.
 		if (operation.lockHandle) {
 			const handle = operation.lockHandle;
-			if (this.open === TRANSACTION_STATE.CLOSED) {
-				// ImmediateTransaction (hold or scoped): each save() is an independent commit; stamp
-				// with nextHolderVersion() so sequential saves each get their own monotonic stamp.
+			if (this.open === TRANSACTION_STATE.CLOSED || this.saveCommits) {
+				// CLOSED path (second+ write per ImmediateTransaction cycle) OR the first write in
+				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
+				// signals the per-write-commit semantics):  stamp with nextHolderVersion() so that
+				// each sequential save() gets its own monotonically increasing stamp — scoped or hold.
 				if (!operation.lockStamp) operation.lockStamp = handle.nextHolderVersion();
 				this.timestamp = operation.lockStamp;
 			} else if (handle.hold) {
-				// OPEN transaction, hold write: pin the clock to acquiredAt on the first write so
-				// concurrent writers at real (later) time win under LWW.  Using acquiredAt (not
-				// nextHolderVersion) keeps the clock stable across multiple saves in one transaction.
-				if (!this.timestamp) {
-					this.timestamp = handle.acquiredAt;
-					// Prime the nextHolderVersion counter so that a subsequent CLOSED-path save (e.g. a
-					// second sequential hold.save() outside a transaction, where this.open is CLOSED by
-					// the time the second commit runs) starts from acquiredAt+MIN_STEP rather than
-					// returning acquiredAt again (a tie with the first write's committed version, which
-					// the LWW drops). Without this, both saves land at the same version and write2 is
-					// silently dropped.
-					handle.nextHolderVersion();
-				} else if (this.timestamp > handle.acquiredAt) {
-					// Clock was set later than the hold's acquisition — prior non-hold writes ran in
-					// the same transaction after the hold was acquired.  If another writer modified
-					// the record since acquiredAt the LWW stamp is no longer safe.
-					const entry = operation.store.getEntry(operation.key);
-					if (entry && entry.version > handle.acquiredAt) {
-						throw new ClientError('Record changed during the hold; write held records in their own transaction', 409);
-					}
-					// Record unchanged since acquiredAt — safe to proceed with the existing clock.
-				}
-				// If this.timestamp <= handle.acquiredAt the clock was pinned by a prior hold write
-				// or by lock() itself; leave it as-is.
+				// Explicit transaction() (saveCommits=false), OPEN, hold write:
+				// lock() already pinned link.timestamp to acquiredAt when no prior writes existed;
+				// otherwise leave the clock alone (best-effort; no 409).
 			}
-			// Scoped lock in an OPEN transaction: lock() already pinned link.timestamp to acquiredAt;
-			// no additional stamping here — the write inherits the transaction clock.
+			// Scoped lock in explicit transaction(): lock() pinned link.timestamp to acquiredAt
+			// when no prior writes existed; no additional stamping here.
 		}
 		let txnTime = this.timestamp;
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
@@ -1752,9 +1737,31 @@ export class ImmediateTransaction extends DatabaseTransaction {
 				this.isCommitting = false;
 				throw err;
 			}
-			return when(commitResult, () => {
-				this.isCommitting = false;
-			});
+			return when(
+				commitResult,
+				() => {
+					this.isCommitting = false;
+				},
+				(err: any) => {
+					// Async rejection (e.g. a rejected rocksdb commit promise) must also clear the
+					// latch; without this, every subsequent save() silently fire-and-forgets.
+					this.isCommitting = false;
+					throw err;
+				}
+			);
+		}
+	}
+
+	// Scoped locks in an ImmediateTransaction context persist across individual saves;
+	// they are released only by unlock() or their lease, not by each commit.
+	releaseRecordLocks(): void {
+		const recordLocks = this.recordLocks;
+		if (!recordLocks) return;
+		for (const [store, storeMap] of recordLocks) {
+			for (const [keyId, handle] of storeMap) {
+				// hold handles: released by unlock(); scoped in immediate context: ditto.
+				// Nothing to release here — both categories must survive this commit.
+			}
 		}
 	}
 

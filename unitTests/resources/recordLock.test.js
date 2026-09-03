@@ -524,92 +524,129 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordB)).n, 201, 'credit write (B) landed');
 		});
 
-		it('rule B: lock() in explicit transaction after prior write 409s when record changed', async function () {
-			// Writes in the transaction fix link.timestamp; a concurrent committed write to the record
-			// being locked makes entry.version > clock → 409.
+		it('item-1: lock() in transaction after prior staged write sees the staged value', async function () {
+			// put(id,{n:1}) in the same transaction then lock(id) → r.n must be 1 (staged value),
+			// so r.set('n', r.n+1) lands as n=2, not n=1 (the pre-put value from a naked getEntry).
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
-			const otherId = id();
 			await LockTest.put({ id: recordId, n: 0 });
-			let caughtErr;
 			await transaction(async () => {
-				// Fix the transaction clock via a write to another key.
-				await LockTest.put({ id: otherId, n: 1 });
-				// Concurrent context writes recordId — bumps its version past link.timestamp.
-				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 99 }));
-				// lock(recordId) now: clock fixed earlier, record changed since → 409.
-				try {
-					await LockTest.lock(recordId);
-				} catch (err) {
-					caughtErr = err;
-				}
-			}).catch(() => {});
-			assert.ok(caughtErr, 'lock() after write + concurrent change threw');
-			assert.strictEqual(caughtErr.statusCode, 409, '409 when record changed since clock was fixed');
-			assert.strictEqual((await LockTest.get(recordId)).n, 99, 'concurrent write is visible');
+				await LockTest.put({ id: recordId, n: 1 });
+				const r = await LockTest.lock(recordId);
+				r.set('n', r.getProperty('n') + 1);
+				await r.save();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'staged write visible through lock()');
 		});
 
-		it('rule C: scoped lock outside transaction() stamps writes; ImmediateTransaction commit releases key', async function () {
-			// In an ImmediateTransaction context each write through a scoped lock is stamped via
-			// nextHolderVersion() (independent commits).  releaseRecordLocks() is called during
-			// ImmediateTransaction.commit() — synchronously before save() resolves — so the key
-			// is already free by the time the caller resumes after await scoped.save().
+		it('item-4/rule-C: scoped lock outside transaction() persists across sequential saves until unlock()', async function () {
+			// In an ImmediateTransaction context (no explicit transaction()) each write through a
+			// scoped lock is stamped via nextHolderVersion() (independent commits), but the key is
+			// NOT released by the first save() — the lock persists until unlock() or lease expiry.
+			// This allows multiple sequential set()+save() calls without a 409 on the second save.
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			const scoped = await LockTest.lock(recordId, { lease: 5000 });
 			scoped.set('n', 1);
-			// Key is still held before save() — verify exclusion now, not after.
-			await assert.rejects(LockTest.lock(recordId, { timeout: 50 }), { statusCode: 423 }, 'key still held');
-			// save() commits the write; ImmediateTransaction.commit() releases the key synchronously.
+			// Key is still held before first save() — verify exclusion.
+			await assert.rejects(LockTest.lock(recordId, { timeout: 50 }), { statusCode: 423 }, 'key held before first save');
+			// First save() commits the write but does NOT release the key.
 			await scoped.save();
-			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write landed');
-			// Key is already free after save(); unlock() is a no-op (returns false).
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'first write landed');
+			// Key must still be held — second save() can happen.
+			await assert.rejects(
+				LockTest.lock(recordId, { timeout: 50 }),
+				{ statusCode: 423 },
+				'key still held after first save'
+			);
+			// Second save.
+			scoped.set('n', 2);
+			await scoped.save();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'second write landed');
+			// Key is still held; unlock() releases it.
 			const released = await scoped.unlock();
-			assert.strictEqual(released, false, 'key already released by commit');
-			// Another lock must succeed immediately.
+			assert.strictEqual(released, true, 'unlock() released the key');
+			// Another lock must succeed immediately after unlock.
 			const next = await LockTest.lock(recordId, { lease: 5000 });
 			await next.unlock();
 		});
 
-		it('rule D: hold write 409s when link.timestamp > acquiredAt AND record changed', async function () {
-			// Acquire holdA (T_A) and holdB (T_B > T_A) inside the same transaction().
-			// Writing through holdB first pins link.timestamp = T_B (in DatabaseTransaction.save()).
-			// A sourceApply concurrent write then bumps recordA.version past T_A.
-			// Writing through holdA: link.timestamp (T_B) > holdA.acquiredAt (T_A) AND
-			// entry.version > T_A → 409.
+		it('item-2: expired-hold 409 does not contaminate context; later put() on same context succeeds', async function () {
+			// A 409 thrown from save() because the lock expired must remove the failed operation
+			// from this.writes so subsequent writes on the same ImmediateTransaction context do
+			// not re-throw 409 (stale null entry in this.writes would re-trigger the guard).
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const lockedId = id();
+			const otherId = id();
+			await LockTest.put({ id: lockedId, n: 0 });
+			await LockTest.put({ id: otherId, n: 0 });
+			// Acquire a hold with a very short lease and wait for it to expire.
+			const holder = await LockTest.lock(lockedId, { hold: true, lease: 200 });
+			await delay(300);
+			// save() must throw or reject with 409 for the expired lock.
+			holder.set('n', 99);
+			let err409;
+			try {
+				await holder.save();
+			} catch (err) {
+				err409 = err;
+			}
+			assert.ok(err409, 'save() threw or rejected for expired lock');
+			assert.strictEqual(err409.statusCode, 409, '409 status for expired lock');
+			// A put() on the same ambient ImmediateTransaction context (no explicit wrapper) must
+			// succeed — verifies the failed write was cleaned out of this.writes.
+			await LockTest.put({ id: otherId, n: 42 });
+			assert.strictEqual((await LockTest.get(otherId)).n, 42, 'put on same context after 409 succeeded');
+		});
+
+		it('item-5: scoped→hold upgrade keeps original acquiredAt stamp; concurrent write survives', async function () {
+			// Upgrading a scoped lock to hold must pass scoped.acquiredAt to the new hold handle
+			// so the hold's clock is not minted fresh (which would be later and could clobber a
+			// concurrent write that arrived between scoped acquisition and hold upgrade).
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
-			const recordA = id();
-			const recordB = id();
-			await LockTest.put({ id: recordA, n: 0 });
-			await LockTest.put({ id: recordB, n: 0 });
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdHandle;
+			await transaction(async () => {
+				const scoped = await LockTest.lock(recordId, { lease: 5000 });
+				scoped.set('n', 5);
+				// Concurrent write between scoped lock and hold upgrade.
+				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 42 }));
+				// Upgrade to hold — inherits scoped.acquiredAt.
+				holdHandle = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				holdHandle.set('n', 5);
+				await holdHandle.save();
+			});
+			// The concurrent write (n=42) arrived at a real timestamp AFTER scoped.acquiredAt;
+			// with LWW it should win over the hold write stamped at acquiredAt.
+			const result = await LockTest.get(recordId);
+			assert.strictEqual(result.n, 42, 'concurrent write (LWW winner) survives scoped→hold upgrade');
+			await holdHandle.unlock();
+		});
+
+		it('item-6: expired scoped handle → invalidate() throws 409', async function () {
+			// After a scoped lock expires, invalidate() through the lock-writable instance must
+			// throw 409 (expired-handle guard) rather than staging a write with no lock handle.
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const scoped = await LockTest.lock(recordId, { lease: 200 });
+			// Wait for lease to expire.
+			await delay(300);
 			let caughtErr;
 			try {
-				await transaction(async () => {
-					// holdA acquired first (acquiredAt = T_A).
-					const holdA = await LockTest.lock(recordA, { hold: true, lease: 10000 });
-					// Small delay so T_B > T_A is guaranteed at Date.now() precision.
-					await delay(2);
-					// holdB acquired later (acquiredAt = T_B > T_A).
-					const holdB = await LockTest.lock(recordB, { hold: true, lease: 10000 });
-					// Write through holdB first: DatabaseTransaction.save() sets link.timestamp = T_B.
-					holdB.set('n', 1);
-					await holdB.save();
-					// Concurrent write bumps recordA.version past T_A.
-					await transaction({ sourceApply: true }, () => LockTest.put({ id: recordA, n: 99 }));
-					// Write through holdA: link.timestamp (T_B) > holdA.acquiredAt (T_A)
-					// AND entry.version > T_A → 409.
-					holdA.set('n', 2);
-					await holdA.save();
-				});
+				await scoped.invalidate();
 			} catch (err) {
 				caughtErr = err;
 			}
-			assert.ok(caughtErr, 'hold save threw when record changed since acquiredAt');
-			assert.strictEqual(caughtErr.statusCode, 409, '409 when record changed since acquiredAt');
+			assert.ok(caughtErr, 'invalidate() on expired scoped handle threw');
+			assert.strictEqual(caughtErr.statusCode, 409, '409 from expired-handle guard in invalidate()');
 		});
 
 		it('rule D (no 409): sequential hold saves inside one transaction() both land', async function () {

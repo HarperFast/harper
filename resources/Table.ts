@@ -713,6 +713,26 @@ export function makeTable(options) {
 		#lockHandle?: RecordLockHandle; // a held ({ hold: true }) record lock
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		declare getProperty: (name: string) => any;
+
+		/**
+		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
+		 * released), throw 409 before staging any write. Covers invalidate/relocate/delete in
+		 * addition to the save() path which already has its own inline check.
+		 */
+		#assertLiveHandle(id: Id): void {
+			if (!this.#lockWritable) return;
+			if (this.#lockHandle) {
+				if (this.#lockHandle.expired || this.#lockHandle.released) {
+					throw new ClientError('Record lock lease expired', 409);
+				}
+				return;
+			}
+			// Scoped lock: must still be in recordLocks.
+			const link = txnForContext(this.getContext());
+			if (!link.recordLockFor(primaryStore, writeKeyId(id))) {
+				throw new ClientError('Record lock lease expired', 409);
+			}
+		}
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
@@ -2172,6 +2192,7 @@ export function makeTable(options) {
 			});
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
+			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
@@ -2222,6 +2243,7 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 		_writeRelocate(id: Id, options: any) {
+			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
@@ -2442,7 +2464,14 @@ export function makeTable(options) {
 					// and create a fresh hold handle that inherits native-key ownership.
 					link.unregisterRecordLock(scoped);
 					scoped.released = true; // prevent double-unlock on commit; native key stays locked
-					const holdHandle = makeKeyLockHandle(primaryStore, scoped.key, scoped.keyId, resolved.lease, true);
+					const holdHandle = makeKeyLockHandle(
+						primaryStore,
+						scoped.key,
+						scoped.keyId,
+						resolved.lease,
+						true,
+						scoped.acquiredAt
+					);
 					link.registerRecordLock(holdHandle);
 					// Preserve #changes staged under the scoped lock; DatabaseTransaction.save() will
 					// pin the clock to holdHandle.acquiredAt on the first hold write automatically.
@@ -2451,52 +2480,66 @@ export function makeTable(options) {
 				// Already held with the same type: re-entrant return.
 				return Promise.resolve(this.#reloadLocked(id, scoped.hold ? scoped : null));
 			}
-			const clockBeforeLock = link.open === TRANSACTION_STATE.OPEN ? link.timestamp : 0;
 			const key = lockAttemptKey(tableId, id);
 			return acquireRecordKey(link, primaryStore, key, keyId, resolved.timeout, resolved.lease, resolved.hold).then(
 				(handle) => {
 					link.registerRecordLock(handle);
-					if (!resolved.hold && link.open === TRANSACTION_STATE.OPEN) {
-						// Rule B: scoped lock in an explicit transaction.
-						// Pin the transaction clock to min(existing clock, acquiredAt) so concurrent
-						// writers at real (later) time always win under LWW.
-						if (clockBeforeLock > 0 && clockBeforeLock < handle.acquiredAt) {
-							// Writes preceded this lock: check whether the record moved since the
-							// transaction began.  If it did, the caller cannot safely write it.
-							const entry = (primaryStore as any).getEntry(id);
-							if (entry && entry.version > clockBeforeLock) {
-								link.unregisterRecordLock(handle);
-								handle.release();
-								throw new ClientError('Record changed before it was locked; lock before writing', 409);
+					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
+						// Explicit transaction() (not ImmediateTransaction): pin the clock to
+						// acquiredAt when no writes have been staged yet.  When writes already
+						// exist, leave the clock alone (ordering is best-effort; write held records
+						// in their own transaction for the guarantee).  ImmediateTransaction is
+						// excluded (saveCommits=true) — its clock is never pinned in lock();
+						// each save() stamps with nextHolderVersion() instead.
+						if (link.writes.length === 0) {
+							link.timestamp = handle.acquiredAt;
+							if (resolved.hold) {
+								// Prime the nextHolderVersion counter so a later CLOSED-path save
+								// (e.g. after the transaction commits and the hold is used from an
+								// ImmediateTransaction context) gets acquiredAt+MIN_STEP instead of
+								// acquiredAt again (which would be a LWW tie with the first write).
+								handle.nextHolderVersion();
 							}
-							// Record unchanged since the transaction started — safe.  Keep the earlier
-							// clock (min(clockBeforeLock, acquiredAt) = clockBeforeLock).
-						} else {
-							// No prior writes (clock=0) or clock >= acquiredAt (set by a prior lock):
-							// pin to min(existing, acquiredAt).
-							link.timestamp = clockBeforeLock > 0 ? Math.min(clockBeforeLock, handle.acquiredAt) : handle.acquiredAt;
 						}
-						if (link.transaction) {
-							// The read snapshot predates the lock; drop it so the scope reads what
-							// it locked.  With iterators open (readTxnsUsed > 1) setTimestamp re-pins
-							// the same handle; plain reads keep the pre-lock snapshot.
+						if (!resolved.hold && link.transaction) {
+							// Scoped lock: the read snapshot may predate the lock; drop it so the
+							// scope reads what it locked.  Hold locks use acquiredAt directly and
+							// do not update the read snapshot.
 							if (link.readTxnsUsed <= 1) {
 								link.releaseReadTxn();
 								link.snapshotFree = true;
 							} else link.transaction.setTimestamp(link.timestamp);
 						}
 					}
-					// For hold locks and for scoped locks in ImmediateTransaction context the
-					// clock is managed in DatabaseTransaction.save(); no pinning here.
+					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
+					// with nextHolderVersion() for both scoped and hold handles.
 					return this.#reloadLocked(id, resolved.hold ? handle : null);
 				}
 			);
 		}
 		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false) {
+			// Read through the current transaction so staged writes in the same transaction scope
+			// are visible (e.g. put(id,{n:1}) then lock(id) → r.n === 1, not the pre-put value).
+			// Optimistic RocksDB transactions do not surface their write buffer through reads, so
+			// instead we scan link.writes for the latest write to this key that ran its commit
+			// callback (has a stagedEntry); fall back to a bare getEntry for the committed value.
+			const link = txnForContext(this.getContext());
+			let entryForReload: any;
+			if (link.open === TRANSACTION_STATE.OPEN) {
+				const keyId = writeKeyId(id);
+				for (let i = link.writes.length - 1; i >= 0; i--) {
+					const w = link.writes[i];
+					if (w && w.store === primaryStore && writeKeyId(w.key) === keyId && w.stagedEntry !== undefined) {
+						entryForReload = w.stagedEntry;
+						break;
+					}
+				}
+			}
+			if (!entryForReload) entryForReload = primaryStore.getEntry(id);
 			if (writeKeyId(id) !== writeKeyId(this.getId())) {
 				// lock(target) where target differs from this record: return a separate instance.
 				const fresh = new (this.constructor as any)(id, this.getContext());
-				TableResource._updateResource(fresh, primaryStore.getEntry(id));
+				TableResource._updateResource(fresh, entryForReload);
 				if (holdHandle) {
 					fresh.#lockHandle = holdHandle;
 					// Do not clear this.#lockHandle: the original instance keeps its own hold on its
@@ -2507,7 +2550,7 @@ export function makeTable(options) {
 			}
 			// Only store the new hold handle; null (scoped lock) must not clear a prior hold handle.
 			if (holdHandle) this.#lockHandle = holdHandle;
-			TableResource._updateResource(this, primaryStore.getEntry(id));
+			TableResource._updateResource(this, entryForReload);
 			// Preserve staged changes when upgrading the same instance from scoped to hold so that
 			// set() calls made under the scoped lock survive the reload.
 			if (!preserveChanges) this.#changes = undefined;
@@ -3470,6 +3513,7 @@ export function makeTable(options) {
 			return Boolean(this.#record);
 		}
 		_writeDelete(id: Id, options?: any) {
+			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			checkValidId(id);
