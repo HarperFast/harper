@@ -31,7 +31,7 @@ import type {
 } from './ResourceInterface.ts';
 import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
+import { PATCH_IF_EXISTS, Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -372,6 +372,16 @@ export interface Table {
 	description?: string;
 	properties?: Record<string, JsonSchemaFragment>;
 	hidden?: boolean;
+}
+
+export function patchIfExists(TableClass: any, target: RequestTargetOrId, updates: object) {
+	if (TableClass.source || TableClass.replicate !== false) {
+		harperLogger.fatal(
+			`Skipped conditional patch for ${TableClass.databaseName}.${TableClass.tableName}: the table must be local and source-free`
+		);
+		return;
+	}
+	return TableClass[PATCH_IF_EXISTS](target, updates, {});
 }
 type ResidencyDefinition = number | string[] | void;
 
@@ -2420,20 +2430,13 @@ export function makeTable(options) {
 			target: RequestTarget,
 			recordUpdate: Partial<Record & RecordObject>
 		): void | (Record & Partial<RecordObject>) | Promise<void | (Record & Partial<RecordObject>)> {
-			const context = this.getContext();
-			const ifExists = (context as Context)?.ifExists === true;
-			// A source patch runs before the local commit check, so it cannot honor this condition.
-			if (ifExists && (this.constructor as any).source)
-				throw new Error('ifExists patches are not supported on source-backed tables');
-			if (ifExists) (context as Context).ifExists = false;
-			const options = ifExists ? { ifExists: true } : undefined;
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat.
 				// `when` settles the embed hook before `save()` so the write is staged first.
-				return when(this.update(target, false, options), () => this.save() as any) as any;
+				return when(this.update(target, false), () => this.save() as any) as any;
 			} else {
 				// standard path, ensure there is no return object
-				return when(this.update(target, recordUpdate, options), () => {
+				return when(this.update(target, recordUpdate), () => {
 					return when(this.save() as any, () => undefined); // wait for the update and save, but return undefined
 				}) as any;
 			}

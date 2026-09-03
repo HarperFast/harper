@@ -2,6 +2,8 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { patchIfExists } = require('#src/resources/Table');
+const { PATCH_IF_EXISTS } = require('#src/resources/Resource');
 const { CONDITIONAL_PATCH } = require('#src/resources/auditStore');
 const { transaction } = require('#src/resources/transaction');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -18,6 +20,7 @@ describe('Table patch conflict merging', () => {
 				table: `PatchConflictMerge${audit ? 'Audited' : 'Unaudited'}`,
 				database: 'test',
 				audit,
+				replicate: false,
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
 					{ name: 'lastActivity' },
@@ -71,11 +74,11 @@ describe('Table patch conflict merging', () => {
 		}
 	});
 
-	it('patches an existing record when ifExists is set', async () => {
+	it('conditionally patches an existing record', async () => {
 		for (const { audit, Table } of PatchMergeTables) {
 			const id = `conditional-existing-${audit}`;
 			await Table.put(id, { id, lastActivity: 1 });
-			await Table.patch(id, { lastActivity: 2 }, { ifExists: true });
+			await patchIfExists(Table, id, { lastActivity: 2 });
 			assert.equal((await Table.get(id)).lastActivity, 2);
 			if (audit) {
 				const auditEntry = [...Table.auditStore.getRange({ start: 1 })]
@@ -86,7 +89,7 @@ describe('Table patch conflict merging', () => {
 		}
 	});
 
-	it('does not create a missing or deleted record when ifExists is set', async () => {
+	it('does not create a missing or deleted record from a conditional patch', async () => {
 		for (const { audit, Table } of PatchMergeTables) {
 			const missingId = `conditional-missing-${audit}`;
 			const deletedId = `conditional-deleted-${audit}`;
@@ -94,8 +97,8 @@ describe('Table patch conflict merging', () => {
 			await Table.delete(deletedId);
 			const auditEntriesBefore = audit ? [...Table.auditStore.getRange({ start: 1 })].length : undefined;
 
-			await Table.patch(missingId, { lastActivity: 2 }, { ifExists: true });
-			await Table.patch(deletedId, { lastActivity: 2 }, { ifExists: true });
+			await patchIfExists(Table, missingId, { lastActivity: 2 });
+			await patchIfExists(Table, deletedId, { lastActivity: 2 });
 
 			assert.equal(await Table.get(missingId), undefined);
 			assert.equal(await Table.get(deletedId), undefined);
@@ -103,17 +106,18 @@ describe('Table patch conflict merging', () => {
 		}
 	});
 
-	it('does not leak ifExists to a later patch using the same context', async () => {
+	it('uses a dedicated transaction instead of the ambient request transaction', async () => {
 		for (const { audit, Table } of PatchMergeTables) {
-			const skippedId = `conditional-consumed-${audit}`;
-			const upsertedId = `conditional-upsert-${audit}`;
-			const context = { ifExists: true };
-			await Table.patch(skippedId, { lastActivity: 1 }, context);
-			assert.notEqual(context.ifExists, true);
-			await Table.patch(upsertedId, { lastActivity: 2 }, context);
-
-			assert.equal(await Table.get(skippedId), undefined);
-			assert.equal((await Table.get(upsertedId)).lastActivity, 2);
+			const id = `conditional-dedicated-${audit}`;
+			await Table.put(id, { id, lastActivity: 1 });
+			await assert.rejects(
+				transaction({}, async () => {
+					await patchIfExists(Table, id, { lastActivity: 2 });
+					throw new Error('abort ambient transaction');
+				}),
+				/abort ambient transaction/
+			);
+			assert.equal((await Table.get(id)).lastActivity, 2);
 		}
 	});
 
@@ -124,8 +128,7 @@ describe('Table patch conflict merging', () => {
 			const context = {};
 			await transaction(context, async () => {
 				await Table.delete(id, context);
-				context.ifExists = true;
-				await Table.patch(id, { lastActivity: 2 }, context);
+				await Table[PATCH_IF_EXISTS](id, { lastActivity: 2 }, context);
 			});
 			assert.equal(await Table.get(id), undefined);
 		}
@@ -139,12 +142,12 @@ describe('Table patch conflict merging', () => {
 			let staleReadComplete;
 			const staleRead = new Promise((resolve) => (staleReadComplete = resolve));
 			const staleRelease = new Promise((resolve) => (releaseStale = resolve));
-			const context = { ifExists: true };
+			const context = {};
 			const stalePatch = transaction(context, async () => {
 				await Table.get(id, context);
 				staleReadComplete();
 				await staleRelease;
-				await Table.patch(id, { lastActivity: 2 }, context);
+				await Table[PATCH_IF_EXISTS](id, { lastActivity: 2 }, context);
 			});
 
 			await staleRead;
@@ -152,6 +155,29 @@ describe('Table patch conflict merging', () => {
 			releaseStale();
 			await stalePatch;
 			assert.equal(await Table.get(id), undefined);
+		}
+	});
+
+	it('refuses conditional patches on replicated and source-backed tables', async () => {
+		const replicated = table({
+			table: 'ConditionalReplicated',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		assert.notEqual(replicated.replicate, false);
+		await replicated.put('replicated', { id: 'replicated', value: 1 });
+		await patchIfExists(replicated, 'replicated', { value: 2 });
+		assert.equal((await replicated.get('replicated')).value, 1);
+
+		const { Table } = PatchMergeTables[0];
+		await Table.put('source-backed', { id: 'source-backed', lastActivity: 1 });
+		const source = Table.source;
+		Table.source = class {};
+		try {
+			await patchIfExists(Table, 'source-backed', { lastActivity: 2 });
+			assert.equal((await Table.get('source-backed')).lastActivity, 1);
+		} finally {
+			Table.source = source;
 		}
 	});
 

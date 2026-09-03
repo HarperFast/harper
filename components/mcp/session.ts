@@ -11,6 +11,7 @@
  */
 import { v4 as uuid } from 'uuid';
 import { table, type Table } from '../../resources/databases.ts';
+import { patchIfExists } from '../../resources/Table.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -58,10 +59,6 @@ export interface McpSessionRecord {
 	 * to clients that declared support. Undefined = client declared none.
 	 */
 	clientCapabilities?: Record<string, unknown>;
-	/** Legacy deletion tombstone retained for rolling-upgrade compatibility. */
-	terminated?: true;
-	/** Per-record expiration retained for legacy deletion tombstones. */
-	expiresAt?: number;
 }
 
 type McpSessionUpdate = Partial<Pick<McpSessionRecord, 'initialized' | 'lastActivity' | 'logLevel' | 'subscriptions'>>;
@@ -79,6 +76,7 @@ function declareSessionTable(): Table {
 	return table<Table>({
 		table: TABLE_NAME,
 		database: DATABASE_NAME,
+		replicate: false,
 		expiration: idleTimeoutSeconds,
 		eviction: idleTimeoutSeconds + EVICTION_WINDOW_SECONDS,
 		attributes: [
@@ -91,8 +89,6 @@ function declareSessionTable(): Table {
 			{ name: 'logLevel' },
 			{ name: 'subscriptions' },
 			{ name: 'clientCapabilities' },
-			{ name: 'terminated' },
-			{ name: 'expiresAt', expiresAt: true, indexed: true },
 		],
 	});
 }
@@ -104,6 +100,11 @@ function declareSessionTable(): Table {
 export function ensureSessionTable(): Table {
 	if (!_sessionTable) {
 		_sessionTable = declareSessionTable();
+		if (_sessionTable.replicate !== false) {
+			harperLogger.warn(`Correcting MCP session table system.${TABLE_NAME} to disable replication`);
+			_sessionTable.replicate = false;
+		}
+		if (_sessionTable.source) harperLogger.fatal(`MCP session table system.${TABLE_NAME} must not be source-backed`);
 		harperLogger.trace(`MCP session table system.${TABLE_NAME} initialized`);
 	}
 	return _sessionTable;
@@ -148,13 +149,7 @@ export async function createSession({
  */
 export async function loadSession(id: string): Promise<McpSessionRecord | null> {
 	const record = (await (getTable() as any).get(id)) as McpSessionRecord | undefined | null;
-	if (
-		!record ||
-		record.terminated ||
-		typeof record.createdAt !== 'number' ||
-		typeof record.protocolVersion !== 'string'
-	)
-		return null;
+	if (!record || typeof record.createdAt !== 'number' || typeof record.protocolVersion !== 'string') return null;
 	return record;
 }
 
@@ -162,7 +157,7 @@ export async function loadSession(id: string): Promise<McpSessionRecord | null> 
  * Persist changed session fields without overwriting concurrent updates.
  */
 export async function saveSession(id: string, changes: McpSessionUpdate): Promise<void> {
-	await (getTable() as any).patch(id, changes, { ifExists: true });
+	await patchIfExists(getTable(), id, changes);
 }
 
 export async function deleteSession(id: string): Promise<void> {

@@ -2,10 +2,12 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { PATCH_IF_EXISTS } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const {
 	_setSessionTableForTest,
 	deleteSession,
+	ensureSessionTable,
 	loadSession,
 	saveSession,
 	touchSession,
@@ -22,6 +24,7 @@ describe('mcp/session with a real table', () => {
 				table: `McpSessionDeleteRace${audit ? 'Audited' : 'Unaudited'}`,
 				database: 'test',
 				audit,
+				replicate: false,
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
 					{ name: 'protocolVersion' },
@@ -34,6 +37,12 @@ describe('mcp/session with a real table', () => {
 	});
 
 	afterEach(() => _setSessionTableForTest(undefined));
+
+	it('declares the MCP session table as non-replicated', () => {
+		const SessionTable = ensureSessionTable();
+		assert.equal(SessionTable.replicate, false);
+		assert.equal(SessionTable.source, undefined);
+	});
 
 	it('keeps a deleted session absent when a late save reaches storage', async () => {
 		for (const [index, SessionTable] of SessionTables.entries()) {
@@ -63,7 +72,10 @@ describe('mcp/session with a real table', () => {
 				await loadRelease;
 				return record;
 			},
-			patch: (...args) => SessionTable.patch(...args),
+			replicate: false,
+			databaseName: SessionTable.databaseName,
+			tableName: SessionTable.tableName,
+			[PATCH_IF_EXISTS]: (...args) => SessionTable[PATCH_IF_EXISTS](...args),
 			delete: (...args) => SessionTable.delete(...args),
 		};
 		_setSessionTableForTest(gatedTable);

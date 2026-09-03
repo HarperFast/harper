@@ -8,6 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
 const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
 const { replayLogs } = require('#src/resources/replayLogs');
+const { CONDITIONAL_PATCH, LOCAL_ONLY } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -163,6 +164,48 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		};
 		await assert.rejects(() => replayLogs(stubStore, { Poisoned: poisonedTable }, true), /poisoned resource/);
 		assert.strictEqual(unlocked, true, 'a failed strict replay must release the lock for the retry');
+	});
+
+	it('preserves conditional and local-only write flags during replay', async function () {
+		let replayOptions;
+		const replayTable = {
+			tableId: 8,
+			primaryStore: {},
+			getResource() {
+				return {
+					_writeUpdate(_id, _record, _fullUpdate, options) {
+						replayOptions = options;
+					},
+					save() {},
+				};
+			},
+		};
+		const stubStore = {
+			databaseName: 'replay-flags',
+			purgeLogs() {
+				return [];
+			},
+			tryLock() {
+				return true;
+			},
+			auditStore: {
+				getRange() {
+					return [
+						{
+							type: 'patch',
+							tableId: 8,
+							version: 1,
+							extendedType: 5 | 32 | CONDITIONAL_PATCH | LOCAL_ONLY,
+							getValue: () => ({ value: 1 }),
+						},
+					];
+				},
+			},
+		};
+
+		await replayLogs(stubStore, { ReplayFlags: replayTable }, true);
+		assert.equal(replayOptions.ifExists, true);
+		assert.equal(replayOptions.localOnly, true);
 	});
 
 	it('fails the load when the adopted branch cannot replay, then adopts cleanly once it can', async function () {
