@@ -483,6 +483,19 @@ function chainKeyForId(id: any): string {
 	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
 }
 
+/**
+ * Normalize an explicitly passed `context` argument the way `transactional()` does, so the static
+ * verbs that resolve their own context agree with the ones that don't: the released placeholder is
+ * an absent argument, anything carrying a context (a resource, a transaction) yields it, and a bare
+ * DatabaseTransaction becomes the context slot holding it. Returns undefined when there is nothing
+ * to use, leaving the caller to fall back to the ambient store.
+ */
+function contextArgument(context: unknown): any {
+	if (context == null || isReleasedTransaction(context)) return undefined;
+	const resolved = (context as any).getContext?.() || context;
+	return resolved instanceof DatabaseTransaction ? { transaction: resolved } : resolved;
+}
+
 /** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
 function isPlainOptions(value: unknown): boolean {
 	return (
@@ -2405,21 +2418,31 @@ export function makeTable(options) {
 			}
 		}
 		/**
-		 * Static entry point: `Table.lock(id, options?)` — creates an instance in the ambient or a
-		 * fresh context and delegates to the instance lock(). This shadows Resource.static lock so
-		 * that both callers share the same transaction link (required for cross-instance upgrade
+		 * Static entry point: `Table.lock(id, options?, context?)` — creates an instance in the given,
+		 * ambient, or a fresh context and delegates to the instance lock(). This shadows Resource.static
+		 * lock so that both callers share the same transaction link (required for cross-instance upgrade
 		 * detection).  lock() is an in-process API with no authorization hook of its own; it is not
 		 * protocol-dispatched, so no allowUpdate/allowCreate check runs on acquisition.
+		 *
+		 * The trailing `context` is the same argument the other static verbs accept, and honoring it is
+		 * load-bearing rather than cosmetic: a caller that has no ambient context and passes its own (a
+		 * background job, a timer, a subscription callback) would otherwise land on a bare `{}` whose
+		 * transaction nothing ever commits or aborts, so `releaseRecordLocks()` would never run and the
+		 * key would stay locked for the whole lease.
 		 */
-		static lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
+		static lock(
+			target?: RequestTargetOrId | RecordLockOptions,
+			options?: RecordLockOptions,
+			context?: any
+		): Promise<any> {
 			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
 			if (options === undefined && isPlainOptions(target)) {
 				options = target as RecordLockOptions;
 				target = undefined;
 			}
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : null;
-			const context: any = contextStorage.getStore() ?? {};
-			const resource = new TableResource(id, context);
+			const resolvedContext: any = contextArgument(context) ?? contextStorage.getStore() ?? {};
+			const resource = new TableResource(id, resolvedContext);
 			return resource.lock(target, options);
 		}
 		/**

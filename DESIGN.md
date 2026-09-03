@@ -134,7 +134,7 @@ Two consequences of that scoping are worth knowing, both pre-existing and neithe
 
 ## Record locks: the native key lock is the sole authority (`Table`/`DatabaseTransaction`/`recordLock`)
 
-`table.lock(id, options?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
+`table.lock(id, options?, context?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
 write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
 map keyed by `[Symbol.for('record-lock'), tableId, id]`. No write goes to the store or audit log for
 `lock()` or `unlock()`. The record's version and stored bytes are unchanged when a lock is acquired or
@@ -201,6 +201,13 @@ Consequences that shape the code:
   handle it acquired would be registered on a fresh transaction that no commit or abort ever releases —
   a leaked key lock until the lease expires. It throws 500 instead, matching the leader's own
   post-acquisition guard.
+- **The static entry point resolves the passed context before the ambient one.**
+  `Table.lock(id, options?, context?)` takes the same trailing context as the other static verbs,
+  normalized by `contextArgument()` exactly as `transactional()` does (a bare `DatabaseTransaction`
+  becomes the context slot holding it). Honoring it is load-bearing, not cosmetic: a caller with no
+  ambient context — a background job, a timer, a subscription callback — would otherwise land on a
+  bare `{}` whose ImmediateTransaction releases no record locks, so the native key would stay locked
+  for the whole lease and every other `lock()` on that record would fail 423 until it expired.
 - **Timed-out waiter callback residue (rocksdb-js follow-up).** When `acquireRecordKey` times out and
   throws 423, the `onUnlocked` callback registered via `tryLock(key, onUnlocked)` stays live in the
   native map until the current holder eventually releases the key. rocksdb-js has no `deregisterCallback`

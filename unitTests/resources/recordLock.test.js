@@ -175,6 +175,61 @@ describe('Record locks (harper#483)', () => {
 			);
 			await holder.unlock();
 		});
+
+		// The static entry point takes the same trailing context as the other static verbs
+		// (`lock(id, options?, context?)`). Honoring it is what keeps the handle on the caller's own
+		// link, so the caller's commit or abort is what releases the native key.
+		it('static lock() uses the context argument when there is no ambient one', async function () {
+			// A caller with no ambient context — a background job, a timer, a subscription callback —
+			// passes its own. Dropped, the handle lands on a fresh ImmediateTransaction that no commit
+			// or abort releases, leaking the native key for the whole lease.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			// `isExplicit` runs the callback outside contextStorage, so nothing ambient can stand in.
+			const context = { isExplicit: true };
+			await transaction(context, async () => {
+				assert.strictEqual(contextStorage.getStore(), undefined, 'no ambient context to fall back on');
+				const record = await LockTest.lock(recordId, undefined, context);
+				assert.ok(context.transaction.recordLocks?.size, 'the handle registered on the passed transaction');
+				record.set('n', 2);
+				await record.save();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'the write landed in the passed transaction');
+			// That transaction's commit released the scoped lock, so a fresh lock takes the key at once.
+			const handle = await LockTest.lock(recordId, { hold: true, timeout: 150 });
+			await handle.unlock();
+		});
+
+		it('static lock() prefers the passed context over a differing ambient one', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			await transaction(async () => {
+				const ambient = contextStorage.getStore();
+				const passed = { isExplicit: true };
+				await transaction(passed, async () => {
+					await LockTest.lock(recordId, undefined, passed);
+					assert.ok(passed.transaction.recordLocks?.size, 'the handle registered on the passed transaction');
+					assert.ok(!ambient.transaction.recordLocks?.size, 'and not on the ambient one');
+				});
+			});
+		});
+
+		it('static lock() accepts a transaction in the context position', async function () {
+			// `transactional()` takes a bare DatabaseTransaction where a context goes; lock() normalizes
+			// the same way, so a caller holding only the transaction is not detached from it.
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			const context = { isExplicit: true };
+			await transaction(context, async (txn) => {
+				await LockTest.lock(recordId, undefined, txn);
+				assert.ok(txn.recordLocks?.size, 'the handle registered on the transaction that was passed');
+			});
+			const handle = await LockTest.lock(recordId, { hold: true, timeout: 150 });
+			await handle.unlock();
+		});
 	});
 
 	describe('concurrent writes: no gating', () => {
