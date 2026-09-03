@@ -79,9 +79,11 @@ const WINDOWS_TREE_POLL_MAX_MS = 5_000;
 const WINDOWS_TREE_WARNING_MS = 5_000;
 const WINDOWS_TREE_WARNING_INTERVAL_MS = 60_000;
 
-// Exit code 1 must mean "queried the process table and positively found nothing" — never "the
-// query itself failed" (e.g. Get-CimInstance denied or WMI unavailable). ErrorActionPreference=Stop
-// plus the wrapping try/catch turns a query failure into its own exit code (2), read as unknown.
+// Exit 0 means the query ran and produced a table (possibly empty — an empty table is still a
+// positive result, not "unknown"); exit 2 means the query itself failed (e.g. Get-CimInstance
+// denied or WMI unavailable), which ErrorActionPreference=Stop plus the wrapping try/catch turns
+// into that distinct code instead of a false-empty result, and `queryWindowsProcessTable` reads
+// anything but 0 as "could not read the table" (null), never as "positively found nothing".
 const PROCESS_TABLE_SCRIPT =
 	"$ErrorActionPreference = 'Stop'; try { " +
 	'$rows = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ ' +
