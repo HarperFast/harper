@@ -50,7 +50,7 @@ function getIdMappingRecord(auditStore) {
 		// now we can take over the local node id
 		nameToId[node_name] = 0;
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames();
+		invalidateNodeNames(auditStore);
 	}
 	return idMappingRecord;
 }
@@ -85,7 +85,7 @@ export function remoteToLocalNodeId(remoteMapping: any, auditStore: any) {
 	}
 	if (hasChanges) {
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames();
+		invalidateNodeNames(auditStore);
 	}
 	return remoteToLocalId;
 }
@@ -105,7 +105,7 @@ export function getIdOfRemoteNode(remoteNodeName, auditStore) {
 		id = lastId + 1;
 		nameToId[remoteNodeName] = id;
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
-		invalidateNodeNames();
+		invalidateNodeNames(auditStore);
 	}
 	logger.trace?.('The remote node name map', remoteNodeName, nameToId, id);
 	return id;
@@ -129,10 +129,11 @@ export function getThisNodeId(auditStore: any) {
 
 // Inverted id -> name map. exportIdMapping() re-reads and unpacks the mapping record on every call,
 // which is far too much per replicated entry on the apply thread; ids are stable once minted, so the
-// inversion is cached and dropped wherever nameToId is written.
-let idToNodeName: Map<number, string> | undefined;
-function invalidateNodeNames() {
-	idToNodeName = undefined;
+// inversion is cached and dropped wherever nameToId is written. Keyed per audit store because short
+// ids are minted per database in first-seen order — id 1 names a different node in each one.
+const idToNodeName = new WeakMap<object, Map<number, string>>();
+function invalidateNodeNames(auditStore: any) {
+	idToNodeName.delete(auditStore);
 }
 
 /**
@@ -140,11 +141,12 @@ function invalidateNodeNames() {
  * origin node need the globally stable name, not the id, which is assigned per node.
  */
 export function getNodeNameForId(auditStore: any, nodeId: number | undefined): string | undefined {
-	if (typeof nodeId !== 'number') return undefined;
-	const cached = idToNodeName?.get(nodeId);
+	if (typeof nodeId !== 'number' || !auditStore) return undefined;
+	const cached = idToNodeName.get(auditStore)?.get(nodeId);
 	if (cached !== undefined) return cached;
 	const nameToId = exportIdMapping(auditStore);
-	const names = (idToNodeName = new Map<number, string>());
+	const names = new Map<number, string>();
 	for (const name in nameToId) names.set(nameToId[name], name);
+	idToNodeName.set(auditStore, names);
 	return names.get(nodeId);
 }

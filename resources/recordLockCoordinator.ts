@@ -108,7 +108,12 @@ export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
 				: controlPackr.pack([entry.key, entry.requester, entry.tsR]);
 	// A record key is an ordered-binary value, never a plain object, so nothing here can mint a
 	// structure. If that ever stops holding, the receiver's decoder has no way to resolve the id.
-	if (controlStructures.length > 0) throw new ClientError('Record lock control payload minted a structure');
+	if (controlStructures.length > 0) {
+		// Clear before throwing: a dirty dictionary would make every later encode throw, and every
+		// grant write is swallowed by a latched warning, so this node would silently stop granting.
+		controlStructures.length = 0;
+		throw new ClientError('Record lock control payload minted a structure');
+	}
 	return packed;
 }
 
@@ -164,6 +169,8 @@ function identityOf(requester: string, tsR: number): string {
 
 interface OwnRound {
 	tsR: number;
+	/** `monotonic()` at the instant `tsR` was minted; every lease bound is measured from it. */
+	mintedMono: number;
 	leaseMs: number;
 	waitMs: number;
 	/** Participants whose grant is still outstanding. */
@@ -179,8 +186,14 @@ interface OwnRound {
 	done: boolean;
 	/** Monotonic bound: the wait deadline before acquisition, the hold deadline after. */
 	deadlineMono: number;
-	resolve: (tsR: number) => void;
+	resolve: (round: LockRound) => void;
 	reject: (error: Error) => void;
+}
+
+/** What a completed round hands back: the identity to stamp with, and the clock to measure from. */
+export interface LockRound {
+	tsR: number;
+	mintedMono: number;
 }
 
 interface PeerRound {
@@ -310,7 +323,7 @@ export class LockCoordinator {
 	 * `ts_R`, which becomes the holder's stamp; rejects 423 on timeout (having written the withdraw)
 	 * or 503 when the guarantee cannot be established.
 	 */
-	acquire(key: any, leaseMs: number, waitMs: number): Promise<number> {
+	acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
 		const keyId = this.#keyIdOf(key);
 		let grantSet: string[];
 		try {
@@ -332,14 +345,16 @@ export class LockCoordinator {
 				new LockUnavailableError(`A cluster record lock round is already in flight for this key on ${this.table}`)
 			);
 		const tsR = this.#nextTimestamp();
-		let resolve!: (value: number) => void;
+		const mintedMono = this.#monotonic();
+		let resolve!: (value: LockRound) => void;
 		let reject!: (error: Error) => void;
-		const acquisition = new Promise<number>((res, rej) => {
+		const acquisition = new Promise<LockRound>((res, rej) => {
 			resolve = res;
 			reject = rej;
 		});
 		const own: OwnRound = {
 			tsR,
+			mintedMono,
 			leaseMs,
 			waitMs,
 			pending: new Set(grantSet),
@@ -348,7 +363,7 @@ export class LockCoordinator {
 			withdrawOwed: false,
 			resolved: false,
 			done: false,
-			deadlineMono: this.#monotonic() + waitMs,
+			deadlineMono: mintedMono + waitMs,
 			resolve,
 			reject,
 		};
@@ -552,7 +567,9 @@ export class LockCoordinator {
 	}
 
 	#complete(state: KeyState, keyId: unknown, own: OwnRound) {
-		const remaining = own.tsR + own.leaseMs - this.#now();
+		// Measured on the monotonic clock, not `tsR + leaseMs - now()`: `tsR` never decreases, so a
+		// backward wall-clock step would report more lease left than the round was granted.
+		const remaining = own.leaseMs - (this.#monotonic() - own.mintedMono);
 		if (remaining <= 0) {
 			// The lease window closed while the round ran. Participants may already have synthesized this
 			// node's grant, so treating the key as held here is exactly the two-holder case.
@@ -562,7 +579,7 @@ export class LockCoordinator {
 		own.acquired = true;
 		own.deadlineMono = this.#monotonic() + remaining;
 		own.resolved = true;
-		own.resolve(own.tsR);
+		own.resolve({ tsR: own.tsR, mintedMono: own.mintedMono });
 	}
 
 	/** End the round: write the withdraw/release, hand out the deferred grants, settle the caller. */

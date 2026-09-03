@@ -266,6 +266,43 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		});
 	});
 
+	describe('lease fencing beyond the timer', () => {
+		it('fences a commit even when the caller unlocked after the lease had lapsed', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			await ClusterLockTest.put({ id: recordId, n: 1 });
+			await assert.rejects(
+				() =>
+					transaction(async () => {
+						const record = await ClusterLockTest.lock(recordId, { lease: 150 });
+						record.set('n', 2);
+						await record.save();
+						await delay(500);
+						// Giving the lock up deliberately does not make a lapsed lease valid again: peers
+						// passed their own bound long ago and the key may already belong to someone else.
+						await record.unlock();
+					}),
+				(error) => error.statusCode === 409
+			);
+			assert.strictEqual((await ClusterLockTest.get(recordId)).n, 1, 'the expired write never landed');
+		});
+
+		it('resolves a node id to a name per database, not process-wide', function () {
+			if (isLMDB) return this.skip();
+			const { pack } = require('msgpackr');
+			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
+			// Short ids are minted per database in first-seen order, so id 1 names a different node in
+			// each one. A process-global inversion would attribute an entry to the wrong node.
+			const storeFor = (mapping) => ({ getBinary: () => pack({ remoteNameToId: mapping }) });
+			const alpha = storeFor({ [NODE_NAME]: 0, 'node-b': 1 });
+			const beta = storeFor({ [NODE_NAME]: 0, 'node-c': 1 });
+			assert.strictEqual(getNodeNameForId(alpha, 1), 'node-b');
+			assert.strictEqual(getNodeNameForId(beta, 1), 'node-c');
+			assert.strictEqual(getNodeNameForId(alpha, 1), 'node-b', 'and the first store is still itself');
+		});
+	});
+
 	describe('exclusion from record-activity surfaces', () => {
 		it('never delivers control entries to subscribers', async function () {
 			if (isLMDB) return this.skip();

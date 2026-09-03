@@ -187,7 +187,7 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			await cluster.release('node-a');
 			await cluster.flush();
 			assert.strictEqual(second.state, 'resolved', 'release hands the key to the waiter');
-			assert.ok(second.value > first.value, 'the second holder stamps later than the first');
+			assert.ok(second.value.tsR > first.value.tsR, 'the second holder stamps later than the first');
 		});
 
 		it('fails without the holder deferral: a forged grant from the holder admits a second holder', async () => {
@@ -282,7 +282,7 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			const holder = cluster.acquire('node-a', KEY, 2_000, 3_000);
 			await cluster.flush();
 			assert.strictEqual(holder.state, 'resolved');
-			const holderTsR = holder.value;
+			const holderTsR = holder.value.tsR;
 
 			const waiter = cluster.acquire('node-b', KEY, 60_000, 120_000);
 			await cluster.flush();
@@ -585,6 +585,50 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			);
 			assert.strictEqual(cluster.node('node-a').written.length, 0);
 			assert.strictEqual(cluster.node('node-a').coordinator.stats.deferred, 0);
+		});
+	});
+
+	describe('lease anchoring', () => {
+		const { makeKeyLockHandle } = require('#src/resources/recordLock');
+		const fakeStore = () => ({ unlock() {}, getMonotonicTimestamp: () => Date.now() });
+
+		it('measures a granted lease monotonically, so a backward wall-clock step cannot extend it', async () => {
+			const handle = makeKeyLockHandle(fakeStore(), ['k'], 'k', 60_000, true, Date.now());
+			// tsR comes from a never-decreasing source, so after the wall clock steps BACK it is ahead of
+			// Date.now(). Deriving the remaining lease from `tsR + leaseMs - Date.now()` would hand back
+			// the full lease plus the step, past what every peer bounded from its own observation.
+			const mintedMono = performance.now();
+			const tsRAfterBackwardStep = Date.now() + 10_000;
+			assert.strictEqual(
+				handle.joinClusterRound(tsRAfterBackwardStep, 200, mintedMono, () => {}),
+				true
+			);
+			assert.strictEqual(handle.isLeaseExpired(), false, 'the lease is live immediately after the round');
+			await new Promise((resolve) => setTimeout(resolve, 350));
+			assert.strictEqual(handle.isLeaseExpired(), true, 'and lapses 200ms later, not 10.2s later');
+		});
+
+		it('reports lease expiry after a deliberate release when the lease timer ran late', () => {
+			const handle = makeKeyLockHandle(fakeStore(), ['k'], 'k', 150, true, Date.now());
+			// Peg the event loop past the deadline, which is exactly what a replication catch-up burst
+			// does, so the lease timer provably has not run.
+			const until = performance.now() + 250;
+			while (performance.now() < until) {} // eslint-disable-line no-empty
+			assert.strictEqual(handle.expired, false, 'the lease timer has not run');
+			handle.release();
+			assert.strictEqual(
+				handle.isLeaseExpired(),
+				true,
+				'giving the lock up deliberately does not make a lapsed lease valid again'
+			);
+		});
+
+		it('refuses a round whose lease already elapsed in monotonic terms', () => {
+			const handle = makeKeyLockHandle(fakeStore(), ['k'], 'k', 60_000, true, Date.now());
+			assert.strictEqual(
+				handle.joinClusterRound(Date.now(), 100, performance.now() - 500, () => {}),
+				false
+			);
 		});
 	});
 
