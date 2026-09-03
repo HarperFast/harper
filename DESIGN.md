@@ -486,11 +486,26 @@ Isolation contains the JS heap, the module registry, process-global registration
 does **not** contain databases, the filesystem, the network or native addons: a candidate can write before
 it throws.
 
+Certification also loads for real, so it leaves the footprint a load leaves. `symlinkHarperModule` links the
+running install into `node_modules/harper` on every non-root load — that is what makes `import 'harper'`
+resolve to the live instance — so certifying writes into the tree it is only supposed to read, and that tree
+is then renamed into the live path. The packer dereferences symlinks and recurses into linked directories,
+so a component carrying that link packages the entire Harper install: `package_component` on a freshly added
+component spent 46s tarring and then failed with "Maximum response size reached". `certifyCandidate`
+therefore snapshots the candidate's `node_modules` before the load and removes only the links its own load
+created, which matters because a `file:<directory>` deploy stages a symlink to the developer's own source
+tree — deleting a link they already had would be certification reaching outside the candidate. This restores
+the staged bytes rather than taking anything away: a serving worker recreates the link the next time it
+loads the component. Packaging a component that a worker HAS loaded still follows the link; that is
+pre-existing, and `scanPackageDirectory` documents the missing cycle protection behind it.
+
 Two cases earn no authority rather than being refused — the rule is _no verdict means no authority_, never
 _no verdict means no deploy_:
 
-- **Safe mode** stages without activating. It may not execute configured code, so it certifies nothing, and
-  nothing uncertified is published. Safe mode is transient, so the next ordinary preparation finishes it.
+- **Safe mode** deploys uncertified. It may not execute configured code, so no validator can vouch for the
+  candidate. An earlier draft staged without activating, on the reasoning that safe mode is transient — but
+  nothing resumes a journal-less staged tree: `recoverInterruptedActivations` removes it as build residue,
+  while the operation had already returned success and replicated. So it activates and mints no `.complete`.
 - **A branch-configured component** deploys uncertified. A branch's location is derived only from the
   application and database names, so a certification load would open the store the live version is serving
   from: a candidate could mutate rows, throw, be rejected, and leave the live version serving the mutation.

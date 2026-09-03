@@ -1,9 +1,11 @@
 'use strict';
 
+import { readdir, lstat, realpath, rm, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MessageChannel, Worker } from 'node:worker_threads';
 
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import {
 	buildWorkerExecArgv,
 	buildWorkerResourceLimits,
@@ -43,6 +45,83 @@ export const VERDICT_REJECTED = 2;
 
 /** How long to wait for a validator to actually go away before giving up and saying so. */
 const TERMINATION_GRACE_MS = 5000;
+
+/** The module links `symlinkHarperModule` maintains inside a component's `node_modules`. */
+const HARPER_MODULE_LINKS = ['harper', 'harperdb'];
+
+/**
+ * What the candidate's `node_modules` held BEFORE certification loaded it.
+ *
+ * Taken so the cleanup below can put the tree back exactly as the deploy staged it, rather than removing a
+ * link that was already there. That distinction is not academic: a `file:<directory>` deploy stages a
+ * SYMLINK to the developer's own source directory, so certification reads and writes through it — and a
+ * developer working on that component very likely already has `node_modules/harper` pointing at this
+ * install. Deleting theirs would be certification reaching outside the candidate to modify a working tree.
+ */
+async function snapshotHarperModuleLinks(
+	candidateDirPath: string,
+	installRoot: string
+): Promise<{ hadNodeModules: boolean; preexisting: Set<string> }> {
+	const nodeModulesDir = join(candidateDirPath, 'node_modules');
+	const preexisting = new Set<string>();
+	let hadNodeModules = false;
+	try {
+		await lstat(nodeModulesDir);
+		hadNodeModules = true;
+	} catch {
+		return { hadNodeModules, preexisting };
+	}
+	for (const name of HARPER_MODULE_LINKS) {
+		try {
+			if ((await realpath(join(nodeModulesDir, name))) === installRoot) preexisting.add(name);
+		} catch {}
+	}
+	return { hadNodeModules, preexisting };
+}
+
+/**
+ * Remove the `node_modules/harper` (and `harperdb`) link the certification load created.
+ *
+ * `symlinkHarperModule` links the running install into a component's `node_modules` on EVERY non-root load,
+ * so certifying a candidate writes into the tree it is only supposed to read — and that tree is then renamed
+ * into the live path. The link is not part of what the deploy staged, and a serving worker recreates it the
+ * next time it loads the component, so removing it restores the staged bytes rather than taking anything
+ * away. Left behind it turns every walk of the component into a walk of the whole Harper install: the packer
+ * dereferences and recurses into symlinked directories, so `package_component` packaged the install.
+ *
+ * Only a link this certification created, and only one resolving to THIS install, is removed — a component
+ * that ships or installs a `node_modules/harper` of its own keeps it.
+ */
+async function removeCertificationLinks(
+	candidateDirPath: string,
+	appName: string,
+	installRoot: string,
+	before: { hadNodeModules: boolean; preexisting: Set<string> }
+): Promise<void> {
+	const nodeModulesDir = join(candidateDirPath, 'node_modules');
+	for (const name of HARPER_MODULE_LINKS) {
+		if (before.preexisting.has(name)) continue;
+		const linkPath = join(nodeModulesDir, name);
+		try {
+			if (!(await lstat(linkPath)).isSymbolicLink()) continue;
+			if ((await realpath(linkPath)) !== installRoot) continue;
+			await rm(linkPath, { force: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+			harperLogger.warn(
+				`Could not remove the ${name} module link certification left in the ${appName} candidate; ` +
+					`packaging or copying this component will follow it into the Harper install:`,
+				error
+			);
+		}
+	}
+	// The load creates `node_modules` when the candidate has none, and an empty directory left behind is
+	// still a difference from the staged tree.
+	if (before.hadNodeModules) return;
+	try {
+		if ((await readdir(nodeModulesDir)).length === 0) await rmdir(nodeModulesDir);
+	} catch {}
+}
 
 let active = 0;
 const waiting: (() => void)[] = [];
@@ -115,6 +194,9 @@ export async function certifyCandidate(
 	// rejected as a malformed verdict. On a dedicated channel, anything that does not conform really is one.
 	const { port1: verdicts, port2: verdictPort } = new MessageChannel();
 	const verdictFlag = new Int32Array(new SharedArrayBuffer(4));
+	// Before the load, so the cleanup in the `finally` can tell what it created from what was already there.
+	const installRoot = await realpath(PACKAGE_ROOT).catch(() => undefined);
+	const linksBefore = installRoot ? await snapshotHarperModuleLinks(candidateDirPath, installRoot) : undefined;
 
 	try {
 		return await new Promise<CertificationOutcome>((resolve) => {
@@ -264,6 +346,10 @@ export async function certifyCandidate(
 			}
 		}
 		if (timer) clearTimeout(timer);
+		// Best-effort, and AFTER the termination above: the validator is gone (or reported as still running),
+		// so this is not racing a thread that could relink. Runs for every outcome, because a rejected
+		// candidate is swept and a certified one is renamed live, and neither should carry the link.
+		if (installRoot && linksBefore) await removeCertificationLinks(candidateDirPath, appName, installRoot, linksBefore);
 		// Both ends, or the channel keeps this thread's event loop referenced.
 		verdicts.close();
 		if (!slotHeld) releaseSlot();

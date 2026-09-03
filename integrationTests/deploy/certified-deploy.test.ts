@@ -102,4 +102,27 @@ suite('deploy_component certifies a candidate before publishing it', (ctx: Conte
 		strictEqual(await readFile(join(livePath, 'version.txt'), 'utf8'), '3', 'v3 is published');
 		strictEqual(await readVersion(ctx), 3, 'and answers requests');
 	});
+
+	test('the published tree does not carry the module link the certification load created', async () => {
+		// Certifying LOADS the candidate, and every non-root load links the running install into the
+		// component's `node_modules/harper` so `import 'harper'` resolves to the live instance. That link is
+		// not part of what the deploy staged, and the candidate tree is renamed into the live path — so
+		// without cleanup every walk of the component follows it into the whole Harper install.
+		// `package_component` did exactly that and packaged the install: 46s of tarring and then
+		// "Maximum response size reached".
+		//
+		// Deployed WITHOUT a restart deliberately: a serving worker legitimately recreates the link the next
+		// time it loads the component, so the invariant is about what the DEPLOY leaves behind.
+		const livePath = join(ctx.harper.dataRootDir, 'components', PROJECT);
+		await operation(ctx, { operation: 'deploy_component', project: PROJECT, payload: await buildPayload(4) });
+		strictEqual(await readFile(join(livePath, 'version.txt'), 'utf8'), '4', 'v4 is published');
+		ok(!existsSync(join(livePath, 'node_modules', 'harper')), 'no link to the Harper install was left behind');
+
+		// And the user-visible consequence: packaging sees the component, not the install behind the link.
+		const estimate = await operation(ctx, { operation: 'package_component', project: PROJECT, estimate: true });
+		ok(
+			estimate.total_size < 1_000_000,
+			`packaging walks only the component (got ${estimate.total_size} bytes; the install is orders of magnitude larger)`
+		);
+	});
 });
