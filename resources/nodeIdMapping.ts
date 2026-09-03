@@ -131,7 +131,13 @@ export function getThisNodeId(auditStore: any) {
 // which is far too much per replicated entry on the apply thread; ids are stable once minted, so the
 // inversion is cached and dropped wherever nameToId is written. Keyed per audit store because short
 // ids are minted per database in first-seen order — id 1 names a different node in each one.
-const idToNodeName = new WeakMap<object, Map<number, string>>();
+// Refresh window for a MISS. A hit is always trusted, but a miss cannot be: ids are minted by
+// whichever worker first talks to a peer, and invalidation only reaches that worker's own copy — so
+// a newly admitted node is absent from every other worker's map until it is rebuilt. Rebuilding on
+// every miss would put a store read and unpack back on the apply thread for each unmapped entry, so
+// misses re-read at most once a second.
+const NODE_NAME_REFRESH_MS = 1000;
+const idToNodeName = new WeakMap<object, { names: Map<number, string>; refreshedAt: number }>();
 function invalidateNodeNames(auditStore: any) {
 	idToNodeName.delete(auditStore);
 }
@@ -142,14 +148,14 @@ function invalidateNodeNames(auditStore: any) {
  */
 export function getNodeNameForId(auditStore: any, nodeId: number | undefined): string | undefined {
 	if (typeof nodeId !== 'number' || !auditStore) return undefined;
-	// Trust a populated cache for misses too. Falling through on `undefined` would make every
-	// unmapped id — a relayed or malformed entry — pay the store read and rebuild it was added to
-	// avoid, on the replication apply thread.
 	const cached = idToNodeName.get(auditStore);
-	if (cached) return cached.get(nodeId);
+	const hit = cached?.names.get(nodeId);
+	if (hit !== undefined) return hit;
+	const now = Date.now();
+	if (cached && now - cached.refreshedAt < NODE_NAME_REFRESH_MS) return undefined;
 	const nameToId = exportIdMapping(auditStore);
 	const names = new Map<number, string>();
 	for (const name in nameToId) names.set(nameToId[name], name);
-	idToNodeName.set(auditStore, names);
+	idToNodeName.set(auditStore, { names, refreshedAt: now });
 	return names.get(nodeId);
 }
