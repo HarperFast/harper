@@ -5607,8 +5607,11 @@ export function makeTable(options) {
 		 * The floor of retained audit history, in the same time domain as `subscribe`'s `startTime` and
 		 * the `localTime` its events carry — but NOT `getHistory`'s `localTime`, which is the origin
 		 * version under that name. Concretely:
-		 * a consumer whose last-processed cursor is below the returned value has lost history it needs
-		 * and must resync from a full read. `Infinity` means the floor is unknown and fails closed, so
+		 * a consumer whose last-processed cursor is below the returned value must resync from a full read.
+		 * That is the action, not a diagnosis: such a cursor *may* have lost history and the floor cannot
+		 * certify otherwise, which is not the same as history having been lost — an `Infinity` floor puts
+		 * every cursor below it with nothing necessarily pruned, and a prune that removed no entry the
+		 * cursor needed reads the same way. `Infinity` means the floor is unknown and fails closed, so
 		 * no cursor reads as safe — reachable when the floor could not be recorded (a read-only
 		 * database, or a failed metadata write).
 		 *
