@@ -351,12 +351,17 @@ export type TransactionWrite = {
 	// audit trail (audit pruning deletes them), so the superseded-write cleanup must leave them alone
 	blobsAuditReferenced?: boolean;
 	// Lock handle set by Table._writeUpdate when the write is staged through a held record lock;
-	// used in DatabaseTransaction.save() to inject the acquisition timestamp as the write's version.
+	// used in DatabaseTransaction.save() to assign and track that handle's write versions.
 	lockHandle?: RecordLockHandle;
 	// Per-operation holder version, set once on first save() and reused on retry so that
 	// ImmediateTransaction's sequential immediateCommit saves don't collide: each write carries its
 	// own stamp independently of this.timestamp, which may not reset to 0 between saves.
 	lockStamp?: number;
+	// Version staged by a write that actually changed the record this round. It advances any
+	// same-key held handle's floor only after the native transaction commits successfully.
+	appliedRecordVersion?: number;
+	// Set by a table commit handler only when this retry round staged a record change.
+	recordVersionApplied?: boolean;
 	// Set by DatabaseTransaction.save() on the immediateCommit path: the Promise returned by the
 	// inner this.commit({ transaction }) call. The ImmediateTransaction outer commit resolves before
 	// this settles (fire-and-forget from the if-branch), so Table.save()'s lock-writable path awaits
@@ -770,6 +775,16 @@ export class DatabaseTransaction implements Transaction {
 		if (recordLocks.size === 0) this.recordLocks = undefined;
 	}
 
+	private noteCommittedLockVersions(): void {
+		const recordLocks = this.recordLocks;
+		if (!recordLocks) return;
+		for (const write of this.writes) {
+			if (write?.appliedRecordVersion == null) continue;
+			const handle = write.lockHandle ?? recordLocks.get(write.store)?.get(writeKeyId(write.key));
+			if (handle?.hold && !handle.released) handle.noteHolderVersion(write.appliedRecordVersion);
+		}
+	}
+
 	/**
 	 * Discard the staged write set (committed or aborted); the per-key chain must go with it so a
 	 * reused transaction never bases a write on a previous batch's staged state.
@@ -939,18 +954,18 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
+		const lockHandle = operation.lockHandle;
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
-		if (operation.lockHandle && (operation.lockHandle.expired || operation.lockHandle.released)) {
+		if (lockHandle && (lockHandle.expired || lockHandle.released)) {
 			// Remove the operation from the staged set so subsequent writes on this context do not
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
 			if (failedIdx > -1) this.writes[failedIdx] = null;
-			throw lockNotHeldError(operation.lockHandle);
+			throw lockNotHeldError(lockHandle);
 		}
 		// Lock-write timestamp rules.
-		if (operation.lockHandle) {
-			const handle = operation.lockHandle;
+		if (lockHandle) {
 			if (this.open === TRANSACTION_STATE.CLOSED || this.saveCommits) {
 				// CLOSED path (second+ write per ImmediateTransaction cycle) OR the first write in
 				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
@@ -961,14 +976,8 @@ export class DatabaseTransaction implements Transaction {
 				// the same context before the commit resets it — a concurrent write in the caller's
 				// own Promise.all, or the next operation in a retry/replay save loop — with the
 				// lock's version, which LWW then silently drops against a newer record version.
-				if (!operation.lockStamp) operation.lockStamp = handle.nextHolderVersion();
-			} else if (handle.hold) {
-				// Explicit transaction() (saveCommits=false), OPEN, hold write:
-				// lock() already pinned link.timestamp to acquiredAt when no prior writes existed;
-				// otherwise leave the clock alone (best-effort; no 409).
+				if (!operation.lockStamp) operation.lockStamp = lockHandle.nextHolderVersion();
 			}
-			// Scoped lock in explicit transaction(): lock() pinned link.timestamp to acquiredAt
-			// when no prior writes existed; no additional stamping here.
 		}
 		let txnTime = operation.lockStamp ?? this.timestamp;
 		// Only an OPEN transaction accepts new staged writes. After commit, this.transaction may still
@@ -1031,6 +1040,7 @@ export class DatabaseTransaction implements Transaction {
 			if (result?.then) this.stageCompletion(result);
 		}
 		const completion = operation.commit(txnTime, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		operation.appliedRecordVersion = operation.recordVersionApplied ? txnTime : undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
@@ -1291,6 +1301,7 @@ export class DatabaseTransaction implements Transaction {
 								if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 							}
+							if (this.recordLocks) this.noteCommittedLockVersions();
 							// now reset transactions tracking; this transaction be reused and committed again
 							this.retries = 0; // reset per-native-transaction retry counter so a reused DatabaseTransaction's next batch starts fresh
 							this.clearWrites();
@@ -1428,6 +1439,7 @@ export class DatabaseTransaction implements Transaction {
 					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
 						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
 				}
+				if (this.recordLocks) this.noteCommittedLockVersions();
 				this.clearWrites();
 				this.releaseRecordLocks();
 				if (options.doneWriting) this.endScopeOwnership();
@@ -1777,9 +1789,17 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		}
 	}
 
-	// Without an explicit transaction() a lock is released only by unlock() or its lease, never by
-	// the per-write commit.
-	releaseRecordLocks(): void {}
+	// Without an explicit transaction() a live lock is released only by unlock() or its lease, never
+	// by the per-write commit. Expired handles are pruned so a reused context does not retain every key.
+	releaseRecordLocks(): void {
+		const recordLocks = this.recordLocks;
+		if (!recordLocks) return;
+		for (const [store, storeMap] of recordLocks) {
+			for (const [keyId, handle] of storeMap) if (handle.released) storeMap.delete(keyId);
+			if (storeMap.size === 0) recordLocks.delete(store);
+		}
+		if (recordLocks.size === 0) this.recordLocks = undefined;
+	}
 
 	declare _timestamp: number;
 	// @ts-expect-error accessor overriding property

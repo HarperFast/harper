@@ -168,9 +168,11 @@ out-of-order duplicates and discard.
 
 **Phase 0 contract.** `lock()` is mutually exclusive only with other `lock()` calls on the same key.
 Plain writes (`put`, `patch`, `delete`, `create`, `invalidate`, `relocate`) are never gated, parked,
-or restaged — they proceed immediately at real wall-clock time. Under LWW a concurrent plain write
-always wins over a holder write because the holder's write is stamped at the lock acquisition time
-(`acquiredAt ≤ real time of the concurrent write`). Use `lock()` when the caller needs to read-then-
+or restaged — they proceed immediately at real wall-clock time. A holder write starts at the lock
+acquisition time, so a later plain write wins under LWW unless the holder first wrote through an
+unpinned mixed explicit transaction. That transaction's later timestamp becomes the handle's floor
+so the holder cannot lose its own subsequent writes; ordering against plain writes between acquisition
+and that transaction timestamp is best-effort. Use `lock()` when the caller needs to read-then-
 conditionally-write without another holder interleaving, not to serialize arbitrary writers.
 
 Consequences that shape the code:
@@ -288,15 +290,23 @@ tiebreaking; once every node participates in the grant protocol, lock() becomes 
 
 **Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
 `transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
-sequential saves each get a distinct, monotonically-increasing version while remaining ≤ any
-concurrent write at real time. That stamp lives on the write (`TransactionWrite.lockStamp`) and is
+sequential saves each get a distinct, monotonically-increasing version. That stamp lives on the write
+(`TransactionWrite.lockStamp`) and is
 never assigned to the link clock: pinning `link.timestamp` would stamp every OTHER write staged on the
 same context before the commit resets it — a concurrent write in the caller's own `Promise.all`, an
 off-key write through the locked instance, the next operation in a retry or replay save loop — with
 the lock's acquisition time, which LWW then silently drops against a newer record version. In an
 explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
-clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes were staged before the hold was acquired the clock is
-left alone (best-effort ordering; no 409 is thrown for the mixed-write case).
+clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
+were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
+thrown for the mixed-write case). After a lock-backed record change commits, its transaction timestamp
+advances `handle.noteHolderVersion()`, so a surviving hold's later saves advance past that version
+rather than going backwards and being dropped by LWW. A skipped or rolled-back change never advances
+the floor. Consequently, a mixed transaction can
+make later holder writes outrank a plain write whose timestamp falls between `acquiredAt` and the mixed
+transaction timestamp. A caller-supplied future `context.timestamp` likewise remains the handle's floor
+for the life of the lease; clamping it would put the next holder write behind the handle's own committed
+version and recreate the silent-drop bug.
 
 **Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
 (`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after

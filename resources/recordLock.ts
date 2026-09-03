@@ -49,11 +49,11 @@ export interface RecordLockHandle {
 	expired: boolean;
 	/** Monotonic timestamp at which tryLock succeeded; used as the base version for holder writes. */
 	acquiredAt: number;
+	/** Advance, but never lower, the version floor from the transaction that owns the actual write timestamp. */
+	noteHolderVersion(version: number): void;
 	/**
-	 * Return the next version to stamp a holder write with. Starts at acquiredAt; increments by
-	 * the minimum monotonic step for every subsequent call so sequential saves on the same hold do
-	 * not collide on version while still staying ≤ any concurrent write that happened after
-	 * lock acquisition.
+	 * Return the next version to stamp a holder write with. Starts at acquiredAt when no transaction
+	 * version has been noted; otherwise advances by the minimum monotonic step from the recorded floor.
 	 */
 	nextHolderVersion(): number;
 	release(): boolean;
@@ -126,8 +126,12 @@ class KeyLockHandle implements RecordLockHandle {
 		}
 	}
 
+	noteHolderVersion(version: number): void {
+		this.#lastHolderVersion = Math.max(this.#lastHolderVersion ?? version, version);
+	}
+
 	nextHolderVersion(): number {
-		// Minimum monotonic step matches getNextMonotonicTime()'s own increment.
+		// A small nonzero step prevents exact LWW ties without materially moving past the observed floor.
 		const MIN_STEP = 0.000488;
 		const next =
 			this.#lastHolderVersion != null ? Math.max(this.#lastHolderVersion + MIN_STEP, this.acquiredAt) : this.acquiredAt;
@@ -169,11 +173,6 @@ class KeyLockHandle implements RecordLockHandle {
 		clearTimeout(this.#timer);
 		this.expiresAt = Date.now() + lease;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), lease).unref();
-		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
-		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
-		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
-		// and any in-transaction save both get acquiredAt, causing a LWW tie that drops the write.
-		this.nextHolderVersion();
 	}
 }
 

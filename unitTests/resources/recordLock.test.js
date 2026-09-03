@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction, contextStorage } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor');
-const { MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
+const { MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -16,9 +16,9 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 // record's version and stored bytes are unchanged by acquiring or releasing a lock.
 //
 // Contract: lock() is mutually exclusive with other lock() calls on the same key. Ordinary writes
-// (put/patch/delete/create) are NEVER gated, waited, or restaged — they proceed at real wall-clock
-// time and win over a holder's write under LWW because the holder's write is stamped with the
-// acquisition timestamp (≤ real time of concurrent writes).
+// (put/patch/delete/create) are NEVER gated, waited, or restaged. Holder writes normally begin at
+// acquisition time; mixed explicit transactions advance the handle from the transaction's version
+// so its own later writes never go backwards.
 describe('Record locks (harper#483)', () => {
 	let LockTest;
 	let nextId = 1;
@@ -45,6 +45,14 @@ describe('Record locks (harper#483)', () => {
 		]);
 
 	describe('pure in-memory: no store writes', () => {
+		it('never lowers a handle version floor', () => {
+			const handle = makeKeyLockHandle({ unlock() {} }, [], 'key', undefined, true, 100);
+			handle.noteHolderVersion(200);
+			handle.noteHolderVersion(150);
+			assert.ok(handle.nextHolderVersion() > 200);
+			handle.release();
+		});
+
 		it('lock() and unlock() do not change the record version or stored bytes', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
@@ -572,6 +580,20 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write committed');
 		});
 
+		it('a reused ImmediateTransaction prunes expired lock handles', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(2000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const context = {};
+			await LockTest.lock(recordId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
+			const immediate = context.transaction;
+			await delay(MIN_LOCK_LEASE_MS + 50);
+			assert.ok(immediate.recordLocks?.size, 'expired handle remains until the transaction is reused');
+			immediate.releaseRecordLocks();
+			assert.strictEqual(immediate.recordLocks, undefined, 'the next cleanup drops expired handle references');
+		});
+
 		it('scoped lock with expired lease: write through the returned record throws 409', async function () {
 			// Item 2a: a scoped lock whose lease expires before save() should throw 409.
 			if (isLMDB) return this.skip();
@@ -1078,28 +1100,138 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(idA)).n, 1, 'write landed');
 		});
 
-		it('major: post-commit save after scoped→hold upgrade lands (nextHolderVersion counter primed)', async function () {
-			// upgradeToHold() now primes the nextHolderVersion counter so that a CLOSED-path save
-			// (e.g. after the enclosing transaction commits) gets acquiredAt+MIN_STEP, not acquiredAt
-			// again.  Without the prime, the in-transaction save and the post-commit save both stamp
-			// at acquiredAt (LWW tie on same node) and the post-commit write is silently dropped.
+		it('post-commit save after a hold follows another staged write advances', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			const otherId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await LockTest.put({ id: otherId, n: 0 });
+			let holdRef;
+			await transaction(async () => {
+				await LockTest.update(otherId, { n: 1 });
+				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				holdRef.set('n', 1);
+				await holdRef.save();
+			});
+			const committedVersion = entryOf(recordId).version;
+			holdRef.set('n', 2);
+			await holdRef.save();
+			await holdRef.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'post-commit hold write landed');
+			assert.ok(entryOf(recordId).version > committedVersion, 'post-commit holder version advanced');
+		});
+
+		it('a committed static same-key write advances a surviving hold', async function () {
 			if (isLMDB) return this.skip();
 			this.timeout(3000);
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0 });
 			let holdRef;
 			await transaction(async () => {
-				const s = await LockTest.lock(recordId); // scoped; pins clock to T_A
-				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 }); // upgradeToHold → primes counter
-				s.set('n', 1);
-				await s.save(); // stamped at T_A (link.timestamp)
-			}); // commit; hold survives
-			// Without prime: nextHolderVersion() = T_A (tie with in-transaction write) → dropped.
-			// With prime: nextHolderVersion() = T_A + MIN_STEP → lands.
+				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				await LockTest.patch(recordId, { n: 1 });
+			});
+			const committedVersion = entryOf(recordId).version;
 			holdRef.set('n', 2);
 			await holdRef.save();
 			await holdRef.unlock();
-			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'post-commit hold write landed (not dropped by LWW tie)');
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'post-commit hold write landed');
+			assert.ok(entryOf(recordId).version > committedVersion, 'holder advanced past the static write');
+		});
+
+		it('post-commit save after a mixed-transaction scoped→hold upgrade advances', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			const otherId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			await LockTest.put({ id: otherId, n: 0 });
+			let holdRef;
+			await transaction(async () => {
+				await LockTest.update(otherId, { n: 1 });
+				const s = await LockTest.lock(recordId);
+				s.set('n', 1);
+				await s.save();
+				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			});
+			const committedVersion = entryOf(recordId).version;
+			holdRef.set('n', 2);
+			await holdRef.save();
+			await holdRef.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'post-commit hold write landed');
+			assert.ok(entryOf(recordId).version > committedVersion, 'post-commit holder version advanced');
+		});
+
+		it('post-commit save after a pinned scoped→hold upgrade advances', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdRef;
+			await transaction(async () => {
+				const scoped = await LockTest.lock(recordId);
+				scoped.set('n', 1);
+				await scoped.save();
+				holdRef = await scoped.lock({ hold: true, lease: 5000 });
+			});
+			const committedVersion = entryOf(recordId).version;
+			holdRef.set('n', 2);
+			await holdRef.save();
+			await holdRef.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'post-commit hold write landed');
+			assert.ok(entryOf(recordId).version > committedVersion, 'post-commit holder version advanced');
+		});
+
+		it('a rolled-back holder write does not advance a surviving hold', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdRef;
+			await assert.rejects(
+				transaction({ timestamp: Date.now() + 60_000 }, async () => {
+					holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+					holdRef.set('n', 1);
+					await holdRef.save();
+					throw new Error('roll back holder write');
+				}),
+				/roll back holder write/
+			);
+			await LockTest.put({ id: recordId, n: 2 });
+			const plainVersion = entryOf(recordId).version;
+			holdRef.set('n', 3);
+			await holdRef.save();
+			const after = entryOf(recordId);
+			await holdRef.unlock();
+			assert.strictEqual(after.value.n, 2, 'plain write remains the LWW winner');
+			assert.strictEqual(after.version, plainVersion, 'rolled-back version did not raise the holder floor');
+		});
+
+		it('a hold with no transaction write does not outrank a later plain write', async function () {
+			if (isLMDB) return this.skip();
+			this.timeout(3000);
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			let holdRef;
+			let lockHandle;
+			await transaction(async (txn) => {
+				holdRef = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+				lockHandle = [...txn.recordLocks.values()][0].values().next().value;
+				assert.strictEqual(
+					lockHandle.nextHolderVersion(),
+					lockHandle.acquiredAt,
+					'acquisition did not prime the floor'
+				);
+				await transaction({ sourceApply: true }, () => LockTest.put({ id: recordId, n: 2 }));
+			});
+			const plainVersion = entryOf(recordId).version;
+			holdRef.set('n', 3);
+			await holdRef.save();
+			const after = entryOf(recordId);
+			await holdRef.unlock();
+			assert.strictEqual(after.value.n, 2, 'plain write remains the LWW winner');
+			assert.strictEqual(after.version, plainVersion, 'dropped holder write did not advance the version');
 		});
 
 		it('minor-2: concurrent lock() calls for same key in one transaction coalesce, not self-block', async function () {

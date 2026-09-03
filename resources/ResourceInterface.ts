@@ -276,6 +276,8 @@ export type { RecordLockOptions } from './recordLock.ts';
 export type WritableRecord<Record extends object = any> = UpdatableRecord<Record> & {
 	save(): void | Promise<void>;
 	update(updates?: Partial<Record>): unknown;
+	delete(target?: RequestTargetOrId): boolean | Promise<boolean>;
+	lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<WritableRecord<Record>>;
 	unlock(): Promise<boolean>;
 };
 

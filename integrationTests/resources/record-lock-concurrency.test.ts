@@ -4,8 +4,8 @@
  * With 4 HTTP workers, concurrent `tables.Counter.lock(id)` callers must admit exactly one holder at a
  * time: every increment lands (exact count) and the holder intervals never overlap, with holders spread
  * over more than one thread. A plain write to a record another party holds proceeds immediately (no
- * gating in Phase 0) and wins under LWW, while a holder that never releases loses the lock at lease
- * expiry with the record intact.
+ * gating in Phase 0), while a holder that never releases loses the lock at lease expiry with the
+ * record intact.
  *
  * Fails-on-base proof: `RECORD_LOCK_CONTROL=1` runs the same increment burst through the fixture's
  * per-worker mutex (`mode: 'worker-mutex'`), the shape a per-worker-only lock has — the serialization
@@ -123,9 +123,7 @@ suite(`record locks serialize across ${WORKERS} workers`, { skip: skipSuite }, (
 	});
 
 	test('a plain write to a held record proceeds immediately; an abandoned holder expires with the record intact', async () => {
-		// Phase 0: plain writes are never gated on a held lock. The write proceeds at real wall-clock
-		// time and wins over the holder's write under LWW because the holder's write is stamped with
-		// the earlier acquisition timestamp.
+		// Phase 0: plain writes are never gated on a held lock.
 		const id = 'held';
 		const seeded = await put(id, { n: 1, holders: 0 });
 		ok(seeded.status === 200 || seeded.status === 204, `seeded (${seeded.status})`);

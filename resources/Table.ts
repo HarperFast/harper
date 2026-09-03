@@ -2223,6 +2223,7 @@ export function makeTable(options) {
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					write.recordVersionApplied = false;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
 						write.skipped = true;
 						return;
@@ -2253,6 +2254,7 @@ export function makeTable(options) {
 						},
 						'invalidate'
 					);
+					write.recordVersionApplied = true;
 					// TODO: recordDeletion?
 				},
 			};
@@ -2264,7 +2266,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				invalidated: true,
@@ -2275,6 +2277,7 @@ export function makeTable(options) {
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+					write.recordVersionApplied = false;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
@@ -2312,8 +2315,10 @@ export function makeTable(options) {
 						false,
 						null
 					);
+					write.recordVersionApplied = true;
 				},
-			});
+			};
+			transaction.addWrite(write);
 		}
 
 		/**
@@ -2585,13 +2590,6 @@ export function makeTable(options) {
 						// each save() stamps with nextHolderVersion() instead.
 						if (link.writes.length === 0 && !link.timestamp) {
 							link.timestamp = handle.acquiredAt;
-							if (resolved.hold) {
-								// Prime the nextHolderVersion counter so a later CLOSED-path save
-								// (e.g. after the transaction commits and the hold is used from an
-								// ImmediateTransaction context) gets acquiredAt+MIN_STEP instead of
-								// acquiredAt again (which would be a LWW tie with the first write).
-								handle.nextHolderVersion();
-							}
 						}
 						if (!resolved.hold && link.transaction) {
 							// Scoped lock: the read snapshot may predate the lock; drop it so the
@@ -2959,6 +2957,7 @@ export function makeTable(options) {
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
+					write.recordVersionApplied = false;
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
 					// The record a preceding write in this transaction left for this key is what this write
@@ -3477,6 +3476,7 @@ export function makeTable(options) {
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					writeCommit(true);
+					write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
 						scheduleCleanup(); // arm for replicated writes too, not just local-context writes
 						// A runtime per-record expiresAt on a table with no table-level expiration/eviction, no expiresAt
@@ -3641,6 +3641,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
+					write.recordVersionApplied = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -3683,6 +3684,7 @@ export function makeTable(options) {
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
 					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					write.recordVersionApplied = true;
 					// the removal supersedes the nearest record an earlier write in this transaction stored
 					// (older ones were already marked by their staged successors), so its saved blobs are
 					// cleaned up post-commit unless its audit entry references them
