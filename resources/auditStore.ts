@@ -739,7 +739,7 @@ export function establishAuditFloor(auditStore: any): void {
 
 /**
  * The floor of this database's retained audit history: every audit entry at or after the returned
- * time is still retained, so a consumer whose last-processed cursor is `>=` it can resume
+ * time is still retained, so a consumer whose last-processed audit-log cursor is `>=` it can resume
  * incrementally, and one below it must resync — it may have lost nothing, but the floor cannot
  * certify it either way. Returns `Infinity` when
  * the floor is unknown, which fails closed — no cursor compares as safe.
