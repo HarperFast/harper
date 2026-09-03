@@ -179,16 +179,16 @@ Consequences that shape the code:
   instance are no longer accepted. When no iterators are open (`readTxnsUsed <= 1`) the read snapshot
   is released and `snapshotFree` is set so subsequent reads see current state.
 - **Scoped lock in an explicit `transaction()` scope (Rule B).** After acquisition the transaction
-  clock is set to `min(existing clock, acquiredAt)`.  If prior writes in the same transaction had fixed
+  clock is set to `min(existing clock, acquiredAt)`. If prior writes in the same transaction had fixed
   the clock earlier than `acquiredAt` and the record was modified since then, `lock()` throws 409
-  (`"Record changed before it was locked"`).  In an `ImmediateTransaction` context (no explicit scope),
+  (`"Record changed before it was locked"`). In an `ImmediateTransaction` context (no explicit scope),
   each write through a scoped lock is stamped with `nextHolderVersion()` exactly like a hold write, so
   sequential saves each land independently without pinning the context clock.
 - **Scoped → hold upgrade.** Calling `lock(id, { hold: true })` while the same transaction already
   holds a scoped lock on the same key upgrades it: the scoped handle is unregistered and its `released`
   flag is set directly (not via `release()`) so the native key remains locked, and a fresh hold handle
-  is created that inherits ownership.  Any changes staged under the scoped lock are preserved on the
-  instance.  The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call
+  is created that inherits ownership. Any changes staged under the scoped lock are preserved on the
+  instance. The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call
   is re-entrant and returns the existing handle.
 - **Crash / thread death.** A process crash releases all key locks (process-wide in-memory). A worker
   thread termination releases its locks: rocksdb-js's `~DBHandle()` destructor calls
@@ -209,9 +209,9 @@ tiebreaking; once every node participates in the grant protocol, lock() becomes 
 **Acquisition timestamp and mixed transactions (Rules C & D).** In an `ImmediateTransaction` context
 (no explicit `transaction()` scope) every save — hold or scoped — is stamped by
 `handle.nextHolderVersion()` so sequential saves each get a distinct, monotonically-increasing version
-while remaining ≤ any concurrent write at real time.  In an explicit OPEN transaction a hold write
+while remaining ≤ any concurrent write at real time. In an explicit OPEN transaction a hold write
 pins the transaction clock to `handle.acquiredAt` on its first save; subsequent saves in the same
-transaction reuse that pinned clock.  If the transaction clock was already set later than `acquiredAt`
+transaction reuse that pinned clock. If the transaction clock was already set later than `acquiredAt`
 (non-hold writes ran after the hold was acquired) and the record has been modified by another writer
 since `acquiredAt`, `DatabaseTransaction.save()` throws 409 (`"Record changed during the hold"`).
 When no concurrent modification occurred the writes proceed safely.

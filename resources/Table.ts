@@ -2467,19 +2467,14 @@ export function makeTable(options) {
 							if (entry && entry.version > clockBeforeLock) {
 								link.unregisterRecordLock(handle);
 								handle.release();
-								throw new ClientError(
-									'Record changed before it was locked; lock before writing',
-									409
-								);
+								throw new ClientError('Record changed before it was locked; lock before writing', 409);
 							}
 							// Record unchanged since the transaction started — safe.  Keep the earlier
 							// clock (min(clockBeforeLock, acquiredAt) = clockBeforeLock).
 						} else {
 							// No prior writes (clock=0) or clock >= acquiredAt (set by a prior lock):
 							// pin to min(existing, acquiredAt).
-							link.timestamp = clockBeforeLock > 0
-								? Math.min(clockBeforeLock, handle.acquiredAt)
-								: handle.acquiredAt;
+							link.timestamp = clockBeforeLock > 0 ? Math.min(clockBeforeLock, handle.acquiredAt) : handle.acquiredAt;
 						}
 						if (link.transaction) {
 							// The read snapshot predates the lock; drop it so the scope reads what
