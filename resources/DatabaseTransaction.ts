@@ -1188,7 +1188,8 @@ export class DatabaseTransaction implements Transaction {
 							// only: an unlock() inside the lease leaves the staged write valid, an elapsed lease
 							// does not, whether or not the caller also unlocked.
 							for (let i = 0; i < this.writes.length; i++) {
-								if (!this.writes[i].lockHandle?.isLeaseExpired()) continue;
+								const lapsed = this.writes[i].lockHandle;
+								if (!lapsed?.isLeaseExpired()) continue;
 								try {
 									transaction.abort();
 								} catch {}
@@ -1201,7 +1202,7 @@ export class DatabaseTransaction implements Transaction {
 								} catch (error) {
 									harperLogger.debug?.('cleaning up a transaction whose record lock lapsed', error);
 								}
-								throw new ClientError('Record lock lease expired', 409);
+								throw lockNotHeldError(lapsed);
 							}
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
