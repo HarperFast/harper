@@ -44,13 +44,11 @@ export function resolveRocksMemoryConfig(input: RocksMemoryConfigInput): RocksMe
 	);
 	const config: RocksMemoryConfig = { blockCacheSize };
 	// costToCache and allowStall only matter when the WBM is enabled. allowStall defaults to false
-	// so the budget is a soft cap RocksDB flushes harder against: a stalling manager parks every
-	// writer in the process inside DBImpl::WriteBufferManagerStallWrites() with nothing guaranteeing
-	// the flush that would release them, because ShouldFlush() only triggers once mutable memory
-	// alone reaches half the budget — spread the budget over enough column families and the only
-	// exit is a restart (#2490). The cost is memory: a non-stalling manager keeps each family's
-	// derived conflict-check history (maxWriteBufferNumber * writeBufferSize), a floor RocksDB
-	// trims toward but never below, until HarperFast/rocksdb-js#821 lets that target be lowered.
+	// so the budget is a soft cap: a stalling manager parks every writer in the process inside
+	// DBImpl::WriteBufferManagerStallWrites(), and once the budget is held across enough column
+	// families nothing triggers the flush that would release them, so the only exit is a restart
+	// (#2490). The cost is memory — a non-stalling manager keeps each family's derived
+	// conflict-check history as a floor RocksDB never trims below, until HarperFast/rocksdb-js#821.
 	if (writeBufferManagerSize > 0) {
 		config.writeBufferManagerSize = writeBufferManagerSize;
 		config.writeBufferManagerCostToCache = typeof configuredCostToCache === 'boolean' ? configuredCostToCache : true;
