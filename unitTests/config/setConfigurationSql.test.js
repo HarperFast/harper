@@ -1,9 +1,7 @@
 'use strict';
 
-// `getConfigValue`/`set_configuration` resolve a name only if it is present in CONFIG_PARAM_MAP,
-// populated from CONFIG_PARAMS. An unregistered param reads as `undefined` forever — the exact
-// way sql.engine/allowFullScan/maxSortRows/maxHashRows shipped inert. Guards the registration;
-// sqlEngine/config.ts's own tests guard that the accessor reads the registered value.
+// An unregistered CONFIG_PARAMS entry reads as `undefined` forever and set_configuration
+// rejects it as unrecognized.
 
 const assert = require('node:assert/strict');
 const { CONFIG_PARAMS, CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');

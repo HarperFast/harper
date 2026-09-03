@@ -284,10 +284,6 @@ describe('Test configValidator module', () => {
 		});
 
 		it('rejects a quoted-string sql.allowFullScan value (convert is off for this section)', () => {
-			// sqlSchema sets convert:false: validateConfig() never writes a coerced value back
-			// into configDoc for sql (unlike threads/logging/storage), so leaving Joi's default
-			// convert:true on here would accept "true"/"false" and then silently drop it —
-			// getSqlEngineConfig()'s typeof guard rejects the still-unconverted string.
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.sql = { allowFullScan: 'true' };
 			expect(configValidator(config).error.message).to.include("'sql.allowFullScan' must be a boolean");

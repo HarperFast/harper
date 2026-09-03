@@ -128,8 +128,6 @@ describe('sqlEngine router', () => {
 });
 
 describe('sqlEngine config: harper config integration', () => {
-	// configUtils' in-memory config is process-wide, shared by every unit test file mocha loads
-	// in this run — clear to a known state per test, restore whatever was there afterward.
 	const SQL_KEYS = [
 		CONFIG_PARAMS.SQL_ENGINE,
 		CONFIG_PARAMS.SQL_ALLOWFULLSCAN,
@@ -202,9 +200,6 @@ describe('sqlEngine config: harper config integration', () => {
 		assert.strictEqual(cfg.maxHashRows, 1_000_000);
 	});
 
-	// The tests above inject through updateConfigObject(), which writes flatConfigObj directly
-	// and never exercises flattenConfig()'s nested-to-flat key derivation a real boot goes
-	// through — cover that derivation here instead of needing a full config-file fixture.
 	it('flattenConfig() derives the four flat sql.* keys from a nested sql block', () => {
 		const flat = configUtils.flattenConfig({
 			sql: { engine: 'legacy', allowFullScan: true, maxSortRows: 5, maxHashRows: 7 },
