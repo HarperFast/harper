@@ -432,30 +432,6 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				'server log never recorded a single "Received WebSocket connection for MQTT from" line -- logging/harness problem, cannot evaluate the transport-accepted-but-never-completed hypothesis'
 			);
 
-			// Two-sided oracle, enforced: the server must never have accepted more transports than
-			// the client accounted for as completed OR cleanly refused. +1 per surface allows for
-			// the baseline usability probe fired above, which triggers an "accepted" log line but
-			// is deliberately excluded from `results`. `refused` counts here deliberately: the
-			// server logs "accepted" the instant the transport upgrade lands, several ms before
-			// CONNACK, so a worker torn down inside that gap during the rolling restart produces a
-			// legitimate accepted-then-reset that the client correctly classifies `refused`, not a
-			// wedge -- comparing only against `completed` would fail that benign interleaving.
-			// `assertNoWedge` above already independently pins the client-observed wedge count to
-			// zero; this oracle instead catches accepts the client never accounted for at all.
-			function assertServerAccepts(
-				surface: string,
-				acceptedLines: number,
-				a: NonNullable<ReturnType<typeof analyzeSurface>>
-			) {
-				ok(
-					acceptedLines <= a.completed.length + a.refused.length + 1,
-					`SERVER-SIDE ACCEPT MISMATCH (${surface}): server log recorded ${acceptedLines} accepted transports vs only ${a.completed.length + a.refused.length} client-accounted-for (completed+refused) attempts`
-				);
-			}
-			assertServerAccepts('WS', wsAcceptedLines, wsA!);
-			if (tcpA) assertServerAccepts('TCP', tcpAcceptedLines, tcpA);
-			if (tlsA) assertServerAccepts('TLS', sslAcceptedLines, tlsA);
-
 			console.log(
 				`\n[QA-649] SELF-HEAL: ${lateSelfHeals.length} of the ${Object.values(lateWatchCount).reduce((a, b) => a + b, 0)} tracked wedged client(s) ` +
 					`fired a late 'connect' within the ${LATE_GRACE_MS}ms post-classification grace window. ` +
@@ -513,6 +489,31 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			assertNoWedge('WS', wsA!);
 			if (tcpA) assertNoWedge('TCP', tcpA);
 			if (tlsA) assertNoWedge('TLS', tlsA);
+
+			// Two-sided oracle, enforced last: `assertNoWedge` above already independently pins
+			// the client-observed wedge count to zero with the most specific diagnostic, so a real
+			// wedge fails there first rather than surfacing here as a less informative accept
+			// mismatch. This instead catches accepts the client never accounted for at all -- the
+			// server must never have accepted more transports than the client accounted for as
+			// completed OR cleanly refused. +1 per surface allows for the baseline usability probe
+			// above, which triggers an "accepted" log line but is deliberately excluded from
+			// `results`. `refused` counts here deliberately: the server logs "accepted" the instant
+			// the transport upgrade lands, several ms before CONNACK, so a worker torn down inside
+			// that gap during the rolling restart produces a legitimate accepted-then-reset the
+			// client correctly classifies `refused`, not a wedge.
+			function assertServerAccepts(
+				surface: string,
+				acceptedLines: number,
+				a: NonNullable<ReturnType<typeof analyzeSurface>>
+			) {
+				ok(
+					acceptedLines <= a.completed.length + a.refused.length + 1,
+					`SERVER-SIDE ACCEPT MISMATCH (${surface}): server log recorded ${acceptedLines} accepted transports vs only ${a.completed.length + a.refused.length} client-accounted-for (completed+refused) attempts`
+				);
+			}
+			assertServerAccepts('WS', wsAcceptedLines, wsA!);
+			if (tcpA) assertServerAccepts('TCP', tcpAcceptedLines, tcpA);
+			if (tlsA) assertServerAccepts('TLS', sslAcceptedLines, tlsA);
 		}
 	);
 });
