@@ -482,10 +482,7 @@ function startWorker(path, options = {}) {
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
-			// Only a serving-topology start describes the topology. A start that omits `threadCount` used to
-			// write `undefined` here, and `restartWorkers`'s default throttle then evaluated to `NaN` — see
-			// HarperFast/harper#2491, which job workers already trigger.
-			workerCount: options.threadCount === undefined ? workerCount : (workerCount = options.threadCount),
+			workerCount: (workerCount = options.threadCount),
 			name: options.name,
 			restartNumber: module.exports.restartNumber,
 			ticketKeys: getTicketKeys(),
