@@ -483,15 +483,9 @@ function chainKeyForId(id: any): string {
 	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
 }
 
-/**
- * Normalize an explicitly passed `context` argument the way `transactional()` does, so the static
- * verbs that resolve their own context agree with the ones that don't: the released placeholder is
- * an absent argument, anything carrying a context (a resource, a transaction) yields it, and a bare
- * DatabaseTransaction becomes the context slot holding it. Returns undefined when there is nothing
- * to use, leaving the caller to fall back to the ambient store.
- */
+/** Normalizes a passed `context` argument as `transactional()` does; undefined means fall back to ambient. */
 function contextArgument(context: unknown): any {
-	if (context == null || isReleasedTransaction(context)) return undefined;
+	if (!context || isReleasedTransaction(context)) return undefined;
 	const resolved = (context as any).getContext?.() || context;
 	return resolved instanceof DatabaseTransaction ? { transaction: resolved } : resolved;
 }
@@ -2424,11 +2418,9 @@ export function makeTable(options) {
 		 * detection).  lock() is an in-process API with no authorization hook of its own; it is not
 		 * protocol-dispatched, so no allowUpdate/allowCreate check runs on acquisition.
 		 *
-		 * The trailing `context` is the same argument the other static verbs accept, and honoring it is
-		 * load-bearing rather than cosmetic: a caller that has no ambient context and passes its own (a
-		 * background job, a timer, a subscription callback) would otherwise land on a bare `{}` whose
-		 * transaction nothing ever commits or aborts, so `releaseRecordLocks()` would never run and the
-		 * key would stay locked for the whole lease.
+		 * Dropping the trailing `context` would leak the key: a caller with no ambient context lands on
+		 * a bare `{}`, whose ImmediateTransaction releases no record locks, so the lease is the only
+		 * thing that ever frees it.
 		 */
 		static lock(
 			target?: RequestTargetOrId | RecordLockOptions,
@@ -2576,7 +2568,12 @@ export function makeTable(options) {
 							if (link.readTxnsUsed <= 1) {
 								link.releaseReadTxn();
 								link.snapshotFree = true;
-							} else link.transaction.setTimestamp(link.timestamp);
+							} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
+							// Guarded like DatabaseTransaction's own setTimestamp calls: the clock is
+							// pinned above only when no writes were staged, and a deferred write from
+							// update() leaves writes staged with the clock still 0. rocksdb-js rejects
+							// setTimestamp(0) outright, so an unguarded call turned lock() into an
+							// opaque native throw.  Nothing to align means leave the snapshot alone.
 						}
 					}
 					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write

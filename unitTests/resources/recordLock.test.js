@@ -176,18 +176,13 @@ describe('Record locks (harper#483)', () => {
 			await holder.unlock();
 		});
 
-		// The static entry point takes the same trailing context as the other static verbs
-		// (`lock(id, options?, context?)`). Honoring it is what keeps the handle on the caller's own
-		// link, so the caller's commit or abort is what releases the native key.
 		it('static lock() uses the context argument when there is no ambient one', async function () {
-			// A caller with no ambient context — a background job, a timer, a subscription callback —
-			// passes its own. Dropped, the handle lands on a fresh ImmediateTransaction that no commit
-			// or abort releases, leaking the native key for the whole lease.
+			// Dropped, the handle lands on an ImmediateTransaction that releases no record locks, so
+			// the key stays locked until the lease expires.
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });
-			// `isExplicit` runs the callback outside contextStorage, so nothing ambient can stand in.
-			const context = { isExplicit: true };
+			const context = { isExplicit: true }; // isExplicit runs the callback outside contextStorage
 			await transaction(context, async () => {
 				assert.strictEqual(contextStorage.getStore(), undefined, 'no ambient context to fall back on');
 				const record = await LockTest.lock(recordId, undefined, context);
@@ -196,9 +191,8 @@ describe('Record locks (harper#483)', () => {
 				await record.save();
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'the write landed in the passed transaction');
-			// That transaction's commit released the scoped lock, so a fresh lock takes the key at once.
 			const handle = await LockTest.lock(recordId, { hold: true, timeout: 150 });
-			await handle.unlock();
+			await handle.unlock(); // the passed transaction's commit is what released the scoped lock
 		});
 
 		it('static lock() prefers the passed context over a differing ambient one', async function () {
@@ -216,9 +210,34 @@ describe('Record locks (harper#483)', () => {
 			});
 		});
 
+		it('a scoped lock with a staged deferred write and an open iterator acquires', async function () {
+			// The scoped-lock snapshot drop cannot run while an iterator pins the read txn, so it aligns
+			// the native transaction's clock instead — but lock() pins that clock only when no writes
+			// were staged yet. update() stages a DEFERRED write (its save, which would set the clock,
+			// runs later), so the clock is still 0 here and the unguarded setTimestamp(0) made
+			// rocksdb-js throw "Invalid timestamp, expected positive number" out of lock().
+			if (isLMDB) return this.skip();
+			const lockedId = id();
+			const updatedId = id();
+			await LockTest.put({ id: lockedId, n: 1 });
+			await LockTest.put({ id: updatedId, n: 2 });
+			await transaction(async () => {
+				const live = await LockTest.update(updatedId);
+				live.set('n', 20);
+				const iterator = LockTest.search({ conditions: [] })[Symbol.asyncIterator]();
+				await iterator.next();
+				const locked = await LockTest.lock(lockedId);
+				locked.set('n', 10);
+				await locked.save();
+				await live.save();
+				await iterator.return?.();
+			});
+			assert.strictEqual((await LockTest.get(lockedId)).n, 10, 'the locked write landed');
+			assert.strictEqual((await LockTest.get(updatedId)).n, 20, 'the staged update landed');
+		});
+
 		it('static lock() accepts a transaction in the context position', async function () {
-			// `transactional()` takes a bare DatabaseTransaction where a context goes; lock() normalizes
-			// the same way, so a caller holding only the transaction is not detached from it.
+			// `transactional()` takes a bare DatabaseTransaction where a context goes; lock() matches.
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 1 });

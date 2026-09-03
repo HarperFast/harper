@@ -854,17 +854,16 @@ function transactional(
 				if (loadAsInstance !== false) {
 					// do permission checks, with allow methods
 					let allowed;
-					const authorizedData = data;
 					try {
 						allowed =
 							options.type === 'read'
 								? resource.allowRead(context.user, query, context)
 								: options.type === 'update'
 									? resource.doesExist?.() === false
-										? resource.allowCreate(context.user, authorizedData, context)
-										: resource.allowUpdate(context.user, authorizedData, context)
+										? resource.allowCreate(context.user, data, context)
+										: resource.allowUpdate(context.user, data, context)
 									: options.type === 'create'
-										? resource.allowCreate(context.user, authorizedData, context)
+										? resource.allowCreate(context.user, data, context)
 										: resource.allowDelete(context.user, query, context);
 					} catch {
 						// allow* threw — fail closed rather than letting the request proceed
