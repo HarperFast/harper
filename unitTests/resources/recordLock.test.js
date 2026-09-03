@@ -211,11 +211,9 @@ describe('Record locks (harper#483)', () => {
 		});
 
 		it('a scoped lock with a staged deferred write and an open iterator acquires', async function () {
-			// The scoped-lock snapshot drop cannot run while an iterator pins the read txn, so it aligns
-			// the native transaction's clock instead — but lock() pins that clock only when no writes
-			// were staged yet. update() stages a DEFERRED write (its save, which would set the clock,
-			// runs later), so the clock is still 0 here and the unguarded setTimestamp(0) made
-			// rocksdb-js throw "Invalid timestamp, expected positive number" out of lock().
+			// An iterator pins the read txn, so lock() aligns the native clock instead of dropping the
+			// snapshot — but update() stages a DEFERRED write, whose later save() is what sets that
+			// clock, so it is still 0 and rocksdb-js rejects setTimestamp(0).
 			if (isLMDB) return this.skip();
 			const lockedId = id();
 			const updatedId = id();

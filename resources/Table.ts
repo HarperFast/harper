@@ -2418,9 +2418,8 @@ export function makeTable(options) {
 		 * detection).  lock() is an in-process API with no authorization hook of its own; it is not
 		 * protocol-dispatched, so no allowUpdate/allowCreate check runs on acquisition.
 		 *
-		 * Dropping the trailing `context` would leak the key: a caller with no ambient context lands on
-		 * a bare `{}`, whose ImmediateTransaction releases no record locks, so the lease is the only
-		 * thing that ever frees it.
+		 * Dropping the trailing `context` leaks the key: the bare `{}` fallback is an
+		 * ImmediateTransaction, which releases no record locks.
 		 */
 		static lock(
 			target?: RequestTargetOrId | RecordLockOptions,
@@ -2565,15 +2564,12 @@ export function makeTable(options) {
 							// Scoped lock: the read snapshot may predate the lock; drop it so the
 							// scope reads what it locked.  Hold locks use acquiredAt directly and
 							// do not update the read snapshot.
+							// The timestamp guard matches DatabaseTransaction's own setTimestamp calls: a
+							// deferred update() write leaves the clock at 0, which rocksdb-js rejects.
 							if (link.readTxnsUsed <= 1) {
 								link.releaseReadTxn();
 								link.snapshotFree = true;
 							} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
-							// Guarded like DatabaseTransaction's own setTimestamp calls: the clock is
-							// pinned above only when no writes were staged, and a deferred write from
-							// update() leaves writes staged with the clock still 0. rocksdb-js rejects
-							// setTimestamp(0) outright, so an unguarded call turned lock() into an
-							// opaque native throw.  Nothing to align means leave the snapshot alone.
 						}
 					}
 					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
