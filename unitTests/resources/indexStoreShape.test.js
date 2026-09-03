@@ -14,9 +14,9 @@ const { RocksIndexStore } = require('#src/resources/RocksIndexStore');
 const { CUSTOM_INDEXES } = require('#src/resources/indexes/customIndexes');
 const { registryStatus } = require('@harperfast/rocksdb-js');
 
-// registryStatus() refcounts every open column family under a database's directory as one entry
-// (rocksdb-js#…); a failed reopen that actually closed its unpublished replacement returns this to
-// its pre-attempt value, while a leaked handle would leave it one higher.
+// registryStatus() refcounts every open column family under a database's directory as one entry;
+// a failed reopen that actually closed its unpublished replacement returns this to its
+// pre-attempt value, while a leaked handle would leave it one higher.
 function openRefCount(Tbl) {
 	const path = Tbl.primaryStore.rootStore.path;
 	return registryStatus().find((instance) => instance.path === path)?.refCount ?? 0;
