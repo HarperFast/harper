@@ -152,24 +152,29 @@ Seven things that are easy to get wrong here:
 - **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see
   history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of
   the shared log, so a table that held the newest entries can leave the newest _survivor_ older than
-  entries that are gone, and a clock rolled back between the two stamps a floor below them (cb1kenobi,
-  #2458). Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot
-  lift it, `establishAuditFloor` skips any existing record), so it would make every upgraded deployment
-  fail closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')`
-  first, then stamps the floor from what that record holds, and never touches the record again:
+  entries that are gone, and a clock rolled back between the two stamps a floor below them (#2458).
+  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot lift it,
+  `establishAuditFloor` skips any existing record), so it would make every upgraded deployment fail
+  closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')`
+  first, then stamps the floor from what that record holds.
 
-  | Floor                   | Bootstrap record | Reading                                              |
-  | ----------------------- | ---------------- | ---------------------------------------------------- |
-  | finite, `=== bootstrap` | present          | still the guess — suspect, repair by raising it      |
-  | finite, `> bootstrap`   | present          | a real prune raised it; earned, not guessed          |
-  | finite                  | absent           | provenance write was lost — suspect, so fails closed |
-  | `AUDIT_FLOOR_UNKNOWN`   | either           | already fail-closed; nothing to repair               |
+  **The record's presence is the signal; comparing it against the floor is not.** A store carrying one
+  has an unverified pre-tracking window for as long as the record exists, however far the floor has
+  since moved — a prune raising the floor above the epoch certifies only what that prune removed, and
+  says nothing about history removed before tracking began, which may sit _above_ the epoch, since that
+  is precisely what the guess could not see. Worked example: a v4-era `deleteHistory` removes tableA up
+  to t=1000 while sibling tableB's newest survivor is 900; a rolled-back clock stamps bootstrap=900 and
+  floor=900; a later retention pass raises the floor to 950. A repair keyed on `floor > bootstrap` would
+  read 950 > 900, call it earned, and leave a consumer at cursor 970 certified over tableA's missing
+  950–1000. So the mark is retired by a database generation (#2451), never by a floor that climbed past
+  it; what the recorded _value_ is for is telling that repair how far the guess reached.
 
-  Repair means _raising_ a suspect floor, which is always safe, which is why absent reads as suspect.
-  Ordering is what makes it hold: a crash between the two writes leaves a record with no floor, and the
-  next open retries because the early return tests the _floor_. Adoption is deliberately not bounded by
-  the newest surviving key — `floor === bootstrap` is the entire signal, and re-deriving would destroy
-  it. #2451 is what consumes this.
+  Two properties it does depend on. **Ordering:** the record is written first, so a crash between the
+  two writes leaves a record with no floor, which the next open retries because the early return tests
+  the _floor_. **Undecodable bytes are overwritten** rather than kept — unlike the floor, where a
+  present record may be a deliberate `AUDIT_FLOOR_UNKNOWN` and rewriting it would lower a floor.
+  Keeping torn bytes pinned the store to unknown _forever_: the resolver skipped the write because a
+  record existed, the read back failed identically on every later open, and no retry could succeed.
 
 - **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what
   `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under

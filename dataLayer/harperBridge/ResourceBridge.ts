@@ -523,7 +523,7 @@ export class ResourceBridge extends BridgeMethods {
 				: typeof deleteObj.timestamp === 'string'
 					? // Number, not Number.parseInt: parseInt takes a numeric PREFIX, so '9999999999999oops'
 						// parsed to a year-2286 bound that satisfied every check below and purged the whole log,
-						// and '1e3' silently became 1 (cb1kenobi on #2458). Number rejects both as NaN. The
+						// and '1e3' silently became 1 (#2458). Number rejects both as NaN. The
 						// empty/whitespace case is explicit because Number('') and Number('   ') are 0, which
 						// parseInt correctly refused.
 						deleteObj.timestamp.trim() === ''

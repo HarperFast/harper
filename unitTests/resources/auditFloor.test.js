@@ -203,7 +203,7 @@ describe('audit staleness floor', () => {
 		});
 
 		// The bootstrap epoch is a guess bounded by surviving state, and surviving state cannot see history
-		// a selective prune already removed (cb1kenobi on #2458). It is recorded AS a guess so a later
+		// a selective prune already removed (#2458). It is recorded AS a guess so a later
 		// release can find the stores still carrying one and repair them — raising a floor is always safe.
 		// These four pin the facts that reading makes rests on. Both engines: the record is written on both,
 		// and only the clock-rollback bound above is LMDB-only.
@@ -250,20 +250,19 @@ describe('audit staleness floor', () => {
 				assert.strictEqual(bootstrapEpoch(existing.auditStore), undefined, 'no record may appear');
 			});
 
-			it('refuses to stamp a floor whose provenance cannot be read back', async () => {
-				// Untrustworthy bytes under the record decode to unknown. Stamping anyway would produce the one
-				// state the repair reading cannot act on: a finite floor with no readable provenance. Fails
-				// closed instead, and recoverably — the floor stays ABSENT, so a later open retries.
+			it('replaces an unreadable record rather than pinning the floor to unknown forever', async () => {
+				// Keeping undecodable bytes was fail-closed FOREVER, not recoverably: the resolver skipped the
+				// write because a record existed, the read back failed the same way on every later open, and
+				// no retry could ever succeed. The record is a comparison basis, not a floor, so unreadable
+				// bytes carry nothing worth keeping — unlike the floor, where a present record may be a
+				// deliberate unknown sentinel.
 				const corrupt = tableInOwnDatabase('ProvenanceCorrupt');
 				corrupt.auditStore.putSync(AUDIT_FLOOR_BOOTSTRAP_KEY, new Uint8Array(4));
 				await clearRecord(corrupt.auditStore, AUDIT_FLOOR_KEY);
 				establishAuditFloor(corrupt.auditStore);
-				assert.strictEqual(corrupt.oldestRetainedAuditTime(), Infinity, 'the floor must stay unknown');
-				assert.strictEqual(
-					corrupt.auditStore.getBinary(AUDIT_FLOOR_KEY),
-					undefined,
-					'and absent rather than sentinel-stamped, so a later open can retry'
-				);
+				const floor = corrupt.oldestRetainedAuditTime();
+				assert.ok(Number.isFinite(floor), `the floor must be stamped, got ${floor}`);
+				assert.strictEqual(bootstrapEpoch(corrupt.auditStore), floor, 'and the record rewritten to match');
 			});
 		});
 

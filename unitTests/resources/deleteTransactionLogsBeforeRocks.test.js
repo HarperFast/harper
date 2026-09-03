@@ -104,7 +104,7 @@ describe('deleteTransactionLogsBefore on RocksDB (harper#2049)', () => {
 			new Date('nonsense'),
 			undefined,
 			// Number.parseInt took a numeric PREFIX, so this parsed to a year-2286 bound that passed the
-			// guard and purged every log; '12abc' did the same on a smaller scale (cb1kenobi on #2458).
+			// guard and purged every log; '12abc' did the same on a smaller scale (#2458).
 			'9999999999999oops',
 			'  12abc',
 			// non-finite bounds purge everything, and Infinity additionally records the unknown sentinel,

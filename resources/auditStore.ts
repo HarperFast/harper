@@ -632,27 +632,25 @@ export function raiseAuditFloor(auditStore: any, cutoff: number): void {
  * In read-only mode nothing is written and the floor stays unknown — the fail-closed answer for a
  * process that cannot record what it does not know.
  *
- * **The epoch is also recorded under its own key, and that record is what makes this bootstrap
- * repairable.** The epoch is a guess bounded by surviving state, and surviving state cannot see
- * history a selective prune already removed (see the clock note below), so a later release needs to
- * be able to find the stores whose floor is still that guess. Comparing the two records answers it:
+ * **The epoch is also recorded under its own key, so this bootstrap is repairable.** The epoch is a
+ * guess bounded by surviving state, and surviving state cannot see history a selective prune already
+ * removed (see the clock note below). The record marks the store as one that carried a guess, and
+ * preserves the value guessed — the two facts a later release needs to raise such a floor to
+ * something it can stand behind. See "Audit retention floor" in DESIGN.md for the full reading.
  *
- * | Floor | Bootstrap record | Reading |
- * | --- | --- | --- |
- * | finite, `=== bootstrap` | present | still the unverified guess — treat as suspect and repair |
- * | finite, `> bootstrap`   | present | a real prune raised it; the floor is earned, not guessed |
- * | finite                  | absent  | the provenance write was lost — suspect, so this fails closed |
- * | `AUDIT_FLOOR_UNKNOWN`   | either  | already the fail-closed answer; nothing to repair |
+ * **The mark is the signal, not a comparison against the floor.** A store carrying this record has an
+ * unverified pre-tracking window for as long as it exists, however far the floor has since moved: a
+ * prune raising the floor above the epoch certifies only what that prune removed, and says nothing
+ * about history removed before tracking began — which may sit above the epoch, since that is exactly
+ * the case the guess cannot see. Retiring the mark takes a database generation (harper#2451), not a
+ * floor that has climbed past it.
  *
- * Repairing means *raising* a suspect floor, which is always safe, so an over-broad reading costs one
- * resync. That is why absent reads as suspect rather than as trustworthy.
- *
- * Ordering and idempotence follow from that. The provenance record is written **first**, so a crash
- * between the two writes leaves a record with no floor — which the next open retries, since the early
- * return above tests the floor. The epoch actually stamped is always read back from the record rather
- * than taken from this call's own `Date.now()`, so a worker whose record lost the race adopts the
- * winner's value and the two always agree. Re-adopting an older record is sound: nothing was pruned in the
- * meantime, or a prune would have written the floor this function returns early on.
+ * Ordering. The provenance record is written **first**, so a crash between the two writes leaves a
+ * record with no floor — which the next open retries, since the early return above tests the floor.
+ * The epoch actually stamped is always read back from the record rather than taken from this call's
+ * own `Date.now()`, so a worker whose record lost the race adopts the winner's value and the two
+ * always agree. Re-adopting an older record is sound: nothing was pruned in the meantime, or a prune
+ * would have written the floor this function returns early on.
  */
 export function establishAuditFloor(auditStore: any): void {
 	if (isReadOnlyMode()) return;
@@ -678,7 +676,7 @@ export function establishAuditFloor(auditStore: any): void {
 		// shared log, so a table whose entries were the newest and all fell below that bound leaves the
 		// log's newest survivor being a sibling's OLDER entry — removed history above every surviving key.
 		// A clock rolled back to between the two then stamps an epoch below entries that are gone, and a
-		// cursor in that window resumes over the gap (cb1kenobi on #2458). Also unclosed:
+		// cursor in that window resumes over the gap (#2458). Also unclosed:
 		// RocksTransactionLogStore.getKeys() is unimplemented, so on that engine this reduces to
 		// Date.now() outright.
 		//
@@ -690,17 +688,22 @@ export function establishAuditFloor(auditStore: any): void {
 		for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
 			if (typeof newest === 'number' && newest > fresh) fresh = newest;
 		}
-		// `recorded ? undefined` never overwrites an existing record, and the epoch is then read back from
-		// the record rather than taken from `fresh` — which is the whole of how adoption works, including
-		// for the worker whose record lost the race. There is deliberately no separate "read it first and
-		// skip all this" fast path: two routes to one value is how this function's neighbours grew their
-		// fail-opens, and everything past the early return above runs once in a store's life, so the
-		// transaction it would save is not worth a second code path.
-		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : fresh), AUDIT_FLOOR_BOOTSTRAP_KEY);
+		// A READABLE record is kept, so the epoch read back below is whatever landed first and the floor
+		// always matches it. An unreadable one is replaced: unlike the floor, where a present record may
+		// be a deliberate AUDIT_FLOOR_UNKNOWN and overwriting it would lower a floor, this record is only
+		// a comparison basis, and undecodable bytes carry nothing worth keeping. Declining to replace
+		// them pinned the store's floor to unknown forever — the resolver would skip the write on every
+		// later open, the read back would fail identically, and no retry could ever succeed, which is the
+		// fail-closed-forever state this bootstrap exists to avoid.
+		updateAuditFloor(
+			auditStore,
+			(current, recorded) => (recorded && Number.isFinite(current) ? undefined : fresh),
+			AUDIT_FLOOR_BOOTSTRAP_KEY
+		);
 		const epoch = decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_BOOTSTRAP_KEY));
-		// Untrustworthy bytes under the record decode to unknown, and stamping a floor whose provenance
-		// cannot be read back would produce the one state the repair reading cannot act on. Recoverable:
-		// the floor stays absent, so a later open retries.
+		// Belt to that braces: `updateAuditFloor` throws if its write did not land, so reaching here with
+		// an unreadable record should be impossible. Stamping a floor whose provenance cannot be read is
+		// the one state the repair reading cannot act on, so refuse rather than trust the reasoning.
 		if (!Number.isFinite(epoch)) return;
 		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : epoch));
 	} catch (error) {
