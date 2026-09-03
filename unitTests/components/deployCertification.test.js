@@ -107,6 +107,38 @@ describe('deploy certification', () => {
 		}
 	});
 
+	it('fails a deploy that cannot get a certification slot, rather than queueing it forever', async function () {
+		// The concurrency cap deliberately withholds the slot of a validator that will not die, so the queue
+		// behind it has to be bounded too — otherwise one stuck thread turns every later deploy into a wait
+		// inside the preparation lock with nothing to report.
+		this.timeout(30000);
+		const rootDir = await mkdtemp(join(tmpdir(), 'certify-slots-'));
+		const candidateDirPath = join(rootDir, 'hangs');
+		await mkdir(candidateDirPath, { recursive: true });
+		await writeFile(join(candidateDirPath, 'package.json'), JSON.stringify({ name: 'hangs', version: '1.0.0' }));
+		await writeFile(join(candidateDirPath, 'config.yaml'), 'jsResource:\n  files: resource.js\n');
+		await writeFile(
+			join(candidateDirPath, 'resource.js'),
+			'const shared = new Int32Array(new SharedArrayBuffer(4));\nAtomics.wait(shared, 0, 0);\n'
+		);
+
+		try {
+			// `acquireSlot` claims synchronously when a slot is free — no await before `active++` — so both of
+			// these hold slots by the time the third call runs, without sleeping to arrange it.
+			const occupying = [
+				certifyCandidate(candidateDirPath, 'first', { timeoutMs: 4000 }),
+				certifyCandidate(candidateDirPath, 'second', { timeoutMs: 4000 }),
+			];
+			const queued = await certifyCandidate(candidateDirPath, 'third', { timeoutMs: 300 });
+			assert.strictEqual(queued.certified, false);
+			assert.match(queued.error.message, /No certification slot became available within 300ms/);
+			assert.strictEqual(queued.error.statusCode, 503);
+			for (const outcome of await Promise.all(occupying)) assert.strictEqual(outcome.certified, false);
+		} finally {
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
+
 	it('refuses to mint .complete for a candidate no validator certified', async function () {
 		// The gate itself. `.complete` is what recovery treats as proof a validation happened, so the
 		// function that writes it has to require the verdict rather than trust its caller — three of

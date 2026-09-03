@@ -126,12 +126,40 @@ async function removeCertificationLinks(
 let active = 0;
 const waiting: (() => void)[] = [];
 
-async function acquireSlot(): Promise<() => void> {
+async function acquireSlot(timeoutMs: number): Promise<() => void> {
 	// Claimed BEFORE yielding to a waiter, not after. Decrementing and then resolving a waiter whose
 	// `active++` runs a microtask later left a window any other caller could admit itself through, so the
 	// documented bound did not hold. The slot is handed straight from releaser to waiter instead.
+	//
+	// And BOUNDED, like every other wait in this module. A validator that will not die keeps its slot
+	// deliberately (see the termination path), so an unbounded queue behind it turns one stuck thread into
+	// every later deploy hanging inside the preparation lock with nothing to report. A deadline turns that
+	// into one failed deploy per attempt, with a reason.
+	const deadline = Date.now() + timeoutMs;
 	while (active >= MAX_CONCURRENT_CERTIFICATIONS) {
-		await new Promise<void>((resolve) => waiting.push(resolve));
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) {
+			const error: any = new Error(
+				`No certification slot became available within ${timeoutMs}ms; ${MAX_CONCURRENT_CERTIFICATIONS} ` +
+					`validator(s) are still running`
+			);
+			error.statusCode = 503;
+			throw error;
+		}
+		let wake!: () => void;
+		const handedOver = await new Promise<boolean>((resolve) => {
+			wake = () => resolve(true);
+			waiting.push(wake);
+			setTimeout(() => resolve(false), remaining).unref?.();
+		});
+		// Timed out while still queued: leave the queue, or a later release hands a slot to a caller that
+		// is gone and the count drifts DOWN — admitting more concurrent validators than the cap, not fewer.
+		// Already dequeued: a release woke us in the same turn the timer fired, so keep that handoff and let
+		// the loop condition decide.
+		if (!handedOver) {
+			const index = waiting.indexOf(wake);
+			if (index !== -1) waiting.splice(index, 1);
+		}
 	}
 	active++;
 	let released = false;
@@ -174,7 +202,12 @@ export async function certifyCandidate(
 		error.statusCode = 503;
 		return { certified: false, error };
 	}
-	const releaseSlot = await acquireSlot();
+	let releaseSlot: () => void;
+	try {
+		releaseSlot = await acquireSlot(timeoutMs);
+	} catch (error) {
+		return { certified: false, error: error as Error };
+	}
 	// The COMPILED sibling, referenced the way `jobRunner` references `jobProcess.js`: workers load from the
 	// build output, and `__dirname` resolves there without assuming where the package root is.
 	const entry = join(__dirname, './deployValidator.js');
@@ -303,18 +336,29 @@ export async function certifyCandidate(
 			// as the missed-exit race above, arrived at from the other side.
 			const grace = () => new Promise<void>((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS).unref?.());
 			try {
+				// Asking is what can fail; WAITING for the exit must happen either way. A synchronous throw
+				// from the ask — `postMessage` on a channel already in an invalid state — used to jump
+				// straight to the `catch`, skipping the wait, so the caller swept a tree whose thread was
+				// still terminating. The ask is therefore fallible and the wait below is not conditional on
+				// it: a validator that is already gone satisfies the wait immediately, and one that is not
+				// still gets its grace.
+				let asked: Promise<unknown> = Promise.resolve();
+				try {
+					asked =
+						typeof (globalThis as any).Bun !== 'undefined'
+							? // `terminate()` triggers a NAPI segfault under Bun; `manageThreads` asks the worker to
+								// exit itself for the same reason.
+								(worker.postMessage({ type: 'force-exit' }), Promise.resolve())
+							: worker.terminate().then(
+									() => {},
+									() => {}
+								);
+				} catch (error) {
+					harperLogger.warn(`Could not ask the validator for ${appName} to exit; waiting for it anyway:`, error);
+				}
 				// ONE grace for the whole thing, not one per step: racing terminate and then racing the exit
 				// could wait 2x before calling a hung validator hung, and this runs inside a deploy holding
 				// the preparation lock.
-				const asked =
-					typeof (globalThis as any).Bun !== 'undefined'
-						? // `terminate()` triggers a NAPI segfault under Bun; `manageThreads` asks the worker to
-							// exit itself for the same reason.
-							(worker.postMessage({ type: 'force-exit' }), Promise.resolve())
-						: worker.terminate().then(
-								() => {},
-								() => {}
-							);
 				const outcome = await Promise.race([
 					Promise.all([asked, exited ?? Promise.resolve()]).then(() => 'exited' as const),
 					grace().then(() => 'still-running' as const),
