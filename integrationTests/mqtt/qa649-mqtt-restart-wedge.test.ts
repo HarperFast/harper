@@ -322,6 +322,11 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 							void endQuiet(r.client);
 						}
 					});
+					// attemptConnect never rejects, and this handler never throws -- but `p` sits
+					// unawaited in `pending` for the rest of the storm, so any future violation of
+					// that contract would otherwise crash the whole process on the next tick as an
+					// unhandled rejection instead of failing just this test.
+					p.catch(() => {});
 					pending.push(p);
 					await sleep(intervalMs);
 				}
@@ -355,8 +360,10 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 
 				// --- Poll get_job to a terminal state (the real completion signal per QA-642) ---
 				const deadline = Date.now() + 60_000;
+				let lastPoll: { status: number; body: any; errCode?: string } | undefined;
 				while (Date.now() < deadline) {
 					const r = await opsCall({ operation: 'get_job', id: jobId }, 3000);
+					lastPoll = r;
 					const job = Array.isArray(r.body) ? r.body[0] : undefined;
 					if (job?.status === 'COMPLETE' || job?.status === 'ERROR') {
 						tJobComplete = Date.now();
@@ -365,7 +372,10 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					}
 					await sleep(20);
 				}
-				ok(tJobComplete, `get_job(${jobId}) never reached a terminal status within 60s`);
+				ok(
+					tJobComplete,
+					`get_job(${jobId}) never reached a terminal status within 60s -- last poll: ${JSON.stringify(lastPoll)}`
+				);
 				strictEqual(
 					finalJob.status,
 					'COMPLETE',
