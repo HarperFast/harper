@@ -109,7 +109,6 @@ describe('resolveRocksMemoryConfig', function () {
 			const config = resolve({ configuredCostToCache: 'yes', configuredAllowStall: 1 });
 			assert.strictEqual(config.writeBufferManagerCostToCache, true);
 			assert.strictEqual(config.writeBufferManagerAllowStall, false);
-			// a truthy non-boolean must not enable stalling by coercion
 			assert.strictEqual(resolve({ configuredAllowStall: 'true' }).writeBufferManagerAllowStall, false);
 		});
 	});
