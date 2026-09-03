@@ -52,6 +52,24 @@ async function declaresLoadableContent(dirPath: string): Promise<boolean> {
 	return false;
 }
 
+/** The bootstrap's own bound, well inside the parent's certification deadline so this error is the one seen. */
+const BOOTSTRAP_DEADLINE_MS = 60_000;
+
+/** Reject with a phase-naming error if `work` does not settle in time, so a hang is diagnosable. */
+async function withPhaseDeadline<T>(work: Promise<T>, ms: number, phase: string): Promise<T> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			work,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(new Error(`Certification timed out after ${ms}ms while ${phase}`)), ms);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
 async function certify(): Promise<void> {
 	const componentName = appName || basename(candidateDirPath);
 	const loadOptions = rootApplicationLoadOptions(componentName, { forCertification: true });
@@ -66,7 +84,15 @@ async function certify(): Promise<void> {
 	// A certification load also has to run the code a WORKER runs — the `start`/`handleApplication`
 	// extension path — or it proves only that the module parsed.
 	const { loadRootPlugins } = await import('../server/loadRootComponents.js');
-	const resources = await loadRootPlugins(true);
+	// Bounded, and it says WHICH phase did not finish. This bootstrap loads Harper's global plugins, parts
+	// of which expect to be a member of the worker topology a validator deliberately is not — so it can
+	// wait on something that will never arrive here. Without a bound that is indistinguishable from a
+	// candidate that hangs, and on Windows it presented as a silent exit.
+	const resources = await withPhaseDeadline(
+		loadRootPlugins(true),
+		BOOTSTRAP_DEADLINE_MS,
+		`loading Harper's global plugins`
+	);
 
 	// The reporter goes on AFTER the bootstrap, so it only ever sees the candidate. Installed earlier it
 	// captured the first error from anything the root config happens to name — and since `deploy_component`
@@ -145,6 +171,14 @@ function report(verdict: { ok: true } | { ok: false; message: string; stack?: st
 	}
 }
 
+// A REF'd handle for the whole certification, so this thread cannot exit while it is still deciding.
+//
+// Windows CI showed the failure this prevents: the thread exited with code 0 having never called `report`,
+// because a worker's event loop draining ends the thread even with a promise still pending — so a bootstrap
+// that never settles read to the parent as "exited without a verdict" instead of as a hang, and no timeout
+// could fire because there was nothing left alive to time out.
+const keepAlive = setInterval(() => {}, 1000);
+
 void (async () => {
 	try {
 		await certify();
@@ -156,5 +190,7 @@ void (async () => {
 		// prototype, and the parent only needs what it will put in the operation's own error.
 		report({ ok: false, message: failure.message, stack: failure.stack });
 		realExit(1);
+	} finally {
+		clearInterval(keepAlive);
 	}
 })();
