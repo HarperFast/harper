@@ -178,8 +178,8 @@ describe('audit staleness floor', () => {
 			// A store that has NEVER bootstrapped, which is the only case this bound applies to: both
 			// records absent. Clearing the floor alone leaves the provenance record its open already wrote,
 			// and `establishAuditFloor` then adopts that epoch rather than deriving a fresh one — correct,
-			// and deliberately not bounded by the newest key, since `floor === record` is what tells a
-			// still-guessed floor from a prune-earned one.
+			// and deliberately not bounded by the newest key: the record has to hold the epoch the floor was
+			// actually stamped to, or its value stops being the guess a later repair reads.
 			await clearRecord(rolled.auditStore, AUDIT_FLOOR_BOOTSTRAP_KEY);
 			await clearRecord(rolled.auditStore, AUDIT_FLOOR_KEY);
 			assert.strictEqual(rolled.oldestRetainedAuditTime(), Infinity, 'precondition: no floor recorded');
@@ -203,10 +203,11 @@ describe('audit staleness floor', () => {
 		});
 
 		// The bootstrap epoch is a guess bounded by surviving state, and surviving state cannot see history
-		// a selective prune already removed (#2458). It is recorded AS a guess so a later
-		// release can find the stores still carrying one and repair them — raising a floor is always safe.
-		// These four pin the facts that reading makes rests on. Both engines: the record is written on both,
-		// and only the clock-rollback bound above is LMDB-only.
+		// a selective prune already removed (#2458). It is recorded AS a guess: the record's PRESENCE marks
+		// the store, its value says how far the guess reached, and only a database generation (#2451)
+		// retires the mark — a floor that has climbed past the epoch does not. These pin what that rests
+		// on. Both engines: the record is written on both, and only the clock-rollback bound above is
+		// LMDB-only.
 		describe('bootstrap provenance', () => {
 			it('records the epoch it stamped, equal to the floor it stamped', () => {
 				const fresh = tableInOwnDatabase('Provenance');
@@ -216,8 +217,10 @@ describe('audit staleness floor', () => {
 			});
 
 			it('leaves the record where it is when a real prune raises the floor', () => {
-				// This is the whole repair reading: floor === record means still a guess, floor > record means a
-				// prune earned it. A record that tracked the floor would collapse the two into one state.
+				// The record preserves the guessed value, so it must not drift with the floor — that value is
+				// what tells a later repair how far the guess reached. Note what it does NOT license: a floor
+				// above the record is no evidence the store is safe, since a prune certifies only the history
+				// it removed and pre-tracking removals can sit above the epoch (#2458).
 				const pruned = tableInOwnDatabase('ProvenancePruned');
 				const stamped = pruned.oldestRetainedAuditTime();
 				const cutoff = stamped + 60_000;
@@ -228,8 +231,8 @@ describe('audit staleness floor', () => {
 
 			it('adopts an orphaned record instead of stamping a fresh epoch', async () => {
 				// The record is written BEFORE the floor, so a crash in between leaves exactly this state. The
-				// next open has to stamp the floor the record already claims, or the two disagree and a store
-				// that is still carrying a guess reads as one that earned its floor.
+				// next open has to stamp the floor the record already claims, or the recorded value stops
+				// being the epoch the floor was built from.
 				const orphaned = tableInOwnDatabase('ProvenanceOrphan');
 				const older = Date.now() - 1_000_000;
 				orphaned.auditStore.putSync(AUDIT_FLOOR_BOOTSTRAP_KEY, encodeFloorBytes(older));

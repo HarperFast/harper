@@ -505,18 +505,12 @@ function updateAuditFloor(
 	const transactionOwner = auditStore?.rootStore ?? auditStore;
 	if (!transactionOwner?.transactionSync)
 		throw new Error('Cannot record the audit retention floor: this database has no audit store');
-	// Both branches read their own write back and report `false` on mismatch, and the caller below
-	// demands an explicit `true`. Neither half of that is belt-and-braces:
-	//  - a RocksDB transactionSync swallows an aborted transaction and returns undefined rather than
-	//    throwing (see RecordEncoder.saveStructures, which relies on the same contract), so a missing
-	//    `=== true` reads an uncommitted write as success;
-	//  - and a write that fails without throwing would otherwise be indistinguishable from one that
-	//    landed, which is the fail-open this floor exists to close — a caller that prunes against a
-	//    floor never recorded. The LMDB half provably needs it (its containment for a replaced `put`
-	//    cannot tell a rejection from a failure); the RocksDB half is verified the same way rather
-	//    than resting on the assumption that a native putSync always throws.
-	// Reads inside a write transaction see that transaction's own writes on both engines (measured),
-	// so the read-back observes what commit will make durable.
+	// Both branches read their own write back and report `false` on mismatch, and the caller demands an
+	// explicit `true`. Both halves are load-bearing: a RocksDB transactionSync returns undefined for a
+	// swallowed abort rather than throwing (see RecordEncoder.saveStructures), and a write that fails
+	// without throwing is otherwise indistinguishable from one that landed — a caller pruning against a
+	// floor never recorded. Reads inside a write transaction see their own writes on both engines, so
+	// the read-back observes what commit will make durable.
 	const committed =
 		auditStore instanceof RocksTransactionLogStore
 			? transactionOwner.transactionSync(
@@ -701,9 +695,8 @@ export function establishAuditFloor(auditStore: any): void {
 			AUDIT_FLOOR_BOOTSTRAP_KEY
 		);
 		const epoch = decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_BOOTSTRAP_KEY));
-		// Belt to that braces: `updateAuditFloor` throws if its write did not land, so reaching here with
-		// an unreadable record should be impossible. Stamping a floor whose provenance cannot be read is
-		// the one state the repair reading cannot act on, so refuse rather than trust the reasoning.
+		// Never stamp a floor whose provenance cannot be read: that is the one state a later repair cannot
+		// act on. Unreachable in principle, since `updateAuditFloor` throws if its write did not land.
 		if (!Number.isFinite(epoch)) return;
 		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : epoch));
 	} catch (error) {
