@@ -594,8 +594,11 @@ export function searchByIndex(
 					}
 				: ({ value }) => value
 		);
-		// scoped to attributes the schema declares multi-valued; a runtime array under an
-		// undeclared attribute repeats the same way but stays outside this boundary
+		// Collapsing AFTER the map is required, not incidental: the condition's own filter tests one
+		// element at a time, so a record whose first entry fails it and whose second passes must
+		// still be reached. Collapsing first would settle that record on the failing entry and drop
+		// it. Scoped to attributes the schema declares multi-valued; a runtime array under an
+		// undeclared attribute repeats the same way but stays outside this boundary.
 		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
 			? scanned
 			: distinctRecords(scanned);

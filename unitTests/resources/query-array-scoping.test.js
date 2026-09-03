@@ -276,6 +276,7 @@ describe('Array-valued property scoping', () => {
 				{ id: 6, sizes: [180], tags: [], weight: 50 },
 				{ id: 7, sizes: [190, 190], tags: ['dup', 'dup'], weight: 60 },
 				{ id: 8, tags: ['ship', 'shop'] },
+				{ id: 9, tags: ['aaa', 'resale'] },
 			];
 			for (const widget of widgets) await GqlWidgets.put(widget);
 		});
@@ -315,8 +316,18 @@ describe('Array-valued property scoping', () => {
 				await collectIdsInOrder(
 					gqlSearch({ conditions: [{ attribute: 'tags', comparator: 'contains', value: 'sale' }] })
 				),
-				[1, 2]
+				[1, 9, 2]
 			);
+		});
+
+		it('a record whose first entry fails the condition is still reached by a later one', async function () {
+			// record 9 owns 'aaa' and 'resale'; 'aaa' sorts first and does not contain 'sale'. The
+			// condition filter tests one element at a time, so collapsing before it ran would settle
+			// record 9 on the failing entry and drop it from the result entirely.
+			const ids = await collectIdsInOrder(
+				gqlSearch({ conditions: [{ attribute: 'tags', comparator: 'contains', value: 'sale' }] })
+			);
+			assert.strictEqual(ids.filter((id) => id === 9).length, 1);
 		});
 
 		it('starts_with returns a record once when two of its elements share the prefix', async function () {
