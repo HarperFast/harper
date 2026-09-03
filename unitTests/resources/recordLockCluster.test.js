@@ -213,6 +213,59 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		});
 	});
 
+	describe('coalescing and cleanup', () => {
+		it('coalesces two concurrent cluster locks on one key instead of self-blocking', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			await ClusterLockTest.put({ id: recordId, n: 0 });
+			const before = controlEntries().length;
+			// The follower waits on the leader's acquisition. If what it waits on ends at the native
+			// hand-off rather than after the cluster round registers the handle, it wakes to find nothing
+			// registered and parks on the leader's own key until its timeout.
+			await transaction(async () => {
+				const both = await Promise.all([
+					ClusterLockTest.lock(recordId, { lease: 5000, timeout: 2000 }),
+					ClusterLockTest.lock(recordId, { lease: 5000, timeout: 2000 }),
+				]);
+				assert.ok(both[0] && both[1], 'both callers get the lock');
+			});
+			assert.strictEqual(
+				controlEntries()
+					.slice(before)
+					.filter((entry) => entry.type === 'lockRequest').length,
+				1,
+				'one cluster round, not one per caller'
+			);
+		});
+
+		it('releases the transaction’s other locks when one of them lapses at commit', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const lapsing = id();
+			const surviving = id();
+			await ClusterLockTest.put({ id: lapsing, n: 1 });
+			await ClusterLockTest.put({ id: surviving, n: 1 });
+			await assert.rejects(
+				() =>
+					transaction(async () => {
+						const short = await ClusterLockTest.lock(lapsing, { lease: 150 });
+						const long = await ClusterLockTest.lock(surviving, { lease: 60_000 });
+						short.set('n', 2);
+						await short.save();
+						long.set('n', 2);
+						await long.save();
+						await delay(500);
+					}),
+				(error) => error.statusCode === 409
+			);
+			// Without the commit path's cleanup the surviving key stays locked for its full 60 s lease
+			// with no owner, and this re-lock times out.
+			const relocked = await ClusterLockTest.lock(surviving, { hold: true, lease: 5000, timeout: 750 });
+			assert.strictEqual(await relocked.unlock(), true, 'the other lock was not stranded');
+		});
+	});
+
 	describe('exclusion from record-activity surfaces', () => {
 		it('never delivers control entries to subscribers', async function () {
 			if (isLMDB) return this.skip();

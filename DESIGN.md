@@ -431,6 +431,12 @@ audit entries as record activity filters them through `isLockControlType`: the s
 `subscribe({ startTime })` replay, the `previousCount` backfill, and `getHistory()`.
 `getHistoryOfRecord()` excludes them already by matching on record id.
 
+**Rolling upgrade.** Unlike the reload marker these entries are modeled on, the three lock nibbles are
+not `LOCAL_ONLY`, so a peer that predates them will decode an action it does not know. Nothing in core
+sends them — the harper-pro transport's capability gate is what keeps them off a peer that cannot
+handle them, and the fail-closed participant rule is what keeps a lock from being promised across
+such a peer.
+
 **Replay and validation.** Entries are idempotent by `(requesterName, tsR)`, and a `LOCK_REQUEST`
 older than `now − (MAX_LOCK_LEASE_MS + waitMs + skew)` is ignored on arrival, so a cursor replay after
 reconnect is harmless. Peer payloads are validated before they can create state: exact tuple length,
@@ -448,8 +454,11 @@ established in core):
   Core makes the unsafe state unreachable rather than merely documented: `ownsCoordination()` gates
   every cluster acquire and every arriving entry, so a non-owner worker gets 503 instead of arbitrating
   against a partial view. The transport must therefore register on EVERY worker (returning false off
-  the owner) and bridge a non-owner worker's acquire/release to the owner; registering only on the
-  owner would leave the other workers with no transport and hand them a silent node-local lock.
+  the owner) and bridge BOTH directions to it — a non-owner worker's acquire/release, and any control
+  entry that arrives on a non-owner worker. Registering only on the owner would leave the other
+  workers with no transport and hand them a silent node-local lock; delivering entries off the owner
+  drops them, which the coordinator counts in `stats.droppedOffOwner` and re-warns about once a
+  minute rather than latching to silence.
 - **Relay re-emission.** A receiving node hands control entries to its coordinator and does not
   re-write them to its own log, so a hub does not forward them to a spoke. Full mesh works;
   hub-and-spoke needs the transport to re-emit.

@@ -50,6 +50,7 @@ function getIdMappingRecord(auditStore) {
 		// now we can take over the local node id
 		nameToId[node_name] = 0;
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
+		invalidateNodeNames();
 	}
 	return idMappingRecord;
 }
@@ -84,6 +85,7 @@ export function remoteToLocalNodeId(remoteMapping: any, auditStore: any) {
 	}
 	if (hasChanges) {
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
+		invalidateNodeNames();
 	}
 	return remoteToLocalId;
 }
@@ -103,6 +105,7 @@ export function getIdOfRemoteNode(remoteNodeName, auditStore) {
 		id = lastId + 1;
 		nameToId[remoteNodeName] = id;
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
+		invalidateNodeNames();
 	}
 	logger.trace?.('The remote node name map', remoteNodeName, nameToId, id);
 	return id;
@@ -124,13 +127,24 @@ export function getThisNodeId(auditStore: any) {
 	return exportIdMapping(auditStore)?.[server.hostname];
 }
 
+// Inverted id -> name map. exportIdMapping() re-reads and unpacks the mapping record on every call,
+// which is far too much per replicated entry on the apply thread; ids are stable once minted, so the
+// inversion is cached and dropped wherever nameToId is written.
+let idToNodeName: Map<number, string> | undefined;
+function invalidateNodeNames() {
+	idToNodeName = undefined;
+}
+
 /**
  * The node name a local short id refers to. Callers that must attribute a replicated entry to its
  * origin node need the globally stable name, not the id, which is assigned per node.
  */
 export function getNodeNameForId(auditStore: any, nodeId: number | undefined): string | undefined {
 	if (typeof nodeId !== 'number') return undefined;
+	const cached = idToNodeName?.get(nodeId);
+	if (cached !== undefined) return cached;
 	const nameToId = exportIdMapping(auditStore);
-	for (const name in nameToId) if (nameToId[name] === nodeId) return name;
-	return undefined;
+	const names = (idToNodeName = new Map<number, string>());
+	for (const name in nameToId) names.set(nameToId[name], name);
+	return names.get(nodeId);
 }

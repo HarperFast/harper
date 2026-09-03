@@ -945,8 +945,7 @@ export function makeTable(options) {
 
 				/** Keeps the writes to any one key in arrival order; see DESIGN.md (harper#2211). */
 				const stageWrite = (event, context) => {
-					// Control entries stage no record, so ordering them behind writes to the same key would
-					// only delay a grant behind whatever that key is doing.
+					// A grant must not queue behind whatever the key it names is doing.
 					if (isLockControlType(event.type)) return writeUpdate(event, context);
 					let chainKey: string | undefined;
 					try {
@@ -2659,78 +2658,85 @@ export function makeTable(options) {
 				resolved.lease,
 				resolved.hold
 			);
-			link.registerPendingLock(primaryStore, keyId, pendingPromise);
 			const clusterStart = Date.now();
-			return pendingPromise.then(
-				async (handle) => {
-					link.unregisterPendingLock(primaryStore, keyId);
-					const closedWhileWaiting = () => link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits;
+			// What a follower waits on must span the cluster round and registration, not just the native
+			// acquire. Waking it at the native hand-off leaves it in a window where the key is held but no
+			// handle is registered, so it retries and parks on the leader's own lock for its full timeout
+			// — inside a transaction that cannot finish until it gives up.
+			const acquisition = pendingPromise.then(async (handle) => {
+				const closedWhileWaiting = () => link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits;
+				if (closedWhileWaiting()) {
+					// The transaction was aborted while this call waited; nothing would ever release the handle.
+					handle.release();
+					throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+				}
+				// The native key is held, so this node has exactly one round in flight for this key.
+				// Anything that goes wrong from here must give the key back rather than leave a lock
+				// this caller does not know it owns.
+				if (coordinator) {
+					try {
+						const remaining = resolved.timeout - (Date.now() - clusterStart);
+						if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
+						const tsR = await coordinator.acquire(id, resolved.lease, remaining);
+						if (!handle.joinClusterRound(tsR, resolved.lease, () => coordinator.release(id))) {
+							// The round completed inside its lease but the lease elapsed before the handle
+							// could take it. The coordinator still holds it, and only this call knows the
+							// hold was never handed out.
+							Promise.resolve(coordinator.release(id)).catch(noop);
+							throw new ClientError('Record lock was granted after its lease had elapsed', 423);
+						}
+					} catch (error) {
+						handle.release();
+						throw error;
+					}
 					if (closedWhileWaiting()) {
-						// The transaction was aborted while this call waited; nothing would ever release the handle.
 						handle.release();
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
-					// The native key is held, so this node has exactly one round in flight for this key.
-					// Anything that goes wrong from here must give the key back rather than leave a lock
-					// this caller does not know it owns.
-					if (coordinator) {
-						try {
-							const remaining = resolved.timeout - (Date.now() - clusterStart);
-							if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
-							const tsR = await coordinator.acquire(id, resolved.lease, remaining);
-							if (!handle.joinClusterRound(tsR, resolved.lease, () => coordinator.release(id))) {
-								// The round completed inside its lease but the lease elapsed before the handle
-								// could take it. The coordinator still holds it, and only this call knows the
-								// hold was never handed out.
-								Promise.resolve(coordinator.release(id)).catch(noop);
-								throw new ClientError('Record lock was granted after its lease had elapsed', 423);
-							}
-						} catch (error) {
-							handle.release();
-							throw error;
-						}
-						if (closedWhileWaiting()) {
-							handle.release();
-							throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+				}
+				link.registerRecordLock(handle);
+				if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
+					// Explicit transaction() (not ImmediateTransaction): pin the clock to
+					// acquiredAt when no writes have been staged yet.  When writes already
+					// exist, leave the clock alone (ordering is best-effort; write held records
+					// in their own transaction for the guarantee).  ImmediateTransaction is
+					// excluded (saveCommits=true) — its clock is never pinned in lock();
+					// each save() stamps with nextHolderVersion() instead.
+					if (link.writes.length === 0 && !link.timestamp) {
+						link.timestamp = handle.acquiredAt;
+						if (resolved.hold) {
+							// Prime the nextHolderVersion counter so a later CLOSED-path save
+							// (e.g. after the transaction commits and the hold is used from an
+							// ImmediateTransaction context) gets acquiredAt+MIN_STEP instead of
+							// acquiredAt again (which would be a LWW tie with the first write).
+							handle.nextHolderVersion();
 						}
 					}
-					link.registerRecordLock(handle);
-					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
-						// Explicit transaction() (not ImmediateTransaction): pin the clock to
-						// acquiredAt when no writes have been staged yet.  When writes already
-						// exist, leave the clock alone (ordering is best-effort; write held records
-						// in their own transaction for the guarantee).  ImmediateTransaction is
-						// excluded (saveCommits=true) — its clock is never pinned in lock();
-						// each save() stamps with nextHolderVersion() instead.
-						if (link.writes.length === 0 && !link.timestamp) {
-							link.timestamp = handle.acquiredAt;
-							if (resolved.hold) {
-								// Prime the nextHolderVersion counter so a later CLOSED-path save
-								// (e.g. after the transaction commits and the hold is used from an
-								// ImmediateTransaction context) gets acquiredAt+MIN_STEP instead of
-								// acquiredAt again (which would be a LWW tie with the first write).
-								handle.nextHolderVersion();
-							}
-						}
-						if (!resolved.hold && link.transaction) {
-							// Scoped lock: the read snapshot may predate the lock; drop it so the
-							// scope reads what it locked.  Hold locks use acquiredAt directly and
-							// do not update the read snapshot.
-							// The timestamp guard matches DatabaseTransaction's own setTimestamp calls: a
-							// deferred update() write leaves the clock at 0, which rocksdb-js rejects.
-							if (link.readTxnsUsed <= 1) {
-								link.releaseReadTxn();
-								link.snapshotFree = true;
-							} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
-						}
+					if (!resolved.hold && link.transaction) {
+						// Scoped lock: the read snapshot may predate the lock; drop it so the
+						// scope reads what it locked.  Hold locks use acquiredAt directly and
+						// do not update the read snapshot.
+						// The timestamp guard matches DatabaseTransaction's own setTimestamp calls: a
+						// deferred update() write leaves the clock at 0, which rocksdb-js rejects.
+						if (link.readTxnsUsed <= 1) {
+							link.releaseReadTxn();
+							link.snapshotFree = true;
+						} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
 					}
-					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
-					// with nextHolderVersion() for both scoped and hold handles.
+				}
+				// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
+				// with nextHolderVersion() for both scoped and hold handles.
+				return handle;
+			});
+			link.registerPendingLock(primaryStore, keyId, acquisition);
+			return acquisition.then(
+				(handle) => {
+					link.unregisterPendingLock(primaryStore, keyId);
 					return this.#reloadLocked(id, handle);
 				},
-				(err) => {
+				(error) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					throw err;
+					throw error;
 				}
 			);
 		}
@@ -4857,9 +4863,7 @@ export function makeTable(options) {
 					if (dropDuringReplay) return;
 					try {
 						let type = auditRecord.type;
-						// Lock coordination entries are internal protocol traffic that happens to share the
-						// log, not table activity. Skipped ahead of the rawEvents branch, which forwards
-						// every type verbatim.
+						// Ahead of the rawEvents branch, which forwards every type verbatim.
 						if (isLockControlType(type)) return;
 						let value;
 						if (type === 'message' || request.rawEvents) {
@@ -4953,8 +4957,6 @@ export function makeTable(options) {
 									if (!isActive()) return;
 								}
 								if (auditRecord.tableId !== tableId) continue;
-								// Same exclusion as the live listener: replay must not surface protocol traffic
-								// that the real-time path filters out.
 								if (isLockControlType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {

@@ -440,7 +440,8 @@ const STRUCTURES = 7;
 // and subscribers should re-read it. Used after a copyApply base copy, whose per-row snapshot writes
 // carry no audit entry (harper-pro#489). The entry type lives in the low nibble of the action byte
 // (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, leaving 9–15 free for
-// future actions. Markers are always written LOCAL_ONLY so an unknown type never reaches a peer.
+// future actions. Reload markers are always written LOCAL_ONLY so an unknown type never reaches a
+// peer; the lock control entries below deliberately are not, and rely on the capability gate instead.
 const RELOAD = 8;
 export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;

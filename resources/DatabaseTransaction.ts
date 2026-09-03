@@ -1191,6 +1191,15 @@ export class DatabaseTransaction implements Transaction {
 								try {
 									transaction.abort();
 								} catch {}
+								// Every other terminal exit from commit() runs the logical cleanup too. Throwing
+								// straight out would strand the OTHER locks this transaction holds, its staged
+								// blobs, and the context's back-reference to a CLOSED transaction — and
+								// transaction()'s onComplete has no rejection path to run it later.
+								try {
+									this.abort();
+								} catch (error) {
+									harperLogger.debug?.('cleaning up a transaction whose record lock lapsed', error);
+								}
 								throw new ClientError('Record lock lease expired', 409);
 							}
 							// The transaction was created with coordinatedRetry:true (see
