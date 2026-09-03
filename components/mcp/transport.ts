@@ -999,13 +999,13 @@ async function handleDelete(request: NormRequest): Promise<NormResponse> {
 	if (session.user !== request.user) {
 		return { status: 403, headers: {} };
 	}
+	await deleteSession(sessionId);
 	// Explicit teardown: stop live subscriptions and reject any pending server→client
 	// requests for this session (the GET 'close' covers subscriptions on disconnect,
 	// but a DELETE may arrive with no open GET stream, and server-requests aren't
 	// GET-tied at all).
 	dropSessionSubscriptions(sessionId);
 	dropSessionServerRequests(sessionId);
-	await deleteSession(sessionId);
 	return { status: 204, headers: {} };
 }
 

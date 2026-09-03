@@ -22,6 +22,7 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
+const { _liveSubscriptionCount, _resetSubscriptionsForTest } = require('#src/components/mcp/subscriptions');
 const { makeFakeSessionTable } = require('./fakeSessionTable');
 
 function makeFakeResources(entries) {
@@ -1467,6 +1468,39 @@ describe('mcp/transport', () => {
 			const res = await handleMcpRequest(makeReq({ method: 'DELETE', headers: { 'mcp-session-id': session.id } }));
 			assert.equal(res.status, 204);
 			assert.equal(await loadSession(session.id), null);
+		});
+
+		it('keeps live subscriptions when storage deletion fails', async () => {
+			envOverrides.mcp_session_allowClientDelete = true;
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			registerSession(session.id, 'application', {
+				username: 'alice',
+				role: { permission: { super_user: true } },
+			});
+			_setSubscribeImplForTest(async () => ({
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}), return: () => Promise.resolve({ done: true }) };
+				},
+			}));
+			try {
+				await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(90, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(_liveSubscriptionCount(session.id), 1);
+				fakeSessionTable.delete = async () => {};
+
+				const res = await handleMcpRequest(makeReq({ method: 'DELETE', headers: { 'mcp-session-id': session.id } }));
+
+				assert.equal(res.status, 500);
+				assert.ok(await loadSession(session.id));
+				assert.equal(_liveSubscriptionCount(session.id), 1);
+			} finally {
+				_resetSubscriptionsForTest();
+			}
 		});
 
 		it('returns 400 when allowClientDelete is true but session-id is missing', async () => {
