@@ -6,6 +6,7 @@ import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
+import { writeKeyId } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 
@@ -232,45 +233,35 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 	};
 }
 
-const CANONICAL_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
-
 /**
- * The store's own notion of key equality, for a primary key that is not a scalar. An array primary
- * key decodes to a fresh instance for every index entry, so identity never matches it, and
- * `flattenKey` is not a substitute: it joins with a NUL byte, folding `['t', 7]` and a scalar
- * string carrying those same bytes into one key and dropping a record.
- */
-function encodedKeyIdentity(primaryKey: Id) {
-	return CANONICAL_KEY_BUFFER.toString('latin1', 0, writeKey(primaryKey, CANONICAL_KEY_BUFFER, 0));
-}
-
-/**
- * Collapse an index scan to one result per record (#2434).
+ * Collapse an index scan to one result per record (#2434). A record's entries are not adjacent —
+ * the composite `[indexedValue, primaryKey]` key sorts on the indexed value first — so the scan has
+ * to remember what it has already yielded rather than compare neighbours.
  *
- * An `elements` attribute gets one index entry per array element, and a record's entries are not
- * adjacent — the composite `[indexedValue, primaryKey]` key sorts on the indexed value first — so
- * this has to remember which records the scan has already yielded. The set holds one primary key
- * per distinct record the range matches, and is deliberately NOT bounded by any page window: the
- * sibling-condition and row filters that shrink the result run downstream of here, so a selective
- * filter keeps the scan (and the set) going while the page fills.
+ * The set holds one primary key per distinct record the range matches, and no page window bounds
+ * it: sibling-condition and row filters run downstream of here, so a selective filter keeps the
+ * scan going, and the set growing, while the page fills. Accepted deliberately (#2434).
  *
- * The set is built per iteration rather than per iterable so re-iterating a scan starts empty.
+ * State is per iteration, so a re-iterated scan starts empty.
  */
 function distinctRecords(entries: any): AsyncIterable<Id> {
 	const distinct = new ExtendedIterable();
 	(distinct as any).iterate = (options) => {
-		// Scalar and encoded keys are tracked apart so an encoded array key can never collide with
-		// a scalar string id that happens to carry the same bytes.
+		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it and
+		// `writeKeyId` gives the store's own key equality. Its bytes live in their own set: a scalar
+		// string id may legitimately carry exactly those bytes, and one set would fold the two.
 		const yieldedKeys = new Set();
 		const yieldedEncodedKeys = new Set();
+		// map, not filter: filter clears `continueOnRecoverableError`, which would break the
+		// recoverable-error continuation the response path installs with mapError()
 		return entries
-			.filter((primaryKey) => {
+			.map((primaryKey) => {
 				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
 				const yielded = isEncoded ? yieldedEncodedKeys : yieldedKeys;
-				const identity = isEncoded ? encodedKeyIdentity(primaryKey) : primaryKey;
-				if (yielded.has(identity)) return false;
+				const identity = isEncoded ? writeKeyId(primaryKey) : primaryKey;
+				if (yielded.has(identity)) return SKIP;
 				yielded.add(identity);
-				return true;
+				return primaryKey;
 			})
 			.iterate(options);
 	};
@@ -306,9 +297,8 @@ export function searchByIndex(
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
 	let needFullScan;
-	// Whether the scan stays inside one indexed value. `[indexedValue, primaryKey]` is unique, so
-	// such a scan cannot reach a record twice and needs no collapsing — which is what keeps
-	// element equality, the common array query, free of the dedup below.
+	// `[indexedValue, primaryKey]` is unique, so a scan that stays inside one indexed value cannot
+	// reach a record twice and skips the collapse below
 	let scansOneIndexedValue;
 	if (Array.isArray(attribute_name)) {
 		const firstAttributeName = attribute_name[0];
@@ -604,9 +594,8 @@ export function searchByIndex(
 					}
 				: ({ value }) => value
 		);
-		// Only a declared multi-valued attribute can put a record into the same scan twice. A
-		// runtime array under an undeclared attribute does too, but the schema does not say it is
-		// multi-valued, so it stays outside this boundary.
+		// scoped to attributes the schema declares multi-valued; a runtime array under an
+		// undeclared attribute repeats the same way but stays outside this boundary
 		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
 			? scanned
 			: distinctRecords(scanned);

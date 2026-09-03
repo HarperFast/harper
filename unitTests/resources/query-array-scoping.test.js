@@ -275,6 +275,7 @@ describe('Array-valued property scoping', () => {
 				{ id: 4, sizes: [175], tags: [], weight: 40 },
 				{ id: 6, sizes: [180], tags: [], weight: 50 },
 				{ id: 7, sizes: [190, 190], tags: ['dup', 'dup'], weight: 60 },
+				{ id: 8, tags: ['ship', 'shop'] },
 			];
 			for (const widget of widgets) await GqlWidgets.put(widget);
 		});
@@ -315,6 +316,16 @@ describe('Array-valued property scoping', () => {
 					gqlSearch({ conditions: [{ attribute: 'tags', comparator: 'contains', value: 'sale' }] })
 				),
 				[1, 2]
+			);
+		});
+
+		it('starts_with returns a record once when two of its elements share the prefix', async function () {
+			// record 8 owns both 'ship' and 'shop'; the prefix bound admits both entries
+			assert.deepStrictEqual(
+				await collectIdsInOrder(
+					gqlSearch({ conditions: [{ attribute: 'tags', comparator: 'starts_with', value: 'sh' }] })
+				),
+				[8]
 			);
 		});
 
@@ -399,6 +410,22 @@ describe('Array-valued property scoping', () => {
 			// objects, so object identity cannot tell them apart, and flattenKey would fold
 			// ['t', 7] into the record keyed 't\u00007'
 			assert.deepStrictEqual(await collectKeys(scanFromA()), [['t', 7], 't\u00007', ['t', 9], collidingId, ['t', 8]]);
+		});
+
+		it('two scans interleaved a step at a time do not share dedup state', async function () {
+			const first = scanFromA()[Symbol.asyncIterator]();
+			const second = scanFromA()[Symbol.asyncIterator]();
+			const firstKeys = [];
+			const secondKeys = [];
+			for (;;) {
+				const a = await first.next();
+				const b = await second.next();
+				if (a.done && b.done) break;
+				if (!a.done) firstKeys.push(a.value.id);
+				if (!b.done) secondKeys.push(b.value.id);
+			}
+			assert.deepStrictEqual(firstKeys, secondKeys);
+			assert.strictEqual(firstKeys.length, 5);
 		});
 
 		it('an encoded array key does not collide with a scalar id carrying the same bytes', async function () {
